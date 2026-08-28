@@ -232,6 +232,17 @@ interface ReconciledFleetScope {
   readonly assessed: FleetConnectionReference[];
   readonly intentionalExclusions: FleetConnectionReference[];
   readonly operationalSummaries: FleetSummary[];
+  /**
+   * Connections excluded because their LIFECYCLE is `paused`.
+   *
+   * Read from inventory rather than from summary evidence: a paused row is
+   * scoped `excluded` and never reaches `collectSummaryEvidence`, so the
+   * `owner_paused` RESOLVER can no longer be the only producer of
+   * `intentional_policy.paused`. Those are two different facts — the resolver
+   * additionally requires `schedule_mode === "scheduled-disabled"` — and the
+   * dimension is named for the lifecycle one.
+   */
+  readonly pausedLifecycle: FleetConnectionReference[];
   readonly setupPending: FleetConnectionReference[];
   readonly unassessed: FleetConnectionReference[];
 }
@@ -344,6 +355,7 @@ function reconcileFleetScope(
   const summariesByConnectionId = new Map(summaries.map((summary) => [summary.connection_id, summary]));
   const inventoryByConnectionId = new Map(inventory.map((connection) => [connection.connectorInstanceId, connection]));
   const assessed: FleetConnectionReference[] = [];
+  const pausedLifecycle: FleetConnectionReference[] = [];
   const intentionalExclusions: FleetConnectionReference[] = [];
   const operationalSummaries: FleetSummary[] = [];
   const setupPending: FleetConnectionReference[] = [];
@@ -354,6 +366,9 @@ function reconcileFleetScope(
     const scope = inventoryScope(connection);
     if (scope === "excluded") {
       intentionalExclusions.push(ref);
+      if (connection.status === "paused") {
+        pausedLifecycle.push(ref);
+      }
       continue;
     }
     if (scope === "setup_pending") {
@@ -374,7 +389,7 @@ function reconcileFleetScope(
       unassessed.push(summaryReference(summary));
     }
   }
-  return { assessed, intentionalExclusions, operationalSummaries, setupPending, unassessed };
+  return { assessed, intentionalExclusions, operationalSummaries, pausedLifecycle, setupPending, unassessed };
 }
 
 function collectSummaryEvidence(summary: FleetSummary, evidence: MutableFleetEvidence): void {
@@ -620,6 +635,20 @@ export function composeFleetHealthVerdict(input: {
     scope.unassessed.length > 0 ||
     evidence.activeWork.length > 0 ||
     evidence.unknownEvidence.length > 0;
+
+  // `intentional_policy.paused` reports every DELIBERATELY paused connection.
+  //
+  // Two disjoint sources, and they cannot overlap: a `status: "paused"` row is
+  // scoped `excluded` and never enters `operationalSummaries`, so it can never
+  // also appear via `evidence.paused` — which is populated only while walking
+  // those summaries. No dedupe is needed, and adding one would be unreachable
+  // code that no test could kill.
+  //   - lifecycle `status: "paused"`  -> `scope.pausedLifecycle`
+  //   - `owner_paused` RESOLVER on a still-ACTIVE row whose schedule the owner
+  //     disabled (`schedule_mode === "scheduled-disabled"`) -> `evidence.paused`
+  // Before this, only the resolver fed the dimension, so it was structurally
+  // empty for exactly the archived rows it is named after.
+  const pausedPolicy: FleetConnectionReference[] = [...scope.pausedLifecycle, ...evidence.paused];
   const state = fleetState({ freshnessAdvisories: evidence.freshnessAdvisories, indeterminate, unhealthy });
   // Actionability-only gate for the global banner: a proven owner action, or
   // a materially blocked connection (real unhealthy headline/coverage/
@@ -644,7 +673,7 @@ export function composeFleetHealthVerdict(input: {
       attention: { needs_owner: evidence.needsOwner },
       coverage_audit: input.streamHealth.status,
       freshness_advisories: evidence.freshnessAdvisories,
-      intentional_policy: { manual: evidence.manual, paused: evidence.paused },
+      intentional_policy: { manual: evidence.manual, paused: pausedPolicy },
       recovery: { retryable: evidence.retryable, terminal: evidence.terminal },
       runtime,
       stalled_work: evidence.stalledWork,
