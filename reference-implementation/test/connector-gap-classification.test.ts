@@ -164,6 +164,31 @@ test("control: a run_failed gap with a SPECIFIC (non-generic) reason is never sh
   assert.equal(hasTerminalKnownGap(run), true);
 });
 
+test("control: a non-run_failed kind carrying a generic reason is never shadowed, even alongside a competing interaction_required gap", () => {
+  const run = hebUnexpectedUiRun({
+    known_gaps: [
+      {
+        kind: "interaction_required",
+        message: "PDPP could not identify what H-E-B is showing.",
+        reason: "interaction_timeout",
+        recovery_hint: { action: "manual_action_required", retryable: false },
+        severity: "actionable",
+        stream: null,
+      },
+      {
+        kind: "collection_failed",
+        message: "heb_session_failed: heb_login_unexpected_ui",
+        reason: "connector_reported_failed",
+        recovery_hint: { action: "unknown", retryable: false },
+        severity: "actionable",
+        stream: null,
+      },
+    ],
+  });
+  assert.equal(hasCompetingOwnerInteractionGap(run.known_gaps), true);
+  assert.equal(hasTerminalKnownGap(run), true);
+});
+
 // ─── isProvenUnfillableGap / isStreamFullyUnfillableAccounted ─────────────────
 //
 // Fixtures below mirror the exact durable row shapes verified against
