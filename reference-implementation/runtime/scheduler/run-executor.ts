@@ -23,6 +23,10 @@
  * guard → preRunGate → launchRun), pre-run gate, or dispatch governor.
  */
 
+import {
+  BROWSER_SURFACE_LEASE_STATUSES,
+  // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
+} from "@opendatalabs/remote-surface/leases";
 import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../../lib/spine.ts";
 import type { SchedulerRunHistoryRecord } from "../../server/stores/scheduler-store.ts";
 import type { ConnectorEnvironmentBinding } from "../connector-child-environment.ts";
@@ -680,12 +684,36 @@ function buildBrowserSurfaceUnavailableSkip(
   };
 }
 
-const BROWSER_SURFACE_UNAVAILABLE_STATUSES = new Set([
-  "run_browser_surface_queued",
-  "browser_surface_probe_failed",
-  "browser_surface_lost",
-  "surface_failed",
-]);
+/**
+ * A managed connector's `runNow` early-returns with a raw
+ * `BrowserSurfaceLeaseStatus` (`run-coordinator.ts`'s `buildBrowserSurfaceEarlyReturn`)
+ * whenever the run never reached the connector at all — no browser surface
+ * was available, one was still starting, or an already-waiting lease's grace
+ * period expired. None of that is a connector execution outcome: nothing was
+ * dispatched, so there is no collection evidence to report and no failure to
+ * retry. `"cancelled"` is excluded: an owner-initiated cancel is already
+ * handled as its own distinct `RunRecord.status` (see
+ * `schedulerStatusFromRuntimeResult`), not a surface-unavailable skip.
+ * `"leased"` is excluded: a leased surface is exactly the one status where
+ * the connector goes on to actually run.
+ *
+ * Generic and connector-agnostic by construction: sourced directly from the
+ * remote-surface package's own status vocabulary
+ * (`BROWSER_SURFACE_LEASE_STATUSES`) rather than a hand-maintained string
+ * list, so it can never drift out of sync with the lease statuses
+ * `run-coordinator.ts` can actually return. The previous hand-maintained set
+ * both mis-cased one entry (`"run_browser_surface_queued"`, which is never
+ * a value `runNowResult.status` can hold — the real value is
+ * `"waiting_for_browser_surface"`) and omitted `"deferred"`/
+ * `"waiting_for_browser_surface"`/`"expired"`/`"released"` outright, so any
+ * of those early-exit statuses fell through to
+ * `buildManagedRunTerminalRecord` and were misclassified `"failed"` —
+ * corrupting the connection's coverage axis (worst-wins degrade) for a run
+ * that never touched the provider.
+ */
+const BROWSER_SURFACE_UNAVAILABLE_STATUSES: ReadonlySet<string> = new Set<string>(
+  BROWSER_SURFACE_LEASE_STATUSES.filter((status) => status !== "cancelled" && status !== "leased")
+);
 
 function messageIndicatesRunAlreadyActive(normalizedMessage: string): boolean {
   return normalizedMessage.includes("run_already_active") || normalizedMessage.includes("already has an active run");

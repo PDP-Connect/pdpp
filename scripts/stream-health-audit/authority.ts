@@ -1309,11 +1309,45 @@ function projectionAgreement(connection: JsonObject, manifest: ResolvedManifest 
     typeof axes?.coverage === "string" &&
     axes.coverage !== "complete" &&
     reportConditions.length > 0 &&
-    reportConditions.every((condition) => condition === "complete")
+    reportConditions.every((condition) => condition === "complete") &&
+    // An accepted-absence axis (`inventory_only`/`deferred`/`unavailable`/
+    // `unsupported`) is a manifest-declared, honest terminal label for the
+    // WHOLE connection's accepted policy — e.g. a required diagnostics-only
+    // stream that only ever proves inventory, never full detail. It is not a
+    // degrading condition, so a per-stream report that independently proves
+    // every required stream `complete` does not disagree with it; the two
+    // evidence pipelines are answering different questions (what the
+    // connector accepts collecting vs. what each stream's own facts show).
+    !ACCEPTED_ABSENCE_POLICIES.has(axes.coverage) &&
+    // A connection-wide, non-stream-scoped pending condition (e.g. a local
+    // collector's own process/upload backlog) can legitimately degrade the
+    // connection axis while never entering any single stream's report — see
+    // `isLocalCollectorRunnerGap`/`pending_other` in ref-control.ts. Fail
+    // closed: only excuse the disagreement when the backlog evidence is
+    // itself readable and actually the reason (a positive `pending_other`
+    // count), never when the backlog is unread/unknown.
+    !hasUnscopedPendingBacklog(health)
   ) {
     return "health coverage disagrees with an entirely complete collection report";
   }
   return null;
+}
+
+/**
+ * Whether the connection carries a genuine, connection-wide pending
+ * detail-gap backlog that is NOT scoped to any required stream
+ * (`detail_gap_backlog.pending_other > 0`, e.g. a local-collector process
+ * failure or a stalled device-exporter outbox). This backlog can legitimately
+ * degrade `axes.coverage` (a real agent-side blocker) while every per-stream
+ * `collection_report` entry independently reads `complete`, because the
+ * per-stream report's in-scope universe deliberately excludes non-stream
+ * process conditions (see `pendingDetailGapCountsByStream` in ref-control.ts).
+ * Reads only the generic, connector-agnostic `pending_other` count — never a
+ * connector/provider identity.
+ */
+function hasUnscopedPendingBacklog(health: JsonObject | null): boolean {
+  const backlog = nestedObject(health, "detail_gap_backlog");
+  return typeof backlog?.pending_other === "number" && backlog.pending_other > 0;
 }
 
 function hasActiveBoundedWork(connection: JsonObject): boolean {

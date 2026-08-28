@@ -2020,6 +2020,213 @@ test("an owner-cancelled run's existing fallback to lastSuccessfulRun is unchang
 });
 
 // ---------------------------------------------------------------------------
+// projection_disagreement root cause (bz-live-authority-close-0828): an
+// `account`-backed connection's newest SETTLED run is a managed browser-
+// surface lease that deferred BEFORE the connector was ever invoked
+// (`runtime/browser-surface/run-coordinator.ts`'s early-return path emits
+// only `run.browser_surface_requested`/`run.browser_surface_deferred`, never
+// a connector-side terminal event). That run settles `run_history.status`
+// as a bare terminal `"failed"` with none of the facts a genuine execution —
+// successful or failed — always produces: `collection_facts` stays `null`,
+// `event_count` stays `0`, `known_gaps` stays empty, and no
+// `connector_error`/`failure_reason`/`terminal_reason` text exists anywhere.
+// Before this fix, `healthClassifyingRun` read this bare "failed" status
+// exactly like a genuine connector-side failure and degraded
+// `axes.coverage` to `"partial"`, even though the connection's last real
+// success had already proven every required stream complete and the
+// "failure" itself observed nothing. Distinct connector-agnostic mechanism
+// from the scheduler-skip fix above (a skip never dispatches at all; this
+// dispatches, then defers before the connector runs) — same disagreement
+// predicate at scripts/stream-health-audit/authority.ts:1308-1315.
+// ---------------------------------------------------------------------------
+
+function accountPreExecutionDeferralRunSummary(startedAt: string, finishedAt: string): ConnectorRunSummary {
+  return {
+    collection_facts: null,
+    event_count: 0,
+    failure_reason: null,
+    finished_at: finishedAt,
+    first_at: startedAt,
+    known_gaps: [],
+    last_at: finishedAt,
+    recovery_only: false,
+    run_id: "run_1787924172900",
+    started_at: startedAt,
+    status: "failed",
+    terminal_reason: null,
+  };
+}
+
+test("an account connection whose newest settled run is a pre-execution browser-surface deferral promotes axes.coverage from its last real success", () => {
+  const lastSuccessfulRun = accountSuccessfulRunSummary();
+  const deferredRun = accountPreExecutionDeferralRunSummary(
+    "2026-08-28T13:36:12.897Z",
+    "2026-08-28T13:36:12.963Z"
+  );
+  assert.equal(accountAllRequiredStreamsComplete(lastSuccessfulRun), true);
+
+  const health = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH_FRESHNESS,
+    lastRun: deferredRun,
+    lastSuccessfulRun,
+    latestSettledRun: deferredRun,
+    localDeviceBacked: false,
+    manifestStreams: accountManifestStreams(),
+    nowIso: NOW,
+    outbox: { axis: "idle" },
+    pendingDetailGaps: [],
+    schedule: { enabled: true },
+  });
+
+  // FAILS before the fix: `healthClassifyingRun` read the bare "failed"
+  // status as a genuine connector failure (no exclusion for it), so
+  // `mapCoverageAxis` degraded this to `"partial"` even though the run
+  // observed nothing at all and the last real success proved every
+  // required stream complete.
+  assert.equal(health.axes.coverage, "complete");
+});
+
+test("a failed run that emitted even one event still degrades, never excused as a deferral", () => {
+  // Negative control: a run that reached the connector (even briefly, even
+  // to fail immediately) must never be excused — only a run with ZERO
+  // signal of ever having attempted collection qualifies.
+  const lastSuccessfulRun = accountSuccessfulRunSummary();
+  const realFailure: ConnectorRunSummary = {
+    collection_facts: null,
+    event_count: 1,
+    failure_reason: null,
+    finished_at: "2026-08-28T13:36:12.963Z",
+    first_at: "2026-08-28T13:36:12.897Z",
+    known_gaps: [],
+    last_at: "2026-08-28T13:36:12.963Z",
+    recovery_only: false,
+    run_id: "run_real_failure_1",
+    started_at: "2026-08-28T13:36:12.897Z",
+    status: "failed",
+    terminal_reason: null,
+  };
+
+  const health = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH_FRESHNESS,
+    lastRun: realFailure,
+    lastSuccessfulRun,
+    latestSettledRun: realFailure,
+    localDeviceBacked: false,
+    manifestStreams: accountManifestStreams(),
+    nowIso: NOW,
+    outbox: { axis: "idle" },
+    pendingDetailGaps: [],
+    schedule: { enabled: true },
+  });
+  assert.notEqual(health.axes.coverage, "complete");
+  assert.equal(health.axes.coverage, "partial");
+});
+
+test("a failed run with a known_gap still degrades, never excused as a deferral", () => {
+  // Negative control: any known_gap (even with zero events) is real evidence
+  // of a genuine connector-side failure and must never be excused.
+  const lastSuccessfulRun = accountSuccessfulRunSummary();
+  const gapBearingFailure: ConnectorRunSummary = {
+    collection_facts: null,
+    event_count: 0,
+    failure_reason: null,
+    finished_at: "2026-08-28T13:36:12.963Z",
+    first_at: "2026-08-28T13:36:12.897Z",
+    known_gaps: [{ reason: "connector_crashed", severity: "actionable" }],
+    last_at: "2026-08-28T13:36:12.963Z",
+    recovery_only: false,
+    run_id: "run_gap_failure_1",
+    started_at: "2026-08-28T13:36:12.897Z",
+    status: "failed",
+    terminal_reason: null,
+  };
+
+  const health = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH_FRESHNESS,
+    lastRun: gapBearingFailure,
+    lastSuccessfulRun,
+    latestSettledRun: gapBearingFailure,
+    localDeviceBacked: false,
+    manifestStreams: accountManifestStreams(),
+    nowIso: NOW,
+    outbox: { axis: "idle" },
+    pendingDetailGaps: [],
+    schedule: { enabled: true },
+  });
+  assert.notEqual(health.axes.coverage, "complete");
+});
+
+test("a failed run with any error/failure/terminal text still degrades, never excused as a deferral", () => {
+  // Negative control: text describing what went wrong is real evidence, even
+  // with zero events and zero known_gaps.
+  const lastSuccessfulRun = accountSuccessfulRunSummary();
+  for (const overrides of [
+    { failure_reason: "credential_rejected" },
+    { terminal_reason: "connector_process_crashed" },
+    {
+      connector_error: {
+        cause_chain: [],
+        code: "credential_rejected",
+        message: "credential rejected",
+        origin: "runtime" as const,
+        retryable: false,
+      },
+    },
+  ] as const) {
+    const texturedFailure: ConnectorRunSummary = {
+      collection_facts: null,
+      event_count: 0,
+      failure_reason: null,
+      finished_at: "2026-08-28T13:36:12.963Z",
+      first_at: "2026-08-28T13:36:12.897Z",
+      known_gaps: [],
+      last_at: "2026-08-28T13:36:12.963Z",
+      recovery_only: false,
+      run_id: "run_textured_failure_1",
+      started_at: "2026-08-28T13:36:12.897Z",
+      status: "failed",
+      terminal_reason: null,
+      ...overrides,
+    };
+
+    const health = projectConnectorSummaryConnectionHealth({
+      freshness: FRESH_FRESHNESS,
+      lastRun: texturedFailure,
+      lastSuccessfulRun,
+      latestSettledRun: texturedFailure,
+      localDeviceBacked: false,
+      manifestStreams: accountManifestStreams(),
+      nowIso: NOW,
+      outbox: { axis: "idle" },
+      pendingDetailGaps: [],
+      schedule: { enabled: true },
+    });
+    assert.notEqual(health.axes.coverage, "complete", JSON.stringify(overrides));
+  }
+});
+
+test("a connection that has never had a successful run stays unknown through a pre-execution deferral, never fabricated complete", () => {
+  const deferredRun = accountPreExecutionDeferralRunSummary(
+    "2026-08-28T13:36:12.897Z",
+    "2026-08-28T13:36:12.963Z"
+  );
+
+  const health = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH_FRESHNESS,
+    lastRun: deferredRun,
+    lastSuccessfulRun: null,
+    latestSettledRun: deferredRun,
+    localDeviceBacked: false,
+    manifestStreams: accountManifestStreams(),
+    nowIso: NOW,
+    outbox: { axis: "idle" },
+    pendingDetailGaps: [],
+    schedule: { enabled: true },
+  });
+  assert.equal(health.axes.coverage, "unknown");
+});
+
+// ---------------------------------------------------------------------------
 // Real-manifest regression guard.
 //
 // The tests above synthesize an `ALWAYS_FRESH_REFRESH_POLICY` to prove the

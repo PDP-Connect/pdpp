@@ -2725,11 +2725,58 @@ function healthClassifyingRun(
   if (
     isOwnerCancelledRun(latestSettledRun) ||
     isControllerAbandonedRun(latestSettledRun) ||
-    isSchedulerSkippedRun(latestSettledRun)
+    isSchedulerSkippedRun(latestSettledRun) ||
+    isPreExecutionDeferralRun(latestSettledRun)
   ) {
     return lastSuccessfulRun;
   }
   return latestSettledRun;
+}
+
+/**
+ * Whether a terminal `"failed"` run carries generic runtime evidence that
+ * collection was never attempted — e.g. a managed browser-surface lease that
+ * deferred BEFORE the connector was ever invoked (`runtime/browser-surface/
+ * run-coordinator.ts`'s early-return path emits only `run.browser_surface_
+ * requested`/`run.browser_surface_deferred`, never a connector-side terminal
+ * event, so the run this becomes carries none of the facts a genuine
+ * execution — successful or failed — always produces).
+ *
+ * Treated like the owner-cancel/controller-abandoned/scheduler-skip cases it
+ * most resembles: this run carries NO provider or coverage evidence, so
+ * health/coverage defer to the last run that actually observed something,
+ * rather than manufacturing a `partial` degradation from a run that never
+ * reached the connector at all.
+ *
+ * Fail-closed by construction: EVERY one of these must hold, so any run that
+ * reached the connector (even briefly, even to fail immediately) is treated
+ * as a real failure, never silently excused.
+ *   - `collection_facts === null`: no per-stream inventory block was ever
+ *     built (`buildCollectionFacts` only returns null for a `recovery_only`
+ *     run or "no in-scope stream universe" — a run that started measuring
+ *     always produces one, even with zero-record entries).
+ *   - `event_count === 0`: the connector emitted no progress/record events.
+ *   - `known_gaps.length === 0`: no gap of any kind (retryable, terminal, or
+ *     otherwise) was recorded against this run — a real connector-side
+ *     failure almost always leaves at least one.
+ *   - `connector_error`/`failure_reason`/`terminal_reason` are all absent: no
+ *     text anywhere describes what went wrong, because nothing inside the
+ *     connector ran long enough to describe anything.
+ *
+ * This is connector-agnostic runtime evidence only — no connector/provider
+ * identity, no `source_kind`, no manifest read.
+ */
+function isPreExecutionDeferralRun(run: ConnectorRunSummary | null): boolean {
+  return Boolean(
+    run &&
+      run.status === "failed" &&
+      run.collection_facts === null &&
+      run.event_count === 0 &&
+      run.known_gaps.length === 0 &&
+      !run.connector_error &&
+      !run.failure_reason &&
+      !run.terminal_reason
+  );
 }
 
 /**
@@ -5215,14 +5262,39 @@ function evidenceUnreliableSources(
   return sources;
 }
 
-function requiredCoverageEvidenceIsAuthoritative(evidence: ConnectorSummaryEvidenceRow | null): boolean {
+/**
+ * A local-device (push-mode) connection's outbox is a SEPARATE evidence
+ * source from `ConnectorSummaryEvidenceRow` (a materialized record/manifest
+ * snapshot with no notion of live transport state) — so a stalled outbox
+ * with open dead-letter/backlog work can sit underneath an otherwise-clean
+ * evidence row and let a stream's `collection_report` keep reading `complete`
+ * from proof gathered before the stall began.
+ *
+ * `openspec/changes/define-stream-coverage-freshness-evidence/design.md:344-345`
+ * is explicit that the durable-proof promotion is admitted "only while the
+ * device is fresh, healthy, idle/drained, and its read is reliable: no
+ * unhealthy/stale heartbeat, open outbox work, ...". This function is the
+ * evidence gate `deriveCollectionReportEntryCoverage` withholds a required
+ * `complete` claim behind (`ref-control.ts:4166-4172`); an `axis === "stalled"`
+ * outbox on a `localDeviceBacked` connection is exactly the "open outbox
+ * work" the design doc names, so it withholds authority the same way a dirty
+ * or non-current evidence row already does. Scoped to `localDeviceBacked`
+ * only: scheduler-managed connections have no local push-mode outbox, so
+ * their axis is always `"unknown"`/`"idle"` and this check is a no-op for
+ * them — no connector ID is read anywhere here.
+ */
+export function requiredCoverageEvidenceIsAuthoritative(
+  evidence: ConnectorSummaryEvidenceRow | null,
+  outbox: { readonly axis: OutboxAxis; readonly localDeviceBacked: boolean }
+): boolean {
   return (
     evidence !== null &&
     evidence.dirty === false &&
     evidence.state === "fresh" &&
     evidence.record_snapshot.state === "current" &&
     evidence.terminal_facts.state === "current" &&
-    evidence.manifest_declaration.state === "current"
+    evidence.manifest_declaration.state === "current" &&
+    !(outbox.localDeviceBacked && outbox.axis === "stalled")
   );
 }
 
@@ -6963,7 +7035,10 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     refreshPolicy,
-    requiredCoverageEvidenceAuthoritative: requiredCoverageEvidenceIsAuthoritative(evidence),
+    requiredCoverageEvidenceAuthoritative: requiredCoverageEvidenceIsAuthoritative(evidence, {
+      axis: outbox.axis,
+      localDeviceBacked,
+    }),
     schedule: localDeviceBacked ? null : normalizeScheduleEvidence(schedule),
     terminalDetailGapsByStream: detailGaps.terminalByStream,
     unfillableAccountedByStream: detailGaps.unfillableAccountedByStream,
