@@ -1441,6 +1441,94 @@ test("carry-forward: never-measured omitted required stream still blocks Healthy
   );
 });
 
+test("an unknown run-classified axis is promoted to complete when every required stream's collection report is already complete", () => {
+  // Connector-agnostic: this reproduces the shape ANY connector reaches when
+  // buildCoverageEvidence's run-classification stage lands on "unknown" for
+  // whatever reason (no run yet resolved, an owner-cancelled/controller-
+  // abandoned/scheduler-skipped classifying run with nothing to fall back to,
+  // a local_device connection with no scheduler-managed run, etc.) while the
+  // independently-built collection_report already proves every required
+  // stream complete from its own durable evidence. See
+  // bz-e052-report-health.md for the live receipt this reproduces
+  // (claude-code, codex, and chatgpt all hit it under different stage-1
+  // causes).
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [fact({ checkpoint: "committed", collected: 500, considered: 500, stream: "messages" })],
+    },
+    collectionFactsAsOf: "2026-06-01T00:00:00.000Z",
+    freshness: "fresh",
+    latestStreamFacts: null,
+    manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
+    refresh: null,
+  });
+  assert.equal(entryFor(entries, "messages").coverage_condition, "complete");
+
+  assert.equal(
+    rollupCollectionReportCoverageOverride("unknown", entries),
+    "complete",
+    "an entirely complete required-stream report must promote an unknown connection axis"
+  );
+});
+
+test("counterexample: an unknown axis is NOT promoted when only some required streams are complete (partial evidence)", () => {
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: { streams: [] },
+    collectionFactsAsOf: "2026-06-01T00:00:00.000Z",
+    freshness: "fresh",
+    latestStreamFacts: storedFacts([
+      fact({ checkpoint: "committed", collected: 500, considered: 500, stream: "messages" }),
+    ]),
+    manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
+    refresh: null,
+  });
+  assert.equal(entryFor(entries, "messages").coverage_condition, "complete");
+  const partialEntries = [
+    ...entries,
+    { ...entryFor(entries, "messages"), coverage_condition: "unknown" as const, stream: "other_required" },
+  ];
+  assert.equal(
+    rollupCollectionReportCoverageOverride("unknown", partialEntries),
+    null,
+    "one required stream still unknown must refuse the promotion — every required stream must be complete, not just some"
+  );
+});
+
+test("counterexample: an unknown axis is NOT promoted when the required-stream set is empty", () => {
+  assert.equal(
+    rollupCollectionReportCoverageOverride("unknown", []),
+    null,
+    "an empty required-report set has nothing to prove complete — must not fabricate a promotion from nothing"
+  );
+});
+
+test("counterexample: an already-degrading axis is NEVER promoted to complete, even if the (mismatched) required report reads all-complete", () => {
+  // Mismatched-input guard, mirroring the existing terminal_gap accounted-rollup
+  // guard: a resolved degrading axis is authoritative on its own and must never
+  // be overridden toward "complete" by a stale/mismatched collection report.
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [fact({ checkpoint: "committed", collected: 500, considered: 500, stream: "messages" })],
+    },
+    collectionFactsAsOf: "2026-06-01T00:00:00.000Z",
+    freshness: "fresh",
+    latestStreamFacts: null,
+    manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
+    refresh: null,
+  });
+  assert.equal(entryFor(entries, "messages").coverage_condition, "complete");
+  for (const currentAxis of ["terminal_gap", "retryable_gap", "gaps", "partial"] as const) {
+    assert.equal(
+      rollupCollectionReportCoverageOverride(currentAxis, entries),
+      null,
+      `a degrading axis (${currentAxis}) must never be promoted to complete regardless of the required report`
+    );
+  }
+});
+
 test("carry-forward: an attempted-but-unresolved classifying fact cannot shadow durable stored proof (monotonic floor)", () => {
   // The classifying block DID attempt `messages` but left it unresolved
   // (not_staged, no skip, no denominator). An older block proved it complete

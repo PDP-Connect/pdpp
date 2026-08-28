@@ -3202,6 +3202,20 @@ export function rollupCollectionReportCoverageOverride(
   ) {
     return "unknown";
   }
+  // Symmetric promotion: when the run-classification stage (buildCoverageEvidence /
+  // mapCoverageAxis) has no run to classify and lands on `unknown` — for any reason,
+  // on any connector — but the independently-built collection_report already proves
+  // every required stream `complete` from its own durable evidence, promote the
+  // connection axis to match. Never touches an already-resolved degrading axis
+  // (worst-wins preserved) and never fires on partial evidence (every required
+  // stream must be complete).
+  if (
+    currentAxis === "unknown" &&
+    requiredReport.length > 0 &&
+    requiredReport.every((entry) => entry.coverage_condition === "complete")
+  ) {
+    return "complete";
+  }
   return null;
 }
 
