@@ -108,6 +108,7 @@ function streamHealthForSummary(summary: unknown, manifestStreams?: readonly unk
       paginationComplete: true,
       renderedRows: true,
       resolved: true,
+      sourceScopes: [],
       streamKeys,
       suspense: false,
     },
