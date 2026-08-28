@@ -1,6 +1,20 @@
 # Vendored cross-repo dependency tarballs (transitional)
 
-`pdpp-connector-protocol-0.0.1.tgz` built via `npm pack` from PDP-Connect/data-connect @
+`pdpp-connector-protocol-0.0.1.tgz` was RE-PACKED on 2026-08-28 from
+PDP-Connect/data-connect commit `cdcede2bf661abbd19d8b75db5d8d185da7481b5`
+("feat(protocol): declare STREAM_EVIDENCE, and reconcile boundary_claim drift") on
+branch `fix/protocol-stream-evidence-boundary-claim-0828`, packed from inside
+that repo's workspace so sibling dependencies resolve during the prepack build.
+It adds two fields the reference implementation already CONSUMED but no
+connector could emit: `SKIP_RESULT.boundary_claim` (GroupMe emits it, the RI's
+`PERSISTED_BOUNDARY_CLAIMS` already allows its only value, but it was dropped in
+transit) and the `STREAM_EVIDENCE` message (the RI validates and accepts it;
+its own re-review recorded "no connector in this repo can emit STREAM_EVIDENCE
+and typecheck" as a hard blocker). Both are additive: `boundary_claim` is
+optional and STREAM_EVIDENCE is a new union member, so nothing that compiled
+before stops compiling.
+
+The prior artifact was built via `npm pack` from PDP-Connect/data-connect @
 3c8aeb0343dcbcbccb0bba3357f6b6bf543012b1 (branch `fix/skip-result-boundary-claim-0828`,
 pushed, not merged: "fix(connector-protocol): add SkipResultBoundaryClaim to source"), from
 inside that repo's workspace so sibling dependencies resolve during the prepack build.
