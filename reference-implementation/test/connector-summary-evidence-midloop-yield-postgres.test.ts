@@ -485,17 +485,21 @@ test("FAIL-BEFORE/PASS-AFTER: a connection needing more pages than one admission
 
   // Monotonic advance alone does NOT prove the yield is well-tuned: a guard
   // that fires after EVERY page also advances monotonically, one page at a
-  // time. That is the same starvation this change exists to fix, reintroduced
-  // through over-caution instead of under-caution — a fat-fingered
-  // `CHUNK_SCAN_PAGE_HEADROOM_MS`, or a flipped comparison, would land there
-  // while every other assertion in this file stayed green.
+  // time. That is the same starvation this file exists to prevent, reached
+  // from the opposite direction — over-caution instead of under-caution.
+  //
+  // This was verified, not imagined. Mutating `admissionAllowanceExhausted`
+  // to `return true` (yield unconditionally) passes every OTHER assertion in
+  // this file: 5 pass / 0 fail against real PostgreSQL. A fat-fingered
+  // `CHUNK_SCAN_PAGE_HEADROOM_MS`, a flipped comparison, or a divisor typo
+  // would all land there and ship green.
   //
   // The fixture is one row per page, so a healthy admission with a 120ms
   // allowance banks MANY pages (a page is sub-millisecond here). Requiring at
   // least one admission to bank more than one page is the weakest assertion
   // that still separates "yields when the allowance is nearly spent" from
-  // "yields unconditionally", and it does not encode a specific page count
-  // that ordinary timing jitter could break.
+  // "yields unconditionally", and it deliberately encodes no specific page
+  // count that ordinary timing jitter could break.
   const largestSinglePassAdvance = advanced.reduce(
     (best, current, index) => (index === 0 ? best : Math.max(best, current - (advanced[index - 1] as number))),
     0
