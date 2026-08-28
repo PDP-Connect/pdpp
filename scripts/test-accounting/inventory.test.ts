@@ -1048,7 +1048,7 @@ test("the memory-default profile declares the exact current skip baseline", asyn
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 185,
+    "PDPP_TEST_POSTGRES_URL unset": 231,
     "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 16,
     "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
     "dedicated disposable URL not selected": 1,
@@ -1063,6 +1063,13 @@ test("the memory-default profile declares the exact current skip baseline", asyn
     "requires --experimental-test-module-mocks (spawns test/fixtures/manual-upload-write-error-server.ts directly)": 1,
     "no dedicated PDPP_TEST_POSTGRES_URL": 1,
     "requires --experimental-test-module-mocks (npm run test:run-generation-fencing-terminal-write-failure)": 1,
+    "PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener": 8,
+    "dedicated PDPP_TEST_POSTGRES_URL unset": 7,
+    "PDPP_TEST_POSTGRES_URL is not set": 6,
+    "PDPP_TEST_POSTGRES_URL is required": 3,
+    "PDPP_TEST_POSTGRES_URL not set": 3,
+    "PDPP_TEST_POSTGRES_URL unset or not a dedicated test URL": 2,
+    "PDPP_TEST_POSTGRES_URL and PDPP_TEST_POSTGRES_RESTORE_URL are not both set": 1,
   });
 });
 test("the polyfill-connectors default profile declares the exact current skip baseline", async () => {

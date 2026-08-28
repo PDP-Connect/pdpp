@@ -14,7 +14,7 @@
           "required": true,
           "skip_reasons": {
             "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
-            "PDPP_TEST_POSTGRES_URL unset": 185,
+            "PDPP_TEST_POSTGRES_URL unset": 231,
             "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 16,
             "dedicated disposable URL not selected": 1,
             "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
@@ -27,7 +27,14 @@
             "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)": 3,
             "requires --experimental-test-module-mocks (spawns test/fixtures/manual-upload-write-error-server.ts directly)": 1,
             "no dedicated PDPP_TEST_POSTGRES_URL": 1,
-            "requires --experimental-test-module-mocks (npm run test:run-generation-fencing-terminal-write-failure)": 1
+            "requires --experimental-test-module-mocks (npm run test:run-generation-fencing-terminal-write-failure)": 1,
+            "PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener": 8,
+            "dedicated PDPP_TEST_POSTGRES_URL unset": 7,
+            "PDPP_TEST_POSTGRES_URL is not set": 6,
+            "PDPP_TEST_POSTGRES_URL is required": 3,
+            "PDPP_TEST_POSTGRES_URL not set": 3,
+            "PDPP_TEST_POSTGRES_URL unset or not a dedicated test URL": 2,
+            "PDPP_TEST_POSTGRES_URL and PDPP_TEST_POSTGRES_RESTORE_URL are not both set": 1
           }
         },
         {
