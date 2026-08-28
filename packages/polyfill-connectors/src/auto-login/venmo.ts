@@ -965,6 +965,29 @@ async function captureLoginState(capture: CaptureSession | null | undefined, pag
 }
 
 /**
+ * True while a replay is running, so no prompt site may ask the owner again.
+ * Managed only by {@link withSuppressedManualPrompts}, which restores the
+ * previous value — see that function for why the guard lives at the boundary
+ * rather than at each individual handoff.
+ */
+let manualPromptSuppressed = false;
+
+/**
+ * Set once a real password has been submitted anywhere in this run. Any probe
+ * that runs afterwards is verifying that submission, so it must classify
+ * `post_submit` under B4 even when it is reached from a suppressed prompt
+ * site deep inside the replay.
+ *
+ * Module-scoped, so it MUST be reset at the run boundary
+ * ({@link ensureVenmoSession}). These connectors run several sessions in one
+ * process; a `true` left behind by an earlier run would make a later run's
+ * genuinely pre-submit transport fault throw the NON-retryable post-submit
+ * name, permanently terminalling a run that had cost nothing to retry. That is
+ * the B4 invariant inverted — safe-by-default in the wrong direction.
+ */
+let credentialSubmittedThisRun = false;
+
+/**
  * Hand the page to the owner, navigating to the real sign-in page first so
  * the handoff shows a Venmo sign-in screen rather than `about:blank` — the
  * page at handoff time has no `preservePageOnSuccess`/`preservePageOnFailure`
@@ -1035,6 +1058,13 @@ async function waitForManualLogin({
   // blank-surface failure into either a usable screen or an honest message.
   // It never navigates, so the captcha/OTP state-preservation guarantee above
   // is untouched.
+  if (manualPromptSuppressed) {
+    // Defence in depth: no path may prompt twice in one run, including the
+    // direct callers that do not route through requestManualLoginForChallenge.
+    // A password already submitted makes this probe post-submit regardless of
+    // the phase this particular site was declared with.
+    return await probeVenmoAccount(page, credentialSubmittedThisRun ? "post_submit" : phase);
+  }
   const painted = await waitForActionableHandoffSurface(page, HANDOFF_PAINT_TIMEOUT_MS);
   if (!painted) {
     // Still hand off — the owner can reload or navigate inside the secure
@@ -1058,7 +1088,24 @@ async function waitForManualLogin({
       // retry, re-entering ensureVenmoSession and re-submitting the same real
       // password against Venmo's anti-automation gate. The replay reports
       // whether it got that far; nothing else may set this.
-      const submitted = resumeFill ? await resumeFill().catch((): false => false) : false;
+      //
+      // NOT wrapped in `.catch()`. `resumeSignInAfterChallenge` already
+      // absorbs every PRE-submit failure by returning `false` (the replay
+      // found no form — the owner's manual sign-in is then the honest
+      // fallback, and the probe below validates it). The only errors that
+      // reach here are POST-submit ones, which arrive already carrying the
+      // correct non-retryable classification. Catching them would discard
+      // that and re-probe with the original `pre_submit` phase, re-arming the
+      // password re-submission B4 forbids — the exact defect a `.catch(() =>
+      // false)` here used to cause.
+      //
+      // Given that rethrow, `submitted` is in practice always `false` on this
+      // line: a replay that got as far as submitting either returns a live
+      // session or throws. The `post_submit` ternary is therefore belt-and-
+      // braces, not the active guard — it is kept so the classification stays
+      // correct if the rethrow is ever narrowed, and deliberately NOT relied
+      // on. Verified unreachable-with-`true` by tripwire across the suite.
+      const submitted = resumeFill ? await resumeFill() : false;
       return await probeVenmoAccount(page, submitted ? "post_submit" : phase);
     },
     ...(reason ? { reason } : {}),
@@ -1088,6 +1135,32 @@ async function ensureManualSessionWithoutCredentials({
     return result;
   }
   throw new Error("venmo_login_manual_incomplete");
+}
+
+/**
+ * At most ONE owner prompt per run, enforced at the single boundary every
+ * handoff passes through.
+ *
+ * The replay re-enters `loginWithSavedCredentials`, which can reach FIVE
+ * separate prompt sites (the challenge handoff itself, `fillVenmoPassword`'s
+ * unrecognized-password-screen branch, `handleVenmoOtpIfPresent`, the
+ * post-submit-incomplete handoff, and the no-credentials path). Guarding only
+ * the site the replay was launched from left the other four able to ask the
+ * owner a second time for the same run — the reviewer's finding, and a real
+ * one: an owner who cleared a bot check should never be asked again mid-replay.
+ *
+ * A depth flag at the boundary is the smallest complete guard. Every site is
+ * covered because every site funnels through here, and it cannot drift as new
+ * handoff sites are added.
+ */
+async function withSuppressedManualPrompts<T>(run: () => Promise<T>): Promise<T> {
+  const previous = manualPromptSuppressed;
+  manualPromptSuppressed = true;
+  try {
+    return await run();
+  } finally {
+    manualPromptSuppressed = previous;
+  }
 }
 
 /**
@@ -1130,12 +1203,20 @@ async function requestManualLoginForChallenge({
   readonly phase?: VenmoProbePhase;
   readonly reason: string;
 }): Promise<VenmoAccountProbeResult> {
+  if (manualPromptSuppressed) {
+    // Inside a replay: the owner has already been asked once for this run.
+    // Probe instead of prompting again, classifying post-submit if a password
+    // has by then reached Venmo (B4).
+    return await probeVenmoAccount(page, credentialSubmittedThisRun ? "post_submit" : phase);
+  }
   return await waitForManualLogin({
     ...(capture ? { capture } : {}),
     message: challengeHandoffMessage(reason, replaySignIn !== undefined),
     page,
     phase,
-    ...(replaySignIn ? { resumeFill: () => resumeSignInAfterChallenge(replaySignIn) } : {}),
+    ...(replaySignIn
+      ? { resumeFill: () => withSuppressedManualPrompts(() => resumeSignInAfterChallenge(replaySignIn)) }
+      : {}),
     sendInteraction,
   });
 }
@@ -1184,9 +1265,26 @@ async function resumeSignInAfterChallenge(
   // count. Returning `live` here would classify a rejected login as
   // pre-submit and re-arm the retry that B4 exists to prevent.
   let submitted = false;
-  await replaySignIn(() => {
-    submitted = true;
-  }).catch((): null => null);
+  try {
+    await replaySignIn(() => {
+      submitted = true;
+      credentialSubmittedThisRun = true;
+    });
+  } catch (error) {
+    // Do NOT flatten. A failure AFTER the password reached Venmo — a
+    // post-submit verify, an OTP step, a settle timeout — carries its own
+    // classification (notably the non-retryable
+    // `venmo_post_submit_probe_transport_error`). Swallowing it here would
+    // hand control back to a probe that re-derives a verdict with the ORIGINAL
+    // pre_submit phase, re-arming exactly the retry B4 forbids.
+    //
+    // Before submission there is nothing to preserve: the replay simply did not
+    // find a form, and the caller's manual fallback is the honest answer.
+    if (submitted) {
+      throw error;
+    }
+    return false;
+  }
   return submitted;
 }
 
@@ -1570,6 +1668,10 @@ export async function ensureVenmoSession({
   progress,
   sendInteraction,
 }: EnsureVenmoSessionArgs): Promise<VenmoAccountProbeResult> {
+  // Run boundary. `credentialSubmittedThisRun` is module-scoped and several
+  // sessions share one process, so a value left over from an earlier run would
+  // misclassify this one — see its declaration.
+  credentialSubmittedThisRun = false;
   await checkpoint("venmo-auth-probe");
   const initial = await probeVenmoAccount(page);
   if (initial.live) {

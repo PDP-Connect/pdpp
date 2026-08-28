@@ -2664,8 +2664,16 @@ test("waitForManualLogin: a surface that never paints still reaches the owner, w
  */
 function makePageWithChallengeThenForm({
   transportFaultAfterSubmit = false,
+  unrecognizedVerificationAfterSubmit = false,
 }: {
   transportFaultAfterSubmit?: boolean;
+  /**
+   * After the replay submits the password, render verification COPY with no
+   * usable code input. That is `handleVenmoOtpIfPresent`'s
+   * "verification step did not match a known input" branch — a prompt site
+   * INSIDE the replay, reached only once a real password has gone out.
+   */
+  unrecognizedVerificationAfterSubmit?: boolean;
 } = {}): {
   fillCalls: Record<string, string>;
   page: Page;
@@ -2699,6 +2707,13 @@ function makePageWithChallengeThenForm({
       // Review finding 3: a filled password is NOT a submitted one. Gate `live`
       // on an actual submit click, so a future change that fills without
       // submitting cannot pass these tests.
+      // Every probe after the submit faults. Deliberately unbudgeted: the
+      // replay's post-submit verify is the FIRST probe after the click, and
+      // `probeVenmoAccount` THROWS on a transport fault rather than returning
+      // one, so that verify does not "keep polling" past it — it propagates.
+      // The classification of that propagated error is what B4 governs, and a
+      // fixture that spared the first probe would be modelling a poll loop
+      // that a throwing probe can never actually run.
       if (transportFaultAfterSubmit && submitClicks.length > 0) {
         return { kind: "transport_error", message: "socket hang up" };
       }
@@ -2714,6 +2729,18 @@ function makePageWithChallengeThenForm({
       return Promise.resolve(null);
     },
     locator(selector: string): Locator {
+      // The body text is read for OTP classification and is independent of the
+      // sign-in form's presence. After the replay submits, render verification
+      // copy with NO usable code input, which is exactly the shape that routes
+      // to the second prompt site.
+      if (selector === "body") {
+        return makeLocator({
+          innerText:
+            unrecognizedVerificationAfterSubmit && submitClicks.length > 0
+              ? "Enter the code we texted you to finish signing in."
+              : "",
+        });
+      }
       // Before the owner clears the interstitial there is no form at all —
       // exactly what the captured DataDome DOM contains.
       if (!formPresent) {
@@ -2872,5 +2899,194 @@ test("a transport fault after the challenge-resume submit is post_submit, not a 
     (thrown as Error | null)?.message ?? "",
     /venmo_post_submit_probe_transport_error/,
     "a fault after a real password submit must be NON-retryable — the retryable name re-submits the password on retry"
+  );
+});
+
+/**
+ * Review finding (HIGH): AT MOST ONE owner prompt per run.
+ *
+ * The replay re-enters `loginWithSavedCredentials`, which can reach five
+ * separate prompt sites. Guarding only the site the replay was LAUNCHED from
+ * left the other four able to ask the owner a second time for the same run.
+ *
+ * This is the empirical version of that property: drive a real
+ * challenge -> submit -> unrecognized-verification sequence and count
+ * `sendInteraction` calls end to end. The second prompt site here is
+ * `handleVenmoOtpIfPresent`'s "verification step did not match a known input"
+ * branch, which is reached ONLY after the replay has submitted the password —
+ * so an unsuppressed build asks the owner twice, the second time for a step he
+ * has no way to complete (there is no usable code input on the page).
+ *
+ * One prompt, not two. An owner who just cleared a bot check must not be
+ * re-interrupted by the replay his own completion started.
+ */
+test("the owner is prompted exactly once across challenge -> submit -> unrecognized verification", async () => {
+  const { page, reveal, submitClicks } = makePageWithChallengeThenForm({
+    unrecognizedVerificationAfterSubmit: true,
+  });
+  let promptCount = 0;
+  const sendInteraction = (_req: InteractionRequest): Promise<InteractionResponse> => {
+    promptCount += 1;
+    reveal();
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    sendInteraction,
+  }).catch((): undefined => undefined);
+
+  assert.ok(
+    submitClicks.length > 0,
+    "precondition: the replay must actually submit, or the second prompt site is never reached"
+  );
+  assert.equal(
+    promptCount,
+    1,
+    "the owner must be asked exactly once per run — a replay that re-prompts wastes the challenge he already cleared"
+  );
+});
+
+/**
+ * Review finding: the resume must not FLATTEN a post-submit diagnosis.
+ *
+ * `resumeSignInAfterChallenge` used `.catch(() => null)`. Classification
+ * survived that by luck — `submitted` stays `true`, so the probe after the
+ * resume is still typed `post_submit` — but the ERROR ITSELF did not. A replay
+ * whose login never settles throws
+ * `venmo_login_did_not_complete: no sign-in outcome within Nms`, which names
+ * the real cause (Venmo never answered) and carries the budget that bounded
+ * it. Swallowing it discarded that and let the run fall out to the generic
+ * `venmo_login_incomplete_after_submit` — an error that describes a rejected
+ * credential, not an unanswered provider, and sends whoever reads it looking
+ * for the wrong fault. Reporting a timeout as a rejection is how a working
+ * password gets blamed.
+ *
+ * So this pins the DIAGNOSIS, not the classification: the specific
+ * post-submit failure must reach the caller intact.
+ */
+test("a post-submit failure inside the replay keeps its own diagnosis instead of flattening", async () => {
+  const { page, reveal, submitClicks } = makePageWithChallengeThenForm();
+  const sendInteraction = (_req: InteractionRequest): Promise<InteractionResponse> => {
+    reveal();
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  let thrown: Error | null = null;
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    // The fixture's probe reports live only from the SECOND probe onward, so a
+    // settle budget this tight expires first: the replay submits, then never
+    // observes an outcome. That is the unsettled-login path.
+    postSubmitSettleTimeoutMs: 0,
+    sendInteraction,
+  }).catch((err: unknown) => {
+    thrown = err as Error;
+  });
+
+  assert.ok(submitClicks.length > 0, "precondition: the replay must have submitted before the failure");
+  assert.match(
+    (thrown as Error | null)?.message ?? "",
+    /venmo_login_did_not_complete/,
+    "the replay's own post-submit failure must survive — flattening it reports an unanswered provider as a rejected password"
+  );
+});
+
+/**
+ * `credentialSubmittedThisRun` is module state, and these connectors run
+ * several sessions in ONE process. Left set by an earlier run, it would make a
+ * later run's genuinely pre-submit transport fault throw the NON-retryable
+ * post-submit name — terminalling a run that had cost nothing to retry, which
+ * is the B4 invariant applied in the wrong direction.
+ *
+ * Run one drives a full challenge -> replay -> submit (setting the flag). Run
+ * two, same process, faults with no password ever submitted and must still get
+ * the RETRYABLE name.
+ *
+ * HONEST SCOPE: today this passes with or without the run-boundary reset,
+ * because the flag is only ever READ inside a suppressed replay guard, and run
+ * two has no replay. It is a REGRESSION FENCE, not proof the reset is load-
+ * bearing right now — it fails the moment a future prompt site reads the flag
+ * outside a replay, which is exactly the drift that would turn stale module
+ * state into a wrongly-terminalled run.
+ */
+test("a submitted password in one run does not misclassify the next run's pre-submit fault", async () => {
+  const first = makePageWithChallengeThenForm();
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page: first.page,
+    sendInteraction: (_req: InteractionRequest): Promise<InteractionResponse> => {
+      first.reveal();
+      return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+    },
+  }).catch((): undefined => undefined);
+  assert.ok(first.submitClicks.length > 0, "precondition: run one must actually submit a password");
+
+  // Run two: a transport fault before anything is typed. Nothing is submitted.
+  const absent = makeLocator({ count: 0, visible: false });
+  const secondPage = {
+    evaluate: (): Promise<unknown> => Promise.resolve({ kind: "transport_error", message: "socket hang up" }),
+    getByRole: (): Locator => absent,
+    goto: (): ReturnType<Page["goto"]> => Promise.resolve(null),
+    locator: (): Locator => absent,
+    url: (): string => "https://venmo.com/",
+    waitForLoadState: (): ReturnType<Page["waitForLoadState"]> => Promise.resolve(),
+    waitForTimeout: (): ReturnType<Page["waitForTimeout"]> => Promise.resolve(),
+  } as unknown as Page;
+
+  let thrown: Error | null = null;
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page: secondPage,
+    sendInteraction: (_req: InteractionRequest): Promise<InteractionResponse> =>
+      Promise.resolve({ ok: true } as unknown as InteractionResponse),
+  }).catch((err: unknown) => {
+    thrown = err as Error;
+  });
+
+  const message = (thrown as Error | null)?.message ?? "";
+  assert.match(message, /venmo_probe_transport_error/, "a fault before any password is typed stays RETRYABLE");
+  assert.doesNotMatch(
+    message,
+    /venmo_post_submit_probe_transport_error/,
+    "the previous run's submitted password must not leak in and terminal this one"
+  );
+});
+
+/**
+ * COUNTERWEIGHT to the suppression above: suppression must not break the owner
+ * who signs in BY HAND.
+ *
+ * If the replay finds no form (a genuinely unrecognized page rather than a
+ * cleared bot check), `resumeSignInAfterChallenge` returns `false` and the
+ * handoff falls back to probing whatever session the owner established
+ * himself. A suppression that swallowed that probe — or that turned the
+ * fallback into a throw — would break the manual path this handoff exists to
+ * serve. Here the form never appears, the owner signs in manually, and the
+ * probe must still report the live session.
+ */
+test("suppression preserves the manual fallback: an owner who signs in by hand still validates", async () => {
+  const { page, submitClicks } = makePageWithChallengeThenForm();
+  let promptCount = 0;
+  // Never call `reveal()`: the sign-in form stays absent, so the replay finds
+  // nothing to fill and the owner's own session is what gets validated.
+  const sendInteraction = (_req: InteractionRequest): Promise<InteractionResponse> => {
+    promptCount += 1;
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  const result = await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    sendInteraction,
+  }).catch((): null => null);
+
+  assert.equal(submitClicks.length, 0, "precondition: with no form revealed, nothing may be submitted");
+  assert.equal(promptCount, 1, "the manual path still asks the owner exactly once");
+  assert.ok(
+    result === null || result.live === false,
+    "an unreached form must resolve through the honest probe path, not a fabricated live session"
   );
 });
