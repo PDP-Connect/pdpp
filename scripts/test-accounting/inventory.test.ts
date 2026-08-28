@@ -669,6 +669,16 @@ test("keeps every fleet-migration and scheduler-upgrade PostgreSQL skip title in
     ]
   );
 });
+// bz-gate seam-spike REVISE (2026-08-27): device-ingest-conformance.test.ts
+// added an eleventh oracle ("device ack ignores held semantic index
+// capacity") to the same looped ORACLES table as its ten siblings, using the
+// same bare-boolean `skip: !DEDICATED_POSTGRES_URL` shape. The new emitted
+// title was missing from POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS, so
+// memory-default rejected it as an unexplained skip.
+test("keeps the device-ack-semantic-capacity device-ingest PostgreSQL skip title in the exact receipt mapping", () => {
+  const name = "PostgreSQL device-ingest conformance: device ack ignores held semantic index capacity";
+  assert.ok(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name));
+});
 test("keeps the setup-binding promotion PostgreSQL skip title in the exact receipt mapping", () => {
   assert.deepEqual(
     [

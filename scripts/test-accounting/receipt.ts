@@ -44,6 +44,7 @@ export function accountingEventLine(event: unknown): string {
 // over emitted identities, never over static source occurrences.
 export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "PostgreSQL device-ingest conformance: derived repair and canonical records",
+  "PostgreSQL device-ingest conformance: device ack ignores held semantic index capacity",
   "PostgreSQL device-ingest conformance: device/direct writer collision matrix",
   "PostgreSQL device-ingest conformance: duplicate and newer writer matrix",
   "PostgreSQL device-ingest conformance: failed batch attempts are logged server-side",
