@@ -6,7 +6,8 @@ import test from "node:test";
 
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import type { FleetHealthVerdict } from "../server/fleet-health.ts";
-import { buildAsApp } from "../server/index.ts";
+import { buildAsApp, evaluateOwnerStreamCoverageAuthority } from "../server/index.ts";
+import { composeFleetHealthVerdict } from "../server/fleet-health.ts";
 import { createOwnerAuthPlaceholder } from "../server/owner-auth.ts";
 import { createOwnerSessionController } from "../server/owner-session.ts";
 import {
@@ -353,6 +354,96 @@ test("production wiring: a paused connection is neutral and classCounts reaches 
     );
   } finally {
     await app.fastify.close();
+    closeDb();
+  }
+});
+
+test("producer/composer seam: an owner-only audit fail keeps the system banner quiet and owner action visible", async () => {
+  // THE REGRESSION FIXTURE the independent review required, at the seam that
+  // actually broke. `fleet-health.test.ts` builds the composer's input by
+  // hand, so it can prove the composer's logic and NOTHING about whether the
+  // real producer supplies that input — which is exactly how the owner-vs-
+  // system split shipped as dead code.
+  //
+  // Current production incidence is deliberately NOT a precondition here: this
+  // pins a REGRESSION, and the exact-current receipt already classifies H-E-B
+  // `cin_8997…` and Signal `cin_992b…` as `owner_interaction` from valid
+  // active-lifecycle/owner-state shapes. The fixture reproduces that class
+  // mix directly rather than depending on a live incident to recur.
+  const OWNER_ONLY_FAIL = {
+    classCounts: { owner_interaction: 2, provider_config_blocked: 4 },
+    status: "fail",
+  } as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["streamHealth"];
+
+  const inventory = [
+    {
+      connectorId: "heb",
+      connectorInstanceId: "cin_owner_only",
+      displayName: "cin_owner_only",
+      revokedAt: null,
+      status: "active",
+    },
+  ] as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["inventory"];
+
+  const ownerOnly = composeFleetHealthVerdict({
+    inventory,
+    runtime: { ok: true },
+    streamHealth: OWNER_ONLY_FAIL,
+    summaries: [],
+  });
+
+  // The audit verdict is preserved verbatim — audit truth is NOT weakened.
+  assert.equal(ownerOnly.dimensions.coverage_audit, "fail", "the audit's own verdict must survive unchanged");
+  assert.equal(
+    ownerOnly.banner_warranted,
+    false,
+    "an audit fail caused ONLY by owner_interaction/provider_config_blocked must not fire the SYSTEM banner"
+  );
+
+  // NEGATIVE CONTROL 1 — a system-caused class alongside owner rows still fires.
+  const mixed = composeFleetHealthVerdict({
+    inventory,
+    runtime: { ok: true },
+    streamHealth: {
+      classCounts: { failed: 1, owner_interaction: 2 },
+      status: "fail",
+    } as unknown as Parameters<typeof composeFleetHealthVerdict>[0]["streamHealth"],
+    summaries: [],
+  });
+  assert.equal(mixed.banner_warranted, true, "one genuinely failed stream alongside owner rows must still fire");
+
+  // NEGATIVE CONTROL 2 — dropping classCounts is the SHIPPED DEFECT. The
+  // composer must fail CLOSED, so this assertion is what goes red if the
+  // producer ever stops threading the field.
+  const dropped = composeFleetHealthVerdict({
+    inventory,
+    runtime: { ok: true },
+    streamHealth: { status: "fail" } as unknown as Parameters<
+      typeof composeFleetHealthVerdict
+    >[0]["streamHealth"],
+    summaries: [],
+  });
+  assert.equal(
+    dropped.banner_warranted,
+    true,
+    "with classCounts DROPPED the composer must fail closed — this is the production defect's signature"
+  );
+
+  // The producer must actually SUPPLY classCounts. This is the wiring
+  // assertion: a composer-level test cannot see the producer's return shape,
+  // and that blindness is what let the discard ship.
+  initDb(":memory:");
+  try {
+    const produced = await evaluateOwnerStreamCoverageAuthority({
+      referenceRevision: "rev_seam_probe",
+      summaries: [],
+    });
+    assert.ok(
+      Object.hasOwn(produced, "classCounts"),
+      "the REAL producer must return classCounts; returning { status } alone is the shipped defect"
+    );
+    assert.equal(typeof produced.classCounts, "object");
+  } finally {
     closeDb();
   }
 });
