@@ -2699,18 +2699,37 @@ function fallbackLatestSettledRun(
  * no client-side reconstruction.
  *
  * Owner cancellation controls work; it is not provider or coverage evidence,
- * so a cancelled `latestSettledRun` still defers to `lastSuccessfulRun`.
- * Scheduler skips never contacted the provider, so they classify as no
- * evidence (`null`), never a fabricated failure.
+ * so a cancelled `latestSettledRun` still defers to `lastSuccessfulRun` — and
+ * a scheduler skip is the same shape of non-evidence (it never dispatched,
+ * never contacted the provider; see `isSchedulerSkippedRun`'s doc comment),
+ * so it gets the identical fallback rather than a harder `null`. Before this
+ * fix the skip case alone returned bare `null` (no fallback), which left
+ * `mapCoverageAxis(null, ...)` stuck reporting `"unknown"` coverage forever
+ * once a connection's owner-interaction requirement started rejecting every
+ * scheduled tick pre-dispatch — even though the connection's last real run
+ * had fully proven every required stream, and the durably-stored
+ * `collection_report` (built independently of this function, from
+ * `stream_latest_facts_json`) already reflected that proof. This function's
+ * return value is only ever read for the fields a proven run legitimately
+ * carries (status, timestamps, known_gaps) — see its callers — never for the
+ * skip's OWN `failure_reason`, which a caller wanting that text reads
+ * directly off the skip row it already has, not through this function; so
+ * this fallback cannot resurrect the self-perpetuating-skip bug
+ * `isSchedulerSkippedRun`'s doc comment describes (that bug was the skip's
+ * stale text leaking through as `reasonCode`, not this function's identity).
  */
 function healthClassifyingRun(
   latestSettledRun: ConnectorRunSummary | null,
   lastSuccessfulRun: ConnectorRunSummary | null = null
 ): ConnectorRunSummary | null {
-  if (isOwnerCancelledRun(latestSettledRun) || isControllerAbandonedRun(latestSettledRun)) {
+  if (
+    isOwnerCancelledRun(latestSettledRun) ||
+    isControllerAbandonedRun(latestSettledRun) ||
+    isSchedulerSkippedRun(latestSettledRun)
+  ) {
     return lastSuccessfulRun;
   }
-  return isSchedulerSkippedRun(latestSettledRun) ? null : latestSettledRun;
+  return latestSettledRun;
 }
 
 /**
