@@ -1268,6 +1268,14 @@ test("runSlackdump: a genuinely stalled dump still times out", async () => {
 // Progress must rearm the budget even when nothing is reporting it: stall
 // detection reads the archive directly and must not depend on a `progress`
 // callback being supplied.
+//
+// The budget stays far below the 1600ms total runtime, so a run that finishes
+// still proves rearming happened — no single step could have carried it.
+// It was 600ms and flaked on CI: each step opens/writes/closes SQLite and
+// detection lags up to one poll period, so observed idle reached ~250ms and a
+// single scheduling hiccup on a shared runner closed the 350ms margin. 1200ms
+// widens that to ~950ms. Verified the discriminating power is unchanged: with
+// the rearm removed from index.ts, the test fails at BOTH 600ms and 1200ms.
 test("runSlackdump: progress rearms the budget with no progress callback attached", async () => {
   await withFakeSlackdump(async ({ archive, bin }) => {
     await writeProgressingSlackdump(bin, { advances: 8, stepMs: 200, thenIdleMs: 0 });
@@ -1276,7 +1284,7 @@ test("runSlackdump: progress rearms the budget with no progress callback attache
       env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
       progressIntervalMs: 50,
       sqlitePath: archive,
-      timeoutMs: 600,
+      timeoutMs: 1200,
     });
   });
 });
