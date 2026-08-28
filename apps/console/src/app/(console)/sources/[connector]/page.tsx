@@ -1117,6 +1117,23 @@ function reauthActionPresentation({
         label: action.cta,
         title: "Open the secure browser session for this connection. Records, history, and schedule are preserved.",
       };
+    case "provider_interaction":
+      // The interaction dock lives on the RUN, not the connection: a provider
+      // interaction (OTP, CAPTCHA, device approval, manual sign-in) can only be
+      // completed while that run is still waiting, and the run's assistance
+      // window expires. Without this case the chip fell to `default` and sent
+      // the owner to the add-source page — a live "Complete the requested
+      // action" prompt that led away from the only surface that could satisfy
+      // it, while the run timed out. `target.run_id` is already on the action
+      // (`exactSyncTargetFromAttention`), so the destination needs no new data.
+      return {
+        href:
+          action.target?.kind === "sync" && action.target.run_id
+            ? `/syncs/${encodeURIComponent(action.target.run_id)}/stream`
+            : fallbackHref,
+        label: action.cta,
+        title: "Open the live run and complete the step this provider is waiting on.",
+      };
     default:
       return {
         href: fallbackHref,

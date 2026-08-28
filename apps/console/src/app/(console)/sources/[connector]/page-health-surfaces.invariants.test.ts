@@ -44,10 +44,23 @@ const RE_ACQUISITION_COVERAGE_TITLE = /title="Acquisition coverage"/;
 const RE_ACQUISITION_COVERAGE_RECEIPT_LINK = /\/connect\/status\//;
 const RE_ACQUISITION_COVERAGE_OWNER_COPY = /coverage receipts, not generic sync status/;
 const RE_ACQUISITION_COVERAGE_SOURCE_NEUTRAL = /\bWhatsApp\b|\bTimeline\b|\bGoogle\b/i;
-const RE_STORED_CREDENTIAL_ACTION_USES_EXPLICIT_COPY =
-  /case "stored_credential"[\s\S]*label: "Update credential"/;
-const RE_BROWSER_SESSION_ACTION_USES_SERVER_CTA =
-  /case "browser_session"[\s\S]*label: action\.cta/;
+const RE_STORED_CREDENTIAL_ACTION_USES_EXPLICIT_COPY = /case "stored_credential"[\s\S]*label: "Update credential"/;
+const RE_BROWSER_SESSION_ACTION_USES_SERVER_CTA = /case "browser_session"[\s\S]*label: action\.cta/;
+
+// Owner-found 2026-08-28: the "Complete the requested action" chip was dead —
+// `provider_interaction` fell through to `default` and pointed at the
+// add-source page, while the only surface that can satisfy the prompt is the
+// waiting run's dock at /syncs/<runId>/stream. The run's assistance window
+// expires, so a chip that leads elsewhere costs the interaction outright (the
+// same night, a Venmo run died `assistance_timed_out`).
+//
+// `page.tsx` imports `server-only`, so it cannot be imported by a test; these
+// are source assertions by necessity, not by preference. They pin the
+// DESTINATION and the encode, not merely that a case exists.
+const RE_PROVIDER_INTERACTION_CASE = /case "provider_interaction":/;
+const RE_PROVIDER_INTERACTION_TARGETS_RUN_STREAM =
+  /`\/syncs\/\$\{encodeURIComponent\(action\.target\.run_id\)\}\/stream`/;
+const RE_PROVIDER_INTERACTION_REQUIRES_SYNC_TARGET = /action\.target\?\.kind === "sync" && action\.target\.run_id/;
 
 // ─── Surface 1: rendered-verdict health explanation ──────────────────────────
 
@@ -130,4 +143,27 @@ test("connector detail page labels each reauthentication surface precisely", asy
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, RE_STORED_CREDENTIAL_ACTION_USES_EXPLICIT_COPY);
   assert.match(src, RE_BROWSER_SESSION_ACTION_USES_SERVER_CTA);
+});
+
+test("a provider interaction routes to the waiting run's stream dock", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(
+    src,
+    RE_PROVIDER_INTERACTION_CASE,
+    "provider_interaction must not fall through to the add-source default"
+  );
+  assert.match(
+    src,
+    RE_PROVIDER_INTERACTION_TARGETS_RUN_STREAM,
+    "the chip must open /syncs/<runId>/stream — the interaction dock lives on the run, and its assistance window expires"
+  );
+});
+
+test("the run-stream destination is guarded and encoded", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(
+    src,
+    RE_PROVIDER_INTERACTION_REQUIRES_SYNC_TARGET,
+    "without a sync target there is no dock to open, so it must fall back rather than build a broken /syncs//stream"
+  );
 });
