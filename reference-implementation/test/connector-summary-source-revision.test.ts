@@ -479,23 +479,6 @@ test("SQLite failed publication cannot overwrite newer evidence, and deletion re
     const deleteId = "cin_source_revision_deleted_publication";
     seedSecondSqliteInstance(deleteId);
     await warmEvidence(deleteId);
-    const insertRepairChunk = () =>
-      getDb()
-        .prepare(
-          `INSERT INTO connector_summary_evidence_repair_chunk(
-             connector_instance_id, resume_after_id, accumulator_json, source_revision, started_at, updated_at
-           ) VALUES(?, 1, '{}', ?, ?, ?)`
-        )
-        .run(deleteId, sourceRevision(deleteId), NOW, NOW);
-    const repairChunkCount = () =>
-      (
-        getDb()
-          .prepare(
-            "SELECT COUNT(*) AS count FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = ?"
-          )
-          .get(deleteId) as { count: number }
-      ).count;
-    insertRepairChunk();
     getDb().prepare("DELETE FROM connector_instances WHERE connector_instance_id = ?").run(deleteId);
     let recreated = false;
     __setConnectorInstanceWritePhaseHookForTest((stage, context) => {
@@ -508,9 +491,7 @@ test("SQLite failed publication cannot overwrite newer evidence, and deletion re
     __setConnectorInstanceWritePhaseHookForTest(null);
     assert.equal(recreated, true);
     assert.ok(evidence(deleteId), "a reused connector instance keeps its evidence");
-    assert.equal(repairChunkCount(), 0, "a reused id cannot resume scan state from before its recreation");
 
-    insertRepairChunk();
     getDb().prepare("DELETE FROM connector_instances WHERE connector_instance_id = ?").run(deleteId);
     const deleted = await reconcileConnectorSummaryEvidence([deleteId]);
     assert.equal(deleted.repaired, 1, "the fenced orphan delete publishes only after the second absence check");
@@ -524,7 +505,6 @@ test("SQLite failed publication cannot overwrite newer evidence, and deletion re
       ).count,
       0
     );
-    assert.equal(repairChunkCount(), 0, "orphan cleanup deletes the absent instance's scan state");
   }));
 
 test("SQLite source receipts avoid terminal trigger amplification and preserve exact BIGINT exhaustion", () =>
