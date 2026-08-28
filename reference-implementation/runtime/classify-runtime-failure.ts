@@ -43,8 +43,14 @@ export function classifyRuntimeFailure(err: unknown): FailureReason {
     message.startsWith("Connector emitted invalid DETAIL_GAP.") ||
     message.startsWith("Connector emitted invalid DETAIL_COVERAGE.") ||
     message.startsWith("Connector emitted invalid DETAIL_GAP_RECOVERED.") ||
+    message.startsWith("Connector emitted invalid STREAM_EVIDENCE.") ||
+    message.startsWith("Connector emitted invalid STREAM_EVIDENCE for stream ") ||
+    message.startsWith("Connector emitted STREAM_EVIDENCE for stream ") ||
+    message.startsWith("Connector emitted duplicate STREAM_EVIDENCE for stream=") ||
+    message.startsWith("Connector emitted DETAIL_COVERAGE for stream ") ||
     message.startsWith("Connector emitted DETAIL_COVERAGE for undeclared stream:") ||
     message.startsWith("Connector emitted DETAIL_GAP_RECOVERED for undeclared stream:") ||
+    message.startsWith("Connector emitted STREAM_EVIDENCE for undeclared stream:") ||
     message.startsWith("Connector detail coverage incomplete:") ||
     message.startsWith("Connector emitted PROGRESS for undeclared stream:") ||
     message.startsWith("Connector emitted SKIP_RESULT for undeclared stream:") ||

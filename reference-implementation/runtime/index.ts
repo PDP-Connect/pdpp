@@ -3101,10 +3101,23 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // append path. The cross-run re-defer suppression is the discovered_run_id gate.
   const detailGapRecordedThisRun = new Set<string>();
   const detailCoverageByStateStream = new Map<string, DetailCoverageEntry[]>();
-  // At most one accepted STREAM_EVIDENCE fact per `stream` this run (rule 5:
-  // duplicate rejection is scoped to this run's own runId — a new runId, e.g.
-  // a resumed/retried run, gets its own map instance). Kept fully separate
-  // from `detailCoverageByStateStream`: STREAM_EVIDENCE is never consulted by
+  // At most one accepted STREAM_EVIDENCE fact per `stream` for the lifetime
+  // of THIS `runConnector` invocation (rule 5's duplicate rejection is
+  // scoped to this Map instance, one per invocation). This is NOT the same
+  // mechanism as `applyStateStreamCheckpointInheritance`'s `parent.runId ===
+  // child.runId` value comparison in ref-control.ts — that compares the
+  // wire `run_id` field explicitly; this Map scopes by object lifetime and
+  // never reads `run_id` at all. The two coincide only when one
+  // `runConnector` invocation always corresponds to exactly one `run_id`,
+  // which callers are not universally guaranteed to preserve (a retry path
+  // can reuse a `run_id` across separate invocations). Not a live safety
+  // gap today — STREAM_EVIDENCE gates no checkpoint commit, so a
+  // more-permissive-than-spec duplicate acceptance across invocations
+  // sharing a `run_id` cannot make any commit unsafe — but a future
+  // refactor that changes this Map's lifetime relative to `run_id` would
+  // silently drift from the spec's rule-5 wording without any test
+  // noticing. Kept fully separate from `detailCoverageByStateStream`:
+  // STREAM_EVIDENCE is never consulted by
   // `missingDetailCoverageReports`/`recordDetailCoverageShortfalls`.
   const streamEvidenceByStream = new Map<string, { considered: number; covered: number }>();
   // Latest `collection_rate` progress payload seen this run. Updated on each

@@ -84,5 +84,14 @@ Modified:
 - Does not let a `state_stream` child emit `DETAIL_COVERAGE`. That
   prohibition, and its enforcement site, are unchanged.
 - Does not change how `parent_streams` children report coverage.
-- Does not implement production code. This is a design-governed proposal
-  only; see `tasks.md`.
+- Does not implement Gmail's (or any connector's) actual
+  `message_bodies`-style `considered`/`covered` measurement. That is a
+  separate, later follow-up change, blocked on a vendored-protocol-tarball
+  re-pin upstream (see `tasks.md` §3a) and gated on the runtime change below
+  being live everywhere that will run it first.
+
+**Status update:** this proposal was originally design-governed with no
+production code (see `tasks.md`'s original framing). The runtime/protocol
+half described above has since been implemented in this change directory's
+companion commits; see `tasks.md` for the current implementation state,
+what shipped, and what remains open.

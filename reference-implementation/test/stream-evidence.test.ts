@@ -40,6 +40,8 @@ const NOT_STATE_STREAM_DECLARED_PATTERN = /which the manifest does not declare w
 const COVERED_EXCEEDS_CONSIDERED_PATTERN = /covered.*exceeds considered/i;
 const DUPLICATE_STREAM_EVIDENCE_PATTERN = /duplicate STREAM_EVIDENCE/i;
 const DETAIL_COVERAGE_STILL_REJECTED_PATTERN = /MUST NOT emit DETAIL_COVERAGE/;
+const REFERENCE_ONLY_INVALID_PATTERN = /invalid STREAM_EVIDENCE\.reference_only/;
+const UNDECLARED_STREAM_PATTERN = /STREAM_EVIDENCE for undeclared stream/;
 
 // ─── Runtime-level (real connector subprocess + real spine) harness ───
 
@@ -208,6 +210,19 @@ function twoStreamManifest(connectorId: string) {
 }
 
 type RuntimeManifest = Parameters<typeof runConnector>[0]["manifest"];
+
+/**
+ * A rejected `runConnector` protocol-violation error carries `failure_reason`
+ * (stamped by `classifyRuntimeFailure` in `handleMessageFailure`), not just a
+ * message. `run_history.failure_reason`/`shouldRetryRunFailure`'s
+ * non-retryable set and `run-executor.ts`'s operator-facing surface both read
+ * this field, not the message text, so asserting only on `.message` misses a
+ * misclassification that leaves a deterministically-failing run retried
+ * forever and unattributed to the connector.
+ */
+interface RuntimeRejectionError extends Error {
+  failure_reason?: string;
+}
 
 function writeConnectorStub(tmpDir: string, script: string): string {
   const connectorPath = join(tmpDir, "connector.mjs");
@@ -429,7 +444,7 @@ test("STREAM_EVIDENCE naming a parent_streams-declared stream is rejected as a p
 `
     );
     try {
-      let rejection: Error | null = null;
+      let rejection: RuntimeRejectionError | null = null;
       try {
         await runConnector({
           admitRunConnection: fakeAdmitRunConnection(),
@@ -444,7 +459,7 @@ test("STREAM_EVIDENCE naming a parent_streams-declared stream is rejected as a p
           state: null,
         });
       } catch (err) {
-        rejection = err as Error;
+        rejection = err as RuntimeRejectionError;
       }
       assert.ok(rejection, "a STREAM_EVIDENCE naming a parent_streams-declared stream must be rejected");
       // Match the specific manifest-shape validator's own message, not the
@@ -452,6 +467,11 @@ test("STREAM_EVIDENCE naming a parent_streams-declared stream is rejected as a p
       // would also throw for STREAM_EVIDENCE -- otherwise this test would
       // pass for the wrong reason both before and after the fix.
       assert.match(rejection?.message || "", NOT_STATE_STREAM_DECLARED_PATTERN);
+      assert.equal(
+        rejection?.failure_reason,
+        "connector_protocol_violation",
+        "a STREAM_EVIDENCE protocol violation must classify as connector_protocol_violation, not the retryable runtime_error default"
+      );
     } finally {
       rmSync(tmpDir, { force: true, recursive: true });
     }
@@ -479,7 +499,7 @@ test("STREAM_EVIDENCE naming a self-mapped stream is rejected as a protocol viol
 `
     );
     try {
-      let rejection: Error | null = null;
+      let rejection: RuntimeRejectionError | null = null;
       try {
         await runConnector({
           admitRunConnection: fakeAdmitRunConnection(),
@@ -494,10 +514,15 @@ test("STREAM_EVIDENCE naming a self-mapped stream is rejected as a protocol viol
           state: null,
         });
       } catch (err) {
-        rejection = err as Error;
+        rejection = err as RuntimeRejectionError;
       }
       assert.ok(rejection, "a STREAM_EVIDENCE naming a self-mapped stream must be rejected");
       assert.match(rejection?.message || "", NOT_STATE_STREAM_DECLARED_PATTERN);
+      assert.equal(
+        rejection?.failure_reason,
+        "connector_protocol_violation",
+        "a STREAM_EVIDENCE protocol violation must classify as connector_protocol_violation, not the retryable runtime_error default"
+      );
     } finally {
       rmSync(tmpDir, { force: true, recursive: true });
     }
@@ -524,7 +549,7 @@ test("STREAM_EVIDENCE with covered greater than considered is rejected", async (
 `
     );
     try {
-      let rejection: Error | null = null;
+      let rejection: RuntimeRejectionError | null = null;
       try {
         await runConnector({
           admitRunConnection: fakeAdmitRunConnection(),
@@ -539,10 +564,122 @@ test("STREAM_EVIDENCE with covered greater than considered is rejected", async (
           state: null,
         });
       } catch (err) {
-        rejection = err as Error;
+        rejection = err as RuntimeRejectionError;
       }
       assert.ok(rejection, "STREAM_EVIDENCE with covered > considered must be rejected");
       assert.match(rejection?.message || "", COVERED_EXCEEDS_CONSIDERED_PATTERN);
+      assert.equal(
+        rejection?.failure_reason,
+        "connector_protocol_violation",
+        "a STREAM_EVIDENCE protocol violation must classify as connector_protocol_violation, not the retryable runtime_error default"
+      );
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("STREAM_EVIDENCE with reference_only not true is rejected", async () => {
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const manifest = streamEvidenceManifest("stream-evidence-reference-only-invalid");
+    await registerManifest(asUrl, manifest);
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-reference-only-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: false, stream: 'message_bodies', considered: 1, covered: 1 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      let rejection: RuntimeRejectionError | null = null;
+      try {
+        await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
+          collectionMode: "incremental",
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest: manifest as unknown as RuntimeManifest,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl,
+          state: null,
+        });
+      } catch (err) {
+        rejection = err as RuntimeRejectionError;
+      }
+      assert.ok(rejection, "STREAM_EVIDENCE with reference_only !== true must be rejected");
+      assert.match(rejection?.message || "", REFERENCE_ONLY_INVALID_PATTERN);
+      assert.equal(
+        rejection?.failure_reason,
+        "connector_protocol_violation",
+        "a STREAM_EVIDENCE protocol violation must classify as connector_protocol_violation, not the retryable runtime_error default"
+      );
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("STREAM_EVIDENCE naming a stream outside the run's scope is rejected", async () => {
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const manifest = streamEvidenceManifest("stream-evidence-out-of-scope");
+    await registerManifest(asUrl, manifest);
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-out-of-scope-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, covered: 1 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      let rejection: RuntimeRejectionError | null = null;
+      try {
+        await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
+          collectionMode: "incremental",
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest: manifest as unknown as RuntimeManifest,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          // `message_bodies` is manifest-declared but deliberately excluded
+          // from this run's granted scope -- the connector reporting
+          // STREAM_EVIDENCE about a stream the owner did not select for this
+          // run must be rejected, the same guard DETAIL_COVERAGE and every
+          // other envelope type already enforce via
+          // validateOptionalScopedStream.
+          rsUrl,
+          scope: { streams: [{ name: "messages" }] },
+          state: null,
+        });
+      } catch (err) {
+        rejection = err as RuntimeRejectionError;
+      }
+      assert.ok(rejection, "STREAM_EVIDENCE naming a stream outside scope.streams must be rejected");
+      assert.match(rejection?.message || "", UNDECLARED_STREAM_PATTERN);
+      assert.equal(
+        rejection?.failure_reason,
+        "connector_protocol_violation",
+        "a STREAM_EVIDENCE protocol violation must classify as connector_protocol_violation, not the retryable runtime_error default"
+      );
     } finally {
       rmSync(tmpDir, { force: true, recursive: true });
     }
@@ -570,7 +707,7 @@ test("a second STREAM_EVIDENCE for the same stream in the same run is rejected a
 `
     );
     try {
-      let rejection: Error | null = null;
+      let rejection: RuntimeRejectionError | null = null;
       try {
         await runConnector({
           admitRunConnection: fakeAdmitRunConnection(),
@@ -585,10 +722,15 @@ test("a second STREAM_EVIDENCE for the same stream in the same run is rejected a
           state: null,
         });
       } catch (err) {
-        rejection = err as Error;
+        rejection = err as RuntimeRejectionError;
       }
       assert.ok(rejection, "a duplicate STREAM_EVIDENCE for the same stream this run must be rejected");
       assert.match(rejection?.message || "", DUPLICATE_STREAM_EVIDENCE_PATTERN);
+      assert.equal(
+        rejection?.failure_reason,
+        "connector_protocol_violation",
+        "a STREAM_EVIDENCE protocol violation must classify as connector_protocol_violation, not the retryable runtime_error default"
+      );
     } finally {
       rmSync(tmpDir, { force: true, recursive: true });
     }
@@ -615,7 +757,7 @@ test("DETAIL_COVERAGE naming a state_stream-declared stream is still rejected af
 `
     );
     try {
-      let rejection: Error | null = null;
+      let rejection: RuntimeRejectionError | null = null;
       try {
         await runConnector({
           admitRunConnection: fakeAdmitRunConnection(),
@@ -630,10 +772,15 @@ test("DETAIL_COVERAGE naming a state_stream-declared stream is still rejected af
           state: null,
         });
       } catch (err) {
-        rejection = err as Error;
+        rejection = err as RuntimeRejectionError;
       }
       assert.ok(rejection, "DETAIL_COVERAGE naming a state_stream-declared stream must still be rejected");
       assert.match(rejection?.message || "", DETAIL_COVERAGE_STILL_REJECTED_PATTERN);
+      assert.equal(
+        rejection?.failure_reason,
+        "connector_protocol_violation",
+        "a STREAM_EVIDENCE protocol violation must classify as connector_protocol_violation, not the retryable runtime_error default"
+      );
     } finally {
       rmSync(tmpDir, { force: true, recursive: true });
     }
