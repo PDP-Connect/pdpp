@@ -4394,7 +4394,17 @@ function authorityRevisionSha(revision: string | null): string | null {
   return revision.split("+").at(-1) ?? null;
 }
 
-async function evaluateOwnerStreamCoverageAuthority({
+/**
+ * Exported ONLY so a test can pin the producer/composer seam.
+ *
+ * `composeFleetHealthVerdict` needs `classCounts` to tell an audit `fail`
+ * caused solely by owner-owed rows from one caused by a system defect. This
+ * function is the sole supplier. It previously returned `{ status }` alone,
+ * which silently sent the composer down its missing-counts fail-closed branch
+ * and made the owner-vs-system split dead code in production — a defect no
+ * composer-level test could see, because those tests build their own input.
+ */
+export async function evaluateOwnerStreamCoverageAuthority({
   referenceRevision,
   summaries,
 }: {
