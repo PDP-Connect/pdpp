@@ -1110,27 +1110,26 @@ async function ensureManualSessionWithoutCredentials({
  */
 async function requestManualLoginForChallenge({
   capture,
-  credentials,
   page,
   phase = "pre_submit",
   reason,
+  replaySignIn,
   sendInteraction,
 }: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
-  readonly credentials?: { readonly password: string; readonly username: string };
+  /**
+   * Replays the full saved-credential sign-in once the owner clears the
+   * challenge. Absent for handoffs raised where no credential exists.
+   */
+  readonly replaySignIn?: () => Promise<VenmoAccountProbeResult>;
   readonly phase?: VenmoProbePhase;
   readonly reason: string;
 }): Promise<VenmoAccountProbeResult> {
   return await waitForManualLogin({
     ...(capture ? { capture } : {}),
-    message: challengeHandoffMessage(reason, credentials !== undefined),
+    message: challengeHandoffMessage(reason, replaySignIn !== undefined),
     page,
     phase,
-    ...(credentials
-      ? {
-          resumeFill: () =>
-            fillSignInAfterChallenge({ ...(capture ? { capture } : {}), credentials, page, sendInteraction }),
-        }
-      : {}),
+    ...(replaySignIn ? { resumeFill: () => resumeSignInAfterChallenge(replaySignIn) } : {}),
     sendInteraction,
   });
 }
@@ -1150,37 +1149,29 @@ function challengeHandoffMessage(reason: string, hasCredentials: boolean): strin
 }
 
 /**
- * Fill the sign-in form the owner's challenge completion revealed.
+ * Resume a pre-credential challenge by REPLAYING THE WHOLE SIGN-IN.
  *
- * Returns `false` when there is nothing to fill — the form still is not there,
- * or the owner already signed in by hand — so the caller falls back to probing
- * instead of treating a missing field as a failure.
+ * The first version of this filled username+password and returned `true`,
+ * leaving the form sitting UNSUBMITTED while `waitForManualLogin` probed it.
+ * Independent review caught that, and it was the right catch: filling is not
+ * signing in. It skipped `clickVenmoLoginSubmit` and its
+ * `venmo_login_submit_missing` guard, the `onCredentialSubmit`
+ * retry-classification marker, the durable `venmo_credential_submit` progress
+ * event, the `domcontentloaded` wait, `handleVenmoOtpIfPresent`, and the POLLED
+ * post-submit verify — each of which exists because a real run once failed
+ * without it.
+ *
+ * Re-entering `loginWithSavedCredentials` is the smallest COMPLETE correction.
+ * The challenge handoff is raised from the top of that function, so calling it
+ * again after the owner clears the check re-runs the identical proven sequence
+ * instead of a second, thinner copy that would drift from it.
+ *
+ * Returns whether the replayed sign-in reached a live session, so the caller
+ * still falls back to probing when the owner signed in by hand instead.
  */
-async function fillSignInAfterChallenge({
-  capture,
-  credentials,
-  page,
-  sendInteraction,
-}: ManualHandoff & {
-  readonly credentials: { readonly password: string; readonly username: string };
-}): Promise<boolean> {
-  const userIn = page.locator(USERNAME_SELECTOR).first();
-  const appeared = await userIn
-    .waitFor({ state: "attached", timeout: 10_000 })
-    .then((): true => true)
-    .catch((): false => false);
-  if (!appeared) {
-    return false;
-  }
-  await captureLoginState(capture, page, "venmo-signin-after-challenge");
-  await userIn.fill(credentials.username);
-  await fillVenmoPassword({
-    ...(capture ? { capture } : {}),
-    page,
-    password: credentials.password,
-    sendInteraction,
-  });
-  return true;
+async function resumeSignInAfterChallenge(replaySignIn: () => Promise<VenmoAccountProbeResult>): Promise<boolean> {
+  const result = await replaySignIn().catch((): null => null);
+  return result?.live === true;
 }
 
 type ManualHandoff = Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction">;
@@ -1368,6 +1359,7 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccoun
  * amazon.ts/reddit.ts.
  */
 async function loginWithSavedCredentials({
+  attempt = 0,
   capture,
   checkpoint,
   onCredentialSubmit,
@@ -1382,6 +1374,11 @@ async function loginWithSavedCredentials({
   EnsureVenmoSessionArgs,
   "capture" | "page" | "passwordScreenTimeoutMs" | "postSubmitSettleTimeoutMs" | "progress" | "sendInteraction"
 > & {
+  /**
+   * 0 on the first entry; 1 when re-entered after the owner cleared a
+   * pre-credential challenge. Bounds that re-entry to a single replay.
+   */
+  attempt?: 0 | 1;
   checkpoint: SessionCheckpointFn;
   onCredentialSubmit?: () => void;
   password: string;
@@ -1397,11 +1394,39 @@ async function loginWithSavedCredentials({
     .then((): true => true)
     .catch((): false => false);
   if (!usernameAppeared) {
+    // On the REPLAY (attempt 1) the owner has already been asked once and the
+    // form still is not here: this is a genuinely unrecognized page, not a
+    // cleared bot check. Returning a dead probe lets the original handoff fall
+    // back to validating whatever session the owner established by hand, and
+    // guarantees the owner is never prompted twice for the same run.
+    if (attempt === 1) {
+      return await probeVenmoAccount(page, "pre_submit");
+    }
     return await requestManualLoginForChallenge({
       ...(capture ? { capture } : {}),
-      credentials: { password, username },
       page,
       reason: "sign-in form did not render",
+      // Replay the whole sign-in after the owner clears the check. `attempt`
+      // bounds it: the replay runs with attempt=1, whose challenge branch no
+      // longer re-arms, so a provider trading bot checks cannot loop.
+      ...(attempt === 0
+        ? {
+            replaySignIn: () =>
+              loginWithSavedCredentials({
+                ...(capture ? { capture } : {}),
+                attempt: 1,
+                checkpoint,
+                ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
+                page,
+                password,
+                ...(passwordScreenTimeoutMs === undefined ? {} : { passwordScreenTimeoutMs }),
+                ...(postSubmitSettleTimeoutMs === undefined ? {} : { postSubmitSettleTimeoutMs }),
+                progress,
+                sendInteraction,
+                username,
+              }),
+          }
+        : {}),
       sendInteraction,
     });
   }
