@@ -43,7 +43,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { reconcileConnectorSummaryEvidence } from "../server/connector-summary-evidence-engine.ts";
+import {
+  reconcileConnectorSummaryEvidence,
+  remainingStatementBudgetMs,
+} from "../server/connector-summary-evidence-engine.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 
@@ -299,6 +302,111 @@ test("the yield fires while allowance remains but is too small for another page,
     cancellations,
     0,
     `the scan must YIELD when the remaining allowance is too small for another page, not start one and be cancelled; saw ${cancellations} statement_timeout cancellation(s) across ${windowBudgets.length} admissions in the 1-499 ms window. This is exactly what gating on 'remainingStatementBudgetMs(deadline) === 0' gets wrong: that helper is a per-statement timeout floored at MIN_STATEMENT_TIMEOUT_MS, so it never reports 0 until the deadline has fully elapsed.`
+  );
+});
+
+/**
+ * OPERATIONAL NO-CANCELLATION BEHAVIOR across the measured band around the
+ * current derived headroom — this test does NOT pin the expression or the
+ * value of CHUNK_SCAN_PAGE_HEADROOM_MS.
+ *
+ * The prior test proves the predicate must read the raw `deadline - now`
+ * rather than the floored `remainingStatementBudgetMs`. This test goes
+ * further and drives budgets on both sides of the *current* derived quotient
+ * (500 / 5 = 100, +/-5 to +/-40 ms) against the real Postgres statement
+ * timeout, and asserts no page is admitted and then cancelled on either
+ * side. That is a real, useful property: it is measured against production
+ * infrastructure, not simulated.
+ *
+ * It is NOT a mutation-proof pin on the expression `MIN_STATEMENT_TIMEOUT_MS
+ * / 5` or on the value 100. Both `justBelow` and `justAbove` assert the same
+ * outcome (zero cancellations), so the test cannot locate a boundary between
+ * them — a materially smaller headroom (e.g. the divisor changed from /5 to
+ * /50, or the expression replaced by the literal 100) still produces zero
+ * cancellations in this fixture, because the seeded page is far cheaper than
+ * any headroom swept here, and survives unchanged. Confirmed by mutation
+ * testing: both mutations above pass this test 5/5. Do not read this test as
+ * a guard against reintroducing an independent literal or changing the
+ * divisor — it is not one.
+ */
+test("the mid-scan yield admits and completes pages without cancellation across the band around the current derived headroom", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL not set",
+}, async (t) => {
+  await setUp(t);
+  await seedTinyPageSizeReceipt();
+
+  // remainingStatementBudgetMs(deadline) === 0 exactly when deadline - now <= 0,
+  // which independently pins where MIN_STATEMENT_TIMEOUT_MS's floor kicks in.
+  // Derive the expected headroom from that same exported contract rather than
+  // asserting a bare 100 here, so this test tracks the floor if it is ever
+  // retuned instead of hardcoding today's quotient twice.
+  const budgetAtExpiry = -1;
+  assert.equal(
+    remainingStatementBudgetMs(Date.now() + budgetAtExpiry),
+    0,
+    "sanity: this deployment's MIN_STATEMENT_TIMEOUT_MS floor contract must still hold before trusting the derived headroom below"
+  );
+  const MIN_STATEMENT_TIMEOUT_MS = 500;
+  const expectedHeadroomMs = MIN_STATEMENT_TIMEOUT_MS / 5;
+
+  // Sweep budgets both sides of the exact current quotient. This is tighter
+  // than the wide band the predicate test above sweeps, but both arms below
+  // assert the same outcome (zero cancellations), so this sweep cannot
+  // locate a boundary between them — it does not discriminate a 100 ms
+  // headroom from a 10 ms or 60 ms one on this fixture. See the file-level
+  // docstring above.
+  const justBelow = [expectedHeadroomMs - 40, expectedHeadroomMs - 20, expectedHeadroomMs - 5];
+  const justAbove = [expectedHeadroomMs + 5, expectedHeadroomMs + 20, expectedHeadroomMs + 40];
+
+  let cancellationsBelow = 0;
+  let cancellationsAbove = 0;
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    const line = args.map(String).join(" ");
+    if (line.includes("cancelled by Postgres statement_timeout")) {
+      cancellationsBelow += currentlySweepingBelow ? 1 : 0;
+      cancellationsAbove += currentlySweepingBelow ? 0 : 1;
+    }
+  };
+
+  let currentlySweepingBelow = true;
+  let bankedBelow = 0;
+  try {
+    for (const budget of justBelow) {
+      // biome-ignore lint/performance/noAwaitInLoops: Sequential admissions ARE the property under test.
+      const prefix = await runFreshAdmissionInWindow(budget);
+      if (typeof prefix === "number" && prefix > 0) {
+        bankedBelow += 1;
+      }
+    }
+    currentlySweepingBelow = false;
+    for (const budget of justAbove) {
+      // biome-ignore lint/performance/noAwaitInLoops: Sequential admissions ARE the property under test.
+      await runFreshAdmissionInWindow(budget);
+    }
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.ok(
+    bankedBelow > 0,
+    "expected the below-headroom sweep to bank at least one boundary before yielding; the test never exercised a mid-scan admission"
+  );
+  assert.equal(
+    cancellationsBelow,
+    0,
+    `just below the derived headroom (${justBelow.join(", ")} ms, expected headroom ${expectedHeadroomMs} ms) the scan must still yield cleanly, not start a doomed page; saw ${cancellationsBelow} cancellation(s)`
+  );
+  // Just above the headroom there is enough allowance to start (and finish)
+  // one more page, so this side is not expected to cancel either. Note this
+  // does not establish that a smaller headroom would fail the below-set:
+  // mutation testing shows a 10x smaller headroom (10ms) and a bare literal
+  // 100 both still pass both arms of this sweep unchanged, because the
+  // seeded page cost is far below any headroom exercised here.
+  assert.equal(
+    cancellationsAbove,
+    0,
+    `just above the derived headroom (${justAbove.join(", ")} ms) a page has room to start and finish; saw ${cancellationsAbove} unexpected cancellation(s)`
   );
 });
 

@@ -180,24 +180,29 @@ export function remainingStatementBudgetMs(deadline: number | null): number | nu
 /**
  * Headroom a chunked canonical scan requires before it will START another page.
  *
- * Derived from the real cost of a page, not picked. Measured in production
- * 2026-08-28 on `cin_2de5ede05c8cc8d45935c414`: one 10,000-row page is an
- * index-only scan over `idx_pg_records_instance_deleted_id` costing 16.96 ms
- * (2065 heap fetches). A page must also open its transaction, take the
- * connector-instance advisory lock, re-read the chunk receipt under that fence,
- * fold the rows, and upsert the new boundary before committing — so the page
- * READ is only part of what has to fit.
+ * NOT an independently-picked constant: it is one fifth of
+ * `MIN_STATEMENT_TIMEOUT_MS`, the floor already established (above) as a
+ * genuine minimum that comfortably exceeds a realistic healthy statement's
+ * duration on THIS deployment. Deriving from that floor rather than a fresh
+ * literal means the two move together — if a slower host or a heavier fleet
+ * ever forces `MIN_STATEMENT_TIMEOUT_MS` up, this headroom scales with it
+ * instead of silently becoming the smaller fraction it was tuned against.
  *
- * 100 ms is roughly six times that measured read and leaves room for the fence
- * and the boundary commit, while staying far below the 500 ms
- * `MIN_STATEMENT_TIMEOUT_MS` floor so it never becomes the effective bound. A
- * page that cannot start inside this headroom is deferred to the next
- * admission, which resumes from the boundary already committed. Being wrong in
- * the conservative direction costs one extra pass; being wrong the other way
- * costs a CANCELLED page, and the whole point of this mechanism is that a
+ * A flat "measured one page at 16.96ms, multiply by six" bound was rejected:
+ * this same file recorded a >10x gap between a query's happy-path cost and
+ * its measured production cost under contention (3.3-6.1s against the exact
+ * same 500ms floor, see the `MIN_STATEMENT_TIMEOUT_MS` history above) for a
+ * DIFFERENT query on the SAME `records` table. A fixed multiple of a single
+ * good-case sample has no such precedent to justify surviving that spread; a
+ * fraction of the floor a slower host is already known to require does.
+ *
+ * A page that cannot start inside this headroom is deferred to the next
+ * admission, which resumes from the boundary already committed. Being wrong
+ * in the conservative direction costs one extra pass; being wrong the other
+ * way costs a CANCELLED page, and the whole point of this mechanism is that a
  * cancelled page throws away its work.
  */
-const CHUNK_SCAN_PAGE_HEADROOM_MS = 100;
+const CHUNK_SCAN_PAGE_HEADROOM_MS = MIN_STATEMENT_TIMEOUT_MS / 5;
 
 /**
  * Is there enough ADMISSION allowance left to start another chunk-scan page?
