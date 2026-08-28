@@ -1047,13 +1047,19 @@ async function waitForManualLogin({
     message: painted ? message : `${message} ${HANDOFF_BLANK_SURFACE_SUFFIX}`,
     page,
     probe: async () => {
-      // Fill first, probe second. The owner's completion is what MAKES the
-      // form reachable; probing an unfilled form just reports signed-out and
+      // Replay first, probe second. The owner's completion is what MAKES the
+      // form reachable; probing an unreached form just reports signed-out and
       // throws away the work he already did (run_1787880916346).
-      if (resumeFill) {
-        await resumeFill().catch((): false => false);
-      }
-      return await probeVenmoAccount(page, phase);
+      //
+      // B4 (see probeVenmoAccount): once the replay has actually SUBMITTED the
+      // saved password, this probe is verifying that submission's outcome, so
+      // a transport fault here is `post_submit` — non-retryable — exactly as it
+      // is on the normal path. Leaving it `pre_submit` would let the runtime
+      // retry, re-entering ensureVenmoSession and re-submitting the same real
+      // password against Venmo's anti-automation gate. The replay reports
+      // whether it got that far; nothing else may set this.
+      const submitted = resumeFill ? await resumeFill().catch((): false => false) : false;
+      return await probeVenmoAccount(page, submitted ? "post_submit" : phase);
     },
     ...(reason ? { reason } : {}),
     sendInteraction,
@@ -1120,7 +1126,7 @@ async function requestManualLoginForChallenge({
    * Replays the full saved-credential sign-in once the owner clears the
    * challenge. Absent for handoffs raised where no credential exists.
    */
-  readonly replaySignIn?: () => Promise<VenmoAccountProbeResult>;
+  readonly replaySignIn?: (onSubmit: () => void) => Promise<VenmoAccountProbeResult>;
   readonly phase?: VenmoProbePhase;
   readonly reason: string;
 }): Promise<VenmoAccountProbeResult> {
@@ -1169,9 +1175,19 @@ function challengeHandoffMessage(reason: string, hasCredentials: boolean): strin
  * Returns whether the replayed sign-in reached a live session, so the caller
  * still falls back to probing when the owner signed in by hand instead.
  */
-async function resumeSignInAfterChallenge(replaySignIn: () => Promise<VenmoAccountProbeResult>): Promise<boolean> {
-  const result = await replaySignIn().catch((): null => null);
-  return result?.live === true;
+async function resumeSignInAfterChallenge(
+  replaySignIn: (onSubmit: () => void) => Promise<VenmoAccountProbeResult>
+): Promise<boolean> {
+  // Reports SUBMISSION, not liveness. The caller needs to know whether a real
+  // password reached Venmo — that is what makes the following probe
+  // `post_submit` under B4 — and a submitted-but-rejected password must still
+  // count. Returning `live` here would classify a rejected login as
+  // pre-submit and re-arm the retry that B4 exists to prevent.
+  let submitted = false;
+  await replaySignIn(() => {
+    submitted = true;
+  }).catch((): null => null);
+  return submitted;
 }
 
 type ManualHandoff = Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction">;
@@ -1411,12 +1427,19 @@ async function loginWithSavedCredentials({
       // longer re-arms, so a provider trading bot checks cannot loop.
       ...(attempt === 0
         ? {
-            replaySignIn: () =>
+            replaySignIn: (onSubmit: () => void) =>
               loginWithSavedCredentials({
                 ...(capture ? { capture } : {}),
                 attempt: 1,
                 checkpoint,
-                ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
+                // Chain, do not replace: the run's own marker still fires (it
+                // drives retry classification in session-establish.ts), and the
+                // replay additionally records that a password reached Venmo so
+                // the following probe can be classified `post_submit` per B4.
+                onCredentialSubmit: () => {
+                  onCredentialSubmit?.();
+                  onSubmit();
+                },
                 page,
                 password,
                 ...(passwordScreenTimeoutMs === undefined ? {} : { passwordScreenTimeoutMs }),
