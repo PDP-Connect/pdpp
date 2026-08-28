@@ -277,3 +277,82 @@ test("fleet-summary projection reuses its owner-visible inventory without a seco
     closeDb();
   }
 });
+
+test("production wiring: a paused connection is neutral and classCounts reaches the composer", async () => {
+  // A WIRING test on purpose. `fleet-health.test.ts` calls
+  // `composeFleetHealthVerdict` with hand-built input, so it proves the
+  // composer's logic and NOTHING about whether the real producer supplies that
+  // input. It did not: `evaluateOwnerStreamCoverageAuthority` returned only
+  // `{ status }`, dropping `classCounts`, which silently sent the composer down
+  // its missing-counts fail-closed branch and made the owner-vs-system banner
+  // split dead code in production. Only a test that drives `buildAsApp` — the
+  // real route, the real producer — can catch that class of defect.
+  initDb(":memory:");
+  const store = createSqliteConnectorInstanceStore();
+  const now = "2026-08-28T00:00:00.000Z";
+  getDb()
+    .prepare("INSERT INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)")
+    .run(
+      VISIBLE_CONNECTOR_ID,
+      JSON.stringify({
+        capabilities: { public_listing: { tier: "supported" } },
+        connector_id: VISIBLE_CONNECTOR_ID,
+        display_name: "Fleet-visible connector",
+        protocol_version: "0.1.0",
+        streams: [],
+        version: "1.0.0",
+      }),
+      now
+    );
+  const seeded: ReadonlyArray<readonly [string, string]> = [
+    ["cin_wiring_active", "active"],
+    ["cin_wiring_paused", "paused"],
+  ];
+  for (const [connectorInstanceId, status] of seeded) {
+    // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
+    await store.upsert({
+      connectorId: VISIBLE_CONNECTOR_ID,
+      connectorInstanceId,
+      createdAt: now,
+      displayName: connectorInstanceId,
+      ownerSubjectId: CUSTOM_OWNER_SUBJECT_ID,
+      sourceBinding: { kind: "test" },
+      sourceBindingKey: connectorInstanceId,
+      sourceKind: "account",
+      status,
+      updatedAt: now,
+    });
+  }
+
+  const app = buildAsApp({
+    ownerAuthPassword: "",
+    ownerAuthSubjectId: CUSTOM_OWNER_SUBJECT_ID,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+  });
+  await app.fastify.ready();
+  try {
+    const response = await app.fastify.inject({ method: "GET", url: "/_ref/fleet-health" });
+    assert.equal(response.statusCode, 200);
+    const body = JSON.parse(response.body) as FleetHealthVerdict;
+
+    // The paused archive stays VISIBLE but leaves the active denominator.
+    assert.deepEqual(
+      body.scope.intentional_exclusions.map((entry) => entry.connection_id),
+      ["cin_wiring_paused"],
+      "through the REAL route, a paused connection must be an intentional exclusion"
+    );
+    assert.equal(
+      body.scope.assessed.some((entry) => entry.connection_id === "cin_wiring_paused"),
+      false,
+      "a paused connection must never enter the assessed denominator"
+    );
+    assert.equal(
+      body.scope.assessed.some((entry) => entry.connection_id === "cin_wiring_active"),
+      true,
+      "negative control: the ACTIVE connection is still assessed, so the exclusion is not swallowing the fleet"
+    );
+  } finally {
+    await app.fastify.close();
+    closeDb();
+  }
+});
