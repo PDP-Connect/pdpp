@@ -943,6 +943,306 @@ test("distinguishes active work, owner interaction, provider/config blocked, fai
   }
 });
 
+test("a stream with its own committed-complete report is not provider_config_blocked merely because a sibling stream degraded the connection (production GroupMe shape: cin_5804a2ff36cd303e22762745)", () => {
+  const groupMeManifest = manifest({
+    connector_id: "groupme",
+    version: "0.1.0",
+    streams: [
+      { name: "groups", required: true, coverage_strategy: "full_inventory", freshness_strategy: "scheduled_window" },
+      {
+        name: "group_messages",
+        required: true,
+        coverage_strategy: "checkpoint_window",
+        freshness_strategy: "scheduled_window",
+      },
+    ],
+  });
+  const connection = healthyConnection({
+    connector_id: "groupme",
+    streams: ["groups", "group_messages"],
+    manifest_version: "0.1.0",
+    owner_state: { resolver: "system_degraded", owner_of_state: "system", posture: "observed" },
+    rendered_verdict: { pill: { tone: "amber", label: "Some records stuck" } },
+    connection_health: {
+      state: "degraded",
+      axes: { coverage: "retryable_gap", freshness: "stale", attention: "none", outbox: "unknown" },
+      conditions: [
+        {
+          current: true,
+          expires_at: null,
+          id: "projection-reliable",
+          message: "Projection is current",
+          observed_at: EVIDENCE_AT,
+          origin: "read_model",
+          reason: "projection_current",
+          reason_code: null,
+          remediation: null,
+          sensitivity: "public",
+          severity: "info",
+          status: "true",
+          type: "ProjectionReliable",
+        },
+      ],
+    },
+    collection_report: [
+      {
+        stream: "groups",
+        coverage_condition: "complete",
+        coverage_strategy: "full_inventory",
+        freshness_strategy: "scheduled_window",
+        checkpoint: "committed",
+        considered: 156,
+        covered: 156,
+        forward_disposition: "complete",
+        evidence_as_of: EVIDENCE_AT,
+      },
+      {
+        stream: "group_messages",
+        coverage_condition: "retryable_gap",
+        coverage_strategy: "checkpoint_window",
+        freshness_strategy: "scheduled_window",
+        checkpoint: "committed",
+        considered: 0,
+        covered: 0,
+        forward_disposition: "resumable",
+        evidence_as_of: EVIDENCE_AT,
+        skipped: { reason: "history_ended_before_provider_count", recovery_action: "retry_by_runtime" },
+      },
+    ],
+    stream_records: [
+      { stream: "groups", record_count: 156, count_state: "known", declaration_state: "declared" },
+      { stream: "group_messages", record_count: 88_743, count_state: "known", declaration_state: "declared" },
+    ],
+  });
+  const result = evaluate(connection, groupMeManifest);
+  const groups = result.streams.find((item) => item.stream === "groups");
+  const groupMessages = result.streams.find((item) => item.stream === "group_messages");
+  assert.ok(groups, "expected a groups stream finding");
+  assert.ok(groupMessages, "expected a group_messages stream finding");
+  assert.notEqual(
+    groups.class,
+    "provider_config_blocked",
+    `a stream with its own committed-complete report must not inherit a sibling's provider_config_blocked verdict (got ${groups.class})`
+  );
+  assert.equal(
+    groups.class,
+    "stale",
+    "the honest classification for this real production shape is stale (connection_health.axes.freshness is stale), not blocked"
+  );
+  assert.equal(
+    groupMessages.class,
+    "provider_config_blocked",
+    "the genuinely degraded stream itself is still correctly classified as blocked"
+  );
+});
+
+test("a hard block (blocked_maintainer) still covers every sibling, even one with its own committed-complete report (production Gmail shape: cin_5804a2ff36cd303e22762745-style maintainer defect)", () => {
+  const gmailManifest = manifest({
+    connector_id: "gmail",
+    version: "manifest-1",
+    streams: [
+      {
+        name: "messages",
+        required: true,
+        coverage_strategy: "checkpoint_window",
+        freshness_strategy: "scheduled_window",
+      },
+      {
+        name: "attachments",
+        required: true,
+        coverage_strategy: "parent_detail_accounting",
+        freshness_strategy: "scheduled_window",
+      },
+    ],
+  });
+  const connection = healthyConnection({
+    connector_id: "gmail",
+    streams: ["messages", "attachments"],
+    owner_state: { resolver: "blocked_maintainer", owner_of_state: "maintainer", posture: "observed" },
+    rendered_verdict: { pill: { tone: "red", label: "Can't collect" } },
+    connection_health: {
+      state: "degraded",
+      axes: { coverage: "terminal_gap", freshness: "fresh", attention: "none", outbox: "unknown" },
+      conditions: [
+        {
+          current: true,
+          expires_at: null,
+          id: "projection-reliable",
+          message: "Projection is current",
+          observed_at: EVIDENCE_AT,
+          origin: "read_model",
+          reason: "projection_current",
+          reason_code: null,
+          remediation: null,
+          sensitivity: "public",
+          severity: "info",
+          status: "true",
+          type: "ProjectionReliable",
+        },
+      ],
+    },
+    collection_report: [
+      {
+        stream: "messages",
+        coverage_condition: "complete",
+        coverage_strategy: "checkpoint_window",
+        freshness_strategy: "scheduled_window",
+        checkpoint: "committed",
+        considered: 1,
+        covered: 1,
+        forward_disposition: "complete",
+        evidence_as_of: EVIDENCE_AT,
+      },
+      {
+        stream: "attachments",
+        coverage_condition: "terminal_gap",
+        coverage_strategy: "parent_detail_accounting",
+        freshness_strategy: "scheduled_window",
+        checkpoint: "committed",
+        considered: 0,
+        covered: 0,
+        forward_disposition: "terminal",
+        evidence_as_of: EVIDENCE_AT,
+      },
+    ],
+    stream_records: [
+      { stream: "messages", record_count: 1, count_state: "known", declaration_state: "declared" },
+      { stream: "attachments", record_count: 0, count_state: "known_zero", declaration_state: "declared" },
+    ],
+  });
+  const result = evaluate(connection, gmailManifest);
+  const messages = result.streams.find((item) => item.stream === "messages");
+  const attachments = result.streams.find((item) => item.stream === "attachments");
+  assert.ok(messages, "expected a messages stream finding");
+  assert.ok(attachments, "expected an attachments stream finding");
+  assert.equal(
+    messages.class,
+    "provider_config_blocked",
+    "a maintainer-audience hard block invalidates every sibling report, including one that looks committed-complete"
+  );
+  assert.equal(
+    attachments.class,
+    "provider_config_blocked",
+    "the genuinely blocked stream itself is still correctly classified as blocked"
+  );
+});
+
+test("a stream with its own committed-complete report is not failed merely because a sibling stream's terminal gap set the connection-wide coverage axis (production Gmail sibling shape)", () => {
+  const gmailManifest = manifest({
+    connector_id: "gmail",
+    version: "manifest-1",
+    streams: [
+      {
+        name: "messages",
+        required: true,
+        coverage_strategy: "checkpoint_window",
+        freshness_strategy: "scheduled_window",
+      },
+      {
+        name: "attachments",
+        required: true,
+        coverage_strategy: "parent_detail_accounting",
+        freshness_strategy: "scheduled_window",
+      },
+    ],
+  });
+  const connection = healthyConnection({
+    connector_id: "gmail",
+    streams: ["messages", "attachments"],
+    owner_state: { resolver: "healthy", owner_of_state: "system", posture: "observed" },
+    rendered_verdict: { pill: { tone: "amber", label: "Missing optional data" } },
+    connection_health: {
+      state: "degraded",
+      axes: { coverage: "terminal_gap", freshness: "fresh", attention: "none", outbox: "unknown" },
+      forward_disposition: "resumable",
+      conditions: [
+        {
+          current: true,
+          expires_at: null,
+          id: "projection-reliable",
+          message: "Projection is current",
+          observed_at: EVIDENCE_AT,
+          origin: "read_model",
+          reason: "projection_current",
+          reason_code: null,
+          remediation: null,
+          sensitivity: "public",
+          severity: "info",
+          status: "true",
+          type: "ProjectionReliable",
+        },
+      ],
+    },
+    collection_report: [
+      {
+        stream: "messages",
+        coverage_condition: "complete",
+        coverage_strategy: "checkpoint_window",
+        freshness_strategy: "scheduled_window",
+        checkpoint: "committed",
+        considered: 1,
+        covered: 1,
+        forward_disposition: "complete",
+        evidence_as_of: EVIDENCE_AT,
+      },
+      {
+        stream: "attachments",
+        coverage_condition: "terminal_gap",
+        coverage_strategy: "parent_detail_accounting",
+        freshness_strategy: "scheduled_window",
+        checkpoint: "committed",
+        considered: 0,
+        covered: 0,
+        forward_disposition: "terminal",
+        evidence_as_of: EVIDENCE_AT,
+      },
+    ],
+    stream_records: [
+      { stream: "messages", record_count: 1, count_state: "known", declaration_state: "declared" },
+      { stream: "attachments", record_count: 0, count_state: "known_zero", declaration_state: "declared" },
+    ],
+  });
+  const result = evaluate(connection, gmailManifest);
+  const messages = result.streams.find((item) => item.stream === "messages");
+  const attachments = result.streams.find((item) => item.stream === "attachments");
+  assert.ok(messages, "expected a messages stream finding");
+  assert.ok(attachments, "expected an attachments stream finding");
+  assert.equal(
+    messages.class,
+    "green",
+    `a stream with its own committed-complete report must not inherit a sibling's terminal-gap failed verdict (got ${messages.class})`
+  );
+  assert.equal(
+    attachments.class,
+    "failed",
+    "the genuinely terminal-gapped stream itself is still correctly classified as failed"
+  );
+});
+
+test("a red pill without a hard block still fails every sibling stream, even one with its own committed-complete report (negative control: connection-wide render fact, not a coverage rollup)", () => {
+  const connection = healthyConnection({
+    rendered_verdict: { pill: { tone: "red", label: "Some records stuck" } },
+  });
+  const result = evaluate(connection);
+  assert.equal(
+    streamResult(result).class,
+    "failed",
+    "a red pill without connection_health.state === 'blocked' is a connection-wide render fact, so it still fails every stream"
+  );
+});
+
+test("a failed latest run still fails every sibling stream, even one with its own committed-complete report (negative control: connection-wide run fact, not a coverage rollup)", () => {
+  const connection = healthyConnection({
+    last_run: { status: "failed", run_id: "run-2" },
+  });
+  const result = evaluate(connection);
+  assert.equal(
+    streamResult(result).class,
+    "failed",
+    "the latest run's own status is a connection-wide fact independent of any stream's report, so it still fails every stream"
+  );
+});
+
 test("accepts a successful runtime-proven absence only for an optional stream", () => {
   const optionalUnavailable = healthyConnection();
   const [optionalReport] = optionalUnavailable.collection_report as Json[];

@@ -1358,29 +1358,52 @@ function needsOwnerInteraction(connection: JsonObject): boolean {
   );
 }
 
-function isProviderConfigBlocked(connection: JsonObject): boolean {
+function isProviderConfigBlocked(connection: JsonObject, report: JsonObject | undefined): boolean {
   const health = nestedObject(connection, "connection_health");
   const axes = nestedObject(health, "axes");
   const ownerState = nestedObject(connection, "owner_state");
-  return (
-    health?.state === "blocked" ||
-    ownerState?.resolver === "blocked_maintainer" ||
-    ownerState?.resolver === "system_degraded" ||
-    axes?.coverage === "unavailable" ||
-    axes?.coverage === "unsupported"
-  );
+  // A hard block (an explicit blocked health state, or a maintainer-audience
+  // defect) applies uniformly to every stream on the connection — e.g. revoked
+  // credentials or a maintainer code-fix stop the whole connector, so a
+  // seemingly-complete sibling report cannot be trusted to still be current.
+  if (health?.state === "blocked" || ownerState?.resolver === "blocked_maintainer") {
+    return true;
+  }
+  // `system_degraded` and a blocked coverage axis are connection-wide rollups,
+  // not per-stream facts — one stream's genuine provider/deployment block must
+  // not launder onto a sibling stream whose own collection_report entry
+  // already proves committed, complete coverage independent of that rollup.
+  const softDegraded =
+    ownerState?.resolver === "system_degraded" || axes?.coverage === "unavailable" || axes?.coverage === "unsupported";
+  if (!softDegraded) {
+    return false;
+  }
+  return !(report && committedCoverageProof(report));
 }
 
-function isFailed(connection: JsonObject): boolean {
+function isFailed(connection: JsonObject, report: JsonObject | undefined): boolean {
   const health = nestedObject(connection, "connection_health");
   const axes = nestedObject(health, "axes");
   const pill = nestedObject(nestedObject(connection, "rendered_verdict"), "pill");
-  return (
+  // A failed latest run, a terminal forward disposition, or a red pill (while
+  // not already hard-blocked) are connection-wide facts about the run/render
+  // itself, so they apply uniformly to every stream.
+  if (
     latestRunFailed(connection) ||
-    axes?.coverage === "terminal_gap" ||
     health?.forward_disposition === "terminal" ||
     (pill?.tone === "red" && health?.state !== "blocked")
-  );
+  ) {
+    return true;
+  }
+  // `connection_health.axes.coverage === "terminal_gap"` is a connection-wide
+  // rollup of whichever stream has the worst coverage — it is not a per-stream
+  // fact. A sibling stream whose own collection_report entry already proves
+  // committed, complete coverage must not inherit another stream's terminal
+  // gap.
+  if (axes?.coverage !== "terminal_gap") {
+    return false;
+  }
+  return !(report && committedCoverageProof(report));
 }
 
 function isStale(connection: JsonObject, record: JsonObject | undefined): boolean {
@@ -2012,14 +2035,14 @@ function classForStream(
   if (hasActiveBoundedWork(connection)) {
     return { class: "active_bounded_work", denominator, reason: "bounded runtime work is still active" };
   }
-  if (isProviderConfigBlocked(connection)) {
+  if (isProviderConfigBlocked(connection, report)) {
     return {
       class: "provider_config_blocked",
       denominator,
       reason: "provider or deployment configuration blocks collection",
     };
   }
-  if (latestRunFailed(connection) || isFailed(connection)) {
+  if (latestRunFailed(connection) || isFailed(connection, report)) {
     return { class: "failed", denominator, reason: "latest runtime evidence reports failure" };
   }
   if (isStale(connection, record)) {
