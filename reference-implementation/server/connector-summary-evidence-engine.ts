@@ -2356,16 +2356,6 @@ async function readAndPersistPostgresCanonicalScanPage(
 }
 
 /**
- * Persist a halved page size OUTSIDE the failing page transaction.
- *
- * The page transaction is rolling back (its statement was cancelled), so a
- * write inside it would be lost — which would leave the whale retrying the
- * same too-large LIMIT forever, the exact failure fa3a79f1a fixes. This is a
- * narrow, unbounded-deadline update of one column on one row, and it
- * deliberately does NOT touch `resume_after_id` or the accumulator: it only
- * records how much this database proved it can serve.
- */
-/**
  * Persist the shrunken page size OUTSIDE the page transaction that is rolling
  * back, SEEDING a receipt when none exists yet.
  *
