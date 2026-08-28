@@ -34,12 +34,11 @@
  *     proof of the resumability property, not a simulation of unrelated
  *     code.
  *
- * The Postgres-specific wiring (per-page `postgresRepairReadQuery` bounding,
- * `withPostgresTransaction` chunk persistence) is exercised only by
- * typecheck and code review in this environment — no dedicated Postgres
- * test listener is available here — but it folds pages through the exact
- * same `foldCanonicalScanPage` this suite proves against SQLite, so SQLite
- * and Postgres cannot silently diverge in the algorithm itself.
+ * The Postgres-specific per-page transaction/timeout wiring is exercised
+ * only by typecheck and code review in this environment — no dedicated
+ * Postgres test listener is available here — but it folds pages through the
+ * exact same `foldCanonicalScanPage` this suite proves against SQLite, so
+ * SQLite and Postgres cannot silently diverge in the algorithm itself.
  */
 
 import assert from "node:assert/strict";
@@ -308,27 +307,43 @@ test("a chunk boundary is durable: a second, separate admission resumes from the
     })
   ));
 
-test("source_revision invalidation: new records landing mid-scan discard the in-progress accumulator instead of silently resuming a stale partial sum", () =>
+test("append-safe receipt: a one-page admission survives a later append and the next admission advances from its durable boundary", () =>
   withTempDb(() =>
     withChunkTestEnv(TEST_PAGE_SIZE, true, async () => {
       seedManifestConnector();
       seedInstance(WHALE_ID);
       seedWhaleRecords(WHALE_ID, WHALE_RECORD_COUNT);
 
+      // First admission is deliberately cancelled after one page, leaving a
+      // durable receipt for the proven prefix.
       await reconcileConnectorSummaryEvidence([WHALE_ID]);
       const inProgress = chunkRow(WHALE_ID);
       assert.ok(inProgress, "a chunk is in progress");
       const revisionAtChunk = inProgress?.source_revision;
+      assert.equal(Number(inProgress.resume_after_id), TEST_PAGE_SIZE, "first admission proves page one");
 
-      // Simulate new records arriving mid-scan: insert more rows (this
-      // advances connector_instances.source_revision via the existing
-      // row-level trigger, the same mechanism classifyCandidate's
-      // source_revision_mismatch already relies on).
+      // Appending rows advances source_revision but cannot change the prefix
+      // already represented by the receipt. The next admission must retain
+      // that work rather than livelocking on a source-revision mismatch.
       seedWhaleRecords(WHALE_ID, 10, WHALE_RECORD_COUNT);
       const liveRevision = getDb()
         .prepare("SELECT CAST(source_revision AS TEXT) AS r FROM connector_instances WHERE connector_instance_id = ?")
         .get(WHALE_ID) as { r: string };
       assert.notEqual(liveRevision.r, revisionAtChunk, "seeding more records must advance source_revision");
+
+      await reconcileConnectorSummaryEvidence([WHALE_ID]);
+      const afterAppend = chunkRow(WHALE_ID);
+      assert.ok(afterAppend, "the append leaves the prior receipt resumable");
+      assert.equal(
+        Number(afterAppend.resume_after_id),
+        TEST_PAGE_SIZE * 2,
+        "the next admission advances from the durable boundary instead of restarting at page one"
+      );
+      assert.equal(
+        JSON.parse(afterAppend.accumulator_json).messages?.record_count,
+        TEST_PAGE_SIZE * 2,
+        "the preserved prefix remains in the accumulator after the append"
+      );
 
       // Drain the rest of the scan.
       for (;;) {
@@ -343,7 +358,99 @@ test("source_revision invalidation: new records landing mid-scan discard the in-
       assert.equal(
         row?.total_records,
         WHALE_RECORD_COUNT + 10,
-        "the final count reflects a restarted scan against the NEW revision, not a resumed stale partial sum that would undercount the 10 new rows"
+        "the final count contains both the proven prefix and the appended tail exactly once"
+      );
+    })
+  ));
+
+test("prefix-mutation control: editing a row at or before the durable boundary invalidates the receipt and restarts the next admission", () =>
+  withTempDb(() =>
+    withChunkTestEnv(TEST_PAGE_SIZE, true, async () => {
+      seedManifestConnector();
+      seedInstance(WHALE_ID);
+      seedWhaleRecords(WHALE_ID, WHALE_RECORD_COUNT);
+
+      await reconcileConnectorSummaryEvidence([WHALE_ID]);
+      const inProgress = chunkRow(WHALE_ID);
+      assert.ok(inProgress, "first admission left a prefix receipt");
+      const boundary = Number(inProgress.resume_after_id);
+      assert.equal(boundary, TEST_PAGE_SIZE, "the receipt covers exactly the first page");
+
+      // This direct canonical write is the negative control for unconditional
+      // resume: it changes a row already folded into the accumulator.
+      getDb()
+        .prepare("UPDATE records SET emitted_at = ? WHERE connector_instance_id = ? AND id = ?")
+        .run("2026-07-28T00:00:00.000Z", WHALE_ID, boundary);
+      assert.equal(chunkRow(WHALE_ID), undefined, "a prefix mutation deletes the invalid receipt immediately");
+
+      await reconcileConnectorSummaryEvidence([WHALE_ID]);
+      const afterMutation = chunkRow(WHALE_ID);
+      assert.ok(afterMutation, "the restarted scan left its new first-page receipt");
+      assert.equal(
+        Number(afterMutation.resume_after_id),
+        TEST_PAGE_SIZE,
+        "the next admission restarts at the first page rather than unconditionally resuming past the mutation"
+      );
+      assert.equal(
+        JSON.parse(afterMutation.accumulator_json).messages?.record_count,
+        TEST_PAGE_SIZE,
+        "the new receipt contains only freshly re-read prefix facts"
+      );
+
+      for (;;) {
+        // biome-ignore lint/performance/noAwaitInLoops: each admission must observe the prior durable receipt before continuing.
+        await reconcileConnectorSummaryEvidence([WHALE_ID]);
+        if (!chunkRow(WHALE_ID)) {
+          break;
+        }
+      }
+      assert.equal(
+        evidenceRow(WHALE_ID)?.total_records,
+        WHALE_RECORD_COUNT,
+        "the restarted scan preserves the exact final count"
+      );
+    })
+  ));
+
+/**
+ * The UPDATE control above proves the trigger's `deleteChunkForEitherPrefix`
+ * builder. It does NOT cover `deleteChunkForPrefix`, which is a SEPARATE SQL
+ * builder wired to the INSERT and DELETE triggers — disabling that one leaves
+ * all six other tests green, so the guard was live but unpinned.
+ *
+ * A DELETE inside the proven prefix is the more dangerous of the two: the
+ * accumulator has already counted that row, so resuming past it would publish
+ * a total_records that is too HIGH — a connection reporting more retained data
+ * than it holds. That is the exact false-green this subsystem exists to stop.
+ */
+test("prefix-DELETE control: removing a row at or before the durable boundary also invalidates the receipt", () =>
+  withTempDb(() =>
+    withChunkTestEnv(TEST_PAGE_SIZE, true, async () => {
+      seedManifestConnector();
+      seedInstance(WHALE_ID);
+      seedWhaleRecords(WHALE_ID, WHALE_RECORD_COUNT);
+
+      await reconcileConnectorSummaryEvidence([WHALE_ID]);
+      const inProgress = chunkRow(WHALE_ID);
+      assert.ok(inProgress, "first admission left a prefix receipt");
+      const boundary = Number(inProgress.resume_after_id);
+
+      // Deletion, not update: exercises `deleteChunkForPrefix` via the DELETE
+      // trigger rather than the UPDATE builder the sibling control covers.
+      getDb().prepare("DELETE FROM records WHERE connector_instance_id = ? AND id = ?").run(WHALE_ID, boundary);
+      assert.equal(chunkRow(WHALE_ID), undefined, "a prefix deletion deletes the invalid receipt immediately");
+
+      for (;;) {
+        // biome-ignore lint/performance/noAwaitInLoops: each admission must observe the prior durable receipt before continuing.
+        await reconcileConnectorSummaryEvidence([WHALE_ID]);
+        if (!chunkRow(WHALE_ID)) {
+          break;
+        }
+      }
+      assert.equal(
+        evidenceRow(WHALE_ID)?.total_records,
+        WHALE_RECORD_COUNT - 1,
+        "the rescanned count reflects the deletion exactly — never the stale, higher pre-deletion total"
       );
     })
   ));
