@@ -2662,7 +2662,12 @@ test("waitForManualLogin: a surface that never paints still reaches the owner, w
  * This pins the fill, not the probe: the assertion is that the credentials
  * reached the fields, which is the step that was missing.
  */
-function makePageWithChallengeThenForm(): { fillCalls: Record<string, string>; page: Page; reveal: () => void } {
+function makePageWithChallengeThenForm(): {
+  fillCalls: Record<string, string>;
+  page: Page;
+  reveal: () => void;
+  submitClicks: string[];
+} {
   const fillCalls: Record<string, string> = {};
   let formPresent = false;
   let probeCount = 0;
@@ -2673,7 +2678,10 @@ function makePageWithChallengeThenForm(): { fillCalls: Record<string, string>; p
     fillCalls.password = value;
   });
   const absent = makeLocator({ count: 0, visible: false });
-  const submit = makeLocator();
+  const submitClicks: string[] = [];
+  const submit = makeSubmitRecordingLocator(() => {
+    submitClicks.push("click");
+  });
   let currentUrl = "https://venmo.com/";
   const page: Pick<
     Page,
@@ -2723,11 +2731,38 @@ function makePageWithChallengeThenForm(): { fillCalls: Record<string, string>; p
     reveal: () => {
       formPresent = true;
     },
+    submitClicks,
   };
 }
 
-test("a bot-check handoff resumes by FILLING the revealed form, not by probing an untouched one", async () => {
-  const { fillCalls, page, reveal } = makePageWithChallengeThenForm();
+/** A visible, enabled locator that records every click — used to prove submit happened. */
+function makeSubmitRecordingLocator(onClick: () => void): Locator {
+  const fake: Pick<
+    Locator,
+    "click" | "count" | "fill" | "first" | "innerText" | "isEnabled" | "isVisible" | "nth" | "waitFor"
+  > = {
+    click: (): Promise<void> => {
+      onClick();
+      return Promise.resolve();
+    },
+    count: (): Promise<number> => Promise.resolve(1),
+    fill: (): Promise<void> => Promise.resolve(),
+    first(): Locator {
+      return fake as Locator;
+    },
+    innerText: (): Promise<string> => Promise.resolve(""),
+    isEnabled: (): Promise<boolean> => Promise.resolve(true),
+    isVisible: (): Promise<boolean> => Promise.resolve(true),
+    nth(): Locator {
+      return fake as Locator;
+    },
+    waitFor: (): Promise<void> => Promise.resolve(),
+  };
+  return fake as Locator;
+}
+
+test("a bot-check handoff resumes by SUBMITTING the revealed form, not by filling and stopping", async () => {
+  const { fillCalls, page, reveal, submitClicks } = makePageWithChallengeThenForm();
   const messages: string[] = [];
   const sendInteraction = (req: InteractionRequest): Promise<InteractionResponse> => {
     messages.push(String(req.message ?? ""));
@@ -2749,6 +2784,15 @@ test("a bot-check handoff resumes by FILLING the revealed form, not by probing a
     "the stored username must be entered after the owner clears the challenge — probing alone loses the run"
   );
   assert.equal(fillCalls.password, "pw-stored", "the stored password must be entered too; the owner does not know it");
+  // THE DISCRIMINATOR. Filling is not signing in. The first version of this fix
+  // filled both fields and returned, leaving the form unsubmitted while the
+  // resume probed it — so the probe read signed-out and the owner's cleared
+  // CAPTCHA was wasted exactly as in run_1787880916346. This assertion fails
+  // whenever the submit click is skipped, which is the whole defect.
+  assert.ok(
+    submitClicks.length > 0,
+    "the revealed form must be SUBMITTED — filling it and probing an unsubmitted form loses the run"
+  );
 });
 
 test("the challenge prompt does not ask the owner for a password the system holds", async () => {
