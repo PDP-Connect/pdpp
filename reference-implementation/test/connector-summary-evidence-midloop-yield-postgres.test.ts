@@ -357,6 +357,28 @@ test("FAIL-BEFORE/PASS-AFTER: a connection needing more pages than one admission
     );
   }
 
+  // Monotonic advance alone does NOT prove the yield is well-tuned: a guard
+  // that fires after EVERY page also advances monotonically, one page at a
+  // time. That is the same starvation this change exists to fix, reintroduced
+  // through over-caution instead of under-caution — a fat-fingered
+  // `CHUNK_SCAN_PAGE_HEADROOM_MS`, or a flipped comparison, would land there
+  // while every other assertion in this file stayed green.
+  //
+  // The fixture is one row per page, so a healthy admission with a 120ms
+  // allowance banks MANY pages (a page is sub-millisecond here). Requiring at
+  // least one admission to bank more than one page is the weakest assertion
+  // that still separates "yields when the allowance is nearly spent" from
+  // "yields unconditionally", and it does not encode a specific page count
+  // that ordinary timing jitter could break.
+  const largestSinglePassAdvance = advanced.reduce(
+    (best, current, index) => (index === 0 ? best : Math.max(best, current - (advanced[index - 1] as number))),
+    0
+  );
+  assert.ok(
+    largestSinglePassAdvance > 1,
+    `at least one bounded admission must bank MORE THAN ONE page, otherwise the yield is firing unconditionally and each admission does a single page of work — starvation by over-caution. Largest single-pass advance was ${largestSinglePassAdvance} row(s) across ${advanced.length} partial passes. Observed prefixes: ${JSON.stringify(advanced)}`
+  );
+
   // Converged evidence must be COMPLETE and correct — the whole point of
   // resuming rather than publishing early.
   assert.deepEqual(await readEvidence(), { dirty: 0, state: "fresh", total_records: TOTAL_RECORDS });
