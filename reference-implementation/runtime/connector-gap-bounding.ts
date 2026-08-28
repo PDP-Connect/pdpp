@@ -531,6 +531,19 @@ interface BuildCollectionFactsInput {
    */
   recoveryOnly?: boolean;
   scopeByStream: Map<string, unknown>;
+  /**
+   * Accepted STREAM_EVIDENCE facts, keyed by stream name (see
+   * openspec/changes/prove-state-stream-child-coverage). Folded into that
+   * stream's own considered/covered ONLY — never merged into
+   * detailCoverageByStateStream, so it can never reach
+   * missingDetailCoverageReports/recordDetailCoverageShortfalls or influence
+   * checkpoint commit eligibility. DETAIL_COVERAGE wins when both are present
+   * for the same stream (structurally impossible in a conformant run, since
+   * STREAM_EVIDENCE is exclusive to state_stream-declared streams and
+   * DETAIL_COVERAGE is rejected for them, but the precedence is made explicit
+   * here rather than left to map key overwrite order).
+   */
+  streamEvidenceByStream?: Map<string, { considered: number; covered: number }>;
 }
 
 /**
@@ -577,6 +590,7 @@ export function buildCollectionFacts({
   committedStateStreams,
   persistState,
   recoveryOnly = false,
+  streamEvidenceByStream,
 }: BuildCollectionFactsInput): { reference_only: true; schema_version: number; streams: object[] } | null {
   if (recoveryOnly) {
     // Recovery-only runs perform no forward/list inventory pass by
@@ -710,9 +724,20 @@ export function buildCollectionFacts({
   const pendingDetailGapsForStream = (stream: string): number =>
     durableDetailGaps.filter((gap) => gap.stream === stream && gap.status === "pending").length;
 
+  // STREAM_EVIDENCE is exclusive to state_stream-declared streams, which are
+  // themselves forbidden from emitting DETAIL_COVERAGE — so
+  // declaredConsideredForStream/declaredCoveredForStream are always null for
+  // a stream with an accepted STREAM_EVIDENCE fact in a conformant run. This
+  // fallback only ever fires for that disjoint case; DETAIL_COVERAGE's value
+  // is used as-is when both happen to be present (see the
+  // streamEvidenceByStream doc comment on BuildCollectionFactsInput).
+  const streamEvidenceForStream = (stream: string): { considered: number; covered: number } | null =>
+    streamEvidenceByStream?.get(stream) ?? null;
+
   const streams = inScopeStreams.map((stream) => {
-    const considered = declaredConsideredForStream(stream);
-    const covered = declaredCoveredForStream(stream);
+    const evidence = streamEvidenceForStream(stream);
+    const considered = declaredConsideredForStream(stream) ?? evidence?.considered ?? null;
+    const covered = declaredCoveredForStream(stream) ?? evidence?.covered ?? null;
     const streamSkip = skipForStream(stream);
     const continuation = streamSkip?.continuation;
     const stateStreams = streamToStateStreams.get(stream) || new Set([stream]);

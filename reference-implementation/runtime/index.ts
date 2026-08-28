@@ -1749,6 +1749,61 @@ function validateDetailCoverageMessage(
   validateDetailCoverageAgainstManifest(msg, manifestStateStreamByStream, manifestDetailParentStreamsByStream);
 }
 
+// STREAM_EVIDENCE is exclusive to state_stream children (see
+// spec-collection-profile.md, "STREAM_EVIDENCE"): rule 3 rejects any stream
+// that is NOT declared with a static state_stream parent, whether it is
+// parent_streams-declared or self-mapped. This is the inverse guard from
+// DETAIL_COVERAGE's state_stream prohibition above, by design — the two
+// message kinds partition the same manifest-shape space.
+function validateStreamEvidenceAgainstManifest(
+  msg: ConnectorMessage,
+  manifestStateStreamByStream: Map<string, string>
+): void {
+  const stream = msg.stream as string;
+  if (!manifestStateStreamByStream.has(stream)) {
+    throw new Error(
+      `Connector emitted STREAM_EVIDENCE for stream '${stream}', which the manifest does not declare with a` +
+        " static state_stream parent; STREAM_EVIDENCE is exclusive to state_stream-declared streams"
+    );
+  }
+}
+
+function validateStreamEvidenceMessage(
+  msg: ConnectorMessage,
+  scopeByStream: ScopeByStream,
+  manifestStateStreamByStream: Map<string, string>,
+  streamEvidenceByStream: Map<string, { considered: number; covered: number }>
+): void {
+  if (msg.reference_only !== true) {
+    throw new Error("Connector emitted invalid STREAM_EVIDENCE.reference_only: expected true");
+  }
+  requireOptionalNonEmptyString(msg.stream, "STREAM_EVIDENCE.stream");
+  if (!msg.stream) {
+    throw new Error("Connector emitted invalid STREAM_EVIDENCE.stream: expected non-empty string");
+  }
+  validateOptionalScopedStream(msg.stream, "STREAM_EVIDENCE", scopeByStream);
+  validateStreamEvidenceAgainstManifest(msg, manifestStateStreamByStream);
+  const { considered, covered } = msg;
+  if (!(Number.isSafeInteger(considered) && (considered as number) >= 0)) {
+    throw new Error(
+      `Connector emitted invalid STREAM_EVIDENCE.considered: expected a non-negative integer, got ${considered}`
+    );
+  }
+  if (!(Number.isSafeInteger(covered) && (covered as number) >= 0)) {
+    throw new Error(
+      `Connector emitted invalid STREAM_EVIDENCE.covered: expected a non-negative integer, got ${covered}`
+    );
+  }
+  if ((covered as number) > (considered as number)) {
+    throw new Error(
+      `Connector emitted invalid STREAM_EVIDENCE for stream '${msg.stream}': covered (${covered}) exceeds considered (${considered})`
+    );
+  }
+  if (streamEvidenceByStream.has(msg.stream as string)) {
+    throw new Error(`Connector emitted duplicate STREAM_EVIDENCE for stream=${msg.stream}`);
+  }
+}
+
 function validateDetailGapRecoveredMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
   requireOptionalNonEmptyString(msg.gap_id, "DETAIL_GAP_RECOVERED.gap_id");
   if (!msg.gap_id) {
@@ -3046,6 +3101,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // append path. The cross-run re-defer suppression is the discovered_run_id gate.
   const detailGapRecordedThisRun = new Set<string>();
   const detailCoverageByStateStream = new Map<string, DetailCoverageEntry[]>();
+  // At most one accepted STREAM_EVIDENCE fact per `stream` this run (rule 5:
+  // duplicate rejection is scoped to this run's own runId — a new runId, e.g.
+  // a resumed/retried run, gets its own map instance). Kept fully separate
+  // from `detailCoverageByStateStream`: STREAM_EVIDENCE is never consulted by
+  // `missingDetailCoverageReports`/`recordDetailCoverageShortfalls`.
+  const streamEvidenceByStream = new Map<string, { considered: number; covered: number }>();
   // Latest `collection_rate` progress payload seen this run. Updated on each
   // rate-change PROGRESS event so the terminal event can carry the final
   // learned state for post-run diagnostics (reference → snapshot derivation).
@@ -3387,6 +3448,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       persistState,
       recoveryOnly: startRecoveryOnly,
       scopeByStream,
+      streamEvidenceByStream,
     } as unknown as Parameters<typeof buildCollectionFacts>[0]);
     // Distinct from `collectionFacts`: a recovery-only run's durable
     // detail-gap-closure count, never an inventory/list-pass claim. See
@@ -3483,6 +3545,23 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       stream,
     });
     detailCoverageByStateStream.set(stateStream, entries);
+  }
+
+  // Parallel to, but independent from, trackDetailCoverage: STREAM_EVIDENCE
+  // is folded into RuntimeCollectionFact.considered/covered at terminal
+  // collection-fact assembly (buildCollectionFacts) and never into
+  // detailCoverageByStateStream, so it can never reach
+  // missingDetailCoverageReports/recordDetailCoverageShortfalls.
+  function trackStreamEvidence(msg: ConnectorMessage): void {
+    // `validateStreamEvidenceMessage` ran first: stream is a non-empty,
+    // in-scope, state_stream-declared name; considered/covered are validated
+    // non-negative integers with covered <= considered; no prior entry exists
+    // for this stream in this run's map instance.
+    const stream = msg.stream as string;
+    streamEvidenceByStream.set(stream, {
+      considered: msg.considered as number,
+      covered: msg.covered as number,
+    });
   }
 
   // Resolve every STATE_STREAM checkpoint key owned by a data stream, for
@@ -4512,6 +4591,47 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       });
     }
 
+    async function handleStreamEvidenceMessage(msg: ConnectorMessage): Promise<void> {
+      validateStreamEvidenceMessage(msg, scopeByStream, manifestStateStreamByStream, streamEvidenceByStream);
+      // Same ordering rule as handleDetailCoverageMessage: a covered claim
+      // must never precede the records it claims durably reached storage.
+      await flushAll();
+      // Proven by the validator: stream is a non-empty, in-scope,
+      // state_stream-declared name; considered/covered are validated
+      // non-negative integers with covered <= considered.
+      const evidenceStream = msg.stream as string;
+      const evidenceConsidered = msg.considered as number;
+      const evidenceCovered = msg.covered as number;
+      trackStreamEvidence(msg);
+      await emitSpineEventTracked({
+        actor_id: connectorId,
+        actor_type: "runtime",
+        data: {
+          considered: evidenceConsidered,
+          covered: evidenceCovered,
+          grant_id: grantId,
+          reference_only: true,
+          source: runSource,
+          stream: evidenceStream,
+        },
+        event_type: "run.stream_evidence_declared",
+        object_id: runId,
+        object_type: "run",
+        run_id: runId,
+        scenario_id: traceContext.scenario_id,
+        status: "succeeded",
+        stream_id: evidenceStream,
+        trace_id: traceContext.trace_id,
+      });
+      onProgress({
+        considered: evidenceConsidered,
+        covered: evidenceCovered,
+        reference_only: true,
+        stream: evidenceStream,
+        type: "STREAM_EVIDENCE",
+      });
+    }
+
     async function handleAssistanceMessage(msg: ConnectorMessage): Promise<void> {
       const assistanceRequestId = (msg.assistance_request_id as string | undefined) || nextAssistanceRequestId();
       const assistanceMsg: ConnectorMessage = { ...msg, assistance_request_id: assistanceRequestId };
@@ -5372,6 +5492,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       RECORD: handleRecordMessage,
       SKIP_RESULT: handleSkipResultMessage,
       STATE: handleStateMessage,
+      STREAM_EVIDENCE: handleStreamEvidenceMessage,
     };
 
     async function handleMsg(msg: ConnectorMessage): Promise<void> {

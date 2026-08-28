@@ -430,6 +430,83 @@ Reports a durable, retryable per-record detail failure within a list+detail lane
 
 A `gap_keys` entry in `DETAIL_COVERAGE` is not by itself proof of a durable retry obligation. The runtime MUST additionally confirm a matching `DETAIL_GAP` exists for the same `stream` and parent boundary before crediting that key as accounted; an unmatched `gap_keys` entry leaves the key unaccounted for coverage purposes, with the same fail-closed effect as a key omitted from every outcome set.
 
+#### STREAM_EVIDENCE
+
+Reports independently measured final `considered`/`covered` coverage counts
+for a stream declared with manifest `state_stream` (a checkpoint-dependent
+child with no cursor of its own, ineligible to emit `DETAIL_COVERAGE`). Does
+not cause a state transition and never gates any checkpoint commit.
+
+```json
+{
+  "type": "STREAM_EVIDENCE",
+  "reference_only": true,
+  "stream": "message_bodies",
+  "considered": 214,
+  "covered": 211
+}
+```
+
+| Field | Type | Description |
+|-------|------|--------------|
+| `reference_only` | `true` | MUST be present and `true`. Same epistemic marker as `DETAIL_COVERAGE.reference_only`: evidence about a run, not itself durable data. |
+| `stream` | string | The `state_stream`-declared stream this fact describes. MUST be present in `scope.streams`. MUST name a stream whose manifest declaration has `state_stream` set (i.e. is itself a `state_stream` child), not `parent_streams` or a self-mapped stream. |
+| `considered` | integer, >= 0 | The full count of keys the connector's own hydration lane considered for this stream in this run, measured at that stream's own hydration site, after the connector's own reconciliation of hydrated vs. gapped vs. unaccounted keys settles. MUST NOT be derived from a different stream's enumeration/emitted-record count, and MUST NOT be derived as a function of this run's own successful-emission or gap counts. |
+| `covered` | integer, 0 <= covered <= considered | The count of `considered` keys the connector successfully hydrated and emitted as `RECORD` in this run. |
+
+A connector MAY emit at most one `STREAM_EVIDENCE` per `stream` per run. It is
+optional: a `state_stream` child with no independent hydration lane, or that
+chooses not to measure itself, emits nothing and keeps the existing
+checkpoint-inheritance/`unknown` projection behavior for that stream
+unchanged.
+
+A connector MUST NOT emit `STREAM_EVIDENCE` for a run that did not establish
+a genuine enumeration boundary for that stream (for example, a scheduled run
+that walked no window for that stream); it MUST NOT substitute
+`considered: 0, covered: 0` for a withheld message.
+
+`STREAM_EVIDENCE` is deliberately distinct from `DETAIL_COVERAGE`: it carries
+no `state_stream` field, no key sets, and is never consulted by
+`missingDetailCoverageReports`/`recordDetailCoverageShortfalls` or the
+[Eligible-checkpoint algorithm](#eligible-checkpoint-algorithm) — see the
+`DETAIL_COVERAGE` prohibition below, which this message provides the
+alternative for.
+
+A runtime MUST reject (fail closed, as a protocol violation) a
+`STREAM_EVIDENCE` message when any of the following holds:
+
+1. `reference_only` is not `true`.
+2. `stream` is not present in the run's `scope.streams`.
+3. `stream` is not declared with manifest `state_stream` (i.e. is
+   `parent_streams`-declared or self-mapped).
+4. `covered` is greater than `considered`, or either value is negative.
+5. A `STREAM_EVIDENCE` was already accepted for the same `stream` in the
+   same run (`runId`-scoped: a resumed or retried run assigned a new
+   `runId` is a different run for this rule).
+
+A runtime MUST NOT silently drop a rejected `STREAM_EVIDENCE` in a way that
+lets the stream fall through to checkpoint inheritance as if nothing had
+been reported.
+
+**Compatibility.** `STREAM_EVIDENCE` is a breaking wire addition for a
+runtime that predates it: an unrecognized `msg.type` is not ignored, it
+fails the entire run (see the runtime's message-dispatch allowlist). The
+runtime that will receive `STREAM_EVIDENCE` MUST be deployed, with
+`STREAM_EVIDENCE` present in its dispatch allowlist, before any connector
+build that emits `STREAM_EVIDENCE` is deployed. This is a coordinated,
+runtime-first rollout, not independent connector/runtime versioning; a new
+runtime paired with an old connector that never emits `STREAM_EVIDENCE` is
+unaffected (that direction degrades gracefully).
+
+**Read-model note.** An accepted `STREAM_EVIDENCE` fact is folded into that
+stream's terminal collection data on every run-termination path (success,
+failure, timeout, cancellation), the same as any other stream's accepted
+runtime fact. Which run's fact is surfaced to the owner as a stream's current
+coverage remains governed entirely by the runtime's existing run-selection
+logic (the classifying-run selector), unmodified by this message: a fact
+accepted during a run that selector does not choose as the classifying run
+is not surfaced in that run's place.
+
 #### PROGRESS
 
 Optional progress update for display in runtime UIs.
@@ -516,7 +593,7 @@ This exception exists because a walk longer than the interval between controller
 
 A data stream's checkpoint parent(s) are declared statically in the manifest (`state_stream` or `parent_streams`). The manifest is authoritative: it declares the permitted parent shape, and the connector's own `DETAIL_COVERAGE` messages (`state_stream` field, per message) may only select or report evidence within that declared shape for a given run — they MUST NOT introduce a parent the manifest did not declare, and MUST NOT override a static single-parent declaration. A runtime MUST resolve a data stream's checkpoint parent(s), and validate live evidence against that resolution, as follows:
 
-1. **`state_stream` (static single parent).** The stream's checkpoint parent is always the manifest's declared `state_stream`, for every run, with no run-time override. The connector MUST NOT emit `DETAIL_COVERAGE` naming this stream as `stream` at all; a runtime MUST reject any such message as a protocol violation (fail closed), regardless of what `state_stream` value it reports.
+1. **`state_stream` (static single parent).** The stream's checkpoint parent is always the manifest's declared `state_stream`, for every run, with no run-time override. The connector MUST NOT emit `DETAIL_COVERAGE` naming this stream as `stream` at all; a runtime MUST reject any such message as a protocol violation (fail closed), regardless of what `state_stream` value it reports. A `state_stream`-declared stream MAY instead emit [`STREAM_EVIDENCE`](#stream_evidence) to report an independently measured coverage fact about itself; that message cannot gate any checkpoint commit and does not relax this prohibition.
 2. **`parent_streams` (declared parent set).** The stream's checkpoint parents are the manifest's declared set. A runtime MUST reject any `DETAIL_COVERAGE` message naming this stream as `stream` whose `state_stream` value is not a member of the declared set, as a protocol violation (fail closed). For a declared parent that HAS a live `DETAIL_COVERAGE` report this run, that report's own coverage/gap accounting gates its checkpoint (see [Eligible-checkpoint algorithm](#eligible-checkpoint-algorithm)). For a declared parent with NO live report this run, where the data stream is in-scope and has staged state, the runtime MUST treat that parent boundary as unproven and withhold it — the same fail-closed treatment as an incomplete coverage report — rather than silently dropping it from the dependency set or silently treating it as satisfied.
 3. **Self-mapping is the default.** If the stream declares neither `state_stream` nor `parent_streams`, its own name is its one checkpoint parent, and it is unaffected by any of the above.
 
@@ -551,6 +628,7 @@ A conformant connector:
 10. If it cannot honor a declared `resources`, `time_range`, or `fields` constraint, emits an explicit `SKIP_RESULT` or fails the run; it never silently broadens scope.
 11. If it runs a list+detail lane, emits `DETAIL_COVERAGE` per checkpoint-parent boundary per run, with every required key accounted in `hydrated_keys` or `gap_keys` backed by a matching `DETAIL_GAP` (see [DETAIL_COVERAGE](#detail_coverage)). The reference implementation's `optional_skip_keys` extension is not required for portable v0.1 conformance.
 12. Scopes every `DETAIL_GAP` to the checkpoint-parent boundary it accounts for via `parent_stream` whenever the affected detail stream has more than one declared parent.
+13. If it emits `STREAM_EVIDENCE` for a `state_stream`-declared stream, emits at most one per stream per run, measures `considered`/`covered` at that stream's own hydration site (never a parent-count alias, never an identity derived from its own successful-emission/gap counts), and withholds the message entirely for a run that established no genuine enumeration boundary for that stream (see [STREAM_EVIDENCE](#stream_evidence)).
 
 ### A conformant connector runtime:
 
@@ -570,6 +648,7 @@ A conformant connector:
 14. Validates every stream's checkpoint-dependency declaration (`state_stream`/`parent_streams`) before spawning the connector, and fails closed (does not start the run) on self-reference, an unknown parent, a duplicate parent, both fields present on one stream, an empty `parent_streams`, or a cycle of any length in the declared dependency graph (see [Checkpoint dependency: Validation](#validation)). Cycle detection (rule 6) is implemented and tested as a genuine check over the complete declared graph — not satisfied vacuously by the other checks — because two or more direct edges can form a cycle that a single-stream check cannot see (see the non-normative notes under [Validation](#validation)).
 15. Resolves a data stream's checkpoint parent(s) for a run from the manifest's static declaration only (`state_stream` or the full declared `parent_streams` set), and validates any live `DETAIL_COVERAGE` evidence against that declared shape: rejects a `state_stream`-declared stream's DETAIL_COVERAGE outright, rejects a `parent_streams`-declared stream's DETAIL_COVERAGE naming an undeclared parent, and withholds a declared parent that received no live report this run rather than dropping it or treating it as satisfied (see [Precedence between manifest and run-time evidence](#precedence-between-manifest-and-run-time-evidence)).
 16. Fails the run as a runtime error, without reporting `succeeded`, if persisting an eligible checkpoint's STATE fails partway through committing multiple staged checkpoints; makes the staged/committed counts, the failing checkpoint stream's identity, and each committed checkpoint stream's identity observable (not necessarily from one field — see [Eligible-checkpoint algorithm](#eligible-checkpoint-algorithm) step 5).
+17. Rejects (fail closed) a `STREAM_EVIDENCE` message that fails any of the five validation rules in [STREAM_EVIDENCE](#stream_evidence), and folds an accepted one into that stream's own terminal collection fact without letting it reach `missingDetailCoverageReports`, `recordDetailCoverageShortfalls`, or the [Eligible-checkpoint algorithm](#eligible-checkpoint-algorithm).
 
 ---
 
@@ -665,6 +744,13 @@ type ConnectorMessage =
       last_error?: Record<string, unknown>;
       gap_id?: string;
       lease_id?: string;
+    }
+  | {
+      type: 'STREAM_EVIDENCE';
+      reference_only: true;
+      stream: string;
+      considered: number;
+      covered: number;
     }
   | {
       type: 'PROGRESS';
