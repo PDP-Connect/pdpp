@@ -1039,3 +1039,101 @@ test("DISCRIMINATION: a real failure beside quiet rows still fires — it is not
   const withBroken = compose(all.map((s) => inventory(s.connection_id)), all);
   assert.equal(withBroken.banner_warranted, true, "adding ONE genuinely blocked source must flip the banner");
 });
+
+test("a paused connection is an intentional archive, not part of the active-health denominator", () => {
+  // BANNER-ZERO-PLAN: "archived and revoked setup history remains visible
+  // where useful but never enters the active-health denominator", and "the
+  // three archived rows remain visible and neutral". A paused connection is
+  // not scheduled, so it cannot collect, so its evidence can only go stale —
+  // grading it against the active fleet reports a degradation no owner action
+  // can clear.
+  const archived = summary("chatgpt-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: { attention: "none", coverage: "unknown", freshness: "stale", outbox: "idle", remote_surface: "none" },
+      state: "degraded",
+    },
+  });
+  const result = compose([inventory("chatgpt-a", { status: "paused" })], [archived]);
+
+  assert.deepEqual(
+    result.scope.intentional_exclusions.map((item) => item.connection_id),
+    ["chatgpt-a"],
+    "a paused archive stays VISIBLE, as an intentional exclusion"
+  );
+  assert.deepEqual(
+    result.scope.assessed.map((item) => item.connection_id),
+    [],
+    "and is NOT assessed — it must not enter the active denominator"
+  );
+  assert.equal(
+    result.banner_warranted,
+    false,
+    "a degraded PAUSED archive alone must not warrant the system banner; nothing an owner does could clear it"
+  );
+});
+
+test("an active connection is still assessed — the paused exclusion must not swallow the fleet", () => {
+  // Negative control for the test above: if `inventoryScope` were changed to
+  // exclude everything, the assertion above would still pass. This pins that
+  // only `paused` moved.
+  const result = compose([inventory("slack-a")], [summary("slack-a")]);
+  assert.deepEqual(
+    result.scope.assessed.map((item) => item.connection_id),
+    ["slack-a"],
+    "an ACTIVE connection must remain in the assessed denominator"
+  );
+  assert.deepEqual(result.scope.intentional_exclusions, []);
+});
+
+test("an audit fail caused ONLY by owner-action rows does not fire the system banner", () => {
+  // The audit is RIGHT to fail: an active connection whose owner owes an OTP
+  // genuinely is not collecting. Softening the audit would be weakening audit
+  // truth. What is wrong is routing that into the SYSTEM banner — the row
+  // already surfaces through attention.needs_owner, and no engineering work
+  // can clear it, so it makes the banner permanently unclearable.
+  const result = compose([inventory("usaa-a")], [summary("usaa-a")], {
+    streamHealth: {
+      classCounts: { owner_interaction: 3, provider_config_blocked: 2 } as never,
+      status: "fail",
+    },
+  });
+  assert.equal(result.dimensions.coverage_audit, "fail", "the audit verdict itself is preserved verbatim");
+  assert.equal(result.banner_warranted, false, "owner-owed rows alone must not fire the SYSTEM banner");
+});
+
+test("an audit fail with ANY system-caused class still fires the banner", () => {
+  // The discriminating case: a mixed result must NOT be excused. This is what
+  // separates "route owner rows correctly" from "ignore audit failures".
+  const mixed = compose([inventory("usaa-a")], [summary("usaa-a")], {
+    streamHealth: { classCounts: { failed: 1, owner_interaction: 3 } as never, status: "fail" },
+  });
+  assert.equal(mixed.banner_warranted, true, "one genuinely failed stream alongside owner rows still fires");
+
+  const systemOnly = compose([inventory("usaa-a")], [summary("usaa-a")], {
+    streamHealth: { classCounts: { stale: 1 } as never, status: "fail" },
+  });
+  assert.equal(systemOnly.banner_warranted, true, "a stale stream is a system signal");
+
+  const noBreakdown = compose([inventory("usaa-a")], [summary("usaa-a")], {
+    streamHealth: { status: "fail" },
+  });
+  assert.equal(noBreakdown.banner_warranted, true, "with no class breakdown, fail CLOSED and keep the banner");
+});
+
+test("benign classes in classCounts cannot be mistaken for system failures", () => {
+  // `classCounts` also carries `green`, `optional_unsupported`, `revoked`.
+  // A predicate testing "any non-owner class with a non-zero count" would see
+  // `green` on any healthy fleet and fire every time, making the fix a no-op.
+  const result = compose([inventory("usaa-a")], [summary("usaa-a")], {
+    streamHealth: {
+      classCounts: { green: 40, optional_unsupported: 5, owner_interaction: 1, revoked: 2 } as never,
+      status: "fail",
+    },
+  });
+  assert.equal(
+    result.banner_warranted,
+    false,
+    "green/optional_unsupported/revoked are not fail-producing classes and must not fire the banner"
+  );
+});

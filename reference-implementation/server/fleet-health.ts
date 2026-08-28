@@ -260,8 +260,21 @@ function inventoryScope(connection: FleetConfiguredConnection): InventoryScope {
   }
   switch (connection.status) {
     case "active":
-    case "paused":
       return "operational";
+    // A paused connection is an INTENTIONAL archive, not a broken one. It is
+    // not scheduled, so it cannot collect, so its evidence can only ever go
+    // stale — grading it against the active fleet reports a self-inflicted
+    // "degraded" that no owner action can clear, and keeps the banner red for
+    // a connection nobody asked to run.
+    //
+    // `excluded` is the right scope rather than a new one: it routes to
+    // `intentionalExclusions`, which stays VISIBLE in the response while
+    // leaving the active-health denominator. That is exactly the contract
+    // BANNER-ZERO-PLAN states — "archived and revoked setup history remains
+    // visible where useful but never enters the active-health denominator"
+    // and "the three archived rows remain visible and neutral".
+    case "paused":
+      return "excluded";
     case "draft":
     case "setup_in_progress":
       return "setup_pending";
@@ -499,9 +512,78 @@ function fleetState(input: {
   return "healthy";
 }
 
+/**
+ * Stream-health classes whose `fail` is caused by the OWNER still owing an
+ * action, not by the system being broken.
+ *
+ * Deliberately narrow. Everything absent from this set — `failed`, `stale`,
+ * `unobserved`, `projection_disagreement`, `manifest_unavailable` — stays a
+ * system signal and still fires the banner.
+ */
+const OWNER_CAUSED_STREAM_HEALTH_CLASSES = ["owner_interaction", "provider_config_blocked"] as const;
+
+/**
+ * The classes that can actually PRODUCE `status: "fail"` — mirrors
+ * `resultStatus`'s `hardClasses` in `scripts/stream-health-audit/authority.ts`.
+ *
+ * Keying on this rather than "every class in `classCounts`" is essential:
+ * `classCounts` also carries benign classes (`green`, `optional_unsupported`,
+ * `revoked`, ...). Testing those would find a non-owner class with a non-zero
+ * count on any fleet containing a single healthy stream, and the check would
+ * silently never fire.
+ */
+const FAIL_PRODUCING_STREAM_HEALTH_CLASSES = [
+  "owner_interaction",
+  "provider_config_blocked",
+  "unobserved",
+  "failed",
+  "stale",
+  "projection_disagreement",
+  "manifest_unavailable",
+] as const;
+
+/**
+ * Does a `fail` from the stream audit indicate a SYSTEM defect?
+ *
+ * The audit is right to return `fail` for an active connection whose owner
+ * owes an OTP or a captcha: that stream genuinely is not collecting, and
+ * softening the audit to say otherwise would be exactly the "weaken audit
+ * truth" move this must not make. The audit stays untouched.
+ *
+ * What is wrong is routing that verdict into the SYSTEM banner. A row waiting
+ * on the owner already surfaces through `attention.needs_owner`; counting it
+ * again as a system fault tells the owner the software is broken when the
+ * software is working and waiting for them. It also makes the banner
+ * unclearable by any amount of engineering, which is what keeps it red after
+ * every real defect is closed.
+ *
+ * So: a `fail` warrants the banner unless EVERY failing class is owner-caused.
+ * A mixed result — one owner row plus one genuinely broken stream — still
+ * fires, because the broken stream is still a system defect.
+ */
+function streamHealthFailIsSystemCaused(
+  streamHealth: Pick<StreamHealthAuthorityResult, "status"> &
+    Partial<Pick<StreamHealthAuthorityResult, "classCounts">>
+): boolean {
+  if (streamHealth.status !== "fail") {
+    return false;
+  }
+  const counts = streamHealth.classCounts;
+  if (!counts || typeof counts !== "object") {
+    // No breakdown to reason from: fail closed and keep the banner. An
+    // unexplained audit failure is a system signal until proven otherwise.
+    return true;
+  }
+  const ownerCaused = new Set<string>(OWNER_CAUSED_STREAM_HEALTH_CLASSES);
+  return FAIL_PRODUCING_STREAM_HEALTH_CLASSES.some(
+    (className) => !ownerCaused.has(className) && Number(counts[className] ?? 0) > 0
+  );
+}
+
 /** Compose a strict fleet verdict from already-read, typed evidence. */
 export function composeFleetHealthVerdict(input: {
-  readonly streamHealth: Pick<StreamHealthAuthorityResult, "status">;
+  readonly streamHealth: Pick<StreamHealthAuthorityResult, "status"> &
+    Partial<Pick<StreamHealthAuthorityResult, "classCounts">>;
   readonly inventory: readonly FleetConfiguredConnection[];
   readonly runtime: { readonly ok?: boolean } | null | undefined;
   readonly summaries: readonly FleetSummary[];
@@ -535,7 +617,7 @@ export function composeFleetHealthVerdict(input: {
   // "unknown"/"inconclusive"). See `banner_warranted`'s doc comment above.
   const bannerWarranted =
     runtime === "unhealthy" ||
-    input.streamHealth.status === "fail" ||
+    streamHealthFailIsSystemCaused(input.streamHealth) ||
     evidence.needsOwner.length > 0 ||
     evidence.materiallyBlocked.length > 0 ||
     evidence.terminal.length > 0 ||
