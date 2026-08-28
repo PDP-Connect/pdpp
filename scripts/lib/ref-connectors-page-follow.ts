@@ -33,15 +33,28 @@ export interface RefConnectorsPageFollowResult {
  * HTTP status) short-circuits after the first non-2xx page — the same
  * "best-effort, do not fail the whole run" posture every caller of this
  * helper already had for the single bare request it replaces.
+ *
+ * `sourcesVisibility` forwards `sources_visibility=1`, the same opt-in
+ * `sources-report.ts` sets and the console `/sources` page sends via
+ * `liveDashboardDataSource.listConnectorSummaries({ sourcesVisibility: true })`.
+ * It asks the reference to apply the Sources page's own visibility rule
+ * (including a revoked, never-succeeded setup shell that has no other
+ * visible row) BEFORE its own `limit`, not to filter the page afterward. A
+ * caller reconciling against the rendered `/sources` DOM must set this, or
+ * it fetches a different, narrower inventory than the page renders from and
+ * every such row reads as a spurious "extra" row instead of a real one this
+ * fetch never asked for.
  */
 export async function fetchAllConnectorSummaries({
   base,
   headers,
   fetchImpl,
+  sourcesVisibility = false,
 }: {
   base: string;
   headers: Record<string, string>;
   fetchImpl: FetchImpl;
+  sourcesVisibility?: boolean;
 }): Promise<RefConnectorsPageFollowResult> {
   const data: unknown[] = [];
   let cursor: string | null = null;
@@ -53,6 +66,9 @@ export async function fetchAllConnectorSummaries({
   const seenCursors = new Set<string>();
   for (;;) {
     const params = new URLSearchParams({ limit: String(REF_CONNECTORS_PAGE_LIMIT) });
+    if (sourcesVisibility) {
+      params.set("sources_visibility", "1");
+    }
     if (cursor) {
       params.set("cursor", cursor);
     }

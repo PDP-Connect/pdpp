@@ -1689,6 +1689,71 @@ test("live authority isolates a malformed manifest to its revoked connection", a
   assert.equal(result.status, "pass");
 });
 
+test("live authority requests the Sources-visible inventory so a never-succeeded revoked setup shell is not extra", async () => {
+  // Mirrors the real reference: `/_ref/connectors` without `sources_visibility=1`
+  // excludes a revoked, never-succeeded browser_enrollment_shell row entirely
+  // (`listOwnerVisibleConnectorInstancePage`); the `/sources` page (and this
+  // authority, which reconciles against it) must ask for the same
+  // `sources_visibility=1` superset the Sources-only escape
+  // (`listSourcesVisibleConnectorInstancePage`) serves, or a legitimately
+  // rendered row reads as a spurious "extra" connection.
+  const setupFailedShell = healthyConnection({
+    connection_id: "c-setup-failed",
+    connector_id: "venmo",
+    revoked_at: "2026-08-24T04:13:59.280Z",
+    source_visibility: "setup_failed",
+    status: "revoked",
+  });
+  const fetchImpl: FetchImpl = (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === "/_ref/connectors") {
+      const data =
+        parsed.searchParams.get("sources_visibility") === "1"
+          ? [healthyConnection(), setupFailedShell]
+          : [healthyConnection()];
+      return Promise.resolve(response({ data, has_more: false, object: "list" }));
+    }
+    if (parsed.pathname === "/connectors/mail") {
+      return Promise.resolve(response(manifest()));
+    }
+    if (parsed.pathname === "/sources") {
+      return Promise.resolve(
+        response(
+          `<header data-pdpp-reference-revision="${REVISION}"><a data-pdpp-selected-source="c1" data-pdpp-source-row="c1" data-pdpp-source-scope="active" href="/sources/c1">one</a><a data-pdpp-source-row="c-setup-failed" data-pdpp-source-scope="revoked" href="/sources/c-setup-failed">setup failed</a><a data-pdpp-stream-row="true" data-connection-id="c1" data-stream-name="messages" href="/explore?connection=c1&amp;stream=messages"></a></header>`
+        )
+      );
+    }
+    throw new Error(`unexpected test URL ${url}`);
+  };
+
+  const result = await runLiveForTest({
+    env: { PDPP_OWNER_SESSION_COOKIE: "owner-session" },
+    expectedRevision: REVISION,
+    expectedSha: "abcdef123456",
+    fetchImpl,
+    origin: "https://example.test",
+  });
+
+  assert.equal(result.connectionCount, 2);
+  assert.deepEqual(result.domAgreement.extraConnectionIds, []);
+  assert.deepEqual(result.domAgreement.missingConnectionIds, []);
+  assert.equal(result.domAgreement.status, "agree");
+  assert.equal(result.status, "pass");
+});
+
+test("fetchAllConnectorSummaries forwards sources_visibility=1 only when the caller opts in", async () => {
+  const seenParams: string[] = [];
+  const fetchImpl: FetchImpl = (url) => {
+    seenParams.push(new URL(url).searchParams.get("sources_visibility") ?? "<absent>");
+    return Promise.resolve(response({ data: [], has_more: false, object: "list" }));
+  };
+
+  await fetchAllConnectorSummaries({ base: "https://example.test", fetchImpl, headers: {} });
+  await fetchAllConnectorSummaries({ base: "https://example.test", fetchImpl, headers: {}, sourcesVisibility: true });
+
+  assert.deepEqual(seenParams, ["<absent>", "1"]);
+});
+
 test("live authority accepts a resolved authenticated empty owner surface with an exact revision receipt", async () => {
   const fetchImpl: FetchImpl = (url) => {
     const parsed = new URL(url);

@@ -596,6 +596,13 @@ export async function runLiveStreamHealthAuthority({
       base,
       fetchImpl: summaryFetch,
       headers: { accept: "application/json", ...auth.header },
+      // This authority reconciles against the resolved `/sources` DOM
+      // (`compareDom` below), which the console renders from the
+      // `sources_visibility=1` inventory, not the generic owner-visible one.
+      // Omitting this opt-in here made a real, rendered, never-succeeded
+      // setup-shell row (present in the DOM, absent from this fetch) read as
+      // a spurious "extra" connection instead of the legitimate row it is.
+      sourcesVisibility: true,
     });
     if (!paged.ok) {
       const authority = evaluateStreamHealthAuthority(
