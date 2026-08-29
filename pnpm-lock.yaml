@@ -1989,7 +1989,7 @@ packages:
     engines: {node: '>=22.14.0'}
 
   '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-0.0.1.tgz':
-    resolution: {integrity: sha512-6th8GYrXkZwp7mYzGimS6UWoT/GiT/z26Crjaf5AoBVMHjj5if3l4cQCdhdIUirSqg4k7eKfAmKkcxuOjbxgbg==, tarball: file:vendor/pdpp-connector-protocol-0.0.1.tgz}
+    resolution: {integrity: sha512-9g4WrPucfGqXpYS1mGQerBXpEJAX4/mrPUfts4ddrk13nWj2op2nSks4X/QqCad+CVLe0mFG8AuTf99FhLJEvg==, tarball: file:vendor/pdpp-connector-protocol-0.0.1.tgz}
     version: 0.0.1
     engines: {node: '>=22.14.0'}
 
