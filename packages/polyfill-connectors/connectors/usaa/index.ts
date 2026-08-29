@@ -1371,6 +1371,15 @@ async function emitDialogUnexpectedShapeDiagnostic(
   });
 }
 
+async function isVisibleActionableField(field: Locator): Promise<boolean> {
+  try {
+    await field.waitFor({ state: "visible", timeout: EXPORT_DIALOG_DELAY_MS });
+    return (await field.isEnabled()) && (await field.isEditable());
+  } catch {
+    return false;
+  }
+}
+
 /** Click Export, then confirm the date-range selector rendered.
  *
  * The readiness check is a bounded WAIT (`waitFor`), not a fixed sleep
@@ -1395,35 +1404,23 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
     return false;
   }
 
-  const selectLocator = page.locator('[role="dialog"] select[name="selectionType"], select[name="selectionType"]');
-  const rendered = await selectLocator
-    .first()
-    .waitFor({ state: "visible", timeout: EXPORT_DIALOG_DELAY_MS })
-    .then((): boolean => true)
-    .catch((): boolean => false);
-  const selectCount = rendered ? await selectLocator.count().catch((): number => 0) : 0;
-
-  // If the select wasn't found, check if any dialog is open. USAA may have
-  // changed the dialog structure. Accept the dialog if it contains any date
-  // input (fromDate, startDate, or endDate), which indicates export UI is
-  // present even if the select changed structure.
-  if (!selectCount) {
-    const dialogCount = await page
-      .locator('[role="dialog"]')
-      .count()
-      .catch((): number => 0);
-
-    const dateInputCount = await page
-      .locator('[role="dialog"] input[name="fromDate"], [role="dialog"] input[name="startDate"], [role="dialog"] input[name="endDate"]')
-      .count()
-      .catch((): number => 0);
-
-    if (dialogCount > 0 && dateInputCount > 0) {
-      // Dialog opened with date inputs. The dialog structure may have drifted,
-      // but it's clearly the export form. Proceed with fillExportDateRange.
-      return true;
+  const dialog = page.locator('[role="dialog"]').first();
+  const dialogCount = await dialog.count().catch((): number => 0);
+  if (dialogCount === 0) {
+    if (onDiagnostics) {
+      await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
     }
+    await captureExportCheckpoint(page, options, "dialog-not-open");
+    await page.keyboard.press("Escape").catch((): undefined => undefined);
+    return false;
+  }
 
+  const startInput = dialog.locator('input[name="fromDate"], input[name="startDate"]').first();
+  const endInput = dialog.locator('input[name="endDate"]').first();
+  const hasActionableDateRange =
+    dialogCount > 0 && (await isVisibleActionableField(startInput)) && (await isVisibleActionableField(endInput));
+
+  if (!hasActionableDateRange) {
     if (onDiagnostics) {
       await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
     }
@@ -1433,37 +1430,74 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
     await page.keyboard.press("Escape").catch((): undefined => undefined);
     return false;
   }
-  return true;
+
+  const selectLocator = dialog.locator('select[name="selectionType"]');
+  const rendered = await selectLocator
+    .first()
+    .waitFor({ state: "visible", timeout: EXPORT_DIALOG_DELAY_MS })
+    .then((): boolean => true)
+    .catch((): boolean => false);
+  const selectCount = rendered ? await selectLocator.count().catch((): number => 0) : 0;
+
+  // A missing selection control is tolerated only after the dialog has proved
+  // it contains the visible, editable date-range pair used by the fill path.
+  return selectCount > 0 || hasActionableDateRange;
 }
 
 /** Fill the date-range inputs via select → clear → type.
  *
- * Resilient to USAA dialog structure changes: tries multiple selector
- * patterns for both the selection-type control (select or otherwise) and
- * date fields, accepting gracefully when selectors don't exist.
+ * Resilient to USAA dialog structure changes: the selection control is
+ * optional, but both date fields must be in the active dialog and every fill
+ * operation must succeed before submission is allowed.
  */
-async function fillExportDateRange(page: Page, sinceDate: string, untilDate: string): Promise<void> {
+async function fillExportDateRange(page: Page, dialog: Locator, sinceDate: string, untilDate: string): Promise<void> {
   // Try to set the selection type to "date-range". Accept failure if this
   // control doesn't exist or is already on date-range.
-  await page.selectOption('select[name="selectionType"]', "date-range").catch((): string[] => []);
+  await dialog
+    .locator('select[name="selectionType"]')
+    .selectOption("date-range")
+    .catch((): string[] => []);
   await politeDelay(EXPORT_STATE_DELAY_MS);
 
-  const fromIn = page.locator('input[name="fromDate"], input[name="startDate"]').first();
-  const endIn = page.locator('input[name="endDate"]').first();
+  const fromIn = dialog.locator('input[name="fromDate"], input[name="startDate"]').first();
+  const endIn = dialog.locator('input[name="endDate"]').first();
 
-  // Fill start date. Accept failure if the input doesn't exist or isn't visible.
-  await fromIn.click().catch((): undefined => undefined);
-  await page.keyboard.press("Control+A").catch((): undefined => undefined);
-  await page.keyboard.press("Delete").catch((): undefined => undefined);
-  await fromIn.pressSequentially(mmddyyyy(sinceDate), { delay: KEY_TYPE_DELAY_MS }).catch((): undefined => undefined);
+  // Do not catch these operations: an incomplete range must fail before
+  // submitExportAndAwait rather than silently producing an unbounded export.
+  await fromIn.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await fromIn.pressSequentially(mmddyyyy(sinceDate), { delay: KEY_TYPE_DELAY_MS });
 
-  // Fill end date. Accept failure if the input doesn't exist or isn't visible.
-  await endIn.click().catch((): undefined => undefined);
-  await page.keyboard.press("Control+A").catch((): undefined => undefined);
-  await page.keyboard.press("Delete").catch((): undefined => undefined);
-  await endIn.pressSequentially(mmddyyyy(untilDate), { delay: KEY_TYPE_DELAY_MS }).catch((): undefined => undefined);
+  await endIn.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await endIn.pressSequentially(mmddyyyy(untilDate), { delay: KEY_TYPE_DELAY_MS });
   await politeDelay(EXPORT_STATE_DELAY_MS);
   await politeDelay(EXPORT_STATE_DELAY_MS);
+}
+
+async function tryFillExportDateRange(
+  page: Page,
+  dialog: Locator,
+  sinceDate: string,
+  untilDate: string,
+  onDiagnostics: DriveExportOptions["onDiagnostics"]
+): Promise<boolean> {
+  try {
+    await fillExportDateRange(page, dialog, sinceDate, untilDate);
+    return true;
+  } catch (err) {
+    if (onDiagnostics) {
+      const message = err instanceof Error ? err.message : String(err);
+      onDiagnostics({
+        diag: await capturePageDiagnostics(page),
+        error: message.slice(0, ID_TEXT_SNIP),
+        phase: "export_dialog_fill_failed",
+      });
+    }
+    return false;
+  }
 }
 
 async function captureExportCheckpoint(page: Page, options: DriveExportOptions, suffix: string): Promise<void> {
@@ -1690,7 +1724,10 @@ export async function driveExport(
     return { kind: "failed" };
   }
 
-  await fillExportDateRange(page, sinceDate, untilDate);
+  const dialog = page.locator('[role="dialog"]').first();
+  if (!(await tryFillExportDateRange(page, dialog, sinceDate, untilDate, onDiagnostics))) {
+    return { kind: "failed" };
+  }
   await captureExportCheckpoint(page, options, "before-submit");
 
   const tempDir = mkdtempSync(join(tmpdir(), "usaa-export-"));

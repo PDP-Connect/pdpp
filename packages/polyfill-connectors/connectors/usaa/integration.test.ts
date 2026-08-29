@@ -1062,8 +1062,54 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
  *  Exercises the fix for the false `export_dialog_unexpected_shape` this
  *  timing gap produced live (run_1787007889181): a slow-but-real render must
  *  not be reported as `export_affordance_missing`. */
-function makeSlowRenderingSelectPage(): Page {
-  return Object.assign({} as Page, {
+function makeSlowRenderingSelectPage(): { page: Page; selectCountCalls: () => number; selectWaitCount: () => number } {
+  let renderedAfterWait = false;
+  let selectCountCalls = 0;
+  let selectWaitCount = 0;
+  const selectLocator = {
+    count() {
+      selectCountCalls += 1;
+      return Promise.resolve(renderedAfterWait ? 1 : 0);
+    },
+    first() {
+      return this;
+    },
+    selectOption() {
+      return Promise.resolve(["date-range"]);
+    },
+    waitFor() {
+      selectWaitCount += 1;
+      renderedAfterWait = true;
+      return Promise.resolve();
+    },
+  };
+  const dateLocator = {
+    click() {
+      return Promise.resolve();
+    },
+    count() {
+      return Promise.resolve(1);
+    },
+    first() {
+      return this;
+    },
+    isEditable() {
+      return Promise.resolve(true);
+    },
+    isEnabled() {
+      return Promise.resolve(true);
+    },
+    isVisible() {
+      return Promise.resolve(true);
+    },
+    pressSequentially() {
+      return Promise.resolve();
+    },
+    waitFor() {
+      return Promise.resolve();
+    },
+  };
+  const page = Object.assign({} as Page, {
     evaluate() {
       return Promise.resolve({
         dialog_html_preview: null,
@@ -1107,19 +1153,23 @@ function makeSlowRenderingSelectPage(): Page {
         // without ever calling `waitFor`, so it always saw 0 here and
         // misclassified the dialog as unexpected-shape; the fix awaits
         // `waitFor` first and only then re-checks `count()`, observing 1.
-        let renderedAfterWait = false;
+        return selectLocator;
+      }
+      if (selector === '[role="dialog"]') {
         return {
           count() {
-            return Promise.resolve(renderedAfterWait ? 1 : 0);
+            return Promise.resolve(1);
           },
           first() {
             return this;
           },
-          waitFor() {
-            renderedAfterWait = true;
-            return Promise.resolve();
+          locator(childSelector: string) {
+            return childSelector.includes("selectionType") ? selectLocator : dateLocator;
           },
         };
+      }
+      if (selector.includes("fromDate") || selector.includes("endDate")) {
+        return dateLocator;
       }
       return {
         count() {
@@ -1143,11 +1193,13 @@ function makeSlowRenderingSelectPage(): Page {
       return "https://www.usaa.com/my/checking?accountId=private";
     },
   });
+  return { page, selectCountCalls: () => selectCountCalls, selectWaitCount: () => selectWaitCount };
 }
 
 test("driveExport treats a slow-but-real date-range select render as ready, not a structure change", async () => {
   const diagnostics: DiagnosticInfo[] = [];
-  await driveExport(makeSlowRenderingSelectPage(), "https://www.usaa.com/my/checking", {
+  const probe = makeSlowRenderingSelectPage();
+  await driveExport(probe.page, "https://www.usaa.com/my/checking", {
     onDiagnostics: (info) => diagnostics.push(info),
     captureLabel: "usaa-export",
     settleDelayMs: 0,
@@ -1161,6 +1213,8 @@ test("driveExport treats a slow-but-real date-range select render as ready, not 
     !fatalPhases.includes("export_dialog_unexpected_shape"),
     `a select that renders within the wait budget must not be reported as a structure change; saw phases: ${fatalPhases.join(", ")}`
   );
+  assert.equal(probe.selectWaitCount(), 1, "the select readiness wait must run");
+  assert.equal(probe.selectCountCalls(), 1, "the rendered select must be counted after waiting");
 });
 
 test("runSingleLadderAttempt retains a logon interstitial on the existing re-auth failure outcome", async () => {
