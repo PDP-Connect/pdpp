@@ -1,10 +1,10 @@
 # Governance, Membership and Conformance
 
-- **Status:** Pre-consultation draft. Not open for formal review.
-- **Circulated:** 24 August 2026
-- **Formal review:** Opens 3 September 2026 at GDC. Closes 1 October 2026.
-- **Programme live:** 1 October 2026
-- **Applies to:** PDP-Connect programme documents. Not part of the normative protocol.
+**Status:** Pre-consultation draft. Not open for formal review.<br>
+**Circulated:** 24 August 2026<br>
+**Formal review:** Opens 3 September 2026 at GDC. Closes 1 October 2026.<br>
+**Programme live:** 1 October 2026<br>
+**Applies to:** PDP-Connect programme documents. Not part of the normative protocol.
 
 Nothing in this draft is settled. It is circulated now so that it can be argued with before it is fixed, and it will change in response.
 
