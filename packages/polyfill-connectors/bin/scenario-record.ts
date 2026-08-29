@@ -1995,6 +1995,14 @@ function finalizeBrowserCaptures(
   outPath: string
 ): void {
   const scenarioDir = dirname(outPath);
+  // The scenario file itself is written later (writeScenarioAtomically, which
+  // does its own mkdir), so on a first-ever capture for this connector the
+  // destination directory does not exist yet and the moves below would fail
+  // with ENOENT. Observed live: a fresh worktree's first `--record-har` reddit
+  // capture crashed here after both runs had already succeeded, losing the
+  // whole capture. Earlier runs only survived because `runs/<connector>/` had
+  // been created by a previous non-HAR capture.
+  mkdirSync(scenarioDir, { recursive: true });
   const outBaseName = basename(outPath).replace(JSON_EXTENSION_RE, "");
   runs.forEach((run, index) => {
     const capture = browserCaptures[index];
