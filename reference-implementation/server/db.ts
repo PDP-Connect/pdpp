@@ -1882,10 +1882,17 @@ CREATE INDEX IF NOT EXISTS idx_connector_coverage_horizons_instance
 -- exception), and growth is bounded by legitimate accepted STREAM_EVIDENCE
 -- events, not request volume — the same bound the prior in-memory registry
 -- already accepted as safe.
+-- The claim row also carries the exact normalized terminal payload, its
+-- digest, and the deterministic terminal event ID. Those fields are nullable
+-- only for legacy rows: such rows remain spent and fail closed because they
+-- cannot safely be used to reconstruct evidence after a crash.
 CREATE TABLE IF NOT EXISTS stream_evidence_run_registry (
   run_id                TEXT NOT NULL,
   stream                TEXT NOT NULL,
   connector_instance_id TEXT NOT NULL,
+  payload_json          TEXT,
+  payload_digest        TEXT,
+  event_id              TEXT,
   created_at            TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (run_id, stream)
 );
@@ -6024,6 +6031,12 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   runWithSqliteBusyRetrySync(() => raw.exec(SCHEMA), {
     onRetry: opts.onSchemaRetry,
   });
+  // Older registries contain only the uniqueness key. Keep those claims
+  // spent, but leave them without a replay payload so the store fails closed
+  // instead of fabricating terminal evidence from an incomplete row.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "stream_evidence_run_registry", "payload_json", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "stream_evidence_run_registry", "payload_digest", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "stream_evidence_run_registry", "event_id", "TEXT"));
   // Idempotent column additions for tables that pre-existed before the
   // column was introduced. SQLite has no `ADD COLUMN IF NOT EXISTS`, so
   // we probe pragma table_info and only ALTER when the column is missing.

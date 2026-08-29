@@ -26,7 +26,11 @@ import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-de
 import type { ConnectorInstanceConfigStore } from "../server/stores/connector-instance-config-store.ts";
 import {
   getDefaultStreamEvidenceRunRegistryStore,
+  type StreamEvidenceClaim,
+  type StreamEvidenceClaimPayload,
   type StreamEvidenceRunRegistryStore,
+  streamEvidencePayloadDigest,
+  streamEvidenceTerminalEventId,
 } from "../server/stores/stream-evidence-run-registry-store.ts";
 import {
   classifyRecoveryError,
@@ -590,6 +594,11 @@ export interface RuntimeRunConnectorOptions {
    * the registry; never logged.
    */
   streamingRegistrationToken?: string | null;
+  /**
+   * Test-only crash seam. Invoked after the durable STREAM_EVIDENCE claim
+   * commits and immediately before its terminal spine event is written.
+   */
+  testOnlyStreamEvidenceAfterClaimFaultInjector?: (() => void) | null;
   /**
    * Test-only fault injector for the terminal-processing callback
    * (`childTerminalEvent.then(...)`, runtime/index.ts). Invoked once,
@@ -2712,6 +2721,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     ingestRetrySleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
     ingestRetryRandom = Math.random,
     testOnlyTerminalProcessingFaultInjector = null,
+    testOnlyStreamEvidenceAfterClaimFaultInjector = null,
   } = opts;
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
   const claimedConnectorInstanceId = resolveRuntimeConnectorInstanceId({
@@ -3833,37 +3843,56 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // `claimStreamEvidenceForRunId` is one atomic database claim, called only
   // after every other rejection check (validator, emitted/gapped
   // reconciliation) has already passed, so a rejected message never
-  // consumes the claim. If the claim is lost — a durable row for `(runId,
-  // stream)` already existed, whether from a prior invocation, a prior
-  // process lifetime, or a concurrent racer that landed first — this
-  // throws and the intra-run `streamEvidenceByStream` entry is never set,
-  // matching every other STREAM_EVIDENCE rejection path.
-  async function trackStreamEvidence(msg: ConnectorMessage): Promise<void> {
+  // consumes a new claim. A matching existing claim with no terminal event
+  // is a recovery of that already-validated fact after a crash, not a second
+  // acceptance; a matching claim whose event exists remains a duplicate.
+  async function trackStreamEvidence(
+    msg: ConnectorMessage,
+    payload: StreamEvidenceClaimPayload,
+    existingClaim?: StreamEvidenceClaim | null
+  ): Promise<StreamEvidenceClaim> {
     // `validateStreamEvidenceMessage` ran first: stream is a non-empty,
     // in-scope, state_stream-declared name; considered and every
     // outcomes.* field are validated non-negative integers summing to
     // considered; no prior entry exists for this stream in this run's map
     // instance.
     const stream = msg.stream as string;
-    const outcomes = msg.outcomes as StreamEvidenceOutcomes;
-    const claimed = await streamEvidenceRunRegistryStore.claimStreamEvidenceForRunId(
-      resolvedConnectorInstanceId,
-      runId,
-      stream
-    );
-    if (!claimed) {
+    const claimResult = existingClaim
+      ? { claim: existingClaim, claimed: false }
+      : await streamEvidenceRunRegistryStore.claimStreamEvidenceForRunId(
+          resolvedConnectorInstanceId,
+          runId,
+          stream,
+          payload
+        );
+    if (!claimResult.claimed && claimResult.claim.terminalEvidencePersisted) {
       throw new Error(
         `Connector emitted duplicate STREAM_EVIDENCE for stream=${stream} under run_id=${runId} ` +
           "(already accepted by a prior runConnector invocation sharing this run_id)"
       );
     }
+    let persistedPayload: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(claimResult.claim.normalizedPayloadJson) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("expected a JSON object");
+      }
+      persistedPayload = parsed as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(
+        `STREAM_EVIDENCE claim for (run_id=${runId}, stream=${stream}) has invalid normalized payload: ${String(error)}`,
+        { cause: error }
+      );
+    }
+    const persistedOutcomes = persistedPayload.outcomes as StreamEvidenceOutcomes;
     streamEvidenceByStream.set(stream, {
-      considered: msg.considered as number,
-      emitted: outcomes.emitted,
-      gapped: outcomes.gapped,
-      unaccounted: outcomes.unaccounted,
-      unchanged: outcomes.unchanged,
+      considered: persistedPayload.considered as number,
+      emitted: persistedOutcomes.emitted,
+      gapped: persistedOutcomes.gapped,
+      unaccounted: persistedOutcomes.unaccounted,
+      unchanged: persistedOutcomes.unchanged,
     });
+    return claimResult.claim;
   }
 
   // Resolve every STATE_STREAM checkpoint key owned by a data stream, for
@@ -4920,27 +4949,55 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       const outcomes = msg.outcomes as StreamEvidenceOutcomes;
       const evidenceEmitted = outcomes.emitted;
       const evidenceGapped = outcomes.gapped;
+      const normalizedEvidencePayload = {
+        considered: evidenceConsidered,
+        grant_id: grantId,
+        outcomes: {
+          emitted: evidenceEmitted,
+          gapped: evidenceGapped,
+          unaccounted: outcomes.unaccounted,
+          unchanged: outcomes.unchanged,
+        },
+        reference_only: true,
+        source: runSource,
+        stream: evidenceStream,
+        ...runConnectionIdentity,
+      } satisfies Record<string, unknown>;
+      const normalizedPayloadJson = JSON.stringify(normalizedEvidencePayload);
+      const payloadDigest = streamEvidencePayloadDigest(normalizedPayloadJson);
+      const claimPayload: StreamEvidenceClaimPayload = {
+        normalizedPayloadJson,
+        payloadDigest,
+        terminalEventId: streamEvidenceTerminalEventId(runId, evidenceStream, payloadDigest),
+      };
+      // A replay after the claim/event seam must be allowed to recover the
+      // already-validated payload. A pre-read is not the uniqueness authority:
+      // the INSERT below remains the atomic winner/loser decision for a fresh
+      // claim, including when another invocation wins this race.
+      const existingClaim = await streamEvidenceRunRegistryStore.getStreamEvidenceClaim(
+        runId,
+        evidenceStream,
+        claimPayload
+      );
 
-      assertStreamEvidenceEmittedMatchesAcceptedKeys(evidenceStream, evidenceEmitted, acceptedKeysDb);
-      assertStreamEvidenceGappedMatchesDurableGaps(evidenceStream, evidenceGapped, durableDetailGaps);
+      if (!existingClaim) {
+        assertStreamEvidenceEmittedMatchesAcceptedKeys(evidenceStream, evidenceEmitted, acceptedKeysDb);
+        assertStreamEvidenceGappedMatchesDurableGaps(evidenceStream, evidenceGapped, durableDetailGaps);
+      }
 
-      await trackStreamEvidence(msg);
+      const claim = await trackStreamEvidence(msg, claimPayload, existingClaim);
+      const persistedEvidencePayload = JSON.parse(claim.normalizedPayloadJson) as Record<string, unknown>;
+      const persistedOutcomes = persistedEvidencePayload.outcomes as StreamEvidenceOutcomes;
+      // Test-only crash injection. This is deliberately the exact boundary:
+      // the uniqueness row (including payload + digest) is durable, while the
+      // terminal evidence event has not yet been attempted. Restart/replay
+      // uses the stored payload and stable event id to close this seam.
+      testOnlyStreamEvidenceAfterClaimFaultInjector?.();
       await emitSpineEventTracked({
         actor_id: connectorId,
         actor_type: "runtime",
-        data: {
-          considered: evidenceConsidered,
-          grant_id: grantId,
-          outcomes: {
-            emitted: evidenceEmitted,
-            gapped: evidenceGapped,
-            unaccounted: outcomes.unaccounted,
-            unchanged: outcomes.unchanged,
-          },
-          reference_only: true,
-          source: runSource,
-          stream: evidenceStream,
-        },
+        data: persistedEvidencePayload,
+        event_id: claim.terminalEventId,
         event_type: "run.stream_evidence_declared",
         object_id: runId,
         object_type: "run",
@@ -4951,12 +5008,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         trace_id: traceContext.trace_id,
       });
       onProgress({
-        considered: evidenceConsidered,
+        considered: persistedEvidencePayload.considered,
         outcomes: {
-          emitted: evidenceEmitted,
-          gapped: evidenceGapped,
-          unaccounted: outcomes.unaccounted,
-          unchanged: outcomes.unchanged,
+          emitted: persistedOutcomes.emitted,
+          gapped: persistedOutcomes.gapped,
+          unaccounted: persistedOutcomes.unaccounted,
+          unchanged: persistedOutcomes.unchanged,
         },
         reference_only: true,
         stream: evidenceStream,

@@ -35,9 +35,28 @@ import {
   SQLITE_LAZY_STORAGE_TABLES,
 } from "../server/backup-table-policy.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
-import { createSqliteStreamEvidenceRunRegistryStore } from "../server/stores/stream-evidence-run-registry-store.ts";
+import {
+  createSqliteStreamEvidenceRunRegistryStore,
+  streamEvidencePayloadDigest,
+  streamEvidenceTerminalEventId,
+} from "../server/stores/stream-evidence-run-registry-store.ts";
 
 const REGISTRY_TABLE = "stream_evidence_run_registry";
+
+function payload(runId: string, stream: string) {
+  const normalizedPayloadJson = JSON.stringify({
+    considered: 0,
+    outcomes: { emitted: 0, gapped: 0, unaccounted: 0, unchanged: 0 },
+    reference_only: true,
+    stream,
+  });
+  const payloadDigest = streamEvidencePayloadDigest(normalizedPayloadJson);
+  return {
+    normalizedPayloadJson,
+    payloadDigest,
+    terminalEventId: streamEvidenceTerminalEventId(runId, stream, payloadDigest),
+  };
+}
 
 test("the accepted-claim registry is declared durable, not transient", () => {
   const entry = BACKUP_TABLE_INVENTORY[REGISTRY_TABLE];
@@ -79,8 +98,9 @@ test("an accepted (run_id, stream) claim survives a backup/restore boundary and 
     // Accept once against the source database.
     initDb(sourcePath);
     const store = createSqliteStreamEvidenceRunRegistryStore();
-    const firstAccept = await store.claimStreamEvidenceForRunId("cin_durable", "run_durable", "messages");
-    assert.equal(firstAccept, true, "the first claim must win");
+    const claimPayload = payload("run_durable", "messages");
+    const firstAccept = await store.claimStreamEvidenceForRunId("cin_durable", "run_durable", "messages", claimPayload);
+    assert.equal(firstAccept.claimed, true, "the first claim must win");
 
     // Take the backup the operator would take, then drop the live database
     // entirely — the restore must stand on the artifact alone.
@@ -91,16 +111,26 @@ test("an accepted (run_id, stream) claim survives a backup/restore boundary and 
     // Restore and replay the SAME run_id, as a retry spanning the boundary would.
     initDb(restoredPath);
     const restoredStore = createSqliteStreamEvidenceRunRegistryStore();
-    const replayAccept = await restoredStore.claimStreamEvidenceForRunId("cin_durable", "run_durable", "messages");
+    const replayAccept = await restoredStore.claimStreamEvidenceForRunId(
+      "cin_durable",
+      "run_durable",
+      "messages",
+      claimPayload
+    );
     assert.equal(
-      replayAccept,
+      replayAccept.claimed,
       false,
       "a run_id accepted before the backup must still be spent after restore; accepting again is duplicate authority"
     );
 
     // The boundary must not over-reject either: an unrelated pair still claims.
-    const freshAccept = await restoredStore.claimStreamEvidenceForRunId("cin_durable", "run_other", "messages");
-    assert.equal(freshAccept, true, "restore must not poison unrelated (run_id, stream) pairs");
+    const freshAccept = await restoredStore.claimStreamEvidenceForRunId(
+      "cin_durable",
+      "run_other",
+      "messages",
+      payload("run_other", "messages")
+    );
+    assert.equal(freshAccept.claimed, true, "restore must not poison unrelated (run_id, stream) pairs");
   } finally {
     closeDb();
     rmSync(dir, { force: true, recursive: true });
@@ -118,7 +148,11 @@ test("the registry's uniqueness scope survives restore as exactly (run_id, strea
   try {
     initDb(sourcePath);
     const store = createSqliteStreamEvidenceRunRegistryStore();
-    assert.equal(await store.claimStreamEvidenceForRunId("cin_a", "run_scope", "messages"), true);
+    assert.equal(
+      (await store.claimStreamEvidenceForRunId("cin_a", "run_scope", "messages", payload("run_scope", "messages")))
+        .claimed,
+      true
+    );
     getDb().prepare("VACUUM INTO ?").run(restoredPath);
     closeDb();
     rmSync(sourcePath, { force: true });
@@ -126,12 +160,26 @@ test("the registry's uniqueness scope survives restore as exactly (run_id, strea
     initDb(restoredPath);
     const restored = createSqliteStreamEvidenceRunRegistryStore();
     assert.equal(
-      await restored.claimStreamEvidenceForRunId("cin_DIFFERENT", "run_scope", "messages"),
+      (
+        await restored.claimStreamEvidenceForRunId(
+          "cin_DIFFERENT",
+          "run_scope",
+          "messages",
+          payload("run_scope", "messages")
+        )
+      ).claimed,
       false,
       "a different connector_instance_id must not re-claim a spent (run_id, stream) after restore"
     );
     assert.equal(
-      await restored.claimStreamEvidenceForRunId("cin_a", "run_scope", "attachments"),
+      (
+        await restored.claimStreamEvidenceForRunId(
+          "cin_a",
+          "run_scope",
+          "attachments",
+          payload("run_scope", "attachments")
+        )
+      ).claimed,
       true,
       "a different stream under the same run_id must remain claimable after restore"
     );

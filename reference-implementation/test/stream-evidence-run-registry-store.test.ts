@@ -6,8 +6,39 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, initDb } from "../server/db.ts";
-import { createSqliteStreamEvidenceRunRegistryStore } from "../server/stores/stream-evidence-run-registry-store.ts";
+import { closeDb, getDb, initDb } from "../server/db.ts";
+import {
+  createSqliteStreamEvidenceRunRegistryStore,
+  streamEvidencePayloadDigest,
+  streamEvidenceTerminalEventId,
+} from "../server/stores/stream-evidence-run-registry-store.ts";
+
+const DIGEST_MISMATCH_PATTERN = /digest mismatch/i;
+const LEGACY_CLAIM_PATTERN = /no recoverable normalized payload/i;
+
+function payload(
+  runId: string,
+  stream: string,
+  variant = "same"
+): {
+  normalizedPayloadJson: string;
+  payloadDigest: string;
+  terminalEventId: string;
+} {
+  const normalizedPayloadJson = JSON.stringify({
+    considered: 0,
+    outcomes: { emitted: 0, gapped: 0, unaccounted: 0, unchanged: 0 },
+    reference_only: true,
+    stream,
+    variant,
+  });
+  const payloadDigest = streamEvidencePayloadDigest(normalizedPayloadJson);
+  return {
+    normalizedPayloadJson,
+    payloadDigest,
+    terminalEventId: streamEvidenceTerminalEventId(runId, stream, payloadDigest),
+  };
+}
 
 function withTempDb(fn: () => Promise<void>): () => Promise<void> {
   return async () => {
@@ -31,10 +62,12 @@ test(
     // (run_id, stream), exactly one must observe `claimed: true`.
     const store = createSqliteStreamEvidenceRunRegistryStore();
     const results = await Promise.all(
-      Array.from({ length: 8 }, () => store.claimStreamEvidenceForRunId("cin_concurrency", "run_race", "messages"))
+      Array.from({ length: 8 }, () =>
+        store.claimStreamEvidenceForRunId("cin_concurrency", "run_race", "messages", payload("run_race", "messages"))
+      )
     );
-    const wins = results.filter((claimed) => claimed === true).length;
-    const losses = results.filter((claimed) => claimed === false).length;
+    const wins = results.filter((claimed) => claimed.claimed === true).length;
+    const losses = results.filter((claimed) => claimed.claimed === false).length;
     assert.equal(wins, 1, "exactly one of the concurrent claims for the same (run_id, stream) must win");
     assert.equal(losses, 7, "every other concurrent claim for the same (run_id, stream) must lose");
   })
@@ -44,10 +77,11 @@ test(
   "claimStreamEvidenceForRunId: a second SEQUENTIAL claim for the same (run_id, stream) loses",
   withTempDb(async () => {
     const store = createSqliteStreamEvidenceRunRegistryStore();
-    const first = await store.claimStreamEvidenceForRunId("cin_sequential", "run_a", "messages");
-    const second = await store.claimStreamEvidenceForRunId("cin_sequential", "run_a", "messages");
-    assert.equal(first, true, "the first claim for a fresh (run_id, stream) must win");
-    assert.equal(second, false, "a later claim for the SAME (run_id, stream) must lose, even sequentially");
+    const claimPayload = payload("run_a", "messages");
+    const first = await store.claimStreamEvidenceForRunId("cin_sequential", "run_a", "messages", claimPayload);
+    const second = await store.claimStreamEvidenceForRunId("cin_sequential", "run_a", "messages", claimPayload);
+    assert.equal(first.claimed, true, "the first claim for a fresh (run_id, stream) must win");
+    assert.equal(second.claimed, false, "a later claim for the SAME (run_id, stream) must lose, even sequentially");
   })
 );
 
@@ -55,10 +89,20 @@ test(
   "claimStreamEvidenceForRunId: a DIFFERENT stream under the same run_id is an independent claim",
   withTempDb(async () => {
     const store = createSqliteStreamEvidenceRunRegistryStore();
-    const messages = await store.claimStreamEvidenceForRunId("cin_control", "run_shared", "messages");
-    const bodies = await store.claimStreamEvidenceForRunId("cin_control", "run_shared", "bodies");
-    assert.equal(messages, true, "the first stream under this run_id must win its own claim");
-    assert.equal(bodies, true, "a different stream under the SAME run_id must win an independent claim");
+    const messages = await store.claimStreamEvidenceForRunId(
+      "cin_control",
+      "run_shared",
+      "messages",
+      payload("run_shared", "messages")
+    );
+    const bodies = await store.claimStreamEvidenceForRunId(
+      "cin_control",
+      "run_shared",
+      "bodies",
+      payload("run_shared", "bodies")
+    );
+    assert.equal(messages.claimed, true, "the first stream under this run_id must win its own claim");
+    assert.equal(bodies.claimed, true, "a different stream under the SAME run_id must win an independent claim");
   })
 );
 
@@ -66,10 +110,20 @@ test(
   "claimStreamEvidenceForRunId: the SAME stream under a DIFFERENT run_id is an independent claim",
   withTempDb(async () => {
     const store = createSqliteStreamEvidenceRunRegistryStore();
-    const runOne = await store.claimStreamEvidenceForRunId("cin_control", "run_one", "messages");
-    const runTwo = await store.claimStreamEvidenceForRunId("cin_control", "run_two", "messages");
-    assert.equal(runOne, true, "the first run_id claiming this stream must win");
-    assert.equal(runTwo, true, "a different run_id claiming the SAME stream must win an independent claim");
+    const runOne = await store.claimStreamEvidenceForRunId(
+      "cin_control",
+      "run_one",
+      "messages",
+      payload("run_one", "messages")
+    );
+    const runTwo = await store.claimStreamEvidenceForRunId(
+      "cin_control",
+      "run_two",
+      "messages",
+      payload("run_two", "messages")
+    );
+    assert.equal(runOne.claimed, true, "the first run_id claiming this stream must win");
+    assert.equal(runTwo.claimed, true, "a different run_id claiming the SAME stream must win an independent claim");
   })
 );
 
@@ -86,17 +140,23 @@ test(
     try {
       initDb(dbPath);
       const store = createSqliteStreamEvidenceRunRegistryStore();
-      const before = await store.claimStreamEvidenceForRunId("cin_restart", "run_restart", "messages");
-      assert.equal(before, true, "the pre-restart claim must win");
+      const claimPayload = payload("run_restart", "messages");
+      const before = await store.claimStreamEvidenceForRunId("cin_restart", "run_restart", "messages", claimPayload);
+      assert.equal(before.claimed, true, "the pre-restart claim must win");
       closeDb();
 
       // Reopen the SAME database file, standing in for a fresh process
       // lifetime after a restart.
       initDb(dbPath);
       const storeAfterRestart = createSqliteStreamEvidenceRunRegistryStore();
-      const after = await storeAfterRestart.claimStreamEvidenceForRunId("cin_restart", "run_restart", "messages");
+      const after = await storeAfterRestart.claimStreamEvidenceForRunId(
+        "cin_restart",
+        "run_restart",
+        "messages",
+        claimPayload
+      );
       assert.equal(
-        after,
+        after.claimed,
         false,
         "re-claiming the SAME (run_id, stream) after a simulated process restart must still lose " +
           "— the durable claim from before the restart must still be honored"
@@ -105,5 +165,37 @@ test(
       closeDb();
       rmSync(dir, { force: true, recursive: true });
     }
+  })
+);
+
+test(
+  "claimStreamEvidenceForRunId: a divergent replay payload is rejected by digest",
+  withTempDb(async () => {
+    const store = createSqliteStreamEvidenceRunRegistryStore();
+    const firstPayload = payload("run_digest", "messages", "first");
+    await store.claimStreamEvidenceForRunId("cin_digest", "run_digest", "messages", firstPayload);
+    await assert.rejects(
+      store.claimStreamEvidenceForRunId(
+        "cin_digest",
+        "run_digest",
+        "messages",
+        payload("run_digest", "messages", "different")
+      ),
+      DIGEST_MISMATCH_PATTERN
+    );
+  })
+);
+
+test(
+  "claimStreamEvidenceForRunId: a legacy key-only claim fails closed without inventing evidence",
+  withTempDb(async () => {
+    getDb()
+      .prepare("INSERT INTO stream_evidence_run_registry (connector_instance_id, run_id, stream) VALUES (?, ?, ?)")
+      .run("cin_legacy", "run_legacy", "messages");
+    const store = createSqliteStreamEvidenceRunRegistryStore();
+    await assert.rejects(
+      store.claimStreamEvidenceForRunId("cin_legacy", "run_legacy", "messages", payload("run_legacy", "messages")),
+      LEGACY_CLAIM_PATTERN
+    );
   })
 );

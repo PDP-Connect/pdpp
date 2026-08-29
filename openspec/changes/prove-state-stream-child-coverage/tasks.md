@@ -480,6 +480,17 @@ six-item smallest repair packet, landed as a separate signed-off commit
       concurrent-worktree-writer incident, not "repository-copy drift" as
       the report described it; five test files' stub ingest responses
       needed migration for the strict-parser envelope, not two).
+- [x] **P2-1 (claim-before-terminal-evidence crash seam).** Closed the
+      durable uniqueness seam by storing the normalized terminal payload,
+      its SHA-256 digest, and stable terminal event ID in the same atomic
+      SQLite/Postgres claim INSERT. Added a test-only fault injector exactly
+      after claim persistence and before terminal evidence persistence, a
+      restart/replay oracle that recovers the exact stored payload, exact
+      replay at-most-once coverage, and divergent-payload digest protection.
+      Legacy key-only rows remain spent and fail closed because they cannot
+      safely supply recoverable evidence. SQLite store tests pass; the
+      Postgres store oracle is present and runs when `PDPP_TEST_POSTGRES_URL`
+      is configured.
 - Explicitly unchanged from round 1: owner-token credential scoping
   remains out of scope (design review §10.3); no `vendor/`, package
   manifest, `pnpm-lock.yaml`, or `data-connect` files touched.

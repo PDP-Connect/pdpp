@@ -483,6 +483,15 @@ async function migratePostgresConnectorSummaryEvidenceRepairChunkPageSize(client
   `);
 }
 
+async function migratePostgresStreamEvidenceRunRegistry(client: PoolClient): Promise<void> {
+  // Legacy claims remain spent. Nullable columns are deliberate: an old row
+  // cannot be safely upgraded into terminal evidence, so the store rejects it
+  // rather than inventing a replay payload.
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS payload_json TEXT");
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS payload_digest TEXT");
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS event_id TEXT");
+}
+
 async function migratePostgresBrowserSurfaceLeaseLifecycleChecks(client: PoolClient): Promise<void> {
   const constraints = await client.query<ConstraintRow>(`
     SELECT conname, pg_get_constraintdef(oid) AS definition
@@ -2185,6 +2194,9 @@ export async function bootstrapPostgresSchema({
         run_id TEXT NOT NULL,
         stream TEXT NOT NULL,
         connector_instance_id TEXT NOT NULL,
+        payload_json TEXT,
+        payload_digest TEXT,
+        event_id TEXT,
         created_at TEXT NOT NULL DEFAULT (now()::text),
         PRIMARY KEY (run_id, stream)
       );
@@ -3222,6 +3234,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
     await migratePostgresConnectorSummaryEvidenceRepairChunkPageSize(client);
+    await migratePostgresStreamEvidenceRunRegistry(client);
     await migratePostgresSemanticEmbeddingToVector(client, log);
     await ensurePostgresLexicalScopedGinIndex(client, log);
     await ensurePostgresRecordsCanonicalCountIndex(client, log);

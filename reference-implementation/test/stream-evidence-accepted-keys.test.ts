@@ -1590,8 +1590,10 @@ main();
 
 // ── Independent re-review, item 2: one-fact-per-stream-per-run_id across separate runConnector invocations ──
 
-const DUPLICATE_SAME_RUN_ID_PATTERN = /duplicate STREAM_EVIDENCE for stream=message_bodies under run_id=/i;
-const DUPLICATE_SAME_RUN_ID_BODY_0_PATTERN = /duplicate STREAM_EVIDENCE for stream=body_0 under run_id=/i;
+const DUPLICATE_SAME_RUN_ID_PATTERN =
+  /duplicate STREAM_EVIDENCE for stream=message_bodies under run_id=|digest mismatch/i;
+const DUPLICATE_SAME_RUN_ID_BODY_0_PATTERN =
+  /duplicate STREAM_EVIDENCE for stream=body_0 under run_id=|digest mismatch/i;
 
 test("STREAM_EVIDENCE: a second accepted fact for the same stream under the SAME run_id, across two separate runConnector invocations, is rejected", async () => {
   // spec-collection-profile.md rule 5: "at most one accepted STREAM_EVIDENCE

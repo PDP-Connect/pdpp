@@ -47,6 +47,10 @@ export function classifyRuntimeFailure(err: unknown): FailureReason {
     message.startsWith("Connector emitted invalid STREAM_EVIDENCE for stream ") ||
     message.startsWith("Connector emitted STREAM_EVIDENCE for stream ") ||
     message.startsWith("Connector emitted duplicate STREAM_EVIDENCE for stream=") ||
+    message.startsWith("STREAM_EVIDENCE claim payload digest mismatch") ||
+    message.startsWith("STREAM_EVIDENCE claim digest mismatch") ||
+    message.startsWith("STREAM_EVIDENCE claim for ") ||
+    message.startsWith("STREAM_EVIDENCE terminal event id collision") ||
     message.startsWith("Connector emitted DETAIL_COVERAGE for stream ") ||
     message.startsWith("Connector emitted DETAIL_COVERAGE for undeclared stream:") ||
     message.startsWith("Connector emitted DETAIL_GAP_RECOVERED for undeclared stream:") ||

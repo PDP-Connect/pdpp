@@ -137,10 +137,13 @@ exception. The registry is therefore durable, not process-scoped: it
 survives a restart, and a single atomic claim operation
 (`claimStreamEvidenceForRunId`) — not a separate check-then-mark pair —
 closes the concurrent-invocation TOCTOU race a check-then-mark split would
-otherwise permit. It holds no record content — only a bare
-already-claimed row per `(run_id, stream)` pair — so it does not
-reintroduce the cross-run accepted-key state this design otherwise avoids
-for the (unrelated) accepted-keys store.
+otherwise permit. The claim INSERT atomically stores the normalized terminal
+payload, its digest, and the deterministic terminal event ID with the
+uniqueness key. If a process stops after that INSERT but before terminal
+evidence persistence, a later invocation MAY replay only the exact stored
+payload; a divergent payload is rejected by digest and an already-persisted
+terminal event remains a duplicate. Legacy rows without a recoverable payload
+are rejected closed rather than used to invent evidence.
 
 A runtime MUST NOT silently drop a rejected `STREAM_EVIDENCE` in a way that
 lets the stream fall through to checkpoint inheritance as if nothing had
@@ -204,6 +207,23 @@ SAME `run_id` and emits `STREAM_EVIDENCE` for the same stream
 violation, exactly as it would within a single invocation
 **AND** this SHALL hold regardless of whether the two invocations share a
 connector instance.
+
+#### Scenario: a claim interrupted before terminal evidence persistence is recoverable
+
+**WHEN** a process persists the durable `(run_id, stream)` claim and then
+stops before writing `run.stream_evidence_declared`
+**AND** a later invocation uses the SAME `run_id`, stream, and normalized
+payload
+**THEN** the runtime SHALL persist the terminal evidence with the claim's
+stored payload and deterministic event ID
+**AND** SHALL NOT derive a new completeness fact from the replay.
+
+#### Scenario: a crash-seam replay with a divergent payload is rejected
+
+**WHEN** a durable claim exists for `(run_id, stream)` and a later invocation
+supplies a different normalized payload
+**THEN** the runtime SHALL reject the replay as a protocol violation
+**AND** SHALL NOT append terminal evidence for the divergent payload.
 
 #### Scenario: a second STREAM_EVIDENCE for the same stream under a DIFFERENT run_id is accepted
 

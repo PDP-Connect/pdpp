@@ -18,10 +18,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
-import { createPostgresStreamEvidenceRunRegistryStore } from "../server/stores/stream-evidence-run-registry-store.ts";
+import {
+  createPostgresStreamEvidenceRunRegistryStore,
+  streamEvidencePayloadDigest,
+  streamEvidenceTerminalEventId,
+} from "../server/stores/stream-evidence-run-registry-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 
 const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
+const DIGEST_MISMATCH_PATTERN = /digest mismatch/i;
+
+function payload(runId: string, stream: string, variant = "same") {
+  const normalizedPayloadJson = JSON.stringify({
+    considered: 0,
+    outcomes: { emitted: 0, gapped: 0, unaccounted: 0, unchanged: 0 },
+    reference_only: true,
+    stream,
+    variant,
+  });
+  const payloadDigest = streamEvidencePayloadDigest(normalizedPayloadJson);
+  return {
+    normalizedPayloadJson,
+    payloadDigest,
+    terminalEventId: streamEvidenceTerminalEventId(runId, stream, payloadDigest),
+  };
+}
 
 async function cleanupRegistryRowsFor(connectorInstanceIdPrefix: string) {
   await postgresQuery("DELETE FROM stream_evidence_run_registry WHERE connector_instance_id LIKE $1", [
@@ -42,10 +63,17 @@ test("postgres claimStreamEvidenceForRunId: concurrent claims for the SAME (run_
 
   const store = createPostgresStreamEvidenceRunRegistryStore();
   const results = await Promise.all(
-    Array.from({ length: 8 }, () => store.claimStreamEvidenceForRunId("cin_pg_concurrency", "run_pg_race", "messages"))
+    Array.from({ length: 8 }, () =>
+      store.claimStreamEvidenceForRunId(
+        "cin_pg_concurrency",
+        "run_pg_race",
+        "messages",
+        payload("run_pg_race", "messages")
+      )
+    )
   );
-  const wins = results.filter((claimed) => claimed === true).length;
-  const losses = results.filter((claimed) => claimed === false).length;
+  const wins = results.filter((claimed) => claimed.claimed === true).length;
+  const losses = results.filter((claimed) => claimed.claimed === false).length;
   assert.equal(
     wins,
     1,
@@ -66,10 +94,11 @@ test("postgres claimStreamEvidenceForRunId: a second SEQUENTIAL claim for the sa
   await cleanupRegistryRowsFor("cin_pg_sequential");
 
   const store = createPostgresStreamEvidenceRunRegistryStore();
-  const first = await store.claimStreamEvidenceForRunId("cin_pg_sequential", "run_pg_a", "messages");
-  const second = await store.claimStreamEvidenceForRunId("cin_pg_sequential", "run_pg_a", "messages");
-  assert.equal(first, true, "the first claim for a fresh (run_id, stream) must win");
-  assert.equal(second, false, "a later claim for the SAME (run_id, stream) must lose, even sequentially");
+  const claimPayload = payload("run_pg_a", "messages");
+  const first = await store.claimStreamEvidenceForRunId("cin_pg_sequential", "run_pg_a", "messages", claimPayload);
+  const second = await store.claimStreamEvidenceForRunId("cin_pg_sequential", "run_pg_a", "messages", claimPayload);
+  assert.equal(first.claimed, true, "the first claim for a fresh (run_id, stream) must win");
+  assert.equal(second.claimed, false, "a later claim for the SAME (run_id, stream) must lose, even sequentially");
 });
 
 test("postgres claimStreamEvidenceForRunId: a DIFFERENT stream under the same run_id is an independent claim", {
@@ -84,10 +113,20 @@ test("postgres claimStreamEvidenceForRunId: a DIFFERENT stream under the same ru
   await cleanupRegistryRowsFor("cin_pg_control");
 
   const store = createPostgresStreamEvidenceRunRegistryStore();
-  const messages = await store.claimStreamEvidenceForRunId("cin_pg_control", "run_pg_shared", "messages");
-  const bodies = await store.claimStreamEvidenceForRunId("cin_pg_control", "run_pg_shared", "bodies");
-  assert.equal(messages, true, "the first stream under this run_id must win its own claim");
-  assert.equal(bodies, true, "a different stream under the SAME run_id must win an independent claim");
+  const messages = await store.claimStreamEvidenceForRunId(
+    "cin_pg_control",
+    "run_pg_shared",
+    "messages",
+    payload("run_pg_shared", "messages")
+  );
+  const bodies = await store.claimStreamEvidenceForRunId(
+    "cin_pg_control",
+    "run_pg_shared",
+    "bodies",
+    payload("run_pg_shared", "bodies")
+  );
+  assert.equal(messages.claimed, true, "the first stream under this run_id must win its own claim");
+  assert.equal(bodies.claimed, true, "a different stream under the SAME run_id must win an independent claim");
 });
 
 test("postgres claimStreamEvidenceForRunId: the SAME stream under a DIFFERENT run_id is an independent claim", {
@@ -102,8 +141,47 @@ test("postgres claimStreamEvidenceForRunId: the SAME stream under a DIFFERENT ru
   await cleanupRegistryRowsFor("cin_pg_control_runs");
 
   const store = createPostgresStreamEvidenceRunRegistryStore();
-  const runOne = await store.claimStreamEvidenceForRunId("cin_pg_control_runs", "run_pg_one", "messages");
-  const runTwo = await store.claimStreamEvidenceForRunId("cin_pg_control_runs", "run_pg_two", "messages");
-  assert.equal(runOne, true, "the first run_id claiming this stream must win");
-  assert.equal(runTwo, true, "a different run_id claiming the SAME stream must win an independent claim");
+  const runOne = await store.claimStreamEvidenceForRunId(
+    "cin_pg_control_runs",
+    "run_pg_one",
+    "messages",
+    payload("run_pg_one", "messages")
+  );
+  const runTwo = await store.claimStreamEvidenceForRunId(
+    "cin_pg_control_runs",
+    "run_pg_two",
+    "messages",
+    payload("run_pg_two", "messages")
+  );
+  assert.equal(runOne.claimed, true, "the first run_id claiming this stream must win");
+  assert.equal(runTwo.claimed, true, "a different run_id claiming the SAME stream must win an independent claim");
+});
+
+test("postgres claimStreamEvidenceForRunId: a divergent replay payload is rejected by digest", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async (t) => {
+  assert.ok(POSTGRES_URL);
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+  t.after(async () => {
+    await cleanupRegistryRowsFor("cin_pg_digest");
+    await closePostgresStorage();
+  });
+  await cleanupRegistryRowsFor("cin_pg_digest");
+
+  const store = createPostgresStreamEvidenceRunRegistryStore();
+  await store.claimStreamEvidenceForRunId(
+    "cin_pg_digest",
+    "run_pg_digest",
+    "messages",
+    payload("run_pg_digest", "messages", "first")
+  );
+  await assert.rejects(
+    store.claimStreamEvidenceForRunId(
+      "cin_pg_digest",
+      "run_pg_digest",
+      "messages",
+      payload("run_pg_digest", "messages", "different")
+    ),
+    DIGEST_MISMATCH_PATTERN
+  );
 });
