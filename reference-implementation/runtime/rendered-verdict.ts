@@ -2139,7 +2139,7 @@ function freshnessAnnotationText(
     return "This is a one-time import. It finished and will not refresh.";
   }
   if (snapshot.axes.freshness === "unknown") {
-    return "Freshness has not been measured yet.";
+    return unknownFreshnessText(progress);
   }
   const stuckSince = retryGapStuckSinceText(snapshot, actions);
   if (stuckSince) {
@@ -2151,6 +2151,26 @@ function freshnessAnnotationText(
     return "Refreshing now.";
   }
   return staleRefreshPolicyText(snapshot, refresh, scheduleEvidence, progress);
+}
+
+/**
+ * Copy for `axes.freshness === "unknown"`. The generic "not been measured
+ * yet" reading is honest for a connection that has genuinely never
+ * collected anything, but a local-device connection can lose its freshness
+ * anchor mid-stream — e.g. a stalled outbox blanks the heartbeat evidence
+ * (honesty invariant: a stall must never read as `fresh`) even though the
+ * device ingested real data before the stall began. When durable
+ * last-ingest evidence is available for that case, name the last known
+ * collection instead of implying zero collection history ever existed.
+ */
+function unknownFreshnessText(progress: ProgressEvidence | null): string {
+  if (progress?.mode === "local_device") {
+    const age = relativeDayAge(progress.last_refreshed_at ?? null, progress.observed_at ?? null);
+    if (age) {
+      return `Last known collection ${age}.`;
+    }
+  }
+  return "Freshness has not been measured yet.";
 }
 
 /** Named per retry_gap action, e.g. "Messages stuck since Jul 3." */
