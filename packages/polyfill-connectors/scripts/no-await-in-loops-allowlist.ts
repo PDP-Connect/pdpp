@@ -146,7 +146,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "bin/replay-pilot-fixtures.ts",
-    line: 132,
+    line: 134,
     column: 15,
     category: "dependent_pagination",
     note: "replayConnector(): next request depends on the prior page's cursor/offset/response",
@@ -1987,7 +1987,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "src/scheduler-runner.ts",
-    line: 253,
+    line: 255,
     column: 7,
     category: "devtool_sequential_output",
     note: "registerManifest(): manual dev-tool script printing ordered per-item console output",
