@@ -1,8 +1,8 @@
 # Vendored cross-repo dependency tarballs (transitional)
 
 `pdpp-connector-protocol-0.0.1.tgz` was RE-PACKED on 2026-08-28 from
-PDP-Connect/data-connect commit `cdcede2bf661abbd19d8b75db5d8d185da7481b5`
-("feat(protocol): declare STREAM_EVIDENCE, and reconcile boundary_claim drift") on
+PDP-Connect/data-connect commit `92cb6928c181a8020d0bd64b07c70e537234ba40`
+("feat(protocol): declare STREAM_EVIDENCE and boundary claims") on
 branch `fix/protocol-stream-evidence-boundary-claim-0828`, packed from inside
 that repo's workspace so sibling dependencies resolve during the prepack build.
 It adds two fields the reference implementation already CONSUMED but no
@@ -13,6 +13,12 @@ its own re-review recorded "no connector in this repo can emit STREAM_EVIDENCE
 and typecheck" as a hard blocker). Both are additive: `boundary_claim` is
 optional and STREAM_EVIDENCE is a new union member, so nothing that compiled
 before stops compiling.
+
+The final source commit also adds compile-time contract tests through the public
+package barrel. Those tests do not alter the packed protocol source: the final
+`connector-runtime-protocol.ts` SHA-256 remains
+`c27e038e18b2ecf1d08850b4079232819277f927a8eaa244c1a5766fad74430c`,
+the exact source payload used for this tarball.
 
 The prior artifact was built via `npm pack` from PDP-Connect/data-connect @
 3c8aeb0343dcbcbccb0bba3357f6b6bf543012b1 (branch `fix/skip-result-boundary-claim-0828`,
@@ -39,11 +45,10 @@ content will be reachable from main directly.
 
 `pdpp-collector-runtime-0.0.1.tgz` was resynced on 2026-08-27 via `npm pack` from commit
 `200b26098cb353d7d2fbdc52cc451712a92f6c85` ("fix(local-collector): rebuild rejected terminal
-commits") in a local checkout at `~/.tmp/data-connect-terminal-recovery-clean-0827`, one
-commit ahead of `data-connect`'s `origin/main` tip (`9766c77e2eab8909974ba7777fe4bafe0eac29e6`)
-on branch `fix/terminal-commit-recovery-0827-clean`, publicly reviewable at
+commits") on branch `fix/terminal-commit-recovery-0827-clean`, merged into
+data-connect `main` as `0bc3f8c5b4ffdc1cbbfb43f1a251915456859886` by
 PDP-Connect/data-connect PR #34 (https://github.com/PDP-Connect/data-connect/pull/34,
-exact head `200b26098`) but not yet merged. It carries the port of
+exact reviewed head `200b26098`). It carries the port of
 PDPP's `fef2464` (repair-terminal-commit-recovery) onto collector-runtime/local-collector:
 retaining rejected `terminal_run_commit` evidence until a newly completed pass produces an
 accepted replacement, recording an append-only supersession link (schema v4) instead of
