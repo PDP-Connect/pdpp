@@ -565,8 +565,16 @@ export function materializeCoreResolvedGrant({
  * readable while giving every caller downstream the single terminal shape.
  * `null` and absent already mean the same thing (no expiry), so this is a
  * representation change, not an authorization change.
+ *
+ * Exported because `grants.grant_json` is not the only durable home of a
+ * resolved grant: `agent_connect_attempts` keeps its own `grant_json` and a
+ * second copy nested in `response_json.grant`. Those blobs are legacy/partial
+ * and cannot be round-tripped through `parseCoreResolvedGrant` (they would
+ * fail full schema validation and break redemption), so the agent-connect
+ * read path applies THIS rule directly. One exported normalizer keeps a single
+ * authority for the representation instead of a second, drifting copy.
  */
-function normalizeAbsentOnlyExpiry(candidate: unknown): unknown {
+export function normalizeAbsentOnlyExpiry(candidate: unknown): unknown {
   if (isObject(candidate) && "expires_at" in candidate && candidate.expires_at === null) {
     const { expires_at: _legacyNull, ...rest } = candidate;
     return rest;
