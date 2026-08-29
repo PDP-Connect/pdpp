@@ -100,8 +100,16 @@ const NO_HOST_CDP_FIT_RE = /aspectRatio:|100cqw|100cqh/;
 const VIEWER_DIRECT_CDP_KEYBOARD_POST_RE = /postInput\(\{[\s\S]*type: "keyboard"/;
 const VIEWER_REACT_CDP_KEYBOARD_HANDLER_RE = /onKeyDown=\{\(e\) => handleKey\(e, "keydown"\)\}|function handleKey\(/;
 const STREAM_SURFACE_RESOLUTION_POLL_PROP_RE = /pollForResolution\?: boolean/;
+// The gate itself is what this pins: the playground must be able to switch the
+// real-run resolution poll off entirely. The scheduler behind the gate is now a
+// BOUNDED self-rescheduling loop (`nextRetryDecision` + `RESOLUTION_POLL_POLICY`,
+// see bounded-retry.ts) rather than the old unbounded
+// `setInterval(..., RESOLUTION_POLL_MS)` — that bare interval re-ran the whole
+// server page loader every 2.5s forever on a dead session and froze the owner's
+// machine. Pinning the bounded scheduler here keeps a regression to a raw
+// interval from passing this test.
 const STREAM_SURFACE_RESOLUTION_POLL_GATE_RE =
-  /if \(!pollForResolution\) \{\s*return;\s*\}[\s\S]*setInterval\(\(\) => router\.refresh\(\), RESOLUTION_POLL_MS\)/;
+  /if \(!pollForResolution\) \{\s*return;\s*\}[\s\S]*nextRetryDecision\(state, RESOLUTION_POLL_POLICY\)[\s\S]*router\.refresh\(\)/;
 const STREAM_PLAYGROUND_RESOLUTION_POLL_DISABLED_RE = /<StreamSurface[\s\S]*pollForResolution=\{false\}/;
 const SETTLING_DISPLAYABLE_BLOCK_RE = /if \(displayable && !mediaDisplayableRef\.current\) \{[\s\S]*?\n {8}\}/;
 const SET_MEDIA_READY_TRUE_RE = /setMediaReady\(true\)/;
