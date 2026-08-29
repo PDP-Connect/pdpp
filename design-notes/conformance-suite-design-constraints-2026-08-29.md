@@ -1,7 +1,6 @@
 # Conformance suite design constraints
 
 Status: captured
-Owner: Tim
 Created: 2026-08-29
 
 The governance draft commits PDP-Connect to publishing a conformance test suite within three months of the programme going live, and gates the Verified Operator status — the register's public finding that an operator's implementation passed the suite — on that publication. No document records the constraints that make such a suite trustworthy: what a conformance claim covers, how self-run results stay honest, where test data comes from, and what assessing a source actually checks. This note records those constraints, with the precedent behind each, so the suite is designed once rather than corrected after it ships. One proposal here has no precedent anywhere and is labeled as such.
