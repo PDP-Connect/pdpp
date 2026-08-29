@@ -3210,13 +3210,21 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (inserted === false) {
       // The durable upsert is `ON CONFLICT DO NOTHING`, so `false` only says
       // a row already occupies this connector instance -- it does not say
-      // whether that row is a competing run or this exact run re-registering
-      // (a browser-surface lease promotion re-entering `runNow` for the same
-      // pending run_id it already reserved when it first queued). Read the
-      // incumbent back to tell the two apart: same run_id is this run's own
-      // reservation surviving from its earlier admission, not a conflict.
+      // whether that row is a competing run, this exact run's own reservation
+      // still legitimately owned by a LIVE in-memory invocation (a second,
+      // concurrent launch must never be admitted -- see
+      // `hasLiveInMemoryOwner`), or a leaked row from a PRIOR process whose
+      // in-memory state is gone (the durable row outlived the invocation that
+      // wrote it, e.g. a promotion re-entering `runNow` after a restart, or a
+      // stale watchdog-orphaned entry already reclaimed above). Only the last
+      // case is safe to treat as an idempotent continuation.
       const incumbent = await getPersistedActiveRun(input.connectorInstanceId);
-      if (incumbent?.run_id !== input.runId) {
+      const isSameRun = incumbent?.run_id === input.runId;
+      // Re-check the in-memory owner AFTER the `await` above, immediately
+      // before the synchronous claim below (no further `await` in between) --
+      // closes the window a concurrent call could use to slip in a live
+      // owner between the durable read and this function's own claim.
+      if (!isSameRun || hasLiveInMemoryOwner(input.runId)) {
         throw new ControllerError(`Connector already has an active run: ${input.runId}`, "run_already_active", {
           runId: input.runId,
         });
@@ -3330,6 +3338,31 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   /**
+   * True when `runId` has a LIVE in-memory invocation currently owning it --
+   * i.e. `assertNoConflictingActiveRun` would (or just did) refuse a second
+   * launch for it. Live means: some `activeRuns` entry currently names this
+   * run_id, it has not been marked settled (`settledRunIds`), and its
+   * `activeRunPromises` entry is still present. This is the ONLY predicate
+   * that may ever justify treating a same-run_id durable row as an idempotent
+   * continuation rather than a conflict -- a durable row surviving with no
+   * live in-memory owner is a leaked reservation from a prior process (a
+   * promotion re-entering `runNow` after the owning invocation already
+   * finalized, or after a restart); a durable row WITH a live owner is this
+   * run currently executing, and admitting a second call for it would launch
+   * the connector twice, silently bump `run_generation` out from under the
+   * live invocation, and clobber `activeRunPromises`/cancellation/watchdog
+   * bookkeeping the live invocation still depends on.
+   */
+  function hasLiveInMemoryOwner(runId: string): boolean {
+    for (const existing of activeRuns.values()) {
+      if (existing.run_id === runId) {
+        return !settledRunIds.has(runId) && activeRunPromises.has(runId);
+      }
+    }
+    return false;
+  }
+
+  /**
    * Guards the 409 run_already_active check against stale in-memory entries.
    *
    * A stale entry arises when the watchdog force-finalizes a hung run but the
@@ -3338,25 +3371,22 @@ export function createController(opts: ControllerOptions = {}): Controller {
    * run_id appears in `settledRunIds` (marked by finalizeRunCleanup) or when
    * there is no corresponding `activeRunPromises` entry (promise already gone).
    *
-   * `candidateRunId` is the run_id this admission attempt is FOR (e.g. a
-   * browser-surface lease promotion re-entering `runNow` for the same pending
-   * run it already reserved). When the existing entry's run_id matches it
-   * exactly, this is the pending run being promoted against its own
-   * reservation, not a competing run — admit rather than reject. An absent
-   * `candidateRunId` never matches, so a fresh manual/scheduled run (which has
-   * no run_id yet at gate time) is still rejected by a genuine incumbent.
+   * A LIVE in-memory entry is never exempted, including for its own run_id: a
+   * browser-surface lease promotion re-entering `runNow` for a run_id that is
+   * still actively executing in-memory must be rejected, not admitted --
+   * admitting it would launch the connector a second time concurrently with
+   * the first (see `hasLiveInMemoryOwner`). Only the DURABLE guard
+   * (`assertNoConflictingDurableActiveRun`) and `registerActiveRunBookkeeping`
+   * may treat a same-run_id row as non-conflicting, and only when
+   * `hasLiveInMemoryOwner` is false.
    *
-   * - If self (candidateRunId === existing.run_id): returns (no conflict).
    * - If stale: clears the orphaned map entries and returns (allows new run).
-   * - If live and different run: throws 409 run_already_active.
+   * - If live (any run_id, including the candidate's own): throws 409 run_already_active.
    * - If absent: returns (no conflict).
    */
-  function assertNoConflictingActiveRun(key: string, candidateRunId?: string): void {
+  function assertNoConflictingActiveRun(key: string): void {
     const existing = activeRuns.get(key);
     if (!existing) {
-      return;
-    }
-    if (candidateRunId !== undefined && candidateRunId === existing.run_id) {
       return;
     }
     const isStale = settledRunIds.has(existing.run_id) || !activeRunPromises.has(existing.run_id);
@@ -3374,6 +3404,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
+  /**
+   * Durable-side twin of `assertNoConflictingActiveRun`. A same-run_id
+   * persisted row is exempted ONLY when `hasLiveInMemoryOwner` is false --
+   * i.e. the row is a leaked reservation from a prior process (this
+   * controller instance has no live in-memory invocation for it), not the
+   * still-executing run this exact process is currently running. A live
+   * owner is always a conflict here too, even for its own run_id: the
+   * in-memory guard above is the primary gate for that case, but a caller
+   * could reach here directly (e.g. a future call site), so this function
+   * must not independently reintroduce the double-launch hole on its own.
+   */
   async function assertNoConflictingDurableActiveRun(
     connectorInstanceId: string,
     candidateRunId?: string
@@ -3382,7 +3423,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!existing) {
       return;
     }
-    if (candidateRunId !== undefined && candidateRunId === existing.run_id) {
+    const isSameRun = candidateRunId !== undefined && candidateRunId === existing.run_id;
+    if (isSameRun && !hasLiveInMemoryOwner(existing.run_id)) {
       return;
     }
     throw new ControllerError(`Connector already has an active run: ${existing.run_id}`, "run_already_active", {
@@ -3679,7 +3721,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       throw new ControllerError(`Unknown connector: ${connectorId}`, "not_found");
     }
     if (!options.sourceWebhookEvent) {
-      assertNoConflictingActiveRun(key, options.runId);
+      assertNoConflictingActiveRun(key);
       await assertNoConflictingDurableActiveRun(key, options.runId);
     }
 

@@ -741,6 +741,41 @@ test("durable active-run row for the SAME run_id is admitted (promotion self-res
   assert.equal(runConnectorCalled, true, "self-promotion must be admitted through to the connector");
 });
 
+test("durable active-run row for the SAME run_id is still rejected when a LIVE in-memory owner exists", async (t) => {
+  // Negative companion to the sibling test above: a durable row matching the
+  // candidate run_id is safe to treat as an idempotent continuation ONLY
+  // when `hasLiveInMemoryOwner` is false. Here the SAME run_id is already a
+  // live in-memory invocation on this controller (an ordinary first admission
+  // that has not finalized), so a second call for it must still be rejected
+  // end-to-end -- proving the durable exemption never overrides a live owner
+  // even when reached in the same request.
+  let releaseFirst: () => void = () => undefined;
+  const runConnectorImpl = () =>
+    new Promise<RuntimeRunConnectorResult>((resolve) => {
+      releaseFirst = () => resolve({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" });
+    });
+  const { controller } = setup(t, { runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_live_and_durable",
+  });
+
+  await assert.rejects(
+    () =>
+      controller.runNow("managed", {
+        manifest: MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_live_and_durable",
+      }),
+    TOP_REGEX_0
+  );
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+});
+
 test("canonical-url configured managed connector leases short-id run", async (t) => {
   const manager = createManager({
     managedConnectors: new Set(["https://registry.pdpp.dev/connectors/chatgpt", "chatgpt"]),
@@ -1697,21 +1732,37 @@ test("duplicate queued managed connector request reports existing pending run", 
 // ─── Same-run-id lease-promotion re-entry (browser-surface promotion collision) ───
 //
 // A browser-surface lease promotion (capacity-pressure reclaim, periodic
-// sweep, post-boot reconciliation) re-invokes `runNow` for a run_id that
-// already occupies this connector instance's active-run reservation -- the
-// pending run being promoted against its own admission, not a competing run.
-// The 409 `run_already_active` gate must exempt exactly that case while still
-// rejecting a genuinely different run_id, and a terminal browser-surface
-// failure must still clear the reservation so a real retry (a fresh run_id,
-// or the same run_id after finalize) is never permanently wedged.
+// sweep, post-boot reconciliation) can re-invoke `runNow` for a run_id that
+// already occupies this connector instance's active-run reservation.
+//
+// R1 (reverted by this R2 follow-up): admitted ANY same-run_id re-entry,
+// including one whose first admission was still LIVE in-memory. Independent
+// review found this launched the connector a second time concurrently with
+// the first, silently bumped `run_generation` out from under the live
+// invocation, and clobbered `activeRunPromises`/cancellation/watchdog
+// bookkeeping the live invocation still depended on -- drain could report
+// success while the first invocation was still running underneath it.
+//
+// R2 invariant: a LIVE in-memory same-run_id re-entry is NEVER exempted --
+// `runNow` has no "attach to the in-flight invocation" return contract, so
+// non-reentrant rejection is the only safe behavior (the promotion path
+// already treats a rejection as "defer and retry later", which is exactly
+// correct once the live invocation itself finalizes). ONLY a durable
+// `controller_active_runs` row proven to have no corresponding live
+// in-memory invocation (a leaked reservation from a prior process, or a
+// controller restart) may be treated as an idempotent continuation for the
+// promotion path -- see `hasLiveInMemoryOwner` in controller.ts. A genuinely
+// different run_id is still rejected, and a terminal browser-surface failure
+// still clears the reservation so a later run_id is admitted fresh.
 
-test("promotion re-entry for the same run_id does not conflict with its own reservation", async (t) => {
+test("promotion re-entry for a LIVE same run_id is rejected, not admitted a second time", async (t) => {
+  // R1 regression guard: this is the exact scenario R1 wrongly admitted.
   let releaseFirst: () => void = () => undefined;
   const runConnectorImpl = () =>
     new Promise<RuntimeRunConnectorResult>((resolve) => {
       releaseFirst = () => resolve({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" });
     });
-  const { controller } = setup(t, { runConnectorImpl });
+  const { calls, controller } = setup(t, { runConnectorImpl });
 
   await controller.runNow("managed", {
     manifest: MANIFEST,
@@ -1720,21 +1771,113 @@ test("promotion re-entry for the same run_id does not conflict with its own rese
   });
 
   // Simulates a browser-surface promotion re-entering runNow for the same
-  // pending run_id while its first admission is still live (e.g. a periodic
+  // pending run_id while its first admission is STILL LIVE (e.g. a periodic
   // sweep's promoteBrowserSurfaceLease racing the original call's own
-  // starting_surface wait). Must be admitted, not rejected as a conflict.
-  await assert.doesNotReject(() =>
-    controller.runNow("managed", {
-      manifest: MANIFEST,
-      ownerToken: "owner-token",
-      runId: "run_promoted",
-    })
+  // starting_surface wait). Must be rejected -- the live invocation is the
+  // only legitimate owner of this run_id, and a second concurrent launch of
+  // the connector for the same run_id must never happen.
+  await assert.rejects(
+    () =>
+      controller.runNow("managed", {
+        manifest: MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_promoted",
+      }),
+    TOP_REGEX_0
   );
 
+  assert.equal(calls.runConnector, 1, "the connector must be launched exactly once, not twice");
   assert.equal(controller.getActiveRun("managed")?.run_id, "run_promoted");
+  assert.equal(
+    controller.getActiveRun("managed")?.run_generation,
+    1,
+    "generation must not bump for the rejected re-entry"
+  );
 
   releaseFirst();
   await controller.drainActiveRuns(1000);
+});
+
+test("concurrent promotion re-entry: exactly one invocation, unchanged generation, one tracked promise, cancellation reaches it, drain waits", async (t) => {
+  // The discriminating proof the P1 review asked for: a live same-run_id
+  // re-entry must not just "get rejected" as a side observation -- the
+  // FIRST invocation's entire bookkeeping (generation, tracked promise,
+  // cancellation controller, drain semantics) must survive completely
+  // unperturbed by the second, rejected call.
+  let releaseFirst: () => void = () => undefined;
+  let capturedCancelSignal: AbortSignal | null = null;
+  let runConnectorInvocations = 0;
+  const runConnectorImpl = (opts: RuntimeRunConnectorOptions) => {
+    runConnectorInvocations += 1;
+    capturedCancelSignal = opts.cancelSignal ?? null;
+    return new Promise<RuntimeRunConnectorResult>((resolve) => {
+      releaseFirst = () => resolve({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" });
+    });
+  };
+  const { controller } = setup(t, { runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_live_reentry",
+  });
+
+  const firstGeneration = controller.getActiveRun("managed")?.run_generation;
+  assert.equal(firstGeneration, 1);
+  assert.ok(capturedCancelSignal, "the live invocation's cancelSignal must have reached runConnector");
+  const firstSignal: AbortSignal = capturedCancelSignal as AbortSignal;
+
+  // A second, concurrent promotion attempt for the identical run_id --
+  // must be rejected without touching the first invocation's state at all.
+  await assert.rejects(
+    () =>
+      controller.runNow("managed", {
+        manifest: MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_live_reentry",
+      }),
+    TOP_REGEX_0
+  );
+
+  // Exactly one connector invocation ever happened.
+  assert.equal(runConnectorInvocations, 1, "a rejected re-entry must not launch a second connector invocation");
+  // Generation ownership is unchanged -- the rejected call never bumped it.
+  assert.equal(
+    controller.getActiveRun("managed")?.run_generation,
+    firstGeneration,
+    "run_generation must remain owned by the first invocation"
+  );
+  // Cancellation reaches the surviving (first, only) invocation.
+  const cancelResult = await controller.cancelRun("run_live_reentry", "owner_local");
+  assert.equal(cancelResult.status, "cancel_requested");
+  assert.equal(firstSignal.aborted, true, "cancellation must abort the first invocation's own signal");
+
+  // Start draining BEFORE releasing the first invocation's connector
+  // promise. `drainActiveRuns` must be genuinely waiting on that one real
+  // tracked promise -- not a promise a rejected re-entry silently replaced
+  // or double-satisfied. Race the drain promise against a deterministic
+  // "settled by now" sentinel (a promise pre-resolved via `setImmediate`,
+  // i.e. already queued for the current macrotask turn) to prove drain has
+  // NOT settled yet, without depending on wall-clock timing.
+  const SETTLED = Symbol("settled-by-next-turn");
+  const settledByNextTurn = new Promise<typeof SETTLED>((resolve) => {
+    setImmediate(() => resolve(SETTLED));
+  });
+  const drainPromise = controller.drainActiveRuns(2000);
+  const raceWinner = await Promise.race([drainPromise, settledByNextTurn]);
+  assert.equal(
+    raceWinner,
+    SETTLED,
+    "drainActiveRuns must still be pending after a full turn while the live invocation is unreleased " +
+      "-- if it already resolved here, some path satisfied drain without the real connector promise settling"
+  );
+
+  releaseFirst();
+
+  // NOW the same drain promise -- not a fresh call -- must resolve, proving
+  // it was genuinely waiting on this run's actual completion.
+  await drainPromise;
+  assert.equal(controller.getActiveRun("managed"), null, "drain must observe the run has actually finalized");
 });
 
 test("a genuinely different run_id is still rejected while promotion is pending", async (t) => {
