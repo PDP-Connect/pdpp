@@ -987,11 +987,19 @@ const activeRuns = new Map<string, ActiveRun>();
 // failure) when the connector child process has exited and the controller's
 // per-run cleanup (`activeRuns.delete`, spine emit, etc.) has finished.
 //
-// Populated alongside `activeRuns.set` and cleared in the same `finally`
-// chain. Used exclusively by `drainActiveRuns` (graceful-shutdown path)
-// to await in-flight cleanup before the parent process exits. See
-// docs/run-reconciliation-design-brief.md for the broader controller-
-// shutdown discipline this complements.
+// NOT populated alongside `activeRuns.set` -- it is set much later, after
+// browser-surface acquisition and connector-launch prep (see the `runNow`
+// body), while `activeRuns.set` happens synchronously at admission time
+// inside `registerActiveRunBookkeeping`. Do not use `activeRunPromises`
+// presence as a proxy for "this run is live" (`hasLiveInMemoryOwner` does
+// not); the gap between the two is a real async window, not a same-tick
+// formality, and treating them as populated together previously produced a
+// false negative across that whole window. Cleared in the same `finally`
+// chain as `activeRuns.delete`. Used by `drainActiveRuns` (graceful-shutdown
+// path) to await in-flight cleanup before the parent process exits, and by
+// `assertNoConflictingActiveRun`'s stale-reclaim heuristic for a DIFFERENT
+// run_id already occupying the key. See docs/run-reconciliation-design-brief.md
+// for the broader controller-shutdown discipline this complements.
 const activeRunPromises = new Map<string, Promise<unknown>>();
 // Run IDs whose runPromise has settled but whose finalizeRunCleanup may not
 // have completed yet (race window) or — defensively — whose cleanup was
@@ -3341,22 +3349,39 @@ export function createController(opts: ControllerOptions = {}): Controller {
    * True when `runId` has a LIVE in-memory invocation currently owning it --
    * i.e. `assertNoConflictingActiveRun` would (or just did) refuse a second
    * launch for it. Live means: some `activeRuns` entry currently names this
-   * run_id, it has not been marked settled (`settledRunIds`), and its
-   * `activeRunPromises` entry is still present. This is the ONLY predicate
-   * that may ever justify treating a same-run_id durable row as an idempotent
-   * continuation rather than a conflict -- a durable row surviving with no
-   * live in-memory owner is a leaked reservation from a prior process (a
-   * promotion re-entering `runNow` after the owning invocation already
-   * finalized, or after a restart); a durable row WITH a live owner is this
-   * run currently executing, and admitting a second call for it would launch
-   * the connector twice, silently bump `run_generation` out from under the
-   * live invocation, and clobber `activeRunPromises`/cancellation/watchdog
-   * bookkeeping the live invocation still depends on.
+   * run_id and it has not been marked settled (`settledRunIds`). This is the
+   * ONLY predicate that may ever justify treating a same-run_id durable row
+   * as an idempotent continuation rather than a conflict -- a durable row
+   * surviving with no live in-memory owner is a leaked reservation from a
+   * prior process (a promotion re-entering `runNow` after the owning
+   * invocation already finalized, or after a restart); a durable row WITH a
+   * live owner is this run currently executing, and admitting a second call
+   * for it would launch the connector twice, silently bump `run_generation`
+   * out from under the live invocation, and clobber `activeRunPromises`/
+   * cancellation/watchdog bookkeeping the live invocation still depends on.
+   *
+   * Does NOT additionally require `activeRunPromises.has(runId)` -- despite
+   * that map's declaration comment claiming it is "populated alongside
+   * `activeRuns.set`", it is actually populated much later (after browser-
+   * surface acquisition and connector-launch prep, see the `runNow` body),
+   * while `activeRuns.set` happens synchronously inside
+   * `registerActiveRunBookkeeping` at admission time. Requiring both
+   * produced a false negative for the ENTIRE window between admission and
+   * `activeRunPromises.set`: a concurrent same-run_id re-entry landing in
+   * that window would see `activeRuns` already claimed but
+   * `activeRunPromises` still empty, read this predicate as `false`, and get
+   * admitted a second time -- reproduced directly by firing two `runNow`
+   * calls for the same run_id with no `await` between the call expressions.
+   * `activeRuns` presence (not settled) is by itself the complete and
+   * correct signal of live ownership; `activeRunPromises` is a separate,
+   * later-arriving map used only by `drainActiveRuns` and by
+   * `assertNoConflictingActiveRun`'s unrelated stale-reclaim heuristic for a
+   * DIFFERENT run_id already occupying the key.
    */
   function hasLiveInMemoryOwner(runId: string): boolean {
     for (const existing of activeRuns.values()) {
       if (existing.run_id === runId) {
-        return !settledRunIds.has(runId) && activeRunPromises.has(runId);
+        return !settledRunIds.has(runId);
       }
     }
     return false;

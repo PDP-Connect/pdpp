@@ -99,13 +99,30 @@ interface SchedulerStoreCalls {
   persistActiveRun: number;
 }
 
+// Keyed on `connector_instance_id`, matching the real
+// `controller_active_runs` table's PK
+// (`server/queries/controller/upsert-active-run.sql`:
+// `ON CONFLICT(connector_instance_id) DO NOTHING`) -- NOT on `run_id`. The
+// prior fake keyed both `upsertActiveRun`'s write and `getActiveRun`'s read
+// on `record.run_id`, while `getPersistedActiveRun` (controller.ts) always
+// calls `getActiveRun(connectorInstanceId)`. Since no test's run_id equals
+// its connector instance id ("managed"), every lookup silently missed --
+// `assertNoConflictingDurableActiveRun` and `registerActiveRunBookkeeping`'s
+// insert-conflict branch were both dead code against this fake, no matter
+// what real durable conflict they were meant to catch.
 function createSchedulerStore(calls: SchedulerStoreCalls): SchedulerStore {
   const activeRuns = new Map<string, ActiveRunRecord>();
   const store: SchedulerStore = {
     appendRunHistory: () => undefined,
     createSchedule: () => undefined,
-    deleteActiveRun: (_connectorId, runId) => {
-      activeRuns.delete(runId);
+    // Fenced on `run_id` matching the real store (both the sqlite and
+    // postgres backends delete only when the row's run_id also matches) --
+    // a stale delete for a superseded run_id must not clobber a newer
+    // occupant's row for the same connector instance.
+    deleteActiveRun: (connectorInstanceId, runId) => {
+      if (activeRuns.get(connectorInstanceId)?.run_id === runId) {
+        activeRuns.delete(connectorInstanceId);
+      }
     },
     deleteSchedule: () => undefined,
     getActiveRun: (connectorInstanceId) => activeRuns.get(connectorInstanceId) ?? null,
@@ -117,9 +134,18 @@ function createSchedulerStore(calls: SchedulerStoreCalls): SchedulerStore {
     listSchedules: () => [],
     setScheduleEnabled: () => undefined,
     updateSchedule: () => undefined,
+    // Real semantics: `INSERT ... ON CONFLICT(connector_instance_id) DO
+    // NOTHING`, first-writer-wins. `changes > 0` (this fake's `true`/`false`
+    // return) is the ONLY signal the real store gives the caller -- it never
+    // says who the incumbent is; the controller re-reads via `getActiveRun`
+    // to tell a same-run reservation apart from a genuine competitor.
     upsertActiveRun: (record) => {
+      const key = record.connector_instance_id ?? record.connector_id;
+      if (activeRuns.has(key)) {
+        return false;
+      }
       calls.persistActiveRun += 1;
-      activeRuns.set(record.run_id, record);
+      activeRuns.set(key, record);
       return true;
     },
     upsertLastRunTime: () => undefined,
@@ -1876,6 +1902,107 @@ test("concurrent promotion re-entry: exactly one invocation, unchanged generatio
 
   // NOW the same drain promise -- not a fresh call -- must resolve, proving
   // it was genuinely waiting on this run's actual completion.
+  await drainPromise;
+  assert.equal(controller.getActiveRun("managed"), null, "drain must observe the run has actually finalized");
+});
+
+test("truly concurrent runNow re-entry (no await between call expressions) for the identical run_id: exactly one invocation, one fulfillment, one rejection", async (t) => {
+  // Every other same-run_id re-entry test in this file `await`s the first
+  // `runNow` call to completion (of its synchronous admission section)
+  // before firing the second -- that proves rejection AFTER the first
+  // invocation has already made its synchronous in-memory claim
+  // (`activeRuns.set` inside `registerActiveRunBookkeeping`), but it does
+  // NOT prove the race is closed at the moment of admission itself. This
+  // test fires both calls back-to-back, in the same synchronous script
+  // section, with no `await` between the two call expressions -- both
+  // `runNow` invocations begin executing, and both reach their first
+  // `await` (inside `resolveAdmittedRunConnection`, since `setup()`'s
+  // `admitRunConnection` fake returns `Promise.resolve(...)`), before
+  // EITHER has made its synchronous claim. This is the actual shape of the
+  // R1/R2 defect: a browser-surface promotion sweep re-entering `runNow`
+  // while the original call is still inside its own admission section, not
+  // safely after it has already returned.
+  //
+  // The scheduler-store fake now models the REAL durable conflict
+  // (`INSERT ... ON CONFLICT(connector_instance_id) DO NOTHING`,
+  // first-writer-wins, `changes > 0` as the only signal) instead of always
+  // overwriting -- see `createSchedulerStore`'s comment above. That makes
+  // `assertNoConflictingDurableActiveRun` and `registerActiveRunBookkeeping`'s
+  // insert-conflict branch genuinely reachable in this interleaving, not
+  // just the synchronous in-memory gate.
+  let releaseFirst: () => void = () => undefined;
+  let runConnectorInvocations = 0;
+  const runConnectorImpl = () => {
+    runConnectorInvocations += 1;
+    return new Promise<RuntimeRunConnectorResult>((resolve) => {
+      releaseFirst = () => resolve({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" });
+    });
+  };
+  const { calls, controller } = setup(t, { runConnectorImpl });
+
+  // No `await` between these two call expressions: both promises are
+  // created, and both `runNow` bodies begin executing synchronously up to
+  // their first internal `await`, before this line returns control to the
+  // event loop.
+  const first = controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_truly_concurrent",
+  });
+  const second = controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_truly_concurrent",
+  });
+
+  const [firstOutcome, secondOutcome] = await Promise.allSettled([first, second]);
+
+  // Exactly one of the two settles fulfilled and the other rejected -- never
+  // both fulfilled (double-admission) and never both rejected (the
+  // legitimate promotion starves forever).
+  const fulfilled = [firstOutcome, secondOutcome].filter((outcome) => outcome.status === "fulfilled");
+  const rejected = [firstOutcome, secondOutcome].filter((outcome) => outcome.status === "rejected");
+  assert.equal(fulfilled.length, 1, "exactly one of the two concurrent calls must be admitted");
+  assert.equal(rejected.length, 1, "exactly one of the two concurrent calls must be rejected");
+  const rejectedReason = rejected[0]?.status === "rejected" ? rejected[0].reason : undefined;
+  assert.match(String((rejectedReason as { message?: string } | undefined)?.message), TOP_REGEX_0);
+  assert.equal(
+    (rejectedReason as { code?: string } | undefined)?.code,
+    "run_already_active",
+    "the losing call must be rejected with run_already_active, not some other failure"
+  );
+
+  // Exactly one connector invocation ever happened, regardless of which of
+  // the two calls happened to win the race.
+  assert.equal(runConnectorInvocations, 1, "a genuinely concurrent re-entry must launch the connector exactly once");
+  assert.equal(calls.runConnector, 1);
+
+  // Generation is exactly 1 -- the losing call never reached
+  // `registerActiveRunBookkeeping`'s generation bump, whichever call it was.
+  assert.equal(
+    controller.getActiveRun("managed")?.run_generation,
+    1,
+    "run_generation must reflect exactly one admitted invocation, not two"
+  );
+  assert.equal(controller.getActiveRun("managed")?.run_id, "run_truly_concurrent");
+
+  // Cancellation reaches the ONE admitted invocation, and drain waits on it.
+  const cancelResult = await controller.cancelRun("run_truly_concurrent", "owner_local");
+  assert.equal(cancelResult.status, "cancel_requested");
+
+  const SETTLED = Symbol("settled-by-next-turn");
+  const settledByNextTurn = new Promise<typeof SETTLED>((resolve) => {
+    setImmediate(() => resolve(SETTLED));
+  });
+  const drainPromise = controller.drainActiveRuns(2000);
+  const raceWinner = await Promise.race([drainPromise, settledByNextTurn]);
+  assert.equal(
+    raceWinner,
+    SETTLED,
+    "drainActiveRuns must still be pending while the one admitted invocation is unreleased"
+  );
+
+  releaseFirst();
   await drainPromise;
   assert.equal(controller.getActiveRun("managed"), null, "drain must observe the run has actually finalized");
 });
