@@ -115,6 +115,15 @@ async function runReadinessProbeCatchingThrow(
   }
 }
 
+/**
+ * Ceiling on how long a single surface's teardown may be deferred because its
+ * run holds an open owner assist. 30 minutes matches the runtime's own
+ * generous owner-attention budget (see scheduler.ts), so an owner who is
+ * genuinely working through a login is never interrupted, while a dead surface
+ * behind an assist the connector never bounded still gets retired.
+ */
+const DEFAULT_ASSIST_DEFERRAL_GRACE_MS = 1_800_000;
+
 // Shared no-op allocator used when no real BrowserSurfaceAllocator is wired.
 const UNCONFIGURED_BROWSER_SURFACE_ALLOCATOR: BrowserSurfaceAllocator = {
   ensureSurface: () => Promise.reject(new Error("browser surface allocator is not configured")),
@@ -164,6 +173,13 @@ interface AllocatorSurfaceReconciliation {
 export interface BrowserSurfaceManagerDeps {
   readonly activeRunInteractions: Map<string, ActiveRunInteraction>;
   readonly browserSurfaceAllocator: BrowserSurfaceAllocator | null;
+  /**
+   * How long one surface may have its teardown deferred because the run holds
+   * an open owner assist. Defaults to 30 minutes, matching the runtime's own
+   * generous owner-attention budget. Tests inject a small value (or 0 to
+   * disable deferral entirely).
+   */
+  readonly browserSurfaceAssistDeferralGraceMs?: number;
   readonly browserSurfaceLeaseManager: BrowserSurfaceLeaseManager | null;
   readonly browserSurfaceLeaseStore: BrowserSurfaceLeaseStore | null;
   readonly browserSurfaceMidWaitPollIntervalMs: number | undefined;
@@ -178,6 +194,8 @@ export interface BrowserSurfaceManagerDeps {
     ReadonlyArray<{ readonly connector_instance_id?: string | null; readonly run_id: string }>
   >;
   readonly log: ControllerLogger;
+  /** Injectable monotonic-enough clock for the assist deferral bound. Defaults to Date.now. */
+  readonly now?: () => number;
   readonly pendingBrowserSurfaceLaunches: Map<string, RunNowOptions>;
   /**
    * Resolves the durable owner of an admitted connection when a process restart
@@ -275,10 +293,12 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   const {
     activeRunInteractions,
     browserSurfaceAllocator,
+    browserSurfaceAssistDeferralGraceMs = DEFAULT_ASSIST_DEFERRAL_GRACE_MS,
     browserSurfaceLeaseManager,
     browserSurfaceLeaseStore,
     browserSurfaceReplacementReceiptStore,
     browserSurfaceMidWaitPollIntervalMs,
+    now = () => Date.now(),
     browserSurfaceReadinessProbe,
     browserSurfaceReadinessTimeoutMs,
     browserSurfaceReclaimRetryAttempts = 3,
@@ -304,9 +324,12 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   });
   const { allocator: replacementAwareAllocator } = replacementHooks;
   const connectorInstanceIdByRunId = new Map<string, string>();
+  // surface_id -> when this surface first had a teardown deferred for an open
+  // owner assist. Bounds the deferral (see deferSurfaceTeardownDuringOwnerAssist).
+  const assistDeferralStartedAtBySurfaceId = new Map<string, number>();
   let browserSurfaceSweepInFlight = false;
   const windowSettleReconciliation = createWindowSettleReconciliation({
-    invalidateDeferredLease: invalidateBrowserSurfaceAfterProbeFailure,
+    invalidateDeferredLease: invalidateBrowserSurfaceUnconditionally,
     invalidateIdleSurface: invalidateIdleSurfaceAfterProbeFailure,
     leaseManager: browserSurfaceLeaseManager,
     log,
@@ -639,10 +662,104 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   // ─── Surface invalidation ─────────────────────────────────────────────────
 
-  async function invalidateBrowserSurfaceAfterProbeFailure(
-    lease: BrowserSurfaceLease,
-    probeCode: string
-  ): Promise<void> {
+  /**
+   * True for the one probe failure that does NOT prove the browser is gone.
+   *
+   * `probeBrowserSurfaceReadinessOverHttp` checks liveness first — `json/version`,
+   * `json/list`, and a real CDP command against a live page target — and only
+   * then reads `pdpp/window-settle`. So reaching a window-settle failure means
+   * the browser answered every liveness check moments earlier; what failed is a
+   * presentation-only read reporting `settled:false` (or timing out against its
+   * own 5s budget) while the window is mid-resize/repaint — exactly the state an
+   * owner interacting with the page produces.
+   *
+   * Every other code is real evidence of a dead surface: `cdp_unreachable` and
+   * `cdp_disconnected` mean the endpoint is refusing or not a DevTools surface,
+   * `page_stale` means no usable target remains, `not_ready`/`probe_timeout`
+   * mean the surface never proved itself at all. An owner facing one of those
+   * is staring at a broken page, and cancelling their assist promptly is the
+   * honest outcome — so those keep tearing down immediately, assist or not.
+   */
+  function isAssistSurvivableProbeFailure(probeCode: string): boolean {
+    return probeCode === "browser_surface_window_settle_unavailable";
+  }
+
+  /**
+   * True while this run has an owner-facing interaction brokered and still
+   * unanswered — the owner is (or may be) driving the browser surface right
+   * now to answer it.
+   *
+   * The signal is the controller's own `activeRunInteractions` pending entry:
+   * set when `brokerInteraction` registers the request, cleared the moment
+   * the owner responds, the interaction is cancelled, or run cleanup runs
+   * `resolveCancelledInteraction`. It is the same record `respondToInteraction`
+   * validates against, so "assist open" here cannot drift from the assist the
+   * owner can actually answer.
+   *
+   * Deliberately in-memory rather than durable: the pending entry holds a
+   * `resolve` closure onto a live in-process promise, so an assist cannot
+   * outlive the process that brokered it. After a restart there is no owner
+   * wait to protect — the run is gone and the surface is genuinely idle, which
+   * is exactly the case boot reconciliation already handles.
+   */
+  function hasOpenOwnerAssist(runId: string): boolean {
+    return Boolean(activeRunInteractions.get(runId)?.pending);
+  }
+
+  /**
+   * Teardown of a still-live surface whose lease belongs to a run with an
+   * assist open would destroy the browser out from under the owner
+   * mid-answer — the production defect this guards. Defer it:
+   * the surface stays leased to this run, is marked for retirement, and
+   * `releaseBrowserSurfaceLease` collects it via `retireDeferredLease` when
+   * the run ends.
+   *
+   * The deferral is bounded twice over, because neither bound alone is
+   * sufficient:
+   *
+   *  - By the assist itself. The moment the owner answers, the interaction is
+   *    cancelled, or run cleanup resolves it, `pending` clears and the next
+   *    probe failure tears the surface down normally.
+   *  - By `browserSurfaceAssistDeferralGraceMs` per surface. A connector is
+   *    not obliged to send `timeout_seconds`, and without it the runtime's
+   *    interaction wait never expires — so "wait for the assist to end" is not
+   *    on its own a bound at all. The grace window caps how long one surface
+   *    may be protected, after which a still-failing probe retires it even
+   *    with the assist open. A genuinely dead browser therefore stops being
+   *    protected instead of pinning the surface for the life of the process.
+   */
+  function deferSurfaceTeardownDuringOwnerAssist(lease: BrowserSurfaceLease, probeCode: string): boolean {
+    if (!(lease.surface_id && isAssistSurvivableProbeFailure(probeCode) && hasOpenOwnerAssist(lease.run_id))) {
+      return false;
+    }
+    const surfaceId = lease.surface_id;
+    const deferralStartedAt = assistDeferralStartedAtBySurfaceId.get(surfaceId) ?? now();
+    assistDeferralStartedAtBySurfaceId.set(surfaceId, deferralStartedAt);
+    if (now() - deferralStartedAt >= browserSurfaceAssistDeferralGraceMs) {
+      windowSettleReconciliation.clearDeferredRetirement(surfaceId);
+      log.warn?.(
+        `[controller] assist deferral grace exhausted for surface ${surfaceId} after probe ${probeCode}: retiring despite the open interaction on run ${lease.run_id}`
+      );
+      return false;
+    }
+    windowSettleReconciliation.deferRetirement(surfaceId, probeCode);
+    log.warn?.(
+      `[controller] deferring teardown of surface ${surfaceId} after probe ${probeCode}: run ${lease.run_id} has an open owner interaction`
+    );
+    return true;
+  }
+
+  /**
+   * Unconditional eviction + allocator stop for a leased surface. The assist
+   * guard deliberately does NOT apply here: this is the collection half of the
+   * deferral, invoked by `retireDeferredLease` at terminal lease release. The
+   * assist may still be open at that moment (a cancelled run resolves its
+   * interaction after the lease is released), and re-consulting the guard here
+   * would defer the very retirement the deferral promised — leaking the dead
+   * surface. Live probe-failure paths must call
+   * `invalidateBrowserSurfaceAfterProbeFailure` instead.
+   */
+  async function invalidateBrowserSurfaceUnconditionally(lease: BrowserSurfaceLease, probeCode: string): Promise<void> {
     if (!(browserSurfaceLeaseManager && lease.surface_id)) {
       return;
     }
@@ -657,6 +774,21 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       await persistInvalidatedBrowserSurface(invalidated.surface);
     }
     await stopAllocatorSurfaceAfterProbeFailure(surfaceId, probeCode);
+  }
+
+  /**
+   * The live probe-failure entry point. Every path that condemns a leased
+   * surface because a readiness probe just failed goes through here, so the
+   * owner-assist deferral is applied uniformly at all three call sites.
+   */
+  async function invalidateBrowserSurfaceAfterProbeFailure(
+    lease: BrowserSurfaceLease,
+    probeCode: string
+  ): Promise<void> {
+    if (deferSurfaceTeardownDuringOwnerAssist(lease, probeCode)) {
+      return;
+    }
+    await invalidateBrowserSurfaceUnconditionally(lease, probeCode);
   }
 
   async function invalidateIdleSurfaceAfterProbeFailure(surface: BrowserSurface, probeCode: string): Promise<void> {
@@ -1034,6 +1166,9 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     reason: string
   ): Promise<void> {
     await windowSettleReconciliation.retireDeferredLease(lease);
+    if (lease.surface_id) {
+      assistDeferralStartedAtBySurfaceId.delete(lease.surface_id);
+    }
     const releaseResult = browserSurfaceLeaseManager?.release({
       fencingToken: lease.fencing_token,
       leaseId: lease.lease_id,
@@ -1728,15 +1863,18 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     connectorId: string,
     runId: string
   ): {
+    readonly gracePeriodMs: number;
     readonly onProbeResult: (result: BrowserSurfaceReadinessProbeResult) => Promise<void>;
     readonly pollIntervalMs?: number;
   } {
     if (browserSurfaceMidWaitPollIntervalMs === undefined) {
       return {
+        gracePeriodMs: browserSurfaceAssistDeferralGraceMs,
         onProbeResult: (result) => replacementHooks.recordBrowserGeneration(lease, surface, connectorId, runId, result),
       };
     }
     return {
+      gracePeriodMs: browserSurfaceAssistDeferralGraceMs,
       onProbeResult: (result) => replacementHooks.recordBrowserGeneration(lease, surface, connectorId, runId, result),
       pollIntervalMs: browserSurfaceMidWaitPollIntervalMs,
     };
@@ -1763,7 +1901,24 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     connectorId: string,
     traceContext: SpineTraceContext,
     interaction: RuntimeInteraction
-  ): Promise<InteractionResponse> {
+  ): Promise<InteractionResponse | null> {
+    // Evaluate the assist guard BEFORE taking the pending entry: taking it is
+    // what makes the assist "closed", so an ordering the other way round would
+    // always observe no open assist and defeat the guard entirely.
+    //
+    // The owner is answering this very interaction on this very surface. A
+    // mid-wait probe failure here is not evidence the owner's browser is
+    // unusable — the probe's own liveness checks (json/version, json/list, a
+    // CDP command against the page target) all passed before the transient
+    // window-settle read that fails under exactly the resize/repaint activity
+    // an owner driving the page produces. Tearing the surface down would kill
+    // the owner's session mid-answer, which is the production defect this
+    // guards. Mark the surface for retirement, leave the owner's wait intact,
+    // and let run cleanup collect it.
+    if (deferSurfaceTeardownDuringOwnerAssist(lease, failure.code)) {
+      return null;
+    }
+
     // Clear the pending interaction entry before the invalidation await so any
     // in-flight respondToInteraction call gets no_pending_interaction.
     const resolveCancelled = takePendingSurfaceInteraction(runId, interaction);
@@ -1808,11 +1963,14 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     handler: (interaction: unknown) => Promise<unknown>,
     rawInteraction: unknown
   ): Promise<unknown> {
-    const detector = createMidWaitSurfaceLossDetector(
-      surface,
-      probe,
-      midWaitSurfaceLossDetectorOptions(lease, surface, connectorId, runId)
-    );
+    const detector = createMidWaitSurfaceLossDetector(surface, probe, {
+      ...midWaitSurfaceLossDetectorOptions(lease, surface, connectorId, runId),
+      // A survivable window-settle failure is consumed only for this poll.
+      // Keep the detector alive so the next failing poll can enforce the
+      // per-surface grace bound; all other failure codes return false and
+      // resolve lossPromise immediately.
+      onProbeFailure: (failure) => deferSurfaceTeardownDuringOwnerAssist(lease, failure.code),
+    });
     const responsePromise = Promise.resolve(handler(rawInteraction)).finally(() => {
       detector.cancel();
     });

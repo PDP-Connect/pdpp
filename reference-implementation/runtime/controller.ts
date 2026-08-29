@@ -522,6 +522,12 @@ export interface ControllerOptions {
   browserSurfaceAllocator?: BrowserSurfaceAllocator;
   /** Stable non-secret identity of the dynamic allocator scope for cache coalescing. */
   browserSurfaceAllocatorScopeId?: string;
+  /**
+   * Ceiling on deferring a browser-surface teardown while the run holds an
+   * open owner assist. Defaults to 30 minutes. Tests inject a small value, or
+   * 0 to disable the deferral.
+   */
+  browserSurfaceAssistDeferralGraceMs?: number;
   /** Freshness budget for one health-only dynamic allocator observation. */
   browserSurfaceHealthObservationTtlMs?: number;
   browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager;
@@ -2745,6 +2751,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const browserSurface = createBrowserSurfaceManager({
     activeRunInteractions,
     browserSurfaceAllocator: browserSurfaceAllocator ?? null,
+    ...(opts.browserSurfaceAssistDeferralGraceMs === undefined
+      ? {}
+      : { browserSurfaceAssistDeferralGraceMs: opts.browserSurfaceAssistDeferralGraceMs }),
     browserSurfaceLeaseManager: browserSurfaceLeaseManager ?? null,
     browserSurfaceLeaseStore: browserSurfaceLeaseStore ?? null,
     browserSurfaceMidWaitPollIntervalMs,

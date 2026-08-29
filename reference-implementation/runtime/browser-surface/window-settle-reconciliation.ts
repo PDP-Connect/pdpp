@@ -29,6 +29,15 @@ interface WindowSettleReconciliationDeps {
 }
 
 export interface WindowSettleReconciliation {
+  /** Forget a deferred marker when the caller retires the surface immediately. */
+  clearDeferredRetirement: (surfaceId: string) => void;
+  /**
+   * Mark a surface for deferred retirement from the LIVE probe-failure path,
+   * rather than boot reconciliation. The caller has decided the surface is
+   * unsafe for later runs but must not be torn down right now (an owner is
+   * mid-assist on it). `retireDeferredLease` collects it at lease release.
+   */
+  deferRetirement: (surfaceId: string, probeCode: string) => void;
   reconcileAtBoot: (activeRunIds: ReadonlySet<string>) => Promise<void>;
   retireDeferredLease: (lease: BrowserSurfaceLease) => Promise<void>;
 }
@@ -49,7 +58,10 @@ function findLeasedSurfaceLease(
 }
 
 export function createWindowSettleReconciliation(deps: WindowSettleReconciliationDeps): WindowSettleReconciliation {
-  const deferredSurfaceIds = new Set<string>();
+  // surface_id -> the probe code that condemned it. Boot reconciliation only
+  // ever defers window-settle failures; the live probe-failure path can defer
+  // any code, and the retirement must report the code that actually fired.
+  const deferredSurfaceIds = new Map<string, string>();
 
   function invokeProbe(
     probe: BrowserSurfaceReadinessProbe,
@@ -83,7 +95,7 @@ export function createWindowSettleReconciliation(deps: WindowSettleReconciliatio
   ): Promise<void> {
     const lease = findLeasedSurfaceLease(leaseManager, surface.surface_id);
     if (lease && activeRunIds.has(lease.run_id)) {
-      deferredSurfaceIds.add(surface.surface_id);
+      deferredSurfaceIds.set(surface.surface_id, WINDOW_SETTLE_UNAVAILABLE);
       deps.log.warn?.(
         `[controller] deferring retirement of active surface ${surface.surface_id} until run ${lease.run_id} completes`
       );
@@ -108,6 +120,12 @@ export function createWindowSettleReconciliation(deps: WindowSettleReconciliatio
   }
 
   return {
+    clearDeferredRetirement(surfaceId) {
+      deferredSurfaceIds.delete(surfaceId);
+    },
+    deferRetirement(surfaceId, probeCode) {
+      deferredSurfaceIds.set(surfaceId, probeCode);
+    },
     async reconcileAtBoot(activeRunIds) {
       // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
       const leaseManager = deps.leaseManager;
@@ -120,10 +138,12 @@ export function createWindowSettleReconciliation(deps: WindowSettleReconciliatio
       }
     },
     async retireDeferredLease(lease) {
-      if (!(lease.surface_id && deferredSurfaceIds.delete(lease.surface_id))) {
+      const probeCode = lease.surface_id ? deferredSurfaceIds.get(lease.surface_id) : undefined;
+      if (!(lease.surface_id && probeCode !== undefined)) {
         return;
       }
-      await deps.invalidateDeferredLease(lease, WINDOW_SETTLE_UNAVAILABLE);
+      deferredSurfaceIds.delete(lease.surface_id);
+      await deps.invalidateDeferredLease(lease, probeCode);
     },
   };
 }

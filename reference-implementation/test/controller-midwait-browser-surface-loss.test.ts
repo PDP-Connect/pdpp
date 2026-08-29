@@ -33,6 +33,7 @@ import {
   DEFAULT_NEKO_PRIORITY_RANKS,
   // biome-ignore lint/correctness/noUnresolvedImports: Biome resolver lacks this runtime-supported dependency export shape.
 } from "@opendatalabs/remote-surface/leases";
+import { emitSpineEvent } from "../lib/spine.ts";
 import type {
   BrowserSurfaceReadinessProbe,
   BrowserSurfaceReadinessProbeCode,
@@ -698,4 +699,275 @@ test("otp interaction without browser surface is not monitored, no spurious brow
   const events = listRunEvents("run_otp_plain");
   const lostEvent = events.find((e) => e.event_type === "run.browser_surface_lost");
   assert.equal(lostEvent, undefined, "no browser_surface_lost for non-browser interactions");
+});
+
+test("owner mid-assist: a transient window-settle blip must not cancel his interaction or kill the surface", async (t) => {
+  // Reproduces production run_1788035484871. The owner's assist opened, and
+  // 15s later a `browser_surface_window_settle_unavailable` probe tore the
+  // surface down under him: interaction cancelled, run failed, before he
+  // could act.
+  //
+  // Window-settle is read only AFTER json/version, json/list and a live CDP
+  // page-target command all succeed, so this code means the browser is alive
+  // and merely mid-resize — which is what an owner interacting with the page
+  // produces. His wait must survive it.
+  const probe = buildProbeWithFailAfter(
+    1,
+    "browser_surface_window_settle_unavailable",
+    "n.eko allocator DELETE /surfaces timed out after 5000ms"
+  );
+
+  closeDb();
+  initDb(
+    (() => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdpp-midwait-assist-"));
+      return path.join(dir, "pdpp.sqlite");
+    })()
+  );
+  __resetControllerInteractionStateForTests();
+  t.after(() => {
+    __resetControllerInteractionStateForTests();
+    closeDb();
+  });
+
+  let resolveConnectorDone!: (value?: FixtureInteractionResponse) => void;
+  const connectorDone = new Promise<FixtureInteractionResponse | undefined>((res) => {
+    resolveConnectorDone = res;
+  });
+  let interactionResponseStatus: "cancelled" | "success" | null = null;
+  const leaseManager = createManagerWithReadySurface("dynamic");
+  const stopRequests: string[] = [];
+
+  const c = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    browserSurfaceAllocator: createTestAllocator(stopRequests),
+    browserSurfaceLeaseManager: leaseManager,
+    browserSurfaceMidWaitPollIntervalMs: 5,
+    browserSurfaceReadinessProbe: probe,
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    runConnectorImpl: async (opts) => {
+      const response = await callOnInteraction(opts.onInteraction, {
+        kind: "manual_action",
+        message: "Approve the Venmo login in the browser.",
+        request_id: "req_owner_assist_1",
+        stream: null,
+      });
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: Runtime guard protects an untyped external/test boundary.
+      interactionResponseStatus = response?.status;
+      resolveConnectorDone(response);
+      return { checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" };
+    },
+    schedulerStore: createSchedulerStore(),
+    streamingTargetNonceHooks: {
+      clearNonce: () => undefined,
+      registerNonce: () => undefined,
+    },
+  });
+
+  await c.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_owner_assist_survives",
+  });
+
+  // Let many mid-wait polls fail. The owner is still reading the page.
+  await new Promise((r) => setTimeout(r, 60));
+
+  const pending = c.getPendingInteraction("run_owner_assist_survives");
+  assert.ok(pending, "the owner's assist must still be open after a window-settle blip");
+  assert.equal(pending.interaction_id, "req_owner_assist_1");
+  assert.deepEqual(stopRequests, [], "the surface the owner is driving must not be stopped");
+  assert.ok(leaseManager.getSurface("surface_static"), "the surface must still exist for the owner");
+
+  // The owner finally answers, as he could not in production.
+  c.respondToInteraction("run_owner_assist_survives", {
+    interaction_id: "req_owner_assist_1",
+    status: "success",
+  });
+
+  const connectorResponse = await connectorDone;
+  assert.equal(connectorResponse?.status, "success", "the owner's answer must reach the connector");
+  assert.equal(interactionResponseStatus, "success");
+
+  await c.drainActiveRuns(2000);
+
+  const events = listRunEvents("run_owner_assist_survives");
+  assert.equal(
+    events.find((e) => e.event_type === "run.browser_surface_lost"),
+    undefined,
+    "a window-settle blip during an open assist must not emit run.browser_surface_lost"
+  );
+  // The surface was condemned, so terminal release must still retire it.
+  assert.deepEqual(stopRequests, ["surface_static"], "the deferred surface is retired when the run ends");
+});
+
+test("owner mid-assist: a genuinely dead surface still cancels his interaction rather than stranding him", async (t) => {
+  // The counterweight to the deferral: cdp_unreachable means the browser is
+  // gone, so the owner is staring at a broken page. Telling him promptly is
+  // the honest outcome, assist open or not.
+  const probe = buildProbeWithFailAfter(1, "browser_surface_cdp_unreachable", "fetch failed: ECONNREFUSED");
+
+  closeDb();
+  initDb(
+    (() => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdpp-midwait-assist-dead-"));
+      return path.join(dir, "pdpp.sqlite");
+    })()
+  );
+  __resetControllerInteractionStateForTests();
+  t.after(() => {
+    __resetControllerInteractionStateForTests();
+    closeDb();
+  });
+
+  let resolveConnectorDone!: (value?: FixtureInteractionResponse) => void;
+  const connectorDone = new Promise<FixtureInteractionResponse | undefined>((res) => {
+    resolveConnectorDone = res;
+  });
+  const leaseManager = createManagerWithReadySurface("dynamic");
+  const stopRequests: string[] = [];
+
+  const c = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    browserSurfaceAllocator: createTestAllocator(stopRequests),
+    browserSurfaceLeaseManager: leaseManager,
+    browserSurfaceMidWaitPollIntervalMs: 5,
+    browserSurfaceReadinessProbe: probe,
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    runConnectorImpl: async (opts) => {
+      const response = await callOnInteraction(opts.onInteraction, {
+        kind: "manual_action",
+        message: "Approve the login in the browser.",
+        request_id: "req_owner_assist_dead",
+        stream: null,
+      });
+      resolveConnectorDone(response);
+      return { checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" };
+    },
+    schedulerStore: createSchedulerStore(),
+    streamingTargetNonceHooks: {
+      clearNonce: () => undefined,
+      registerNonce: () => undefined,
+    },
+  });
+
+  await c.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_owner_assist_dead",
+  });
+
+  const connectorResponse = await connectorDone;
+  assert.equal(connectorResponse?.status, "cancelled", "a dead browser must still cancel the owner's wait");
+
+  await c.drainActiveRuns(2000);
+
+  assert.deepEqual(stopRequests, ["surface_static"], "a genuinely dead surface is stopped immediately");
+  const events = listRunEvents("run_owner_assist_dead");
+  assert.ok(
+    events.find((e) => e.event_type === "run.browser_surface_lost"),
+    "a dead surface during an assist must still emit run.browser_surface_lost"
+  );
+});
+
+test("unanswered owner assist past grace stops the allocator and completes terminal run cleanup", async (t) => {
+  // This is the live lifecycle regression: the first survivable failure must
+  // leave a detector/timer running. Before the repair, the detector stopped
+  // after that first failure and this bounded wait timed out.
+  const probe = buildProbeWithFailAfter(
+    1,
+    "browser_surface_window_settle_unavailable",
+    "window settle remained unavailable"
+  );
+  const runId = "run_owner_assist_grace_expired";
+  const leaseManager = createManagerWithReadySurface("dynamic");
+  const stopRequests: string[] = [];
+
+  closeDb();
+  initDb(tempDbPath());
+  __resetControllerInteractionStateForTests();
+  t.after(() => {
+    __resetControllerInteractionStateForTests();
+    closeDb();
+  });
+
+  let resolveConnectorDone!: (value: FixtureInteractionResponse) => void;
+  const connectorDone = new Promise<FixtureInteractionResponse>((resolve) => {
+    resolveConnectorDone = resolve;
+  });
+
+  const c = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    browserSurfaceAllocator: createTestAllocator(stopRequests),
+    browserSurfaceAssistDeferralGraceMs: 25,
+    browserSurfaceLeaseManager: leaseManager,
+    browserSurfaceMidWaitPollIntervalMs: 100,
+    browserSurfaceReadinessProbe: probe,
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    maxRunWallClockMs: Number.POSITIVE_INFINITY,
+    runConnectorImpl: async (opts) => {
+      const response = await callOnInteraction(opts.onInteraction, {
+        kind: "manual_action",
+        message: "Approve the Venmo login in the browser.",
+        request_id: "req_owner_assist_grace_expired",
+        stream: null,
+      });
+      assert.ok(opts.traceContext);
+      await emitSpineEvent({
+        actor_id: opts.connectorId,
+        actor_type: "runtime",
+        data: { connector_instance_id: "managed", reason: "browser_surface_lost", records_emitted: 0 },
+        event_type: "run.failed",
+        object_id: opts.runId ?? null,
+        object_type: "run",
+        run_id: opts.runId ?? null,
+        scenario_id: opts.traceContext.scenario_id ?? null,
+        status: "failed",
+        trace_id: opts.traceContext.trace_id,
+      });
+      resolveConnectorDone(response);
+      return { checkpoint_summary: null, records_emitted: 0, state: null, status: "failed" };
+    },
+    schedulerStore: createSchedulerStore(),
+    streamingTargetNonceHooks: {
+      clearNonce: () => undefined,
+      registerNonce: () => undefined,
+    },
+  });
+
+  await c.runNow("managed", { manifest: MANIFEST, ownerToken: "owner-token", runId });
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const connectorResponse = await Promise.race([
+    connectorDone,
+    new Promise<FixtureInteractionResponse>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error("unanswered assist exceeded test deadline")), 170);
+    }),
+  ]).finally(() => {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  });
+
+  assert.equal(connectorResponse.status, "cancelled", "grace expiry must cancel the unanswered interaction");
+  assert.equal(c.getPendingInteraction(runId), null, "terminal interaction cleanup must clear pending owner state");
+  assert.equal(await c.awaitRun(runId), "failed", "the cancelled interaction must reach a terminal failed run");
+  assert.equal(c.findActiveRunByRunId(runId), null, "terminal run cleanup must clear the active run");
+  assert.equal(c.getActiveRun("managed"), null, "terminal run cleanup must release the connection flight");
+  assert.equal(leaseManager.getSurface("surface_static"), undefined, "grace expiry must evict the condemned surface");
+  assert.deepEqual(stopRequests, ["surface_static"], "grace expiry must stop the dynamic allocator resource");
+  assert.equal(leaseManager.getLease("lease_1")?.status, "released", "terminal cleanup must release the lease");
+  assert.equal(
+    c.listBrowserSurfaceRunProjections().some((projection) => projection.browser_surface_status === "leased"),
+    false,
+    "terminal cleanup must leave no active surface lease"
+  );
+
+  const events = listRunEvents(runId);
+  const lostEvent = events.find((event) => event.event_type === "run.browser_surface_lost");
+  assert.ok(lostEvent, "grace expiry must emit the typed browser-surface loss event");
+  assert.equal(surfaceLostData(lostEvent.data).browser_surface_probe.code, "browser_surface_window_settle_unavailable");
 });

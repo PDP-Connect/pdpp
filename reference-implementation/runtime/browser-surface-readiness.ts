@@ -144,6 +144,10 @@ export interface CreateDefaultBrowserSurfaceReadinessProbeOptions {
 }
 
 export interface MidWaitSurfaceLossDetectorOptions {
+  /** After a failure is consumed, resolve lossPromise with that failure when this delay elapses. */
+  readonly gracePeriodMs?: number;
+  /** Return true after a survivable failure to keep polling; false/omitted resolves lossPromise. */
+  readonly onProbeFailure?: (failure: BrowserSurfaceReadinessProbeFailure) => Promise<boolean> | boolean;
   /** Generic observation hook; it runs after a successful probe and before the next poll is scheduled. */
   readonly onProbeResult?: (result: BrowserSurfaceReadinessProbeResult) => Promise<void> | void;
   readonly pollIntervalMs?: number;
@@ -153,15 +157,19 @@ export interface MidWaitSurfaceLossDetector {
   /** Stop polling. Safe to call multiple times. */
   cancel: () => void;
   /**
-   * Resolves with the first failing probe result, or never resolves if the
-   * surface stays live until `cancel()` is called.
+   * Resolves with the first failure that the failure hook does not consume, or
+   * never resolves if failures are consumed or the surface stays live until
+   * `cancel()` is called.
    */
   readonly lossPromise: Promise<BrowserSurfaceReadinessProbeFailure>;
 }
 
 /**
  * Create a detector that polls a browser surface during an open interaction
- * wait and resolves `lossPromise` with the first failing probe result.
+ * wait and resolves `lossPromise` with the first failing probe result that the
+ * optional failure hook does not consume. A failure hook can keep polling after
+ * a known-survivable failure, which is required when a caller defers teardown
+ * but still has a deadline to enforce.
  *
  * Callers race `lossPromise` against the owner-response promise and cancel
  * the detector when the race settles (either the owner responded or the
@@ -175,6 +183,7 @@ export function createMidWaitSurfaceLossDetector(
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_MID_WAIT_SURFACE_LOSS_POLL_INTERVAL_MS;
 
   let cancelled = false;
+  let graceTimerId: ReturnType<typeof setTimeout> | null = null;
   let timerId: ReturnType<typeof setTimeout> | null = null;
   let resolveFailure!: (failure: BrowserSurfaceReadinessProbeFailure) => void;
 
@@ -186,7 +195,24 @@ export function createMidWaitSurfaceLossDetector(
     if (cancelled) {
       return;
     }
+    cancelled = true;
+    clearScheduledPoll();
+    clearGraceTimer();
     resolveFailure(failure);
+  }
+
+  function clearGraceTimer(): void {
+    if (graceTimerId !== null) {
+      clearTimeout(graceTimerId);
+      graceTimerId = null;
+    }
+  }
+
+  function scheduleGraceTimer(failure: BrowserSurfaceReadinessProbeFailure): void {
+    if (graceTimerId !== null || options.gracePeriodMs === undefined) {
+      return;
+    }
+    graceTimerId = setTimeout(() => resolveSurfaceLoss(failure), Math.max(0, options.gracePeriodMs));
   }
 
   async function handlePollResult(result: BrowserSurfaceReadinessProbeResult): Promise<void> {
@@ -197,7 +223,13 @@ export function createMidWaitSurfaceLossDetector(
       await options.onProbeResult?.(result);
       scheduleNextPoll();
     } else {
-      resolveSurfaceLoss(result);
+      const consumed = await options.onProbeFailure?.(result);
+      if (consumed) {
+        scheduleGraceTimer(result);
+        scheduleNextPoll();
+      } else {
+        resolveSurfaceLoss(result);
+      }
     }
   }
 
@@ -244,6 +276,7 @@ export function createMidWaitSurfaceLossDetector(
     cancel() {
       cancelled = true;
       clearScheduledPoll();
+      clearGraceTimer();
     },
     lossPromise,
   };
