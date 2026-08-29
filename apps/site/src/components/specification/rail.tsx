@@ -14,7 +14,7 @@ import {
 } from "fumadocs-ui/layouts/docs/slots/sidebar";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PdppRailFrontMatter } from "@/components/sections/rail-front-matter.tsx";
+import { PdppRailFrontMatter, PdppRailGovernanceFrontMatter } from "@/components/sections/rail-front-matter.tsx";
 import { PdppRailSectionLabel } from "@/components/sections/rail-section-label.tsx";
 import { useSpecRailData } from "./rail-context.tsx";
 
@@ -76,14 +76,19 @@ function RailBanner() {
   if (!frontMatter) {
     return null;
   }
-  return (
-    <PdppRailFrontMatter
-      date={frontMatter.date}
-      editors={frontMatter.editors}
-      status={frontMatter.status}
-      version={frontMatter.version}
-    />
-  );
+  if (frontMatter.kind === "governance") {
+    const { circulated, formalReview, programmeLive, status } = frontMatter.value;
+    return (
+      <PdppRailGovernanceFrontMatter
+        circulated={circulated}
+        formalReview={formalReview}
+        programmeLive={programmeLive}
+        status={status}
+      />
+    );
+  }
+  const { date, editors, status, version } = frontMatter.value;
+  return <PdppRailFrontMatter date={date} editors={editors} status={status} version={version} />;
 }
 
 export function PdppSpecRail(props: SidebarProps) {

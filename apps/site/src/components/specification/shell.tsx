@@ -10,22 +10,26 @@ import { getSpecFrontMatter } from "@/lib/spec-front-matter.ts";
 import { specRailSlots } from "./rail.tsx";
 import { SpecRailProvider } from "./rail-context.tsx";
 
+type RailFrontMatterProp = Parameters<typeof SpecRailProvider>[0]["frontMatter"];
+
 // The specification shell uses fumadocs' own slots to replace the sidebar
 // contents and remove its duplicate search trigger. Fumadocs still owns the
 // sidebar behavior, mobile drawer, active state, and document tree.
-// `specFrontMatter` defaults to the specification's own block. Pass null on a
-// surface that is not the specification (see the governance route) so the rail
-// keeps the document list without claiming the spec's version and status.
+// `railFrontMatter` defaults to the specification's own block, tagged "spec"
+// so RailBanner (rail.tsx) knows which card shape to render. Pass a
+// "governance"-tagged block (see the governance route) or null on a surface
+// that is neither, so the rail keeps the document list without claiming a
+// front-matter block it doesn't have data for.
 export function SpecificationShell({
   children,
-  specFrontMatter = getSpecFrontMatter(),
+  railFrontMatter = { kind: "spec", value: getSpecFrontMatter() },
 }: {
   children: ReactNode;
-  specFrontMatter?: ReturnType<typeof getSpecFrontMatter> | null;
+  railFrontMatter?: RailFrontMatterProp;
 }) {
   return (
     <PdppConceptShell className="pdpp-docs-shell" data-pdpp-doc-theme="true">
-      <SpecRailProvider frontMatter={specFrontMatter}>
+      <SpecRailProvider frontMatter={railFrontMatter}>
         {/* Same page measure as PdppConceptPage / masthead / footer — no
             full-bleed exception, so the rail's links open on the same x as
             the wordmark here as on every other page. */}

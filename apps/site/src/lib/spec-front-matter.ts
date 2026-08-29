@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The specification's own front matter — VERSION / STATUS / DATE / EDITORS —
-// taken from the artifacts that already declare them, never hand-typed here.
+// and the governance programme's own rail facts — STATUS / CIRCULATED /
+// FORMAL REVIEW / PROGRAMME LIVE — taken from the artifacts that already
+// declare them, never hand-typed here.
 //
-//   version, status, date  <- the repo-root spec-core.md header
-//   editors                <- MAINTAINERS.md
+//   version, status, date            <- the repo-root spec-core.md header
+//   editors                          <- MAINTAINERS.md
+//   governance status/dates          <- the repo-root GOVERNANCE.md header
 //
 // Those files are read ONCE, by scripts/sync-spec-docs.mjs at prebuild, which
 // writes src/generated/spec-front-matter.ts. Nothing here touches the file
@@ -23,7 +26,7 @@
 // A malformed header still breaks the build loudly: the parsers and their
 // refusal to guess now live in that script.
 
-import { SPEC_FRONT_MATTER } from "@/generated/spec-front-matter.ts";
+import { GOVERNANCE_FRONT_MATTER, SPEC_FRONT_MATTER } from "@/generated/spec-front-matter.ts";
 
 export interface SpecFrontMatter {
   date: string;
@@ -38,5 +41,25 @@ export function getSpecFrontMatter(): SpecFrontMatter {
     editors: [...SPEC_FRONT_MATTER.editors],
     status: SPEC_FRONT_MATTER.status,
     version: SPEC_FRONT_MATTER.version,
+  };
+}
+
+// The governance rail card has no Version and no Editors row: the document
+// isn't versioned like the specification, and it is amended by a vote of
+// Partners rather than maintained day to day (see MAINTAINERS.md). It carries
+// its own review-calendar facts instead.
+export interface GovernanceFrontMatter {
+  circulated: string;
+  formalReview: string;
+  programmeLive: string;
+  status: string;
+}
+
+export function getGovernanceFrontMatter(): GovernanceFrontMatter {
+  return {
+    circulated: GOVERNANCE_FRONT_MATTER.circulated,
+    formalReview: GOVERNANCE_FRONT_MATTER.formalReview,
+    programmeLive: GOVERNANCE_FRONT_MATTER.programmeLive,
+    status: GOVERNANCE_FRONT_MATTER.status,
   };
 }
