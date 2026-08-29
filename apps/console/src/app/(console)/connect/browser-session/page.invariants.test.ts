@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}[connectorId]/page.tsx`;
+const OPTIONAL_CREDENTIAL_FIELDS_FILE = `${HERE}[connectorId]/optional-stored-credential-fields.tsx`;
 const START_ROUTE_FILE = `${HERE}[connectorId]/start/route.ts`;
 const LAUNCH_PANEL_FILE = `${HERE}[connectorId]/launch/launch-panel.tsx`;
 const LAUNCH_START_ROUTE_FILE = `${HERE}[connectorId]/launch/start/route.ts`;
@@ -80,14 +81,15 @@ test("browser-session page does not send owners to operator/browser-service arti
 
 test("browser-session setup page keeps the new-account form and reconnect escape hatch explicit", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
+  const optionalCredentialFields = await readFile(OPTIONAL_CREDENTIAL_FIELDS_FILE, "utf8");
 
   assert.match(src, PAGE_SETUP_DESCRIPTION_RE);
   assert.match(src, PAGE_NEW_ACCOUNT_COPY_RE);
   assert.match(src, PAGE_EXISTING_SOURCE_LINK_RE);
   assert.match(src, PAGE_OPTIONAL_LABEL_RE);
   assert.match(src, PAGE_DISPLAY_NAME_FIELD_RE);
-  assert.match(src, PAGE_OPTIONAL_CREDENTIAL_CONTROL_RE);
-  assert.match(src, PAGE_MANIFEST_CREDENTIAL_FIELDS_RE);
+  assert.match(optionalCredentialFields, PAGE_OPTIONAL_CREDENTIAL_CONTROL_RE);
+  assert.match(optionalCredentialFields, PAGE_MANIFEST_CREDENTIAL_FIELDS_RE);
   assert.match(src, PAGE_FORM_CONTRACT_RE);
   assert.match(src, PAGE_PRIMARY_ACTION_LABEL_RE);
   assert.match(src, PAGE_HOW_IT_WORKS_ACTION_RE);

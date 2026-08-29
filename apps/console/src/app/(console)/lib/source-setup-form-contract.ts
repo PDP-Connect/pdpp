@@ -33,11 +33,11 @@ export function connectionNameFieldContract(displayName: string): ConnectionName
 }
 
 export interface BrowserOptionalCredentialContract {
-  readonly checkboxLabel: "Save these details to assist initial sign-in or repair.";
+  readonly checkboxLabel: "Save these sign-in details for next time.";
   readonly checkboxName: "remember_sign_in_details";
   readonly description: string;
   readonly fields: readonly StaticSecretSetupField[];
-  readonly title: "Optional saved sign-in details";
+  readonly title: "Save new sign-in details (optional)";
 }
 
 export interface BrowserSessionFormContract {
@@ -64,12 +64,12 @@ export function browserSessionFormContract(setup: StaticSecretSetup | null): Bro
 
   return {
     optionalCredentials: {
-      checkboxLabel: "Save these details to assist initial sign-in or repair.",
+      checkboxLabel: "Save these sign-in details for next time.",
       checkboxName: "remember_sign_in_details",
       description:
-        "Interactive sign-in is valid. Leave these fields blank to sign in in the secure browser; save them only if they may help with initial sign-in or repair. CAPTCHA, OTP, passkeys, and other human steps stay in the browser, and unattended reconnection is not guaranteed.",
+        "Leaving this off changes nothing: interactive sign-in in the secure browser still works, and any sign-in details already saved for this source stay in use. Check this box only to save new details, which may assist initial sign-in or repair. CAPTCHA, OTP, passkeys, and other human steps stay in the browser either way, and unattended reconnection is not guaranteed.",
       fields: setup.credential_capture.fields,
-      title: "Optional saved sign-in details",
+      title: "Save new sign-in details (optional)",
     },
     repairLoginDescription:
       "Optional encrypted sign-in details may assist repair, but they do not replace the secure browser or guarantee unattended reconnection.",

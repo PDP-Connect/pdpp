@@ -12,11 +12,12 @@ import {
 } from "./source-setup-form-contract.ts";
 
 const INTERACTIVE_SIGN_IN_RE = /Interactive sign-in is valid/;
-const LEAVE_FIELDS_BLANK_RE = /Leave these fields blank/;
 const UNATTENDED_RECONNECTION_RE = /unattended reconnection is not guaranteed/;
 const NO_PROVIDER_CREDENTIALS_RE = /does not collect provider credentials/;
 const NO_UNATTENDED_RECONNECTION_RE = /does not promise unattended reconnection/;
 const AUTOMATIC_LOGIN_RE = /automatic login/i;
+const LEAVING_OFF_CHANGES_NOTHING_RE = /Leaving this off changes nothing/;
+const SAVED_DETAILS_STAY_IN_USE_RE = /sign-in details already saved for this source stay in use/;
 
 const SETUP: StaticSecretSetup = {
   connector_id: "synthetic-browser-source",
@@ -76,12 +77,19 @@ test("browser credential contract makes interactive sign-in and optional fields 
   const contract = browserSessionFormContract(SETUP);
   assert.ok(contract.optionalCredentials);
   assert.match(contract.setupDescription, INTERACTIVE_SIGN_IN_RE);
-  assert.match(contract.optionalCredentials.description, LEAVE_FIELDS_BLANK_RE);
   assert.match(contract.optionalCredentials.description, UNATTENDED_RECONNECTION_RE);
   const usernameField = SETUP.credential_capture.fields.find((field) => field.name === "username");
   assert.ok(usernameField);
   assert.equal(optionalCredentialFieldLabel(usernameField), "Username (optional)");
   assert.deepEqual(contract.optionalCredentials.fields, SETUP.credential_capture.fields);
+});
+
+test("browser credential contract reads as an explicit opt-in that leaves saved credentials untouched when off", () => {
+  const contract = browserSessionFormContract(SETUP);
+  assert.ok(contract.optionalCredentials);
+  assert.equal(contract.optionalCredentials.title, "Save new sign-in details (optional)");
+  assert.match(contract.optionalCredentials.description, LEAVING_OFF_CHANGES_NOTHING_RE);
+  assert.match(contract.optionalCredentials.description, SAVED_DETAILS_STAY_IN_USE_RE);
 });
 
 test("browser-only start has no optional credential section or automatic-login promise", () => {
