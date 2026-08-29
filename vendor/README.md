@@ -1,8 +1,8 @@
 # Vendored cross-repo dependency tarballs (transitional)
 
 `pdpp-connector-protocol-0.0.1.tgz` was RE-PACKED on 2026-08-28 from
-PDP-Connect/data-connect commit `92cb6928c181a8020d0bd64b07c70e537234ba40`
-("feat(protocol): declare STREAM_EVIDENCE and boundary claims") on
+PDP-Connect/data-connect commit `7faa043c27f9743e57b3c117e37470ca12cb3c04`
+("fix(protocol): export skip boundary claims") on
 branch `fix/protocol-stream-evidence-boundary-claim-0828`, packed from inside
 that repo's workspace so sibling dependencies resolve during the prepack build.
 It adds two fields the reference implementation already CONSUMED but no
@@ -14,11 +14,12 @@ and typecheck" as a hard blocker). Both are additive: `boundary_claim` is
 optional and STREAM_EVIDENCE is a new union member, so nothing that compiled
 before stops compiling.
 
-The final source commit also adds compile-time contract tests through the public
-package barrel. Those tests do not alter the packed protocol source: the final
+The final source commits add compile-time contract tests and export
+`SkipResultBoundaryClaim` through the public package barrel. The
 `connector-runtime-protocol.ts` SHA-256 remains
 `c27e038e18b2ecf1d08850b4079232819277f927a8eaa244c1a5766fad74430c`,
-the exact source payload used for this tarball.
+while the barrel change is included in this artifact built from the final PR
+head.
 
 The prior artifact was built via `npm pack` from PDP-Connect/data-connect @
 3c8aeb0343dcbcbccb0bba3357f6b6bf543012b1 (branch `fix/skip-result-boundary-claim-0828`,
