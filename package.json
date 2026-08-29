@@ -126,19 +126,19 @@
   },
   "devDependencies": {
     "@babel/parser": "8.0.4",
-    "@biomejs/biome": "2.5.8",
+    "@biomejs/biome": "2.5.10",
     "@pdpp/brand": "workspace:*",
     "@pdpp/list-envelope": "workspace:*",
     "@semantic-release/exec": "^7.1.0",
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^26.2.0",
-    "conventional-changelog-conventionalcommits": "^10.3.0",
+    "@types/node": "^26.3.0",
+    "conventional-changelog-conventionalcommits": "^10.4.0",
     "lefthook": "^2.1.10",
-    "patchright": "1.61.1",
+    "patchright": "1.62.1",
     "pdpp-reference-implementation": "workspace:*",
     "semantic-release": "^25.0.9",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
-    "ultracite": "7.10.5"
+    "ultracite": "7.10.6"
   }
 }
