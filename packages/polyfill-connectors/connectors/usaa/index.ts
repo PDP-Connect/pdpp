@@ -1408,19 +1408,17 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
   // input (fromDate, startDate, or endDate), which indicates export UI is
   // present even if the select changed structure.
   if (!selectCount) {
-    const dialogExists = await page
+    const dialogCount = await page
       .locator('[role="dialog"]')
-      .first()
-      .isVisible()
-      .catch((): boolean => false);
+      .count()
+      .catch((): number => 0);
 
-    const hasDateInput = await page
+    const dateInputCount = await page
       .locator('[role="dialog"] input[name="fromDate"], [role="dialog"] input[name="startDate"], [role="dialog"] input[name="endDate"]')
-      .first()
-      .isVisible()
-      .catch((): boolean => false);
+      .count()
+      .catch((): number => 0);
 
-    if (dialogExists && hasDateInput) {
+    if (dialogCount > 0 && dateInputCount > 0) {
       // Dialog opened with date inputs. The dialog structure may have drifted,
       // but it's clearly the export form. Proceed with fillExportDateRange.
       return true;
