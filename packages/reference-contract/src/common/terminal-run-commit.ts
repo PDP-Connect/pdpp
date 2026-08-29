@@ -22,7 +22,15 @@ export interface TerminalRunCommitEnvelopeInput {
 
 /**
  * The one hash-authority projection shared by collector and reference server.
- * Connector identity MUST already be canonical before entry.
+ *
+ * Callers MUST pass the connector id exactly as it appears on the wire, NOT a
+ * canonicalized form. The collector hashes the envelope it sends and compares
+ * that digest against the one the server returns, so both sides have to hash
+ * the same bytes. The collector does not canonicalize (it forwards
+ * `PDPP_COLLECTOR_CONNECTOR` verbatim), which means the server must not either:
+ * rewriting `claude_code` to `claude-code` here yields a digest the collector
+ * can never reproduce, and the commit dead-letters on the first attempt with no
+ * retry. Canonicalize for storage and identity, never for the hash input.
  */
 export function canonicalTerminalRunCommitEnvelope(input: TerminalRunCommitEnvelopeInput): unknown {
   return canonicalValue({
