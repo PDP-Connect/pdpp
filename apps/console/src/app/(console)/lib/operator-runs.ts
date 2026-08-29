@@ -515,3 +515,68 @@ export async function deleteConnection(connectionId: string): Promise<DeleteConn
   const body = await readBody(response);
   return classifyDeleteConnectionResponse(response.status, body, connectionControlErrorCode(body));
 }
+
+export interface ConfirmCoverageHorizonInput {
+  readonly basis: "inferred_from_stable_boundary" | "provider_confirmed" | "provider_stated";
+  readonly earliest_available: string | null;
+  readonly reason: "consent_window" | "provider_deleted_history" | "provider_never_had_data" | "provider_retention_policy";
+  readonly stream: string | null;
+  readonly note?: string | null;
+}
+
+/**
+ * Owner-confirm a coverage horizon via the owner-session
+ * `POST /_ref/connections/:id/coverage-horizon` route. Records a durable,
+ * attributed disclosure of the boundary of what this provider can ever
+ * serve — pure disclosure, never a mutation of retained records and never
+ * a coverage-classification input. Connector-agnostic: the body carries only
+ * the evidence fields the route's closed vocabularies accept. The actor is
+ * the authenticated owner session, never form-supplied.
+ */
+export async function confirmCoverageHorizon(
+  connectionId: string,
+  input: ConfirmCoverageHorizonInput
+): Promise<unknown> {
+  const response = await fetchAs(connectionControlPath(connectionId, "/coverage-horizon"), {
+    body: asJson(input),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
+  const body = await readBody(response);
+  if (response.status !== 200) {
+    throw new Error(describeError(body, `coverage horizon confirmation failed (${response.status})`));
+  }
+  return body;
+}
+
+export interface AcknowledgeConnectionLossInput {
+  readonly cause: "provider_access_withdrawn" | "provider_data_contradictory" | "provider_deleted_upstream";
+  readonly scope: "partial" | "total";
+  readonly streams?: readonly string[];
+  readonly note?: string | null;
+}
+
+/**
+ * Owner-acknowledge a permanent, externally-caused data loss via the
+ * owner-session `POST /_ref/connections/:id/acknowledge-loss` route. Does
+ * not pause, revoke, delete, or retry anything: the source keeps collecting
+ * anything still reachable. `acknowledged_by` is the owner's own stated name,
+ * not a credential. Connector-agnostic: the body carries only the closed
+ * cause/scope vocabulary the route accepts.
+ */
+export async function acknowledgeConnectionLoss(
+  connectionId: string,
+  acknowledgedBy: string,
+  input: AcknowledgeConnectionLossInput
+): Promise<unknown> {
+  const response = await fetchAs(connectionControlPath(connectionId, "/acknowledge-loss"), {
+    body: asJson({ acknowledged_by: acknowledgedBy, ...input }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
+  const body = await readBody(response);
+  if (response.status !== 200) {
+    throw new Error(describeError(body, `loss acknowledgement failed (${response.status})`));
+  }
+  return body;
+}

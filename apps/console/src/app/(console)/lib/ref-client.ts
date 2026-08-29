@@ -600,6 +600,20 @@ export type RefCountState = "known" | "known_zero" | "unobserved" | "stale" | "u
 /** Mirrors the server-owned `ConnectorSummary.source_work` projection. */
 export type RefSourceWorkGroup = "needs_owner" | "not_measured" | "review" | "system_issue" | "working" | "none";
 
+export interface RefCoverageHorizon {
+  readonly basis: "inferred_from_stable_boundary" | "provider_confirmed" | "provider_stated";
+  readonly confirmedAt: string;
+  readonly confirmedBy: string;
+  readonly connectorInstanceId: string;
+  readonly earliestAvailable: string | null;
+  readonly horizonId: string;
+  readonly note: string | null;
+  readonly reason: "consent_window" | "provider_deleted_history" | "provider_never_had_data" | "provider_retention_policy";
+  readonly stream: string;
+  readonly supersededAt: string | null;
+  readonly supersededByHorizonId: string | null;
+}
+
 export interface RefConnectorSummary {
   /**
    * Owner/control-plane acquisition provenance for manual imports, device
@@ -616,6 +630,13 @@ export interface RefConnectorSummary {
    */
   collection_report?: readonly RefCollectionReportEntry[];
   connection_health: RefConnectionHealthSnapshot;
+  /**
+   * Durable, attributed disclosures of provider-retention boundaries. Optional
+   * on the mirror: a reference predating this field omits it and the console
+   * renders no horizons rather than inventing a state. Pass-through from
+   * `server/ref-control.ts#projectConnectorSummaryConnectionHealth`.
+   */
+  coverage_horizons?: readonly RefCoverageHorizon[];
   connection_id: string;
   connector_display_name?: string;
   connector_id: string;
