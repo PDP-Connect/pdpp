@@ -1380,13 +1380,21 @@ async function fillVenmoPassword(
  * the same interaction path. Returns `null` when no verification step was
  * detected (the caller proceeds to the final session probe).
  *
- * Only ever called from `loginWithSavedCredentials` AFTER the saved password
- * was already submitted, so the one probe that remains in this function is
- * `"post_submit"` (see {@link probeVenmoAccount}'s B4 doc).
+ * Once the owner's response to the code interaction resolves — whether they
+ * supplied a code or cancelled/dismissed it — this function is done probing,
+ * for the same reason {@link waitForManualLogin} is: the owner just acted on
+ * the page, and a probe (or the page-context fetch/navigation underneath one)
+ * is the next thing that could destroy or race the state that action created.
+ * The code, if supplied, is still submitted — that is automation the owner
+ * cannot do themselves — but nothing here asserts what Venmo did with it.
+ * Both outcomes return {@link OWNER_HANDOFF_COMPLETE}, which
+ * `loginWithSavedCredentials` already treats as "stop, do not reach the
+ * post-submit settle poll" (same truthy short-circuit as every other handoff
+ * path). Liveness is established one layer later, by collection — see
+ * {@link waitForManualLogin}'s doc for why that is the correct owner of this
+ * evidence.
  */
-async function handleVenmoOtpIfPresent(
-  args: ManualHandoff
-): Promise<OwnerHandoffComplete | VenmoAccountProbeResult | null> {
+async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<OwnerHandoffComplete | null> {
   const { capture, page, sendInteraction } = args;
   const otpIn = findVenmoOtpInput(page);
   const bodyText = (
@@ -1443,17 +1451,22 @@ async function handleVenmoOtpIfPresent(
   });
   const code = resp.data?.code ?? resp.value ?? null;
   if (!code) {
-    const probed = await probeVenmoAccount(page, "post_submit");
-    if (probed.live) {
-      return probed;
-    }
-    throw new Error("venmo_otp_cancelled");
+    // The owner's response to the code interaction resolved without a code —
+    // cancelled or dismissed. Nothing was submitted, so there is nothing to
+    // probe for: nothing here may run a page-context probe/navigation after
+    // an owner interaction response, the same invariant `waitForManualLogin`
+    // enforces for every other handoff. Report the handoff as over,
+    // unverified, exactly like those paths.
+    return OWNER_HANDOFF_COMPLETE;
   }
   await otpIn.fill(code);
   await clickVenmoLoginSubmit(page).catch((): boolean => false);
   await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch((): null => null);
   await captureLoginState(capture, page, "venmo-otp-after-submit");
-  return null;
+  // The code was submitted — real automation the owner could not do
+  // themselves — but collection, not this probe, is the next liveness
+  // authority: see this function's doc.
+  return OWNER_HANDOFF_COMPLETE;
 }
 
 /**

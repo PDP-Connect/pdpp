@@ -555,7 +555,7 @@ test("mutation-kill twin: omitting progress from ensureVenmoSession still succee
 
 // ─── OTP handoff ─────────────────────────────────────────────────────────
 
-test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, never asking for the password again", async () => {
+test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, never asking for the password again, and reports the owner-handoff sentinel rather than a fabricated probe", async () => {
   await withVenmoCredentials(async () => {
     let probeCount = 0;
     const username = makeLocator();
@@ -570,7 +570,9 @@ test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, nev
       // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
       async evaluate(): Promise<unknown> {
         probeCount += 1;
-        return probeCount > 1 ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
+        // Only the initial pre-submit probe (count 1) may ever run; a second
+        // call would mean something probed after the OTP interaction resolved.
+        return { kind: "dead" };
       },
       getByRole(): Locator {
         return submit;
@@ -607,10 +609,173 @@ test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, nev
       page: page as Page,
       sendInteraction,
     });
-    assert.equal(result?.live, true);
+    // A code-bearing OTP response must return the owner-handoff sentinel
+    // (`null`), never a fabricated `{ live: true }` the connector never
+    // actually checked — collection is the next liveness authority.
+    assert.equal(result, null);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "otp");
     assert.doesNotMatch(requests[0]?.message ?? "", /test-password/);
+    assert.equal(probeCount, 1, "only the initial pre-submit probe may run; nothing may probe after the OTP response");
+  });
+});
+
+// These two tests pin the MECHANISM (no page-context probe/navigation runs
+// after the OTP interaction resolves), not merely the outcome — same shape as
+// the manual-login mechanism tests above, and for the same reason: an
+// assertion on the outcome alone can pass while a probe still runs and simply
+// happens to agree with reality in the fake.
+test("ensureVenmoSession: a code-bearing OTP response triggers no page-context probe or navigation after it resolves", async () => {
+  await withVenmoCredentials(async () => {
+    const username = makeLocator();
+    const password = makeLocator();
+    const submit = makeLocator();
+    const otp = makeLocator();
+    let currentUrl = "https://venmo.com/";
+    let responded = false;
+    let evaluatesAfterResponse = 0;
+    let gotosAfterResponse = 0;
+    const page: Pick<
+      Page,
+      "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+    > = {
+      // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+      async evaluate(): Promise<unknown> {
+        if (responded) {
+          evaluatesAfterResponse += 1;
+        }
+        return { kind: "dead" };
+      },
+      getByRole(): Locator {
+        return submit;
+      },
+      goto(url: string): ReturnType<Page["goto"]> {
+        if (responded) {
+          gotosAfterResponse += 1;
+        }
+        currentUrl = url;
+        return Promise.resolve(null);
+      },
+      locator(selector: string): Locator {
+        if (selector.includes("username")) {
+          return username;
+        }
+        if (selector.includes("password")) {
+          return password;
+        }
+        if (selector.includes("otp") || selector.includes("code")) {
+          return otp;
+        }
+        return makeLocator({ count: 0, visible: false });
+      },
+      url(): string {
+        return currentUrl;
+      },
+      waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
+        return Promise.resolve();
+      },
+      waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+        return Promise.resolve();
+      },
+    };
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page: page as Page,
+      sendInteraction: (req) => {
+        const response = sendInteraction(req);
+        responded = true;
+        return response;
+      },
+    });
+    assert.equal(result, null, "a submitted OTP code must report the owner-handoff sentinel");
+    assert.equal(requests[0]?.kind, "otp");
+    assert.equal(evaluatesAfterResponse, 0, "no page-context probe may run once the OTP response resolves");
+    assert.equal(gotosAfterResponse, 0, "no navigation may run once the OTP response resolves");
+  });
+});
+
+test("ensureVenmoSession: cancelling/dismissing the OTP prompt triggers no page-context probe or navigation, and reports the owner-handoff sentinel rather than fabricating proof", async () => {
+  await withVenmoCredentials(async () => {
+    const username = makeLocator();
+    const password = makeLocator();
+    const submit = makeLocator();
+    const otp = makeLocator();
+    let currentUrl = "https://venmo.com/";
+    let responded = false;
+    let evaluatesAfterResponse = 0;
+    let gotosAfterResponse = 0;
+    const page: Pick<
+      Page,
+      "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+    > = {
+      // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+      async evaluate(): Promise<unknown> {
+        // Answers LIVE only once the owner has responded — the state a real
+        // account would be in only AFTER the cancelled prompt, so a probe run
+        // (illegitimately) after the response would see proof and could be
+        // tempted to fabricate a result from it. The fix must never call
+        // this again once `responded` flips, not merely fail to use the
+        // answer if it did.
+        if (responded) {
+          evaluatesAfterResponse += 1;
+          return { kind: "live", ownerId: "1234567890123456789" };
+        }
+        return { kind: "dead" };
+      },
+      getByRole(): Locator {
+        return submit;
+      },
+      goto(url: string): ReturnType<Page["goto"]> {
+        if (responded) {
+          gotosAfterResponse += 1;
+        }
+        currentUrl = url;
+        return Promise.resolve(null);
+      },
+      locator(selector: string): Locator {
+        if (selector.includes("username")) {
+          return username;
+        }
+        if (selector.includes("password")) {
+          return password;
+        }
+        if (selector.includes("otp") || selector.includes("code")) {
+          return otp;
+        }
+        return makeLocator({ count: 0, visible: false });
+      },
+      url(): string {
+        return currentUrl;
+      },
+      waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
+        return Promise.resolve();
+      },
+      waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+        return Promise.resolve();
+      },
+    };
+    const requests: InteractionRequest[] = [];
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page: page as Page,
+      sendInteraction: (req): Promise<InteractionResponse> => {
+        requests.push(req);
+        responded = true;
+        // Owner cancelled/dismissed: a terminal status with no code, exactly
+        // what a real cancel/dismiss produces (interaction-handler.ts's
+        // InteractionResponseStatus).
+        return Promise.resolve({ request_id: "test_interaction", status: "cancelled", type: "INTERACTION_RESPONSE" });
+      },
+    });
+    assert.equal(
+      result,
+      null,
+      "a cancelled/dismissed OTP prompt must report the owner-handoff sentinel, never a fabricated probe result"
+    );
+    assert.equal(requests[0]?.kind, "otp");
+    assert.equal(evaluatesAfterResponse, 0, "no page-context probe may run once the cancel/dismiss response resolves");
+    assert.equal(gotosAfterResponse, 0, "no navigation may run once the cancel/dismiss response resolves");
   });
 });
 
@@ -834,7 +999,10 @@ test("ensureVenmoSession: the captured SMS offer selects Remember this device, s
       },
     });
 
-    assert.equal(result?.live, true, "the sent code's existing OTP path must be able to establish the session");
+    // A code-bearing OTP response returns the owner-handoff sentinel, not a
+    // fabricated liveness claim — collection re-probes and is the actual
+    // liveness authority.
+    assert.equal(result, null, "a submitted OTP code must report the owner-handoff sentinel, not a probed result");
     assert.equal(fake.checkboxClicks, 1, "the unchecked captured control must be selected before code dispatch");
     assert.equal(fake.isRememberDeviceChecked(), true, "Remember this device must stay selected");
     assert.equal(fake.sendCodeClicks, 1, "the real captured Send code control must dispatch exactly once");
@@ -858,7 +1026,7 @@ test("ensureVenmoSession: the already-checked captured Remember this device cont
       },
     });
 
-    assert.equal(result?.live, true);
+    assert.equal(result, null, "a submitted OTP code must report the owner-handoff sentinel, not a probed result");
     assert.equal(fake.checkboxClicks, 0, "a checked Remember this device control must not be clicked back off");
     assert.equal(fake.isRememberDeviceChecked(), true);
     assert.equal(fake.sendCodeClicks, 1);
