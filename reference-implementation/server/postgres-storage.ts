@@ -1724,6 +1724,15 @@ export async function bootstrapPostgresSchema({
       );
       CREATE INDEX IF NOT EXISTS idx_pg_grants_client_status
         ON grants(client_id, status, issued_at);
+      -- Absent-only grant expiry: grants issued before that normalization
+      -- persisted an explicit JSON null expires_at in grant_json. Null and
+      -- absent both mean "no expiry", so dropping the member is a
+      -- representation change, not an authorization change. Scoped to the
+      -- JSON-null case so string expiries are never touched, and idempotent
+      -- so repeated startups are no-ops.
+      UPDATE grants
+        SET grant_json = grant_json - 'expires_at'
+        WHERE jsonb_typeof(grant_json->'expires_at') = 'null';
 
       CREATE TABLE IF NOT EXISTS tokens (
         token_id TEXT PRIMARY KEY,

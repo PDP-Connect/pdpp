@@ -3894,10 +3894,7 @@
                             },
                             "expires_at": {
                               "format": "date-time",
-                              "type": [
-                                "string",
-                                "null"
-                              ]
+                              "type": "string"
                             },
                             "grant_id": {
                               "minLength": 1,
@@ -4678,10 +4675,7 @@
                         },
                         "expires_at": {
                           "format": "date-time",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
+                          "type": "string"
                         },
                         "grant_id": {
                           "minLength": 1,
@@ -5586,10 +5580,7 @@
                         },
                         "expires_at": {
                           "format": "date-time",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
+                          "type": "string"
                         },
                         "grant_id": {
                           "minLength": 1,

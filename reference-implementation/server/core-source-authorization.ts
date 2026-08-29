@@ -537,7 +537,9 @@ export function materializeCoreResolvedGrant({
   const candidate = {
     access_mode: accessMode,
     client: { client_id: clientId },
-    expires_at: expiresAt,
+    // Absent-only expiry: a grant with no expiry omits the field entirely
+    // rather than carrying an explicit `null` (spec-core.md, Grant fields).
+    ...(expiresAt === null || expiresAt === undefined ? {} : { expires_at: expiresAt }),
     grant_id: grantId,
     issued_at: issuedAt,
     purpose_code: purposeCode,
@@ -553,9 +555,28 @@ export function materializeCoreResolvedGrant({
   return parseCoreResolvedGrant(candidate);
 }
 
+/**
+ * Normalize a legacy explicit-null `expires_at` to the absent-only form.
+ *
+ * `expires_at` is absent-only: a grant with no expiry omits the field. Grants
+ * issued before that normalization persisted an explicit `"expires_at": null`
+ * in `grants.grant_json`, and those blobs are re-parsed on every read. Dropping
+ * the member here — rather than rejecting it — keeps already-issued grants
+ * readable while giving every caller downstream the single terminal shape.
+ * `null` and absent already mean the same thing (no expiry), so this is a
+ * representation change, not an authorization change.
+ */
+function normalizeAbsentOnlyExpiry(candidate: unknown): unknown {
+  if (isObject(candidate) && "expires_at" in candidate && candidate.expires_at === null) {
+    const { expires_at: _legacyNull, ...rest } = candidate;
+    return rest;
+  }
+  return candidate;
+}
+
 /** Parse the closed Source resolved-grant contract used by every binding. */
 export function parseCoreResolvedGrant(value: unknown): ResolvedGrant {
-  const candidate = cloneJson(value);
+  const candidate = normalizeAbsentOnlyExpiry(cloneJson(value));
   if (!validateResolvedGrantSchema(candidate)) {
     const details = (validateResolvedGrantSchema.errors ?? [])
       .map((error) => `${error.instancePath || "/"} ${error.message || "is invalid"}`)
