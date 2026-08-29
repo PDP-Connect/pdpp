@@ -77,9 +77,10 @@ function RailBanner() {
     return null;
   }
   if (frontMatter.kind === "governance") {
-    const { circulated, formalReview, programmeLive, status } = frontMatter.value;
+    const { appliesTo, circulated, formalReview, programmeLive, status } = frontMatter.value;
     return (
       <PdppRailGovernanceFrontMatter
+        appliesTo={appliesTo}
         circulated={circulated}
         formalReview={formalReview}
         programmeLive={programmeLive}

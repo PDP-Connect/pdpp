@@ -1,6 +1,6 @@
 ---
 title: "Governance, Membership and Conformance"
-description: "How PDP-Connect is governed, how membership works, and how conformance status is obtained — a programme document, not normative protocol text."
+description: "How PDP-Connect is governed, how membership works, and how conformance status is obtained."
 ---
 
 <Callout type="info" title="Programme document">

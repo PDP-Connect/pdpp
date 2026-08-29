@@ -14,6 +14,7 @@ export interface PdppRailFrontMatterProps {
 }
 
 export interface PdppRailGovernanceFrontMatterProps {
+  appliesTo: string;
   circulated: string;
   formalReview: string;
   programmeLive: string;
@@ -62,11 +63,15 @@ export function PdppRailFrontMatter({ date, editors, status, version }: PdppRail
 
 /**
  * Governance rail banner: STATUS / CIRCULATED / FORMAL REVIEW / PROGRAMME
- * LIVE / SOURCE. No Version and no Editors row — the programme document isn't
- * versioned like the specification, and it is amended by a vote of Partners
- * rather than maintained day to day (see MAINTAINERS.md).
+ * LIVE / APPLIES TO / SOURCE. No Version and no Editors row — the programme
+ * document isn't versioned like the specification, and it is amended by a
+ * vote of Partners rather than maintained day to day (see MAINTAINERS.md).
+ * Applies to is here, not in the page body, because GOVERNANCE.md's own
+ * status block (which stated it inline) is elided from the generated page —
+ * a document has one status block, and this card is it.
  */
 export function PdppRailGovernanceFrontMatter({
+  appliesTo,
   circulated,
   formalReview,
   programmeLive,
@@ -79,6 +84,7 @@ export function PdppRailGovernanceFrontMatter({
         <RailMetaRow label="Circulated">{circulated}</RailMetaRow>
         <RailMetaRow label="Formal review">{formalReview}</RailMetaRow>
         <RailMetaRow label="Programme live">{programmeLive}</RailMetaRow>
+        <RailMetaRow label="Applies to">{appliesTo}</RailMetaRow>
         <RailSourceRow href={repoBlobUrl("GOVERNANCE.md")} />
       </dl>
     </div>

@@ -47,8 +47,12 @@ export function getSpecFrontMatter(): SpecFrontMatter {
 // The governance rail card has no Version and no Editors row: the document
 // isn't versioned like the specification, and it is amended by a vote of
 // Partners rather than maintained day to day (see MAINTAINERS.md). It carries
-// its own review-calendar facts instead.
+// its own review-calendar facts instead, plus Applies to — the one fact from
+// GOVERNANCE.md's status block that the rail card would otherwise be missing
+// once that block is elided from the generated page body (see
+// sync-spec-docs.mts's stripGovernanceStatusBlock).
 export interface GovernanceFrontMatter {
+  appliesTo: string;
   circulated: string;
   formalReview: string;
   programmeLive: string;
@@ -57,6 +61,7 @@ export interface GovernanceFrontMatter {
 
 export function getGovernanceFrontMatter(): GovernanceFrontMatter {
   return {
+    appliesTo: GOVERNANCE_FRONT_MATTER.appliesTo,
     circulated: GOVERNANCE_FRONT_MATTER.circulated,
     formalReview: GOVERNANCE_FRONT_MATTER.formalReview,
     programmeLive: GOVERNANCE_FRONT_MATTER.programmeLive,

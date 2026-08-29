@@ -179,17 +179,37 @@ for (const spec of SPECS) {
 
 // Programme documents are single-sourced the same way, from a DIFFERENT root
 // header shape. GOVERNANCE.md is not a spec: it carries a bolded `**Status:**`
-// block with Circulated / Formal review / Programme live lines rather than the
-// uniform `Status:`/`Date:` pair extractBody asserts on, and it is not under
-// CSL-1.0 or amended through the Community Specification process. Running it
-// through the spec path would throw on line 3; giving it its own path keeps the
-// spec header contract strict rather than loosening it to accommodate a file
-// that was never meant to satisfy it.
+// block with Circulated / Formal review / Programme live / Applies to lines
+// rather than the uniform `Status:`/`Date:` pair extractBody asserts on, and it
+// is not under CSL-1.0 or amended through the Community Specification process.
+// Running it through the spec path would throw on line 3; giving it its own
+// path keeps the spec header contract strict rather than loosening it to
+// accommodate a file that was never meant to satisfy it.
 //
-// The body is taken whole below the `# Title` line — the root document's own
-// status block IS content here (it states the review window and the lock), so
-// unlike the specs nothing is stripped but the heading the frontmatter replaces.
+// The body is taken from below the `# Title` line, with the five-line
+// `**Label:** value` status block also stripped (see stripGovernanceStatusBlock)
+// for the SITE copy only: the rail card now renders those same facts (see
+// GOVERNANCE_FRONT_MATTER below and rail.tsx), and a document has one status
+// block — rendered chrome replaces the in-body list rather than sitting beside
+// it. The root GOVERNANCE.md keeps the list; only the generated .mdx elides it.
 const PROGRAMME_DOCS = [{ header: "governance", root: "GOVERNANCE", slug: "governance" }];
+
+// Matches exactly the label set the rail card sources from this same block
+// (see requireGovernanceMatch below): Status, Circulated, Formal review,
+// Programme live, Applies to. Anchored to `**Label:**` at the start of a line
+// so it cannot match a similarly-worded sentence deeper in the document.
+const GOVERNANCE_STATUS_LABEL_PATTERN = /^\*\*(?:Status|Circulated|Formal review|Programme live|Applies to):\*\*.*$/;
+
+function stripGovernanceStatusBlock(body: string[]): string[] {
+  const rest = [...body];
+  while (rest.length && GOVERNANCE_STATUS_LABEL_PATTERN.test(rest[0] ?? "")) {
+    rest.shift();
+  }
+  while (rest.length && rest[0].trim() === "") {
+    rest.shift();
+  }
+  return rest;
+}
 
 function extractProgrammeBody(rootText: string, docName: string): string {
   const lines = rootText.split("\n");
@@ -200,10 +220,11 @@ function extractProgrammeBody(rootText: string, docName: string): string {
     );
   }
 
-  const body = lines.slice(1);
+  let body = lines.slice(1);
   while (body.length && body[0].trim() === "") {
     body.shift();
   }
+  body = stripGovernanceStatusBlock(body);
 
   return body.join("\n");
 }
@@ -277,7 +298,7 @@ if (editors.length === 0) {
 }
 
 // GOVERNANCE.md's own rail facts — Status / Circulated / Formal review /
-// Programme live — for the /governance rail card (see
+// Programme live / Applies to — for the /governance rail card (see
 // apps/site/src/components/specification/rail-context.tsx). Governance has no
 // Editors row: the document is amended by a vote of Partners, not maintained
 // the way the specification is (see MAINTAINERS.md).
@@ -315,6 +336,7 @@ const governanceProgrammeLive = requireGovernanceMatch(
   /^\*\*Programme live:\*\*\s*(.+?)<br \/>\s*$/m,
   "Programme live"
 );
+const governanceAppliesTo = requireGovernanceMatch(/^\*\*Applies to:\*\*\s*([^.]+)\./m, "Applies to");
 
 // "3 September 2026" / "1 October 2026" -> "3 September – 1 October 2026":
 // drop the opens-date's year when both ends share one, rather than repeating
@@ -333,6 +355,7 @@ const governanceFrontMatter = {
   circulated: governanceCirculated,
   formalReview,
   programmeLive: governanceProgrammeLive,
+  appliesTo: governanceAppliesTo,
 };
 
 const generatedDir = path.join(siteDir, "src", "generated");
