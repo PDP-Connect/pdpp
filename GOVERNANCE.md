@@ -282,7 +282,7 @@ Verified Accessor by either route is a positive trust signal for [Core §6](http
 
 ### 4.6 Operator status
 
-**Verified Operator.** The applicant runs the conformance test suite against its authorization server and resource server implementation and submits the results under [§4.2](#42-how-status-is-obtained).
+**Verified Operator.** The applicant runs the conformance test suite against its authorization server and resource server implementation and submits the results under [§4.2](#42-how-status-is-obtained). A Verified Operator claim states which [Core §9](https://pdpp.dev/specification#conformance) roles and tiers it covers, and against which specification version the results were produced.
 
 [Core §9](https://pdpp.dev/specification#conformance) notes that a conformance test suite is planned and not defined in v0.1. The suite is published within three months of programme live, and Verified Operator opens on its publication. Until then operator conformance is self-asserted and PDP-Connect makes no finding about it.
 
