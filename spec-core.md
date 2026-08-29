@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-08-14
+Date: 2026-08-29
 
 ---
 
@@ -231,7 +231,7 @@ This design ensures that a client authorized for fields A and B cannot infer tha
 
 Tombstones use the same `object: "record"` envelope as regular response records, with `deleted: true`. The `id` field is the canonical key string (see RECORD envelope, Compound key encoding below). Both `deleted_at` and `emitted_at` are required on tombstone objects. No `data` field is present on tombstones.
 
-A tombstone signals that a record left the stream. For subset or derived streams this means membership removal; it does not assert that the source record was deleted.
+A tombstone signals that a record left the stream. For subset or derived streams this means membership removal; it does not assert that the source record was deleted. See [Derived subset streams](#predicate-based-grant-scoping) (Section 12) for the non-normative discussion of this stream shape.
 
 `deleted_at` represents the time the record was deleted in the source system, if known; otherwise the time the RS processed the deletion directive. If the source system deletion time is unknown, the RS SHOULD use the `emitted_at` value of the delete directive as `deleted_at`.
 
@@ -754,7 +754,7 @@ Per-stream, within the `streams` array. All are optional except `name`.
 |-----------|------|--------|-------------|
 | `name` | string | Protocol-enforced | Stream name, or `*` for all streams (resolved at consent time against the retained SourceDeclaration). |
 | `necessity` | enum | Consent-flow control at issuance time | `required` (default) or `optional`. Optional streams are presented as user choices during consent. |
-| `instance_ids` | string[] | Protocol-enforced | Optional opaque owner-instance handles for this stream. Handles are scoped to issuer, subject, `source.id`, and stream. Omission never means fan-in. The AS resolves exactly one eligible handle or requires an explicit owner choice. |
+| `instance_ids` | string[] | Protocol-enforced | Optional opaque owner-instance handles for this stream. Handles are scoped to issuer, subject, `source.id`, and stream. Omission never means fan-in (reading across more than one connected instance of the same source). The AS resolves exactly one eligible handle or requires an explicit owner choice. |
 | `time_range.since` | ISO 8601 | Protocol-enforced | Earliest data to include (inclusive, >=), evaluated against the stream's `consent_time_field`. |
 | `time_range.until` | ISO 8601 | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. A hard cap: applies to future resources as well as past ones. |
 | `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. AS returns 400 `invalid_request` if both are present. |
@@ -802,7 +802,7 @@ Every field in the issued grant is derived from either the selection request, cl
 
 **Note:** This section defines the immutable consent artifact and the constraints a resource server enforces for a token-bound client. Grant database schema, signed-token format, hosted registries, and deployment topology are out of scope for this document.
 
-The grant is an immutable consent artifact. It is the output of the authorization flow.
+A grant is an immutable consent artifact. It is the output of the authorization flow.
 
 The authorization server issues an access token bound to the grant. The client uses the access token (not the raw grant) to authenticate with the resource server. The resource server resolves the token to the grant and enforces its constraints on every request. Grant lifecycle (active, expired, revoked) is tracked by the authorization server, not stored in the grant itself.
 
@@ -839,11 +839,11 @@ The authorization server issues an access token bound to the grant. The client u
 
 ### Grant fields
 
-**The following field table is normative.** TypeScript types in Section 13 are non-normative.
+**The following field table is normative.** [Section 13](#typescript-types)'s TypeScript types are a non-normative convenience mirror; on conflict, this table wins.
 
 | Field | Type | Required | Status | Description |
 |-------|------|----------|--------|-------------|
-| `version` | string | yes | Protocol metadata | Grant schema version. This contract requires exactly `0.1.0`. |
+| `version` | string | yes | Protocol metadata | Tracks the version of this specification's grant schema (not a URL; there is no external schema document to resolve). This contract requires exactly `0.1.0`. |
 | `grant_id` | string | yes | Protocol metadata | Unique identifier. |
 | `issued_at` | ISO 8601 | yes | Protocol metadata | When the grant was issued. |
 | `subject` | object | yes | Identity binding | Exactly `{ id }`. The `subject.id` is an opaque string, unique within the issuing AS's namespace. No format constraint is imposed. |
@@ -863,7 +863,7 @@ The authorization server issues an access token bound to the grant. The client u
 | Field | Type | Required | Status | Description |
 |-------|------|----------|--------|-------------|
 | `name` | string | yes | Protocol-enforced | Unique stream name within the grant. Always concrete; no wildcards in issued grants. |
-| `instance_ids` | string[] | yes | Protocol-enforced | Unique non-empty opaque instance handles scoped to issuer, subject, source ID, and this stream. Multiple handles authorize fan-in only when explicitly listed. |
+| `instance_ids` | string[] | yes | Protocol-enforced | Unique non-empty opaque instance handles scoped to issuer, subject, source ID, and this stream. Multiple handles authorize fan-in only when explicitly listed. Example: two connected Gmail accounts are two instances of the same source kind, each with its own handle. |
 | `fields` | string[] | yes | Protocol-enforced | Unique non-empty resolved field allowlist, authoritative for RS enforcement. Top-level field names only. |
 | `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, since?, until? }` resolved from the retained declaration. `field` is required and at least one bound is present. `since` is inclusive; `until` is exclusive. |
 | `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Absent means all records. |
@@ -920,9 +920,9 @@ explicitly migrate such state MUST require fresh consent.
 | `single_use` | The grant is consumed at first token issuance. The AS marks the grant consumed atomically with issuance of the first client access token. The AS MUST reject subsequent attempts to issue new client access tokens against the same consumed grant. The RS honors all tokens issued against the grant until token expiry or revocation. The client MAY retry or resume pagination using the same access token. Failure to complete retrieval before token expiry does not un-consume the grant. |
 | `continuous` | The grant is fulfilled repeatedly. The client may query the resource server incrementally over time. Active until expiry or revocation. |
 
-### time constraint semantics
+### Time constraint semantics
 
-The request's `time_range` is resolved against the retained stream
+The selection request's `time_range` is resolved against the retained stream
 `consent_time_field` into the grant's `time_constraint`. The grant freezes that
 field with the bounds. The filter is:
 
@@ -1066,10 +1066,15 @@ On every request, the resource server:
 5. If all checks pass, returns records filtered accordingly.
 6. If any check fails, returns a structured error (see Errors below).
 
-For owner-token current-capability reads, the RS MAY compute
-`effective_filter = grant_filter AND request_filter`; request filters can only
-narrow the current owner read and cannot widen it. In v0.1, client-token reads
-do not have request-time predicate filters (see List records below).
+For owner-token current-capability reads, the effective filter is the permitted
+owner request filter alone: an owner token carries no grant, so there is no grant
+filter to intersect. Request filters can only narrow the current owner read and
+cannot widen it.
+
+In v0.1, client-token reads do not have request-time predicate filters (see List
+records below); the resource server enforces the frozen grant constraints and
+rejects a client request-time predicate filter rather than evaluating it. A
+future client-filter capability may define intersection semantics.
 
 The RS MUST NOT re-validate authorization against the current SourceDeclaration. All enforcement constraints are in the resolved grant. Current serving metadata MAY route a granted instance, describe current schemas or query capabilities, or reject a request that cannot currently be served. It MUST NOT widen or reinterpret a stream, instance, field, time field, bound, or resource key.
 
@@ -1078,8 +1083,8 @@ The RS MUST NOT re-validate authorization against the current SourceDeclaration.
 ### Token introspection
 
 For separated AS/RS deployments, the RS MUST authenticate to the AS
-introspection endpoint as required by RFC 7662. PDPP defines the following
-extension fields in the introspection response:
+introspection endpoint as required by RFC 7662. The introspection response
+combines standard RFC 7662 fields with PDPP-defined extensions:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -1159,7 +1164,7 @@ GET /v1/streams/{stream}
 Authorization: Bearer <access_token>
 ```
 
-Returns full source stream metadata. This endpoint is not grant-projected: grants determine whether the caller may access the stream and what reads or queries are permitted, but they do not redact or rewrite the metadata document returned here. Response:
+Returns full source stream metadata. A client-token caller may fetch metadata only for a stream present in its resolved authorization context. An owner-token caller may fetch metadata for streams in the subject's data store the owner token is scoped to. Once access is authorized, the metadata document is returned whole rather than field-projected by the grant. Response:
 
 ```json
 {
@@ -1246,10 +1251,11 @@ Client-token requests that contain any exact or range `filter[...]` parameter
 MUST be rejected with HTTP 400 `invalid_request` before the RS consults current
 SourceDeclaration or serving metadata. This rejection applies regardless of
 whether the field or operator would otherwise be declared. Owner-token
-current-capability reads MAY accept exact filters on authorized top-level
-scalar fields and declared range filters; unknown fields and non-scalar fields
-are HTTP 400, and fields outside the grant's authorized projection are HTTP 403
-`field_not_granted`.
+current-capability reads MAY accept exact filters on declared top-level scalar
+fields and range filters explicitly declared by current serving metadata.
+Unknown fields, non-scalar fields, and unsupported range shapes return HTTP
+400. Owner subject, source, and connection scope are enforced independently. An
+owner token has no client grant field projection.
 
 Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be
 rejected with HTTP 400 `invalid_request` before the RS consults current
@@ -1278,10 +1284,10 @@ Eligibility for `changes_since` MUST be computed on the grant-authorized project
 
 If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`.
 
-**Filter on unauthorized field:** For owner-token current-capability reads, RS
-MUST reject a `filter[{field}]` parameter targeting a field outside the grant's
-authorized projection with 403 `field_not_granted`. Client-token requests are
-rejected earlier by the v0.1 client-filter rule above.
+**Invalid owner filter:** An owner-token current-capability filter on an
+unknown, non-scalar, or unsupported field/operator returns HTTP 400
+`invalid_request` or `unknown_field`, as applicable. Client-token predicate
+filters are rejected earlier under the v0.1 client-filter rule.
 
 **Expansion:** A client-token expansion request is rejected with 400
 `invalid_request` before declaration lookup. For an owner-token
@@ -1394,7 +1400,7 @@ Every non-2xx response returns a structured error:
 | `unsupported_version` | 400 | `invalid_request_error` | `PDPP-Version` header specifies unsupported version, or grant references unsupported schema version. |
 | `authentication_error` | 401 | `authentication_error` | Missing or invalid access token. |
 | `authorization_state.unsupported_legacy_shape` | 401 | `authentication_error` | Persisted authorization state does not match a supported shape. Fresh consent is required when no migration applies. |
-| `field_not_granted` | 403 | `permission_error` | Filter targets a field outside the grant's authorized projection. |
+| `field_not_granted` | 403 | `permission_error` | Requested client field exceeds the grant's authorized field projection. |
 | `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
 | `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
 | `grant_time_range_exceeded` | 403 | `permission_error` | Request filters exceed the grant's frozen `time_constraint`. |
@@ -1464,7 +1470,7 @@ A conformant Core RS:
 2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter.
 3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results no longer than `min(token_exp, 60 seconds)`.
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
-5. Computes effective filters as `grant_filter AND request_filter`.
+5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
 6. Returns structured errors as defined in Section 8 (unified error table).
 7. Supports incremental sync via `changes_since` for `mutable_state` streams, including tombstone entries, omission of records whose grant-authorized projection did not change, and HTTP 410 with error code `cursor_expired` on cursor expiry.
 8. Returns `next_changes_since` on the terminal page of every `changes_since` response.
@@ -1635,7 +1641,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Predicate-based grant scoping | Deferred; see spec-deferred for subset template design direction |
 | Real-time streaming | Different spec needed |
 
-### Predicate-based grant scoping
+### Predicate-based grant scoping {#predicate-based-grant-scoping}
 
 v0.1 grants narrow access only by stream selection, named view or field projection, time range, and explicit resource identifiers. Generic predicate expressions (e.g., `filter[sender_domain]=amazon.com` as a grant parameter) are not supported.
 
@@ -1661,7 +1667,7 @@ Current active editors and maintainers are listed in `MAINTAINERS.md`. This repo
 
 ---
 
-## 13. TypeScript Types
+## 13. TypeScript Types {#typescript-types}
 
 **Note:** TypeScript types in this section are non-normative. The normative definitions are the prose field tables in Sections 5, 6, and 7.
 

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import robots from "@/app/robots.ts";
 import { SITE_ORIGIN } from "@/lib/site-facts.ts";
 import { buildSitemap, type DocPageRef } from "@/lib/sitemap-entries.ts";
-import { MAINTAINER_DOC_SLUGS, maintainersRoute } from "@/lib/spec-nav-slugs.ts";
+import { MAINTAINER_DOC_SLUGS, maintainersRoute, specDocExtension } from "@/lib/spec-nav-slugs.ts";
 
 // SEO/GEO standard MUST #1.5: robots.txt must agree with the approved access
 // policy. MUST #4.3: a sitemap must contain only canonical, indexable URLs.
@@ -46,13 +46,13 @@ test("robots.txt allows the public site and blocks non-canonical surfaces", () =
 const FIXTURE_PAGES: DocPageRef[] = [
   { path: "index.mdx", url: "/specification" },
   { path: "README.md", url: "/specification/README" },
-  { path: "spec-core.md", url: "/specification/spec-core" },
-  { path: "spec-discovery-and-trust.md", url: "/specification/spec-discovery-and-trust" },
+  { path: "spec-core.mdx", url: "/specification/spec-core" },
+  { path: "spec-discovery-and-trust.mdx", url: "/specification/spec-discovery-and-trust" },
   // Every maintainer document, not just a sample. These were absent from the
   // fixture, which is why the suite stayed green while they leaked into the
-  // live sitemap.
+  // live sitemap. Extensions are mixed: see GENERATED_MDX_SPEC_SLUGS.
   ...MAINTAINER_DOC_SLUGS.map((slug) => ({
-    path: `${slug}.md`,
+    path: `${slug}.${specDocExtension(slug)}`,
     url: `/specification/${slug}`,
   })),
 ];

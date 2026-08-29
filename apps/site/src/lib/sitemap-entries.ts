@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { MetadataRoute } from "next";
-import { GOVERNANCE_SLUG, governanceRoute, MAINTAINER_DOC_SLUGS } from "./spec-nav-slugs.ts";
+import { GOVERNANCE_SLUG, governanceRoute, MAINTAINER_DOC_SLUGS, specDocExtension } from "./spec-nav-slugs.ts";
 
 // Pure by design: takes plain { path, url } pairs rather than a fumadocs
 // Page, so this can be unit-tested without loading the generated MDX source
@@ -11,7 +11,7 @@ import { GOVERNANCE_SLUG, governanceRoute, MAINTAINER_DOC_SLUGS } from "./spec-n
 // scripts/seo-metadata.test.ts). src/app/sitemap.ts is the only caller and
 // supplies the real fumadocs pages.
 export interface DocPageRef {
-  /** Repo-relative source path, e.g. "spec-core.md" or "README.md". */
+  /** Repo-relative source path, e.g. "spec-core.mdx" or "README.md". */
   path: string;
   /** Resolved public URL, e.g. "/specification/spec-core". */
   url: string;
@@ -28,14 +28,20 @@ export interface DocPageRef {
 //   and their own noindex all keep out. Derived from MAINTAINER_DOC_SLUGS
 //   rather than repeated, so the rail and the sitemap cannot disagree about
 //   what is unlisted.
-// - governance.md: canonical at /governance, not at the /specification/governance
+// - governance.mdx: canonical at /governance, not at the /specification/governance
 //   URL fumadocs derives for it (that URL 308-redirects). Listing the fumadocs
 //   URL would put a redirect in the sitemap; the canonical route is added as a
 //   static entry below instead.
+//
+// Extensions come from specDocExtension rather than a hardcoded ".md": some
+// maintainer docs are single-sourced from a root spec-*.md and generated as
+// .mdx (see GENERATED_MDX_SPEC_SLUGS), others (reference-implementation*,
+// open-questions) are hand-authored .md files this repo's generator never
+// touches.
 const NON_CANONICAL_DOC_PATHS = new Set([
   "README.md",
-  `${GOVERNANCE_SLUG}.md`,
-  ...MAINTAINER_DOC_SLUGS.map((slug) => `${slug}.md`),
+  `${GOVERNANCE_SLUG}.mdx`,
+  ...MAINTAINER_DOC_SLUGS.map((slug) => `${slug}.${specDocExtension(slug)}`),
 ]);
 
 // SEO/GEO standard MUST #4.3: a sitemap must contain only canonical,

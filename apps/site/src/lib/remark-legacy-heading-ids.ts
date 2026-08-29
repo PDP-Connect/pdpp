@@ -20,7 +20,15 @@ interface TreeNode {
   value?: string;
 }
 
-const LEGACY_ID_PATTERN = /\s*\{#([A-Za-z0-9_-]+)\}\s*$/;
+// Matches the root spec files' own `{#id}` (kept literal there — GitHub and
+// plain-Markdown readers just show it as inert trailing text) AND
+// sync-spec-docs.mjs's `[#id]` substitution written into the generated .mdx
+// copy. Curly braces are live MDX expression syntax once a doc compiles as
+// .mdx (`{#introduction}` fails to parse as JS), so the generator swaps the
+// braces for square brackets — inert prose in both CommonMark and MDX —
+// before writing the .mdx file. Accepting both forms here means this plugin
+// keeps working unchanged if a doc is ever generated with the braces intact.
+const LEGACY_ID_PATTERN = /\s*[[{]#([A-Za-z0-9_-]+)[\]}]\s*$/;
 
 function visit(node: TreeNode, visitor: (node: TreeNode) => void) {
   visitor(node);
