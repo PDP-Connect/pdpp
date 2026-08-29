@@ -624,27 +624,20 @@ function parseDetailItem(link: HTMLAnchorElement): DetailItem | null {
 // same product-detail href — an aria-hidden image-wrapper link with empty
 // text (sorts first in document order) and the real name link
 // (a[data-qe-id="itemRowDetailsName"]). Selecting the name anchor directly
-// avoids both failure modes the old a[href*="/product-detail"] + dedup-by-
-// href approach had: the image anchor's empty name would fail the name check
-// silently, and the dedup would then skip the real (second, same-href) name
-// anchor entirely — the exact reason the old selector parsed 0 items against
-// every real order-detail page captured. No recommendation/footer product
-// rail was found on the real captured page (verified: only a "Quick actions"
-// banner with report/reorder buttons, no product-detail links).
+// avoids the empty-name failure from the old broad product-link selector.
+// Do not deduplicate these name anchors by href: two purchased lines can
+// legitimately refer to the same product, and item position is retained in
+// the emitted id for that case. No recommendation/footer product rail was
+// found on the real captured page (verified: only a "Quick actions" banner
+// with report/reorder buttons, no product-detail links).
 export function parseOrderDetailDom(html: string): OrderDetail | null {
   const { document } = parseHTML(html);
   const links = [...document.querySelectorAll<HTMLAnchorElement>('a[data-qe-id="itemRowDetailsName"]')];
   if (links.length === 0) {
     return null;
   }
-  const seenHrefs = new Set<string>();
   const items: DetailItem[] = [];
   for (const link of links) {
-    const href = link.getAttribute("href") ?? "";
-    if (!href || seenHrefs.has(href)) {
-      continue;
-    }
-    seenHrefs.add(href);
     const item = parseDetailItem(link);
     if (item) {
       items.push(item);
@@ -810,17 +803,13 @@ export function buildOrderRecord(listOrder: ListPageOrder, orderDate: string, em
   };
 }
 
-/** Composite item id, Amazon's `${orderId}|${key}` pattern (design doc: "H-E-B
- *  is *better* off than Amazon here because `product_id` comes free from the
- *  detail-page href"). Falls back to a normalized name when product_id is
- *  absent so every item still gets a stable, order-scoped id. The fallback
- *  incorporates `itemIndex` (the item's position within this order's parsed
- *  item list) so two same-name, product-id-null items in one order — e.g. two
- *  malformed/variant hrefs that both fail to yield a product id — get
- *  distinct ids instead of colliding on the same normalized name. */
+/** Composite item id, Amazon's `${orderId}|${key}` pattern. H-E-B can expose
+ * two purchased lines with the same product href, so the parsed position is
+ * part of every id; otherwise an ingest upsert would collapse those lines
+ * after the DOM parser correctly retained both. */
 export function orderItemId(orderId: string, item: Pick<DetailItem, "productId" | "name">, itemIndex: number): string {
   if (item.productId) {
-    return `${orderId}|${item.productId}`;
+    return `${orderId}|${item.productId}|${itemIndex}`;
   }
   const normalizedName = item.name.replace(WHITESPACE_RE, " ").trim().toLowerCase() || "unknown";
   return `${orderId}|${normalizedName}|${itemIndex}`;

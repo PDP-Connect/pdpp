@@ -90,63 +90,242 @@ export const HEB_ORDER_RETENTION_FLOOR_DAYS = 730;
 export const HEB_REPAIR_RETRY_DELAY_MIN_MS = 1500;
 export const HEB_REPAIR_RETRY_DELAY_MAX_MS = 2500;
 
+const DETAIL_SURFACE_TIMEOUT_MS = 30_000;
+const DETAIL_SURFACE_POLL_MS = 250;
+const DETAIL_SURFACE_STABLE_POLLS = 3;
+
+type DetailSurfaceSettlement = "complete" | "incomplete" | "timeout" | "error";
+
+interface DetailSurfaceRow {
+  html: string;
+  key: string;
+}
+
+interface DetailSurfaceState {
+  actionableControl: string | null;
+  atEnd: boolean;
+  clientHeight: number;
+  loading: boolean;
+  rowCount: number;
+  rows: DetailSurfaceRow[];
+  scrollHeight: number;
+  scrollTop: number;
+}
+
+interface DetailSurfaceDiagnostics {
+  actionableControl: string | null;
+  clientHeight: number;
+  collectedRows: number;
+  expectedRows: number | null;
+  lastAction: string | null;
+  lastError: string | null;
+  loading: boolean;
+  scrollHeight: number;
+  scrollTop: number;
+  settlement: DetailSurfaceSettlement;
+  snapshots: number;
+}
+
+interface DetailSurfaceResult {
+  diagnostics: DetailSurfaceDiagnostics;
+  html: string;
+}
+
 async function hydrationWait(): Promise<void> {
   const jitter = HEB_HYDRATION_WAIT_MIN_MS + Math.random() * (HEB_HYDRATION_WAIT_MAX_MS - HEB_HYDRATION_WAIT_MIN_MS);
   await politeDelay(jitter);
 }
 
-/**
- * Scroll order-detail page to load all lazy-rendered items.
- *
- * H-E-B's order-detail pages use lazy loading: only viewport-visible item rows
- * are rendered in the DOM initially. Below-the-fold items render only when the
- * user scrolls. This function scrolls to the bottom of the items container to
- * trigger H-E-B's client-side lazy-load, then waits for the final batch to
- * settle before returning. If scrolling fails or times out, the function
- * continues silently — the parse will work with whatever items are present,
- * and if the shortfall is significant, the item-count anchor will flag it.
- */
-async function scrollToLoadAllItems(page: Page): Promise<void> {
-  const scrollTimeout = 5000; // 5s max wait for lazy-load to settle
-  const stabilityWait = 300; // 300ms with no new items = scroll complete
-  const checkInterval = 100; // Check every 100ms
+/** Read and advance the provider's detail surface once. The function is
+ * serialized into the browser by Playwright, so it has no connector state and
+ * does not depend on H-E-B-specific React internals. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this serialized probe keeps row capture, scrollport discovery, and source-control honoring atomic
+function inspectAndAdvanceDetailSurface(lastAction: string | null): DetailSurfaceState {
+  const rows = [...document.querySelectorAll<HTMLAnchorElement>('a[data-qe-id="itemRowDetailsName"]')].map((link) => {
+    const row = link.closest("li") ?? link;
+    const identity = ["data-item-id", "data-order-item-id", "data-key", "data-index", "aria-posinset"]
+      .map((attribute) => row.getAttribute(attribute))
+      .find((value) => value);
+    const key = identity ?? `${link.getAttribute("href") ?? ""}\u001f${link.textContent?.trim() ?? ""}`;
+    const department =
+      row.closest("section")?.querySelector('[data-qe-id="orderDetailsGroupTitle"]')?.textContent ?? "";
+    const escapedDepartment = department.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    const wrappedHtml = escapedDepartment
+      ? `<section><h2 data-qe-id="orderDetailsGroupTitle">${escapedDepartment}</h2>${row.outerHTML}</section>`
+      : row.outerHTML;
+    return { html: wrappedHtml, key };
+  });
 
-  try {
-    const startTime = Date.now();
-    let lastItemCount = 0;
-    let stableCount = 0;
-
-    while (Date.now() - startTime < scrollTimeout) {
-      // Count currently-rendered items in the DOM
-      const currentCount = await page
-        .locator('a[data-qe-id="itemRowDetailsName"]')
-        .count()
-        .catch((): number => lastItemCount);
-
-      if (currentCount > lastItemCount) {
-        // New items rendered; keep scrolling
-        lastItemCount = currentCount;
-        stableCount = 0;
-      } else if (currentCount === lastItemCount) {
-        // No new items this tick
-        stableCount += checkInterval;
-        if (stableCount >= stabilityWait) {
-          // Item count stable for 300ms; assume lazy-load is done
-          return;
-        }
-      }
-
-      // Scroll to bottom to trigger next batch
-      await page.evaluate(() => {
-        window.scrollBy(0, window.innerHeight);
-      });
-
-      await page.waitForTimeout(checkInterval);
+  const row = document.querySelector('a[data-qe-id="itemRowDetailsName"]')?.closest("li") ?? document.body;
+  let scrollPort: Element | Document = document.scrollingElement ?? document.documentElement;
+  for (let current: Element | null = row; current; current = current.parentElement) {
+    const style = getComputedStyle(current);
+    const scrollable = style.overflowY === "auto" || style.overflowY === "scroll";
+    if (current.scrollHeight > current.clientHeight && scrollable) {
+      scrollPort = current;
+      break;
     }
-  } catch {
-    // Scroll or evaluate failed; proceed with parse anyway.
-    // The item-count anchor will flag any significant shortfall.
   }
+  const isDocumentScrollPort = scrollPort instanceof Document;
+  const scrollTop = isDocumentScrollPort ? window.scrollY : (scrollPort as Element & { scrollTop: number }).scrollTop;
+  const scrollHeight = isDocumentScrollPort
+    ? Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)
+    : scrollPort.scrollHeight;
+  const clientHeight = isDocumentScrollPort ? window.innerHeight : scrollPort.clientHeight;
+  const atEnd = scrollTop + clientHeight >= scrollHeight - 2;
+  const loading = Boolean(document.querySelector('[aria-busy="true"], [data-loading="true"]'));
+  const controls = [...document.querySelectorAll<HTMLElement>('button, [role="button"]')].filter((candidate) => {
+    const labels = [candidate.textContent?.trim() ?? "", candidate.getAttribute("aria-label")?.trim() ?? ""];
+    return (
+      !candidate.hasAttribute("disabled") &&
+      candidate.getAttribute("aria-disabled") !== "true" &&
+      labels.some((label) => ["load more", "show more", "view more", "next"].includes(label.toLowerCase())) &&
+      candidate.getBoundingClientRect().width > 0
+    );
+  });
+  const [control] = controls;
+  const controlText = control
+    ? ([control.textContent?.trim() ?? "", control.getAttribute("aria-label")?.trim() ?? ""].find((label) =>
+        ["load more", "show more", "view more", "next"].includes(label.toLowerCase())
+      ) ?? null)
+    : null;
+  const actionKey = controlText ? `control:${controlText}` : null;
+  let actionableControl: string | null = null;
+  if (control && actionKey !== lastAction && (atEnd || scrollHeight <= clientHeight)) {
+    control.click();
+    actionableControl = actionKey;
+  } else if (!atEnd && scrollHeight > clientHeight) {
+    const nextTop = Math.min(scrollTop + Math.max(clientHeight * 0.8, 1), scrollHeight - clientHeight);
+    if (isDocumentScrollPort) {
+      window.scrollTo(0, nextTop);
+    } else {
+      (scrollPort as Element & { scrollTop: number }).scrollTop = nextTop;
+    }
+    actionableControl = "scroll";
+  }
+
+  return {
+    actionableControl,
+    atEnd,
+    clientHeight,
+    loading,
+    rowCount: rows.length,
+    rows,
+    scrollHeight,
+    scrollTop,
+  };
+}
+
+function detailSurfaceErrorMessage(diagnostics: DetailSurfaceDiagnostics): string {
+  return [
+    `detail_surface_${diagnostics.settlement}`,
+    `collected=${diagnostics.collectedRows}`,
+    `expected=${diagnostics.expectedRows ?? "unknown"}`,
+    `snapshots=${diagnostics.snapshots}`,
+    `scroll_top=${Math.round(diagnostics.scrollTop)}`,
+    `scroll_height=${Math.round(diagnostics.scrollHeight)}`,
+    `client_height=${Math.round(diagnostics.clientHeight)}`,
+    `loading=${diagnostics.loading}`,
+    `action=${diagnostics.lastAction ?? "none"}`,
+    ...(diagnostics.lastError ? [`error=${diagnostics.lastError.slice(0, 160)}`] : []),
+  ].join(";");
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the bounded poll owns one state machine so timeout, progress, and settlement cannot diverge
+async function collectDetailSurface(
+  page: Page,
+  expectedItemCount: number | null | undefined,
+  onProgress?: ((message: string) => Promise<void>) | undefined,
+  timeoutMs = DETAIL_SURFACE_TIMEOUT_MS
+): Promise<DetailSurfaceResult> {
+  const expectedRows =
+    typeof expectedItemCount === "number" && Number.isInteger(expectedItemCount) ? expectedItemCount : null;
+  const collected = new Map<string, string>();
+  const startedAt = Date.now();
+  let lastSignature = "";
+  let lastAction: string | null = null;
+  let stablePolls = 0;
+  let snapshots = 0;
+  let latest: DetailSurfaceState = {
+    actionableControl: null,
+    atEnd: false,
+    clientHeight: 0,
+    loading: false,
+    rowCount: 0,
+    rows: [],
+    scrollHeight: 0,
+    scrollTop: 0,
+  };
+  let lastError: string | null = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      latest = await page.evaluate(inspectAndAdvanceDetailSurface, lastAction);
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      break;
+    }
+    snapshots += 1;
+    const occurrenceByKey = new Map<string, number>();
+    for (const row of latest.rows) {
+      const occurrence = (occurrenceByKey.get(row.key) ?? 0) + 1;
+      occurrenceByKey.set(row.key, occurrence);
+      collected.set(`${row.key}\u001f${occurrence}`, row.html);
+    }
+    const signature = `${latest.scrollTop}:${latest.scrollHeight}:${[...collected.keys()].join("|")}`;
+    const progressed = signature !== lastSignature;
+    lastSignature = signature;
+    if (progressed) {
+      stablePolls = 0;
+      lastAction = null;
+    } else {
+      stablePolls += 1;
+    }
+    if (latest.actionableControl) {
+      lastAction = latest.actionableControl;
+    }
+    if (onProgress && (progressed || latest.actionableControl)) {
+      await onProgress(
+        `H-E-B detail surface: ${collected.size} rows observed; action=${latest.actionableControl ?? "settling"}`
+      );
+    }
+    if (expectedRows !== null && collected.size >= expectedRows) {
+      break;
+    }
+    if (latest.atEnd && !latest.loading && !latest.actionableControl && stablePolls >= DETAIL_SURFACE_STABLE_POLLS) {
+      break;
+    }
+    await page.waitForTimeout(DETAIL_SURFACE_POLL_MS);
+  }
+
+  const timedOut = Date.now() - startedAt >= timeoutMs;
+  const complete =
+    expectedRows === null
+      ? latest.atEnd && !latest.loading && !latest.actionableControl
+      : collected.size >= expectedRows;
+  let settlement: DetailSurfaceSettlement = "incomplete";
+  if (lastError) {
+    settlement = "error";
+  } else if (complete) {
+    settlement = "complete";
+  } else if (timedOut) {
+    settlement = "timeout";
+  }
+  const diagnostics: DetailSurfaceDiagnostics = {
+    actionableControl: latest.actionableControl,
+    clientHeight: latest.clientHeight,
+    collectedRows: collected.size,
+    expectedRows,
+    lastAction,
+    lastError,
+    loading: latest.loading,
+    scrollHeight: latest.scrollHeight,
+    scrollTop: latest.scrollTop,
+    settlement,
+    snapshots,
+  };
+  const html = collected.size > 0 ? `<html><body><main>${[...collected.values()].join("")}</main></body></html>` : "";
+  return { diagnostics, html };
 }
 
 /**
@@ -171,6 +350,9 @@ export function hebAllowsInteractiveAuthRepair(env: NodeJS.ProcessEnv = process.
 
 type DetailFailureKind =
   | "deferred_budget"
+  | "detail_surface_error"
+  | "detail_surface_incomplete"
+  | "detail_surface_timeout"
   | "navigation_failed_non_retryable"
   | "navigation_retry_exhausted"
   | "parse_missing"
@@ -202,6 +384,9 @@ export function reasonForDetailFailure(kind: DetailFailureKind): HebDetailGapRea
     case "navigation_retry_exhausted":
     case "deferred_budget":
       return "retry_exhausted";
+    case "detail_surface_error":
+    case "detail_surface_incomplete":
+    case "detail_surface_timeout":
     case "parse_missing":
     case "session_repair_required":
     case "navigation_failed_non_retryable":
@@ -218,6 +403,9 @@ export function classifyHebDetailFailure(kind: DetailFailureKind): HebRecoveryCl
     case "session_repair_required":
       return "owner_repair_required";
     case "navigation_retry_exhausted":
+    case "detail_surface_error":
+    case "detail_surface_incomplete":
+    case "detail_surface_timeout":
     case "parse_missing":
       return "transient_no_progress";
     case "navigation_failed_non_retryable":
@@ -228,9 +416,9 @@ export function classifyHebDetailFailure(kind: DetailFailureKind): HebRecoveryCl
 }
 
 export type DetailFetchResult =
-  | { detail: OrderDetail; status: "hydrated" }
-  | { failureKind: DetailFailureKind; reason: HebDetailGapReason; status: "deferred" }
-  | { failureKind: DetailFailureKind; reason: HebDetailGapReason; status: "failed" };
+  | { detail: OrderDetail; diagnostic?: string; status: "hydrated" }
+  | { diagnostic?: string; failureKind: DetailFailureKind; reason: HebDetailGapReason; status: "deferred" }
+  | { diagnostic?: string; failureKind: DetailFailureKind; reason: HebDetailGapReason; status: "failed" };
 
 const SIGNIN_URL_RE = /\/(sign-in|login|challenge|checkpoint)/i;
 // Amazon's navigation-retry shape (connectors/amazon/index.ts): retry only
@@ -258,11 +446,18 @@ async function navigateToOrderDetail(page: Page, url: string): Promise<void> {
 }
 
 export interface HydrationDeps {
+  /** Test-only deadline seam; production uses the fixed 30-second bound. */
+  detailSurfaceTimeoutMs?: number | undefined;
+  /** Expected provider-declared item count from the order list, when sound. */
+  expectedItemCount?: number | null | undefined;
+  /** Optional bounded progress sink for browser-surface diagnostics. */
+  onDetailProgress?: ((message: string) => Promise<void>) | undefined;
   /** Optional deterministic seam for unit tests; production omits it and
    *  therefore keeps the 1500–2500ms polite hydration wait. */
   waitForHydration?: (() => Promise<void>) | undefined;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: detail fetch must keep navigation, auth, surface, and parse settlement in one observable transaction
 export async function fetchOrderDetail(
   page: Page,
   orderId: string,
@@ -291,11 +486,68 @@ export async function fetchOrderDetail(
   }
   await (deps.waitForHydration ?? hydrationWait)();
 
-  // Scroll to load all lazy-rendered items before parsing.
-  await scrollToLoadAllItems(page);
+  const initialLandedUrl = page.url();
+  let initialHtml: string;
+  try {
+    initialHtml = await page.content();
+  } catch (error) {
+    const diagnostic = error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160);
+    return {
+      diagnostic: `detail_content_error; error=${diagnostic}`,
+      failureKind: "detail_surface_error",
+      reason: reasonForDetailFailure("detail_surface_error"),
+      status: "failed",
+    };
+  }
+  if (SIGNIN_URL_RE.test(initialLandedUrl) || looksLoggedOut(initialLandedUrl, initialHtml)) {
+    return {
+      failureKind: "session_repair_required",
+      reason: reasonForDetailFailure("session_repair_required"),
+      status: "failed",
+    };
+  }
+  if (isIncapsulaBlocked(initialHtml)) {
+    return {
+      failureKind: "session_repair_required",
+      reason: reasonForDetailFailure("session_repair_required"),
+      status: "failed",
+    };
+  }
+
+  const surface = await collectDetailSurface(
+    page,
+    deps.expectedItemCount,
+    deps.onDetailProgress,
+    deps.detailSurfaceTimeoutMs
+  );
+  if (surface.diagnostics.settlement !== "complete") {
+    let failureKind: Extract<DetailFailureKind, `detail_surface_${string}`> = "detail_surface_incomplete";
+    if (surface.diagnostics.settlement === "error") {
+      failureKind = "detail_surface_error";
+    } else if (surface.diagnostics.settlement === "timeout") {
+      failureKind = "detail_surface_timeout";
+    }
+    return {
+      diagnostic: detailSurfaceErrorMessage(surface.diagnostics),
+      failureKind,
+      reason: reasonForDetailFailure(failureKind),
+      status: "failed",
+    };
+  }
 
   const landedUrl = page.url();
-  const html = await page.content().catch((): string => "");
+  let html: string;
+  try {
+    html = await page.content();
+  } catch (error) {
+    const diagnostic = error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160);
+    return {
+      diagnostic: `detail_content_error; error=${diagnostic}`,
+      failureKind: "detail_surface_error",
+      reason: reasonForDetailFailure("detail_surface_error"),
+      status: "failed",
+    };
+  }
   // Same looksLoggedOut() helper the deep probe uses (URL AND password-form
   // check) — not just the URL pattern — so a login form served at the
   // original order URL (not just a redirect to a sign-in path) is also
@@ -316,7 +568,7 @@ export async function fetchOrderDetail(
     };
   }
 
-  const detail = parseOrderDetailDom(html);
+  const detail = parseOrderDetailDom(surface.html || html);
   if (!detail) {
     return {
       failureKind: "parse_missing",
@@ -324,7 +576,7 @@ export async function fetchOrderDetail(
       status: "failed",
     };
   }
-  return { detail, status: "hydrated" };
+  return { detail, diagnostic: detailSurfaceErrorMessage(surface.diagnostics), status: "hydrated" };
 }
 
 // ─── List-page extraction with shape-check ────────────────────────────────
@@ -643,7 +895,8 @@ function buildHebDetailGap(
   orderId: string,
   reason: HebDetailGapReason,
   failureKind: DetailFailureKind,
-  orderDate?: string | undefined
+  orderDate?: string | undefined,
+  diagnostic?: string | undefined
 ) {
   return buildDetailGap({
     stream: "order_items",
@@ -651,7 +904,7 @@ function buildHebDetailGap(
     recordKey: orderId,
     reason,
     locator: { kind: "heb.order_detail", order_id: orderId, ...(orderDate ? { order_date: orderDate } : {}) },
-    error: { class: classifyHebDetailFailure(failureKind) },
+    error: { class: classifyHebDetailFailure(failureKind), ...(diagnostic ? { message: diagnostic } : {}) },
   });
 }
 
@@ -895,7 +1148,9 @@ async function recoverPendingOrderItemDetailGapPage(
     if (result.status === "failed" && result.failureKind === "session_repair_required") {
       flags.sessionRepairRequired = true;
     }
-    await deps.emit(buildHebDetailGap(locator.orderId, result.reason, result.failureKind, locator.orderDate));
+    await deps.emit(
+      buildHebDetailGap(locator.orderId, result.reason, result.failureKind, locator.orderDate, result.diagnostic)
+    );
     reDeferred += 1;
   }
   return { recovered, reDeferred, skipped };
@@ -996,6 +1251,8 @@ async function fetchDetailAndRecordCoverage(
 ): Promise<OrderDetail | null> {
   const result = await resolveOrderDetail(page, flags, listOrder.orderId, {
     ...(deps.capture ? { capture: deps.capture } : {}),
+    expectedItemCount: listOrder.itemCount,
+    onDetailProgress: deps.progress,
     sendInteraction: deps.sendInteraction,
     waitForHydration: deps.waitForHydration,
   });
@@ -1006,7 +1263,9 @@ async function fetchDetailAndRecordCoverage(
     const outcome: DetailOutcome = result.status === "hydrated" ? "hydrated" : "gap";
     recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, outcome);
     if (result.status !== "hydrated") {
-      await deps.emit(buildHebDetailGap(listOrder.orderId, result.reason, result.failureKind, orderDate));
+      await deps.emit(
+        buildHebDetailGap(listOrder.orderId, result.reason, result.failureKind, orderDate, result.diagnostic)
+      );
     }
   }
   return result.status === "hydrated" ? result.detail : null;

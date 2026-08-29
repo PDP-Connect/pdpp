@@ -553,7 +553,7 @@ test("parseOrderDetailDom: every product-detail row emits a duplicate aria-hidde
   assert.equal(beef.lineTotal, "$8.97");
 });
 
-test("parseOrderDetailDom dedupes a product-detail href appearing twice", () => {
+test("parseOrderDetailDom preserves two purchased lines with the same product href", () => {
   const html = `<html><body><main><ul>
     <li data-qe-id="itemRow">
       <a data-qe-id="itemRowDetailsName" href="/product-detail/x/500">Widget</a>
@@ -567,7 +567,7 @@ test("parseOrderDetailDom dedupes a product-detail href appearing twice", () => 
     </li>
   </ul></main></body></html>`;
   const detail = parseOrderDetailDom(html);
-  assert.equal(detail?.items.length, 1);
+  assert.equal(detail?.items.length, 2, "same-product lines are distinct purchased items");
 });
 
 test("parseOrderDetailDom returns null for a page with zero item rows", () => {
@@ -758,7 +758,14 @@ test("parseCurrencyCents returns null for null/empty input", () => {
 });
 
 test("orderItemId prefers product_id over name", () => {
-  assert.equal(orderItemId("HEB123", { productId: "999", name: "Milk" }, 0), "HEB123|999");
+  assert.equal(orderItemId("HEB123", { productId: "999", name: "Milk" }, 0), "HEB123|999|0");
+});
+
+test("orderItemId keeps same-product lines distinct by parsed position", () => {
+  const first = orderItemId("HEB123", { productId: "999", name: "Milk" }, 0);
+  const second = orderItemId("HEB123", { productId: "999", name: "Milk" }, 1);
+  assert.notEqual(first, second);
+  assert.equal(second, "HEB123|999|1");
 });
 
 test("orderItemId falls back to a normalized name + item index when product_id is absent", () => {
@@ -795,7 +802,7 @@ test("buildOrderItemRecord maps a parsed detail item into the emitted order_item
   const milk = detail?.items[0];
   assert.ok(milk);
   const record = buildOrderItemRecord("HEB1029384756", "2026-07-14", milk, 0, "2026-07-14T12:00:00.000Z");
-  assert.equal(record.id, "HEB1029384756|123456789");
+  assert.equal(record.id, "HEB1029384756|123456789|0");
   assert.equal(record.order_id, "HEB1029384756");
   assert.equal(record.name, "H-E-B Organic 2% Reduced Fat Milk");
   assert.equal(record.department, "Dairy & eggs");

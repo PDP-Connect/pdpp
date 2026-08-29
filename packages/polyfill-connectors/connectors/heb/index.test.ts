@@ -27,7 +27,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { EmittedMessage } from "@pdpp/connector-protocol";
-import type { Page } from "playwright";
+import { chromium, type Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import {
@@ -135,7 +135,7 @@ function makeListOrder(overrides: Partial<ListPageOrder> = {}): ListPageOrder {
     timeslotStart: null,
     timeslotEnd: null,
     total: "$42.00",
-    itemCount: 3,
+    itemCount: 1,
     source: "dom",
     unfulfilledCount: null,
     ...overrides,
@@ -167,6 +167,7 @@ function makePageStub(opts: {
   goto?: (url: string) => void;
   throwsNTimes?: number;
   url?: string;
+  evaluateError?: boolean;
 }): Page {
   let gotoCalls = 0;
   const url = opts.url ?? "https://www.heb.com/my-account/order-history/HEB1000000001";
@@ -186,6 +187,35 @@ function makePageStub(opts: {
         }
         if (prop === "waitForSelector") {
           return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "evaluate") {
+          if (opts.evaluateError) {
+            return (): Promise<never> => Promise.reject(new Error("synthetic evaluate failure"));
+          }
+          return (): Promise<unknown> => {
+            const hasItem = opts.content.includes('data-qe-id="itemRowDetailsName"');
+            const rows = hasItem
+              ? [
+                  {
+                    html: '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
+                    key: "/product-detail/widget/500\u001fWidget",
+                  },
+                ]
+              : [];
+            return Promise.resolve({
+              actionableControl: null,
+              atEnd: true,
+              clientHeight: 100,
+              loading: false,
+              rowCount: rows.length,
+              rows,
+              scrollHeight: 100,
+              scrollTop: 0,
+            });
+          };
+        }
+        if (prop === "waitForTimeout") {
+          return (): Promise<void> => Promise.resolve();
         }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(opts.content);
@@ -244,6 +274,19 @@ function makeSessionRepairPageStub(opts: { detailHtmlAfterRepair?: string; htmlS
         }
         if (prop === "waitForSelector" || prop === "waitForTimeout") {
           return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "evaluate") {
+          return (): Promise<unknown> =>
+            Promise.resolve({
+              actionableControl: null,
+              atEnd: true,
+              clientHeight: 100,
+              loading: false,
+              rowCount: 0,
+              rows: [],
+              scrollHeight: 100,
+              scrollTop: 0,
+            });
         }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(currentHtml);
@@ -540,6 +583,22 @@ test("fetchOrderDetail: a non-retryable navigation error (e.g. page closed) is n
         if (prop === "waitForSelector") {
           return (): Promise<null> => Promise.resolve(null);
         }
+        if (prop === "evaluate") {
+          return (): Promise<unknown> =>
+            Promise.resolve({
+              actionableControl: null,
+              atEnd: true,
+              clientHeight: 100,
+              loading: false,
+              rowCount: 0,
+              rows: [],
+              scrollHeight: 100,
+              scrollTop: 0,
+            });
+        }
+        if (prop === "waitForTimeout") {
+          return (): Promise<void> => Promise.resolve();
+        }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(DETAIL_HTML);
         }
@@ -797,12 +856,12 @@ test("runForwardScan: an order id repeated across two list pages is only process
   const pages: Record<number, string> = {
     1: `<html><body><main>
       <a href="/my-account/order-history/HEB1000000002">July 14, 2026 $10.00, 1 items</a>
-      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
+      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 1 items</a>
       ${paginationNav}
     </main></body></html>`,
     2: `<html><body><main>
-      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
-      <a href="/my-account/order-history/HEB1000000000">July 12, 2026 $30.00, 3 items</a>
+      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 1 items</a>
+      <a href="/my-account/order-history/HEB1000000000">July 12, 2026 $30.00, 1 items</a>
       ${paginationNav}
     </main></body></html>`,
   };
@@ -820,6 +879,24 @@ test("runForwardScan: an order id repeated across two list pages is only process
         }
         if (prop === "waitForSelector") {
           return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "evaluate") {
+          return (): Promise<unknown> =>
+            Promise.resolve({
+              actionableControl: null,
+              atEnd: true,
+              clientHeight: 100,
+              loading: false,
+              rowCount: 1,
+              rows: [
+                {
+                  html: '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
+                  key: "/product-detail/widget/500\u001fWidget",
+                },
+              ],
+              scrollHeight: 100,
+              scrollTop: 0,
+            });
         }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(pages[currentPage] ?? "");
@@ -859,12 +936,12 @@ test("runForwardScan: item-enriched scan (wantsItems: true) still fetches page 2
   const listPages: Record<number, string> = {
     1: `<html><body><main>
       <a href="/my-account/order-history/HEB1000000002">July 14, 2026 $10.00, 1 items</a>
-      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
+      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 1 items</a>
       ${paginationNav}
     </main></body></html>`,
     2: `<html><body><main>
-      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
-      <a href="/my-account/order-history/HEB1000000000">July 12, 2026 $30.00, 3 items</a>
+      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 1 items</a>
+      <a href="/my-account/order-history/HEB1000000000">July 12, 2026 $30.00, 1 items</a>
       ${paginationNav}
     </main></body></html>`,
   };
@@ -889,6 +966,24 @@ test("runForwardScan: item-enriched scan (wantsItems: true) still fetches page 2
         }
         if (prop === "waitForSelector") {
           return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "evaluate") {
+          return (): Promise<unknown> =>
+            Promise.resolve({
+              actionableControl: null,
+              atEnd: true,
+              clientHeight: 100,
+              loading: false,
+              rowCount: 1,
+              rows: [
+                {
+                  html: '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
+                  key: "/product-detail/widget/500\u001fWidget",
+                },
+              ],
+              scrollHeight: 100,
+              scrollTop: 0,
+            });
         }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(lastContent);
@@ -2065,7 +2160,9 @@ test("buildOrdersStateCursor: a truncated scan must not advance the orders check
  * Each scroll increments the item count until a ceiling is reached.
  */
 function makeLazyLoadPageStub(totalItems: number): Page {
-  let itemsRendered = Math.min(15, totalItems); // Initial viewport: ~15 items
+  const viewportItems = Math.min(15, totalItems);
+  let itemsRendered = viewportItems;
+  let firstVisibleItem = 0;
   let scrolls = 0;
   const maxScrolls = Math.ceil(totalItems / 10); // Load ~10 items per scroll
 
@@ -2076,6 +2173,7 @@ function makeLazyLoadPageStub(totalItems: number): Page {
         if (prop === "goto") {
           return (): Promise<null> => {
             itemsRendered = Math.min(15, totalItems);
+            firstVisibleItem = 0;
             scrolls = 0;
             return Promise.resolve(null);
           };
@@ -2091,13 +2189,33 @@ function makeLazyLoadPageStub(totalItems: number): Page {
           };
         }
         if (prop === "evaluate") {
-          return (fn: () => void): Promise<void> => {
-            // Simulate scroll: load more items
+          return (): Promise<unknown> => {
+            // Simulate a virtualized inner scrollport: each action loads a
+            // later window and unmounts rows from the previous window.
+            const lastVisibleItem = Math.min(firstVisibleItem + viewportItems, itemsRendered);
+            const rows = Array.from({ length: lastVisibleItem - firstVisibleItem }, (_, offset) => {
+              const index = firstVisibleItem + offset;
+              return {
+                html: `<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/item-${index}">Item ${index}</a></li>`,
+                key: `/product-detail/item-${index}\u001fItem ${index}`,
+              };
+            });
+            const state = {
+              actionableControl: itemsRendered < totalItems ? "scroll" : null,
+              atEnd: itemsRendered >= totalItems,
+              clientHeight: viewportItems,
+              loading: false,
+              rowCount: rows.length,
+              rows,
+              scrollHeight: totalItems,
+              scrollTop: firstVisibleItem,
+            };
             scrolls += 1;
             if (scrolls <= maxScrolls && itemsRendered < totalItems) {
               itemsRendered = Math.min(itemsRendered + 10, totalItems);
+              firstVisibleItem = Math.min(Math.max(itemsRendered - viewportItems, 0), totalItems - viewportItems);
             }
-            return Promise.resolve(undefined);
+            return Promise.resolve(state);
           };
         }
         if (prop === "waitForTimeout") {
@@ -2106,8 +2224,10 @@ function makeLazyLoadPageStub(totalItems: number): Page {
         if (prop === "content") {
           return (): Promise<string> => {
             // Return fake HTML with the current item count
-            const items = Array.from({ length: itemsRendered }, (_, i) =>
-              `<li data-qe-id="itemRow">
+            const items = Array.from(
+              { length: itemsRendered },
+              (_, i) =>
+                `<li data-qe-id="itemRow">
                 <a data-qe-id="itemRowDetailsName" href="/product-detail/item-${i}">Item ${i}</a>
               </li>`
             ).join("");
@@ -2125,34 +2245,88 @@ function makeLazyLoadPageStub(totalItems: number): Page {
 
 test("fetchOrderDetail: scrolls to load lazy-rendered items before parsing", async () => {
   const page = makeLazyLoadPageStub(59); // 59-item order, ~15 visible initially
-  const { deps } = makeRecordingDeps({ waitForHydration: immediateWait });
 
-  const result = await fetchOrderDetail(page, "HEB123", { waitForHydration: immediateWait });
+  const result = await fetchOrderDetail(page, "HEB123", {
+    detailSurfaceTimeoutMs: 1000,
+    expectedItemCount: 59,
+    waitForHydration: immediateWait,
+  });
 
   assert.equal(result.status, "hydrated", "order detail fetched successfully");
   assert.ok(result.detail, "detail is present");
-  // After scroll, nearly all 59 items should be rendered and parsed
-  // (The exact count depends on how many scroll cycles complete within the 5s timeout)
   const itemsCollected = result.detail?.items.length ?? 0;
-  assert.ok(
-    itemsCollected > 30,
-    `collected ${itemsCollected} items (declared 59); scroll improved from ~15 initial`
-  );
+  assert.equal(itemsCollected, 59, "virtualized rows observed across scroll snapshots are all collected");
 });
 
-test("fetchOrderDetail: handles scroll timeout gracefully, parsing available items", async () => {
-  const page = makeLazyLoadPageStub(100); // Large order; scroll may timeout
-  const { deps } = makeRecordingDeps({ waitForHydration: immediateWait });
+test("fetchOrderDetail: real inner scrollport fixture proves virtualization and load-more are honored", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-inner-scrollport.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-INNER-SCROLL", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
 
-  // Should not throw, even if scroll times out
-  const result = await fetchOrderDetail(page, "HEB999", { waitForHydration: immediateWait });
+    const result = await fetchOrderDetail(page, "HEB-INNER-SCROLL", {
+      detailSurfaceTimeoutMs: 15_000,
+      expectedItemCount: 16,
+      waitForHydration: immediateWait,
+    });
 
-  assert.ok(result.status === "hydrated" || result.status === "failed", "completes or fails cleanly");
+    assert.equal(result.status, "hydrated");
+    assert.equal(
+      result.detail?.items.length,
+      16,
+      "all rows behind the inner scrollport and load-more control are collected"
+    );
+    assert.deepEqual(
+      result.detail?.items.map((item) => item.name),
+      Array.from({ length: 16 }, (_, index) => (index < 2 ? `Repeated item ${index}` : `Synthetic item ${index}`)),
+      "virtualized row replacement does not lose or reorder any canonical item"
+    );
+    assert.equal(
+      result.detail?.items.filter((item) => item.productUrl === "https://www.heb.com/product-detail/repeated/900")
+        .length,
+      2,
+      "same-product purchased lines remain distinct rows"
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: an incomplete bounded surface becomes an observable gap, not partial hydrated data", async () => {
+  const page = makeLazyLoadPageStub(100); // Deliberately expect more than this fixture exposes.
+
+  const result = await fetchOrderDetail(page, "HEB999", {
+    detailSurfaceTimeoutMs: 1,
+    expectedItemCount: 101,
+    waitForHydration: immediateWait,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.ok(
+    result.failureKind === "detail_surface_timeout" || result.failureKind === "detail_surface_incomplete",
+    `unexpected settlement: ${result.failureKind}`
+  );
+  assert.match(result.diagnostic ?? "", /detail_surface_(timeout|incomplete)/);
+});
+
+test("fetchOrderDetail: a surface evaluation error is an observable gap, not swallowed partial hydration", async () => {
+  const result = await fetchOrderDetail(
+    makePageStub({ content: DETAIL_HTML, evaluateError: true }),
+    "HEB-EVALUATE-ERROR",
+    { expectedItemCount: 1, waitForHydration: immediateWait }
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failureKind, "detail_surface_error");
+  assert.match(result.diagnostic ?? "", /detail_surface_error/);
+  assert.match(result.diagnostic ?? "", /synthetic evaluate failure/);
 });
 
 test("fetchOrderDetail: small orders (fit in viewport) parse without scroll", async () => {
   const page = makeLazyLoadPageStub(8); // 8 items, all in initial viewport (15-item initial)
-  const { deps } = makeRecordingDeps({ waitForHydration: immediateWait });
 
   const result = await fetchOrderDetail(page, "HEB8", { waitForHydration: immediateWait });
 
