@@ -10,6 +10,7 @@ on:
       - "package.json"
       - "scripts/spec-check.ts"
       - "scripts/spec-date-check.ts"
+      - "scripts/check-owner-filter-grant-coupling.ts"
       - "spec-*.md"
   pull_request:
     paths:
@@ -19,6 +20,7 @@ on:
       - "package.json"
       - "scripts/spec-check.ts"
       - "scripts/spec-date-check.ts"
+      - "scripts/check-owner-filter-grant-coupling.ts"
       - "spec-*.md"
   workflow_dispatch: {}
 
@@ -61,3 +63,6 @@ jobs:
 
       - name: Check spec Date headers are not stale
         run: pnpm spec:dates
+
+      - name: Check owner-filter / client-grant coupling
+        run: pnpm spec:owner-filter-check

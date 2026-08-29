@@ -1060,11 +1060,11 @@ The resource server stores records and serves them to clients filtered by grants
 On every request, the resource server:
 
 1. Resolves the access token through authenticated RFC 7662 introspection or a local equivalent for co-located deployments. Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`.
-2. Verifies that the grant is active (`active: true` in the introspection response).
-3. Verifies that the requested stream appears in the grant's `streams` list.
-4. Selects records only from the explicitly granted `instance_ids` and verifies that the request falls within the grant's `time_constraint`, `fields`, and `resources` constraints.
-5. If all checks pass, returns records filtered accordingly.
-6. If any check fails, returns a structured error (see Errors below).
+2. Determines `pdpp_token_kind` from the introspection response, then branches:
+   - **Client:** requires an active resolved authorization context (`active: true`, a resolved grant). Verifies that the requested stream appears in the grant's `streams` list. Selects records only from the explicitly granted `instance_ids` and enforces the grant's `time_constraint`, `fields`, and `resources` constraints.
+   - **Owner:** enforces subject, source, connection, and operation scope derived from the introspection response. Does not require or synthesize a client grant — an owner token carries none.
+3. If all checks pass, returns records filtered accordingly.
+4. If any check fails, returns a structured error (see Errors below).
 
 For owner-token current-capability reads, the effective filter is the permitted
 owner request filter alone: an owner token carries no grant, so there is no grant
@@ -1124,7 +1124,7 @@ GET /v1/streams
 Authorization: Bearer <access_token>
 ```
 
-Returns the streams available under the current grant with record counts.
+Returns streams with record counts, scoped by token kind: for a client token, the streams present in the resolved authorization context; for an owner token, the streams in the subject-scoped data store the owner token is scoped to.
 
 **Response:**
 ```json
@@ -1164,7 +1164,12 @@ GET /v1/streams/{stream}
 Authorization: Bearer <access_token>
 ```
 
-Returns full source stream metadata. A client-token caller may fetch metadata only for a stream present in its resolved authorization context. An owner-token caller may fetch metadata for streams in the subject's data store the owner token is scoped to. Once access is authorized, the metadata document is returned whole rather than field-projected by the grant. Response:
+A client-token caller may fetch metadata only for a stream present in its resolved authorization context. An owner-token caller may fetch metadata for streams in the subject's data store the owner token is scoped to. Once access is authorized, the response body is actor-specific:
+
+- **Owner token:** the metadata document is returned whole — full current schema, query capabilities, views, and relationships — rather than field-projected by any grant. An owner token carries no grant, so there is nothing to project against.
+- **Client token:** the response is a closed projection derived from the resolved authorization context: only the granted stream's explicitly granted fields, and only immutable/frozen grant facts. Current query, view, relationship, filter, expansion, and aggregation capabilities MUST NOT appear unless that capability is explicitly part of a future frozen grant vocabulary. Current metadata MAY report availability/freshness or reject an unavailable operation, but MUST NOT make the grant appear broader or semantically different than what was issued. A source declaration change made after the grant was issued (e.g., a new field) MUST NOT become visible through this endpoint for that grant.
+
+**Owner-token response** (full current metadata):
 
 ```json
 {
@@ -1197,6 +1202,37 @@ Returns full source stream metadata. A client-token caller may fetch metadata on
   "relationships": [
     { "name": "messages", "stream": "messages", "foreign_key": "conversation_id", "cardinality": "has_many" }
   ]
+}
+```
+
+**Client-token response** (closed projection of a grant frozen to fields `id`, `name`, `source_updated_at`; no range filters, views, or relationships were granted):
+
+```json
+{
+  "object": "stream_metadata",
+  "name": "top_artists",
+  "schema": {
+    "properties": {
+      "id": { },
+      "name": { },
+      "source_updated_at": { }
+    }
+  },
+  "primary_key": ["id"],
+  "cursor_field": "source_updated_at",
+  "consent_time_field": "source_updated_at",
+  "selection": {
+    "fields": true,
+    "resources": false
+  },
+  "query": { },
+  "freshness": {
+    "captured_at": "2026-04-06T15:01:00Z",
+    "status": "current",
+    "last_attempted_at": "2026-04-06T15:01:00Z"
+  },
+  "views": [],
+  "relationships": []
 }
 ```
 
@@ -1481,6 +1517,8 @@ A conformant Core RS:
 11. Implements the `PDPP-Version` header negotiation.
 12. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response.
 13. SHOULD support owner-authenticated access to the `/v1/streams/{stream}/records` query endpoints without a client grant, allowing the data subject to export their own data directly (self-export).
+14. For owner-token stream-metadata reads, returns the full current stream metadata within the owner's subject/source/connection scope, including current query, view, and relationship capabilities.
+15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
 
 Collection Resource Server, runtime, and connector conformance are separate
 claims defined in the [PDPP Collection Profile](spec-collection-profile).
@@ -1564,7 +1602,7 @@ In the Collection Profile, connectors receive credentials via the INTERACTION ch
 | Role | Responsibilities |
 |------|----------------|
 | **Authorization Server** | Validates purpose-code syntax and local policy; authenticates user; preserves semantic distinctions on the consent surface; validates stream/field/view/resource-id shape at grant issuance; resolves views to field lists; issues access tokens; maintains grant lifecycle. |
-| **Resource Server** | Validates token via introspection; enforces stream, instance, fields, frozen time constraints, and resources on every request; never reinterprets authorization from a current declaration; scopes owner access to one subject. |
+| **Resource Server** | Validates token via introspection; for client requests, enforces stream, instance, fields, frozen time constraints, and resources against the resolved grant; for owner requests, enforces subject/source/connection/operation scope without requiring a grant; never reinterprets authorization from a current declaration. |
 | **Client** | Submits well-formed selection requests; uses access tokens; terminates on revocation; honors retention commitments. |
 
 ### Revocation {#revocation}
