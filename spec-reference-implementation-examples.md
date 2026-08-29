@@ -222,8 +222,7 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
     { "name": "conversations" },
     { "name": "messages" },
     { "name": "memories" }
-  ],
-  "expires_at": null
+  ]
 }
 ```
 

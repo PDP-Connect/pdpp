@@ -856,7 +856,7 @@ The authorization server issues an access token bound to the grant. The client u
 | `streams` | StreamGrant[] | yes | Protocol-enforced | Granted streams. Always expanded; no wildcards. See StreamGrant fields table below. |
 | `selection_preset` | string | no | Informational | Which SourceDeclaration preset was selected. The resolved streams and fields remain authoritative. |
 | `retention` | object | no | Structured policy declaration | Policy commitment by the data recipient (see below). |
-| `expires_at` | ISO 8601 or null | no | Protocol-enforced | Grant expiry. null means no expiry. |
+| `expires_at` | ISO 8601 | no | Protocol-enforced | Grant expiry. Absent means no expiry. |
 
 ### StreamGrant fields
 
@@ -1014,8 +1014,7 @@ Retention is a structured policy declaration and policy commitment by the data r
       "instance_ids": ["openai-account-a"],
       "fields": ["id", "conversation_id", "role", "content", "source_created_at"]
     }
-  ],
-  "expires_at": null
+  ]
 }
 ```
 
@@ -1385,6 +1384,8 @@ Every non-2xx response returns a structured error:
 }
 ```
 
+Clients MUST treat unrecognized error codes as opaque and fall back to the HTTP status class and the error `type`.
+
 | Code | HTTP Status | Type | Meaning |
 |------|------------|------|---------|
 | `invalid_cursor` | 400 | `invalid_request_error` | Cursor token is malformed or unrecognized. |
@@ -1489,6 +1490,7 @@ A conformant client:
 4. Stores `next_changes_since` from the terminal page of a `changes_since` response for use in the next sync session.
 5. Respects HTTP 410 `cursor_expired` responses by performing a full re-sync rather than retrying with the expired cursor.
 6. Honors retention commitments declared in the grant.
+7. Treats unrecognized error codes as opaque, falling back to the HTTP status class and the error `type` rather than failing on an unknown code.
 
 ### Conformance test suite
 
@@ -1764,7 +1766,7 @@ interface DataGrant {
     max_duration: string;  // ISO 8601 duration
     on_expiry: 'delete' | 'anonymize';
   };
-  expires_at?: string | null;
+  expires_at?: string;  // ISO 8601; absent means no expiry
 }
 
 // --- Source Declaration ---

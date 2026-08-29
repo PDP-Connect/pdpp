@@ -5907,6 +5907,19 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   runWithSqliteBusyRetrySync(() => {
     raw.exec("CREATE INDEX IF NOT EXISTS idx_tokens_refresh_family ON tokens(refresh_family_id, revoked)");
   });
+  // Absent-only grant expiry: grants issued before that normalization
+  // persisted an explicit `"expires_at": null` in grant_json. `null` and
+  // absent both mean "no expiry", so dropping the member is a representation
+  // change, not an authorization change. Scoped to the JSON-null case so a
+  // string expiry is never touched, and idempotent so repeated boots are
+  // no-ops.
+  runWithSqliteBusyRetrySync(() => {
+    raw.exec(`
+      UPDATE grants
+         SET grant_json = json_remove(grant_json, '$.expires_at')
+       WHERE json_type(grant_json, '$.expires_at') = 'null';
+    `);
+  });
   runWithSqliteBusyRetrySync(() => {
     raw.transaction(() =>
       raw.exec(`
