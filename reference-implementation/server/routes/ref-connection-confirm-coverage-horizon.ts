@@ -8,10 +8,9 @@
 //
 // This is the missing write path for `ConnectorCoverageHorizonStore`, whose
 // `confirmCoverageHorizon` had no production caller: the read side is wired
-// (`ref-control.ts` -> `connection-health.ts` -> `rendered-verdict.ts`) and the
-// denominator rule consumes it (`connector-gap-classification.ts`), but nothing
-// could put a row in `connector_coverage_horizons` without manual SQL, which
-// the banner-zero plan forbids.
+// (`ref-control.ts` -> `connection-health.ts` -> `rendered-verdict.ts`), but
+// nothing could put a row in `connector_coverage_horizons` without manual SQL,
+// which the banner-zero plan forbids.
 //
 // DISTINCT FROM `acknowledge-loss`, deliberately. That route stamps
 // `source_binding.acknowledged_loss`: "data I once had, or could have had, is
@@ -30,12 +29,12 @@
 // "no RI branches on connector IDs" rule.
 //
 // Recording a horizon does NOT pause, revoke, or change the connection's
-// status, and never rewrites or deletes retained records. It narrows the
-// CURRENT SERVABLE DENOMINATOR only, per the researched rule in
-// `upstream-retention-loss-health-ux-prior-art.md` (PDPP recommendation (b)).
-// The structural precedent named there is PyPI's yank: a fact recorded once,
-// reversible only by explicit revision, that never participates in the
-// "is this broken" verdict.
+// status, never rewrites or deletes retained records, and does NOT narrow the
+// coverage denominator or alter any health classification — it is disclosure
+// an owner reads, nothing more (see `server/connector-gap-classification.ts`).
+// The structural precedent from `upstream-retention-loss-health-ux-prior-art.md`
+// is PyPI's yank: a fact recorded once, reversible only by explicit revision,
+// that never participates in the "is this broken" verdict.
 //
 // Error taxonomy:
 //   - foreign/unknown id -> connector_instance_not_found (404)
@@ -94,8 +93,8 @@ export interface MountRefConnectionConfirmCoverageHorizonContext {
   readonly createTraceContext: () => { readonly scenario_id: string; readonly trace_id: string };
   readonly emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
   readonly ensureRequestId: (res: RouteResponse) => string;
-  readonly handleError: (res: RouteResponse, err: unknown) => void;
   readonly getOwnerSubjectId: (req: RouteRequest) => string | null;
+  readonly handleError: (res: RouteResponse, err: unknown) => void;
   readonly now?: () => string;
   readonly pdppError: PdppErrorFn;
   readonly requireOwnerSession: MiddlewareHandler;
@@ -195,10 +194,14 @@ export type ParsedCoverageHorizonBody =
  *    provenance is that "who confirmed this" is checkable, and a body field
  *    would let any authenticated request attribute the confirmation to anyone.
  *    The body may still carry a free-text `note` for the owner's own words.
- *  - `confirmed_at` must not be in the FUTURE. `isProvenPreHorizonGap` treats
- *    any current (non-superseded) horizon as live proof, so a future-stamped
- *    row would act as proof immediately while appearing not-yet-valid to a
- *    human reader — the exact shape that turns an audit record into a lie.
+ *  - `confirmed_at` must not be in the FUTURE. A horizon is disclosure an
+ *    owner reads and an auditor walks, and every read treats a current
+ *    (non-superseded) row as live. A future-stamped row would present as live
+ *    disclosure immediately while appearing not-yet-valid to a human reader —
+ *    the exact shape that turns an audit record into a lie. This holds
+ *    independently of classification: the horizon no longer narrows the
+ *    coverage denominator at all (see `server/connector-gap-classification.ts`),
+ *    and an honest timestamp is required for the disclosure's own sake.
  */
 export function parseCoverageHorizonBody(
   body: unknown,
@@ -259,14 +262,13 @@ export function parseCoverageHorizonBody(
     earliestAvailable = b.earliest_available;
   }
   // An unknown stream name is INERT, not dangerous, so it is not validated
-  // against the manifest here. `currentHorizonForStream` matches a horizon to a
-  // gap by exact stream name or the connection-wide `"*"`; a horizon recorded
-  // for a stream this connector does not have matches no gap and therefore
-  // declassifies nothing. Rejecting it would need the route to load and read
-  // the connection's manifest — real cost for no safety gain, and it would
-  // wrongly refuse a legitimate horizon for a stream a future manifest adds.
-  // The negative test "a horizon confirmed for a DIFFERENT stream does not
-  // cover this one" pins the inertness this reasoning depends on.
+  // against the manifest here. A horizon declassifies nothing for ANY stream
+  // name — it is disclosure, never a coverage authority (see
+  // `server/connector-gap-classification.ts`) — so a horizon recorded for a
+  // stream this connector does not have is simply disclosure nobody reads.
+  // Rejecting it would need the route to load and read the connection's
+  // manifest — real cost for no safety gain, and it would wrongly refuse a
+  // legitimate horizon for a stream a future manifest adds.
   if (b.stream !== undefined && b.stream !== null && !isNonEmptyString(b.stream)) {
     return { error: "stream must be a non-empty string when present", ok: false };
   }

@@ -2,21 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * A weak-basis coverage horizon is DISCLOSED but cannot narrow the servable
- * denominator, proven through the real projection rather than the predicate.
+ * NO coverage horizon narrows the servable denominator, regardless of basis —
+ * proven through the real projection rather than a predicate.
  *
- * `inferred_from_stable_boundary` is the shape a broken connector produces: a
- * walk that consistently stops early because of a bug is indistinguishable
- * from one stopping at a real retention cliff. If that could green a retryable
- * gap, "our reader keeps failing at the same place" would render as "the
- * provider has no more data" — the exact false green this axis exists to
- * prevent. BANNER-ZERO-PLAN.md: a horizon "requires positive evidence and must
- * fail closed to unknown when evidence is weak."
+ * This file originally proved a narrower claim: that a WEAK-basis horizon
+ * (`inferred_from_stable_boundary`) could not green a retryable gap, while an
+ * affirmative basis could. The reasoning for excluding the weak basis was that
+ * a walk which consistently stops early because of a bug is indistinguishable
+ * from one stopping at a real retention cliff, so "our reader keeps failing at
+ * the same place" would render as "the provider has no more data".
  *
- * The route still RECORDS a weak horizon and the snapshot still carries it —
- * the owner's inference is not discarded, it just cannot settle the question
- * by itself. Re-confirming the same boundary with a provider-backed basis
- * promotes it.
+ * That reasoning turned out to apply to EVERY basis. No basis established that
+ * a particular gap lay outside the interval the provider can still serve:
+ * nothing compared the gap to the horizon's edge, and a horizon with an
+ * unknown edge (`earliestAvailable: null`) qualified. So the denominator-
+ * narrowing path was removed entirely, and the tests below now assert that
+ * every basis behaves the way the weak one always did.
+ *
+ * The route still RECORDS a horizon of any basis and the snapshot still
+ * carries it — disclosure is unchanged. Only the completeness authority is
+ * gone.
  */
 
 import assert from "node:assert/strict";
@@ -70,7 +75,9 @@ function horizon(basis: ConnectionCoverageHorizon["basis"]): ConnectionCoverageH
   } as ConnectionCoverageHorizon;
 }
 
-function project(basis: ConnectionCoverageHorizon["basis"]): ReturnType<typeof projectConnectorSummaryConnectionHealth> {
+function project(
+  basis: ConnectionCoverageHorizon["basis"]
+): ReturnType<typeof projectConnectorSummaryConnectionHealth> {
   return projectConnectorSummaryConnectionHealth({
     coverageHorizons: [horizon(basis)],
     freshness: { status: "current" },
@@ -83,11 +90,17 @@ function project(basis: ConnectionCoverageHorizon["basis"]): ReturnType<typeof p
 test("WEAK BASIS: an inferred boundary cannot green a retryable gap", () => {
   const snap = project("inferred_from_stable_boundary");
   const coverage = snap.conditions.find((c) => c.type === "SourceCoverageComplete");
-  assert.notEqual(
-    coverage?.reason,
-    "coverage_complete_horizon_accounted",
+  // Asserted positively (`status === "false"`, `reason === "retryable_gap"`)
+  // rather than as `notEqual` against the deleted `coverage_complete_horizon_
+  // accounted` string: once that reason no longer exists, a `notEqual` against
+  // it passes vacuously and would keep passing even if some other path greened
+  // the gap.
+  assert.equal(
+    coverage?.status,
+    "false",
     "a boundary the owner INFERRED is not the provider saying so; it must not account the gap away"
   );
+  assert.equal(coverage?.reason, "retryable_gap");
   assert.notEqual(snap.state, "healthy", "weak evidence must fail closed, never settle the connection green");
 });
 
@@ -99,17 +112,20 @@ test("WEAK BASIS is still disclosed on the snapshot, not discarded", () => {
   assert.equal(snap.coverage_horizons[0]?.basis, "inferred_from_stable_boundary");
 });
 
-test("AFFIRMATIVE BASES: provider_confirmed and provider_stated both qualify", () => {
-  // The control for the negatives above: the same run, the same gap, the same
-  // stream — only the basis differs, and that alone decides the outcome.
+test("AFFIRMATIVE BASES do not qualify either — no basis is a denominator", () => {
+  // This was the control proving `provider_confirmed`/`provider_stated`
+  // narrowed the denominator where `inferred_from_stable_boundary` did not.
+  // The denominator-narrowing path is REMOVED, so the basis distinction no
+  // longer decides completeness at all: an affirmative basis is stronger
+  // PROVENANCE for the disclosure an owner reads, never authority over
+  // coverage. What made the weak basis unsafe (no independent proof that a
+  // given gap lies outside the servable interval) was in fact true of every
+  // basis — nothing bound a gap to the horizon's edge.
   for (const basis of ["provider_confirmed", "provider_stated"] as const) {
     const snap = project(basis);
     const coverage = snap.conditions.find((c) => c.type === "SourceCoverageComplete");
-    assert.equal(
-      coverage?.reason,
-      "coverage_complete_horizon_accounted",
-      `${basis} is the provider's own word and must account the pre-horizon gap`
-    );
-    assert.equal(snap.state, "healthy", `${basis} should reach healthy for the in-horizon scope`);
+    assert.equal(coverage?.status, "false", `${basis} must not settle coverage`);
+    assert.notEqual(snap.state, "healthy", `${basis} must not green the connection`);
+    assert.equal(snap.coverage_horizons[0]?.basis, basis, `${basis} is still disclosed on the snapshot`);
   }
 });

@@ -57,16 +57,17 @@ test("no authenticated owner subject means no horizon", () => {
 });
 
 test("a future confirmed_at is refused", () => {
-  // `isProvenPreHorizonGap` treats any current horizon as live proof, so a
-  // future stamp would act as proof immediately while reading as not-yet-valid.
+  // Every read treats a current horizon as live disclosure, so a future stamp
+  // would present as live immediately while reading as not-yet-valid.
   const parsed = parseCoverageHorizonBody(body({ confirmed_at: "2027-01-01T00:00:00.000Z" }), NOW, OWNER);
   assert.equal(parsed.ok, false);
   assert.match(parsed.ok ? "" : parsed.error, /confirmed_at must not be in the future/);
 });
 
 test("an earliest_available later than confirmed_at is refused", () => {
-  // A boundary in the future would exclude ALL history from the denominator —
-  // the one shape that could manufacture a false green from this route.
+  // A boundary stamped in the future describes a nonsensical interval — it
+  // would disclose that NO history is available. Refused at the route so the
+  // record stays coherent for the owner reading it.
   const parsed = parseCoverageHorizonBody(body({ earliest_available: "2026-12-31T00:00:00.000Z" }), NOW, OWNER);
   assert.equal(parsed.ok, false);
   assert.match(parsed.ok ? "" : parsed.error, /must not be later than confirmed_at/);
@@ -85,11 +86,10 @@ test("basis and reason are closed vocabularies, refused when unrecognized", () =
 test("a weak basis is accepted but recorded AS weak, never upgraded", () => {
   // The research treats `inferred_from_stable_boundary` as provisional. The
   // route's job is to record it faithfully, not to refuse it or launder it
-  // into a settled one. What a weak basis may SUPPORT is decided by
-  // `QUALIFYING_HORIZON_BASES` in connector-gap-classification.ts — it is
-  // disclosed but cannot narrow the denominator; see
-  // coverage-horizon-weak-basis.test.ts for that boundary proven through the
-  // real projection.
+  // into a settled one. No basis narrows the coverage denominator any more —
+  // the basis is provenance an owner reads; see
+  // coverage-horizon-weak-basis.test.ts for that proven through the real
+  // projection.
   const parsed = parseCoverageHorizonBody(body({ basis: "inferred_from_stable_boundary" }), NOW, OWNER);
   assert.equal(parsed.ok, true);
   assert.equal(parsed.ok && parsed.record.basis, "inferred_from_stable_boundary");

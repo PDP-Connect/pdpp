@@ -4,34 +4,32 @@
 /**
  * End-to-end wiring proof for the GroupMe-shaped provider-retention-boundary
  * case, through the REAL production entry point
- * (`projectConnectorSummaryConnectionHealth` in `server/ref-control.ts`) —
- * not just the connection-health-layer unit tests in `coverage-horizon.test.ts`
- * (which set `coverage.horizonAccountedRetryableGap` directly) or the
- * classification-layer unit tests in `connector-gap-classification.test.ts`
- * (which call `isProvenPreHorizonGap` directly). This file proves the ROLLUP
- * in between: a raw `ConnectorRunSummary.known_gaps` entry shaped exactly like
- * GroupMe's real production skip (`reason: "history_ended_before_provider_count"`,
- * `recovery_action: "retry_by_runtime"` — see
- * `test/fixtures/sources-report-fleet-parity-0825.json`) plus a real
- * `ConnectionCoverageHorizon` produces a healthy, in-horizon-scope coverage
- * verdict — and that removing either half of the proof (no horizon, or a
- * horizon for a different stream) leaves the connection exactly as degraded
- * as it always was.
+ * (`projectConnectorSummaryConnectionHealth` in `server/ref-control.ts`).
  *
- * GOAL-OWNER RULING (recorded in
- * `openspec/changes/add-coverage-horizon-and-actionability-banner/design.md`):
- * "an affirmatively recorded current horizon may exclude ONLY the unavailable
- * pre-horizon interval from the current servable denominator; current/
- * in-horizon gaps and unproven horizons remain degrading." "Do not just show
- * a disclosure beside the same red state."
+ * This file previously proved that a raw `ConnectorRunSummary.known_gaps`
+ * entry shaped like GroupMe's real production skip, plus a matching
+ * `ConnectionCoverageHorizon`, produced a HEALTHY in-horizon coverage verdict.
+ * That rollup is REMOVED: claim-plus-any-horizon was never proof that a given
+ * gap fell outside the interval the provider can still serve, so it could turn
+ * genuinely owed data green.
+ *
+ * The negatives below are unchanged and still pass — they were always the
+ * important half. The former positive is inverted: the same run and the same
+ * confirmed horizon must now leave the connection exactly as degraded as the
+ * no-horizon case, with the disclosure still attached.
+ *
+ * Its header previously cited a "GOAL-OWNER RULING (recorded in
+ * .../design.md)" permitting exclusion of the pre-horizon interval from the
+ * denominator. No such text exists in that design.md at this revision; the
+ * change's normative spec delta requires the opposite ("SHALL participate in
+ * NO classification step"). The citation is not repeated here.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
+import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 import type { ConnectorRunSummary } from "../server/ref-control.ts";
 import { projectConnectorSummaryConnectionHealth } from "../server/ref-control.ts";
-import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 
 const NOW = "2026-08-27T12:00:00.000Z";
 const RUN_AT = "2026-08-27T11:59:00.000Z";
@@ -83,7 +81,9 @@ function groupMeHorizon(overrides: Partial<ConnectionCoverageHorizon> = {}): Con
   };
 }
 
-test("GROUPME WIRING: raw known_gaps skip + a confirmed matching horizon reaches a healthy, in-horizon coverage verdict", () => {
+test("GROUPME WIRING: raw known_gaps skip + a confirmed matching horizon does NOT reach a healthy verdict", () => {
+  // The owner's stated acceptance bar: GroupMe must not be green on
+  // claim + any-horizon alone.
   const snap = projectConnectorSummaryConnectionHealth({
     coverageHorizons: [groupMeHorizon()],
     freshness: { status: "current" },
@@ -91,12 +91,32 @@ test("GROUPME WIRING: raw known_gaps skip + a confirmed matching horizon reaches
     lastSuccessfulRun: groupMeShapedRun(),
     schedule: { enabled: true },
   });
-  assert.equal(snap.axes.coverage, "retryable_gap", "the raw axis is preserved — the boundary is a scope fact, not a mutation");
+  assert.equal(snap.axes.coverage, "retryable_gap", "the raw axis is preserved — the gap is still a gap");
   const coverageCondition = snap.conditions.find((c) => c.type === "SourceCoverageComplete");
-  assert.equal(coverageCondition?.status, "true", "the in-horizon scope is fully accounted for");
-  assert.equal(coverageCondition?.reason, "coverage_complete_horizon_accounted");
-  assert.equal(snap.state, "healthy", "the connection reaches healthy for its current, in-horizon scope");
+  assert.equal(coverageCondition?.status, "false", "a horizon cannot account this gap away");
+  assert.equal(coverageCondition?.reason, "retryable_gap");
+  assert.notEqual(snap.state, "healthy");
   assert.equal(snap.coverage_horizons.length, 1, "the horizon disclosure is still visible on the snapshot");
+});
+
+test("GROUPME WIRING: the confirmed-horizon run is byte-identical in classification to the no-horizon run", () => {
+  // Disclosure attached, classification untouched — the whole Model A claim,
+  // asserted at the production entry point.
+  const common = {
+    freshness: { status: "current" },
+    lastRun: groupMeShapedRun(),
+    lastSuccessfulRun: groupMeShapedRun(),
+    nowIso: NOW,
+    schedule: { enabled: true },
+  } as const;
+  const without = projectConnectorSummaryConnectionHealth({ ...common } as never);
+  const with_ = projectConnectorSummaryConnectionHealth({ ...common, coverageHorizons: [groupMeHorizon()] } as never);
+  assert.equal(with_.state, without.state);
+  assert.deepEqual(with_.axes, without.axes);
+  assert.deepEqual(with_.conditions, without.conditions);
+  assert.equal(with_.forward_disposition, without.forward_disposition);
+  assert.deepEqual(without.coverage_horizons, []);
+  assert.equal(with_.coverage_horizons.length, 1);
 });
 
 test("NEGATIVE: the SAME raw skip with NO horizon confirmed stays exactly as retryable/degraded as it always was", () => {
@@ -127,7 +147,15 @@ test("NEGATIVE: a confirmed horizon for a DIFFERENT stream does not launder this
 
 test("NEGATIVE: a real, CURRENT-scope gap (no boundary-shaped reason) stays unhealthy even with an unrelated horizon on record", () => {
   const liveGapRun = groupMeShapedRun({
-    known_gaps: [{ kind: "skip_result", reason: "upstream_rate_limited", recovery_action: "retry_by_runtime", severity: "transient", stream: "group_messages" }],
+    known_gaps: [
+      {
+        kind: "skip_result",
+        reason: "upstream_rate_limited",
+        recovery_action: "retry_by_runtime",
+        severity: "transient",
+        stream: "group_messages",
+      },
+    ],
   });
   const snap = projectConnectorSummaryConnectionHealth({
     coverageHorizons: [groupMeHorizon()],

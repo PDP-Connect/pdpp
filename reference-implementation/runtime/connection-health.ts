@@ -135,7 +135,6 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_SUCCEEDED: "collection_succeeded",
   COLLECTION_SUCCEEDED_IMPORT_COMPLETE: "collection_succeeded_import_complete",
   COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
-  COVERAGE_COMPLETE_HORIZON_ACCOUNTED: "coverage_complete_horizon_accounted",
   COVERAGE_COMPLETE_UNFILLABLE_ACCOUNTED: "coverage_complete_unfillable_accounted",
   COVERAGE_UNKNOWN: "coverage_unknown",
   COVERAGE_UNKNOWN_STALE_COLLECTOR: "coverage_unknown_stale_collector",
@@ -870,17 +869,6 @@ export interface ConnectionHealthSnapshot {
    */
   readonly coverage_horizons: readonly ConnectionCoverageHorizon[];
   /**
-   * Cadence-relative lateness, carried onto the snapshot so downstream
-   * surfaces read the FACT rather than inferring it from a rendered tone.
-   *
-   * `resolveOwnerStateResolver` previously had only `verdict.pill.tone` to work
-   * with, so an amber pill — which a merely-late source legitimately earns —
-   * was indistinguishable from real system degradation, and ordinary lateness
-   * grouped as `system_issue` and fired the global banner. A presentation
-   * value is the wrong input for that decision.
-   */
-  readonly lateness?: { readonly state: CadenceLatenessState } | null;
-  /**
    * Additive, nullable source-pressure detail-gap backlog rollup
    * ({@link DetailGapBacklog}). `null` when no backlog evidence was supplied
    * or the durable gap store was unreadable; a readable-but-drained backlog is
@@ -918,6 +906,17 @@ export interface ConnectionHealthSnapshot {
    */
   readonly forward_disposition: ForwardDisposition;
   readonly last_success_at: string | null;
+  /**
+   * Cadence-relative lateness, carried onto the snapshot so downstream
+   * surfaces read the FACT rather than inferring it from a rendered tone.
+   *
+   * `resolveOwnerStateResolver` previously had only `verdict.pill.tone` to work
+   * with, so an amber pill — which a merely-late source legitimately earns —
+   * was indistinguishable from real system degradation, and ordinary lateness
+   * grouped as `system_issue` and fired the global banner. A presentation
+   * value is the wrong input for that decision.
+   */
+  readonly lateness?: { readonly state: CadenceLatenessState } | null;
   /**
    * Additive, nullable local-device outbox count breakdown carried through
    * from {@link ConnectionOutboxEvidence.counts}. Pure annotation: no
@@ -1082,32 +1081,6 @@ export interface ConnectionCoverageEvidence {
    * path and a caller has no reason to combine the two.
    */
   readonly unfillableAccounted?: boolean;
-  /**
-   * `true` only when EVERY outstanding gap behind a `retryable_gap` axis
-   * carries BOTH (a) a connector-reported skip reason matching the
-   * provider-retention-boundary pattern (never a bare "we retried and it
-   * failed" signal) AND (b) a CURRENT, non-superseded, positively-confirmed
-   * {@link ConnectionCoverageHorizon} for that stream (or connection-wide)
-   * whose `earliestAvailable` covers the gap. See
-   * `isProvenPreHorizonGap`/`isStreamFullyHorizonAccounted`
-   * (`connector-gap-classification.ts`) — the exact same two-part discipline
-   * `unfillableAccounted` already applies to `terminal_gap`: the connector's
-   * own claim is necessary but never sufficient; an independently-recorded,
-   * reversible confirmation is the actual proof.
-   *
-   * This is DELIBERATELY NOT satisfied by the skip reason alone — a
-   * connector claiming "provider ended history here" is a hint, not
-   * evidence, until an owner/operator has confirmed it via
-   * `ConnectorCoverageHorizonStore.confirmCoverageHorizon`. Before that
-   * confirmation exists, the gap stays `retryable_gap` and degrading exactly
-   * as before — an unproven boundary is never accepted as provider reality
-   * (see `openspec/changes/add-coverage-horizon-and-actionability-banner/design.md`).
-   *
-   * Optional/absent preserves the prior (never-set) behavior — a
-   * `retryable_gap` axis blocks `SourceCoverageComplete` regardless, exactly
-   * as it always has. Ignored for every axis other than `retryable_gap`.
-   */
-  readonly horizonAccountedRetryableGap?: boolean;
   /**
    * `true` when `axis === "unknown"` specifically because a local-device
    * collector's committed coverage snapshot is missing a store the current
@@ -1548,14 +1521,14 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       // it.
       coverageHorizons,
       detailGapBacklog,
+      dominantConditionId,
+      ephemeralBrowserRuntime,
+      forwardDisposition,
       // Same funnel discipline as `coverageHorizons`: the cadence fact rides
       // along onto the snapshot so downstream surfaces read EVIDENCE rather
       // than inferring lateness from a rendered tone. No classification step
       // can reach it, so it cannot change the headline here.
       lateness: input.lateness ?? null,
-      dominantConditionId,
-      ephemeralBrowserRuntime,
-      forwardDisposition,
       // Attached at the single funnel every classification step returns
       // through, so the annotation rides along without any step being able to
       // classify on it.
@@ -3157,33 +3130,18 @@ function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: Conn
       type: "SourceCoverageComplete",
     });
   }
-  // A `retryable_gap` axis whose entire shortfall is a provider-retention
-  // boundary a caller has independently confirmed (never inferred from the
-  // connector's skip claim alone — see `horizonAccountedRetryableGap`'s doc
-  // comment) is coverage the current, in-horizon scope has already fully
-  // satisfied. The unavailable interval before the horizon is out of scope
-  // by definition — the same "provider-servable-now, not all-data-ever"
-  // denominator rule every surveyed product in
-  // `upstream-retention-loss-health-ux-prior-art.md` uses — so retrying it
-  // forever is not a pending task, it is a category error. `requiredButAccepted`
-  // and every other degrading axis are evaluated first and are unaffected —
-  // this branch only ever softens `retryable_gap`, and only with positive,
-  // reversible proof.
-  if (
-    axes.coverage === "retryable_gap" &&
-    input.coverage?.requiredButAccepted !== true &&
-    input.coverage?.horizonAccountedRetryableGap === true
-  ) {
-    return condition({
-      message:
-        "Source coverage is complete for the current, in-horizon scope: the remaining gap is before a confirmed provider retention boundary.",
-      origin: "connector",
-      reason: CONDITION_REASON.COVERAGE_COMPLETE_HORIZON_ACCOUNTED,
-      severity: "info",
-      status: "true",
-      type: "SourceCoverageComplete",
-    });
-  }
+  // There is deliberately NO counterpart branch for `retryable_gap` backed by
+  // a coverage horizon. A horizon and a connector `boundary_claim` are
+  // disclosure the owner reads beside the gap, never proof the gap is outside
+  // the servable denominator — see the disclosure-only rationale in
+  // `server/connector-gap-classification.ts` and the normative requirement in
+  // `openspec/changes/add-coverage-horizon-and-actionability-banner/specs/
+  // reference-connection-health/spec.md` ("SHALL participate in NO
+  // classification step ... SHALL NOT by itself mark ... a stream's coverage
+  // complete"). Unlike `unfillableAccounted` above, which rests on per-item
+  // durable evidence of impossibility, no per-gap binding to a horizon EDGE
+  // exists in the protocol, so a retryable gap inside the still-servable
+  // interval would have been accounted away on a broad typed claim alone.
   if (input.coverage?.requiredButAccepted === true || isDegradingCoverage(axes.coverage)) {
     return condition({
       message: "Required source coverage is incomplete.",
@@ -4025,7 +3983,6 @@ function degradedReasonCode(input: ComputeConnectionHealthInput): string | null 
 // ─── Builders ─────────────────────────────────────────────────────────────
 
 interface SnapshotArgs {
-  readonly lateness?: { readonly state: CadenceLatenessState } | null;
   readonly axes: ConnectionAxes;
   readonly badges: ConnectionBadges;
   readonly collectionRate?: CollectionRateSnapshot | null;
@@ -4036,6 +3993,7 @@ interface SnapshotArgs {
   readonly ephemeralBrowserRuntime?: EphemeralBrowserRuntimeProjection | null | undefined;
   readonly forwardDisposition: ForwardDisposition;
   readonly lastSuccessAt: string | null;
+  readonly lateness?: { readonly state: CadenceLatenessState } | null;
   readonly localDeviceOutboxCounts?: OutboxDiagnosticCounts | null;
   readonly nextAction?: NextAction | null;
   readonly nextAttemptAt: string | null;
@@ -4053,12 +4011,12 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
     collection_rate: args.collectionRate ?? null,
     conditions: args.conditions,
     coverage_horizons: args.coverageHorizons ?? [],
-    lateness: args.lateness ?? null,
     detail_gap_backlog: args.detailGapBacklog ?? null,
     dominant_condition_id: args.dominantConditionId,
     ephemeral_browser_runtime: runtimeAnnotationForSnapshot(args.ephemeralBrowserRuntime),
     forward_disposition: args.forwardDisposition,
     last_success_at: args.lastSuccessAt,
+    lateness: args.lateness ?? null,
     local_device_outbox_counts: args.localDeviceOutboxCounts ?? null,
     next_action: args.nextAction ?? null,
     next_attempt_at: args.nextAttemptAt,

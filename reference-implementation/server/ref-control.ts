@@ -65,9 +65,7 @@ import {
   type OutboxDiagnosticCounts,
   type OutboxStalledCause,
 } from "../runtime/connection-health.ts";
-import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 import { boundConnectorErrorCode, boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
-import { getDefaultConnectorCoverageHorizonStore } from "./stores/connector-coverage-horizon-store.ts";
 import {
   buildProgressEvidence,
   progressMode,
@@ -75,6 +73,7 @@ import {
   type ManifestStreamLike as VerdictManifestStreamLike,
 } from "../runtime/connector-verdict-input.ts";
 import type { BrowserSurfaceRuntimeInventorySnapshot, BrowserSurfaceRuntimeManagement } from "../runtime/controller.ts";
+import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 import {
   type ClassifiedRunForOwnerState,
   deriveOwnerState,
@@ -116,6 +115,7 @@ import {
   pickMostRecentSurface,
   pickMostUrgentLease,
 } from "./browser-surface-selection.ts";
+import { deriveCadenceLateness } from "./cadence-lateness.ts";
 import { mapWithConcurrency as runWithConcurrency } from "./concurrency.ts";
 import { manualUploadSetupFromManifest, staticSecretCredentialCaptureFromManifest } from "./connection-setup-plan.ts";
 import {
@@ -137,7 +137,6 @@ import {
   hasCompetingOwnerInteractionGap,
   hasDegradingKnownGap,
   hasTerminalKnownGap,
-  isProvenPreHorizonGap,
   isRetryableKnownGap,
   isStreamFullyUnfillableAccounted,
   type TerminalGapProofRow,
@@ -157,7 +156,6 @@ import {
 import { listConnectorSummaryEvidence } from "./connector-summary-read-model.ts";
 import { filterRunGapsProvenCompleteByReport } from "./continuation-proof.ts";
 import { getSqliteStoreCacheIdentity } from "./db.ts";
-import { deriveCadenceLateness } from "./cadence-lateness.ts";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { readStoredCollectionScope } from "./local-collection-scope.ts";
 import { mapPendingPressureGaps } from "./pending-pressure-gap-map.ts";
@@ -198,6 +196,7 @@ import {
 } from "./stores/acquisition-batch-store.ts";
 import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
+import { getDefaultConnectorCoverageHorizonStore } from "./stores/connector-coverage-horizon-store.ts";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.ts";
 import {
   type CredentialStateChange,
@@ -480,10 +479,13 @@ interface StreamSummary {
  * vocabulary the RI can act on without reading prose.
  *
  * `provider_history_boundary` means: "the provider will not serve anything
- * older than this point, ever." It is the ONLY value the coverage-horizon
- * denominator rule will consider, and it is still never sufficient alone — an
- * independently recorded, current `ConnectionCoverageHorizon` must agree (see
- * `isProvenPreHorizonGap`).
+ * older than this point, ever." It is DISCLOSURE the owner can read beside the
+ * gap, never a completeness authority: it does not narrow the coverage
+ * denominator, change the coverage axis, or move connection health, alone or
+ * combined with a recorded `ConnectionCoverageHorizon`. See the disclosure-only
+ * rationale in `server/connector-gap-classification.ts` and the normative
+ * requirement in `openspec/changes/add-coverage-horizon-and-actionability-
+ * banner/specs/reference-connection-health/spec.md`.
  *
  * This field exists because the alternative is the RI pattern-matching
  * connector `reason` strings, which is provider knowledge in the RI wearing a
@@ -3096,11 +3098,9 @@ function buildCoverageEvidence(
   lastRun: ConnectorRunSummary | null,
   pendingDetailGaps: readonly PendingDetailGapSummary[],
   manifestStreams: readonly ManifestStream[],
-  localCoverage: LocalCoverageDiagnosticAxis | null = null,
-  coverageHorizons: readonly ConnectionCoverageHorizon[] = []
+  localCoverage: LocalCoverageDiagnosticAxis | null = null
 ): {
   axis: CoverageAxis;
-  horizonAccountedRetryableGap: boolean;
   requiredButAccepted: boolean;
   unknownStaleCollectorBuild: boolean;
 } {
@@ -3114,55 +3114,16 @@ function buildCoverageEvidence(
   // the diagnostic-derived axis. This is the only honest signal of local
   // collector completeness: an empty/drained outbox is NOT proof of coverage.
   const runAxis = mapCoverageAxis(lastRun, pendingDetailGaps, manifestStreams);
-  const horizonAccountedRetryableGap =
-    runAxis === "retryable_gap" && computeHorizonAccountedRetryableGap(lastRun, coverageHorizons);
   if (runAxis === "unknown" && localCoverage !== null && localCoverage.axis !== "unknown") {
     return {
       axis: localCoverage.axis,
-      horizonAccountedRetryableGap: false,
       requiredButAccepted,
       unknownStaleCollectorBuild: false,
     };
   }
   const unknownStaleCollectorBuild =
     runAxis === "unknown" && localCoverage !== null && localCoverage.unreliableReason === "missing_stores";
-  return { axis: runAxis, horizonAccountedRetryableGap, requiredButAccepted, unknownStaleCollectorBuild };
-}
-
-/**
- * Whether EVERY retryable known-gap on the run is a proven pre-horizon gap
- * (§ workstream A / `ConnectionCoverageEvidence.horizonAccountedRetryableGap`
- * — see its doc comment in `connection-health.ts` for the full rule). A
- * connection can have retryable gaps across several streams; this rolls up
- * per-stream via {@link isProvenPreHorizonGap}, requiring EVERY retryable gap
- * (not just some) to match its stream's confirmed horizon — one genuinely
- * retryable gap anywhere still keeps the whole axis degrading, exactly as
- * `isStreamFullyUnfillableAccounted` requires unanimous per-item proof for
- * `terminal_gap`.
- *
- * Reads `known_gaps` only (the run's own reported skips) — pending detail
- * gaps are a distinct durable retry contract and are deliberately NOT
- * softened here; a horizon disclosure does not cancel an active retry the
- * connector itself has queued.
- */
-function computeHorizonAccountedRetryableGap(
-  lastRun: ConnectorRunSummary | null,
-  horizons: readonly ConnectionCoverageHorizon[]
-): boolean {
-  if (!lastRun || horizons.length === 0) {
-    return false;
-  }
-  const retryableGaps = lastRun.known_gaps.filter((gap) => isRetryableKnownGap(gap));
-  if (retryableGaps.length === 0) {
-    return false;
-  }
-  return retryableGaps.every((gap) => {
-    const stream =
-      gap && typeof gap === "object" && !Array.isArray(gap) ? (gap as { stream?: unknown }).stream : null;
-    return typeof stream === "string" && stream.length > 0
-      ? isProvenPreHorizonGap(gap as { reason?: unknown }, horizons, stream)
-      : false;
-  });
+  return { axis: runAxis, requiredButAccepted, unknownStaleCollectorBuild };
 }
 
 const DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER = ["terminal_gap", "retryable_gap", "gaps", "partial"] as const;
@@ -3490,7 +3451,6 @@ export function refineConnectionHealthWithCollectionReport(
 function applyCoverageOverride(
   resolvedCoverage: {
     axis: CoverageAxis;
-    horizonAccountedRetryableGap?: boolean;
     requiredButAccepted: boolean;
     unfillableAccounted?: boolean;
     unknownStaleCollectorBuild: boolean;
@@ -3505,7 +3465,6 @@ function applyCoverageOverride(
     | undefined
 ): {
   axis: CoverageAxis;
-  horizonAccountedRetryableGap?: boolean;
   requiredButAccepted: boolean;
   unfillableAccounted?: boolean;
   unknownStaleCollectorBuild: boolean;
@@ -3515,12 +3474,6 @@ function applyCoverageOverride(
   }
   return {
     axis: coverageOverride.axis,
-    // Same non-inheritance discipline as `unfillableAccounted` below: an
-    // override that changes the axis away from `retryable_gap` must not
-    // carry forward a horizon proof computed for a DIFFERENT axis/report
-    // pairing. A collection-report override never re-derives the horizon
-    // rollup, so this always resets to `false` across an override.
-    horizonAccountedRetryableGap: false,
     requiredButAccepted: coverageOverride.requiredButAccepted ?? resolvedCoverage.requiredButAccepted,
     // Unlike `requiredButAccepted`, this is NEVER inherited from
     // `resolvedCoverage` when the override is silent about it: an override
@@ -6017,8 +5970,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
       coverageRunForHealth,
       pendingDetailGaps,
       input.manifestStreams ?? [],
-      input.localCoverage ?? null,
-      input.coverageHorizons ?? []
+      input.localCoverage ?? null
     ),
     input.coverageOverride
   );
@@ -6937,14 +6889,6 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       instance.sourceKind === "manual" &&
       authoritativeLastSuccessfulRun !== null &&
       authoritativeLastSuccessfulRun.finished_at !== null,
-    // `manual` is a CHECK-constrained, immutable source_kind written once at
-    // creation (ref-manual-upload-draft-connection.ts) — a durable fact about
-    // what this connection IS, never an inference from a missing run. A
-    // one-time import has no future capture to age, so freshness does not
-    // apply; see design-notes/source-state-truth-2026-08-18.md. This is
-    // deliberately independent of `acquisitionReceiptProven` above — see
-    // `ConnectionAcquisitionEvidence` in connection-health.ts.
-    freshnessNotApplicable: instance.sourceKind === "manual",
     activeRun: authoritativeActiveRun,
     attentionRecords: attention.records,
     // A file-import connector contacts no provider, so `CredentialsValid` has
@@ -6958,6 +6902,14 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     credential,
     ephemeralBrowserRuntime: authoritativeEphemeralBrowserRuntime,
     freshness,
+    // `manual` is a CHECK-constrained, immutable source_kind written once at
+    // creation (ref-manual-upload-draft-connection.ts) — a durable fact about
+    // what this connection IS, never an inference from a missing run. A
+    // one-time import has no future capture to age, so freshness does not
+    // apply; see design-notes/source-state-truth-2026-08-18.md. This is
+    // deliberately independent of `acquisitionReceiptProven` above — see
+    // `ConnectionAcquisitionEvidence` in connection-health.ts.
+    freshnessNotApplicable: instance.sourceKind === "manual",
     lastRun: authoritativeLastRun,
     lastSuccessfulRun: authoritativeLastSuccessfulRun,
     latestSettledRun: authoritativeLatestSettledRun,

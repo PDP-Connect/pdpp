@@ -23,17 +23,11 @@
  *      UNPROVEN boundary (no confirmed horizon on record, or a superseded
  *      one) can never be accepted as provider reality — absence here means
  *      "not read," never "confirmed absent."
- *   3. `ConnectionCoverageEvidence.horizonAccountedRetryableGap` — the ONE
- *      place a horizon legitimately narrows the coverage DENOMINATOR — softens
- *      `retryable_gap` ONLY when the caller has independently verified BOTH a
- *      connector-reported boundary claim AND a current confirmed horizon
- *      (`isProvenPreHorizonGap`/`isStreamFullyHorizonAccounted`,
- *      `connector-gap-classification.test.ts`, covers the rollup itself); this
- *      file proves the connection-health-layer contract: the flag alone
- *      (never the horizon record's mere presence) is what moves
- *      `SourceCoverageComplete`, and even then only for `retryable_gap` —
- *      `terminal_gap` and every other axis are untouched regardless of the
- *      flag.
+ *   3. A horizon narrows the coverage DENOMINATOR in no case at all. There is
+ *      no coverage-evidence input, and no horizon shape, that can make a
+ *      `retryable_gap` (or any other degrading axis) read complete — see the
+ *      final section of this file, and the end-to-end false-green proofs in
+ *      `test/coverage-horizon-disclosure-only-authority.test.ts`.
  *
  * Pure mapping/projection; no grant/auth/token/consent logic (no RED tokens
  * in the modules under test). No source is changed.
@@ -161,11 +155,9 @@ test("NEGATIVE: a provider-retention boundary can never become a retryable failu
   // A stream with a genuine, terminal, permanent gap (the provider will
   // never serve pre-2013 history) MUST NOT be reclassified as
   // `retryable_gap`/`resumable` merely because a coverage horizon explains
-  // WHY the gap exists. The BARE HORIZON RECORD (`coverageHorizons`, with no
-  // `horizonAccountedRetryableGap` proof set) carries no `ConnectionHealthState`
-  // and moves no axis — see the `horizonAccountedRetryableGap` section below
-  // for the ONE narrow, explicitly-gated case where a caller's own proof CAN
-  // soften `retryable_gap` specifically. Proving the bare-record case on a
+  // WHY the gap exists. The horizon record carries no `ConnectionHealthState`
+  // and moves no axis — and, since the horizon-accounted path was removed,
+  // there is no longer any input that lets it move one. Proving this on a
   // `terminal_gap` coverage axis: attaching a horizon record must leave the
   // coverage axis, the forward disposition, and the headline state exactly
   // as red/terminal as they were without it.
@@ -253,44 +245,48 @@ test("NEGATIVE: an unproven boundary cannot be accepted as provider reality", ()
   assert.equal(supersededOnly.state, snap.state);
 });
 
-// ─── horizonAccountedRetryableGap: the ONE case a horizon narrows coverage ──
+// ─── A horizon narrows NOTHING: coverage authority is gone ─────────────────
 //
-// GOAL-OWNER RULING (recorded verbatim in
-// `openspec/changes/add-coverage-horizon-and-actionability-banner/design.md`):
-// "an affirmatively recorded current horizon may exclude ONLY the
-// unavailable pre-horizon interval from the current servable denominator;
-// current/in-horizon gaps and unproven horizons remain degrading." These
-// tests exercise `sourceCoverageCondition`'s `SourceCoverageComplete`
-// derivation directly via the `coverage.horizonAccountedRetryableGap` flag —
-// the rollup that PRODUCES that flag from a connector's raw skip reason plus
-// the confirmed horizon lives in `connector-gap-classification.ts` and is
-// covered by its own test file; this file proves the connection-health-layer
-// contract only: what the flag does and does not unlock.
+// This section previously proved the one case in which a horizon was allowed
+// to narrow the servable denominator, via a `coverage.horizonAccountedRetryableGap`
+// flag. That flag and the branch honoring it are REMOVED, so the tests below
+// now prove the opposite contract: no coverage-evidence input and no horizon
+// shape can make a `retryable_gap` read complete.
+//
+// Its header previously cited a "GOAL-OWNER RULING (recorded verbatim in
+// .../design.md)" permitting the pre-horizon interval to be excluded from the
+// denominator. No such text exists in that design.md at this revision — the
+// design's Alternatives section rejects making a horizon a classification
+// input, and the change's normative spec delta requires that a horizon
+// "SHALL participate in NO classification step" and "SHALL NOT by itself mark
+// ... a stream's coverage complete". The citation is not repeated here.
+//
+// End-to-end proof through the real projection, including the false-green
+// cases (unknown horizon edge, gap inside the servable interval, multiple
+// claiming gaps), lives in
+// `test/coverage-horizon-disclosure-only-authority.test.ts`.
 
-test("GROUPME-LIKE: a pre-horizon retryable gap WITH a proven horizon reads coverage complete for the current, in-horizon scope — not the same as a healthy, unbounded green", () => {
+test("a retryable gap WITH a fully-confirmed horizon on record still fails SourceCoverageComplete", () => {
+  // The inverse of the removed positive case, same inputs: an affirmatively
+  // based, current, exactly-dated horizon cannot settle completeness, because
+  // nothing binds this gap to that horizon's edge.
   const input = healthyInput({
-    coverage: { axis: "retryable_gap", horizonAccountedRetryableGap: true },
+    coverage: { axis: "retryable_gap" },
     coverageHorizons: [horizon({ note: "GroupMe confirmed no messages retained before 2013" })],
   });
   const snap = computeConnectionHealth(input);
   const coverageCondition = snap.conditions.find((c) => c.type === "SourceCoverageComplete");
-  assert.equal(coverageCondition?.status, "true", "horizon-accounted coverage satisfies SourceCoverageComplete");
-  assert.equal(coverageCondition?.reason, "coverage_complete_horizon_accounted");
-  assert.match(coverageCondition?.message ?? "", /current, in-horizon scope/i);
-  assert.doesNotMatch(coverageCondition?.message ?? "", /error|fail|broken/i, "still the neutral disclosure register");
-  assert.equal(snap.axes.coverage, "retryable_gap", "the RAW axis is preserved — this softens the verdict, not the fact");
-
-  // Retained records are never touched by this path — this module has no
-  // record-mutation capability at all, but assert the shape it DOES touch
-  // (conditions/state) never claims records changed.
+  assert.equal(coverageCondition?.status, "false", "a horizon is disclosure, not a denominator");
+  assert.equal(coverageCondition?.reason, "retryable_gap", "the ordinary degrading reason is preserved");
+  assert.equal(snap.axes.coverage, "retryable_gap");
+  assert.notEqual(snap.state, "healthy");
+  assert.equal(snap.coverage_horizons.length, 1, "and the horizon is still disclosed alongside it");
   assert.doesNotMatch(JSON.stringify(snap), /delet|remov|purge/i);
 });
 
 test("NEGATIVE: the SAME retryable gap WITHOUT a confirmed horizon stays exactly as retryable/degrading as before", () => {
-  // Byte-identical to the GroupMe-like case except `horizonAccountedRetryableGap`
-  // is unset (the caller's rollup never computed it true — e.g. because no
-  // horizon was ever confirmed for this stream). Coverage must NOT go green:
-  // an unproven boundary is never accepted as provider reality.
+  // Unchanged by this work, and now the ONLY behavior: with or without a
+  // horizon, a retryable gap is degrading.
   const input = healthyInput({ coverage: { axis: "retryable_gap" } });
   const snap = computeConnectionHealth(input);
   const coverageCondition = snap.conditions.find((c) => c.type === "SourceCoverageComplete");
@@ -301,45 +297,47 @@ test("NEGATIVE: the SAME retryable gap WITHOUT a confirmed horizon stays exactly
 
 test("NEGATIVE: an in-horizon (current-scope) gap stays unhealthy even with a confirmed horizon on record", () => {
   // A confirmed horizon existing SOMEWHERE on the connection must not launder
-  // an unrelated, currently-in-scope gap: `horizonAccountedRetryableGap` is
-  // the caller's affirmative claim that EVERY retryable gap matched its own
-  // proven pre-horizon reason — a caller that (correctly) did NOT set it,
-  // because the actual gap is a live/current-scope failure with no matching
-  // boundary claim, must see coverage stay exactly as degrading as if no
-  // horizon existed at all. The mere presence of `coverageHorizons` on the
-  // snapshot must never be read as itself sufficient.
+  // an unrelated, currently-in-scope gap. The mere presence of
+  // `coverageHorizons` on the snapshot was never sufficient, and now no
+  // additional input can make it sufficient either.
   const input = healthyInput({
-    coverage: { axis: "retryable_gap" }, // horizonAccountedRetryableGap NOT set
-    coverageHorizons: [horizon()], // a horizon exists, but the caller did not attribute this gap to it
+    coverage: { axis: "retryable_gap" },
+    coverageHorizons: [horizon()],
   });
   const snap = computeConnectionHealth(input);
   const coverageCondition = snap.conditions.find((c) => c.type === "SourceCoverageComplete");
   assert.equal(coverageCondition?.status, "false", "a confirmed horizon elsewhere must not launder an in-scope gap");
   assert.notEqual(snap.state, "healthy");
-  assert.equal(snap.coverage_horizons.length, 1, "the horizon still appears as disclosure — it just proves nothing here");
+  assert.equal(
+    snap.coverage_horizons.length,
+    1,
+    "the horizon still appears as disclosure — it just proves nothing here"
+  );
 });
 
-test("NEGATIVE: horizonAccountedRetryableGap never softens terminal_gap, only retryable_gap", () => {
+test("NEGATIVE: a horizon never softens terminal_gap either", () => {
   const input = healthyInput({
-    coverage: { axis: "terminal_gap", horizonAccountedRetryableGap: true },
-    run: { hasDegradingGaps: true, lastSuccessAt: "2026-08-27T00:00:00.000Z", latestStatus: "succeeded", reasonCode: null },
+    coverage: { axis: "terminal_gap" },
+    coverageHorizons: [horizon()],
+    run: {
+      hasDegradingGaps: true,
+      lastSuccessAt: "2026-08-27T00:00:00.000Z",
+      latestStatus: "succeeded",
+      reasonCode: null,
+    },
   });
   const snap = computeConnectionHealth(input);
   const coverageCondition = snap.conditions.find((c) => c.type === "SourceCoverageComplete");
-  assert.notEqual(
-    coverageCondition?.reason,
-    "coverage_complete_horizon_accounted",
-    "the horizon-accounted path is scoped to retryable_gap only"
-  );
   assert.equal(coverageCondition?.status, "false");
+  assert.equal(snap.coverage_horizons.length, 1);
 });
 
-test("NEGATIVE: requiredButAccepted still wins over horizon-accounted retryable coverage", () => {
+test("NEGATIVE: requiredButAccepted still refuses green for a retryable gap carrying a horizon", () => {
   // Mirrors the existing `unfillableAccounted` + `requiredButAccepted`
   // precedence: a contradictory manifest (a REQUIRED stream declaring an
-  // accepted-absent policy) refuses green regardless of any other proof.
+  // accepted-absent policy) refuses green regardless of any other evidence.
   const input = healthyInput({
-    coverage: { axis: "retryable_gap", horizonAccountedRetryableGap: true, requiredButAccepted: true },
+    coverage: { axis: "retryable_gap", requiredButAccepted: true },
     coverageHorizons: [horizon()],
   });
   const snap = computeConnectionHealth(input);

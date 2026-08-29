@@ -11,7 +11,6 @@
 // The run/gap summary shapes are imported type-only (erased at runtime, so no
 // module cycle with ref-control.ts).
 
-import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 import type { ConnectorRunSummary, PendingDetailGapSummary } from "./ref-control.ts";
 
 /**
@@ -500,134 +499,47 @@ export function isStreamFullyUnfillableAccounted(terminalGaps: readonly Terminal
   return terminalGaps.length > 0 && terminalGaps.every(isProvenUnfillableGap);
 }
 
-// ─── Provider-retention-boundary retryable gap accounting ─────────────────
+// ─── Provider-retention boundaries are DISCLOSURE, not coverage accounting ──
 //
-// A `retryable_gap` stream whose connector-reported skip reason names a
-// provider retention/history boundary AND whose connection carries a
-// CURRENT, positively-confirmed `ConnectionCoverageHorizon` for that same
-// stream (or connection-wide) is coverage the current, in-horizon scope has
-// already fully accounted for — the exact "provider-servable-now, not
-// all-data-ever" denominator rule from `upstream-retention-loss-health-ux-
-// prior-art.md`. Structurally identical two-part discipline to the
-// unfillable-gap proof above: the connector's own claim (the reason-pattern
-// match) is a HINT, never sufficient alone; the independently-recorded,
-// reversible horizon confirmation is the actual evidence. Neither one alone
-// changes anything — a connector claiming "provider ended history here"
-// with no confirmed horizon stays exactly as retryable/degrading as before,
-// and a confirmed horizon with no matching connector claim does not retag
-// an unrelated gap.
-
-/**
- * A skip reason a connector might plausibly use to report a permanent
- * provider retention/history boundary. Deliberately narrow and pattern-based
- * (mirrors `isSourceUnavailableKnownGap`'s `SOURCE_UNAVAILABLE_GAP_RE`
- * style) — the connector's STRUCTURED claim, never its prose.
- *
- * An earlier revision matched a regex against the connector's `reason` string.
- * That was provider knowledge in the RI wearing a regex as a disguise: it
- * false-positives on any prose that happens to contain a keyword (a connector
- * whose reason mentions a "retention_policy" it is merely describing) and
- * false-negatives every new connector that words the same fact differently.
- * The RI must not infer provider semantics from an open vocabulary. It
- * validates a closed shape a connector opted into, and nothing else.
- */
-const BOUNDARY_CLAIM_PROVIDER_HISTORY = "provider_history_boundary";
-
-/**
- * True when the gap carries the connector's explicit, typed boundary claim.
- * The `reason` string is NEVER consulted: a connector that wants horizon
- * accounting says so in a field, in connector code, where the provider
- * knowledge belongs.
- */
-function hasProviderHistoryBoundaryClaim(
-  gap: { readonly boundary_claim?: unknown; readonly reason?: unknown } | null | undefined
-): boolean {
-  if (!gap || typeof gap !== "object") {
-    return false;
-  }
-  return gap.boundary_claim === BOUNDARY_CLAIM_PROVIDER_HISTORY;
-}
-
-/**
- * The bases that are AFFIRMATIVE evidence of a provider boundary: the provider
- * said so, either in its own published statement (`provider_stated`) or in a
- * confirmation obtained from it (`provider_confirmed`).
- *
- * `inferred_from_stable_boundary` is deliberately EXCLUDED. The research
- * (`upstream-retention-loss-health-ux-prior-art.md`, PDPP recommendation (c))
- * calls it "weaker/provisional (subject to re-check if new evidence appears)"
- * against `provider_confirmed`'s "settled", and BANNER-ZERO-PLAN.md requires a
- * horizon to rest on positive evidence and "fail closed to unknown when
- * evidence is weak". An inference from a stable boundary is exactly the shape
- * a broken connector produces: a walk that consistently stops early because of
- * a bug looks identical to one stopping at a real retention cliff. Letting
- * that green a retryable gap would turn "our reader keeps failing at the same
- * place" into "the provider has no more data" — the false green this whole
- * axis exists to prevent.
- *
- * A weak horizon is still RECORDED and still DISCLOSED on the snapshot; it
- * simply cannot narrow the servable denominator on its own. Re-confirming the
- * same boundary with a provider-backed basis promotes it.
- */
-const QUALIFYING_HORIZON_BASES: ReadonlySet<string> = new Set(["provider_confirmed", "provider_stated"]);
-
-/**
- * A stream's CURRENT (non-superseded), AFFIRMATIVELY-BASED coverage horizon,
- * if any — connection-wide (`stream: "*"`) or scoped to this exact stream
- * name. Superseded rows are never consulted: only the live confirmation is
- * evidence. A weak-basis horizon is not evidence for this purpose at all.
- */
-function currentHorizonForStream(
-  horizons: readonly ConnectionCoverageHorizon[],
-  streamName: string
-): ConnectionCoverageHorizon | null {
-  return (
-    horizons.find(
-      (horizon) =>
-        horizon.supersededAt === null &&
-        QUALIFYING_HORIZON_BASES.has(horizon.basis) &&
-        (horizon.stream === "*" || horizon.stream === streamName)
-    ) ?? null
-  );
-}
-
-/**
- * True only when a single retryable gap carries BOTH a connector-reported
- * provider-retention-boundary skip reason AND a current, positively-
- * confirmed horizon for its stream. `earliestAvailable: null` on the horizon
- * (the boundary exists but its exact edge is unknown — e.g. "before this
- * connection existed") still counts: the horizon's mere current confirmed
- * existence for this stream is the proof, not a specific date comparison the
- * gap's own opaque shape usually cannot support. A `null`/absent horizon
- * (never confirmed, or confirmed then superseded with nothing re-confirmed
- * after) is NOT proof — the gap stays exactly as retryable as before.
- */
-export function isProvenPreHorizonGap(
-  gap: { readonly boundary_claim?: unknown; readonly reason?: unknown } | null | undefined,
-  horizons: readonly ConnectionCoverageHorizon[],
-  streamName: string
-): boolean {
-  if (!hasProviderHistoryBoundaryClaim(gap)) {
-    return false;
-  }
-  return currentHorizonForStream(horizons, streamName) !== null;
-}
-
-/**
- * Whether an entire stream's retryable gaps are horizon-accounted: at least
- * one retryable gap exists AND every single one of them is
- * {@link isProvenPreHorizonGap}. A stream with even one gap that does not
- * match the boundary pattern, or has no confirmed horizon, does NOT
- * qualify — partial proof is not proof, the same rule
- * {@link isStreamFullyUnfillableAccounted} already enforces for terminal
- * gaps. Returns `false` for an empty gap list.
- */
-export function isStreamFullyHorizonAccounted(
-  retryableGaps: readonly { reason?: unknown }[],
-  horizons: readonly ConnectionCoverageHorizon[],
-  streamName: string
-): boolean {
-  return (
-    retryableGaps.length > 0 && retryableGaps.every((gap) => isProvenPreHorizonGap(gap, horizons, streamName))
-  );
-}
+// A coverage horizon and a connector's `boundary_claim` are recorded, carried
+// onto the health snapshot, and surfaced to the owner in
+// `RenderedVerdict.detail` — but neither one, alone or together, decides
+// whether a stream's coverage is complete. There is deliberately no predicate
+// in this module that answers "is this gap accounted for by a horizon?".
+//
+// This restores the only authority that was ever explicitly designed and
+// accepted. The normative spec delta
+// (`openspec/changes/add-coverage-horizon-and-actionability-banner/specs/
+// reference-connection-health/spec.md`) requires that a coverage horizon
+// "SHALL carry no ConnectionHealthState, no health axis, and no forward
+// disposition, and SHALL participate in NO classification step", and "SHALL
+// NOT by itself mark a connection unhealthy or a stream's coverage complete".
+// That change's `design.md` rejects making the horizon a classification input
+// outright: "a horizon is disclosure, not a verdict".
+//
+// WHY THE REMOVED RULE WAS UNSAFE. It softened a `retryable_gap` when the gap
+// carried the typed `provider_history_boundary` claim AND any current,
+// affirmatively-based horizon existed for the stream. Nothing bound the GAP to
+// the horizon's EDGE — there was no temporal, cursor, or ordered-key
+// comparison at all, and a horizon with `earliestAvailable: null` (edge
+// unknown) satisfied it. So a gap lying wholly INSIDE the interval the
+// provider can still serve was accounted away on a broad typed string plus
+// "some horizon exists": data the provider WOULD return read as complete and
+// stopped being owed. Multiple such gaps softened collectively for the same
+// reason.
+//
+// Binding a specific gap to a specific horizon edge is a legitimate product
+// direction, but it is a public-protocol change, not a runtime one: it needs
+// `boundary_claim` defined in the normative Collection Profile, an explicit
+// provenance/authority model, a comparable structured edge (timestamp
+// interval, provider cursor, ordered key boundary) carried per gap, and
+// conformance tests. Until that contract exists, the disclosure-only rule
+// here is also the strictly SAFE one — it can only ever make a verdict less
+// green, so it cannot manufacture a false green.
+//
+// The claim itself is still validated and persisted at the runtime trust
+// boundary (`PERSISTED_BOUNDARY_CLAIMS` in `runtime/connector-gap-bounding.ts`)
+// and horizons are still recorded, superseded, and read
+// (`server/stores/connector-coverage-horizon-store.ts`,
+// `POST /_ref/connections/:id/coverage-horizon`). Only the completeness
+// authority is gone.
