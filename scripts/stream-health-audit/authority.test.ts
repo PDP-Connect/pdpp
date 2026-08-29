@@ -2356,16 +2356,21 @@ test("vocabulary: `skipped` is a RECOGNISED run status, and still not green", ()
   // closed on a value the runtime intentionally produces — which reads to the
   // owner as a broken connection rather than a gap in the audit's vocabulary.
   const skipped = evaluate(
-    healthyConnection({ last_run: { finished_at: EVIDENCE_AT, run_id: "run-skip", status: "skipped" } })
+    healthyConnection({
+      last_run: { finished_at: EVIDENCE_AT, run_id: "run-skip", status: "skipped" },
+      last_successful_run: null,
+    })
   );
   assert.equal(skipped.perClass.unknown_vocabulary, 0, "the runtime emits it; the audit must recognise it");
 
-  // ...and recognising it must not make it count as success. The row still has
-  // no successful latest run, so it cannot be scored green.
+  // ...and recognising it must not make it count as success on its own. With
+  // no independent successful evidence to fall back on ("keeps a skipped
+  // stream non-green when it has no settled collection evidence" covers this
+  // same contract), a withheld run collected nothing and cannot be green.
   assert.notEqual(
     skipped.status,
     "pass",
-    "KNOWN means recognised, never green — a withheld run collected nothing"
+    "KNOWN means recognised, never green without independent successful evidence"
   );
 });
 
