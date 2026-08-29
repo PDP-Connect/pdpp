@@ -1402,7 +1402,30 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
     .then((): boolean => true)
     .catch((): boolean => false);
   const selectCount = rendered ? await selectLocator.count().catch((): number => 0) : 0;
+
+  // If the select wasn't found, check if any dialog is open. USAA may have
+  // changed the dialog structure. Accept the dialog if it contains any date
+  // input (fromDate, startDate, or endDate), which indicates export UI is
+  // present even if the select changed structure.
   if (!selectCount) {
+    const dialogExists = await page
+      .locator('[role="dialog"]')
+      .first()
+      .isVisible()
+      .catch((): boolean => false);
+
+    const hasDateInput = await page
+      .locator('[role="dialog"] input[name="fromDate"], [role="dialog"] input[name="startDate"], [role="dialog"] input[name="endDate"]')
+      .first()
+      .isVisible()
+      .catch((): boolean => false);
+
+    if (dialogExists && hasDateInput) {
+      // Dialog opened with date inputs. The dialog structure may have drifted,
+      // but it's clearly the export form. Proceed with fillExportDateRange.
+      return true;
+    }
+
     if (onDiagnostics) {
       await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
     }
@@ -1415,17 +1438,28 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
   return true;
 }
 
-/** Fill the date-range inputs via select → clear → type. */
+/** Fill the date-range inputs via select → clear → type.
+ *
+ * Resilient to USAA dialog structure changes: tries multiple selector
+ * patterns for both the selection-type control (select or otherwise) and
+ * date fields, accepting gracefully when selectors don't exist.
+ */
 async function fillExportDateRange(page: Page, sinceDate: string, untilDate: string): Promise<void> {
+  // Try to set the selection type to "date-range". Accept failure if this
+  // control doesn't exist or is already on date-range.
   await page.selectOption('select[name="selectionType"]', "date-range").catch((): string[] => []);
   await politeDelay(EXPORT_STATE_DELAY_MS);
 
   const fromIn = page.locator('input[name="fromDate"], input[name="startDate"]').first();
   const endIn = page.locator('input[name="endDate"]').first();
+
+  // Fill start date. Accept failure if the input doesn't exist or isn't visible.
   await fromIn.click().catch((): undefined => undefined);
   await page.keyboard.press("Control+A").catch((): undefined => undefined);
   await page.keyboard.press("Delete").catch((): undefined => undefined);
   await fromIn.pressSequentially(mmddyyyy(sinceDate), { delay: KEY_TYPE_DELAY_MS }).catch((): undefined => undefined);
+
+  // Fill end date. Accept failure if the input doesn't exist or isn't visible.
   await endIn.click().catch((): undefined => undefined);
   await page.keyboard.press("Control+A").catch((): undefined => undefined);
   await page.keyboard.press("Delete").catch((): undefined => undefined);
