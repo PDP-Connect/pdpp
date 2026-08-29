@@ -12,7 +12,7 @@ import { ResponsiveSpecTable } from "@/components/mdx/responsive-table.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
 import { repoBlobUrl } from "@/lib/site-facts.ts";
-import { MAINTAINER_DOC_SLUGS } from "@/lib/spec-nav-slugs.ts";
+import { MAINTAINER_DOC_SLUGS, specDocExtension } from "@/lib/spec-nav-slugs.ts";
 
 interface DocsPageProps {
   params: Promise<{
@@ -138,7 +138,9 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   // surface stayed crawlable and ranked, reachable from search even though
   // nothing in the rail pointed at them.
   const isInternalNotesPage = page.path === "README.md";
-  const isMaintainerDoc = MAINTAINER_DOC_SLUGS.some((maintainerSlug) => page.path === `${maintainerSlug}.md`);
+  const isMaintainerDoc = MAINTAINER_DOC_SLUGS.some(
+    (maintainerSlug) => page.path === `${maintainerSlug}.${specDocExtension(maintainerSlug)}`
+  );
   const canonicalUrl = isRootSlug ? "/specification" : page.url;
 
   return {

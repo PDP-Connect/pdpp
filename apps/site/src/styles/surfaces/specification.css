@@ -535,6 +535,36 @@
   color: inherit;
 }
 
+/* Fumadocs' Callout (fumadocs-ui/components/callout) is an unstyled `flex
+   gap-2` row with no `items-start`/`items-center` of its own, so the row uses
+   the flex default of `align-items: stretch`. The lucide icon SVG ships a
+   `width`/`height="24"` attribute pair; Tailwind's `size-5` utility overrides
+   width but its height half loses to the browser's own stretch-to-cross-axis
+   sizing once the row is taller than one line (verified in a rendered build:
+   the icon's own computed height reported ~203px against a 20px width on
+   governance's five-line "Programme document" callout, and the icon read as
+   vertically centered — not merely misaligned, genuinely stretched — on both
+   that callout and spec-change-tracking's four-line one). Every other Callout
+   on the site is one line tall, where stretch and top-alignment are the same
+   position, which is why this went unnoticed until a taller callout existed.
+   Pin the icon to a fixed square and stop it stretching, and keep it flush
+   with the title's cap-height rather than the vertical middle of the box. */
+[data-pdpp-doc-theme]
+  .pdpp-docs-body
+  :is(
+    .lucide-info,
+    .lucide-triangle-alert,
+    .lucide-circle-x,
+    .lucide-circle-check,
+    .lucide-lightbulb
+  ) {
+  flex-shrink: 0;
+  align-self: flex-start;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+}
+
 /* No `.prose` on this selector: the table and code-block rules below narrow it
    and are lower specificity, so adding a third class here silently wins over
    them (inline padding leaks into <pre>, nowrap stops applying in cells). */
