@@ -217,45 +217,6 @@ function rootMetadata(text: string): Metadata {
   return { status, date };
 }
 
-function leadingCallout(text: string): string | null {
-  const lines = stripFrontmatter(text).split("\n");
-  stripLeadingBlank(lines);
-  if (!CALLOUT_OPEN_PATTERN.test(lines[0] ?? "")) {
-    return null;
-  }
-  const out: string[] = [];
-  while (lines.length > 0) {
-    const line = lines.shift() ?? "";
-    out.push(line);
-    if (CALLOUT_CLOSE_PATTERN.test(line)) {
-      break;
-    }
-  }
-  return out.join("\n");
-}
-
-const BOLD_MARKER_PATTERN = /\*\*/g;
-
-function cleanMetadataValue(value: string): string {
-  return value.replace(BOLD_MARKER_PATTERN, "").trim();
-}
-
-const CALLOUT_STATUS_PATTERN = /^\s*Status:\s*(.+)$/m;
-const CALLOUT_DATE_PATTERN = /^\s*Date:\s*(.+)$/m;
-
-function calloutMetadata(text: string): Metadata {
-  const callout = leadingCallout(text);
-  if (!callout) {
-    return { status: null, date: null };
-  }
-  const status = callout.match(CALLOUT_STATUS_PATTERN)?.[1] ?? null;
-  const date = callout.match(CALLOUT_DATE_PATTERN)?.[1] ?? null;
-  return {
-    status: status ? cleanMetadataValue(status) : null,
-    date: date ? cleanMetadataValue(date) : null,
-  };
-}
-
 interface LineDiff {
   line: number;
   root: string;
@@ -283,25 +244,20 @@ function checkPair(file: string): string[] {
   const rootText = readFileSync(join(REPO_ROOT, file), "utf8");
   const siteText = readFileSync(join(SITE_DOCS, siteFile), "utf8");
   const expectedMeta = rootMetadata(rootText);
-  const actualMeta = calloutMetadata(siteText);
   const errors: string[] = [];
 
   if (!(expectedMeta.status && expectedMeta.date)) {
     errors.push(`${file}: root spec must declare Status and Date`);
   }
-  if (!(actualMeta.status && actualMeta.date)) {
-    errors.push(`${siteFile}: public-site copy must start with a Status/Date Callout`);
-  }
-  if (expectedMeta.status && actualMeta.status !== expectedMeta.status) {
-    errors.push(
-      `${siteFile}: site Status mismatch (root=${JSON.stringify(expectedMeta.status)} site=${JSON.stringify(actualMeta.status)})`
-    );
-  }
-  if (expectedMeta.date && actualMeta.date !== expectedMeta.date) {
-    errors.push(
-      `${siteFile}: site Date mismatch (root=${JSON.stringify(expectedMeta.date)} site=${JSON.stringify(actualMeta.date)})`
-    );
-  }
+
+  // The site copy no longer echoes Status/Date in a leading Callout: that
+  // metadata now lives in the /specification rail card (VERSION / STATUS /
+  // DATE / EDITORS / SOURCE, sourced from spec-core.md — see
+  // spec-front-matter.ts), not repeated per-page. A header sidecar MAY still
+  // carry a Callout for a genuinely interpretive note (a cross-reference, a
+  // superseded warning); if it does, calloutMetadata would find no
+  // Status:/Date: lines inside it (those are prose now, not a label:value
+  // pair), so there is nothing to compare against root metadata here anymore.
 
   const expected = normalizeBody(stripTitleAndRootStatus(rootText));
   const actual = normalizeBody(stripLeadingSiteCallout(siteText));
