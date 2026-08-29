@@ -1202,6 +1202,47 @@ function rethrowStashedPreflightError(
   throw stashed;
 }
 
+/**
+ * The one-line "replay time" banner `main()` prints once per scenario —
+ * extracted to a pure function so the driver-mix branching (three cases:
+ * recorded-http only, recorded-browser only, or both in the same scenario)
+ * doesn't push `main()` over this file's cognitive-complexity budget. See
+ * the call site's doc comment for why the message must vary by driver:
+ * `recorded-http` replay scales pacing/backoff timers 100x
+ * (writeReplayBridgePreload); `recorded-browser` replay does not (browser-
+ * har-replay.ts's preload — Playwright/patchright's own internal timeouts
+ * share the same global setTimeout, so scaling it would break them, per
+ * that file's module doc comment).
+ */
+function replayTimeBannerLine(declaredDrivers: readonly ("recorded-http" | "recorded-browser")[]): string {
+  const hasRecordedHttpRun = declaredDrivers.includes("recorded-http");
+  const hasRecordedBrowserRun = declaredDrivers.includes("recorded-browser");
+  if (hasRecordedHttpRun && hasRecordedBrowserRun) {
+    return "replay time: recorded-http runs scaled 100x (pacing/backoff compressed); recorded-browser runs run in real time (Playwright's own timeouts share the same clock)";
+  }
+  if (hasRecordedHttpRun) {
+    return "replay time: scaled 100x (pacing/backoff compressed; recorded responses need no provider protection)";
+  }
+  if (hasRecordedBrowserRun) {
+    return "replay time: real time (recorded-browser: Playwright's own per-call timeouts share the connector's global clock, so pacing/backoff is not compressed)";
+  }
+  // No driver declared on any run at all (legacy scenario, or a
+  // hand-assembled one) — neither claim applies; caller prints nothing.
+  return "";
+}
+
+/** Writes `replayTimeBannerLine`'s result to stdout, or nothing at all when
+ *  no driver is declared — pulled out of `main()` alongside the line-
+ *  computation function itself so the call site is a single statement
+ *  (this file's cognitive-complexity budget is otherwise exceeded by the
+ *  three-way driver-mix branching). */
+function printReplayTimeBanner(declaredDrivers: readonly ("recorded-http" | "recorded-browser")[]): void {
+  const line = replayTimeBannerLine(declaredDrivers);
+  if (line) {
+    process.stdout.write(`${line}\n`);
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const connectorPath = resolveConnectorPath(args);
@@ -1272,15 +1313,14 @@ async function main(): Promise<void> {
   // Every replayed response is served from the recording, not a live
   // provider, so a connector's own pacing/backoff timers (governor pacing,
   // an inline PAGE_DELAY sleep, anything else built on setTimeout/
-  // setInterval) have nothing left to protect. The replay preload
-  // (src/scenario/subprocess-fetch-preloads.ts's writeReplayBridgePreload)
-  // scales — not skips — every such delay by REPLAY_TIME_SCALE so relative
-  // ordering (a pace vs. a longer backoff) survives while wall-clock cost
-  // collapses to roughly 1%. Printed once per scenario, matching the
-  // isolationLine convention above.
-  process.stdout.write(
-    "replay time: scaled 100x (pacing/backoff compressed; recorded responses need no provider protection)\n"
-  );
+  // setInterval) have nothing left to protect — for `recorded-http` runs.
+  // `recorded-browser` runs do NOT get the same treatment (Playwright/
+  // patchright's own internal timeouts share the same global clock) — see
+  // `replayTimeBannerLine`'s doc comment for the full reasoning. Printed
+  // once per scenario, reflecting what actually applies given the drivers
+  // THIS scenario declares, rather than a single claim that would be false
+  // whenever any run is recorded-browser.
+  printReplayTimeBanner(declaredDrivers);
   const isolationWorkspace = createScenarioEvidenceWorkspace();
 
   // FIX 2d (repair wave 4): every run's raw messages, accumulated across the

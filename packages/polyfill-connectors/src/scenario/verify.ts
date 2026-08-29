@@ -1479,7 +1479,36 @@ async function verifyRun(
   // record count/id/hash to check, and final_state trivially matches
   // whatever an empty seed merges to. Report this explicitly instead of
   // silently reporting pass:true for a run that verified nothing.
-  if (run.interactions.length === 0 && Object.keys(run.expected.records).length === 0) {
+  //
+  // `recorded-browser` EXCEPTION: for this driver, `run.interactions` is
+  // structurally never the evidence — browser-driven traffic never touches
+  // this module's `createReplayFetch`/interaction-matching machinery at all
+  // (browser-har-replay.ts routes it through `context.routeFromHAR`
+  // instead, entirely outside this process). A recorded-browser run's real
+  // evidence is its HAR file, summarized here by the scenario's own
+  // declared `har_entry_count` (format.ts's `ScenarioBrowserNetworkDriver`
+  // — the same field `wire-registry.ts`'s `DRIVER_EVIDENCE_POLICIES` already
+  // reads for the scenario-level `recorded-browser` evidence-sufficiency
+  // check; see `hasPositiveHarEntryCount` there). A run with 42 HAR entries
+  // and a genuinely empty incremental diff (nothing changed since the prior
+  // capture, so zero new records) DID prove something — the connector
+  // contacted the real provider and got a real (if unchanged) response —
+  // and is not vacuous just because `interactions`/`expected.records` are
+  // both empty. This exception is intentionally narrow: it only fires when
+  // the run actually declares `recorded-browser` AND a positive
+  // `har_entry_count`; it does not touch the `recorded-http` path (whose
+  // proof-of-real-provider-contact IS `interactions.length`, unchanged
+  // below) or a `recorded-browser` run whose HAR is itself empty (still
+  // correctly vacuous_run — see resolveBrowserEvidence's separate,
+  // earlier-firing pre-flight rejection of that case in
+  // browser-har-replay.ts, which never even lets replay reach this point).
+  const network = run.environment?.network;
+  const recordedBrowserHasEvidence =
+    network?.driver === "recorded-browser" &&
+    typeof network.har_entry_count === "number" &&
+    Number.isInteger(network.har_entry_count) &&
+    network.har_entry_count > 0;
+  if (!recordedBrowserHasEvidence && run.interactions.length === 0 && Object.keys(run.expected.records).length === 0) {
     failures.push({
       kind: "vacuous_run",
       runIndex,
