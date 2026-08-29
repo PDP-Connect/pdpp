@@ -582,7 +582,51 @@ export function normalizeAbsentOnlyExpiry(candidate: unknown): unknown {
   return candidate;
 }
 
-/** Parse the closed Source resolved-grant contract used by every binding. */
+/**
+ * Parse the closed Source resolved-grant contract used by every binding.
+ *
+ * TOLERANT BY DESIGN, AND PERSISTED-STATE ONLY. This function deliberately
+ * accepts one shape the current JSON Schema rejects: a legacy explicit
+ * `"expires_at": null`. It drops that member (see `normalizeAbsentOnlyExpiry`)
+ * BEFORE running the validator, so a grant blob written before the absent-only
+ * normalization still parses.
+ *
+ * That tolerance is a persistence-compatibility bridge, NOT a wire contract.
+ * The current wire contract is the JSON Schema, which rejects explicit null.
+ * Nothing here licenses accepting an explicit null from a peer.
+ *
+ * Every current call site honours that restriction, which is what makes the
+ * looser shape safe to keep here for now:
+ *
+ *   - `source-approved-authorization.ts` parses a grant read back from
+ *     durable storage;
+ *   - `source-introspection-context.ts` parses a grant this process just
+ *     reconstructed field-by-field in `resolvedGrantInput()`, which omits
+ *     `expires_at` rather than emitting null, and thereafter re-parses only
+ *     that already-normalized internal object.
+ *
+ * No path feeds newly received, untrusted peer JSON straight into this
+ * function. Keep it that way: if such a caller is ever added, it must NOT
+ * inherit this tolerance.
+ *
+ * FOLLOW-UP (review of #242, "Optional parser-boundary refinement"): the
+ * stronger terminal design splits this into two named boundaries --
+ *
+ *     parseCurrentResolvedGrant()
+ *       - strict current schema
+ *       - explicit null rejected
+ *
+ *     parseLegacyPersistedResolvedGrant()
+ *       - permits only documented legacy deviations
+ *       - normalizes
+ *       - records migration/evidence
+ *       - never used for new untrusted wire input
+ *
+ * That split does not block #242 because the call sites above are verified to
+ * use the tolerant parser only for persisted/internal data. This comment is
+ * the documented restriction the review asked for, so the migration exception
+ * does not silently become permanent protocol acceptance.
+ */
 export function parseCoreResolvedGrant(value: unknown): ResolvedGrant {
   const candidate = normalizeAbsentOnlyExpiry(cloneJson(value));
   if (!validateResolvedGrantSchema(candidate)) {
