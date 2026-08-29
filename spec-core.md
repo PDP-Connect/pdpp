@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-08-14
+Date: 2026-08-29
 
 ---
 
@@ -1251,10 +1251,11 @@ Client-token requests that contain any exact or range `filter[...]` parameter
 MUST be rejected with HTTP 400 `invalid_request` before the RS consults current
 SourceDeclaration or serving metadata. This rejection applies regardless of
 whether the field or operator would otherwise be declared. Owner-token
-current-capability reads MAY accept exact filters on authorized top-level
-scalar fields and declared range filters; unknown fields and non-scalar fields
-are HTTP 400, and fields outside the grant's authorized projection are HTTP 403
-`field_not_granted`.
+current-capability reads MAY accept exact filters on declared top-level scalar
+fields and range filters explicitly declared by current serving metadata.
+Unknown fields, non-scalar fields, and unsupported range shapes return HTTP
+400. Owner subject, source, and connection scope are enforced independently. An
+owner token has no client grant field projection.
 
 Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be
 rejected with HTTP 400 `invalid_request` before the RS consults current
@@ -1283,10 +1284,10 @@ Eligibility for `changes_since` MUST be computed on the grant-authorized project
 
 If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`.
 
-**Filter on unauthorized field:** For owner-token current-capability reads, RS
-MUST reject a `filter[{field}]` parameter targeting a field outside the grant's
-authorized projection with 403 `field_not_granted`. Client-token requests are
-rejected earlier by the v0.1 client-filter rule above.
+**Invalid owner filter:** An owner-token current-capability filter on an
+unknown, non-scalar, or unsupported field/operator returns HTTP 400
+`invalid_request` or `unknown_field`, as applicable. Client-token predicate
+filters are rejected earlier under the v0.1 client-filter rule.
 
 **Expansion:** A client-token expansion request is rejected with 400
 `invalid_request` before declaration lookup. For an owner-token
@@ -1399,7 +1400,7 @@ Every non-2xx response returns a structured error:
 | `unsupported_version` | 400 | `invalid_request_error` | `PDPP-Version` header specifies unsupported version, or grant references unsupported schema version. |
 | `authentication_error` | 401 | `authentication_error` | Missing or invalid access token. |
 | `authorization_state.unsupported_legacy_shape` | 401 | `authentication_error` | Persisted authorization state does not match a supported shape. Fresh consent is required when no migration applies. |
-| `field_not_granted` | 403 | `permission_error` | Filter targets a field outside the grant's authorized projection. |
+| `field_not_granted` | 403 | `permission_error` | Requested client field exceeds the grant's authorized field projection. |
 | `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
 | `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
 | `grant_time_range_exceeded` | 403 | `permission_error` | Request filters exceed the grant's frozen `time_constraint`. |

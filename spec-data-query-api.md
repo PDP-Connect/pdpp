@@ -1,7 +1,7 @@
 # PDPP Data Query API v0.1.0
 
 Status: Superseded
-Date: 2026-08-14 (original); superseded 2026-04-12
+Date: 2026-08-29 (original); superseded 2026-04-12
 
 > **Note:** This document was written before Core Section 8 was expanded to normatively define the RS query interface. [Core Section 8 (Resource Server Interface)](spec-core.md#resource-server-interface) is authoritative for current query syntax, including the canonical `filter[{field}]` / `filter[{field}][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the `limit_clamped` warning behavior. This file is retained for historical reference and should not be used for implementation. Where it disagrees with Core Section 8, Core Section 8 prevails — in particular, the `limit`, `expand_limit`, search, and error-table sections below predate the current contract and are stale.
 
@@ -150,11 +150,12 @@ Returns records from a stream, filtered by grant constraints and request paramet
 | `expand[]` | string | Expand a foreign key relation inline (e.g., `expand[]=messages`). |
 | `expand_limit[{relation}]` | integer | Max records per expanded relation. Default 10, max 50. |
 
-**Grant enforcement:** Owner-token current-capability reads MAY compute
-`effective_filter = grant_filter AND request_filter`. Client-token requests do
-not support request-time `filter[...]` in v0.1 and reject those parameters
-before consulting current source metadata. See Core Section 8, which is
-authoritative for the current query contract.
+**Grant enforcement:** For owner-token current-capability reads, the effective
+filter is the permitted owner request filter alone: an owner token carries no
+grant, so there is no grant filter to intersect. Client-token requests do not
+support request-time `filter[...]` in v0.1 and reject those parameters before
+consulting current source metadata. See Core Section 8, which is authoritative
+for the current query contract.
 
 Note: `limit` on this API is **page size** (how many records per response). The grant constrains access through `time_range`, `fields`, and stream selection — not through record count limits. "Top 50 artists" or "recent 100 posts" are modeled as manifest-defined streams or profiles, not as grant-level constraints.
 
@@ -301,7 +302,7 @@ Every non-2xx response returns a structured error:
 | `unknown_field` | 400 | `invalid_request_error` | Requested field not in stream schema. |
 | `unsupported_version` | 400 | `invalid_request_error` | `PDPP-Version` header specifies unsupported version, or grant references unsupported schema version. |
 | `authentication_error` | 401 | `authentication_error` | Missing or invalid access token. |
-| `field_not_granted` | 403 | `permission_error` | Filter targets a field outside the grant's authorized projection. |
+| `field_not_granted` | 403 | `permission_error` | Requested client field exceeds the grant's authorized field projection. |
 | `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
 | `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
 | `grant_time_range_exceeded` | 403 | `permission_error` | Request filters exceed grant's `time_range`. |
