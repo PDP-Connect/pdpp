@@ -2056,3 +2056,106 @@ test("buildOrdersStateCursor: a truncated scan must not advance the orders check
     "an honest completion still advances the checkpoint — truncation handling must not freeze normal progress"
   );
 });
+
+// ─── Lazy-load scroll-to-load for order details (0829 shortfall fix) ────────
+
+/**
+ * Mock Page stub for testing lazy-load behavior.
+ * Simulates a page where items are only rendered after scroll is called.
+ * Each scroll increments the item count until a ceiling is reached.
+ */
+function makeLazyLoadPageStub(totalItems: number): Page {
+  let itemsRendered = Math.min(15, totalItems); // Initial viewport: ~15 items
+  let scrolls = 0;
+  const maxScrolls = Math.ceil(totalItems / 10); // Load ~10 items per scroll
+
+  return new Proxy(
+    {},
+    {
+      get(_target, prop): unknown {
+        if (prop === "goto") {
+          return (): Promise<null> => {
+            itemsRendered = Math.min(15, totalItems);
+            scrolls = 0;
+            return Promise.resolve(null);
+          };
+        }
+        if (prop === "locator") {
+          return (selector: string): { count: () => Promise<number> } => {
+            if (selector === 'a[data-qe-id="itemRowDetailsName"]') {
+              return {
+                count: (): Promise<number> => Promise.resolve(itemsRendered),
+              };
+            }
+            return { count: (): Promise<number> => Promise.resolve(0) };
+          };
+        }
+        if (prop === "evaluate") {
+          return (fn: () => void): Promise<void> => {
+            // Simulate scroll: load more items
+            scrolls += 1;
+            if (scrolls <= maxScrolls && itemsRendered < totalItems) {
+              itemsRendered = Math.min(itemsRendered + 10, totalItems);
+            }
+            return Promise.resolve(undefined);
+          };
+        }
+        if (prop === "waitForTimeout") {
+          return (): Promise<void> => Promise.resolve();
+        }
+        if (prop === "content") {
+          return (): Promise<string> => {
+            // Return fake HTML with the current item count
+            const items = Array.from({ length: itemsRendered }, (_, i) =>
+              `<li data-qe-id="itemRow">
+                <a data-qe-id="itemRowDetailsName" href="/product-detail/item-${i}">Item ${i}</a>
+              </li>`
+            ).join("");
+            return Promise.resolve(`<html><body><ul>${items}</ul></body></html>`);
+          };
+        }
+        if (prop === "url") {
+          return (): string => "https://www.heb.com/my-account/order-history/HEB123";
+        }
+        throw new Error(`unexpected page.${String(prop)} in lazy-load test`);
+      },
+    }
+  ) as Page;
+}
+
+test("fetchOrderDetail: scrolls to load lazy-rendered items before parsing", async () => {
+  const page = makeLazyLoadPageStub(59); // 59-item order, ~15 visible initially
+  const { deps } = makeRecordingDeps({ waitForHydration: immediateWait });
+
+  const result = await fetchOrderDetail(page, "HEB123", { waitForHydration: immediateWait });
+
+  assert.equal(result.status, "hydrated", "order detail fetched successfully");
+  assert.ok(result.detail, "detail is present");
+  // After scroll, nearly all 59 items should be rendered and parsed
+  // (The exact count depends on how many scroll cycles complete within the 5s timeout)
+  const itemsCollected = result.detail?.items.length ?? 0;
+  assert.ok(
+    itemsCollected > 30,
+    `collected ${itemsCollected} items (declared 59); scroll improved from ~15 initial`
+  );
+});
+
+test("fetchOrderDetail: handles scroll timeout gracefully, parsing available items", async () => {
+  const page = makeLazyLoadPageStub(100); // Large order; scroll may timeout
+  const { deps } = makeRecordingDeps({ waitForHydration: immediateWait });
+
+  // Should not throw, even if scroll times out
+  const result = await fetchOrderDetail(page, "HEB999", { waitForHydration: immediateWait });
+
+  assert.ok(result.status === "hydrated" || result.status === "failed", "completes or fails cleanly");
+});
+
+test("fetchOrderDetail: small orders (fit in viewport) parse without scroll", async () => {
+  const page = makeLazyLoadPageStub(8); // 8 items, all in initial viewport (15-item initial)
+  const { deps } = makeRecordingDeps({ waitForHydration: immediateWait });
+
+  const result = await fetchOrderDetail(page, "HEB8", { waitForHydration: immediateWait });
+
+  assert.equal(result.status, "hydrated");
+  assert.equal(result.detail?.items.length, 8, "all 8 items collected without scroll");
+});

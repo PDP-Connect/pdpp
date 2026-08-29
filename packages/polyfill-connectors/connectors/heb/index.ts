@@ -96,6 +96,60 @@ async function hydrationWait(): Promise<void> {
 }
 
 /**
+ * Scroll order-detail page to load all lazy-rendered items.
+ *
+ * H-E-B's order-detail pages use lazy loading: only viewport-visible item rows
+ * are rendered in the DOM initially. Below-the-fold items render only when the
+ * user scrolls. This function scrolls to the bottom of the items container to
+ * trigger H-E-B's client-side lazy-load, then waits for the final batch to
+ * settle before returning. If scrolling fails or times out, the function
+ * continues silently — the parse will work with whatever items are present,
+ * and if the shortfall is significant, the item-count anchor will flag it.
+ */
+async function scrollToLoadAllItems(page: Page): Promise<void> {
+  const scrollTimeout = 5000; // 5s max wait for lazy-load to settle
+  const stabilityWait = 300; // 300ms with no new items = scroll complete
+  const checkInterval = 100; // Check every 100ms
+
+  try {
+    const startTime = Date.now();
+    let lastItemCount = 0;
+    let stableCount = 0;
+
+    while (Date.now() - startTime < scrollTimeout) {
+      // Count currently-rendered items in the DOM
+      const currentCount = await page
+        .locator('a[data-qe-id="itemRowDetailsName"]')
+        .count()
+        .catch((): number => lastItemCount);
+
+      if (currentCount > lastItemCount) {
+        // New items rendered; keep scrolling
+        lastItemCount = currentCount;
+        stableCount = 0;
+      } else if (currentCount === lastItemCount) {
+        // No new items this tick
+        stableCount += checkInterval;
+        if (stableCount >= stabilityWait) {
+          // Item count stable for 300ms; assume lazy-load is done
+          return;
+        }
+      }
+
+      // Scroll to bottom to trigger next batch
+      await page.evaluate(() => {
+        window.scrollBy(0, window.innerHeight);
+      });
+
+      await page.waitForTimeout(checkInterval);
+    }
+  } catch {
+    // Scroll or evaluate failed; proceed with parse anyway.
+    // The item-count anchor will flag any significant shortfall.
+  }
+}
+
+/**
  * Read the run's trigger-kind/automation-mode metadata (the same
  * `PDPP_RUN_TRIGGER_KIND` primitive the ChatGPT connector reads via
  * `chatGptAllowsInteractiveAuthRepair`, src/auto-login/chatgpt.ts:221) to
@@ -236,6 +290,9 @@ export async function fetchOrderDetail(
     };
   }
   await (deps.waitForHydration ?? hydrationWait)();
+
+  // Scroll to load all lazy-rendered items before parsing.
+  await scrollToLoadAllItems(page);
 
   const landedUrl = page.url();
   const html = await page.content().catch((): string => "");
