@@ -1883,14 +1883,17 @@ CREATE INDEX IF NOT EXISTS idx_connector_coverage_horizons_instance
 -- events, not request volume — the same bound the prior in-memory registry
 -- already accepted as safe.
 -- The claim row also carries the exact normalized terminal payload, its
--- digest, and the deterministic terminal event ID. Those fields are nullable
--- only for legacy rows: such rows remain spent and fail closed because they
--- cannot safely be used to reconstruct evidence after a crash.
+-- replay identity, digest, and deterministic terminal event ID. The replay
+-- identity excludes changing grant/source/connection provenance, so a retry
+-- may refresh metadata while recovering the first accepted fact. The fields
+-- are nullable only for legacy rows: such rows remain spent and fail closed
+-- because they cannot safely be used to reconstruct evidence after a crash.
 CREATE TABLE IF NOT EXISTS stream_evidence_run_registry (
   run_id                TEXT NOT NULL,
   stream                TEXT NOT NULL,
   connector_instance_id TEXT NOT NULL,
   payload_json          TEXT,
+  replay_identity_json  TEXT,
   payload_digest        TEXT,
   event_id              TEXT,
   created_at            TEXT NOT NULL DEFAULT (datetime('now')),
@@ -6035,6 +6038,9 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   // spent, but leave them without a replay payload so the store fails closed
   // instead of fabricating terminal evidence from an incomplete row.
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "stream_evidence_run_registry", "payload_json", "TEXT"));
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "stream_evidence_run_registry", "replay_identity_json", "TEXT")
+  );
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "stream_evidence_run_registry", "payload_digest", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "stream_evidence_run_registry", "event_id", "TEXT"));
   // Idempotent column additions for tables that pre-existed before the

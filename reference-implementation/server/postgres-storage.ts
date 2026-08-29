@@ -488,6 +488,7 @@ async function migratePostgresStreamEvidenceRunRegistry(client: PoolClient): Pro
   // cannot be safely upgraded into terminal evidence, so the store rejects it
   // rather than inventing a replay payload.
   await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS payload_json TEXT");
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS replay_identity_json TEXT");
   await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS payload_digest TEXT");
   await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS event_id TEXT");
 }
@@ -2195,6 +2196,7 @@ export async function bootstrapPostgresSchema({
         stream TEXT NOT NULL,
         connector_instance_id TEXT NOT NULL,
         payload_json TEXT,
+        replay_identity_json TEXT,
         payload_digest TEXT,
         event_id TEXT,
         created_at TEXT NOT NULL DEFAULT (now()::text),

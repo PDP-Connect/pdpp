@@ -9,33 +9,44 @@ import test from "node:test";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import {
   createSqliteStreamEvidenceRunRegistryStore,
+  getStreamEvidenceRollbackGateStatus,
   streamEvidencePayloadDigest,
   streamEvidenceTerminalEventId,
 } from "../server/stores/stream-evidence-run-registry-store.ts";
 
 const DIGEST_MISMATCH_PATTERN = /digest mismatch/i;
 const LEGACY_CLAIM_PATTERN = /no recoverable normalized payload/i;
+const TERMINAL_EVENT_ID_PATTERN = /terminal event identity mismatch/;
 
 function payload(
   runId: string,
   stream: string,
-  variant = "same"
+  variant = "same",
+  metadata: { grantId?: string; connectionId?: string } = {}
 ): {
   normalizedPayloadJson: string;
+  replayIdentityJson: string;
   payloadDigest: string;
   terminalEventId: string;
 } {
-  const normalizedPayloadJson = JSON.stringify({
+  const replayIdentityJson = JSON.stringify({
     considered: 0,
     outcomes: { emitted: 0, gapped: 0, unaccounted: 0, unchanged: 0 },
     reference_only: true,
     stream,
     variant,
   });
-  const payloadDigest = streamEvidencePayloadDigest(normalizedPayloadJson);
+  const normalizedPayloadJson = JSON.stringify({
+    ...JSON.parse(replayIdentityJson),
+    connection_id: metadata.connectionId || "connection_a",
+    grant_id: metadata.grantId || "grant_a",
+    source: { id: "connector_a", kind: "connector" },
+  });
+  const payloadDigest = streamEvidencePayloadDigest(replayIdentityJson);
   return {
     normalizedPayloadJson,
     payloadDigest,
+    replayIdentityJson,
     terminalEventId: streamEvidenceTerminalEventId(runId, stream, payloadDigest),
   };
 }
@@ -128,6 +139,62 @@ test(
 );
 
 test(
+  "claimStreamEvidenceForRunId: changing grant/connection provenance does not change replay identity",
+  withTempDb(async () => {
+    const store = createSqliteStreamEvidenceRunRegistryStore();
+    const first = await store.claimStreamEvidenceForRunId(
+      "cin_metadata_a",
+      "run_metadata",
+      "messages",
+      payload("run_metadata", "messages")
+    );
+    const replay = await store.claimStreamEvidenceForRunId(
+      "cin_metadata_b",
+      "run_metadata",
+      "messages",
+      payload("run_metadata", "messages", "same", { connectionId: "connection_b", grantId: "grant_b" })
+    );
+    assert.equal(first.claimed, true);
+    assert.equal(replay.claimed, false, "metadata changes must not create a second claim");
+    assert.equal(
+      replay.claim.normalizedPayloadJson,
+      first.claim.normalizedPayloadJson,
+      "replay must use the first claim's exact terminal provenance payload"
+    );
+  })
+);
+
+test(
+  "claimStreamEvidenceForRunId: store rejects a non-derived terminal event identity",
+  withTempDb(async () => {
+    const store = createSqliteStreamEvidenceRunRegistryStore();
+    const claimPayload = payload("run_event_id", "messages");
+    await assert.rejects(
+      store.claimStreamEvidenceForRunId("cin_event_id", "run_event_id", "messages", {
+        ...claimPayload,
+        terminalEventId: "evt_not_derived",
+      }),
+      TERMINAL_EVENT_ID_PATTERN
+    );
+  })
+);
+
+test(
+  "claimStreamEvidenceForRunId: rollback gate is closed while a recoverable claim has no terminal event",
+  withTempDb(async () => {
+    const store = createSqliteStreamEvidenceRunRegistryStore();
+    assert.deepEqual(await getStreamEvidenceRollbackGateStatus(), { inFlightNewFormatClaims: 0, safe: true });
+    await store.claimStreamEvidenceForRunId(
+      "cin_rollback",
+      "run_rollback",
+      "messages",
+      payload("run_rollback", "messages")
+    );
+    assert.deepEqual(await getStreamEvidenceRollbackGateStatus(), { inFlightNewFormatClaims: 1, safe: false });
+  })
+);
+
+test(
   "claimStreamEvidenceForRunId: durability — a claim recorded before closeDb()/initDb() (simulating a process restart) is still honored",
   withTempDb(async () => {
     // This is the exact scenario independent exact-head re-review flagged:
@@ -197,5 +264,34 @@ test(
       store.claimStreamEvidenceForRunId("cin_legacy", "run_legacy", "messages", payload("run_legacy", "messages")),
       LEGACY_CLAIM_PATTERN
     );
+  })
+);
+
+test(
+  "claimStreamEvidenceForRunId: a 14767dd claim supports exact replay after the identity migration",
+  withTempDb(async () => {
+    const claimPayload = payload("run_pre_identity", "messages");
+    const oldPayloadDigest = streamEvidencePayloadDigest(claimPayload.normalizedPayloadJson);
+    const oldEventId = streamEvidenceTerminalEventId("run_pre_identity", "messages", oldPayloadDigest);
+    getDb()
+      .prepare(
+        "INSERT INTO stream_evidence_run_registry (connector_instance_id, run_id, stream, payload_json, payload_digest, event_id) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+      .run(
+        "cin_pre_identity",
+        "run_pre_identity",
+        "messages",
+        claimPayload.normalizedPayloadJson,
+        oldPayloadDigest,
+        oldEventId
+      );
+    const replay = await createSqliteStreamEvidenceRunRegistryStore().claimStreamEvidenceForRunId(
+      "cin_pre_identity",
+      "run_pre_identity",
+      "messages",
+      claimPayload
+    );
+    assert.equal(replay.claimed, false);
+    assert.equal(replay.claim.terminalEventId, oldEventId, "old claim identity remains authoritative on replay");
   })
 );

@@ -1590,8 +1590,7 @@ main();
 
 // ── Independent re-review, item 2: one-fact-per-stream-per-run_id across separate runConnector invocations ──
 
-const DUPLICATE_SAME_RUN_ID_PATTERN =
-  /duplicate STREAM_EVIDENCE for stream=message_bodies under run_id=|digest mismatch/i;
+const DUPLICATE_SAME_RUN_ID_PATTERN = /duplicate STREAM_EVIDENCE for stream=message_bodies under run_id=/i;
 const DUPLICATE_SAME_RUN_ID_BODY_0_PATTERN =
   /duplicate STREAM_EVIDENCE for stream=body_0 under run_id=|digest mismatch/i;
 

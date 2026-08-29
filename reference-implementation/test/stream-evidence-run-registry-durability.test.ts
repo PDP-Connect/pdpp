@@ -50,10 +50,12 @@ function payload(runId: string, stream: string) {
     reference_only: true,
     stream,
   });
-  const payloadDigest = streamEvidencePayloadDigest(normalizedPayloadJson);
+  const replayIdentityJson = normalizedPayloadJson;
+  const payloadDigest = streamEvidencePayloadDigest(replayIdentityJson);
   return {
     normalizedPayloadJson,
     payloadDigest,
+    replayIdentityJson,
     terminalEventId: streamEvidenceTerminalEventId(runId, stream, payloadDigest),
   };
 }

@@ -4963,11 +4963,28 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         stream: evidenceStream,
         ...runConnectionIdentity,
       } satisfies Record<string, unknown>;
+      // Replay identity is the accepted fact, not the invocation's mutable
+      // authorization/provenance envelope. A retry may use a refreshed grant
+      // or connection while reusing run_id; it must recover the first fact's
+      // persisted terminal payload and event identity, not create a second
+      // fact or reject a metadata-only replay as divergent evidence.
+      const replayIdentityJson = JSON.stringify({
+        considered: evidenceConsidered,
+        outcomes: {
+          emitted: evidenceEmitted,
+          gapped: evidenceGapped,
+          unaccounted: outcomes.unaccounted,
+          unchanged: outcomes.unchanged,
+        },
+        reference_only: true,
+        stream: evidenceStream,
+      });
       const normalizedPayloadJson = JSON.stringify(normalizedEvidencePayload);
-      const payloadDigest = streamEvidencePayloadDigest(normalizedPayloadJson);
+      const payloadDigest = streamEvidencePayloadDigest(replayIdentityJson);
       const claimPayload: StreamEvidenceClaimPayload = {
         normalizedPayloadJson,
         payloadDigest,
+        replayIdentityJson,
         terminalEventId: streamEvidenceTerminalEventId(runId, evidenceStream, payloadDigest),
       };
       // A replay after the claim/event seam must be allowed to recover the

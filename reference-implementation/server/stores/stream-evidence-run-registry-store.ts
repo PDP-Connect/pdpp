@@ -47,8 +47,15 @@ import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from "../..
 import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
 export interface StreamEvidenceClaimPayload {
+  /** The exact terminal-event payload, including provenance metadata. */
   readonly normalizedPayloadJson: string;
   readonly payloadDigest: string;
+  /**
+   * The accepted-fact identity. This deliberately excludes changing grant,
+   * source, connector-instance, and connection metadata; those fields remain
+   * provenance in `normalizedPayloadJson`, not replay identity.
+   */
+  readonly replayIdentityJson: string;
   readonly terminalEventId: string;
 }
 
@@ -64,8 +71,13 @@ export interface StreamEvidenceClaimResult {
   readonly claimed: boolean;
 }
 
-export function streamEvidencePayloadDigest(normalizedPayloadJson: string): string {
-  return `sha256:${createHash("sha256").update(normalizedPayloadJson, "utf8").digest("hex")}`;
+export interface StreamEvidenceRollbackGateStatus {
+  readonly inFlightNewFormatClaims: number;
+  readonly safe: boolean;
+}
+
+export function streamEvidencePayloadDigest(replayIdentityJson: string): string {
+  return `sha256:${createHash("sha256").update(replayIdentityJson, "utf8").digest("hex")}`;
 }
 
 export function streamEvidenceTerminalEventId(runId: string, stream: string, payloadDigest: string): string {
@@ -80,16 +92,32 @@ export class StreamEvidenceClaimIntegrityError extends Error {
   }
 }
 
+function rollbackGateStatus(inFlightNewFormatClaims: number): StreamEvidenceRollbackGateStatus {
+  return {
+    inFlightNewFormatClaims,
+    safe: inFlightNewFormatClaims === 0,
+  };
+}
+
 interface StreamEvidenceClaimRow {
   readonly event_id: string | null;
   readonly payload_digest: string | null;
   readonly payload_json: string | null;
+  readonly replay_identity_json: string | null;
 }
 
 function assertPayloadDigest(payload: StreamEvidenceClaimPayload): void {
-  if (streamEvidencePayloadDigest(payload.normalizedPayloadJson) !== payload.payloadDigest) {
+  if (streamEvidencePayloadDigest(payload.replayIdentityJson) !== payload.payloadDigest) {
     throw new StreamEvidenceClaimIntegrityError(
-      "STREAM_EVIDENCE claim payload digest mismatch: the supplied digest does not match the normalized payload"
+      "STREAM_EVIDENCE claim payload digest mismatch: the supplied digest does not match the replay identity"
+    );
+  }
+}
+
+function assertTerminalEventId(runId: string, stream: string, payload: StreamEvidenceClaimPayload): void {
+  if (streamEvidenceTerminalEventId(runId, stream, payload.payloadDigest) !== payload.terminalEventId) {
+    throw new StreamEvidenceClaimIntegrityError(
+      `STREAM_EVIDENCE terminal event identity mismatch for (run_id=${runId}, stream=${stream})`
     );
   }
 }
@@ -105,22 +133,51 @@ function assertExistingClaimMatches(
       `STREAM_EVIDENCE claim for (run_id=${runId}, stream=${stream}) has no recoverable normalized payload`
     );
   }
-  if (
-    existing.payload_json !== payload.normalizedPayloadJson ||
-    existing.payload_digest !== payload.payloadDigest ||
-    existing.event_id !== payload.terminalEventId
-  ) {
+  if (streamEvidenceTerminalEventId(runId, stream, existing.payload_digest) !== existing.event_id) {
+    throw new StreamEvidenceClaimIntegrityError(
+      `STREAM_EVIDENCE stored terminal event identity mismatch for (run_id=${runId}, stream=${stream})`
+    );
+  }
+
+  if (existing.replay_identity_json) {
+    if (streamEvidencePayloadDigest(existing.replay_identity_json) !== existing.payload_digest) {
+      throw new StreamEvidenceClaimIntegrityError(
+        `STREAM_EVIDENCE claim for (run_id=${runId}, stream=${stream}) has an invalid replay identity digest`
+      );
+    }
+    if (existing.payload_digest !== payload.payloadDigest) {
+      throw new StreamEvidenceClaimIntegrityError(
+        `STREAM_EVIDENCE claim digest mismatch for (run_id=${runId}, stream=${stream}); refusing divergent replay`
+      );
+    }
+    return;
+  }
+
+  // Rows written by 14767dd predate the explicit replay identity. Preserve
+  // exact replay for those rows, but never infer a new identity from a
+  // key-only legacy row or silently reinterpret old provenance.
+  if (streamEvidencePayloadDigest(existing.payload_json) !== existing.payload_digest) {
+    throw new StreamEvidenceClaimIntegrityError(
+      `STREAM_EVIDENCE claim for (run_id=${runId}, stream=${stream}) has an invalid pre-replay-identity digest`
+    );
+  }
+  if (existing.payload_json !== payload.normalizedPayloadJson) {
     throw new StreamEvidenceClaimIntegrityError(
       `STREAM_EVIDENCE claim digest mismatch for (run_id=${runId}, stream=${stream}); refusing divergent replay`
     );
   }
 }
 
-function makeClaim(payload: StreamEvidenceClaimPayload, terminalEvidencePersisted: boolean): StreamEvidenceClaim {
+function makeClaim(
+  normalizedPayloadJson: string,
+  payloadDigest: string,
+  terminalEventId: string,
+  terminalEvidencePersisted: boolean
+): StreamEvidenceClaim {
   return {
-    normalizedPayloadJson: payload.normalizedPayloadJson,
-    payloadDigest: payload.payloadDigest,
-    terminalEventId: payload.terminalEventId,
+    normalizedPayloadJson,
+    payloadDigest,
+    terminalEventId,
     terminalEvidencePersisted,
   };
 }
@@ -151,9 +208,10 @@ export function createSqliteStreamEvidenceRunRegistryStore(): StreamEvidenceRunR
     payload: StreamEvidenceClaimPayload
   ): StreamEvidenceClaim | null {
     assertPayloadDigest(payload);
+    assertTerminalEventId(runId, stream, payload);
     const [existing] = [
       ...iterateDynamicSqlAcknowledged<StreamEvidenceClaimRow>(
-        `SELECT payload_json, payload_digest, event_id
+        `SELECT payload_json, payload_digest, event_id, replay_identity_json
          FROM stream_evidence_run_registry
         WHERE run_id = ? AND stream = ?`,
         [runId, stream]
@@ -172,7 +230,7 @@ export function createSqliteStreamEvidenceRunRegistryStore(): StreamEvidenceRunR
         `SELECT event_type, run_id, stream_id
          FROM spine_events
         WHERE event_id = ?`,
-        [payload.terminalEventId]
+        [existing.event_id]
       ),
     ];
     if (
@@ -185,13 +243,19 @@ export function createSqliteStreamEvidenceRunRegistryStore(): StreamEvidenceRunR
         `STREAM_EVIDENCE terminal event id collision for (run_id=${runId}, stream=${stream})`
       );
     }
-    return makeClaim(payload, Boolean(terminalEvent));
+    return makeClaim(
+      existing.payload_json as string,
+      existing.payload_digest as string,
+      existing.event_id as string,
+      Boolean(terminalEvent)
+    );
   }
 
   return {
     // biome-ignore lint/suspicious/useAwait: The async signature is part of this store's cross-backend contract.
     async claimStreamEvidenceForRunId(connectorInstanceId, runId, stream, payload) {
       assertPayloadDigest(payload);
+      assertTerminalEventId(runId, stream, payload);
       // REVIEWED-DYNAMIC: idempotent insert into the store-owned registry
       // table. `changes` is better-sqlite3's authoritative row-count for
       // this exact statement, so `changes === 1` means THIS call's insert
@@ -199,18 +263,22 @@ export function createSqliteStreamEvidenceRunRegistryStore(): StreamEvidenceRunR
       // against the same primary key reports `changes === 0` instead of
       // throwing, which is exactly the atomic claim-or-lose signal needed.
       const result = execDynamicSqlAcknowledged(
-        "INSERT OR IGNORE INTO stream_evidence_run_registry (connector_instance_id, run_id, stream, payload_json, payload_digest, event_id) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO stream_evidence_run_registry (connector_instance_id, run_id, stream, payload_json, replay_identity_json, payload_digest, event_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
           connectorInstanceId,
           runId,
           stream,
           payload.normalizedPayloadJson,
+          payload.replayIdentityJson,
           payload.payloadDigest,
           payload.terminalEventId,
         ]
       );
       if (Number(result.changes || 0) === 1) {
-        return { claim: makeClaim(payload, false), claimed: true };
+        return {
+          claim: makeClaim(payload.normalizedPayloadJson, payload.payloadDigest, payload.terminalEventId, false),
+          claimed: true,
+        };
       }
       const existing = getStreamEvidenceClaim(runId, stream, payload);
       if (!existing) {
@@ -224,6 +292,48 @@ export function createSqliteStreamEvidenceRunRegistryStore(): StreamEvidenceRunR
   };
 }
 
+/**
+ * Rollback is safe only after the runtime is drained of recoverable claims
+ * whose terminal event is not yet durable. A prior binary can preserve the
+ * uniqueness row, but it cannot replay a payload written by this repair.
+ * Legacy key-only rows are excluded: they are already spent and fail closed.
+ */
+export async function getStreamEvidenceRollbackGateStatus(): Promise<StreamEvidenceRollbackGateStatus> {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM stream_evidence_run_registry r
+        WHERE r.payload_json IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+              FROM spine_events e
+             WHERE e.event_id = r.event_id
+               AND e.event_type = 'run.stream_evidence_declared'
+               AND e.run_id = r.run_id
+               AND e.stream_id = r.stream
+          )`
+    );
+    return rollbackGateStatus(Number(result.rows[0]?.count ?? 0));
+  }
+
+  const [row] = [
+    ...iterateDynamicSqlAcknowledged<{ count: number }>(
+      `SELECT COUNT(*) AS count
+         FROM stream_evidence_run_registry r
+        WHERE r.payload_json IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+              FROM spine_events e
+             WHERE e.event_id = r.event_id
+               AND e.event_type = 'run.stream_evidence_declared'
+               AND e.run_id = r.run_id
+               AND e.stream_id = r.stream
+          )`
+    ),
+  ];
+  return rollbackGateStatus(Number(row?.count ?? 0));
+}
+
 export function createPostgresStreamEvidenceRunRegistryStore(): StreamEvidenceRunRegistryStore {
   async function getStreamEvidenceClaim(
     runId: string,
@@ -231,8 +341,9 @@ export function createPostgresStreamEvidenceRunRegistryStore(): StreamEvidenceRu
     payload: StreamEvidenceClaimPayload
   ): Promise<StreamEvidenceClaim | null> {
     assertPayloadDigest(payload);
+    assertTerminalEventId(runId, stream, payload);
     const existing = await postgresQuery<StreamEvidenceClaimRow>(
-      "SELECT payload_json, payload_digest, event_id FROM stream_evidence_run_registry WHERE run_id = $1 AND stream = $2",
+      "SELECT payload_json, payload_digest, event_id, replay_identity_json FROM stream_evidence_run_registry WHERE run_id = $1 AND stream = $2",
       [runId, stream]
     );
     const [row] = existing.rows;
@@ -244,7 +355,7 @@ export function createPostgresStreamEvidenceRunRegistryStore(): StreamEvidenceRu
       event_type: string;
       run_id: string | null;
       stream_id: string | null;
-    }>("SELECT event_type, run_id, stream_id FROM spine_events WHERE event_id = $1", [payload.terminalEventId]);
+    }>("SELECT event_type, run_id, stream_id FROM spine_events WHERE event_id = $1", [row.event_id]);
     const [event] = terminalEvent.rows;
     if (
       event &&
@@ -254,29 +365,34 @@ export function createPostgresStreamEvidenceRunRegistryStore(): StreamEvidenceRu
         `STREAM_EVIDENCE terminal event id collision for (run_id=${runId}, stream=${stream})`
       );
     }
-    return makeClaim(payload, Boolean(event));
+    return makeClaim(row.payload_json as string, row.payload_digest as string, row.event_id as string, Boolean(event));
   }
 
   return {
     async claimStreamEvidenceForRunId(connectorInstanceId, runId, stream, payload) {
       assertPayloadDigest(payload);
+      assertTerminalEventId(runId, stream, payload);
       // `ON CONFLICT ... DO NOTHING RETURNING run_id` returns a row only
       // for the call whose insert actually landed; a concurrent racer that
       // hits the same primary key gets zero rows back, atomically.
       const result = await postgresQuery(
-        "INSERT INTO stream_evidence_run_registry (connector_instance_id, run_id, stream, payload_json, payload_digest, event_id) VALUES ($1, $2, $3, $4, $5, $6) " +
+        "INSERT INTO stream_evidence_run_registry (connector_instance_id, run_id, stream, payload_json, replay_identity_json, payload_digest, event_id) VALUES ($1, $2, $3, $4, $5, $6, $7) " +
           "ON CONFLICT (run_id, stream) DO NOTHING RETURNING run_id",
         [
           connectorInstanceId,
           runId,
           stream,
           payload.normalizedPayloadJson,
+          payload.replayIdentityJson,
           payload.payloadDigest,
           payload.terminalEventId,
         ]
       );
       if (result.rows.length === 1) {
-        return { claim: makeClaim(payload, false), claimed: true };
+        return {
+          claim: makeClaim(payload.normalizedPayloadJson, payload.payloadDigest, payload.terminalEventId, false),
+          claimed: true,
+        };
       }
       const existing = await getStreamEvidenceClaim(runId, stream, payload);
       if (!existing) {

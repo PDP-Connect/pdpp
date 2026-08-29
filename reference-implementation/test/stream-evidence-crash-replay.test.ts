@@ -263,13 +263,21 @@ test("STREAM_EVIDENCE claim crash replays its exact payload after restart and re
 
     const claim = getDb()
       .prepare(
-        "SELECT payload_json, payload_digest, event_id FROM stream_evidence_run_registry WHERE run_id = ? AND stream = ?"
+        "SELECT payload_json, replay_identity_json, payload_digest, event_id FROM stream_evidence_run_registry WHERE run_id = ? AND stream = ?"
       )
-      .get(runId, "message_bodies") as { event_id: string; payload_digest: string; payload_json: string } | undefined;
+      .get(runId, "message_bodies") as
+      | {
+          event_id: string;
+          payload_digest: string;
+          payload_json: string;
+          replay_identity_json: string;
+        }
+      | undefined;
     if (!claim) {
       throw new Error("the crash leaves a durable claim");
     }
     assert.equal(typeof claim.payload_json, "string", "the durable claim carries normalized payload");
+    assert.equal(typeof claim.replay_identity_json, "string", "the durable claim carries replay identity");
     assert.equal(typeof claim.payload_digest, "string", "the durable claim carries payload digest");
     const beforeReplayEvidence = getDb()
       .prepare(
