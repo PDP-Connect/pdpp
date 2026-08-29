@@ -48,6 +48,11 @@ export const googleTakeoutCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "google_takeout",
   entry: "google_takeout",
   bindings: { filesystem: { required: true } },
+  // Declared explicitly (not omitted): this definition targets the
+  // connector-protocol 0.0.2 capability-declaration contract, which
+  // requires an explicit array even when empty. This connector emits no
+  // STREAM_EVIDENCE and needs no protocol capability today.
+  protocol_capabilities: [],
   streams: GOOGLE_TAKEOUT_DEFAULT_STREAMS,
   time_scopable_streams: GOOGLE_TAKEOUT_TIME_SCOPABLE_STREAMS,
 };

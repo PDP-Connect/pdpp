@@ -55,6 +55,7 @@ export function classifyRuntimeFailure(err: unknown): FailureReason {
     message.startsWith("Connector emitted PROGRESS for undeclared stream:") ||
     message.startsWith("Connector emitted SKIP_RESULT for undeclared stream:") ||
     message.startsWith("Connector emitted DETAIL_GAP for undeclared stream:") ||
+    message.startsWith("Connector emitted DETAIL_GAP for stream ") ||
     message.startsWith("Connector emitted invalid DONE status:") ||
     message.startsWith("Connector emitted invalid DONE.error") ||
     message.startsWith("Connector emitted invalid DONE.records_emitted:") ||

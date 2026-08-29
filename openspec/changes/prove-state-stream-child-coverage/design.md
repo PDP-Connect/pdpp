@@ -1,4 +1,26 @@
-## Decision
+## Supersession note (P1-2)
+
+This document's original decision (below) specified `STREAM_EVIDENCE` with a
+single scalar `covered` field. That shipped as P1-1. An independent hostile
+design review (`STREAM-EVIDENCE-TERMINAL-DESIGN-REVIEW.md §10`, retained
+outside this repo) found the scalar `covered` conflates writes with
+non-writes (it legitimately includes suppressed-unchanged and gapped keys),
+which makes intra-run duplicate-key inflation and claiming coverage over
+RS-rejected records structurally unclosable against it — a distinct-key
+count cannot be compared against a number that includes non-writes. P1-2
+implements that review's corrected terminal design: `covered` is replaced on
+the wire by an explicit, sum-checked `outcomes: {emitted, unchanged, gapped,
+unaccounted}` partition, and the runtime additionally closes `emitted`
+against a parent-owned, per-run, disk-backed exact distinct-(stream,key) set
+of durably-accepted records, and `gapped` against the runtime's own durable
+`DETAIL_GAP` count. Where this note and the sections below conflict, this
+note and the current wire shape in `spec-collection-profile.md` govern; the
+sections below are retained as the original design record for the parts that
+are unchanged (message kind rationale, why final counts, why not a
+parent-count alias, checkpoint-commit independence, cross-run-state
+rejection, sender-honesty framing for `unchanged`, and rollout ordering).
+
+## Decision (original; see supersession note above for the shipped wire shape)
 
 Add one new connector-to-runtime message, `STREAM_EVIDENCE`. It is the
 smallest portable primitive that lets a `state_stream` child report an
@@ -11,7 +33,12 @@ confused with, `DETAIL_COVERAGE`.
   "reference_only": true,
   "stream": "message_bodies",
   "considered": 214,
-  "covered": 211
+  "outcomes": {
+    "emitted": 200,
+    "unchanged": 11,
+    "gapped": 2,
+    "unaccounted": 1
+  }
 }
 ```
 
@@ -20,7 +47,14 @@ confused with, `DETAIL_COVERAGE`.
 | `reference_only` | `true` | MUST be present and `true`. Same epistemic marker as `DETAIL_COVERAGE.reference_only`: evidence about a run, not itself durable data. |
 | `stream` | string | The `state_stream`-declared stream this fact describes. MUST be present in `scope.streams`. MUST name a stream whose manifest declaration has `state_stream` set (i.e. is itself a `state_stream` child). |
 | `considered` | integer, >= 0 | The full count of keys the connector's own hydration lane considered for this stream in this run, after the connector's own reconciliation of hydrated vs. gapped vs. unaccounted keys settles. |
-| `covered` | integer, 0 <= covered <= considered | The count of `considered` keys the connector successfully hydrated and emitted as `RECORD` in this run. |
+| `outcomes.emitted` | integer, >= 0 | The count of `considered` keys the connector successfully hydrated and emitted as `RECORD` in this run. |
+| `outcomes.unchanged` | integer, >= 0 | The count of `considered` keys compared against the source and found unchanged, and therefore not emitted. Sender-honest; the runtime cannot observe a suppressed key. |
+| `outcomes.gapped` | integer, >= 0 | The count of `considered` keys reported via a durable `DETAIL_GAP` for this stream this run. |
+| `outcomes.unaccounted` | integer, >= 0 | The count of `considered` keys lost before reaching either the hydrated or gapped outcome (the swallowed-exception case). |
+
+`outcomes.emitted + outcomes.unchanged + outcomes.gapped +
+outcomes.unaccounted` MUST equal `considered` exactly — this is what P1-2
+adds over the original scalar `covered` (see supersession note above).
 
 A connector emits at most one `STREAM_EVIDENCE` per `stream` per run. It is
 optional: a `state_stream` child that has no independent hydration lane, or
@@ -60,10 +94,12 @@ this without a protocol or manifest change:
   proposal.
 
 `STREAM_EVIDENCE` therefore carries only what a `state_stream` child can
-honestly report about itself: `considered`, `covered`, its own `stream`
-name. No `state_stream` field, no key sets, no parent identity — because it
-never needs to select or contest a parent; the manifest already says which
-parent it rides, immutably, and this message never touches that.
+honestly report about itself: `considered`, the `outcomes` partition (see
+supersession note above — this replaced the original scalar `covered`),
+its own `stream` name. No `state_stream` field, no key sets, no parent
+identity — because it never needs to select or contest a parent; the
+manifest already says which parent it rides, immutably, and this message
+never touches that.
 
 ### Why final counts, not progress metadata
 
@@ -126,6 +162,25 @@ different stream's count.
 
 ### Runtime handling
 
+**SUPERSEDED (P1-2/round 3).** Rule 2 below describes the ORIGINAL scalar
+`covered` wire shape (`covered > considered` / `covered < 0`), which no
+longer exists on the wire. Independent re-review (round 3, item 5)
+correctly flagged this as a stale claim left standing without an inline
+pointer, despite the top-level supersession note at the top of this file.
+The current, authoritative validation rules are `outcomes.emitted +
+outcomes.unchanged + outcomes.gapped + outcomes.unaccounted === considered`
+(replacing rule 2's `covered` bound), `outcomes.emitted` equal to this
+run's distinct durably-accepted key count, and `outcomes.gapped` equal
+(not merely bounded by) this run's distinct durable `DETAIL_GAP` count for
+the stream — see `spec-collection-profile.md`'s `STREAM_EVIDENCE` section
+and `openspec/changes/prove-state-stream-child-coverage/specs/
+reference-implementation-runtime/spec.md`, which govern. Rules 1, 3, and 4
+below remain accurate (manifest-shape rejection, duplicate rejection, and
+the fold into `RuntimeCollectionFact` — the field NAMES `considered`/
+`covered` in rule 4 are still what `RuntimeCollectionFact` itself carries,
+since `covered` there is now DERIVED as `outcomes.emitted +
+outcomes.unchanged` rather than read directly off the wire).
+
 `STREAM_EVIDENCE` is validated and tracked by a new function,
 `trackStreamEvidence(msg)`, parallel to but independent from
 `trackDetailCoverage(msg)`. It is called from the same message-receive loop
@@ -137,11 +192,16 @@ as every other connector message, and:
    `parent_streams`-declared or self-mapped stream reporting one is a
    protocol violation, symmetric with `DETAIL_COVERAGE`'s existing rejection
    of `state_stream` children.
-2. Rejects a `STREAM_EVIDENCE` with `covered > considered`, `considered < 0`,
-   or `covered < 0`.
+2. ~~Rejects a `STREAM_EVIDENCE` with `covered > considered`, `considered < 0`,
+   or `covered < 0`.~~ SUPERSEDED — see the note above this list.
 3. Rejects a second `STREAM_EVIDENCE` for the same `stream` in the same run
    (at most one per stream per run — the message is a terminal fact, not an
-   incremental one).
+   incremental one). This is enforced across separate `runConnector`
+   invocations sharing the same `run_id`, not only within one invocation,
+   including across a process restart between invocations — via a durable
+   store (`server/stores/stream-evidence-run-registry-store.ts`), not an
+   in-process registry; see that module's doc comment for the full
+   rationale.
 4. On acceptance, records `{considered, covered}` for that stream, folded
    into `RuntimeCollectionFact.considered`/`covered` at the same point
    `buildCollectionFacts` assembles the terminal collection report — never
@@ -257,11 +317,17 @@ and then fails on an unrelated stream MUST NOT have that child's
   numerator is even consulted. This is unchanged existing behavior; a
   `state_stream` child gains no special gap-handling path.
 - **Invalid message.** A `STREAM_EVIDENCE` failing runtime validation (wrong
-  stream shape, `covered > considered`, negative counts, duplicate for the
-  same stream/run) is a protocol violation: the runtime rejects it fail
-  closed, exactly as an invalid `DETAIL_COVERAGE` is rejected today. A
-  rejected `STREAM_EVIDENCE` MUST NOT be silently dropped in a way that lets
-  the stream fall through to inheritance as if nothing were reported; a
+  stream shape; the `outcomes` partition not summing to `considered`, or
+  any field negative or non-integer — see supersession note above for the
+  current shape, which replaced the original scalar `covered > considered`
+  check; `outcomes.emitted` not equal to this run's distinct
+  durably-accepted key count; `outcomes.gapped` not equal to this run's
+  distinct durable `DETAIL_GAP` count; duplicate for the same stream/run,
+  including across separate `runConnector` invocations sharing the same
+  `run_id`) is a protocol violation: the runtime rejects it fail closed,
+  exactly as an invalid `DETAIL_COVERAGE` is rejected today. A rejected
+  `STREAM_EVIDENCE` MUST NOT be silently dropped in a way that lets the
+  stream fall through to inheritance as if nothing were reported; a
   connector emitting an invalid fact is a protocol-conformance failure for
   the run.
 
@@ -389,9 +455,21 @@ and then fails on an unrelated stream MUST NOT have that child's
 
 ## Acceptance
 
+(P1-2 additions, on top of P1-1's original acceptance criteria below: the
+four `outcomes.*` fields MUST sum to `considered` exactly; a `STREAM_EVIDENCE`
+claiming `outcomes.emitted` above this run's own distinct durably-accepted
+key count for the stream is rejected — closing both intra-run duplicate-key
+inflation and claiming coverage over RS-rejected records; a
+`STREAM_EVIDENCE` claiming `outcomes.gapped` above this run's own durable
+`DETAIL_GAP` count for the stream is rejected; `outcomes.gapped`/
+`outcomes.unaccounted` being nonzero prevents the derived `covered` from
+reaching `considered`, which is what blocks `complete` — no separate gating
+code was added.)
+
 - A `state_stream` child connector that measures itself and emits
-  `STREAM_EVIDENCE{considered: n, covered: n}` with no pending gaps, after a
-  genuine enumeration boundary, projects `complete`.
+  `STREAM_EVIDENCE{considered: n, outcomes: {emitted: n, unchanged: 0,
+  gapped: 0, unaccounted: 0}}` with no pending gaps, after a genuine
+  enumeration boundary, projects `complete`.
 - The same connector, with `k` keys gapped, projects `retryable_gap` (rule 3
   fires on `pending_detail_gaps > 0` before the numerator).
 - The same connector, with one key enumerated then lost to an unhandled

@@ -35,7 +35,6 @@
  */
 
 import { iterateDynamicSqlAcknowledged } from "../lib/db.ts";
-import type { EphemeralBrowserRuntimeProjection } from "../runtime/browser-surface/ephemeral-health-projection.ts";
 import { readConnectorInstanceIdPage as readInstanceIdPage } from "./connector-summary-evidence-bounded-reconciliation.ts";
 import type { RepairCandidateReason } from "./connector-summary-evidence-engine.ts";
 import {
@@ -162,40 +161,21 @@ function parseEvidenceJson(value: unknown, fallback: unknown): unknown {
 }
 
 /**
- * Narrow handoff for the separately-owned scoped runtime observer. The
- * terminal list projection stores the observer's already-classified result;
- * it never discovers surfaces, reads runtime history, or treats an omitted
- * observation as healthy.
+ * Why this envelope carries a reason code and nothing else: the terminal list
+ * projection never had a reachable cached payload. Its `state` column was only
+ * ever written `'stale'`, so the `state === 'current'` read that gated the
+ * payload could not be true, and the stored JSON was written but never served.
+ * The payload, its `computed_at` stamp, and the `state` column were removed;
+ * the reason code stayed because it is the part owners actually read.
  */
-export interface ConnectorListSummaryRuntimeEvidence {
-  readonly observed_at: string;
-  readonly projection: EphemeralBrowserRuntimeProjection | null;
-}
-
-export interface ConnectorListSummaryTerminalProjection {
-  readonly runtime: ConnectorListSummaryRuntimeEvidence | null;
-  /** Exact owner LIST-item shape, retained as one named projection payload. */
-  readonly summary: Record<string, unknown>;
-}
-
 export interface ConnectorListSummaryTerminalProjectionEnvelope {
-  readonly computed_at: string | null;
-  readonly projection: ConnectorListSummaryTerminalProjection | null;
   readonly reason_code: string | null;
-  readonly state: "current" | "stale" | "unobserved" | "failed";
 }
 
-const TERMINAL_PROJECTION_STATES = new Set(["current", "stale", "failed"]);
 export const TERMINAL_PROJECTION_PUBLICATION_RACE = "ConnectorListSummaryProjectionRace";
 const DECIMAL_SOURCE_REVISION_RE = /^\d+$/;
 const LEADING_ZEROES_SOURCE_REVISION_RE = /^0+(?=\d)/;
 const MAX_SOURCE_REVISION = "9223372036854775807";
-
-function terminalProjectionState(value: unknown): ConnectorListSummaryTerminalProjectionEnvelope["state"] {
-  return typeof value === "string" && TERMINAL_PROJECTION_STATES.has(value)
-    ? (value as ConnectorListSummaryTerminalProjectionEnvelope["state"])
-    : "unobserved";
-}
 
 function knownSourceRevision(value: unknown): boolean {
   return value !== null && value !== undefined && DECIMAL_SOURCE_REVISION_RE.test(String(value));
@@ -206,21 +186,6 @@ function sourceRevisionIsExhausted(value: unknown): boolean {
     return false;
   }
   return String(value).replace(LEADING_ZEROES_SOURCE_REVISION_RE, "") === MAX_SOURCE_REVISION;
-}
-
-function parseTerminalProjection(value: unknown): ConnectorListSummaryTerminalProjection | null {
-  const parsed = parseEvidenceJson(value, null);
-  if (!(parsed && typeof parsed === "object" && !Array.isArray(parsed))) {
-    return null;
-  }
-  const candidate = parsed as Record<string, unknown>;
-  if (!(candidate.summary && typeof candidate.summary === "object" && !Array.isArray(candidate.summary))) {
-    return null;
-  }
-  return {
-    runtime: (candidate.runtime as ConnectorListSummaryRuntimeEvidence | null | undefined) ?? null,
-    summary: candidate.summary as Record<string, unknown>,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -351,8 +316,7 @@ function createConnectorSummaryStore() {
                   canonical_evidence_revision,
                   source_revision::text AS source_revision,
                   manifest_generation, schedule_checkpoint, run_lifecycle_event_seq,
-                  list_summary_projection_json, list_summary_projection_state,
-                  list_summary_projection_reason_code, list_summary_projection_computed_at
+                  list_summary_projection_reason_code
              FROM connector_summary_evidence
              ${where}
              ORDER BY connector_instance_id ASC`,
@@ -398,7 +362,6 @@ function createConnectorSummaryStore() {
                   state = 'stale',
                   last_error = $1,
                   canonical_evidence_revision = canonical_evidence_revision + 1,
-                  list_summary_projection_state = 'stale',
                   list_summary_projection_reason_code = 'canonical_evidence_dirty'`,
           [sanitized]
         );
@@ -424,7 +387,6 @@ function createConnectorSummaryStore() {
                   state = 'stale',
                   last_error = $1,
                   canonical_evidence_revision = canonical_evidence_revision + 1,
-                  list_summary_projection_state = 'stale',
                   list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   record_snapshot_state = 'failed',
                   record_snapshot_reason_code = $2,
@@ -459,7 +421,6 @@ function createConnectorSummaryStore() {
                   state = 'stale',
                   last_error = $1,
                   canonical_evidence_revision = canonical_evidence_revision + 1,
-                  list_summary_projection_state = 'stale',
                   list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   terminal_facts_state = $2,
                   terminal_facts_reason_code = $3
@@ -494,7 +455,6 @@ function createConnectorSummaryStore() {
                   state = 'stale',
                   last_error = $2,
                   canonical_evidence_revision = canonical_evidence_revision + 1,
-                  list_summary_projection_state = 'stale',
                   list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   source_event_seq = COALESCE($3, source_event_seq)
             WHERE connector_instance_id = $1`,
@@ -570,8 +530,7 @@ function createConnectorSummaryStore() {
                     canonical_evidence_revision,
                     CAST(source_revision AS TEXT) AS source_revision,
                     manifest_generation, schedule_checkpoint, run_lifecycle_event_seq,
-                    list_summary_projection_json, list_summary_projection_state,
-                    list_summary_projection_reason_code, list_summary_projection_computed_at`;
+                    list_summary_projection_reason_code`;
       if (connectorInstanceId) {
         return db
           .prepare(
@@ -635,7 +594,6 @@ function createConnectorSummaryStore() {
                   state = 'stale',
                   last_error = ?,
                   canonical_evidence_revision = canonical_evidence_revision + 1,
-                  list_summary_projection_state = 'stale',
                   list_summary_projection_reason_code = 'canonical_evidence_dirty'`
         )
         .run(sanitized);
@@ -660,7 +618,6 @@ function createConnectorSummaryStore() {
                   state = 'stale',
                   last_error = ?,
                   canonical_evidence_revision = canonical_evidence_revision + 1,
-                  list_summary_projection_state = 'stale',
                   list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   record_snapshot_state = 'failed',
                   record_snapshot_reason_code = ?,
@@ -694,7 +651,6 @@ function createConnectorSummaryStore() {
                   state = 'stale',
                   last_error = ?,
                   canonical_evidence_revision = canonical_evidence_revision + 1,
-                  list_summary_projection_state = 'stale',
                   list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   terminal_facts_state = ?,
                   terminal_facts_reason_code = ?
@@ -718,7 +674,6 @@ function createConnectorSummaryStore() {
                   state = 'stale',
                   last_error = ?,
                   canonical_evidence_revision = canonical_evidence_revision + 1,
-                  list_summary_projection_state = 'stale',
                   list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   source_event_seq = COALESCE(?, source_event_seq)
             WHERE connector_instance_id = ?`
@@ -764,37 +719,30 @@ export async function getConnectorSummaryEvidence(connectorInstanceId: string | 
   return rows[0] ?? null;
 }
 
-async function invalidateAllConnectorListSummaryTerminalProjections(reasonCode: string): Promise<void> {
+/**
+ * Bumps every row's canonical evidence revision, so readers holding an older
+ * revision know their copy is superseded.
+ *
+ * This used to also stamp a projection reason code, under a
+ * `CASE WHEN list_summary_projection_state = 'current'` guard. Nothing ever
+ * wrote that state, so the guard never fired and the stamp never landed; the
+ * revision bump was always the whole observable effect. The dead branch and
+ * its now-unused reason-code argument were removed with the projection cache.
+ */
+async function bumpAllCanonicalEvidenceRevisions(): Promise<void> {
   if (isPostgresStorageBackend()) {
     await postgresQuery(
       `UPDATE connector_summary_evidence
-          SET canonical_evidence_revision = canonical_evidence_revision + 1,
-              list_summary_projection_state = CASE
-                WHEN list_summary_projection_state = 'current' THEN 'stale'
-                ELSE list_summary_projection_state
-              END,
-              list_summary_projection_reason_code = CASE
-                WHEN list_summary_projection_state = 'current' THEN $1
-                ELSE list_summary_projection_reason_code
-              END`,
-      [reasonCode]
+          SET canonical_evidence_revision = canonical_evidence_revision + 1`
     );
     return;
   }
   getDb()
     .prepare(
       `UPDATE connector_summary_evidence
-          SET canonical_evidence_revision = canonical_evidence_revision + 1,
-              list_summary_projection_state = CASE
-                WHEN list_summary_projection_state = 'current' THEN 'stale'
-                ELSE list_summary_projection_state
-              END,
-              list_summary_projection_reason_code = CASE
-                WHEN list_summary_projection_state = 'current' THEN ?
-                ELSE list_summary_projection_reason_code
-              END`
+          SET canonical_evidence_revision = canonical_evidence_revision + 1`
     )
-    .run(reasonCode);
+    .run();
 }
 
 /**
@@ -854,29 +802,14 @@ function shapeComponentEnvelope(row: Row, state: unknown, reasonCode: unknown) {
 
 function shapeListSummaryProjection(row: Row): ConnectorListSummaryTerminalProjectionEnvelope {
   if (!knownSourceRevision(row.source_revision)) {
-    return {
-      computed_at: null,
-      projection: null,
-      reason_code: "canonical_source_revision_unknown",
-      state: "stale",
-    };
+    return { reason_code: "canonical_source_revision_unknown" };
   }
   if (sourceRevisionIsExhausted(row.source_revision)) {
-    return {
-      computed_at: null,
-      projection: null,
-      reason_code: "canonical_source_revision_exhausted",
-      state: "stale",
-    };
+    return { reason_code: "canonical_source_revision_exhausted" };
   }
-  const state = terminalProjectionState(row.list_summary_projection_state);
   return {
-    computed_at:
-      typeof row.list_summary_projection_computed_at === "string" ? row.list_summary_projection_computed_at : null,
-    projection: state === "current" ? parseTerminalProjection(row.list_summary_projection_json) : null,
     reason_code:
       typeof row.list_summary_projection_reason_code === "string" ? row.list_summary_projection_reason_code : null,
-    state,
   };
 }
 
@@ -1501,15 +1434,7 @@ function createStreamFactsFoldStore() {
                   stream_facts_fold_version = $5,
                   terminal_facts_state = $6,
                   terminal_facts_reason_code = $7,
-                  canonical_evidence_revision = canonical_evidence_revision + 1,
-                  list_summary_projection_state = CASE
-                    WHEN list_summary_projection_state = 'current' THEN 'stale'
-                    ELSE list_summary_projection_state
-                  END,
-                  list_summary_projection_reason_code = CASE
-                    WHEN list_summary_projection_state = 'current' THEN 'canonical_evidence_changed'
-                    ELSE list_summary_projection_reason_code
-                  END
+                  canonical_evidence_revision = canonical_evidence_revision + 1
             WHERE connector_instance_id = $1
               AND stream_facts_event_seq IS NOT DISTINCT FROM $4
               AND stream_facts_fold_version IS NOT DISTINCT FROM $8`,
@@ -1617,15 +1542,7 @@ function createStreamFactsFoldStore() {
                   stream_facts_fold_version = ?,
                   terminal_facts_state = ?,
                   terminal_facts_reason_code = ?,
-                  canonical_evidence_revision = canonical_evidence_revision + 1,
-                  list_summary_projection_state = CASE
-                    WHEN list_summary_projection_state = 'current' THEN 'stale'
-                    ELSE list_summary_projection_state
-                  END,
-                  list_summary_projection_reason_code = CASE
-                    WHEN list_summary_projection_state = 'current' THEN 'canonical_evidence_changed'
-                    ELSE list_summary_projection_reason_code
-                  END
+                  canonical_evidence_revision = canonical_evidence_revision + 1
             WHERE connector_instance_id = ?
               AND stream_facts_event_seq IS ?
               AND stream_facts_fold_version IS ?`
@@ -3579,7 +3496,7 @@ async function observeConnectorSummaryEvidence(
  */
 export async function rebuildConnectorSummaryEvidence() {
   await observeConnectorSummaryEvidence();
-  await invalidateAllConnectorListSummaryTerminalProjections("canonical_evidence_rebuilt");
+  await bumpAllCanonicalEvidenceRevisions();
   return listConnectorSummaryEvidence();
 }
 

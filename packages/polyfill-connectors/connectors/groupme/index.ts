@@ -2191,10 +2191,9 @@ async function emitGroupMessageAnchorEvidence(
       // protocol field. The walk reached the oldest message GroupMe will
       // serve while its lifetime total still counted more: that is a
       // provider history boundary, not a fetch that can be retried into
-      // success. The RI reads this typed claim and never our prose — and it
-      // is still not sufficient alone, since an independently recorded,
-      // current coverage horizon must agree before anything is excluded
-      // from the servable denominator.
+      // success. The RI reads this typed claim and never our prose — it is
+      // disclosure that an owner can read alongside the gap, but does not
+      // narrow the completeness authority or exclude any gap from coverage.
       boundary_claim: "provider_history_boundary",
       message:
         `GroupMe's history ran out before reaching its own message total in ${String(unexplained.length)} group(s): ` +

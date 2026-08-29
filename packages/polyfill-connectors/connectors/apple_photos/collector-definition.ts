@@ -36,6 +36,11 @@ export const applePhotosCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "apple_photos",
   entry: "apple_photos",
   bindings: { filesystem: { required: true } },
+  // Declared explicitly (not omitted): this definition targets the
+  // connector-protocol 0.0.2 capability-declaration contract, which
+  // requires an explicit array even when empty. This connector emits no
+  // STREAM_EVIDENCE and needs no protocol capability today.
+  protocol_capabilities: [],
   streams: APPLE_PHOTOS_DEFAULT_STREAMS,
   time_scopable_streams: APPLE_PHOTOS_TIME_SCOPABLE_STREAMS,
 };

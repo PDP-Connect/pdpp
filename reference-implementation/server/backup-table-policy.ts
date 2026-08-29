@@ -325,6 +325,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Disclosure-spine events are durable audit state.",
   },
+  stream_evidence_run_registry: {
+    classification: "backup_required",
+    reason:
+      "The accepted-(run_id, stream) claims enforcing spec-collection-profile.md rule 5 ('at most one accepted STREAM_EVIDENCE per stream per run_id'). Rows are never deleted and cannot be rebuilt from any other table: rule 5 defines 'same run' strictly by caller-chosen run_id and grants no restart or restore exception, so a claim lost at the durability boundary lets a reused run_id re-accept and admit duplicate authority — the same replay-admits-duplicates hazard source_webhook_run_receipts is retained against.",
+  },
   tokens: {
     classification: "backup_required",
     reason: "Access-token state is core authorization state.",

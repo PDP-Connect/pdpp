@@ -1858,6 +1858,41 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_coverage_horizons_current
 CREATE INDEX IF NOT EXISTS idx_connector_coverage_horizons_instance
   ON connector_coverage_horizons(connector_instance_id);
 
+-- Cross-invocation half of STREAM_EVIDENCE rule 5 ("at most one accepted
+-- STREAM_EVIDENCE per stream per run_id"): a durable record of every
+-- (run_id, stream) pair this runtime has ever accepted a STREAM_EVIDENCE
+-- fact for. The primary key is EXACTLY (run_id, stream) because that is the
+-- exact scope spec-collection-profile.md rule 5 defines "same run" over —
+-- the wire protocol's guarantee is not connector/instance-scoped, so this
+-- table must not narrow it to one. connector_instance_id is carried as an
+-- informational, non-key column only (operational lookups/debugging),
+-- never part of the uniqueness check.
+--
+-- Exists because a retry path may reuse the SAME caller-chosen run_id
+-- across separate runConnector invocations
+-- (runtime/scheduler/run-executor.ts's buildAttemptCall), and each
+-- invocation is a separate process lifetime — an in-memory guard alone
+-- loses the fact on process restart, silently permitting the exact
+-- duplicate this table exists to reject. See
+-- server/stores/stream-evidence-run-registry-store.ts's doc comment for the
+-- full argument.
+--
+-- No TTL/reap: a run_id remaining in this table forever is exactly what
+-- correctness requires (root profile rule 5 grants no restart or age
+-- exception), and growth is bounded by legitimate accepted STREAM_EVIDENCE
+-- events, not request volume — the same bound the prior in-memory registry
+-- already accepted as safe.
+CREATE TABLE IF NOT EXISTS stream_evidence_run_registry (
+  run_id                TEXT NOT NULL,
+  stream                TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (run_id, stream)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stream_evidence_run_registry_instance
+  ON stream_evidence_run_registry(connector_instance_id);
+
 CREATE TABLE IF NOT EXISTS version_counter (
   connector_id  TEXT NOT NULL,
   connector_instance_id TEXT NOT NULL,
@@ -2244,14 +2279,13 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   -- whose best-effort dirty marker was lost, using the spine's own
   -- already-durable, atomically-assigned sequence as the repair receipt.
   run_lifecycle_event_seq INTEGER,
-  -- Complete owner LIST-item projection, published only by bounded
-  -- maintenance after all durable axes have converged. This is deliberately
-  -- one named projection payload, not a generic cache: its state is coupled
-  -- to this row's canonical evidence envelope and is invalidated with it.
-  list_summary_projection_json TEXT,
-  list_summary_projection_state TEXT NOT NULL DEFAULT 'unobserved',
-  list_summary_projection_reason_code TEXT,
-  list_summary_projection_computed_at TEXT
+  -- Why the owner LIST-item projection is a reason code and nothing else:
+  -- the payload columns (_json, _state, _computed_at) were removed
+  -- 2026-08-28. _state was only ever written 'stale', so the read that served
+  -- the payload (state = 'current') could never be true; the JSON was written
+  -- on every repair and never read back. This reason code is the part owners
+  -- actually see, so it stays.
+  list_summary_projection_reason_code TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
   ON connector_summary_evidence(connector_id);
@@ -2771,15 +2805,23 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "source_revision", "INTEGER");
   addColumnIfMissing(raw, "connector_summary_evidence", "schedule_checkpoint", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "run_lifecycle_event_seq", "INTEGER");
-  addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_json", "TEXT");
-  addColumnIfMissing(
-    raw,
-    "connector_summary_evidence",
-    "list_summary_projection_state",
-    "TEXT NOT NULL DEFAULT 'unobserved'"
-  );
   addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_reason_code", "TEXT");
-  addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_computed_at", "TEXT");
+  // Drop the unreachable list-summary projection cache (2026-08-28). The
+  // payload was gated on `list_summary_projection_state = 'current'`, a value
+  // no code path ever wrote — every write set 'stale' — so the cache could not
+  // hit by construction while still costing ~8 kB per row on each repair.
+  // Bounded, idempotent DDL only; it does not scan or rewrite rows. The
+  // sibling `_reason_code` column stays: it is populated on every row and is
+  // the projection state owners actually read.
+  for (const column of [
+    "list_summary_projection_json",
+    "list_summary_projection_state",
+    "list_summary_projection_computed_at",
+  ]) {
+    if (hasTableColumn(raw, "connector_summary_evidence", column)) {
+      raw.exec(`ALTER TABLE connector_summary_evidence DROP COLUMN ${column}`);
+    }
+  }
 }
 
 function ensureRetainedSizeRejectionColumns(raw: SqliteDatabase): void {

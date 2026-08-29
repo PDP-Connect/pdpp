@@ -1728,7 +1728,6 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
               dirty = 1,
               state = 'failed',
               last_error = ?,
-              list_summary_projection_state = 'stale',
               list_summary_projection_reason_code = 'canonical_evidence_failed',
               canonical_evidence_revision = canonical_evidence_revision + 1
         WHERE connector_instance_id = ?`
@@ -1777,7 +1776,6 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
        dirty = 1,
        state = 'failed',
        last_error = excluded.last_error,
-       list_summary_projection_state = 'stale',
        list_summary_projection_reason_code = 'canonical_evidence_failed',
        canonical_evidence_revision = canonical_evidence_revision + 1`,
     [
@@ -1848,7 +1846,6 @@ async function persistFailedEvidencePostgres(
             dirty = 1,
             state = 'failed',
             last_error = $11,
-            list_summary_projection_state = 'stale',
             list_summary_projection_reason_code = 'canonical_evidence_failed',
             canonical_evidence_revision = canonical_evidence_revision + 1
       WHERE connector_instance_id = $1`,
@@ -1893,7 +1890,6 @@ async function persistFailedEvidencePostgres(
        dirty = 1,
        state = 'failed',
        last_error = EXCLUDED.last_error,
-       list_summary_projection_state = 'stale',
        list_summary_projection_reason_code = 'canonical_evidence_failed',
        canonical_evidence_revision = connector_summary_evidence.canonical_evidence_revision + 1`,
     [
@@ -2260,7 +2256,7 @@ async function repairCandidateSqlite(connectorInstanceId: string): Promise<Repai
         }
         if (deferred) {
           execDynamicSqlAcknowledged(
-            `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', source_revision = ?, list_summary_projection_state = 'stale', list_summary_projection_reason_code = ?, last_error = NULL WHERE connector_instance_id = ?`,
+            `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', source_revision = ?, list_summary_projection_reason_code = ?, last_error = NULL WHERE connector_instance_id = ?`,
             [sourceRevision, sourceRevisionDeferredReason(Boolean(activeRun), sourceRevision), connectorInstanceId]
           );
         } else {
@@ -3069,7 +3065,7 @@ async function repairCandidatePostgres(
           }
           if (deferred) {
             await client.query(
-              `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', source_revision = $2, list_summary_projection_state = 'stale', list_summary_projection_reason_code = $1, last_error = NULL WHERE connector_instance_id = $3`,
+              `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', source_revision = $2, list_summary_projection_reason_code = $1, last_error = NULL WHERE connector_instance_id = $3`,
               [
                 sourceRevisionDeferredReason(activeRunResult.rowCount !== 0, sourceRevision),
                 sourceRevision,
@@ -3411,9 +3407,6 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        schedule_checkpoint = excluded.schedule_checkpoint,
        run_lifecycle_event_seq = excluded.run_lifecycle_event_seq,
        source_revision = excluded.source_revision,
-       list_summary_projection_state = CASE
-         WHEN ${SQLITE_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
-         THEN 'stale' ELSE connector_summary_evidence.list_summary_projection_state END,
        list_summary_projection_reason_code = CASE
          WHEN ${SQLITE_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
          THEN 'canonical_evidence_rebuilt' ELSE connector_summary_evidence.list_summary_projection_reason_code END`,
@@ -3515,9 +3508,6 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        schedule_checkpoint = EXCLUDED.schedule_checkpoint,
        run_lifecycle_event_seq = EXCLUDED.run_lifecycle_event_seq,
        source_revision = EXCLUDED.source_revision,
-       list_summary_projection_state = CASE
-         WHEN ${POSTGRES_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
-         THEN 'stale' ELSE connector_summary_evidence.list_summary_projection_state END,
        list_summary_projection_reason_code = CASE
          WHEN ${POSTGRES_PROJECTION_RELEVANT_EVIDENCE_CHANGED}
          THEN 'canonical_evidence_rebuilt' ELSE connector_summary_evidence.list_summary_projection_reason_code END`,
