@@ -230,6 +230,135 @@ test(
   })
 );
 
+/**
+ * Seed a PENDING attempt whose grant can only be recovered from
+ * `grant_packages.package_json`.
+ *
+ * This is the package-shaped path: `getRecoveredApprovedConsent` LEFT JOINs
+ * both `grants` and `grant_packages`, and `grantFromRecoveredConsent` prefers
+ * `grant_json` and falls back to `package_json`. Deliberately inserting NO
+ * `grants` row is what forces the fallback, so the attempt is approved from a
+ * package rather than from a bare grant.
+ *
+ * The attempt starts PENDING with no grant of its own, because the package is
+ * only ever consulted through `recoverApprovedAttempt`.
+ */
+function seedSqlitePackageShapedAttempt(id: string, packageGrant: Record<string, unknown>): void {
+  const deviceCode = `device-${id}`;
+  const packageId = packageGrant.grant_id as string;
+  getDb()
+    .prepare(
+      `INSERT INTO agent_connect_attempts(
+         id, request_uri, client_id, polling_code_hash, status, approval_url, token_url,
+         interval_seconds, created_at, expires_at_ms
+       ) VALUES(?, ?, ?, ?, 'pending', ?, ?, 2, ?, ?)`
+    )
+    .run(
+      id,
+      `urn:pdpp:pending-consent:${deviceCode}`,
+      "research-app",
+      POLLING_CODE_HASH,
+      "https://as.example/approve",
+      "https://as.example/token",
+      "2026-08-11T12:00:00Z",
+      Date.now() + 600_000
+    );
+  getDb()
+    .prepare(
+      `INSERT INTO pending_consents(
+         device_code, user_code, params_json, status, subject_id, grant_id, token_id, created_at, expires_at, approved_at
+       ) VALUES(?, ?, '{}', 'approved', 'owner-1', ?, ?, '2026-08-11T12:00:00Z', '2036-08-11T12:00:00Z', '2026-08-11T12:00:05Z')`
+    )
+    .run(deviceCode, `user-${id}`, packageId, TOKEN);
+  // NO `grants` row on purpose: that absence is what routes recovery through
+  // `package_json`.
+  getDb()
+    .prepare(
+      `INSERT INTO grant_packages(package_id, subject_id, client_id, status, package_json, created_at, approved_at)
+       VALUES(?, 'owner-1', 'research-app', 'active', ?, '2026-08-11T12:00:00Z', '2026-08-11T12:00:05Z')`
+    )
+    .run(packageId, JSON.stringify(packageGrant));
+  getDb()
+    .prepare(
+      `INSERT INTO tokens(token_id, subject_id, client_id, token_kind, expires_at, revoked, created_at)
+       VALUES(?, 'owner-1', 'research-app', 'access', NULL, 0, '2026-08-11T12:00:00Z')`
+    )
+    .run(TOKEN);
+}
+
+test(
+  "SQLite: a package-shaped response is NOT altered when it already has no expiry member",
+  withSqlite(async () => {
+    // The review asked for this case explicitly: a response built from
+    // `grant_packages.package_json` rather than from a bare grant must pass
+    // through normalization UNCHANGED. Production holds 99 `grant_packages`
+    // rows, so this is the shape most likely to be perturbed by an
+    // over-broad rewrite.
+    const packageGrant = {
+      access_mode: "continuous",
+      client: { client_id: "research-app" },
+      grant_id: "pkg_absent",
+      issued_at: "2026-08-11T12:00:00Z",
+      purpose_code: "https://pdpp.dev/purpose/research",
+    };
+    seedSqlitePackageShapedAttempt("att_pkg_absent", packageGrant);
+
+    const store = createAgentConnectAttemptStore();
+    const result = await store.redeem("att_pkg_absent", POLLING_CODE);
+
+    assert.ok(result.outcome === "approved", "the package-shaped attempt must redeem");
+    // Byte-for-byte identity is the real assertion: normalization must be a
+    // no-op here, not merely produce something that happens to validate.
+    assert.deepEqual(
+      result.body.grant,
+      packageGrant,
+      "an already-absent package-shaped grant must be returned exactly as stored"
+    );
+    assertExpiryAbsent(result.body, "sqlite package-shaped, already absent");
+  })
+);
+
+test(
+  "SQLite: a package-shaped response carrying a REAL expiry is NOT altered",
+  withSqlite(async () => {
+    // The other half of "unchanged": normalization must not touch a bounded
+    // package grant either. Only the explicit-null case may ever be rewritten.
+    const packageGrant = {
+      access_mode: "continuous",
+      client: { client_id: "research-app" },
+      expires_at: "2027-04-06T00:00:00Z",
+      grant_id: "pkg_expiring",
+      issued_at: "2026-08-11T12:00:00Z",
+      purpose_code: "https://pdpp.dev/purpose/research",
+    };
+    seedSqlitePackageShapedAttempt("att_pkg_expiring", packageGrant);
+
+    const store = createAgentConnectAttemptStore();
+    const result = await store.redeem("att_pkg_expiring", POLLING_CODE);
+
+    assert.ok(result.outcome === "approved");
+    assert.deepEqual(result.body.grant, packageGrant, "a bounded package-shaped grant must survive byte-for-byte");
+  })
+);
+
+test(
+  "SQLite: a package-shaped grant carrying the legacy null IS normalized",
+  withSqlite(async () => {
+    // `grant_packages.package_json` is NOT rewritten by either startup
+    // migration, so this source can still supply a null on a fully-migrated
+    // deployment. It is the reason the repair had to be normalize-on-read.
+    // Pins that the previous two tests assert "unchanged" because the input
+    // was already correct, not because this path skips normalization.
+    seedSqlitePackageShapedAttempt("att_pkg_legacy", legacyGrant("pkg_legacy"));
+
+    const store = createAgentConnectAttemptStore();
+    const result = await store.redeem("att_pkg_legacy", POLLING_CODE);
+
+    assert.ok(result.outcome === "approved");
+    assertExpiryAbsent(result.body, "sqlite package-shaped, legacy null");
+  })
+);
+
 // --- PostgreSQL -----------------------------------------------------------
 
 /** Run `body` against the dedicated PostgreSQL test database. */
