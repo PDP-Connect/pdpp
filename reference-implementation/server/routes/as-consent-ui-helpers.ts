@@ -383,21 +383,42 @@ async function buildConnectorPickerRows(
   const connectorLabel = ownerFacingConnectorLabel(manifest.display_name || manifest.name, connectorMetaToken);
   const manifestStreams = Array.isArray(manifest.streams) ? manifest.streams : [];
   // The manifest list stays the full grantable catalog for the checkbox rows
-  // (`HostedMcpPickerRow.streams`): the owner may pre-authorize a stream that
-  // has no data yet, and hiding it here would silently shrink what a
-  // continuous grant can ever cover. Only the owner-facing "available" COUNT
-  // must reflect real holdings — see `listStreamsWithRecords` below.
+  // (`HostedMcpPickerRow.streams`) of a CONNECTED source: the owner may
+  // pre-authorize a stream that has no data yet, and hiding it would silently
+  // shrink what a continuous grant can ever cover. Only the owner-facing
+  // "available" COUNT must reflect real holdings — see `listStreamsWithRecords`
+  // below. "Has no data yet" and "has no eligible instance" are different
+  // facts, and only the first one is pre-authorizable; see the zero-connection
+  // branch below.
   const streamSummaries = manifestStreams.map((stream) => ({
     description: typeof stream.description === "string" ? stream.description : null,
     name: stream.name,
   }));
   const connections = await caps.listActiveBindingsForGrant({ connectorId, ownerSubjectId }).catch(() => []);
   if (connections.length === 0) {
-    // No active connection for this connector at all: the owner has never
-    // held any of its data, so "N streams available" would state a catalog
-    // fact as a holdings fact. Say the true thing instead — this source
-    // isn't connected — while still letting the owner pre-authorize it below
-    // (streams stays the manifest list; the checkbox stays enabled).
+    // No active connection for this connector at all. Authorization derives a
+    // stream's eligible instance set from exactly this list
+    // (`listActiveBindingsForGrant` -> `listActiveByConnector`, the same store
+    // read `resolveEligibleInstanceIdsForApproval` in server/auth.ts performs
+    // before calling `resolveCoreEligibleInstanceIds`). Zero active bindings
+    // therefore means EVERY stream this manifest declares resolves to zero
+    // eligible instances, and `resolveCoreEligibleInstanceIds` drops each one
+    // from the grant — or, when the owner selected nothing else, fails the
+    // whole request with `No eligible instance for any requested stream`.
+    //
+    // Offering those checkboxes was the owner-reported defect (2026-08-29):
+    // the picker listed the streams of connectors that had never been
+    // connected (e.g. Oura's `sleep`, `readiness`, `activity`), the owner
+    // checked them, and authorization rejected the selection. A stream the
+    // picker offers MUST be grantable, so an unconnected source contributes
+    // no stream checkboxes. This is NOT the "connected but no data yet" case
+    // above: that stream has an eligible instance and IS grantable, so it
+    // stays offered.
+    //
+    // The row itself is deliberately kept (with an empty stream list, which
+    // the renderer turns into a disabled checkbox plus an owner-facing
+    // "not connected" line) so the source stays visible and the owner learns
+    // it must be connected first, rather than silently vanishing.
     return [
       {
         connectionId: null,
@@ -412,7 +433,7 @@ async function buildConnectorPickerRows(
           streamCount: 0,
         }),
         sourceKey: caps.hostedMcpSourceKey({ connectionId: null, connectorId }),
-        streams: streamSummaries,
+        streams: [],
       },
     ];
   }

@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 interface JsdomModule {
   JSDOM: new (html: string, options?: { runScripts?: "dangerously" }) => { readonly window: unknown };
@@ -90,6 +91,26 @@ async function registerFixture(asUrl: string, fixtureName: string): Promise<Reco
     method: "POST",
   });
   assert.equal(resp.status, 201, `register ${fixtureName}`);
+  // Seed one active connector instance. The picker only offers a stream that
+  // an eligible instance can actually serve (see `buildConnectorPickerRows`),
+  // so a registered-but-unconnected manifest renders a disabled row with no
+  // stream checkboxes — nothing for these interaction tests to drive. Every
+  // assertion below is about the picker's BEHAVIOR once streams are present,
+  // so the fixture has to be a connected source.
+  const connectorId = manifest.connector_id as string;
+  const now = new Date().toISOString();
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId: `cin_runtime_${connectorId}`,
+    createdAt: now,
+    displayName: `${connectorId} runtime test account`,
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: connectorId },
+    sourceBindingKey: `cin_runtime_${connectorId}`,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
   return manifest;
 }
 

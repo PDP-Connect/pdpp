@@ -2720,8 +2720,14 @@ test("hosted MCP picker renders collapsed source summaries with per-stream contr
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    // Both connectors are seeded with an active instance: the picker only
+    // renders stream checkboxes for a source whose streams are actually
+    // grantable, and grantability comes from having an eligible instance.
+    // An unconnected source now renders a disabled row with no stream block
+    // (see `buildConnectorPickerRows`), which is a different assertion —
+    // covered by the picker-render suite.
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
     const verifier = randomBytes(32).toString("base64url");
 
@@ -2768,9 +2774,11 @@ test("hosted MCP picker renders collapsed source summaries with per-stream contr
     // Every manifest stream must be rendered unchecked but enabled. JS derives
     // the parent source checkbox from checked streams so a source cannot stay
     // selected for grant while every stream is clear.
+    // Each seeded source renders under its own connection, so the stream form
+    // value carries that connection id (not null).
     for (const stream of spotify.streams) {
       const streamFormValue = encodeHostedMcpStreamSelection({
-        connectionId: null,
+        connectionId: defaultHostedInstanceId(spotify.connector_id),
         connectorId: spotify.connector_id,
         streamName: stream.name,
       });
@@ -2781,7 +2789,7 @@ test("hosted MCP picker renders collapsed source summaries with per-stream contr
     }
     for (const stream of github.streams) {
       const streamFormValue = encodeHostedMcpStreamSelection({
-        connectionId: null,
+        connectionId: defaultHostedInstanceId(github.connector_id),
         connectorId: github.connector_id,
         streamName: stream.name,
       });
@@ -3227,6 +3235,110 @@ test("POST /oauth/authorize/mcp-package still rejects an ambiguous omitted-insta
       `ambiguous multi-instance approval must still be rejected with a 4xx, not ${resp.status}: ${bodyText}`
     );
     assert.notEqual(resp.status, 500, "ambiguity guard must not regress to a 500");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("POST /oauth/authorize/mcp-package reports EVERY ineligible source in one attempt, not just the first", async () => {
+  // Owner-reported whack-a-mole (2026-08-29): approving a multi-source
+  // selection failed naming only google-maps-data-portability's
+  // `archive_jobs`; the owner deselected that source, retried, and failed
+  // AGAIN on Oura's `sleep, readiness, activity`. Each retry revealed exactly
+  // one more broken source.
+  //
+  // Root cause: `createHostedMcpGrantPackage` issues child grants in a
+  // `forEachSequential` loop with no per-entry catch, so the FIRST source
+  // whose eligibility resolution throws rejects the whole request — the
+  // later sources are never evaluated and never reported.
+  //
+  // Two registered-but-unconnected connectors stand in for the two the owner
+  // hit. One attempt must name the streams of BOTH.
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString("base64url");
+    const challenge = pkceChallenge(verifier);
+
+    const params = buildHostedMcpPickerForm({
+      challenge,
+      client,
+      sourceSelections: [
+        { connectorId: spotify.connector_id, streamNames: ["saved_tracks"] },
+        { connectorId: github.connector_id, streamNames: ["repositories"] },
+      ],
+      state: "all-ineligible-in-one-pass",
+    });
+
+    const resp = await exchangePackageCode({ asUrl, client, params });
+    const bodyText = await resp.text();
+    assert.ok(
+      resp.status >= 400 && resp.status < 500,
+      `an all-ineligible selection must return an actionable 4xx, not ${resp.status}: ${bodyText}`
+    );
+
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(bodyText);
+    } catch {
+      assert.fail(`expected a structured JSON error envelope, got: ${bodyText}`);
+    }
+
+    assert.ok(
+      Array.isArray(body.streams),
+      `error envelope must carry a structured 'streams' array, got: ${JSON.stringify(body)}`
+    );
+    const reported = [...(body.streams as string[])].sort();
+    // BOTH sources' streams, from ONE attempt. Before the fix this array held
+    // only `saved_tracks` — the first source evaluated.
+    assert.deepEqual(
+      reported,
+      ["repositories", "saved_tracks"],
+      `one attempt must name every ineligible stream, got: ${JSON.stringify(reported)}`
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("POST /oauth/authorize/mcp-package still grants eligible sources while skipping ineligible ones", async () => {
+  // Degradation regression pin. `resolveCoreEligibleInstanceIds` drops a
+  // zero-eligible stream rather than detonating the request, and only fails
+  // when EVERY requested stream drops. Reporting all failures together must
+  // not turn a partially-eligible selection into a rejection.
+  //
+  // Spotify is connected (one active instance); GitHub is registered but
+  // never connected. The approval must succeed on Spotify.
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString("base64url");
+    const challenge = pkceChallenge(verifier);
+
+    const params = buildHostedMcpPickerForm({
+      challenge,
+      client,
+      sourceSelections: [{ connectorId: spotify.connector_id, streamNames: ["saved_tracks"] }],
+      state: "mixed-eligibility",
+    });
+
+    const resp = await exchangePackageCode({ asUrl, client, params });
+    assert.equal(
+      resp.status,
+      302,
+      `a selection whose streams are eligible must still be approved, got ${resp.status}: ${await resp.text()}`
+    );
+    assert.ok(github.connector_id, "the unconnected connector fixture is registered");
   } finally {
     await closeServer(server);
   }

@@ -359,10 +359,93 @@ test("an unheld connector never claims manifest streams are 'available'", async 
   );
   assert.match(row.meta, /not connected/i, "an unheld connector states plainly that it isn't connected");
 
-  // The checkbox and its full stream list must still be present and enabled:
-  // the owner can still pre-authorize this source for future data. Hiding it
-  // would be the opposite defect (P1: no real grant capability disappears).
-  assert.equal(row.streams.length, 2, "the manifest's full stream catalog must remain grantable, not hidden");
+  // REVISED 2026-08-29 (owner-reported consent failure). This assertion used
+  // to require the full manifest catalog to stay selectable here, on the
+  // rationale that the owner could "pre-authorize this source for future
+  // data". That rationale was wrong, and offering those checkboxes was the
+  // defect: authorization derives eligible instances from the very same
+  // `listActiveBindingsForGrant` read, so with zero active bindings every one
+  // of these streams resolves to zero eligible instances and
+  // `resolveCoreEligibleInstanceIds` either drops it or rejects the whole
+  // request. There was never a grant to pre-authorize. Offering it only got
+  // the owner a `source.authorization_details_invalid` rejection.
+  //
+  // The row itself stays (so the source remains discoverable and the "not
+  // connected" line above teaches the owner what to do), but it contributes
+  // no selectable stream. See `buildConnectorPickerRows`.
+  assert.equal(row.streams.length, 0, "an unconnected source must offer no stream it cannot actually grant");
+});
+
+// ── Picker/validator agreement: only servable streams are offered ────────────
+//
+// Owner-reported (2026-08-29): opening /oauth/authorize to connect an MCP
+// client and selecting all streams failed with
+// `source.authorization_details_invalid` — "No eligible instance for any
+// requested stream: archive_jobs" — and, after deselecting that source and
+// retrying, failed again on Oura's `sleep, readiness, activity`, a connector
+// that had never been connected. Both are the same shape: the picker rendered
+// the REGISTRY CATALOG (every manifest registered on the server) rather than
+// the streams the owner's connected instances can actually serve. Production
+// had 25 registered connectors against ~17 with any active instance.
+//
+// The invariant these tests pin: a stream the picker OFFERS must be a stream
+// authorization can GRANT. Both surfaces read eligibility from the same
+// source, so they cannot disagree.
+
+test("a connector with no connected instance contributes zero selectable streams (Oura shape)", async () => {
+  // Oura shape: registered manifest, never connected, zero instances.
+  const caps = makeCaps({
+    listActiveBindingsForGrant: async () => [],
+    listRegisteredConnectorIds: async () => [SPOTIFY_ID],
+  });
+  const rows = await listHostedMcpPickerRows(caps, "owner_local");
+  const row = mustExist(rows[0], "the unconnected source must still be listed");
+
+  // The manifest declares 2 streams; none of them is grantable.
+  assert.deepEqual(
+    row.streams.map((stream) => stream.name),
+    [],
+    "a connector with zero active instances must offer no streams — authorization cannot grant any of them"
+  );
+});
+
+test("two separately-unconnected connectors both contribute zero streams (archive_jobs + Oura shapes)", async () => {
+  // The owner's real selection spanned two independently-unconnected
+  // connectors: google-maps-data-portability (whose only stream is
+  // `archive_jobs`) and oura. Neither had a single instance in production.
+  const caps = makeCaps({
+    listActiveBindingsForGrant: async () => [],
+    listRegisteredConnectorIds: async () => [SPOTIFY_ID, GITHUB_ID],
+  });
+  const rows = await listHostedMcpPickerRows(caps, "owner_local");
+  assert.equal(rows.length, 2, "both unconnected sources stay visible as rows");
+
+  const offered = rows.flatMap((row) => row.streams.map((stream) => stream.name));
+  assert.deepEqual(offered, [], `no unconnected source may offer a stream; got: ${JSON.stringify(offered)}`);
+});
+
+test("a connected connector still offers its full grantable catalog (anti-over-correction)", async () => {
+  // The filter must key on "has an eligible instance", NOT on "has records".
+  // A connected source whose stream holds no data yet IS grantable — the
+  // instance exists, so `resolveCoreEligibleInstanceIds` resolves it — and
+  // must stay offered. This is the boundary the fix must not cross.
+  const caps = makeCaps({
+    listActiveBindingsForGrant: async ({ connectorId }: { connectorId: string }) =>
+      connectorId === SPOTIFY_ID ? (BINDINGS[SPOTIFY_ID] ?? []) : [],
+    listRegisteredConnectorIds: async () => [SPOTIFY_ID],
+    // Zero records held, yet the connection exists.
+    listStreamsWithRecords: async () => Promise.resolve([]),
+  });
+  const rows = await listHostedMcpPickerRows(caps, "owner_local");
+  const row = mustExist(rows[0], "the connected source row must exist");
+
+  assert.deepEqual(
+    row.streams.map((stream) => stream.name).sort(),
+    ["saved_tracks", "top_artists"],
+    "a connected source keeps offering every manifest stream even with no data yet"
+  );
+  // And it still tells the truth about holdings.
+  assert.match(row.meta, /\b0 streams available\b/, `expected an honest 0-held count, got: ${row.meta}`);
 });
 
 // ── Anti-over-correction guard: a HELD connector still renders its real streams ──
