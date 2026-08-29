@@ -32,9 +32,22 @@ import type { ProgressExtra } from "@pdpp/connector-protocol/connector-runtime-p
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import type { Locator, Page } from "playwright";
 import { DEADLINE_TIMEOUT, manualBrowserLogin, withDeadline } from "../browser-handoff.ts";
-import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
+import type {
+  AssistanceCompletionStatus,
+  AssistanceRequest,
+  InteractionRequest,
+  InteractionResponse,
+  SessionCheckpointFn,
+} from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
 import { locatorIsVisible } from "./locator-helpers.ts";
+import {
+  type OwnerBrowserActionMode,
+  observationAttempts,
+  requestOwnerBrowserAction,
+  resolveObservationBudgetMs,
+  type UnobservableJustification,
+} from "./observed-login.ts";
 
 /** Same bound `index.ts`'s `errorDetail` applies after redaction — keeps one link short and legible without truncating mid-token. */
 const PROBE_TRANSPORT_DETAIL_MAX = 200;
@@ -327,8 +340,17 @@ const OTP_PROMPT_TEXT_RE = /verification code|enter the code|we (?:sent|texted)|
  * is a page full of inputs, not a code entry.
  */
 const MAX_SPLIT_CODE_DIGITS = 10;
+/**
+ * Says "sign in", not "sign in then respond success". The handoff now reaches
+ * the owner as NON-BLOCKING assistance that resolves as soon as the account
+ * probe reads live, so there is usually no Continue button to press. Promising
+ * one that may never appear is the same class of dishonesty as the inferred
+ * security-check claim: the message must describe what the owner actually has
+ * to do. If the observation budget expires the blocking ask still arrives, and
+ * it carries its own instruction.
+ */
 const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
-  "No optional Venmo sign-in details were provided. Sign in to Venmo in the secure browser, then respond success.";
+  "No Venmo sign-in details are stored for this connection. Sign in to Venmo in the secure browser; PDPP continues automatically once the sign-in succeeds.";
 
 /**
  * Anything the owner could actually act on during a handoff: the sign-in form
@@ -370,6 +392,47 @@ const POST_SUBMIT_SETTLE_TIMEOUT_MS = 30_000;
 
 /** Gap between post-submit liveness polls. */
 const POST_SUBMIT_POLL_INTERVAL_MS = 1000;
+
+/**
+ * Bound on the wait for the sign-in form's identifier field to attach. Named
+ * because the owner-facing handoff reason quotes it: the message reports the
+ * OBSERVED fact ("did not appear within Nms"), so the number in the sentence
+ * and the number in the wait must be the same one.
+ */
+const USERNAME_FIELD_TIMEOUT_MS = 10_000;
+
+/**
+ * Observation budget for an owner-assisted handoff, and the gap between
+ * readiness probes within it.
+ *
+ * 900s matches chatgpt.ts's push-approval budget and is chosen for the same
+ * reason: it must cover realistic human latency on a challenge (find the
+ * phone, open the app, approve, wait for Venmo to settle) so the run auto-
+ * resumes via the non-blocking poll instead of falling through to the blocking
+ * owner-click fallback. A budget shorter than the human step converts a working
+ * detect-and-resume back into the Continue button it replaced.
+ *
+ * The poll checkpoints on EVERY iteration (see `observed-login.ts`), so the
+ * session-establishment watchdog is not tripped by this budget exceeding its
+ * default 120s no-progress deadline.
+ */
+const HANDOFF_OBSERVATION_DEFAULT_TIMEOUT_MS = 900_000;
+const HANDOFF_OBSERVATION_TIMEOUT_ENV = "PDPP_VENMO_HANDOFF_OBSERVATION_TIMEOUT_MS";
+const HANDOFF_OBSERVATION_POLL_INTERVAL_MS = 5000;
+
+/**
+ * Bounded retry for a single readiness probe inside the observation poll.
+ * `probeVenmoAccount` throws on a transport fault rather than reporting dead,
+ * and one blip must not end an observation window the owner is actively working
+ * inside — the same reasoning as chatgpt.ts's SESSION_PROBE_RETRY_ATTEMPTS.
+ */
+const SESSION_PROBE_RETRY_ATTEMPTS = 3;
+const SESSION_PROBE_RETRY_DELAY_MS = 1500;
+
+/** Resolve the handoff observation budget in ms. */
+export function resolveVenmoHandoffObservationMs(env: NodeJS.ProcessEnv = process.env): number {
+  return resolveObservationBudgetMs(env, HANDOFF_OBSERVATION_TIMEOUT_ENV, HANDOFF_OBSERVATION_DEFAULT_TIMEOUT_MS);
+}
 
 const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
   {
@@ -547,8 +610,20 @@ function describeLandedOrigin(landedOrigin: string | null, landedUrl: string): s
 const noopCheckpoint: SessionCheckpointFn = () => Promise.resolve();
 
 interface EnsureVenmoSessionArgs {
+  /**
+   * Emits NON-BLOCKING assistance so a handoff can be observed to completion
+   * rather than waiting on an owner click. Optional: without it every handoff
+   * keeps its previous blocking-Continue behavior, which is what direct
+   * (non-runtime) callers and older tests rely on.
+   */
+  assist?: (req: AssistanceRequest) => Promise<string>;
   capture?: CaptureSession | null;
   checkpoint?: SessionCheckpointFn;
+  completeAssistance?: (
+    assistanceRequestId: string,
+    status: AssistanceCompletionStatus,
+    extra?: { message?: string }
+  ) => Promise<void>;
   credentials?: Readonly<Record<string, string>>;
   onCredentialSubmit?: () => void;
   page: Page;
@@ -1002,15 +1077,30 @@ let credentialSubmittedThisRun = false;
  * saved password must pass `"post_submit"` explicitly.
  */
 async function waitForManualLogin({
+  assist,
   capture,
+  checkpoint,
+  completeAssistance,
   message,
   page,
   phase = "pre_submit",
   reason,
   resumeFill,
   sendInteraction,
-}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  unobservable,
+}: Pick<
+  EnsureVenmoSessionArgs,
+  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "sendInteraction"
+> & {
   readonly message: string;
+  /**
+   * Present ONLY for a site whose completion cannot be settled by probing
+   * account liveness. Supplying it selects the blocking ask; omitting it gets
+   * the paved road (detect-and-resume). There is no boolean and no default —
+   * the justification IS the opt-out, so a site cannot take the blocking path
+   * without saying, in a form the conformance gate reads, why.
+   */
+  readonly unobservable?: UnobservableJustification;
   readonly phase?: VenmoProbePhase;
   readonly reason?: "captcha";
   /**
@@ -1072,64 +1162,114 @@ async function waitForManualLogin({
     // wondering what they are supposed to complete.
     await captureLoginState(capture, page, "venmo-handoff-surface-blank");
   }
-  return await manualBrowserLogin({
-    ...(capture ? { capture } : {}),
-    message: painted ? message : `${message} ${HANDOFF_BLANK_SURFACE_SUFFIX}`,
-    page,
-    probe: async () => {
-      // Replay first, probe second. The owner's completion is what MAKES the
-      // form reachable; probing an unreached form just reports signed-out and
-      // throws away the work he already did (run_1787880916346).
-      //
-      // B4 (see probeVenmoAccount): once the replay has actually SUBMITTED the
-      // saved password, this probe is verifying that submission's outcome, so
-      // a transport fault here is `post_submit` — non-retryable — exactly as it
-      // is on the normal path. Leaving it `pre_submit` would let the runtime
-      // retry, re-entering ensureVenmoSession and re-submitting the same real
-      // password against Venmo's anti-automation gate. The replay reports
-      // whether it got that far; nothing else may set this.
-      //
-      // NOT wrapped in `.catch()`. `resumeSignInAfterChallenge` already
-      // absorbs every PRE-submit failure by returning `false` (the replay
-      // found no form — the owner's manual sign-in is then the honest
-      // fallback, and the probe below validates it). The only errors that
-      // reach here are POST-submit ones, which arrive already carrying the
-      // correct non-retryable classification. Catching them would discard
-      // that and re-probe with the original `pre_submit` phase, re-arming the
-      // password re-submission B4 forbids — the exact defect a `.catch(() =>
-      // false)` here used to cause.
-      //
-      // Given that rethrow, `submitted` is in practice always `false` on this
-      // line: a replay that got as far as submitting either returns a live
-      // session or throws. The `post_submit` ternary is therefore belt-and-
-      // braces, not the active guard — it is kept so the classification stays
-      // correct if the rethrow is ever narrowed, and deliberately NOT relied
-      // on. Verified unreachable-with-`true` by tripwire across the suite.
-      const submitted = resumeFill ? await resumeFill() : false;
-      return await probeVenmoAccount(page, submitted ? "post_submit" : phase);
-    },
-    ...(reason ? { reason } : {}),
-    sendInteraction,
-    timeoutSeconds: 1800,
+  const handoffMessage = painted ? message : `${message} ${HANDOFF_BLANK_SURFACE_SUFFIX}`;
+  const blockingHandoff = (): Promise<VenmoAccountProbeResult> =>
+    manualBrowserLogin({
+      ...(capture ? { capture } : {}),
+      message: handoffMessage,
+      page,
+      probe: async () => {
+        // Replay first, probe second. The owner's completion is what MAKES the
+        // form reachable; probing an unreached form just reports signed-out and
+        // throws away the work he already did (run_1787880916346).
+        //
+        // B4 (see probeVenmoAccount): once the replay has actually SUBMITTED the
+        // saved password, this probe is verifying that submission's outcome, so
+        // a transport fault here is `post_submit` — non-retryable — exactly as it
+        // is on the normal path. Leaving it `pre_submit` would let the runtime
+        // retry, re-entering ensureVenmoSession and re-submitting the same real
+        // password against Venmo's anti-automation gate. The replay reports
+        // whether it got that far; nothing else may set this.
+        //
+        // NOT wrapped in `.catch()`. `resumeSignInAfterChallenge` already
+        // absorbs every PRE-submit failure by returning `false` (the replay
+        // found no form — the owner's manual sign-in is then the honest
+        // fallback, and the probe below validates it). The only errors that
+        // reach here are POST-submit ones, which arrive already carrying the
+        // correct non-retryable classification. Catching them would discard
+        // that and re-probe with the original `pre_submit` phase, re-arming the
+        // password re-submission B4 forbids — the exact defect a `.catch(() =>
+        // false)` here used to cause.
+        //
+        // Given that rethrow, `submitted` is in practice always `false` on this
+        // line: a replay that got as far as submitting either returns a live
+        // session or throws. The `post_submit` ternary is therefore belt-and-
+        // braces, not the active guard — it is kept so the classification stays
+        // correct if the rethrow is ever narrowed, and deliberately NOT relied
+        // on. Verified unreachable-with-`true` by tripwire across the suite.
+        const submitted = resumeFill ? await resumeFill() : false;
+        return await probeVenmoAccount(page, submitted ? "post_submit" : phase);
+      },
+      ...(reason ? { reason } : {}),
+      sendInteraction,
+      timeoutSeconds: 1800,
+    });
+
+  // The paved road: detect-and-resume unless this site declared why it cannot.
+  const mode: OwnerBrowserActionMode<VenmoAccountProbeResult> = unobservable
+    ? { kind: "unobservable", justification: unobservable }
+    : {
+        kind: "observable",
+        budget: {
+          attempts: observationAttempts(resolveVenmoHandoffObservationMs(), HANDOFF_OBSERVATION_POLL_INTERVAL_MS),
+          intervalMs: HANDOFF_OBSERVATION_POLL_INTERVAL_MS,
+          wait: (ms) => page.waitForTimeout(ms),
+        },
+        probe: { observe: () => observeVenmoLogin(page, phase) },
+        waitingCheckpointLabel: "venmo-handoff-observation-waiting",
+      };
+  return await requestOwnerBrowserAction<VenmoAccountProbeResult>({
+    ...(assist ? { assist } : {}),
+    blockingAsk: blockingHandoff,
+    ...(checkpoint ? { checkpoint } : {}),
+    ...(completeAssistance ? { completeAssistance } : {}),
+    message: handoffMessage,
+    mode,
   });
 }
 
+/**
+ * One readiness reading for the observation poll: the probe result when Venmo
+ * reports a live session, `null` when it does not.
+ *
+ * A transport fault is NOT a reading. `probeVenmoAccount` throws on one (B4),
+ * and a single blip must not end an observation window the owner is actively
+ * working inside — nor may it escape and be classified as a real fault while
+ * the owner is mid-challenge. Retries are bounded; an exhausted retry reports
+ * `null` (not yet observed), which simply spends one poll iteration.
+ */
+async function observeVenmoLogin(page: Page, phase: VenmoProbePhase): Promise<VenmoAccountProbeResult | null> {
+  for (let attempt = 0; attempt < SESSION_PROBE_RETRY_ATTEMPTS; attempt += 1) {
+    const probed = await probeVenmoAccount(page, phase).catch((): null => null);
+    if (probed?.live) {
+      return probed;
+    }
+    if (probed) {
+      // A definite "not signed in yet" reading. Nothing to retry — wait for the
+      // next poll iteration rather than burning the retry budget on a page that
+      // answered correctly.
+      return null;
+    }
+    await page.waitForTimeout(SESSION_PROBE_RETRY_DELAY_MS);
+  }
+  return null;
+}
+
 async function ensureManualSessionWithoutCredentials({
-  capture,
   checkpoint,
-  page,
-  sendInteraction,
-}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  ...handoff
+}: ManualHandoff & {
   checkpoint: SessionCheckpointFn;
 }): Promise<VenmoAccountProbeResult> {
   await checkpoint("venmo-signin-manual-required");
   // pre_submit (default): no credentials are saved at all, so no password
   // has ever been typed anywhere in this call graph.
+  //
+  // OBSERVABLE: the owner signs in by hand and the account probe reads live —
+  // no secret has to reach the connector for this to resolve.
   const result = await waitForManualLogin({
-    ...(capture ? { capture } : {}),
+    ...handoffHooks({ ...handoff, checkpoint }),
     message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
-    page,
-    sendInteraction,
   });
   if (result.live) {
     return result;
@@ -1188,13 +1328,15 @@ async function withSuppressedManualPrompts<T>(run: () => Promise<T>): Promise<T>
  * signed in manually.
  */
 async function requestManualLoginForChallenge({
-  capture,
-  page,
   phase = "pre_submit",
   reason,
   replaySignIn,
-  sendInteraction,
-}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  securityCheckDetected = false,
+  unobservable,
+  ...handoff
+}: ManualHandoff & {
+  /** See `waitForManualLogin`'s `unobservable`. */
+  readonly unobservable?: UnobservableJustification;
   /**
    * Replays the full saved-credential sign-in once the owner clears the
    * challenge. Absent for handoffs raised where no credential exists.
@@ -1202,22 +1344,26 @@ async function requestManualLoginForChallenge({
   readonly replaySignIn?: (onSubmit: () => void) => Promise<VenmoAccountProbeResult>;
   readonly phase?: VenmoProbePhase;
   readonly reason: string;
+  /**
+   * Whether a security check was actually OBSERVED on the page. Only a site
+   * that probed for one may pass `true`; see {@link challengeHandoffMessage}.
+   */
+  readonly securityCheckDetected?: boolean;
 }): Promise<VenmoAccountProbeResult> {
   if (manualPromptSuppressed) {
     // Inside a replay: the owner has already been asked once for this run.
     // Probe instead of prompting again, classifying post-submit if a password
     // has by then reached Venmo (B4).
-    return await probeVenmoAccount(page, credentialSubmittedThisRun ? "post_submit" : phase);
+    return await probeVenmoAccount(handoff.page, credentialSubmittedThisRun ? "post_submit" : phase);
   }
   return await waitForManualLogin({
-    ...(capture ? { capture } : {}),
-    message: challengeHandoffMessage(reason, replaySignIn !== undefined),
-    page,
+    ...handoffHooks(handoff),
+    message: challengeHandoffMessage(reason, replaySignIn !== undefined, securityCheckDetected),
     phase,
+    ...(unobservable ? { unobservable } : {}),
     ...(replaySignIn
       ? { resumeFill: () => withSuppressedManualPrompts(() => resumeSignInAfterChallenge(replaySignIn)) }
       : {}),
-    sendInteraction,
   });
 }
 
@@ -1227,12 +1373,26 @@ async function requestManualLoginForChallenge({
  * When we hold the credentials, naming "sign in" first is a false ask — see
  * `login-credentials.ts`'s note on page-shaped messages hiding
  * credential-shaped truths. Name the challenge, and say the rest is automatic.
+ *
+ * `securityCheckDetected` gates the security-check CLAIM on having actually
+ * detected one. The previous copy asserted "Venmo is showing a security check
+ * instead of the sign-in form" at every credentialed site, including the one
+ * whose only evidence is that a username selector did not attach within 10s —
+ * which probes for no CAPTCHA, no device approval, and no verification element
+ * at all. An owner watched the real sign-in form render while being told it had
+ * not. That inverts `login-credentials.ts`'s stated convention: the reason
+ * describes the PAGE we OBSERVED, never a cause we inferred from one absent
+ * selector. Undetected now says what was seen and lists the security check as a
+ * possibility, not a finding.
  */
-function challengeHandoffMessage(reason: string, hasCredentials: boolean): string {
-  if (hasCredentials) {
-    return `Venmo is showing a security check instead of the sign-in form (${reason}). Complete the check — CAPTCHA, device approval, or verification — in the secure browser, then respond success. Your stored credentials are entered automatically afterward; you do not need the password.`;
+function challengeHandoffMessage(reason: string, hasCredentials: boolean, securityCheckDetected: boolean): string {
+  if (!hasCredentials) {
+    return `Venmo did not render the expected sign-in form (${reason}). Complete sign-in — including any device approval, CAPTCHA, or verification step — in the secure browser; PDPP continues automatically once the sign-in succeeds.`;
   }
-  return `Venmo did not render the expected sign-in form (${reason}). Complete sign-in — including any device approval, CAPTCHA, or verification step — in the secure browser, then respond success.`;
+  const situation = securityCheckDetected
+    ? `Venmo is showing a security check instead of the sign-in form (${reason}).`
+    : `Venmo did not render the expected sign-in form (${reason}). A security check — CAPTCHA, device approval, or verification — is the usual cause, but none was detected on the page.`;
+  return `${situation} Complete anything Venmo asks for in the secure browser. Your stored credentials are entered automatically afterward; you do not need the password.`;
 }
 
 /**
@@ -1288,7 +1448,28 @@ async function resumeSignInAfterChallenge(
   return submitted;
 }
 
-type ManualHandoff = Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction">;
+/**
+ * The hooks every handoff site needs. Carries the detect-and-resume channel
+ * (`assist`/`completeAssistance`/`checkpoint`) alongside the page and the
+ * blocking interaction sender, so a site reached deep in the sign-in flow can
+ * observe its own completion rather than only being able to ask.
+ */
+type ManualHandoff = Pick<
+  EnsureVenmoSessionArgs,
+  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "sendInteraction"
+>;
+
+/** Forward only the hooks that are actually present, under exactOptionalPropertyTypes. */
+function handoffHooks(args: ManualHandoff): ManualHandoff {
+  return {
+    ...(args.assist ? { assist: args.assist } : {}),
+    ...(args.capture ? { capture: args.capture } : {}),
+    ...(args.checkpoint ? { checkpoint: args.checkpoint } : {}),
+    ...(args.completeAssistance ? { completeAssistance: args.completeAssistance } : {}),
+    page: args.page,
+    sendInteraction: args.sendInteraction,
+  };
+}
 
 /**
  * Fill the password field, advancing Venmo's two-step sign-in when needed.
@@ -1313,7 +1494,7 @@ type ManualHandoff = Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInte
 async function fillVenmoPassword(
   args: ManualHandoff & { password: string; passwordScreenTimeoutMs?: number }
 ): Promise<VenmoAccountProbeResult | null> {
-  const { capture, page, password, passwordScreenTimeoutMs = PASSWORD_SCREEN_TIMEOUT_MS, sendInteraction } = args;
+  const { capture, page, password, passwordScreenTimeoutMs = PASSWORD_SCREEN_TIMEOUT_MS } = args;
   const passwordIn = page.locator(PASSWORD_SELECTOR).first();
   // A visible password box is NOT proof of a one-screen form. Venmo's step-one
   // screen renders an UNNAMED `input[type="password"]` alongside the
@@ -1345,11 +1526,11 @@ async function fillVenmoPassword(
     // handoff exists for, so it hands off rather than throwing — nothing has
     // been submitted, and the owner can still finish by hand.
     await captureLoginState(capture, page, "venmo-step-one-submit-missing");
+    // OBSERVABLE: whatever the owner does here ends in a live session, which
+    // the account probe reads without being told.
     return await requestManualLoginForChallenge({
-      ...(capture ? { capture } : {}),
-      page,
+      ...handoffHooks(args),
       reason: "could not advance past the sign-in identifier step",
-      sendInteraction,
     });
   }
   await captureLoginState(capture, page, "venmo-identifier-submitted");
@@ -1364,14 +1545,16 @@ async function fillVenmoPassword(
   // real stall — because Venmo embeds reCAPTCHA on healthy sign-ins too.
   await captureLoginState(capture, page, "venmo-password-screen-missing");
   if (await hasVenmoCaptcha(page)) {
+    // OBSERVABLE: a solved CAPTCHA lets the sign-in complete, and the account
+    // probe sees that. The CAPTCHA claim here IS evidence-backed — unlike the
+    // inferred one `challengeHandoffMessage` guards, this branch only runs
+    // after `hasVenmoCaptcha` actually found the widget.
     return await waitForManualLogin({
-      ...(capture ? { capture } : {}),
+      ...handoffHooks(args),
       message:
         "Venmo is showing a human-verification challenge (CAPTCHA) that PDPP will not attempt to solve. " +
-        "Complete the challenge and finish signing in to Venmo in the secure browser, then respond success.",
-      page,
+        "Complete the challenge and finish signing in to Venmo in the secure browser.",
       reason: "captcha",
-      sendInteraction,
     });
   }
   // No captcha, no password screen, and no evidence of what Venmo did. Fail
@@ -1425,12 +1608,17 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccoun
     // Either the prompt copy matched with no known input shape, or an input
     // rendered that cannot accept a code. Hand off rather than guess a
     // selector for a UI we can't confirm — and never fabricate a code demand.
+    //
+    // OBSERVABLE: the owner completes the verification in the browser and the
+    // session goes live. The connector needs no code of its own here — it
+    // could not use one, which is why this branch hands off instead of
+    // prompting. `securityCheckDetected`: a verification step WAS observed
+    // (the copy or an input matched), so the claim is evidence-backed.
     return await requestManualLoginForChallenge({
-      ...(capture ? { capture } : {}),
-      page,
+      ...handoffHooks(args),
       phase: "post_submit",
       reason: "verification step did not match a known input",
-      sendInteraction,
+      securityCheckDetected: true,
     });
   }
   // Last line of defense before the owner is asked for a secret. Classification
@@ -1473,9 +1661,11 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<VenmoAccoun
  * amazon.ts/reddit.ts.
  */
 async function loginWithSavedCredentials({
+  assist,
   attempt = 0,
   capture,
   checkpoint,
+  completeAssistance,
   onCredentialSubmit,
   page,
   passwordScreenTimeoutMs,
@@ -1486,7 +1676,14 @@ async function loginWithSavedCredentials({
   password,
 }: Pick<
   EnsureVenmoSessionArgs,
-  "capture" | "page" | "passwordScreenTimeoutMs" | "postSubmitSettleTimeoutMs" | "progress" | "sendInteraction"
+  | "assist"
+  | "capture"
+  | "completeAssistance"
+  | "page"
+  | "passwordScreenTimeoutMs"
+  | "postSubmitSettleTimeoutMs"
+  | "progress"
+  | "sendInteraction"
 > & {
   /**
    * 0 on the first entry; 1 when re-entered after the owner cleared a
@@ -1502,9 +1699,21 @@ async function loginWithSavedCredentials({
   await captureLoginState(capture, page, "venmo-login-page");
   await checkpoint("venmo-signin-loaded");
 
+  // One bundle, threaded to every handoff site this function can reach, so a
+  // site cannot silently lose the detect-and-resume channel and fall back to
+  // asking the owner for a sign-in the connector could have observed.
+  const hooks = handoffHooks({
+    ...(assist ? { assist } : {}),
+    ...(capture ? { capture } : {}),
+    checkpoint,
+    ...(completeAssistance ? { completeAssistance } : {}),
+    page,
+    sendInteraction,
+  });
+
   const userIn = page.locator(USERNAME_SELECTOR).first();
   const usernameAppeared = await userIn
-    .waitFor({ state: "attached", timeout: 10_000 })
+    .waitFor({ state: "attached", timeout: USERNAME_FIELD_TIMEOUT_MS })
     .then((): true => true)
     .catch((): false => false);
   if (!usernameAppeared) {
@@ -1516,10 +1725,27 @@ async function loginWithSavedCredentials({
     if (attempt === 1) {
       return await probeVenmoAccount(page, "pre_submit");
     }
+    // The reason reports what was OBSERVED — the form did not attach within
+    // the bound — and nothing more. `securityCheckDetected` stays false
+    // because this branch probes for no CAPTCHA, device approval, or
+    // verification element; the old copy asserted a security check from this
+    // one absent selector and told an owner the sign-in form had not rendered
+    // while he watched it render.
     return await requestManualLoginForChallenge({
-      ...(capture ? { capture } : {}),
-      page,
-      reason: "sign-in form did not render",
+      ...hooks,
+      reason: `sign-in form did not appear within ${USERNAME_FIELD_TIMEOUT_MS}ms`,
+      // DECLARED UNOBSERVABLE. Clearing this challenge does NOT produce a live
+      // session — it produces the SIGN-IN FORM, which the connector must then
+      // fill and submit (`replaySignIn` below is what does that). Polling
+      // account liveness here would wait for a state that cannot arrive until
+      // the connector acts, spending the whole budget to reach the same
+      // blocking ask. The owner's success signal is the replay, not a probe.
+      unobservable: {
+        evidence:
+          "The username field never attached, so the page is a pre-credential interstitial (observed live as a DataDome bot check, run_1787880916346). The owner clearing it reveals the sign-in form; the saved password still has to be submitted afterwards by replaySignIn, so account liveness cannot become true from the owner's action alone.",
+        reason: "success_is_not_session_liveness",
+        site: "venmo:signin-form-absent",
+      },
       // Replay the whole sign-in after the owner clears the check. `attempt`
       // bounds it: the replay runs with attempt=1, whose challenge branch no
       // longer re-arms, so a provider trading bot checks cannot loop.
@@ -1527,9 +1753,11 @@ async function loginWithSavedCredentials({
         ? {
             replaySignIn: (onSubmit: () => void) =>
               loginWithSavedCredentials({
+                ...(assist ? { assist } : {}),
                 ...(capture ? { capture } : {}),
                 attempt: 1,
                 checkpoint,
+                ...(completeAssistance ? { completeAssistance } : {}),
                 // Chain, do not replace: the run's own marker still fires (it
                 // drives retry classification in session-establish.ts), and the
                 // replay additionally records that a password reached Venmo so
@@ -1558,11 +1786,9 @@ async function loginWithSavedCredentials({
   // a secret, so it deliberately does NOT fire `onCredentialSubmit` — see that
   // function's doc.
   const passwordHandoff = await fillVenmoPassword({
-    ...(capture ? { capture } : {}),
-    page,
+    ...hooks,
     password,
     ...(passwordScreenTimeoutMs === undefined ? {} : { passwordScreenTimeoutMs }),
-    sendInteraction,
   });
   if (passwordHandoff) {
     return passwordHandoff;
@@ -1589,7 +1815,7 @@ async function loginWithSavedCredentials({
   await captureLoginState(capture, page, "venmo-login-after-submit");
   await checkpoint("venmo-2fa-decision");
 
-  const otpHandoff = await handleVenmoOtpIfPresent({ ...(capture ? { capture } : {}), page, sendInteraction });
+  const otpHandoff = await handleVenmoOtpIfPresent(hooks);
   if (otpHandoff) {
     return otpHandoff;
   }
@@ -1647,19 +1873,23 @@ async function loginWithSavedCredentials({
   if (finalProbe?.live) {
     return finalProbe;
   }
+  // OBSERVABLE: this is the site the owner sat clicking Continue on. The
+  // password was submitted and the login may simply have been slower than the
+  // settle bound — so the account probe, not a button press, is what should
+  // decide whether it worked.
   return await requestManualLoginForChallenge({
-    ...(capture ? { capture } : {}),
-    page,
+    ...hooks,
     phase: "post_submit",
     reason: "automated sign-in did not complete",
-    sendInteraction,
   });
 }
 
 /** Resolve a live Venmo browser session, or throw if establishment fails. */
 export async function ensureVenmoSession({
+  assist,
   capture,
   checkpoint = noopCheckpoint,
+  completeAssistance,
   credentials = {},
   onCredentialSubmit,
   page,
@@ -1683,16 +1913,20 @@ export async function ensureVenmoSession({
   const password = credentials.VENMO_PASSWORD;
   if (!(username && password)) {
     return await ensureManualSessionWithoutCredentials({
+      ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
       checkpoint,
+      ...(completeAssistance ? { completeAssistance } : {}),
       page,
       sendInteraction,
     });
   }
 
   const result = await loginWithSavedCredentials({
+    ...(assist ? { assist } : {}),
     ...(capture ? { capture } : {}),
     checkpoint,
+    ...(completeAssistance ? { completeAssistance } : {}),
     ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
     page,
     ...(passwordScreenTimeoutMs === undefined ? {} : { passwordScreenTimeoutMs }),

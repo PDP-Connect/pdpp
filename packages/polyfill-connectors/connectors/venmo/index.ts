@@ -551,8 +551,10 @@ if (isMainModule(import.meta.url)) {
     auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
     browser: { profileName: "venmo" },
     async ensureSession({
+      assist,
       capture,
       checkpoint,
+      completeAssistance,
       credentials,
       onCredentialSubmit,
       page,
@@ -560,8 +562,14 @@ if (isMainModule(import.meta.url)) {
       sendInteraction,
     }): Promise<void> {
       await ensureVenmoSession({
+        // Detect-and-resume: with these wired, a handoff is emitted as
+        // non-blocking assistance and resolves the moment the account probe
+        // reads live, so the owner is never asked to confirm a sign-in the
+        // connector can see succeeded.
+        assist,
         ...(capture ? { capture } : {}),
         checkpoint,
+        completeAssistance,
         credentials,
         onCredentialSubmit,
         page,

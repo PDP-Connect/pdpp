@@ -287,8 +287,19 @@ test("ensureVenmoSession: hands off to manual_action when no credentials are sav
     await assert.rejects(ensureVenmoSession({ page, sendInteraction }), /venmo_login_manual_incomplete/);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "manual_action");
-    assert.match(requests[0]?.message ?? "", /No optional Venmo sign-in details/);
+    // Names the CREDENTIAL, not the page (login-credentials.ts's convention):
+    // an owner told "the form did not render" goes to debug a provider outage
+    // that is not happening.
+    assert.match(requests[0]?.message ?? "", /sign-in details are stored/i);
     assert.doesNotMatch(requests[0]?.message ?? "", /password|test-user/i);
+    // The blocking fallback may still be reached when observation expires, but
+    // the copy must never promise a Continue click as THE way to finish: the
+    // non-blocking assistance resolves on its own the moment sign-in succeeds.
+    assert.doesNotMatch(
+      requests[0]?.message ?? "",
+      /respond success/i,
+      "copy must not promise a Continue step the detect-and-resume path does not require"
+    );
     // F2: the owner must be handed a real Venmo sign-in page, not
     // about:blank — the manual handoff navigates to LOGIN_URL first.
     assert.ok(
@@ -1527,7 +1538,7 @@ test("ensureVenmoSession: a captcha blocking the password screen hands off to th
 // at all is a genuinely unrecognized page, and must still hand off with the
 // existing message. The bug was that a RECOGNIZED page was misread — not that
 // this check exists.
-test("ensureVenmoSession: a page with no username field still hands off with the existing 'sign-in form did not render' message", async () => {
+test("ensureVenmoSession: a page with no username field hands off reporting what was OBSERVED, not an inferred security check", async () => {
   await withVenmoCredentials(async () => {
     const { fillCalls, page } = makeTwoStepVenmoPage({ identifierSelectorMatches: false });
     const { requests, sendInteraction } = recordingSendInteraction();
@@ -1541,10 +1552,22 @@ test("ensureVenmoSession: a page with no username field still hands off with the
     );
     const manual = requests.filter((req): boolean => req.kind === "manual_action");
     assert.equal(manual.length, 1, "an unrecognized sign-in page must still reach the owner");
+    // The handoff must report the OBSERVED fact — the form did not appear
+    // within the bound — because that is all this branch actually checked.
     assert.match(
       manual[0]?.message ?? "",
-      /sign-in form did not render/,
-      "the existing, load-bearing handoff message must survive the two-step fix"
+      /sign-in form did not appear within \d+ms/,
+      "the handoff must say what was observed: the form did not appear within the bound"
+    );
+    // And it must NOT assert a security check it never probed for. This branch
+    // reads one absent selector; it tests no CAPTCHA, device-approval, or
+    // verification element. The prior copy claimed "Venmo is showing a security
+    // check instead of the sign-in form", and an owner watched the real form
+    // render while being told it had not.
+    assert.doesNotMatch(
+      manual[0]?.message ?? "",
+      /is showing a security check/,
+      "an unprobed security check must never be asserted as fact"
     );
     assert.equal(fillCalls.username, undefined, "nothing may be typed into a form the connector does not recognize");
     assert.equal(fillCalls.password, undefined);

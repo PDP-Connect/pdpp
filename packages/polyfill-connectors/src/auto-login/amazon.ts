@@ -21,9 +21,22 @@
 
 import type { BrowserContext, Locator, Page } from "playwright";
 import { manualAction } from "../browser-handoff.ts";
-import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
+import type {
+  AssistanceCompletionStatus,
+  AssistanceRequest,
+  InteractionRequest,
+  InteractionResponse,
+  SessionCheckpointFn,
+} from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
 import { type LoginCredentialFields, resolveLoginCredentials } from "./login-credentials.ts";
+import {
+  type OwnerBrowserActionMode,
+  observationAttempts,
+  requestOwnerBrowserAction,
+  resolveObservationBudgetMs,
+  type UnobservableJustification,
+} from "./observed-login.ts";
 
 /**
  * Where Amazon's sign-in pair lives in the runtime-resolved `credentials`
@@ -47,7 +60,41 @@ const ORDERS_URL = "https://www.amazon.com/your-orders/orders";
  */
 const noopCheckpoint: SessionCheckpointFn = () => Promise.resolve();
 
+/**
+ * Observation budget for an owner-assisted handoff, and the gap between
+ * readiness probes within it. 900s matches chatgpt.ts and venmo.ts for the same
+ * reason: it must cover realistic human latency on a CAPTCHA or an
+ * approve-on-device step so the run auto-resumes instead of falling through to
+ * the blocking owner-click fallback.
+ *
+ * The poll checkpoints on EVERY iteration (see `observed-login.ts`), so this
+ * budget exceeding the watchdog's default 120s no-progress deadline does not
+ * trip it.
+ */
+const HANDOFF_OBSERVATION_DEFAULT_TIMEOUT_MS = 900_000;
+const HANDOFF_OBSERVATION_TIMEOUT_ENV = "PDPP_AMAZON_HANDOFF_OBSERVATION_TIMEOUT_MS";
+const HANDOFF_OBSERVATION_POLL_INTERVAL_MS = 5000;
+
+/**
+ * Bounded retry for one readiness probe. `probeAmazonSession` navigates, so a
+ * single reading can miss a session that is mid-redirect; one such blip must
+ * not spend the owner's observation window.
+ */
+const SESSION_PROBE_RETRY_ATTEMPTS = 2;
+const SESSION_PROBE_RETRY_DELAY_MS = 1500;
+
+/** Resolve the handoff observation budget in ms. */
+export function resolveAmazonHandoffObservationMs(env: NodeJS.ProcessEnv = process.env): number {
+  return resolveObservationBudgetMs(env, HANDOFF_OBSERVATION_TIMEOUT_ENV, HANDOFF_OBSERVATION_DEFAULT_TIMEOUT_MS);
+}
+
 interface EnsureAmazonSessionArgs {
+  /**
+   * Emits NON-BLOCKING assistance so a handoff can be observed to completion
+   * rather than waiting on an owner click. Optional: without it every handoff
+   * keeps its previous blocking-Continue behavior.
+   */
+  assist?: (req: AssistanceRequest) => Promise<string>;
   capture?: CaptureSession | null;
   /**
    * Session-establishment checkpoint hook from the runtime watchdog. Each call
@@ -55,6 +102,11 @@ interface EnsureAmazonSessionArgs {
    * phase diagnostic so a hang no longer leaves only an about:blank artifact.
    */
   checkpoint?: SessionCheckpointFn;
+  completeAssistance?: (
+    assistanceRequestId: string,
+    status: AssistanceCompletionStatus,
+    extra?: { message?: string }
+  ) => Promise<void>;
   context: BrowserContext;
   /**
    * This connection's resolved sign-in pair, threaded from the runtime (see
@@ -135,93 +187,157 @@ async function probeAmazonSession(page: Page): Promise<boolean> {
  * credentials, and the sign-in URL handed to the operator carries no secrets.
  */
 async function requestManualLoginForChallenge({
-  capture,
-  page,
   reason,
-  sendInteraction,
-}: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  ...handoff
+}: AmazonHandoff & {
   readonly reason: string;
 }): Promise<boolean> {
   return await waitForManualLogin({
-    ...(capture ? { capture } : {}),
+    ...handoff,
     handoffReason: "captcha",
     message:
       `Amazon did not render the expected sign-in form (${reason}). ` +
       "This usually means Amazon is showing a CAPTCHA/puzzle or an approve-on-device challenge to the automated browser. " +
-      "If this run opened a visible browser, complete Amazon sign-in there and respond success. " +
+      "If this run opened a visible browser, complete Amazon sign-in there. " +
       "If it is headless, cancel this interaction and rerun with PDPP_BROWSER_HEADLESS=0 (or unset it) on a browser-capable deployment.",
-    page,
-    sendInteraction,
   });
 }
 
 async function requestManualLoginWithoutCredentials({
-  capture,
   credentialReason,
-  page,
-  sendInteraction,
-}: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  ...handoff
+}: AmazonHandoff & {
   readonly credentialReason: string;
 }): Promise<boolean> {
   return await waitForManualLogin({
-    ...(capture ? { capture } : {}),
+    ...handoff,
     handoffReason: "login",
     // Leads with the CREDENTIAL. The previous copy called the sign-in details
     // "optional" and named no field, so an owner could not tell that a stored
     // credential was expected and absent.
     message:
       `${credentialReason} ` +
-      "Alternatively, sign in to Amazon in the secure browser and complete any CAPTCHA, OTP, passkey, or other human verification there, then respond success.",
-    page,
-    sendInteraction,
+      "Alternatively, sign in to Amazon in the secure browser and complete any CAPTCHA, OTP, passkey, or other human verification there.",
   });
 }
 
+/**
+ * The hooks every Amazon handoff site needs. Carries the detect-and-resume
+ * channel alongside the page and the blocking interaction sender.
+ */
+type AmazonHandoff = Pick<
+  EnsureAmazonSessionArgs,
+  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "sendInteraction"
+>;
+
+/** Forward only the hooks that are present, under exactOptionalPropertyTypes. */
+function handoffHooks(args: AmazonHandoff): AmazonHandoff {
+  return {
+    ...(args.assist ? { assist: args.assist } : {}),
+    ...(args.capture ? { capture: args.capture } : {}),
+    ...(args.checkpoint ? { checkpoint: args.checkpoint } : {}),
+    ...(args.completeAssistance ? { completeAssistance: args.completeAssistance } : {}),
+    page: args.page,
+    sendInteraction: args.sendInteraction,
+  };
+}
+
 async function waitForManualLogin({
+  assist,
   capture,
+  checkpoint,
+  completeAssistance,
   handoffReason,
   message,
   page,
   sendInteraction,
-}: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  unobservable,
+}: Pick<
+  EnsureAmazonSessionArgs,
+  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "sendInteraction"
+> & {
   readonly handoffReason: "captcha" | "login";
   readonly message: string;
+  /** See venmo.ts's `unobservable`: the justification IS the opt-out. */
+  readonly unobservable?: UnobservableJustification;
 }): Promise<boolean> {
-  await manualAction(
-    {
-      ...(capture ? { capture } : {}),
-      page,
-      reason: handoffReason,
-      message,
-      timeoutSeconds: 1800,
-    },
-    sendInteraction
-  );
-  await page.waitForTimeout(3000);
-  return probeAmazonSession(page);
+  const blockingHandoff = async (): Promise<boolean> => {
+    await manualAction(
+      {
+        ...(capture ? { capture } : {}),
+        page,
+        reason: handoffReason,
+        message,
+        timeoutSeconds: 1800,
+      },
+      sendInteraction
+    );
+    await page.waitForTimeout(3000);
+    return probeAmazonSession(page);
+  };
+
+  // The paved road: detect-and-resume unless this site declared why it cannot.
+  // Every Amazon handoff so far IS observable — a solved CAPTCHA, an approved
+  // device, and a manual sign-in all end with the orders page reachable — so
+  // no site here supplies a justification.
+  const mode: OwnerBrowserActionMode<boolean> = unobservable
+    ? { kind: "unobservable", justification: unobservable }
+    : {
+        kind: "observable",
+        budget: {
+          attempts: observationAttempts(resolveAmazonHandoffObservationMs(), HANDOFF_OBSERVATION_POLL_INTERVAL_MS),
+          intervalMs: HANDOFF_OBSERVATION_POLL_INTERVAL_MS,
+          wait: (ms: number) => page.waitForTimeout(ms),
+        },
+        probe: { observe: () => observeAmazonLogin(page) },
+        waitingCheckpointLabel: "amazon-handoff-observation-waiting",
+      };
+  return await requestOwnerBrowserAction<boolean>({
+    ...(assist ? { assist } : {}),
+    blockingAsk: blockingHandoff,
+    ...(checkpoint ? { checkpoint } : {}),
+    ...(completeAssistance ? { completeAssistance } : {}),
+    message,
+    mode,
+  });
+}
+
+/**
+ * One readiness reading for the observation poll: `true` when Amazon reports a
+ * live session, `null` when it does not yet.
+ *
+ * Returns `null` rather than `false` for "not signed in": `false` is a
+ * legitimate observed value for the poll's `Result` type, so reporting it would
+ * end the observation window on the FIRST probe and defeat the whole point.
+ */
+async function observeAmazonLogin(page: Page): Promise<true | null> {
+  for (let attempt = 0; attempt < SESSION_PROBE_RETRY_ATTEMPTS; attempt += 1) {
+    if (await probeAmazonSession(page).catch((): boolean => false)) {
+      return true;
+    }
+    if (attempt + 1 < SESSION_PROBE_RETRY_ATTEMPTS) {
+      await page.waitForTimeout(SESSION_PROBE_RETRY_DELAY_MS);
+    }
+  }
+  return null;
 }
 
 async function ensureManualSessionWithoutCredentials({
-  capture,
   checkpoint,
   credentialReason,
-  page,
-  sendInteraction,
-}: {
-  capture?: CaptureSession | null;
+  ...handoff
+}: AmazonHandoff & {
   checkpoint: SessionCheckpointFn;
   /** Owner-facing reason naming the absent credential fields. */
   readonly credentialReason: string;
-  page: Page;
-  sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }): Promise<boolean> {
   await checkpoint("amazon-signin-manual-required");
+  // OBSERVABLE: the owner signs in by hand and the orders page becomes
+  // reachable — no secret has to reach the connector for this to resolve.
   if (
     await requestManualLoginWithoutCredentials({
-      ...(capture ? { capture } : {}),
+      ...handoffHooks({ ...handoff, checkpoint }),
       credentialReason,
-      page,
-      sendInteraction,
     })
   ) {
     return true;
@@ -242,21 +358,19 @@ async function ensureManualSessionWithoutCredentials({
  * step did not establish a session.
  */
 async function fillOrHandleChallenge({
-  capture,
   fieldTimeoutMs = 15_000,
   locator,
-  page,
   reason,
-  sendInteraction,
   value,
-}: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  ...handoff
+}: AmazonHandoff & {
   readonly locator: Locator;
   readonly fieldTimeoutMs?: number | undefined;
   readonly reason: string;
   readonly value: string;
 }): Promise<"filled" | "recovered"> {
   try {
-    await fillWhenVisible(page, locator, value, { timeout: fieldTimeoutMs });
+    await fillWhenVisible(handoff.page, locator, value, { timeout: fieldTimeoutMs });
     return "filled";
   } catch (error) {
     if (!isMissingVisibleFieldError(error)) {
@@ -266,7 +380,10 @@ async function fillOrHandleChallenge({
     // Cloudflare/CAPTCHA/puzzle or approve-on-device challenge instead of the
     // sign-in form. Hand off to the operator and re-probe the session before
     // declaring failure, rather than crashing with a bare selector timeout.
-    if (await requestManualLoginForChallenge({ ...(capture ? { capture } : {}), page, reason, sendInteraction })) {
+    //
+    // OBSERVABLE: the orders page becoming reachable is the marker, and it
+    // settles every resolution of this state without an owner click.
+    if (await requestManualLoginForChallenge({ ...handoffHooks(handoff), reason })) {
       return "recovered";
     }
     throw new Error("amazon_login_unexpected_ui", { cause: error });
@@ -274,8 +391,10 @@ async function fillOrHandleChallenge({
 }
 
 export async function ensureAmazonSession({
+  assist,
   capture,
   checkpoint = noopCheckpoint,
+  completeAssistance,
   context: _context,
   credentials,
   fieldTimeoutMs,
@@ -291,19 +410,29 @@ export async function ensureAmazonSession({
     return true;
   }
 
+  // One bundle, threaded to every handoff site, so a site cannot silently lose
+  // the detect-and-resume channel and fall back to asking the owner for a
+  // sign-in the connector could have observed.
+  const hooks = handoffHooks({
+    ...(assist ? { assist } : {}),
+    ...(capture ? { capture } : {}),
+    checkpoint,
+    ...(completeAssistance ? { completeAssistance } : {}),
+    page,
+    sendInteraction,
+  });
+
   // Connection-scoped, never ambient: `credentials` belongs to the ONE
   // connection this run is for. See `login-credentials.ts` for why reading
   // process.env here is banned (scripts/check-no-direct-credential-env.ts).
   const resolved = resolveLoginCredentials(credentials, AMAZON_LOGIN_FIELDS, "amazon");
   if (resolved.kind === "absent") {
     return await ensureManualSessionWithoutCredentials({
-      ...(capture ? { capture } : {}),
+      ...hooks,
       checkpoint,
       // Names the CREDENTIAL, not the page: the old copy said sign-in details
       // were "optional" and never named the fields the owner had to supply.
       credentialReason: resolved.reason,
-      page,
-      sendInteraction,
     });
   }
   const { password, username: email } = resolved;
@@ -333,12 +462,10 @@ export async function ensureAmazonSession({
     .catch((): string => "");
   if (currentEmail !== email) {
     const emailStep = await fillOrHandleChallenge({
-      ...(capture ? { capture } : {}),
+      ...hooks,
       fieldTimeoutMs,
       locator: emailLoc,
-      page,
       reason: "sign-in form did not render",
-      sendInteraction,
       value: email,
     });
     if (emailStep === "recovered") {
@@ -361,12 +488,10 @@ export async function ensureAmazonSession({
   // Password step — `#ap_password` remains stable; `input[name="password"]`
   // also matches a hidden autofill hint, so we prefer the id + require vis.
   const passwordStep = await fillOrHandleChallenge({
-    ...(capture ? { capture } : {}),
+    ...hooks,
     fieldTimeoutMs,
     locator: page.locator("input#ap_password"),
-    page,
     reason: "password form did not render",
-    sendInteraction,
     value: password,
   });
   if (passwordStep === "recovered") {
@@ -427,12 +552,13 @@ export async function ensureAmazonSession({
   if (await probeAmazonSession(page)) {
     return true;
   }
+  // OBSERVABLE: the password was submitted and an approve-on-device step may
+  // simply still be pending. The orders page becoming reachable settles it —
+  // the owner should not have to confirm a login the connector can see.
   if (
     await requestManualLoginForChallenge({
-      ...(capture ? { capture } : {}),
-      page,
+      ...hooks,
       reason: "automated sign-in did not complete",
-      sendInteraction,
     })
   ) {
     return true;
