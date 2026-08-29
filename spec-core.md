@@ -1066,10 +1066,15 @@ On every request, the resource server:
 5. If all checks pass, returns records filtered accordingly.
 6. If any check fails, returns a structured error (see Errors below).
 
-For owner-token current-capability reads, the RS MAY compute
-`effective_filter = grant_filter AND request_filter`; request filters can only
-narrow the current owner read and cannot widen it. In v0.1, client-token reads
-do not have request-time predicate filters (see List records below).
+For owner-token current-capability reads, the effective filter is the permitted
+owner request filter alone: an owner token carries no grant, so there is no grant
+filter to intersect. Request filters can only narrow the current owner read and
+cannot widen it.
+
+In v0.1, client-token reads do not have request-time predicate filters (see List
+records below); the resource server enforces the frozen grant constraints and
+rejects a client request-time predicate filter rather than evaluating it. A
+future client-filter capability may define intersection semantics.
 
 The RS MUST NOT re-validate authorization against the current SourceDeclaration. All enforcement constraints are in the resolved grant. Current serving metadata MAY route a granted instance, describe current schemas or query capabilities, or reject a request that cannot currently be served. It MUST NOT widen or reinterpret a stream, instance, field, time field, bound, or resource key.
 
@@ -1159,7 +1164,7 @@ GET /v1/streams/{stream}
 Authorization: Bearer <access_token>
 ```
 
-Returns full source stream metadata. This endpoint is not grant-projected: grants determine whether the caller may access the stream and what reads or queries are permitted, but they do not redact or rewrite the metadata document returned here. Response:
+Returns full source stream metadata. A client-token caller may fetch metadata only for a stream present in its resolved authorization context. An owner-token caller may fetch metadata for streams in the subject's data store the owner token is scoped to. Once access is authorized, the metadata document is returned whole rather than field-projected by the grant. Response:
 
 ```json
 {
@@ -1246,10 +1251,11 @@ Client-token requests that contain any exact or range `filter[...]` parameter
 MUST be rejected with HTTP 400 `invalid_request` before the RS consults current
 SourceDeclaration or serving metadata. This rejection applies regardless of
 whether the field or operator would otherwise be declared. Owner-token
-current-capability reads MAY accept exact filters on authorized top-level
-scalar fields and declared range filters; unknown fields and non-scalar fields
-are HTTP 400, and fields outside the grant's authorized projection are HTTP 403
-`field_not_granted`.
+current-capability reads MAY accept exact filters on declared top-level scalar
+fields and range filters explicitly declared by current serving metadata.
+Unknown fields, non-scalar fields, and unsupported range shapes return HTTP
+400. Owner subject, source, and connection scope are enforced independently. An
+owner token has no client grant field projection.
 
 Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be
 rejected with HTTP 400 `invalid_request` before the RS consults current
@@ -1278,10 +1284,10 @@ Eligibility for `changes_since` MUST be computed on the grant-authorized project
 
 If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`.
 
-**Filter on unauthorized field:** For owner-token current-capability reads, RS
-MUST reject a `filter[{field}]` parameter targeting a field outside the grant's
-authorized projection with 403 `field_not_granted`. Client-token requests are
-rejected earlier by the v0.1 client-filter rule above.
+**Invalid owner filter:** An owner-token current-capability filter on an
+unknown, non-scalar, or unsupported field/operator returns HTTP 400
+`invalid_request` or `unknown_field`, as applicable. Client-token predicate
+filters are rejected earlier under the v0.1 client-filter rule.
 
 **Expansion:** A client-token expansion request is rejected with 400
 `invalid_request` before declaration lookup. For an owner-token
@@ -1394,7 +1400,7 @@ Every non-2xx response returns a structured error:
 | `unsupported_version` | 400 | `invalid_request_error` | `PDPP-Version` header specifies unsupported version, or grant references unsupported schema version. |
 | `authentication_error` | 401 | `authentication_error` | Missing or invalid access token. |
 | `authorization_state.unsupported_legacy_shape` | 401 | `authentication_error` | Persisted authorization state does not match a supported shape. Fresh consent is required when no migration applies. |
-| `field_not_granted` | 403 | `permission_error` | Filter targets a field outside the grant's authorized projection. |
+| `field_not_granted` | 403 | `permission_error` | Requested client field exceeds the grant's authorized field projection. |
 | `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
 | `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
 | `grant_time_range_exceeded` | 403 | `permission_error` | Request filters exceed the grant's frozen `time_constraint`. |
@@ -1464,7 +1470,7 @@ A conformant Core RS:
 2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter.
 3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results no longer than `min(token_exp, 60 seconds)`.
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
-5. Computes effective filters as `grant_filter AND request_filter`.
+5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
 6. Returns structured errors as defined in Section 8 (unified error table).
 7. Supports incremental sync via `changes_since` for `mutable_state` streams, including tombstone entries, omission of records whose grant-authorized projection did not change, and HTTP 410 with error code `cursor_expired` on cursor expiry.
 8. Returns `next_changes_since` on the terminal page of every `changes_since` response.
