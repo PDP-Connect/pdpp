@@ -691,6 +691,56 @@ test("durable active-run row blocks managed manual and recovery admission before
   assert.equal(manager.listLeases().length, 0, "durable conflict must not create a lease");
 });
 
+test("durable active-run row for the SAME run_id is admitted (promotion self-reservation, no in-memory state)", async (t) => {
+  // Mirrors the in-flight controller restarting (or a promotion re-entering
+  // through a fresh controller instance) with only the durable
+  // controller_active_runs row surviving -- no in-memory activeRuns entry.
+  // The durable guard alone must exempt a candidate run_id that matches the
+  // persisted row's own run_id; only a genuinely different run_id conflicts.
+  // Unlike the sibling rejection test above, admission here succeeds all the
+  // way to the connector, so it needs the same real sqlite DB `setup()`
+  // normally provides (e.g. for the source-pressure cooldown gate's query).
+  closeDb();
+  initDb(tempDbPath());
+  t.after(() => closeDb());
+
+  const allocator = createReadyAllocator();
+  const manager = createManager();
+  const durableRow: ActiveRunRecord = {
+    connector_id: "managed",
+    connector_instance_id: "managed",
+    run_generation: 1,
+    run_id: "run_self_promotion",
+    scenario_id: "scn_self_promotion",
+    started_at: "2026-05-12T12:00:00.000Z",
+    trace_id: "trc_self_promotion",
+  };
+  let runConnectorCalled = false;
+  const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    browserSurfaceAllocator: allocator,
+    browserSurfaceLeaseManager: manager,
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    runConnectorImpl: () => {
+      runConnectorCalled = true;
+      return Promise.resolve({ records_emitted: 0, status: "succeeded" });
+    },
+    schedulerStore: createDurableConflictSchedulerStore(durableRow),
+  });
+
+  await assert.doesNotReject(() =>
+    controller.runNow("managed", {
+      manifest: MANIFEST,
+      ownerToken: "owner-token",
+      runId: "run_self_promotion",
+      triggerKind: "manual",
+    })
+  );
+
+  assert.equal(runConnectorCalled, true, "self-promotion must be admitted through to the connector");
+});
+
 test("canonical-url configured managed connector leases short-id run", async (t) => {
   const manager = createManager({
     managedConnectors: new Set(["https://registry.pdpp.dev/connectors/chatgpt", "chatgpt"]),
@@ -1642,6 +1692,108 @@ test("duplicate queued managed connector request reports existing pending run", 
 
   releaseFirst();
   await controller.drainActiveRuns(1000);
+});
+
+// ─── Same-run-id lease-promotion re-entry (browser-surface promotion collision) ───
+//
+// A browser-surface lease promotion (capacity-pressure reclaim, periodic
+// sweep, post-boot reconciliation) re-invokes `runNow` for a run_id that
+// already occupies this connector instance's active-run reservation -- the
+// pending run being promoted against its own admission, not a competing run.
+// The 409 `run_already_active` gate must exempt exactly that case while still
+// rejecting a genuinely different run_id, and a terminal browser-surface
+// failure must still clear the reservation so a real retry (a fresh run_id,
+// or the same run_id after finalize) is never permanently wedged.
+
+test("promotion re-entry for the same run_id does not conflict with its own reservation", async (t) => {
+  let releaseFirst: () => void = () => undefined;
+  const runConnectorImpl = () =>
+    new Promise<RuntimeRunConnectorResult>((resolve) => {
+      releaseFirst = () => resolve({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" });
+    });
+  const { controller } = setup(t, { runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_promoted",
+  });
+
+  // Simulates a browser-surface promotion re-entering runNow for the same
+  // pending run_id while its first admission is still live (e.g. a periodic
+  // sweep's promoteBrowserSurfaceLease racing the original call's own
+  // starting_surface wait). Must be admitted, not rejected as a conflict.
+  await assert.doesNotReject(() =>
+    controller.runNow("managed", {
+      manifest: MANIFEST,
+      ownerToken: "owner-token",
+      runId: "run_promoted",
+    })
+  );
+
+  assert.equal(controller.getActiveRun("managed")?.run_id, "run_promoted");
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+});
+
+test("a genuinely different run_id is still rejected while promotion is pending", async (t) => {
+  let releaseFirst: () => void = () => undefined;
+  const runConnectorImpl = () =>
+    new Promise<RuntimeRunConnectorResult>((resolve) => {
+      releaseFirst = () => resolve({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" });
+    });
+  const { controller } = setup(t, { runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_promoted",
+  });
+
+  await assert.rejects(
+    () =>
+      controller.runNow("managed", {
+        manifest: MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_competing",
+      }),
+    TOP_REGEX_0
+  );
+
+  assert.equal(controller.getActiveRun("managed")?.run_id, "run_promoted");
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+});
+
+test("terminal browser-surface failure clears active-run state so retry is admitted", async (t) => {
+  const manager = createManager({ staticProfileKey: "other-profile" });
+  const { controller, schedulerStore } = setup(t, { manager });
+
+  const first = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_surface_failed",
+  });
+
+  // MANIFEST's profile_key ("managed-profile") is incompatible with the
+  // manager's configured static profile ("other-profile") -- the same
+  // deferred-on-mismatch path "incompatible static profile defers and clears
+  // its transient reservation" below exercises for a fresh run_id. Here the
+  // point is retrying with the SAME run_id afterwards must not see a stale
+  // 409: this is the terminal half of the promotion-collision invariant.
+  assert.equal(first.status, "deferred");
+  assert.equal(controller.getActiveRun("managed"), null);
+  assert.equal((await schedulerStore.listActiveRuns()).length, 0);
+
+  await assert.doesNotReject(() =>
+    controller.runNow("managed", {
+      manifest: MANIFEST,
+      ownerToken: "owner-token",
+      runId: "run_surface_failed",
+    })
+  );
 });
 
 test("incompatible static profile defers and clears its transient reservation", async (t) => {

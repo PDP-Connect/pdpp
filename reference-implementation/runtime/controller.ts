@@ -3208,9 +3208,19 @@ export function createController(opts: ControllerOptions = {}): Controller {
       inserted = await persistActiveRun(activeRun);
     }
     if (inserted === false) {
-      throw new ControllerError(`Connector already has an active run: ${input.runId}`, "run_already_active", {
-        runId: input.runId,
-      });
+      // The durable upsert is `ON CONFLICT DO NOTHING`, so `false` only says
+      // a row already occupies this connector instance -- it does not say
+      // whether that row is a competing run or this exact run re-registering
+      // (a browser-surface lease promotion re-entering `runNow` for the same
+      // pending run_id it already reserved when it first queued). Read the
+      // incumbent back to tell the two apart: same run_id is this run's own
+      // reservation surviving from its earlier admission, not a conflict.
+      const incumbent = await getPersistedActiveRun(input.connectorInstanceId);
+      if (incumbent?.run_id !== input.runId) {
+        throw new ControllerError(`Connector already has an active run: ${input.runId}`, "run_already_active", {
+          runId: input.runId,
+        });
+      }
     }
     runGenerations.set(input.key, newGeneration);
     activeRuns.set(input.key, {
@@ -3328,13 +3338,25 @@ export function createController(opts: ControllerOptions = {}): Controller {
    * run_id appears in `settledRunIds` (marked by finalizeRunCleanup) or when
    * there is no corresponding `activeRunPromises` entry (promise already gone).
    *
+   * `candidateRunId` is the run_id this admission attempt is FOR (e.g. a
+   * browser-surface lease promotion re-entering `runNow` for the same pending
+   * run it already reserved). When the existing entry's run_id matches it
+   * exactly, this is the pending run being promoted against its own
+   * reservation, not a competing run — admit rather than reject. An absent
+   * `candidateRunId` never matches, so a fresh manual/scheduled run (which has
+   * no run_id yet at gate time) is still rejected by a genuine incumbent.
+   *
+   * - If self (candidateRunId === existing.run_id): returns (no conflict).
    * - If stale: clears the orphaned map entries and returns (allows new run).
-   * - If live: throws 409 run_already_active.
+   * - If live and different run: throws 409 run_already_active.
    * - If absent: returns (no conflict).
    */
-  function assertNoConflictingActiveRun(key: string): void {
+  function assertNoConflictingActiveRun(key: string, candidateRunId?: string): void {
     const existing = activeRuns.get(key);
     if (!existing) {
+      return;
+    }
+    if (candidateRunId !== undefined && candidateRunId === existing.run_id) {
       return;
     }
     const isStale = settledRunIds.has(existing.run_id) || !activeRunPromises.has(existing.run_id);
@@ -3352,9 +3374,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
-  async function assertNoConflictingDurableActiveRun(connectorInstanceId: string): Promise<void> {
+  async function assertNoConflictingDurableActiveRun(
+    connectorInstanceId: string,
+    candidateRunId?: string
+  ): Promise<void> {
     const existing = await getPersistedActiveRun(connectorInstanceId);
     if (!existing) {
+      return;
+    }
+    if (candidateRunId !== undefined && candidateRunId === existing.run_id) {
       return;
     }
     throw new ControllerError(`Connector already has an active run: ${existing.run_id}`, "run_already_active", {
@@ -3651,8 +3679,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
       throw new ControllerError(`Unknown connector: ${connectorId}`, "not_found");
     }
     if (!options.sourceWebhookEvent) {
-      assertNoConflictingActiveRun(key);
-      await assertNoConflictingDurableActiveRun(key);
+      assertNoConflictingActiveRun(key, options.runId);
+      await assertNoConflictingDurableActiveRun(key, options.runId);
     }
 
     await assertNotSourcePressureCoolingOff(connectorId, options);
