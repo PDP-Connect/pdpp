@@ -1144,27 +1144,38 @@ function isCredentialsMissingError(connectorName: string, message: string): bool
 /**
  * Resolve credentials via the configured auth strategy.
  *
- * When `authOptional` is set, a DECLINED credentials interaction resolves to an
- * empty credential set instead of failing the run. This is opt-in per connector
- * and exists for session-first browser connectors whose primary authenticator
- * is the owner-authenticated browser profile, not a stored secret.
+ * When `authOptional` is set, a missing credential is a supported state rather
+ * than a run-ending failure: the connector authenticates through the owner's
+ * browser profile and treats a stored username/password as an optional
+ * auto-login shortcut. Present credentials are used exactly as before; absent
+ * ones resolve to an empty set WITHOUT ever prompting.
  *
- * Root cause it fixes (chatgpt second-account, 2026-08-27): the `env` strategy
- * prompts for every `required` field it cannot fill from the child env, and a
- * SCHEDULED run has no owner to answer. The declined interaction threw
- * `chatgpt_credentials_missing` from `resolveCredentials`, which runs BEFORE
- * `ensureSession` — so a connection with a perfectly good browser session was
- * failed in ~0.5s without ever opening a browser, and `ensureChatGptSession`'s
- * own absent-credential branch (which reuses the live session, and is what the
- * ChatGPT manifest promises: "scheduled runs reuse current session evidence and
- * do not prompt for credentials") was unreachable.
+ * Root cause history. 6f6765bbb (2026-08-26) fixed half of this: it stopped a
+ * declined prompt from failing the run. But it caught the failure AFTER the
+ * `env` strategy had already opened the `credentials` interaction and awaited
+ * it — it suppressed the ERROR, not the PROMPT. Live prod run
+ * run_1788004675387 showed the remaining half: the run leased and readied a
+ * browser surface, then immediately emitted a `credentials` interaction. The
+ * repair page put a username/password form in front of the owner, which is
+ * unanswerable for a Google-SSO account and blocks the required journey
+ * (repair page -> run -> streamed browser -> owner completes SSO there).
+ * A scheduled run has nobody to answer it at all.
  *
- * Narrowly scoped on purpose: only a declined/timed-out credentials prompt is
- * softened, and only for connectors that opt in. Every OTHER auth failure
+ * The flag is now threaded into `AuthStrategyContext` so the strategy returns
+ * before asking, rather than being talked out of the answer afterwards. The
+ * post-hoc catch below is retained deliberately: it still covers a strategy
+ * that reaches the missing-credential branch by another route, and it keeps
+ * this behavior pinned if an older protocol build is ever installed.
+ *
+ * Narrowly scoped on purpose: only connectors that opt in are affected, and
+ * only the credential question is skipped — an `assist`/`manual_action`
+ * interaction from the same run still reaches the owner, which is what the
+ * browser login depends on. Every OTHER auth failure
  * (`auth_env_required_missing`, `auth_strategy_unknown`, a strategy's own
  * throw) still fails the run closed, and connectors that never set
  * `authOptional` — every API connector, e.g. github/ynab/notion — keep the
- * unchanged fail-closed behavior rather than proceeding token-less.
+ * unchanged prompt-then-fail-closed behavior rather than proceeding
+ * token-less.
  */
 export async function resolveCredentials(
   auth: AuthConfig | undefined,

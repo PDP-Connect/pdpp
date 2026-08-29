@@ -2340,7 +2340,7 @@ packages:
     engines: {node: '>=22.14.0'}
 
   '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-0.0.1.tgz':
-    resolution: {integrity: sha512-9g4WrPucfGqXpYS1mGQerBXpEJAX4/mrPUfts4ddrk13nWj2op2nSks4X/QqCad+CVLe0mFG8AuTf99FhLJEvg==, tarball: file:vendor/pdpp-connector-protocol-0.0.1.tgz}
+    resolution: {integrity: sha512-K3/ebpm4UcOLuGZvxBndZCCy4OQMH4bHWBNathCIBbeU48KFDzUKIAJ7Fqf05Y8KTOWr2njYDYV302kxJ6f1yQ==, tarball: file:vendor/pdpp-connector-protocol-0.0.1.tgz}
     version: 0.0.1
     engines: {node: '>=22.14.0'}
 
@@ -11107,7 +11107,6 @@ snapshots:
   '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.1.tgz':
     dependencies:
       '@pdpp/connector-protocol': file:vendor/pdpp-connector-protocol-0.0.1.tgz
-      '@pdpp/reference-contract': link:packages/reference-contract
 
   '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-0.0.1.tgz':
     dependencies:

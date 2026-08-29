@@ -1,10 +1,31 @@
 # Vendored cross-repo dependency tarballs (transitional)
 
-`pdpp-connector-protocol-0.0.1.tgz` was RE-PACKED on 2026-08-28 from
-PDP-Connect/data-connect commit `7faa043c27f9743e57b3c117e37470ca12cb3c04`
-("fix(protocol): export skip boundary claims") on
-branch `fix/protocol-stream-evidence-boundary-claim-0828`, packed from inside
-that repo's workspace so sibling dependencies resolve during the prepack build.
+`pdpp-connector-protocol-0.0.1.tgz` was RE-PACKED on 2026-08-29 from
+PDP-Connect/data-connect commit `65fa39cf3bb27abc598f8a15ab20353660b77479`
+("fix(protocol): let a session-first connector skip the credentials prompt") on
+branch `rail/pr36-0828`, packed with `npm pack` from inside that repo's
+workspace so sibling dependencies resolve during the prepack build. Artifact
+SHA-256 `65c1c3a7fd994a8d0b83231a226a0b3c69556377afdeb579c844439274660cc5`
+(see SHA256SUMS); the matching sha512 integrity is pinned in `pnpm-lock.yaml`.
+The tarball is a straight pack of that commit with a clean worktree — no
+post-pack edits to its contents.
+
+It carries one behavior change, in the `env` auth strategy.
+`AuthStrategyContext` gains an optional `authOptional`; when it is set and a
+declared credential is missing, the strategy returns the resolved subset
+immediately instead of raising a `credentials` INTERACTION. This unblocks
+session-first browser connectors (ChatGPT): the browser profile is the real
+authenticator, so a scheduled run no longer dies waiting on a prompt nobody
+can answer, and a repair run no longer shows a username/password form to an
+owner who signs in through SSO. The same change drops the prompt's
+".env.local for persistence" instruction, which promised a persistence the
+system does not provide. Additive and default-absent, so every connector that
+genuinely requires its secret still prompts and still fails closed.
+
+Its parent, commit `7faa043c27f9743e57b3c117e37470ca12cb3c04`
+("fix(protocol): export skip boundary claims") on branch
+`fix/protocol-stream-evidence-boundary-claim-0828`, is the prior pin point and
+remains fully contained in this artifact.
 It adds two fields the reference implementation already CONSUMED but no
 connector could emit: `SKIP_RESULT.boundary_claim` (GroupMe emits it, the RI's
 `PERSISTED_BOUNDARY_CLAIMS` already allows its only value, but it was dropped in
