@@ -418,7 +418,7 @@ function resolveNewUrlSegment(expr: Node, analysis: FileAnalysis, depth: number,
   return anchored.kind === "static" ? { kind: "anchored", relPath: anchored.relPath } : UNRESOLVABLE;
 }
 
-/** `join(...)`/`resolve(...)`/`fileURLToPath(...)` as a nested segment. */
+/** `join(...)`/`resolve(...)`/`fileURLToPath(...)`/`pathToFileURL(...)` as a nested segment. */
 function resolveCallExpressionSegment(
   expr: Node,
   analysis: FileAnalysis,
@@ -430,7 +430,13 @@ function resolveCallExpressionSegment(
     const joined = resolveJoinOrResolveCall(expr, analysis, depth, visiting);
     return joined.kind === "static" ? { kind: "anchored", relPath: joined.relPath } : UNRESOLVABLE;
   }
-  if (name === "fileURLToPath") {
+  // fileURLToPath(<url>) and pathToFileURL(<path>) are each other's inverse:
+  // one unwraps a file:// URL to a filesystem path, the other wraps a
+  // filesystem path as a file:// URL (needed so `import()` accepts an
+  // absolute path on Windows, where a bare "C:\..." string parses as a URL
+  // with scheme "c:" instead of a filesystem path). Neither changes WHICH
+  // file is denoted, so both resolve transparently to their argument.
+  if (name === "fileURLToPath" || name === "pathToFileURL") {
     const [first] = nodeArrayField(expr, "arguments");
     if (first) {
       const anchored = resolveAnchoredExpr(first, analysis, depth + 1, visiting);
