@@ -629,8 +629,31 @@ test("ensureVenmoSession: a code-bearing OTP response triggers no page-context p
   await withVenmoCredentials(async () => {
     const username = makeLocator();
     const password = makeLocator();
-    const submit = makeLocator();
-    const otp = makeLocator();
+    let submitClicksAfterFill = 0;
+    let codeFilled = false;
+    const submit = makeClickRecordingLocator(() => {
+      if (codeFilled) {
+        submitClicksAfterFill += 1;
+      }
+    });
+    const filledCodes: string[] = [];
+    const otp: Pick<Locator, "count" | "fill" | "first" | "isEnabled" | "isVisible" | "nth" | "waitFor"> = {
+      count: (): Promise<number> => Promise.resolve(1),
+      fill: (value: string): Promise<void> => {
+        filledCodes.push(value);
+        codeFilled = true;
+        return Promise.resolve();
+      },
+      first(): Locator {
+        return otp as Locator;
+      },
+      isEnabled: (): Promise<boolean> => Promise.resolve(true),
+      isVisible: (): Promise<boolean> => Promise.resolve(true),
+      nth(): Locator {
+        return otp as Locator;
+      },
+      waitFor: (): Promise<void> => Promise.resolve(),
+    };
     let currentUrl = "https://venmo.com/";
     let responded = false;
     let evaluatesAfterResponse = 0;
@@ -664,7 +687,7 @@ test("ensureVenmoSession: a code-bearing OTP response triggers no page-context p
           return password;
         }
         if (selector.includes("otp") || selector.includes("code")) {
-          return otp;
+          return otp as Locator;
         }
         return makeLocator({ count: 0, visible: false });
       },
@@ -678,18 +701,25 @@ test("ensureVenmoSession: a code-bearing OTP response triggers no page-context p
         return Promise.resolve();
       },
     };
-    const { requests, sendInteraction } = recordingSendInteraction();
+    const requests: InteractionRequest[] = [];
     const result = await ensureVenmoSession({
       credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
       page: page as Page,
-      sendInteraction: (req) => {
-        const response = sendInteraction(req);
+      sendInteraction: (req): Promise<InteractionResponse> => {
+        requests.push(req);
         responded = true;
-        return response;
+        return Promise.resolve({
+          data: { code: "123456" },
+          request_id: req.request_id ?? "test_interaction",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        });
       },
     });
     assert.equal(result, null, "a submitted OTP code must report the owner-handoff sentinel");
     assert.equal(requests[0]?.kind, "otp");
+    assert.deepEqual(filledCodes, ["123456"], "the OTP locator must be filled with the owner-supplied code");
+    assert.equal(submitClicksAfterFill, 1, "the real submit control must be clicked exactly once after the code is filled");
     assert.equal(evaluatesAfterResponse, 0, "no page-context probe may run once the OTP response resolves");
     assert.equal(gotosAfterResponse, 0, "no navigation may run once the OTP response resolves");
   });
@@ -869,12 +899,14 @@ function makeCapturedSmsOfferPage({
   rememberDeviceInitiallyChecked?: boolean;
 } = {}): {
   checkboxClicks: number;
+  filledCodes: string[];
   isRememberDeviceChecked: () => boolean;
   markOtpRequested: () => void;
   page: Page;
   sendCodeClicks: number;
 } {
   let checkboxClicks = 0;
+  const filledCodes: string[] = [];
   let otpRequested = false;
   let rememberDeviceChecked = rememberDeviceInitiallyChecked;
   let sendCodeClicks = 0;
@@ -915,7 +947,10 @@ function makeCapturedSmsOfferPage({
   };
   const otpInput: Pick<Locator, "count" | "fill" | "first" | "isEnabled" | "isVisible" | "nth" | "waitFor"> = {
     count: (): Promise<number> => Promise.resolve(stage === "code" ? 1 : 0),
-    fill: (): Promise<void> => Promise.resolve(),
+    fill: (value: string): Promise<void> => {
+      filledCodes.push(value);
+      return Promise.resolve();
+    },
     first(): Locator {
       return otpInput as Locator;
     },
@@ -974,6 +1009,7 @@ function makeCapturedSmsOfferPage({
     get checkboxClicks(): number {
       return checkboxClicks;
     },
+    filledCodes,
     isRememberDeviceChecked: (): boolean => rememberDeviceChecked,
     markOtpRequested: (): void => {
       otpRequested = true;
@@ -995,7 +1031,12 @@ test("ensureVenmoSession: the captured SMS offer selects Remember this device, s
       sendInteraction: (request): Promise<InteractionResponse> => {
         requests.push(request);
         fake.markOtpRequested();
-        return Promise.resolve({ request_id: "test_interaction", status: "success", type: "INTERACTION_RESPONSE" });
+        return Promise.resolve({
+          data: { code: "654321" },
+          request_id: "test_interaction",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        });
       },
     });
 
@@ -1006,6 +1047,11 @@ test("ensureVenmoSession: the captured SMS offer selects Remember this device, s
     assert.equal(fake.checkboxClicks, 1, "the unchecked captured control must be selected before code dispatch");
     assert.equal(fake.isRememberDeviceChecked(), true, "Remember this device must stay selected");
     assert.equal(fake.sendCodeClicks, 1, "the real captured Send code control must dispatch exactly once");
+    assert.deepEqual(
+      fake.filledCodes,
+      ["654321"],
+      "the sent code's existing OTP path must fill the input with the owner-supplied code"
+    );
     assert.deepEqual(
       requests.map((request) => request.kind),
       ["otp"],
@@ -1026,7 +1072,7 @@ test("ensureVenmoSession: the already-checked captured Remember this device cont
       },
     });
 
-    assert.equal(result, null, "a submitted OTP code must report the owner-handoff sentinel, not a probed result");
+    assert.equal(result, null, "the resolved OTP interaction must report the owner-handoff sentinel, not a probed result");
     assert.equal(fake.checkboxClicks, 0, "a checked Remember this device control must not be clicked back off");
     assert.equal(fake.isRememberDeviceChecked(), true);
     assert.equal(fake.sendCodeClicks, 1);
