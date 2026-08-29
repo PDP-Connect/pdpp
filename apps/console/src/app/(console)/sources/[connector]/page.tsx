@@ -1220,6 +1220,38 @@ function RenderedVerdictHeaderAction({
         </span>
       );
     }
+    // A validated sync target is NOT enough on its own: the run must still be
+    // waiting. `exactSyncTargetFromAttention` reads `run_id` off the attention
+    // record with no liveness check, and an `expired` record keeps its `run_id`
+    // forever — so a concluded run still produced a `/syncs/<id>` link. The
+    // owner clicked "Complete the requested action" and nothing happened,
+    // because the run that owned the interaction had already ended and taken
+    // the interaction with it (production, ChatGPT chaka.dondo@gmail.com: three
+    // consecutive `expired` attention records, each still carrying a run id).
+    //
+    // With no live run there is nothing to complete. The honest destination is
+    // the surface that can re-establish the session so a NEW run can ask again.
+    if (!running) {
+      return browserSessionRepairHref === null ? (
+        <span
+          className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
+          data-action-stale-target="true"
+          data-testid="detail-action-rendered-verdict"
+        >
+          {action.cta} — no run is waiting right now
+        </span>
+      ) : (
+        <Link
+          className={buttonVariants({ size: "sm", variant: "default" })}
+          data-action-stale-target="true"
+          data-testid="detail-action-rendered-verdict"
+          href={browserSessionRepairHref}
+          title="No run is waiting right now. Open the secure browser session to sign in again; the next run will pick up from there."
+        >
+          {action.cta}
+        </Link>
+      );
+    }
     return (
       <Link
         className={buttonVariants({ size: "sm", variant: "default" })}

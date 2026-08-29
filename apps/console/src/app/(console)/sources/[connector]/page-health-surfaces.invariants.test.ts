@@ -145,6 +145,26 @@ test("connector detail page labels each reauthentication surface precisely", asy
   assert.match(src, RE_BROWSER_SESSION_ACTION_USES_SERVER_CTA);
 });
 
+// The defect this pins: `exactSyncTargetFromAttention` reads `run_id` off the
+// attention record with NO liveness check, and an `expired` record keeps its
+// `run_id` forever. So an `add_info` chip with a validated sync target still
+// linked to a concluded run — the owner clicked "Complete the requested action"
+// and nothing happened, because the run that owned the interaction had ended
+// and taken the interaction with it (production: ChatGPT chaka.dondo@gmail.com,
+// three consecutive `expired` records each still carrying a run id).
+//
+// A validated target is necessary but NOT sufficient. `running` must gate it.
+const RE_ADD_INFO_GUARDS_ON_RUNNING = /if \(!running\) \{/;
+
+test("an add_info sync target is only clickable while a run is actually waiting", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(
+    src,
+    RE_ADD_INFO_GUARDS_ON_RUNNING,
+    "a validated sync target is not enough — an expired attention record keeps its run_id, so the chip must also require a live run before linking to /syncs/<runId>"
+  );
+});
+
 test("a provider interaction routes to the waiting run's stream dock", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(
