@@ -172,6 +172,135 @@ test("a device sending the legacy connector alias still commits: both sides are 
   );
 });
 
+/**
+ * Production defect, run 652780f6-3316-4e90-9c53-835cfb0af483: the alias fix
+ * above made the GUARD alias-tolerant but left the HASH INPUT canonicalized.
+ * The collector hashes the envelope it actually sent (`claude_code`); the
+ * server rehashed a rewritten envelope (`claude-code`), so the two hashes
+ * never matched and the collector dead-lettered every terminal commit
+ * forever — 34 dead letters / 0 succeeded for claude_code, against
+ * 182 succeeded / 0 dead letters for codex, whose key canonicalizes to
+ * itself and therefore never diverged.
+ *
+ * The 201 assertion in the alias test above cannot catch this: the request is
+ * accepted, and only the returned hash is wrong. This case pins the hash.
+ */
+test("the envelope hash is computed over the connector id the device SENT, not the canonicalized one", async () => {
+  const capture = responseCapture();
+  let committed: ResolvedTerminalRunCommit | null = null;
+  const sentBody = validBody({ connector_id: "claude_code" });
+  await handleLocalDeviceTerminalRunCommit({
+    ctx: {
+      canonicalConnectorKey,
+      commitTerminalRun: (commitInput) => {
+        committed = commitInput;
+        return Promise.resolve({
+          replayed: false,
+          response: {
+            commit_id: commitInput.commitId,
+            envelope_hash: commitInput.envelopeHash,
+            object: "device_terminal_run_commit",
+            run_id: commitInput.runId,
+            terminal_event_id: "evt-alias-hash",
+          },
+        });
+      },
+      emitSpineEvent: () => Promise.resolve(),
+      handleError: (_res, error) => {
+        throw error;
+      },
+      pdppError: (_res, status, code, message) => {
+        throw new Error(`unexpected ${status}:${code} ${message}`);
+      },
+    },
+    req: {
+      body: sentBody,
+      deviceExporter: { deviceId: "dev-1" },
+      params: { deviceId: "dev-1", sourceInstanceId: "src-1" },
+    },
+    res: capture.response,
+    resolveAuthorizedSource: () =>
+      Promise.resolve({
+        connectorInstance: { connectorInstanceId: "cin-1" },
+        sourceInstance: { connectorId: "claude-code" },
+      }),
+  });
+  assert.equal(capture.snapshot().status, 201);
+  assert.ok(committed);
+  const resolved = committed as ResolvedTerminalRunCommit;
+
+  // What the collector itself computes: the bytes it put on the wire.
+  const clientHash = createHash("sha256")
+    .update(canonicalTerminalRunCommitJson({ ...sentBody, version: 1 }))
+    .digest("hex");
+  // What canonicalizing the hash input would produce instead. Pinned as a
+  // NEGATIVE so a regression cannot pass by making both sides equal.
+  const rewrittenHash = createHash("sha256")
+    .update(canonicalTerminalRunCommitJson({ ...sentBody, connector_id: "claude-code", version: 1 }))
+    .digest("hex");
+  assert.notEqual(clientHash, rewrittenHash, "the alias and canonical spellings must actually hash differently");
+  assert.equal(
+    resolved.envelopeHash,
+    clientHash,
+    "the server must rehash the bytes the device sent; canonicalizing the hash input dead-letters every underscore alias"
+  );
+
+  // Storage identity stays canonical — only the hash input follows the wire.
+  assert.equal(resolved.connectorId, "claude-code");
+});
+
+test("an identity-alias connector still hashes correctly — the alias fix does not disturb the working path", async () => {
+  const capture = responseCapture();
+  let committed: ResolvedTerminalRunCommit | null = null;
+  const sentBody = validBody({ connector_id: "codex" });
+  await handleLocalDeviceTerminalRunCommit({
+    ctx: {
+      canonicalConnectorKey,
+      commitTerminalRun: (commitInput) => {
+        committed = commitInput;
+        return Promise.resolve({
+          replayed: false,
+          response: {
+            commit_id: commitInput.commitId,
+            envelope_hash: commitInput.envelopeHash,
+            object: "device_terminal_run_commit",
+            run_id: commitInput.runId,
+            terminal_event_id: "evt-codex-hash",
+          },
+        });
+      },
+      emitSpineEvent: () => Promise.resolve(),
+      handleError: (_res, error) => {
+        throw error;
+      },
+      pdppError: (_res, status, code, message) => {
+        throw new Error(`unexpected ${status}:${code} ${message}`);
+      },
+    },
+    req: {
+      body: sentBody,
+      deviceExporter: { deviceId: "dev-1" },
+      params: { deviceId: "dev-1", sourceInstanceId: "src-1" },
+    },
+    res: capture.response,
+    resolveAuthorizedSource: () =>
+      Promise.resolve({
+        connectorInstance: { connectorInstanceId: "cin-1" },
+        sourceInstance: { connectorId: "codex" },
+      }),
+  });
+  assert.equal(capture.snapshot().status, 201);
+  assert.ok(committed);
+  const resolved = committed as ResolvedTerminalRunCommit;
+  assert.equal(
+    resolved.envelopeHash,
+    createHash("sha256")
+      .update(canonicalTerminalRunCommitJson({ ...sentBody, version: 1 }))
+      .digest("hex")
+  );
+  assert.equal(resolved.connectorId, "codex");
+});
+
 test("an unrelated connector id is still rejected — canonicalizing both sides does not make the guard permissive", async () => {
   const capture = responseCapture();
   let status = 0;
