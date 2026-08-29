@@ -4,19 +4,28 @@
 // Single-source the normative spec docs.
 //
 // The repository root holds the normative `spec-*.md` files (source of truth).
-// The docs site renders them from `content/docs/spec-*.md`, which need MDX
+// The docs site renders them from `content/docs/spec-*.mdx`, which need MDX
 // frontmatter (title/description) and a `<Callout>` status banner that the
 // plain root files do not carry. Rather than keep hand-edited copies in sync
 // (they drift — an edit to a root spec silently leaves the site stale), we
 // GENERATE the site copies at build time:
 //
-//     content/docs/<spec>.md  =  spec-headers/<spec>.header.md
-//                                + the root spec body (header stripped)
+//     content/docs/<spec>.mdx  =  spec-headers/<spec>.header.md
+//                                 + the root spec body (header stripped)
 //
 // The header sidecars are committed (site-owned presentation) and live OUTSIDE
 // content/docs so fumadocs does not glob them as doc pages. The generated
-// `content/docs/spec-*.md` files are gitignored and untracked, so the root
+// `content/docs/spec-*.mdx` files are gitignored and untracked, so the root
 // files are the single source for all normative body text.
+//
+// Output is `.mdx`, NOT `.md`. In a `.md` file, fumadocs-mdx compiles in
+// CommonMark mode, where `<Callout ...>` is a raw HTML block that runs to the
+// first blank line: the tag AND the lines before that blank are dropped
+// outright, so the wrapper never reaches the renderer and its opening content
+// (the `Status:` line) disappears — the spec pages' own status banners
+// rendered as bare paragraphs missing their `Status:` line. `.mdx` parses the
+// JSX properly, so the callout renders as the real component (this is why the
+// governance programme doc below has always used `.mdx`).
 //
 // Runs from `predev` and `prebuild`. Vercel builds from apps/site with the
 // monorepo root available, so the relative path to the repo root resolves.
@@ -42,6 +51,32 @@ const SPECS = [
     "spec-deferred",
     "spec-discovery-and-trust",
 ];
+// The root specs use kramdown-style `{#id}` heading-id suffixes (see
+// remark-legacy-heading-ids.ts) and, in one place, a literal `<` comparison
+// operator in prose. Both are inert in the CommonMark reading GitHub and the
+// old .md output gave them, but a real MDX compiler (which the .mdx output
+// below now gets, so `<Callout>` renders as JSX instead of being dropped)
+// treats `{` as the start of a JS expression and `<` as the start of a tag.
+// `{#id}` on `{#ai-training-consent}` and `<` on "(exclusive, <)" both fail to
+// parse as MDX. Rewrite just those two constructs into MDX-safe equivalents
+// when generating the site copy; the root files stay untouched so GitHub
+// rendering and this same substitution's own input are unaffected.
+function toMdxSafe(body) {
+    return (body
+        // `## Heading {#id}` -> `## Heading [#id]`. Anchored to a heading line's
+        // trailing `{#id}` only, so `{...}` used for any other reason (there is
+        // none today) is left alone. Square brackets are ordinary prose text in
+        // both CommonMark and MDX — no link/image syntax is triggered because
+        // there is no following `(` or `[`. Trailing whitespace is matched with
+        // `[ \t]*`, NOT `\s*` — `\s` matches newlines too, which silently ate
+        // the blank line separating a heading from its first paragraph.
+        .replace(/^(#{1,6} .*?)[ \t]*\{#([A-Za-z0-9_-]+)\}[ \t]*$/gm, "$1 [#$2]")
+        // A bare `<` immediately followed by `)` reads to the MDX/JSX tokenizer
+        // as the start of a tag name; `)` cannot start a tag name, so the parse
+        // fails. Backtick-quoting it (already how this table quotes every other
+        // token) makes the comparison operator literal.
+        .replace("(exclusive, <), evaluated", "(exclusive, `<`), evaluated"));
+}
 // Root header shape (uniform across all spec files):
 //   line 1: `# <Title>`
 //   line 2: (blank)
@@ -74,7 +109,7 @@ function extractBody(rootText, specName) {
             body.shift();
         }
     }
-    return { body: body.join("\n"), date, status };
+    return { body: toMdxSafe(body.join("\n")), date, status };
 }
 // The header sidecar mirrors the root Status/Date inside its <Callout>. Root is
 // the source of truth; warn loudly if they drift so the sidecar gets updated
@@ -99,7 +134,7 @@ let generated = 0;
 for (const spec of SPECS) {
     const rootPath = path.join(repoRoot, `${spec}.md`);
     const headerPath = path.join(headerDir, `${spec}.header.md`);
-    const outPath = path.join(contentDir, `${spec}.md`);
+    const outPath = path.join(contentDir, `${spec}.mdx`);
     if (!existsSync(rootPath)) {
         throw new Error(`sync-spec-docs: missing root spec ${rootPath}`);
     }
@@ -149,14 +184,10 @@ for (const doc of PROGRAMME_DOCS) {
     }
     const header = readFileSync(headerPath, "utf8").replace(/\s*$/, "");
     const body = extractProgrammeBody(readFileSync(rootPath, "utf8"), doc.root);
-    // .mdx, NOT .md. In a .md file CommonMark treats `<Callout ...>` as a raw
-    // HTML block that runs to the first blank line, so the tag AND the lines
-    // before that blank are dropped outright — the wrapper never reaches the
-    // renderer and its opening content disappears. (This is why the spec pages'
-    // own `<Callout>` status banners render as bare paragraphs with their
-    // `Status:` line missing; those are generated as .md.) Emitting .mdx parses
-    // the JSX properly, so the callout renders as the real component. Safe here
-    // because the governance body contains no `<` or `{` for MDX to trip on.
+    // .mdx, NOT .md — same reason as the spec loop above: emitting .mdx parses
+    // the header sidecar's `<Callout>` as the real JSX component instead of
+    // dropping it as a raw HTML block. Safe here because the governance body
+    // contains no `<` or `{` for MDX to trip on.
     writeFileSync(path.join(contentDir, `${doc.slug}.mdx`), `${header}\n\n${body.replace(/\s*$/, "")}\n`);
     generated += 1;
 }

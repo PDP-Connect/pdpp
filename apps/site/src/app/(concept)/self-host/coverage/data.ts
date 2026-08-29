@@ -5,6 +5,7 @@ import "server-only";
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { specDocExtension } from "@/lib/spec-nav-slugs.ts";
 import { repoBlobUrl } from "@/lib/site-facts.ts";
 
 export type CoverageCategory =
@@ -44,7 +45,10 @@ const rootRelative = (sourcePath: string) => resolve(repoRoot, sourcePath);
 const docs = (slug: string, label: string): CoverageEvidence => ({
   label,
   href: `/specification/${slug}`,
-  sourcePath: `apps/site/content/docs/${slug}.md`,
+  // sync-spec-docs.mjs generates some of these slugs as .mdx (so their
+  // <Callout> status banner renders as JSX) and leaves others as
+  // hand-authored .md; existsSync below fails loudly if this guesses wrong.
+  sourcePath: `apps/site/content/docs/${slug}.${specDocExtension(slug)}`,
 });
 
 const referenceTest = (file: string, label: string): CoverageEvidence => ({

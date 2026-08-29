@@ -83,11 +83,28 @@ function governanceAllowlistErrors(): string[] {
 const REFERENCE_ONLY_ROOT_SPECS = new Set(["spec-reference-implementation-examples.md"]);
 
 const SPEC_FILENAME_PATTERN = /^spec-.*\.md$/;
+const SITE_SPEC_FILENAME_PATTERN = /^spec-.*\.mdx?$/;
 
 function specFiles(dir: string): string[] {
   return readdirSync(dir)
     .filter((name) => SPEC_FILENAME_PATTERN.test(name))
     .sort();
+}
+
+// The site copy of a canonical spec is generated as .mdx (see
+// sync-spec-docs.mjs — .md would have its <Callout> silently dropped by
+// CommonMark), so the counterpart of root file `${base}.md` is
+// `${base}.mdx`, not the same filename. Site-only extensions
+// (SITE_ONLY_EXTENSIONS) have no root counterpart and are matched by exact
+// filename instead, unaffected by this.
+function siteFiles(dir: string): string[] {
+  return readdirSync(dir)
+    .filter((name) => SITE_SPEC_FILENAME_PATTERN.test(name))
+    .sort();
+}
+
+function siteCounterpartName(rootFile: string): string {
+  return `${rootFile.slice(0, -".md".length)}.mdx`;
 }
 
 const CRLF_PATTERN = /\r\n/g;
@@ -163,12 +180,23 @@ function stripLeadingBlank(lines: string[]): void {
   }
 }
 
-const ANCHOR_ID_PATTERN = /[ \t]+\{#[A-Za-z0-9_-]+\}/g;
+// Matches the root's `{#id}` and the site .mdx copy's `[#id]` (sync-spec-docs.mjs
+// substitutes braces for brackets so the generated .mdx compiles — see that
+// script's toMdxSafe). Both forms are stripped so the drift check compares
+// prose, not the heading-id spelling each side is forced to use.
+const ANCHOR_ID_PATTERN = /[ \t]+[[{]#[A-Za-z0-9_-]+[\]}]/g;
+
+// sync-spec-docs.mjs's toMdxSafe backtick-quotes the one bare `<` in
+// spec-core.md that would otherwise read to the MDX/JSX tokenizer as the
+// start of a tag. Normalizing both sides to the un-quoted form keeps this an
+// expected, allowlisted difference rather than reported drift.
+const BARE_LT_ESCAPE_PATTERN = /\(exclusive, `<`\), evaluated/g;
 
 function normalizeBody(text: string): string {
   return text
     .replace(CRLF_PATTERN, "\n")
     .replace(ANCHOR_ID_PATTERN, "")
+    .replace(BARE_LT_ESCAPE_PATTERN, "(exclusive, <), evaluated")
     .split("\n")
     .map((line) => line.trimEnd())
     .join("\n")
@@ -251,8 +279,9 @@ function firstDiff(expected: string, actual: string): LineDiff | null {
 }
 
 function checkPair(file: string): string[] {
+  const siteFile = siteCounterpartName(file);
   const rootText = readFileSync(join(REPO_ROOT, file), "utf8");
-  const siteText = readFileSync(join(SITE_DOCS, file), "utf8");
+  const siteText = readFileSync(join(SITE_DOCS, siteFile), "utf8");
   const expectedMeta = rootMetadata(rootText);
   const actualMeta = calloutMetadata(siteText);
   const errors: string[] = [];
@@ -261,16 +290,16 @@ function checkPair(file: string): string[] {
     errors.push(`${file}: root spec must declare Status and Date`);
   }
   if (!(actualMeta.status && actualMeta.date)) {
-    errors.push(`${file}: public-site copy must start with a Status/Date Callout`);
+    errors.push(`${siteFile}: public-site copy must start with a Status/Date Callout`);
   }
   if (expectedMeta.status && actualMeta.status !== expectedMeta.status) {
     errors.push(
-      `${file}: site Status mismatch (root=${JSON.stringify(expectedMeta.status)} site=${JSON.stringify(actualMeta.status)})`
+      `${siteFile}: site Status mismatch (root=${JSON.stringify(expectedMeta.status)} site=${JSON.stringify(actualMeta.status)})`
     );
   }
   if (expectedMeta.date && actualMeta.date !== expectedMeta.date) {
     errors.push(
-      `${file}: site Date mismatch (root=${JSON.stringify(expectedMeta.date)} site=${JSON.stringify(actualMeta.date)})`
+      `${siteFile}: site Date mismatch (root=${JSON.stringify(expectedMeta.date)} site=${JSON.stringify(actualMeta.date)})`
     );
   }
 
@@ -280,7 +309,7 @@ function checkPair(file: string): string[] {
     const diff = firstDiff(expected, actual);
     errors.push(
       [
-        `${file}: body drift after normalization`,
+        `${file} vs ${siteFile}: body drift after normalization`,
         diff ? `  first mismatch at normalized line ${diff.line}` : null,
         diff ? `  root: ${diff.root}` : null,
         diff ? `  site: ${diff.site}` : null,
@@ -295,24 +324,30 @@ function checkPair(file: string): string[] {
 function main(): void {
   syncSpecs();
   const rootSpecs = specFiles(REPO_ROOT);
-  const siteSpecs = specFiles(SITE_DOCS);
-  const rootSet = new Set(rootSpecs);
+  const siteSpecs = siteFiles(SITE_DOCS);
   const siteSet = new Set(siteSpecs);
+  // The root-derived counterpart names (spec-core.md -> spec-core.mdx) that
+  // ARE expected on the site side, so the site-only-spec pass below doesn't
+  // flag them as unlisted extensions.
+  const rootCounterpartSet = new Set(
+    rootSpecs.filter((file) => !REFERENCE_ONLY_ROOT_SPECS.has(file)).map(siteCounterpartName)
+  );
   const errors: string[] = [];
 
   for (const file of rootSpecs) {
     if (REFERENCE_ONLY_ROOT_SPECS.has(file)) {
       continue;
     }
-    if (!siteSet.has(file)) {
-      errors.push(`${file}: missing public-site counterpart at apps/site/content/docs/${file}`);
+    const siteFile = siteCounterpartName(file);
+    if (!siteSet.has(siteFile)) {
+      errors.push(`${file}: missing public-site counterpart at apps/site/content/docs/${siteFile}`);
       continue;
     }
     errors.push(...checkPair(file));
   }
 
   for (const file of siteSpecs) {
-    if (rootSet.has(file)) {
+    if (rootCounterpartSet.has(file)) {
       continue;
     }
     if (!SITE_ONLY_EXTENSIONS.has(file)) {
