@@ -226,6 +226,7 @@ import {
   isPostgresStorageBackend,
   postgresQuery,
   resolveStorageBackend,
+  schedulePostgresSemanticHnswMaintenance,
 } from "./postgres-storage.ts";
 import { createGenericProviderAuthDispatch } from "./provider-auth/generic-dispatch.ts";
 import { buildRecordVersionStatsEnvelope } from "./record-version-stats.ts";
@@ -790,6 +791,7 @@ interface ServerOpts {
   } | null;
   ownerToken?: string | null;
   postgresBootstrapLockTimeoutMs?: number;
+  postgresSemanticHnswMaintenanceImpl?: typeof schedulePostgresSemanticHnswMaintenance;
   preRegisteredPublicClients?: unknown;
   presentationScreenStateStore?: PresentationScreenStateStore | null;
   presentationTerminalBarrier?: {
@@ -8485,6 +8487,16 @@ export async function startServer(opts: ServerOpts = {}) {
   await controller.promoteBrowserSurfaceLeasesAfterBoot();
   logger.info({ port: rsPort, url: `http://localhost:${rsPort}` }, "resource server listening");
 
+  // HNSW is a derived acceleration structure. Its durable builder is bounded,
+  // advisory-locked, and retryable, but it must never join the readiness await
+  // chain for a large existing semantic corpus.
+  const postgresSemanticHnswMaintenanceDone =
+    storageBackend.backend === "postgres"
+      ? (opts.postgresSemanticHnswMaintenanceImpl ?? schedulePostgresSemanticHnswMaintenance)({
+          log: (message) => logger.info(message),
+        })
+      : Promise.resolve();
+
   // Manifest reconciliation is optional maintenance, not a listener gate.
   // Start it only after both protocol listeners bind. Retrieval backfill waits
   // for this step so a manifest correction cannot race an index rebuild using
@@ -8795,6 +8807,7 @@ export async function startServer(opts: ServerOpts = {}) {
     controller,
     logger,
     manifestReconciliationDone,
+    postgresSemanticHnswMaintenanceDone,
     rsPort,
     rsServer,
     schedulerManager,

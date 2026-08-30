@@ -148,6 +148,11 @@ let lexicalPgSearchAvailability = "unavailable";
 const SEMANTIC_VECTOR_INDEXED_DIMENSIONS = 384;
 const SEMANTIC_HNSW_INDEX_NAME = "idx_pg_semantic_search_embedding_hnsw";
 const SEMANTIC_HOT_HNSW_INDEX_PREFIX = "idx_pg_semantic_hnsw_hot_";
+const POSTGRES_SEMANTIC_HNSW_BUILD_LOCK = [482_571, 152];
+const POSTGRES_SEMANTIC_HNSW_BUILD_TIMEOUT_ENV = "PDPP_PG_SEMANTIC_HNSW_BUILD_TIMEOUT_MS";
+const POSTGRES_SEMANTIC_HNSW_BUILD_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const POSTGRES_SEMANTIC_HNSW_BUILD_HARD_MAX_TIMEOUT_MS = 30 * 60 * 1000;
+const POSTGRES_SEMANTIC_HNSW_BUILD_LOCK_TIMEOUT_MS = 15_000;
 const RECORDS_BLOB_SEARCH_INDEX_LOCK_ID = "8022352479012001";
 const POSTGRES_DIRECT_PRIORITY_IN = /^CHECK \(\(?priority_class IN \([^)]*\)\)?\)$/i;
 const POSTGRES_DIRECT_PRIORITY_ANY = /^CHECK \(\(?priority_class = ANY \(ARRAY\[[^\]]*\]\)\)?\)$/i;
@@ -157,6 +162,14 @@ const CONNECTOR_INSTANCE_SAFE_CHARS = /[^a-zA-Z0-9]/g;
 const POSTGRES_INDEX_NAME = /^[a-z][a-z0-9_]*$/;
 const SEMANTIC_CONNECTOR_SAFE_CHARS = /[^a-z0-9]+/g;
 const SEMANTIC_CONNECTOR_TRIM = /^_+|_+$/g;
+
+export function resolvePostgresSemanticHnswBuildTimeoutMs({ env = process.env }: { env?: NodeJS.ProcessEnv } = {}) {
+  const configured = Number(env[POSTGRES_SEMANTIC_HNSW_BUILD_TIMEOUT_ENV]);
+  if (Number.isInteger(configured) && configured > 0) {
+    return Math.min(configured, POSTGRES_SEMANTIC_HNSW_BUILD_HARD_MAX_TIMEOUT_MS);
+  }
+  return POSTGRES_SEMANTIC_HNSW_BUILD_DEFAULT_TIMEOUT_MS;
+}
 
 async function sequentially<T>(items: readonly T[], visit: (item: T) => Promise<void>): Promise<void> {
   const item = items.at(0);
@@ -2729,6 +2742,22 @@ export async function bootstrapPostgresSchema({
         PRIMARY KEY(connector_instance_id, stream)
       );
 
+      -- One durable optional-maintenance job for the global and hot-source
+      -- HNSW catalog indexes. The row is scheduling/diagnostic state only;
+      -- vector reads remain correct while the state is pending or failed.
+      CREATE TABLE IF NOT EXISTS semantic_hnsw_index_build (
+        build_key TEXT PRIMARY KEY CHECK (build_key = 'semantic_hnsw'),
+        state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'ready', 'unavailable', 'failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT,
+        completed_at TEXT,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO semantic_hnsw_index_build(build_key, state, updated_at)
+      VALUES ('semantic_hnsw', 'pending', (now() AT TIME ZONE 'utc')::text)
+      ON CONFLICT (build_key) DO NOTHING;
+
       CREATE TABLE IF NOT EXISTS semantic_search_backfill_progress (
         connector_id TEXT NOT NULL,
         connector_instance_id TEXT NOT NULL,
@@ -3684,15 +3713,35 @@ async function detectSemanticIterativeScanSupport(client: PoolClient): Promise<b
   }
 }
 
-async function ensureSemanticEmbeddingHnswIndex(client: PoolClient, log: StorageLog): Promise<void> {
+async function setSemanticHnswStatementTimeout(client: PoolClient, deadline: number): Promise<void> {
+  const remainingMs = Math.floor(deadline - Date.now());
+  if (remainingMs <= 0) {
+    throw new Error("semantic HNSW maintenance attempt deadline exceeded");
+  }
+  await client.query(`SET statement_timeout = ${remainingMs}`);
+}
+
+async function ensureSemanticEmbeddingHnswIndex(client: PoolClient, log: StorageLog, deadline: number): Promise<void> {
   const existing = await client.query(
-    `SELECT 1 FROM pg_indexes
-      WHERE schemaname = current_schema() AND tablename = 'semantic_search_blob' AND indexname = $1
+    `SELECT ix.indisvalid AS valid, ix.indisready AS ready, pg_get_indexdef(idx.oid) AS definition
+       FROM pg_class idx
+       JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+       JOIN pg_index ix ON ix.indexrelid = idx.oid
+      WHERE ns.nspname = current_schema() AND idx.relname = $1
       LIMIT 1`,
     [SEMANTIC_HNSW_INDEX_NAME]
   );
-  if ((existing.rowCount ?? 0) > 0) {
+  if (
+    existing.rows[0]?.valid === true &&
+    existing.rows[0]?.ready === true &&
+    String(existing.rows[0]?.definition ?? "").includes("hnsw")
+  ) {
     return;
+  }
+  if ((existing.rowCount ?? 0) > 0) {
+    log(`[PDPP] Semantic index maintenance: dropping invalid HNSW index ${SEMANTIC_HNSW_INDEX_NAME}`);
+    await setSemanticHnswStatementTimeout(client, deadline);
+    await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${sqlIdentifier(SEMANTIC_HNSW_INDEX_NAME)}`);
   }
 
   // HNSW builds want the graph in maintenance_work_mem; the Postgres default
@@ -3701,30 +3750,33 @@ async function ensureSemanticEmbeddingHnswIndex(client: PoolClient, log: Storage
   // size-literal pattern before interpolation.
   const workMem = process.env.PDPP_PG_SEMANTIC_INDEX_MAINTENANCE_WORK_MEM || "256MB";
   const workMemValid = POSTGRES_WORK_MEM_LITERAL.test(workMem);
-  if (workMemValid) {
-    await client.query(`SET maintenance_work_mem = '${workMem}'`);
+  try {
+    if (workMemValid) {
+      await client.query(`SET maintenance_work_mem = '${workMem}'`);
+    }
+    // Parallel HNSW builds allocate dynamic shared memory proportional to
+    // maintenance_work_mem; containerized Postgres commonly runs with the 64MB
+    // /dev/shm default. Build serially so this optional job is safe in the
+    // smallest supported container.
+    await client.query("SET max_parallel_maintenance_workers = 0");
+    log(
+      `[PDPP] Semantic index maintenance: building HNSW index ${SEMANTIC_HNSW_INDEX_NAME} (cosine, ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS} dims${workMemValid ? `, maintenance_work_mem=${workMem}` : ""}, serial build)`
+    );
+    const startedAt = Date.now();
+    await setSemanticHnswStatementTimeout(client, deadline);
+    await client.query(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${SEMANTIC_HNSW_INDEX_NAME}
+         ON semantic_search_blob
+         USING hnsw ((embedding::vector(${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})) vector_cosine_ops)
+         WHERE (vector_dims(embedding) = ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})`
+    );
+    log(`[PDPP] Semantic index maintenance: HNSW index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  } finally {
+    await client.query("RESET max_parallel_maintenance_workers").catch(() => undefined);
+    if (workMemValid) {
+      await client.query("RESET maintenance_work_mem").catch(() => undefined);
+    }
   }
-  // Parallel HNSW builds allocate dynamic shared memory proportional to
-  // maintenance_work_mem; containerized Postgres commonly runs with the 64MB
-  // /dev/shm default and dies with "could not resize shared memory segment".
-  // Build serially — no DSM involved — so the boot migration succeeds in any
-  // container (verified against pgvector/pgvector:pg16).
-  await client.query("SET max_parallel_maintenance_workers = 0");
-  log(
-    `[PDPP] Semantic index migration: building HNSW index ${SEMANTIC_HNSW_INDEX_NAME} (cosine, ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS} dims${workMemValid ? `, maintenance_work_mem=${workMem}` : ""}, serial build)`
-  );
-  const startedAt = Date.now();
-  await client.query(
-    `CREATE INDEX IF NOT EXISTS ${SEMANTIC_HNSW_INDEX_NAME}
-       ON semantic_search_blob
-       USING hnsw ((embedding::vector(${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})) vector_cosine_ops)
-       WHERE (vector_dims(embedding) = ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})`
-  );
-  await client.query("RESET max_parallel_maintenance_workers");
-  if (workMemValid) {
-    await client.query("RESET maintenance_work_mem");
-  }
-  log(`[PDPP] Semantic index migration: HNSW index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
 }
 
 function sqlIdentifier(value: string): string {
@@ -3754,15 +3806,7 @@ function semanticHotHnswIndexName(connectorId: string, connectorInstanceId: stri
   return `${SEMANTIC_HOT_HNSW_INDEX_PREFIX}${connector}_${instance}`.slice(0, 63);
 }
 
-async function ensureSemanticHotHnswIndexes(
-  client: PoolClient,
-  log: StorageLog = () => {
-    /* no-op */
-  }
-): Promise<void> {
-  // bootstrapPostgresSchema holds the polling-acquired session lock while this
-  // concurrent build runs; a losing bootstrap has finished pg_try_advisory_lock
-  // before backing off and cannot form a virtual-xact wait cycle here.
+async function ensureSemanticHotHnswIndexes(client: PoolClient, log: StorageLog, deadline: number): Promise<void> {
   if (!(await hasPgvectorExtension(client))) {
     return;
   }
@@ -3801,8 +3845,30 @@ async function ensureSemanticHotHnswIndexes(
     log(
       `[PDPP] Semantic index migration: ensuring hot-source HNSW index ${indexName} (${row.connector_id}, ${row.indexed_rows} rows)`
     );
+    const existing = await client.query(
+      `SELECT ix.indisvalid AS valid, ix.indisready AS ready, pg_get_indexdef(idx.oid) AS definition
+         FROM pg_class idx
+         JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+         JOIN pg_index ix ON ix.indexrelid = idx.oid
+        WHERE ns.nspname = current_schema() AND idx.relname = $1
+        LIMIT 1`,
+      [indexName]
+    );
+    if (
+      existing.rows[0]?.valid !== true ||
+      existing.rows[0]?.ready !== true ||
+      !String(existing.rows[0]?.definition ?? "").includes("hnsw")
+    ) {
+      if ((existing.rowCount ?? 0) > 0) {
+        await setSemanticHnswStatementTimeout(client, deadline);
+        await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${sqlIdentifier(indexName)}`);
+      }
+    } else {
+      return;
+    }
     await client.query("SET max_parallel_maintenance_workers = 0");
     try {
+      await setSemanticHnswStatementTimeout(client, deadline);
       await client.query(
         `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${sqlIdentifier(indexName)}
            ON semantic_search_blob
@@ -3814,6 +3880,134 @@ async function ensureSemanticHotHnswIndexes(
       await client.query("RESET max_parallel_maintenance_workers");
     }
   }, Promise.resolve());
+}
+
+interface PostgresSemanticHnswMaintenanceOptions {
+  log?: StorageLog;
+}
+
+async function updateSemanticHnswBuildState(
+  client: PoolClient,
+  values: {
+    state: "pending" | "running" | "ready" | "unavailable" | "failed";
+    incrementAttempts?: boolean;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    lastError?: string | null;
+  }
+): Promise<void> {
+  await client.query(
+    `UPDATE semantic_hnsw_index_build
+        SET state = $1,
+            attempts = attempts + CASE WHEN $2 THEN 1 ELSE 0 END,
+            started_at = COALESCE($3, started_at),
+            completed_at = $4,
+            last_error = $5,
+            updated_at = (now() AT TIME ZONE 'utc')::text
+      WHERE build_key = 'semantic_hnsw'`,
+    [
+      values.state,
+      values.incrementAttempts === true,
+      values.startedAt ?? null,
+      values.completedAt ?? null,
+      values.lastError ?? null,
+    ]
+  );
+}
+
+function postgresMaintenanceErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 2000);
+}
+
+/**
+ * Run one bounded, durable HNSW attempt. This function is intentionally
+ * separate from bootstrap: the graph is a catalog acceleration, while the
+ * vector column and its read semantics are required storage state.
+ */
+export async function runPostgresSemanticHnswMaintenance({
+  log = NOOP_STORAGE_LOG,
+}: PostgresSemanticHnswMaintenanceOptions = {}): Promise<void> {
+  if (!isPostgresStorageBackend()) {
+    return;
+  }
+  const client = await getPostgresLockPool().connect();
+  let lockHeld = false;
+  let sessionSettingsApplied = false;
+  try {
+    const lock = await client.query("SELECT pg_try_advisory_lock($1, $2) AS locked", POSTGRES_SEMANTIC_HNSW_BUILD_LOCK);
+    if (lock.rows[0]?.locked !== true) {
+      log("[PDPP] Semantic index maintenance: HNSW builder already owned by another process");
+      return;
+    }
+    lockHeld = true;
+
+    const startedAt = new Date().toISOString();
+    await updateSemanticHnswBuildState(client, { incrementAttempts: true, startedAt, state: "running" });
+    if (!(await hasPgvectorExtension(client))) {
+      await updateSemanticHnswBuildState(client, {
+        completedAt: null,
+        lastError: null,
+        state: "unavailable",
+      });
+      log("[PDPP] Semantic index maintenance: pgvector is unavailable; exact semantic reads remain active");
+      return;
+    }
+
+    const timeoutMs = resolvePostgresSemanticHnswBuildTimeoutMs();
+    const deadline = Date.now() + timeoutMs;
+    await client.query(`SET statement_timeout = ${timeoutMs}`);
+    sessionSettingsApplied = true;
+    await client.query(`SET lock_timeout = ${POSTGRES_SEMANTIC_HNSW_BUILD_LOCK_TIMEOUT_MS}`);
+    await ensureSemanticEmbeddingHnswIndex(client, log, deadline);
+    await ensureSemanticHotHnswIndexes(client, log, deadline);
+    await updateSemanticHnswBuildState(client, {
+      completedAt: new Date().toISOString(),
+      lastError: null,
+      state: "ready",
+    });
+    log("[PDPP] Semantic index maintenance: HNSW builder completed");
+  } catch (error) {
+    const message = postgresMaintenanceErrorMessage(error);
+    await updateSemanticHnswBuildState(client, {
+      completedAt: null,
+      lastError: message,
+      state: "failed",
+    }).catch(() => undefined);
+    log(`[PDPP] Semantic index maintenance: HNSW builder failed (retryable): ${message}`);
+  } finally {
+    if (sessionSettingsApplied) {
+      await client.query("RESET statement_timeout").catch(() => undefined);
+      await client.query("RESET lock_timeout").catch(() => undefined);
+    }
+    if (lockHeld) {
+      await client.query("SELECT pg_advisory_unlock($1, $2)", POSTGRES_SEMANTIC_HNSW_BUILD_LOCK).catch(() => undefined);
+    }
+    client.release();
+  }
+}
+
+/** Schedule the optional builder without adding it to the readiness await chain. */
+export function schedulePostgresSemanticHnswMaintenance({
+  log = NOOP_STORAGE_LOG,
+  run = runPostgresSemanticHnswMaintenance,
+}: PostgresSemanticHnswMaintenanceOptions & {
+  run?: (options: PostgresSemanticHnswMaintenanceOptions) => Promise<void>;
+} = {}): Promise<void> {
+  log("[PDPP] Semantic index maintenance: HNSW builder scheduled after AS/RS listen");
+  return new Promise((resolve) => setImmediate(resolve))
+    .then(() => run({ log }))
+    .catch((error) => {
+      log(`[PDPP] Semantic index maintenance: HNSW scheduler failed after listeners (retryable): ${error}`);
+    });
+}
+
+/** Test-only seam for proving the scheduler is outside the readiness chain. */
+export function __schedulePostgresSemanticHnswMaintenanceForTest(options: {
+  log: StorageLog;
+  run: (options: PostgresSemanticHnswMaintenanceOptions) => Promise<void>;
+}): Promise<void> {
+  return schedulePostgresSemanticHnswMaintenance(options);
 }
 
 /**
@@ -3844,8 +4038,6 @@ async function migratePostgresSemanticEmbeddingToVector(
 
   const udtName = await postgresColumnUdtName(client, "semantic_search_blob", "embedding");
   if (udtName === "vector") {
-    await ensureSemanticEmbeddingHnswIndex(client, log);
-    await ensureSemanticHotHnswIndexes(client, log);
     semanticEmbeddingColumnMode = "vector";
     semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
     return;
@@ -3913,8 +4105,6 @@ async function migratePostgresSemanticEmbeddingToVector(
     throw err;
   }
 
-  await ensureSemanticEmbeddingHnswIndex(client, log);
-  await ensureSemanticHotHnswIndexes(client, log);
   semanticEmbeddingColumnMode = "vector";
   semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
   if (total > 0) {
