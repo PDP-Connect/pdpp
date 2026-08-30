@@ -81,7 +81,7 @@
     "release:matrix:test": "pnpm test:scratch -- node --test --import tsx scripts/release-package-matrix.test.ts",
     "release:local": "pnpm release:policy-check && pnpm release:matrix",
     "release:signoff": "pnpm release:local && pnpm release:dry-run",
-    "pdpp:vendor:verify": "node --import tsx scripts/check-pdpp-vendored-package-pins.ts",
+    "pdpp:vendor:verify": "pnpm test:scratch -- node --import tsx scripts/check-pdpp-vendored-package-pins.ts",
     "release:dist-tag-check": "node --import tsx scripts/check-dist-tag-posture.ts",
     "release:dist-tag-check:test": "pnpm test:scratch -- node --test --import tsx scripts/check-dist-tag-posture.test.ts",
     "owner-journey:acceptance": "pnpm test:scratch -- node --import tsx scripts/check-owner-journey-acceptance.ts",
