@@ -3352,9 +3352,48 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
+  /**
+   * Guards the durable 409 run_already_active check against a stale
+   * `controller_active_runs` row.
+   *
+   * Unlike its in-memory sibling `assertNoConflictingActiveRun`, this check
+   * used to trust the row unconditionally: any row meant "blocked," forever,
+   * with no way to self-heal short of a process restart reaching the boot
+   * reconciler (`reconcileOrphanedRunsAtBoot`, `lib/controller-boot.ts`).
+   * That reconciler only fires once per boot and explicitly excludes rows
+   * from the CURRENT boot epoch, so a row orphaned mid-process-life — e.g.
+   * `finalizeRunCleanup`'s fire-and-forget `clearPersistedActiveRun` losing a
+   * transient DB error while a browser session failed to start — was never
+   * reconciled by anything. The owner's "Try Again" then 409s against a run
+   * the UI (which reads the spine's terminal-event projection) already shows
+   * as failed, indefinitely.
+   *
+   * The spine is the honest record of whether a run reached a terminal
+   * state (`runAlreadyTerminal`, the same oracle the watchdog and the boot
+   * reconciler both defer to). A durable row whose run_id already has a
+   * terminal spine event is provably stale — the run finished, only the
+   * flight-table delete failed or raced — so it is safe to clear here and
+   * allow the new run, mirroring the in-memory reclamation above.
+   *
+   * - If stale (row's run has a terminal spine event): clears the orphaned
+   *   row and returns (allows new run).
+   * - If live (no terminal event yet): throws 409 run_already_active. This
+   *   is the fail-closed default — a run with no observed terminal event is
+   *   presumed live, so two genuinely concurrent runs on one connector are
+   *   still impossible.
+   * - If absent: returns (no conflict).
+   */
   async function assertNoConflictingDurableActiveRun(connectorInstanceId: string): Promise<void> {
     const existing = await getPersistedActiveRun(connectorInstanceId);
     if (!existing) {
+      return;
+    }
+    if (await runAlreadyTerminal(existing.run_id)) {
+      log.warn?.(
+        `[controller] reclaiming stale controller_active_runs row for ${existing.connector_id} ` +
+          `(run_id=${existing.run_id}); its run already reached a terminal state — allowing new run`
+      );
+      await clearPersistedActiveRun(existing.connector_instance_id ?? existing.connector_id, existing.run_id);
       return;
     }
     throw new ControllerError(`Connector already has an active run: ${existing.run_id}`, "run_already_active", {
