@@ -228,6 +228,42 @@ test("shouldCloseBrowserPageAfterRun preserves only opted-in run outcomes", () =
   );
 });
 
+test("the recording env-var names mirrored in connector-runtime still match browser-launch's exported source of truth", async () => {
+  // connector-runtime.ts mirrors these two names as string literals rather
+  // than importing them, to keep browser-launch.ts (and patchright) out of a
+  // fetch-only connector's load path. A rename on either side would silently
+  // make browserRecordingRequested() under-detect and reintroduce the lost-
+  // storageState bug, with every behavioral test still passing — so pin the
+  // two together here. This import is test-only; it does not affect the
+  // runtime module's own dynamic-import boundary.
+  const { HAR_RECORD_PATH_ENV, STORAGE_STATE_RECORD_PATH_ENV } = await import("./browser-launch.ts");
+  assert.equal(HAR_RECORD_PATH_ENV, "PDPP_SCENARIO_HAR_RECORD_PATH");
+  assert.equal(STORAGE_STATE_RECORD_PATH_ENV, "PDPP_SCENARIO_STORAGE_STATE_RECORD_PATH");
+  // And prove the gate actually keys off those exact names.
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, { [HAR_RECORD_PATH_ENV]: "/tmp/x.har" }), false);
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, { [STORAGE_STATE_RECORD_PATH_ENV]: "/tmp/x.json" }), false);
+});
+
+test("shouldCloseBrowserPageAfterRun keeps the page open when --record-har is active, regardless of preserve flags or outcome", () => {
+  // Root cause this guards: Patchright's launchPersistentContext ties the
+  // whole context's CDP transport to its pages — closing the connector's
+  // LAST page here (before release() reads storageState()) makes
+  // context.storageState() throw "Target page, context or browser has been
+  // closed", silently dropping the recorded session even though the HAR
+  // itself still flushes (network buffering is page-lifecycle-independent).
+  // release()'s own context.close() closes the page a moment later anyway,
+  // so skipping this pre-release close is a no-op in shape, not a leak.
+  const harEnv = { PDPP_SCENARIO_HAR_RECORD_PATH: "/tmp/run1.har" };
+  const storageStateEnv = { PDPP_SCENARIO_STORAGE_STATE_RECORD_PATH: "/tmp/run1.storage-state.json" };
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, harEnv), false);
+  assert.equal(shouldCloseBrowserPageAfterRun({}, false, harEnv), false);
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, storageStateEnv), false);
+  // Empty-string env values (unset-but-present key) must not count as active.
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, { PDPP_SCENARIO_HAR_RECORD_PATH: "" }), true);
+  // Normal (non-recording) runs are unaffected — same behavior as before.
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, {}), true);
+});
+
 test("resolveBrowserRuntimeVisibility defaults every local browser session to headed", () => {
   assert.deepEqual(resolveBrowserRuntimeVisibility({}, "reddit", {}), {
     envKey: "PDPP_BROWSER_HEADLESS",

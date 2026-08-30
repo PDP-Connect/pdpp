@@ -156,7 +156,9 @@ test("generic dispatcher is always mounted; an unconfigured Google-family connec
   const asUrl = `http://localhost:${server.asPort}`;
   try {
     const calendarManifest = JSON.parse(
-      await (await import("node:fs/promises")).readFile(
+      await (
+        await import("node:fs/promises")
+      ).readFile(
         new URL("../../packages/polyfill-connectors/manifests/google_calendar.json", import.meta.url),
         "utf8"
       )

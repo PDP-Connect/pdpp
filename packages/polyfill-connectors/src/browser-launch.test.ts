@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,12 +15,18 @@ import {
   connectOverCdpWithRetry,
   decideContainerHeadedBrowserGate,
   fetchPageTargetWsUrl,
+  fileFlushOutcome,
+  HAR_RECORD_PATH_ENV,
   HEADED_BROWSER_UNAVAILABLE_CODE,
   HeadedBrowserUnavailableError,
   isCdpAttachSessionRaceError,
+  isDefinitivelyZeroViewport,
+  redactHarDocument,
+  redactHarFileBestEffort,
   resolveDeploymentBrowserHeadless,
   resolvePageTargetWsUrl,
   runCdpAttemptWithRaceGuard,
+  STORAGE_STATE_RECORD_PATH_ENV,
   shouldCleanRemoteCdpPageTargets,
   type UnhandledRejectionHost,
 } from "./browser-launch.ts";
@@ -870,4 +876,283 @@ test("connectOverCdpWithRetry rides out an UNHANDLED-rejection race end-to-end t
   assert.equal(attempts, 2, "one raced attempt, then a clean one");
   assert.equal(slept, 1, "slept once between the converted race and the retry");
   assert.deepEqual(disconnects, ["BROWSER_ATTEMPT_1"], "the orphaned first browser was disconnected before retry");
+});
+
+// ─── isDefinitivelyZeroViewport (FIX 3 predicate) ─────────────────────────
+//
+// `failFastOnUnusableViewport` itself is not practically testable
+// headless-in-CI: a real headless launch has a real, non-zero viewport by
+// construction, and reproducing the actual broken-display failure mode (a
+// headed Chromium under a misconfigured X server / tmux with empty
+// XAUTHORITY) needs a genuinely broken display, not something this suite
+// can fabricate. Only the pure classification predicate is unit-tested
+// here; the wiring around it (launch → evaluate → throw) was verified by
+// reading `acquireIsolatedBrowser`'s launch path, not by an automated test.
+
+test("isDefinitivelyZeroViewport: both dimensions zero is unusable", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 0, innerHeight: 0 }), true);
+});
+
+test("isDefinitivelyZeroViewport: a normal viewport is not unusable", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 1280, innerHeight: 720 }), false);
+});
+
+test("isDefinitivelyZeroViewport: a small-but-nonzero viewport is NOT flagged (conservative)", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 1, innerHeight: 1 }), false);
+});
+
+test("isDefinitivelyZeroViewport: only width zero is not enough (must be BOTH dimensions)", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 0, innerHeight: 720 }), false);
+});
+
+test("isDefinitivelyZeroViewport: only height zero is not enough (must be BOTH dimensions)", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 1280, innerHeight: 0 }), false);
+});
+
+test("isDefinitivelyZeroViewport: undefined measurements (unreadable) are NOT flagged", () => {
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: undefined, innerHeight: undefined }), false);
+  assert.equal(isDefinitivelyZeroViewport({ innerWidth: 0, innerHeight: undefined }), false);
+});
+
+// ─── HAR secret-hygiene pass (redactHarDocument / redactHarFileBestEffort) ─
+//
+// Pure-unit coverage of the actual redaction transform, independent of any
+// subprocess/CLI wiring (bin/scenario-record-har.test.ts covers the
+// end-to-end plumbing through the CLI). A synthetic HAR document exercises
+// every field this module claims to redact and, separately, every field it
+// deliberately does NOT — both directions matter for a secret-hygiene claim.
+
+function harWithOneEntry(overrides: {
+  requestCookies?: Array<{ name: string; value: string }>;
+  requestHeaders?: Array<{ name: string; value: string }>;
+  requestPostData?: { mimeType?: string; params?: Array<{ name: string; value: string }>; text?: string };
+  responseCookies?: Array<{ name: string; value: string }>;
+  responseContent?: { text: string };
+  responseHeaders?: Array<{ name: string; value: string }>;
+}) {
+  return {
+    log: {
+      entries: [
+        {
+          request: {
+            method: "POST",
+            url: "https://provider.example.test/login",
+            ...(overrides.requestHeaders ? { headers: overrides.requestHeaders } : {}),
+            ...(overrides.requestCookies ? { cookies: overrides.requestCookies } : {}),
+            ...(overrides.requestPostData ? { postData: overrides.requestPostData } : {}),
+          },
+          response: {
+            status: 200,
+            ...(overrides.responseHeaders ? { headers: overrides.responseHeaders } : {}),
+            ...(overrides.responseCookies ? { cookies: overrides.responseCookies } : {}),
+            ...(overrides.responseContent ? { content: overrides.responseContent } : {}),
+          },
+        },
+      ],
+    },
+  };
+}
+
+test("redactHarDocument: strips Cookie/Authorization request headers (keeps the name, blanks the value)", () => {
+  const har = harWithOneEntry({
+    requestHeaders: [
+      { name: "Cookie", value: "session=super-secret" },
+      { name: "authorization", value: "Bearer super-secret-token" },
+      { name: "accept", value: "application/json" },
+    ],
+  });
+  const redacted = redactHarDocument(har) as ReturnType<typeof harWithOneEntry>;
+  const headers = redacted.log.entries[0]?.request.headers as Array<{ name: string; value: string }>;
+  const cookie = headers.find((h) => h.name === "Cookie");
+  const auth = headers.find((h) => h.name === "authorization");
+  const accept = headers.find((h) => h.name === "accept");
+  assert.ok(cookie && !cookie.value.includes("super-secret"), "Cookie value must be redacted");
+  assert.equal(cookie?.name, "Cookie", "header NAME is preserved");
+  assert.ok(auth && !auth.value.includes("super-secret-token"), "Authorization value must be redacted");
+  assert.equal(accept?.value, "application/json", "an unrelated header must survive untouched");
+});
+
+test("redactHarDocument: strips Set-Cookie response headers and x-csrf-token/x-xsrf-token headers case-insensitively", () => {
+  const har = harWithOneEntry({
+    responseHeaders: [
+      { name: "Set-Cookie", value: "session=super-secret; Path=/" },
+      { name: "X-CSRF-Token", value: "csrf-secret-value" },
+      { name: "x-xsrf-token", value: "xsrf-secret-value" },
+      { name: "content-type", value: "application/json" },
+    ],
+  });
+  const redacted = redactHarDocument(har) as ReturnType<typeof harWithOneEntry>;
+  const headers = redacted.log.entries[0]?.response.headers as Array<{ name: string; value: string }>;
+  for (const name of ["Set-Cookie", "X-CSRF-Token", "x-xsrf-token"]) {
+    const header = headers.find((h) => h.name === name);
+    assert.ok(header, `${name} header should still be present (name kept)`);
+    assert.ok(!header?.value.includes("secret"), `${name} value must be redacted`);
+  }
+  assert.equal(headers.find((h) => h.name === "content-type")?.value, "application/json");
+});
+
+test("redactHarDocument: strips HAR cookies[] arrays on both request and response sides", () => {
+  const har = harWithOneEntry({
+    requestCookies: [{ name: "session", value: "super-secret-session" }],
+    responseCookies: [{ name: "session", value: "super-secret-session" }],
+  });
+  const redacted = redactHarDocument(har) as ReturnType<typeof harWithOneEntry>;
+  const reqCookies = redacted.log.entries[0]?.request.cookies as Array<{ name: string; value: string }>;
+  const resCookies = redacted.log.entries[0]?.response.cookies as Array<{ name: string; value: string }>;
+  assert.equal(reqCookies[0]?.name, "session");
+  assert.ok(!reqCookies[0]?.value.includes("super-secret-session"));
+  assert.ok(!resCookies[0]?.value.includes("super-secret-session"));
+});
+
+test("redactHarDocument: blanks a credential-shaped form POST (password field) — both text and params", () => {
+  const har = harWithOneEntry({
+    requestPostData: {
+      mimeType: "application/x-www-form-urlencoded",
+      text: "username=alice&password=hunter2",
+      params: [
+        { name: "username", value: "alice" },
+        { name: "password", value: "hunter2" },
+      ],
+    },
+  });
+  const redacted = redactHarDocument(har) as ReturnType<typeof harWithOneEntry>;
+  const postData = redacted.log.entries[0]?.request.postData as {
+    mimeType: string;
+    params: Array<{ name: string; value: string }>;
+    text: string;
+  };
+  assert.equal(postData.mimeType, "application/x-www-form-urlencoded", "mimeType is preserved");
+  assert.ok(!postData.text.includes("hunter2"), "postData.text must be redacted");
+  assert.ok(
+    postData.params.every((p) => p.value !== "hunter2"),
+    "every param value must be redacted once the post looks like a credential submission"
+  );
+  assert.equal(postData.params.find((p) => p.name === "username")?.name, "username", "field NAMES are preserved");
+});
+
+test("redactHarDocument: a non-credential form POST is left untouched", () => {
+  const har = harWithOneEntry({
+    requestPostData: {
+      mimeType: "application/x-www-form-urlencoded",
+      text: "search=hello+world",
+      params: [{ name: "search", value: "hello world" }],
+    },
+  });
+  const redacted = redactHarDocument(har) as ReturnType<typeof harWithOneEntry>;
+  const postData = redacted.log.entries[0]?.request.postData as { params: Array<{ name: string; value: string }> };
+  assert.equal(postData.params[0]?.value, "hello world", "a search param is not a credential and must survive");
+});
+
+test("redactHarDocument: does NOT redact response/request body content — stated residual exposure", () => {
+  const har = harWithOneEntry({
+    responseContent: { text: JSON.stringify({ account_id: "acct_12345", token: "not-a-header" }) },
+  });
+  const redacted = redactHarDocument(har) as ReturnType<typeof harWithOneEntry>;
+  const content = redacted.log.entries[0]?.response.content as { text: string };
+  assert.match(
+    content.text,
+    /acct_12345/,
+    "body content must survive unredacted — this is a documented gap, not a bug"
+  );
+});
+
+test("redactHarDocument: a HAR with no log.entries is returned unchanged (no throw)", () => {
+  const empty = { log: {} };
+  assert.deepEqual(redactHarDocument(empty), empty);
+  assert.deepEqual(redactHarDocument({}), {});
+});
+
+// ─── redactHarFileBestEffort (file-level, best-effort) ─────────────────────
+
+test("redactHarFileBestEffort: redacts a real file on disk in place, 0600", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-har-redact-test-"));
+  try {
+    const harPath = join(dir, "capture.har");
+    await writeFile(
+      harPath,
+      JSON.stringify(harWithOneEntry({ requestHeaders: [{ name: "cookie", value: "s3cr3t" }] })),
+      "utf8"
+    );
+    await redactHarFileBestEffort(harPath);
+    const written = JSON.parse(await readFile(harPath, "utf8")) as ReturnType<typeof harWithOneEntry>;
+    const headers = written.log.entries[0]?.request.headers as Array<{ name: string; value: string }>;
+    assert.ok(!headers[0]?.value.includes("s3cr3t"));
+    const info = await stat(harPath);
+    // 0600 => only owner read/write bits set.
+    // biome-ignore lint/suspicious/noBitwiseOperators: masking a real POSIX file mode, not a boolean/logic bug
+    assert.equal(info.mode & 0o777, 0o600);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("redactHarFileBestEffort: a missing file is a silent no-op (does not throw)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-har-redact-missing-test-"));
+  try {
+    await assert.doesNotReject(() => redactHarFileBestEffort(join(dir, "does-not-exist.har")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("redactHarFileBestEffort: an unparseable file is left unmodified and does not throw", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-har-redact-garbage-test-"));
+  try {
+    const harPath = join(dir, "garbage.har");
+    await writeFile(harPath, "not valid json {{{", "utf8");
+    await assert.doesNotReject(() => redactHarFileBestEffort(harPath));
+    const stillThere = await readFile(harPath, "utf8");
+    assert.equal(stillThere, "not valid json {{{", "an unparseable file is left byte-for-byte unmodified");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ─── fileFlushOutcome (the shared "did the expected file actually land"
+// honesty check backing HarRecordingOutcome/StorageStateRecordingOutcome) ──
+
+test("fileFlushOutcome: a nonempty file reports flushed:true", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-flush-outcome-test-"));
+  try {
+    const filePath = join(dir, "artifact.json");
+    await writeFile(filePath, "{}", "utf8");
+    const outcome = await fileFlushOutcome(filePath);
+    assert.deepEqual(outcome, { path: filePath, flushed: true });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("fileFlushOutcome: a missing file reports flushed:false (the honest crash/SIGKILL signal)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-flush-outcome-missing-test-"));
+  try {
+    const outcome = await fileFlushOutcome(join(dir, "never-written.json"));
+    assert.equal(outcome.flushed, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("fileFlushOutcome: a zero-byte file reports flushed:false (not a real capture)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-flush-outcome-empty-test-"));
+  try {
+    const filePath = join(dir, "empty.json");
+    await writeFile(filePath, "", "utf8");
+    const outcome = await fileFlushOutcome(filePath);
+    assert.equal(outcome.flushed, false, "a zero-byte file must not be reported as a successful flush");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ─── opt-in cost: HAR recording env vars have stable, documented names ─────
+//
+// A change to either constant is a silent breaking change for
+// bin/scenario-record.ts's subprocess-boundary contract (see
+// HAR_RECORD_PATH_ENV's doc comment) — pinned here so a rename shows up as
+// an intentional, reviewed diff instead of a runtime-only surprise.
+
+test("HAR_RECORD_PATH_ENV and STORAGE_STATE_RECORD_PATH_ENV have stable names", () => {
+  assert.equal(HAR_RECORD_PATH_ENV, "PDPP_SCENARIO_HAR_RECORD_PATH");
+  assert.equal(STORAGE_STATE_RECORD_PATH_ENV, "PDPP_SCENARIO_STORAGE_STATE_RECORD_PATH");
 });
