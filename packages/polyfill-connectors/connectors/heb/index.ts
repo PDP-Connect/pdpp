@@ -70,15 +70,291 @@ const MAX_DETAIL_ATTEMPTS_PER_RUN = 100;
 // (design doc "Collector plan" §4).
 const CHECKPOINT_OVERLAP_DAYS = 60;
 const MS_PER_DAY = 86_400_000;
+// H-E-B's order history is not an archive: the site lists only orders inside a
+// rolling retention window, and drops older ones from `/my-account/your-orders`
+// entirely. There is no archive view, year filter, or date picker to reach them
+// — the empty page carries a breadcrumb, the empty-state component, and a
+// "Start shopping" link, nothing more (verified against the retained capture of
+// the 2026-08-27 failing run).
+//
+// H-E-B does not publish the window's length, so this is a deliberately
+// CONSERVATIVE floor rather than a measured constant: two years is comfortably
+// longer than any window H-E-B has been observed to keep, so a checkpoint older
+// than this is aged-out under every plausible reading. Being conservative is the
+// safe direction — it can only ever make the connector escalate a case it could
+// have explained, never explain away a case it should escalate.
+export const HEB_ORDER_RETENTION_FLOOR_DAYS = 730;
 // Bounded polite delay after a successful mid-run repair re-probe, before
 // retrying the one affected detail (design.md Decision 4). Reuses the same
 // jitter shape as hydrationWait rather than inventing a second constant pair.
 export const HEB_REPAIR_RETRY_DELAY_MIN_MS = 1500;
 export const HEB_REPAIR_RETRY_DELAY_MAX_MS = 2500;
 
+const DETAIL_SURFACE_TIMEOUT_MS = 30_000;
+const DETAIL_SURFACE_POLL_MS = 250;
+const DETAIL_SURFACE_STABLE_POLLS = 3;
+
+type DetailSurfaceSettlement = "complete" | "incomplete" | "timeout" | "error";
+
+interface DetailSurfaceRow {
+  html: string;
+  key: string;
+}
+
+interface DetailSurfaceState {
+  actionableControl: string | null;
+  actionPerformed: string | null;
+  atEnd: boolean;
+  clientHeight: number;
+  loading: boolean;
+  rowCount: number;
+  rows: DetailSurfaceRow[];
+  scrollHeight: number;
+  scrollTop: number;
+}
+
+interface DetailSurfaceDiagnostics {
+  actionableControl: string | null;
+  clientHeight: number;
+  collectedRows: number;
+  expectedRows: number | null;
+  lastAction: string | null;
+  lastError: string | null;
+  loading: boolean;
+  scrollHeight: number;
+  scrollTop: number;
+  settlement: DetailSurfaceSettlement;
+  snapshots: number;
+}
+
+interface DetailSurfaceResult {
+  diagnostics: DetailSurfaceDiagnostics;
+  html: string;
+}
+
 async function hydrationWait(): Promise<void> {
   const jitter = HEB_HYDRATION_WAIT_MIN_MS + Math.random() * (HEB_HYDRATION_WAIT_MAX_MS - HEB_HYDRATION_WAIT_MIN_MS);
   await politeDelay(jitter);
+}
+
+/** Read and advance the provider's detail surface once. The function is
+ * serialized into the browser by Playwright, so it has no connector state and
+ * does not depend on H-E-B-specific React internals. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this serialized probe keeps row capture, scrollport discovery, and source-control honoring atomic
+function inspectAndAdvanceDetailSurface(lastAction: string | null): DetailSurfaceState {
+  const row = document.querySelector('a[data-qe-id="itemRowDetailsName"]')?.closest("li") ?? document.body;
+  let scrollPort: Element | Document = document.scrollingElement ?? document.documentElement;
+  for (let current: Element | null = row; current; current = current.parentElement) {
+    const style = getComputedStyle(current);
+    const scrollable = style.overflowY === "auto" || style.overflowY === "scroll";
+    if (current.scrollHeight > current.clientHeight && scrollable) {
+      scrollPort = current;
+      break;
+    }
+  }
+  const isDocumentScrollPort = scrollPort instanceof Document;
+  const scrollTop = isDocumentScrollPort ? window.scrollY : (scrollPort as Element & { scrollTop: number }).scrollTop;
+  const scrollHeight = isDocumentScrollPort
+    ? Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)
+    : scrollPort.scrollHeight;
+  const clientHeight = isDocumentScrollPort ? window.innerHeight : scrollPort.clientHeight;
+  const isStaticDocumentSurface =
+    !isDocumentScrollPort &&
+    (scrollPort === document.documentElement || scrollPort === document.scrollingElement) &&
+    scrollHeight <= clientHeight;
+  const rows = [...document.querySelectorAll<HTMLAnchorElement>('a[data-qe-id="itemRowDetailsName"]')].map(
+    (link, itemIndex) => {
+      const itemRow = link.closest("li") ?? link;
+      const positionalIdentity = ["data-index", "aria-posinset"]
+        .map((attribute) => {
+          const value = itemRow.getAttribute(attribute)?.trim();
+          return value ? `position:${attribute}=${value}` : null;
+        })
+        .find((value) => value);
+      // The old full-page fixture and non-virtual small orders have every row
+      // mounted and no provider position. Document order is explicit and
+      // stable for that bounded surface. A scrollable/virtual surface without
+      // provider position remains an error because its local index can repeat
+      // after remount.
+      const key = positionalIdentity ?? (isStaticDocumentSurface ? `position:document-order=${itemIndex}` : null);
+      if (!key) {
+        throw new Error("detail row has no explicit positional identity");
+      }
+      const department =
+        itemRow.closest("section")?.querySelector('[data-qe-id="orderDetailsGroupTitle"]')?.textContent ?? "";
+      const escapedDepartment = department.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+      const wrappedHtml = escapedDepartment
+        ? `<section><h2 data-qe-id="orderDetailsGroupTitle">${escapedDepartment}</h2>${itemRow.outerHTML}</section>`
+        : itemRow.outerHTML;
+      return { html: wrappedHtml, key };
+    }
+  );
+  const atEnd = scrollTop + clientHeight >= scrollHeight - 2;
+  const loading = Boolean(document.querySelector('[aria-busy="true"], [data-loading="true"]'));
+  const controls = [...document.querySelectorAll<HTMLElement>('button, [role="button"]')].filter((candidate) => {
+    const labels = [candidate.textContent?.trim() ?? "", candidate.getAttribute("aria-label")?.trim() ?? ""];
+    return (
+      !candidate.hasAttribute("disabled") &&
+      candidate.getAttribute("aria-disabled") !== "true" &&
+      labels.some((label) => ["load more", "show more", "view more", "next"].includes(label.toLowerCase())) &&
+      candidate.getBoundingClientRect().width > 0
+    );
+  });
+  const [control] = controls;
+  const controlText = control
+    ? ([control.textContent?.trim() ?? "", control.getAttribute("aria-label")?.trim() ?? ""].find((label) =>
+        ["load more", "show more", "view more", "next"].includes(label.toLowerCase())
+      ) ?? null)
+    : null;
+  const actionKey = controlText ? `control:${controlText}` : null;
+  let actionPerformed: string | null = null;
+  let actionableControl: string | null = null;
+  if (actionKey) {
+    actionableControl = actionKey;
+  }
+  if (control && actionKey !== lastAction && (atEnd || scrollHeight <= clientHeight)) {
+    control.click();
+    actionPerformed = actionKey;
+  } else if (!atEnd && scrollHeight > clientHeight) {
+    const nextTop = Math.min(scrollTop + Math.max(clientHeight * 0.8, 1), scrollHeight - clientHeight);
+    if (isDocumentScrollPort) {
+      window.scrollTo(0, nextTop);
+    } else {
+      (scrollPort as Element & { scrollTop: number }).scrollTop = nextTop;
+    }
+    actionPerformed = "scroll";
+  }
+
+  return {
+    actionPerformed,
+    actionableControl,
+    atEnd,
+    clientHeight,
+    loading,
+    rowCount: rows.length,
+    rows,
+    scrollHeight,
+    scrollTop,
+  };
+}
+
+function detailSurfaceErrorMessage(diagnostics: DetailSurfaceDiagnostics): string {
+  return [
+    `detail_surface_${diagnostics.settlement}`,
+    `collected=${diagnostics.collectedRows}`,
+    `expected=${diagnostics.expectedRows ?? "unknown"}`,
+    `snapshots=${diagnostics.snapshots}`,
+    `scroll_top=${Math.round(diagnostics.scrollTop)}`,
+    `scroll_height=${Math.round(diagnostics.scrollHeight)}`,
+    `client_height=${Math.round(diagnostics.clientHeight)}`,
+    `loading=${diagnostics.loading}`,
+    `action=${diagnostics.lastAction ?? "none"}`,
+    ...(diagnostics.lastError ? [`error=${diagnostics.lastError.slice(0, 160)}`] : []),
+  ].join(";");
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the bounded poll owns one state machine so timeout, progress, and settlement cannot diverge
+async function collectDetailSurface(
+  page: Page,
+  expectedItemCount: number | null | undefined,
+  onProgress?: ((message: string) => Promise<void>) | undefined,
+  timeoutMs = DETAIL_SURFACE_TIMEOUT_MS
+): Promise<DetailSurfaceResult> {
+  const expectedRows =
+    typeof expectedItemCount === "number" && Number.isInteger(expectedItemCount) ? expectedItemCount : null;
+  const collected = new Map<string, string>();
+  const startedAt = Date.now();
+  let lastSignature = "";
+  let lastAction: string | null = null;
+  let stablePolls = 0;
+  let snapshots = 0;
+  let latest: DetailSurfaceState = {
+    actionPerformed: null,
+    actionableControl: null,
+    atEnd: false,
+    clientHeight: 0,
+    loading: false,
+    rowCount: 0,
+    rows: [],
+    scrollHeight: 0,
+    scrollTop: 0,
+  };
+  let lastError: string | null = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      latest = await page.evaluate(inspectAndAdvanceDetailSurface, lastAction);
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      break;
+    }
+    snapshots += 1;
+    const occurrenceByKey = new Map<string, number>();
+    for (const row of latest.rows) {
+      const occurrence = (occurrenceByKey.get(row.key) ?? 0) + 1;
+      occurrenceByKey.set(row.key, occurrence);
+      collected.set(`${row.key}\u001f${occurrence}`, row.html);
+    }
+    const signature = `${latest.scrollTop}:${latest.scrollHeight}:${[...collected.keys()].join("|")}`;
+    const progressed = signature !== lastSignature;
+    lastSignature = signature;
+    if (progressed) {
+      stablePolls = 0;
+      lastAction = null;
+    } else {
+      stablePolls += 1;
+    }
+    if (latest.actionPerformed) {
+      lastAction = latest.actionPerformed;
+    }
+    if (onProgress && (progressed || latest.actionableControl)) {
+      await onProgress(
+        `H-E-B detail surface: ${collected.size} rows observed; action=${latest.actionableControl ?? "settling"}`
+      );
+    }
+    if (
+      expectedRows !== null &&
+      collected.size >= expectedRows &&
+      latest.atEnd &&
+      !latest.loading &&
+      !latest.actionableControl
+    ) {
+      break;
+    }
+    if (latest.atEnd && !latest.loading && !latest.actionableControl && stablePolls >= DETAIL_SURFACE_STABLE_POLLS) {
+      break;
+    }
+    await page.waitForTimeout(DETAIL_SURFACE_POLL_MS);
+  }
+
+  const timedOut = Date.now() - startedAt >= timeoutMs;
+  const complete =
+    expectedRows === null
+      ? latest.atEnd && !latest.loading && !latest.actionableControl && stablePolls >= DETAIL_SURFACE_STABLE_POLLS
+      : collected.size >= expectedRows && latest.atEnd && !latest.loading && !latest.actionableControl;
+  let settlement: DetailSurfaceSettlement = "incomplete";
+  if (lastError) {
+    settlement = "error";
+  } else if (complete) {
+    settlement = "complete";
+  } else if (timedOut) {
+    settlement = "timeout";
+  }
+  const diagnostics: DetailSurfaceDiagnostics = {
+    actionableControl: latest.actionableControl,
+    clientHeight: latest.clientHeight,
+    collectedRows: collected.size,
+    expectedRows,
+    lastAction,
+    lastError,
+    loading: latest.loading,
+    scrollHeight: latest.scrollHeight,
+    scrollTop: latest.scrollTop,
+    settlement,
+    snapshots,
+  };
+  const html = collected.size > 0 ? `<html><body><main>${[...collected.values()].join("")}</main></body></html>` : "";
+  return { diagnostics, html };
 }
 
 /**
@@ -101,8 +377,11 @@ export function hebAllowsInteractiveAuthRepair(env: NodeJS.ProcessEnv = process.
   return triggerKind === "manual";
 }
 
-type DetailFailureKind =
+export type DetailFailureKind =
   | "deferred_budget"
+  | "detail_surface_error"
+  | "detail_surface_incomplete"
+  | "detail_surface_timeout"
   | "navigation_failed_non_retryable"
   | "navigation_retry_exhausted"
   | "parse_missing"
@@ -134,6 +413,9 @@ export function reasonForDetailFailure(kind: DetailFailureKind): HebDetailGapRea
     case "navigation_retry_exhausted":
     case "deferred_budget":
       return "retry_exhausted";
+    case "detail_surface_error":
+    case "detail_surface_incomplete":
+    case "detail_surface_timeout":
     case "parse_missing":
     case "session_repair_required":
     case "navigation_failed_non_retryable":
@@ -150,6 +432,9 @@ export function classifyHebDetailFailure(kind: DetailFailureKind): HebRecoveryCl
     case "session_repair_required":
       return "owner_repair_required";
     case "navigation_retry_exhausted":
+    case "detail_surface_error":
+    case "detail_surface_incomplete":
+    case "detail_surface_timeout":
     case "parse_missing":
       return "transient_no_progress";
     case "navigation_failed_non_retryable":
@@ -160,9 +445,9 @@ export function classifyHebDetailFailure(kind: DetailFailureKind): HebRecoveryCl
 }
 
 export type DetailFetchResult =
-  | { detail: OrderDetail; status: "hydrated" }
-  | { failureKind: DetailFailureKind; reason: HebDetailGapReason; status: "deferred" }
-  | { failureKind: DetailFailureKind; reason: HebDetailGapReason; status: "failed" };
+  | { detail: OrderDetail; diagnostic?: string; status: "hydrated" }
+  | { diagnostic?: string; failureKind: DetailFailureKind; reason: HebDetailGapReason; status: "deferred" }
+  | { diagnostic?: string; failureKind: DetailFailureKind; reason: HebDetailGapReason; status: "failed" };
 
 const SIGNIN_URL_RE = /\/(sign-in|login|challenge|checkpoint)/i;
 // Amazon's navigation-retry shape (connectors/amazon/index.ts): retry only
@@ -190,11 +475,18 @@ async function navigateToOrderDetail(page: Page, url: string): Promise<void> {
 }
 
 export interface HydrationDeps {
+  /** Test-only deadline seam; production uses the fixed 30-second bound. */
+  detailSurfaceTimeoutMs?: number | undefined;
+  /** Expected provider-declared item count from the order list, when sound. */
+  expectedItemCount?: number | null | undefined;
+  /** Optional bounded progress sink for browser-surface diagnostics. */
+  onDetailProgress?: ((message: string) => Promise<void>) | undefined;
   /** Optional deterministic seam for unit tests; production omits it and
    *  therefore keeps the 1500–2500ms polite hydration wait. */
   waitForHydration?: (() => Promise<void>) | undefined;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: detail fetch must keep navigation, auth, surface, and parse settlement in one observable transaction
 export async function fetchOrderDetail(
   page: Page,
   orderId: string,
@@ -223,8 +515,68 @@ export async function fetchOrderDetail(
   }
   await (deps.waitForHydration ?? hydrationWait)();
 
+  const initialLandedUrl = page.url();
+  let initialHtml: string;
+  try {
+    initialHtml = await page.content();
+  } catch (error) {
+    const diagnostic = error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160);
+    return {
+      diagnostic: `detail_content_error; error=${diagnostic}`,
+      failureKind: "detail_surface_error",
+      reason: reasonForDetailFailure("detail_surface_error"),
+      status: "failed",
+    };
+  }
+  if (SIGNIN_URL_RE.test(initialLandedUrl) || looksLoggedOut(initialLandedUrl, initialHtml)) {
+    return {
+      failureKind: "session_repair_required",
+      reason: reasonForDetailFailure("session_repair_required"),
+      status: "failed",
+    };
+  }
+  if (isIncapsulaBlocked(initialHtml)) {
+    return {
+      failureKind: "session_repair_required",
+      reason: reasonForDetailFailure("session_repair_required"),
+      status: "failed",
+    };
+  }
+
+  const surface = await collectDetailSurface(
+    page,
+    deps.expectedItemCount,
+    deps.onDetailProgress,
+    deps.detailSurfaceTimeoutMs
+  );
+  if (surface.diagnostics.settlement !== "complete") {
+    let failureKind: Extract<DetailFailureKind, `detail_surface_${string}`> = "detail_surface_incomplete";
+    if (surface.diagnostics.settlement === "error") {
+      failureKind = "detail_surface_error";
+    } else if (surface.diagnostics.settlement === "timeout") {
+      failureKind = "detail_surface_timeout";
+    }
+    return {
+      diagnostic: detailSurfaceErrorMessage(surface.diagnostics),
+      failureKind,
+      reason: reasonForDetailFailure(failureKind),
+      status: "failed",
+    };
+  }
+
   const landedUrl = page.url();
-  const html = await page.content().catch((): string => "");
+  let html: string;
+  try {
+    html = await page.content();
+  } catch (error) {
+    const diagnostic = error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160);
+    return {
+      diagnostic: `detail_content_error; error=${diagnostic}`,
+      failureKind: "detail_surface_error",
+      reason: reasonForDetailFailure("detail_surface_error"),
+      status: "failed",
+    };
+  }
   // Same looksLoggedOut() helper the deep probe uses (URL AND password-form
   // check) — not just the URL pattern — so a login form served at the
   // original order URL (not just a redirect to a sign-in path) is also
@@ -245,7 +597,7 @@ export async function fetchOrderDetail(
     };
   }
 
-  const detail = parseOrderDetailDom(html);
+  const detail = parseOrderDetailDom(surface.html || html);
   if (!detail) {
     return {
       failureKind: "parse_missing",
@@ -253,7 +605,7 @@ export async function fetchOrderDetail(
       status: "failed",
     };
   }
-  return { detail, status: "hydrated" };
+  return { detail, diagnostic: detailSurfaceErrorMessage(surface.diagnostics), status: "hydrated" };
 }
 
 // ─── List-page extraction with shape-check ────────────────────────────────
@@ -309,7 +661,52 @@ interface EmptyListPageClassification {
  */
 export interface PriorOrdersEvidence {
   hasPriorOrders: boolean;
+  /**
+   * The `orders` checkpoint date (`YYYY-MM-DD`) behind `hasPriorOrders`, when
+   * there is one — the newest order date this connection ever recorded.
+   *
+   * Carried so the classifier can ask HOW OLD the prior evidence is, not merely
+   * whether it exists. Absent/unparseable is treated as "age unknown", which
+   * keeps the escalating branch.
+   */
+  newestPriorOrderDate?: string | undefined;
 }
+
+/**
+ * Whether every order this connection ever recorded predates H-E-B's retention
+ * window, making an empty order-history page the expected render rather than a
+ * contradiction.
+ *
+ * Pure, and deliberately strict in the safe direction — it answers "yes" only on
+ * positive proof of age:
+ *   - no checkpoint date, or one that does not parse -> NO (age unknown)
+ *   - a checkpoint newer than the floor              -> NO (still in-window)
+ * Both fall through to the escalating branch. The only way to reach `true` is a
+ * parseable date strictly older than the floor.
+ */
+export function priorOrdersAreBeyondRetention(evidence: PriorOrdersEvidence, now: Date): boolean {
+  if (!evidence.hasPriorOrders) {
+    return false;
+  }
+  const checkpoint = evidence.newestPriorOrderDate;
+  if (!checkpoint) {
+    return false;
+  }
+  const checkpointMs = Date.parse(checkpoint);
+  if (Number.isNaN(checkpointMs)) {
+    return false;
+  }
+  const ageDays = (now.getTime() - checkpointMs) / MS_PER_DAY;
+  return ageDays > HEB_ORDER_RETENTION_FLOOR_DAYS;
+}
+
+/** Owner-facing copy for the retention case. It states what was observed and
+ *  what it means, and explicitly does NOT ask the owner to do anything: there
+ *  is no action available, and inventing one would be a false alarm. */
+export const HEB_EMPTY_AFTER_RETENTION_MESSAGE =
+  "H-E-B's order history no longer lists this account's orders, which are all older than H-E-B's " +
+  "retention window. Your previously collected orders are retained and untouched. This is expected " +
+  "and needs no action; new orders will be collected normally.";
 
 /** Owner-facing message for the one classification whose whole point is to be
  *  read by a person. Says exactly what was observed and what was NOT concluded:
@@ -341,7 +738,8 @@ export function classifyEmptyListPage(
   diag: ListPageDiagnostics,
   pageNum: number,
   maxPageResolution: MaxPageResolution,
-  priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false }
+  priorOrdersEvidence: PriorOrdersEvidence = { hasPriorOrders: false },
+  now: Date = new Date()
 ): EmptyListPageClassification {
   if (diag.incapsula_block || diag.password_form) {
     return { action: "abort", reason: "source_auth_or_challenge" };
@@ -364,6 +762,21 @@ export function classifyEmptyListPage(
   // specific diagnosis and keeps its own reason), and ABOVE the empty_state
   // branch, so a source-authored empty state cannot short-circuit past it.
   if (diag.empty_state && priorOrdersEvidence.hasPriorOrders) {
+    // ...unless every order this connection ever recorded is old enough that
+    // H-E-B's retention window no longer covers it. Then the empty page is not
+    // a contradiction at all: it is precisely what a healthy account looks like
+    // once its last order ages out, and escalating it asks the owner to fix
+    // something that is not broken and cannot be fixed.
+    //
+    // This is a NARROW exception, and its narrowness is the whole safety
+    // argument. It requires a parseable checkpoint date strictly older than a
+    // conservative retention floor. A recent checkpoint — the case the guard was
+    // written for, where orders that H-E-B should still be listing have vanished
+    // — keeps escalating, because that genuinely cannot be told apart from a
+    // purge or a degraded session.
+    if (priorOrdersAreBeyondRetention(priorOrdersEvidence, now)) {
+      return { action: "terminal", reason: "source_reported_empty_after_retention" };
+    }
     return { action: "abort", reason: "heb_empty_history_after_prior_orders" };
   }
   // H-E-B's own empty-state component, rendered inside the order-results
@@ -407,6 +820,7 @@ async function reportEmptyPageDiagnostics(
   page: Page,
   pageNum: number,
   emit: BrowserCollectContext["emit"],
+  progress: BrowserCollectContext["progress"],
   priorOrdersEvidence: PriorOrdersEvidence
 ): Promise<EmptyListPageClassification> {
   const html = await page.content().catch((): string => "");
@@ -414,6 +828,15 @@ async function reportEmptyPageDiagnostics(
   const maxPageResolution = resolveMaxPage(html);
   const classification = classifyEmptyListPage(diag, pageNum, maxPageResolution, priorOrdersEvidence);
   if (classification.action === "terminal") {
+    // A terminal classification must NOT emit a SKIP_RESULT: a skip marks the
+    // stream as an unresolved attempt, which permanently vetoes the
+    // `considered: 0` enumeration-boundary proof this run is entitled to
+    // (reference-contract `evaluateStreamCoherence` rule 1). The retention case
+    // still deserves to be legible, so it goes out as run progress — visible in
+    // the run log, with no effect on the coverage axis.
+    if (classification.reason === "source_reported_empty_after_retention") {
+      await progress(HEB_EMPTY_AFTER_RETENTION_MESSAGE, { stream: "orders" });
+    }
     return classification;
   }
   await emit({
@@ -501,7 +924,8 @@ function buildHebDetailGap(
   orderId: string,
   reason: HebDetailGapReason,
   failureKind: DetailFailureKind,
-  orderDate?: string | undefined
+  orderDate?: string | undefined,
+  diagnostic?: string | undefined
 ) {
   return buildDetailGap({
     stream: "order_items",
@@ -509,7 +933,7 @@ function buildHebDetailGap(
     recordKey: orderId,
     reason,
     locator: { kind: "heb.order_detail", order_id: orderId, ...(orderDate ? { order_date: orderDate } : {}) },
-    error: { class: classifyHebDetailFailure(failureKind) },
+    error: { class: classifyHebDetailFailure(failureKind), ...(diagnostic ? { message: diagnostic } : {}) },
   });
 }
 
@@ -737,7 +1161,7 @@ async function recoverPendingOrderItemDetailGapPage(
       for (const [itemIndex, item] of result.detail.items.entries()) {
         await deps.emitRecord(
           "order_items",
-          buildOrderItemRecord(locator.orderId, locator.orderDate, item, itemIndex, deps.emittedAt)
+          buildOrderItemRecord(locator.orderId, locator.orderDate, item, itemIndex, deps.emittedAt, result.detail.items)
         );
       }
       await deps.emit({
@@ -753,7 +1177,9 @@ async function recoverPendingOrderItemDetailGapPage(
     if (result.status === "failed" && result.failureKind === "session_repair_required") {
       flags.sessionRepairRequired = true;
     }
-    await deps.emit(buildHebDetailGap(locator.orderId, result.reason, result.failureKind, locator.orderDate));
+    await deps.emit(
+      buildHebDetailGap(locator.orderId, result.reason, result.failureKind, locator.orderDate, result.diagnostic)
+    );
     reDeferred += 1;
   }
   return { recovered, reDeferred, skipped };
@@ -821,7 +1247,7 @@ async function emitOrderAndItems(
     for (const [itemIndex, item] of detail.items.entries()) {
       await deps.emitRecord(
         "order_items",
-        buildOrderItemRecord(listOrder.orderId, orderDate, item, itemIndex, deps.emittedAt)
+        buildOrderItemRecord(listOrder.orderId, orderDate, item, itemIndex, deps.emittedAt, detail.items)
       );
     }
     // Completeness anchor: H-E-B's own list card declared how many items
@@ -854,6 +1280,8 @@ async function fetchDetailAndRecordCoverage(
 ): Promise<OrderDetail | null> {
   const result = await resolveOrderDetail(page, flags, listOrder.orderId, {
     ...(deps.capture ? { capture: deps.capture } : {}),
+    expectedItemCount: listOrder.itemCount,
+    onDetailProgress: deps.progress,
     sendInteraction: deps.sendInteraction,
     waitForHydration: deps.waitForHydration,
   });
@@ -864,7 +1292,9 @@ async function fetchDetailAndRecordCoverage(
     const outcome: DetailOutcome = result.status === "hydrated" ? "hydrated" : "gap";
     recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, outcome);
     if (result.status !== "hydrated") {
-      await deps.emit(buildHebDetailGap(listOrder.orderId, result.reason, result.failureKind, orderDate));
+      await deps.emit(
+        buildHebDetailGap(listOrder.orderId, result.reason, result.failureKind, orderDate, result.diagnostic)
+      );
     }
   }
   return result.status === "hydrated" ? result.detail : null;
@@ -955,7 +1385,14 @@ export async function runForwardScan(
   const walk = await walkPagesWithCeiling({
     maxPages: MAX_LIST_PAGES,
     fetchPage: async (pageNum) => {
-      const listPage = await loadListPage(page, pageNum, deps.emit, priorOrdersEvidence, deps.waitForHydration);
+      const listPage = await loadListPage(
+        page,
+        pageNum,
+        deps.emit,
+        deps.progress,
+        priorOrdersEvidence,
+        deps.waitForHydration
+      );
       if (listPage === "terminal") {
         return false;
       }
@@ -1098,6 +1535,7 @@ async function loadListPage(
   page: Page,
   pageNum: number,
   emit: BrowserCollectContext["emit"],
+  progress: BrowserCollectContext["progress"],
   priorOrdersEvidence: PriorOrdersEvidence,
   waitForHydration?: () => Promise<void>
 ): Promise<LoadedListPage | "terminal"> {
@@ -1142,7 +1580,7 @@ async function loadListPage(
     }
     return { maxPage: maxPageResolution.value, orders };
   }
-  const classification = await reportEmptyPageDiagnostics(page, pageNum, emit, priorOrdersEvidence);
+  const classification = await reportEmptyPageDiagnostics(page, pageNum, emit, progress, priorOrdersEvidence);
   if (classification.action === "terminal") {
     return "terminal";
   }
@@ -1232,7 +1670,13 @@ export interface OrdersStateShape {
  * once listed orders for this account.
  */
 export function priorOrdersEvidenceFromState(ordersState: { checkpoint?: string }): PriorOrdersEvidence {
-  return { hasPriorOrders: Boolean(ordersState.checkpoint) };
+  return {
+    hasPriorOrders: Boolean(ordersState.checkpoint),
+    // The checkpoint IS the newest order date this connection ever recorded
+    // (`buildOrdersStateCursor` advances it to `newestOrderDate`), so it is the
+    // right age to test the retention window against.
+    newestPriorOrderDate: ordersState.checkpoint,
+  };
 }
 
 /**
