@@ -612,6 +612,7 @@ class PackageRsClient {
         },
         ok: false,
         requestId: null,
+        retryAfter: null,
         status: 404,
       },
     };
@@ -884,6 +885,7 @@ function typedError(
     error,
     ok: false,
     requestId: null,
+    retryAfter: null,
     status: options.status ?? (code === "not_found" ? 404 : 409),
   };
 }

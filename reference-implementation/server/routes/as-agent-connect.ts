@@ -174,6 +174,25 @@ function parseStoredResponse(responseJson: string): {
   return { body, rewritten: body !== stored };
 }
 
+const HEALING_ERROR_LOG_MAX_LENGTH = 240;
+
+/** Opaque, non-reversible correlation token for an attempt id in logs. */
+function hashAttemptId(id: string): string {
+  return createHash("sha256").update(id, "utf8").digest("base64url").slice(0, 16);
+}
+
+/**
+ * Bound and redact a healing-write failure before it reaches logs.
+ *
+ * The failure can originate from a driver (SQLite or PostgreSQL) and its
+ * message is not guaranteed to be free of credential-like values or bounded
+ * in length, so this strips long token-shaped runs and caps the result.
+ */
+function sanitizeHealingError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err ?? "unknown error");
+  return message.replace(/[A-Za-z0-9+/=_-]{32,}/g, "[redacted]").slice(0, HEALING_ERROR_LOG_MAX_LENGTH);
+}
+
 export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
   const hashPollingCode = (code: string) => createHash("sha256").update(code, "utf8").digest("base64url");
   const pollingCodeMatches = (hash: string, code: string) => {
@@ -275,9 +294,9 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
         await rewriteStoredResponse(id, responseJson, JSON.stringify(body));
       } catch (err) {
         console.error(
-          `[agent-connect] best-effort response_json healing write failed for attempt ${id}, returning normalized body anyway: ${
-            err instanceof Error ? err.message : String(err)
-          }`
+          `[agent-connect] best-effort response_json healing write failed for attempt ${hashAttemptId(
+            id
+          )}, returning normalized body anyway: ${sanitizeHealingError(err)}`
         );
       }
     }

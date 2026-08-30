@@ -118,7 +118,13 @@ test("synthesizes envelope for plain-text errors", async () => {
   assert.match(result.error.message ?? "", INSUFFICIENT_SCOPE);
 });
 
-test("429 status is authoritative and Retry-After is honored", async () => {
+// RsClient is a thin transport adapter: it exposes the raw HTTP status,
+// headers, and error envelope for the caller to act on. It does not itself
+// schedule retries, perform re-sync, or apply retry/re-sync policy — that
+// policy lives in the code that calls RsClient. These tests therefore prove
+// exposure/pass-through of transport facts, not retry or re-sync behavior.
+
+test("429 status and Retry-After header are both exposed on the error envelope", async () => {
   const fetch = async () =>
     new Response(JSON.stringify({ error: { type: "rate_limit_error", code: "rate_limit_exceeded" } }), {
       status: 429,
@@ -136,7 +142,7 @@ test("429 status is authoritative and Retry-After is honored", async () => {
   assert.equal(result.retryAfter, "30");
 });
 
-test("410 triggers re-sync regardless of error.type", async () => {
+test("410 status and cursor_expired code both surface unchanged, regardless of error.type", async () => {
   const fetch = async () =>
     new Response(JSON.stringify({ error: { type: "gone_error", code: "cursor_expired" } }), {
       status: 410,
@@ -154,7 +160,7 @@ test("410 triggers re-sync regardless of error.type", async () => {
   assert.equal(result.error.code, "cursor_expired");
 });
 
-test("unknown error code with a recognized status is handled by status alone", async () => {
+test("unknown error code with a recognized status still surfaces the actual status", async () => {
   const fetch = async () =>
     new Response(JSON.stringify({ error: { type: "not_a_real_type", code: "brand_new_future_code" } }), {
       status: 403,
@@ -173,6 +179,46 @@ test("unknown error code with a recognized status is handled by status alone", a
   // actual status code, and must not cause a parse failure.
   assert.equal(result.error.type, "not_a_real_type");
   assert.equal(result.error.code, "brand_new_future_code");
+});
+
+test("unrecognized HTTP status (471) still parses and surfaces the actual status", async () => {
+  const fetch = async () =>
+    new Response(JSON.stringify({ error: { type: "unheard_of_type", code: "unheard_of_code" } }), {
+      status: 471,
+      headers: { "content-type": "application/json" },
+    });
+
+  const rs = new RsClient({ providerUrl: "https://x", accessToken: "t", fetch });
+  const result = await rs.getJson("/v1/streams/orders/records");
+
+  assert.equal(result.status, 471);
+  assert.equal(result.ok, false);
+  if (result.ok) {
+    throw new Error("expected an error envelope");
+  }
+  assert.equal(result.error.type, "unheard_of_type");
+  assert.equal(result.error.code, "unheard_of_code");
+});
+
+test("contradictory error.type on a 403 does not override the forbidden status", async () => {
+  // Body claims a rate-limit shape, but the actual status is 403 (forbidden).
+  // The status is authoritative; a client must not treat this as retryable
+  // rate-limit handling on the strength of the incompatible body type alone.
+  const fetch = async () =>
+    new Response(JSON.stringify({ error: { type: "rate_limit_error", code: "rate_limit_exceeded" } }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+
+  const rs = new RsClient({ providerUrl: "https://x", accessToken: "t", fetch });
+  const result = await rs.getJson("/v1/streams/orders/records");
+
+  assert.equal(result.status, 403);
+  assert.equal(result.ok, false);
+  if (result.ok) {
+    throw new Error("expected an error envelope");
+  }
+  assert.equal(result.retryAfter, null);
 });
 
 test("status-incompatible error.type does not override the transport outcome", async () => {

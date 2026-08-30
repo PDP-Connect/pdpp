@@ -225,6 +225,114 @@ test(
 );
 
 test(
+  "SQLite: a later replay heals the row once the failing trigger is gone",
+  withSqlite(async () => {
+    // The best-effort contract implies recovery: a failed heal is not a
+    // permanent wedge. Prove that a SECOND replay, while the row is still
+    // stale, normalizes the body again (the failure did not corrupt state),
+    // and that a THIRD replay after the trigger is removed both normalizes
+    // AND finally rewrites the durable row.
+    const grant = legacyGrant("grt_legacy_recovery");
+    const staleResponse = JSON.stringify({
+      access_token: TOKEN,
+      grant,
+      grant_id: grant.grant_id,
+      token_type: "Bearer",
+    });
+    seedSqliteAttempt("att_recovery", grant, staleResponse);
+    getDb().exec(`
+      CREATE TRIGGER heal_recovery_fails
+      BEFORE UPDATE OF response_json ON agent_connect_attempts
+      WHEN NEW.id = 'att_recovery'
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated healing write failure');
+      END;
+    `);
+
+    const store = createAgentConnectAttemptStore();
+
+    const firstFailedReplay = await store.redeem("att_recovery", POLLING_CODE);
+    assert.equal(firstFailedReplay.outcome, "approved");
+    assert.ok(firstFailedReplay.outcome === "approved");
+    assertExpiryAbsent(firstFailedReplay.body, "sqlite recovery, first failed heal");
+
+    const secondFailedReplay = await store.redeem("att_recovery", POLLING_CODE);
+    assert.equal(secondFailedReplay.outcome, "approved");
+    assert.ok(secondFailedReplay.outcome === "approved");
+    assert.equal(secondFailedReplay.replay, true, "still replaying the stale stored response");
+    assertExpiryAbsent(secondFailedReplay.body, "sqlite recovery, second failed heal");
+
+    let staleRow = getDb()
+      .prepare("SELECT response_json FROM agent_connect_attempts WHERE id = ?")
+      .get("att_recovery") as { response_json: string };
+    assert.equal(staleRow.response_json, staleResponse, "row must still be unhealed after repeated failures");
+
+    getDb().exec("DROP TRIGGER heal_recovery_fails");
+
+    const healedReplay = await store.redeem("att_recovery", POLLING_CODE);
+    assert.equal(healedReplay.outcome, "approved");
+    assert.ok(healedReplay.outcome === "approved");
+    assertExpiryAbsent(healedReplay.body, "sqlite recovery, delayed heal");
+
+    staleRow = getDb().prepare("SELECT response_json FROM agent_connect_attempts WHERE id = ?").get("att_recovery") as {
+      response_json: string;
+    };
+    assert.equal(staleRow.response_json.includes("expires_at"), false, "the delayed heal must rewrite the row");
+  })
+);
+
+test(
+  "SQLite: a failed healing write logs one bounded, redacted event",
+  withSqlite(async () => {
+    const grant = legacyGrant("grt_legacy_log");
+    const staleResponse = JSON.stringify({
+      access_token: TOKEN,
+      grant,
+      grant_id: grant.grant_id,
+      token_type: "Bearer",
+    });
+    seedSqliteAttempt("att_log", grant, staleResponse);
+    // A driver error is not guaranteed to be short or free of token-shaped
+    // substrings, so the simulated failure message embeds one.
+    const credentialLikeValue = "a".repeat(64);
+    getDb().exec(`
+      CREATE TRIGGER heal_log_fails
+      BEFORE UPDATE OF response_json ON agent_connect_attempts
+      WHEN NEW.id = 'att_log'
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated failure token=${credentialLikeValue}');
+      END;
+    `);
+
+    const originalConsoleError = console.error;
+    const logged: unknown[][] = [];
+    console.error = (...args: unknown[]) => {
+      logged.push(args);
+    };
+    try {
+      const store = createAgentConnectAttemptStore();
+      const result = await store.redeem("att_log", POLLING_CODE);
+      assert.equal(result.outcome, "approved");
+    } finally {
+      console.error = originalConsoleError;
+    }
+
+    assert.equal(logged.length, 1, "exactly one healing-failure event must be logged");
+    const [entry] = logged;
+    assert.ok(entry);
+    const rendered = entry.map((part) => String(part)).join(" ");
+
+    assert.equal(rendered.includes(TOKEN), false, "log must not contain the access token");
+    assert.equal(rendered.includes(POLLING_CODE), false, "log must not contain the polling code");
+    assert.equal(rendered.includes(staleResponse), false, "log must not contain the raw stored response");
+    assert.equal(rendered.includes("att_log"), false, "log must not contain the raw attempt id");
+    assert.equal(rendered.includes(credentialLikeValue), false, "credential-like runs must be redacted");
+    assert.ok(rendered.includes("[redacted]"), "redaction marker must be present");
+    assert.ok(rendered.length < 400, "log line must be bounded, not the raw unbounded driver message");
+  })
+);
+
+test(
   "SQLite: the stored response_json is rewritten so the null cannot resurface",
   withSqlite(async () => {
     const grant = legacyGrant("grt_legacy_rewrite");
@@ -548,6 +656,136 @@ test(
       await postgresQuery("DROP TRIGGER IF EXISTS reject_healing_write ON agent_connect_attempts");
       await postgresQuery("DROP FUNCTION IF EXISTS pg_temp_reject_healing_write()");
     }
+  })
+);
+
+test(
+  "PostgreSQL: a later replay heals the row once the failing trigger is gone",
+  { skip: POSTGRES_SKIP },
+  withPostgres(async () => {
+    const grant = legacyGrant("grt_pg_recovery");
+    const staleResponse = JSON.stringify({
+      access_token: TOKEN,
+      grant,
+      grant_id: grant.grant_id,
+      token_type: "Bearer",
+    });
+    await seedPostgresAttempt("att_pg_recovery", grant, staleResponse);
+    await postgresQuery(`
+      CREATE OR REPLACE FUNCTION pg_temp_reject_recovery_write() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.id = 'att_pg_recovery' THEN
+          RAISE EXCEPTION 'simulated healing write failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await postgresQuery(`
+      CREATE TRIGGER reject_recovery_write
+      BEFORE UPDATE OF response_json ON agent_connect_attempts
+      FOR EACH ROW EXECUTE FUNCTION pg_temp_reject_recovery_write();
+    `);
+    try {
+      const store = createAgentConnectAttemptStore();
+
+      const firstFailedReplay = await store.redeem("att_pg_recovery", POLLING_CODE);
+      assert.ok(firstFailedReplay.outcome === "approved");
+      assertExpiryAbsent(firstFailedReplay.body, "postgres recovery, first failed heal");
+
+      const secondFailedReplay = await store.redeem("att_pg_recovery", POLLING_CODE);
+      assert.ok(secondFailedReplay.outcome === "approved");
+      assert.equal(secondFailedReplay.replay, true);
+      assertExpiryAbsent(secondFailedReplay.body, "postgres recovery, second failed heal");
+
+      let staleRow = await postgresQuery<{ response_json: string }>(
+        "SELECT response_json FROM agent_connect_attempts WHERE id = $1",
+        ["att_pg_recovery"]
+      );
+      assert.equal(
+        staleRow.rows[0]?.response_json,
+        staleResponse,
+        "row must still be unhealed after repeated failures"
+      );
+
+      await postgresQuery("DROP TRIGGER IF EXISTS reject_recovery_write ON agent_connect_attempts");
+
+      const healedReplay = await store.redeem("att_pg_recovery", POLLING_CODE);
+      assert.ok(healedReplay.outcome === "approved");
+      assertExpiryAbsent(healedReplay.body, "postgres recovery, delayed heal");
+
+      staleRow = await postgresQuery<{ response_json: string }>(
+        "SELECT response_json FROM agent_connect_attempts WHERE id = $1",
+        ["att_pg_recovery"]
+      );
+      assert.equal(
+        (staleRow.rows[0]?.response_json ?? "").includes("expires_at"),
+        false,
+        "the delayed heal must rewrite the row"
+      );
+    } finally {
+      await postgresQuery("DROP TRIGGER IF EXISTS reject_recovery_write ON agent_connect_attempts");
+      await postgresQuery("DROP FUNCTION IF EXISTS pg_temp_reject_recovery_write()");
+    }
+  })
+);
+
+test(
+  "PostgreSQL: a failed healing write logs one bounded, redacted event",
+  { skip: POSTGRES_SKIP },
+  withPostgres(async () => {
+    const grant = legacyGrant("grt_pg_log");
+    const staleResponse = JSON.stringify({
+      access_token: TOKEN,
+      grant,
+      grant_id: grant.grant_id,
+      token_type: "Bearer",
+    });
+    await seedPostgresAttempt("att_pg_log", grant, staleResponse);
+    const credentialLikeValue = "b".repeat(64);
+    await postgresQuery(`
+      CREATE OR REPLACE FUNCTION pg_temp_reject_log_write() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.id = 'att_pg_log' THEN
+          RAISE EXCEPTION 'simulated failure token=${credentialLikeValue}';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await postgresQuery(`
+      CREATE TRIGGER reject_log_write
+      BEFORE UPDATE OF response_json ON agent_connect_attempts
+      FOR EACH ROW EXECUTE FUNCTION pg_temp_reject_log_write();
+    `);
+
+    const originalConsoleError = console.error;
+    const logged: unknown[][] = [];
+    console.error = (...args: unknown[]) => {
+      logged.push(args);
+    };
+    try {
+      const store = createAgentConnectAttemptStore();
+      const result = await store.redeem("att_pg_log", POLLING_CODE);
+      assert.equal(result.outcome, "approved");
+    } finally {
+      console.error = originalConsoleError;
+      await postgresQuery("DROP TRIGGER IF EXISTS reject_log_write ON agent_connect_attempts");
+      await postgresQuery("DROP FUNCTION IF EXISTS pg_temp_reject_log_write()");
+    }
+
+    assert.equal(logged.length, 1, "exactly one healing-failure event must be logged");
+    const [entry] = logged;
+    assert.ok(entry);
+    const rendered = entry.map((part) => String(part)).join(" ");
+
+    assert.equal(rendered.includes(TOKEN), false, "log must not contain the access token");
+    assert.equal(rendered.includes(POLLING_CODE), false, "log must not contain the polling code");
+    assert.equal(rendered.includes(staleResponse), false, "log must not contain the raw stored response");
+    assert.equal(rendered.includes("att_pg_log"), false, "log must not contain the raw attempt id");
+    assert.equal(rendered.includes(credentialLikeValue), false, "credential-like runs must be redacted");
+    assert.ok(rendered.includes("[redacted]"), "redaction marker must be present");
+    assert.ok(rendered.length < 400, "log line must be bounded, not the raw unbounded driver message");
   })
 );
 
