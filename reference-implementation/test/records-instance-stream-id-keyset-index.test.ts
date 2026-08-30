@@ -87,7 +87,7 @@ const SUMMARY_REPAIR_KEYSET_SQL = `SELECT id, stream, emitted_at
      WHERE connector_instance_id = $1
        AND deleted = FALSE
        AND id > $2
-     ORDER BY id ASC
+     ORDER BY connector_instance_id ASC, deleted ASC, id ASC
      LIMIT $3`;
 
 function withPostgres(fn: () => Promise<void>) {
