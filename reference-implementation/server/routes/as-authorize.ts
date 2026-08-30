@@ -240,18 +240,29 @@ async function accumulateSourceEntry(
     return "rejected";
   }
 
+  // Verify the connector has at least one active connection for this owner,
+  // whether or not a specific connection was selected. The picker only ever
+  // renders rows for connectors the owner actually holds (see
+  // `buildConnectorPickerRows`), so this rejects a stale or forged selection
+  // — e.g. a source removed since the page was rendered, or a manufactured
+  // connector_id — before it can reach the grant engine and hard-fail the
+  // whole package with `source.authorization_details_invalid` for every
+  // other legitimately-selected source in the same submission. The active
+  // set also drives the pin-vs-fan-in decision below: a chosen connection is
+  // only an enforceable constraint when there is more than one to choose
+  // among.
+  const active = await caps
+    .listActiveBindingsForGrant({ connectorId, ownerSubjectId })
+    .catch(() => [] as ConsentPickerBinding[]);
+  const activeBindingCount = active.length;
+  if (activeBindingCount === 0) {
+    oauthError(res, 400, "invalid_request", `No active connection for ${connectorId}`);
+    return "rejected";
+  }
   let matchedBinding: ConsentPickerBinding | null = null;
-  let activeBindingCount = 0;
   if (connectionId) {
-    // Verify the requested connection is currently active for this
-    // owner+connector. Reject silently-pinning a stale connection. The active
-    // set also drives the pin-vs-fan-in decision below: a chosen connection is
-    // only an enforceable constraint when there is more than one to choose
-    // among.
-    const active = await caps
-      .listActiveBindingsForGrant({ connectorId, ownerSubjectId })
-      .catch(() => [] as ConsentPickerBinding[]);
-    activeBindingCount = active.length;
+    // Reject silently-pinning a stale connection: the id must still be one
+    // of the connector's currently active bindings.
     matchedBinding = active.find((row) => row.connectorInstanceId === connectionId) || null;
     if (!matchedBinding) {
       oauthError(res, 400, "invalid_request", `Connection ${connectionId} is not active for ${connectorId}`);
