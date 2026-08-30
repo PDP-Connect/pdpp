@@ -26,9 +26,21 @@
  * SHAPE
  *
  * One row per migration id. `status` is the receipt; `cursor` is the durable
- * resume boundary; `lease_owner`/`lease_expires_at` fence concurrent boots
- * that got past the advisory lock (a stale lease from a crashed process must
- * be reclaimable, so the lease expires rather than pinning forever).
+ * resume boundary. `lease_owner`/`lease_expires_at` are DIAGNOSTIC ONLY — an
+ * operator-facing "who last ran this and until when did they expect to hold
+ * it" breadcrumb, not a concurrency control. Nothing in this module reads
+ * `lease_expires_at` to decide whether a claim is stale: `claimPostgresMigration`
+ * re-claims any row whose `status` is not `complete` regardless of the lease
+ * timestamp (see the "stale running receipt" test in
+ * `postgres-boot-migration-resume.test.ts`, which seeds a lease expiring in
+ * 2099 and asserts the re-claim still proceeds). The session-scoped
+ * `pg_advisory_lock` taken by `bootstrapPostgresSchema` before any migration
+ * runs is the sole mechanism that serializes concurrent boots; it is held for
+ * the whole bootstrap and is released automatically if the holding
+ * connection dies, so it needs no expiry of its own. A future caller must not
+ * add a second gate that checks `lease_expires_at` against `now()` — that
+ * would be a redundant fence that could disagree with the advisory lock and
+ * silently reintroduce a second, weaker concurrency authority.
  * `changed_rows` accumulates the migration's own reported mutation count so
  * an operator can tell a real rewrite from a no-op pass without reading
  * `pg_stat_user_tables`.
@@ -60,7 +72,9 @@ export interface PostgresMigrationLedgerRow {
   readonly changedRows: number;
   readonly cursor: string | null;
   readonly lastError: string | null;
+  /** Diagnostic only — see the module docblock. Never read to gate a claim. */
   readonly leaseExpiresAt: string | null;
+  /** Diagnostic only — see the module docblock. Never read to gate a claim. */
   readonly leaseOwner: string | null;
   readonly migrationId: string;
   readonly status: PostgresMigrationStatus;
@@ -106,6 +120,10 @@ export async function ensurePostgresMigrationLedger(client: PoolClient): Promise
       -- writes it (for the local-device canonicalization it is the last
       -- fully-committed source_instance_id); the ledger only stores it.
       cursor            TEXT,
+      -- Diagnostic breadcrumbs only (who last claimed this and when they
+      -- expected to release it). Never read to decide whether a claim is
+      -- stale; the session-scoped advisory lock in bootstrapPostgresSchema
+      -- is the sole concurrency authority. See the module docblock.
       lease_owner       TEXT,
       lease_expires_at  TEXT,
       attempt_count     INTEGER NOT NULL DEFAULT 0,
