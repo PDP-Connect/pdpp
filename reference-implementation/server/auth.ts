@@ -40,6 +40,7 @@ import {
   validateConnectorManifest,
 } from "./connector-manifest-validation.ts";
 import {
+  CoreSourceAuthorizationError,
   projectResolvedCoreGrantStreams as coreProjectResolvedGrantStreams,
   coreSchemaRequiredFields,
   createRetainedCoreConsentSnapshot,
@@ -8381,6 +8382,78 @@ async function persistChildGrantForPackage({
  * @param {string} [args.subjectId]
  * @param {object} [args.opts]
  */
+/**
+ * Resolve eligibility for every selected source in one pass and report all of
+ * the ineligible ones together.
+ *
+ * The issuance loop in `createHostedMcpGrantPackage` is sequential and stops at
+ * the first rejection, so on its own it can only ever name one source's
+ * streams per attempt. This pre-pass runs the identical per-entry resolution
+ * (`resolvePendingRequestForApproval`, which bottoms out in
+ * `resolveCoreEligibleInstanceIds`) against every entry, keeps going after a
+ * failure, and then raises a single error naming every stream that could not
+ * be granted.
+ *
+ * Genuine ambiguity (`eligible.size > 1`) still fails -- the owner must
+ * disambiguate -- it is simply reported alongside the other failures instead
+ * of pre-empting them. Graceful degradation is untouched: an entry whose
+ * streams partly resolve is not a failure here, exactly as before.
+ */
+async function requireEveryHostedMcpSourceEligible({
+  authorizationDetails,
+  clientId,
+  opts,
+  storageBindings,
+  subjectId,
+}: {
+  authorizationDetails: Record<string, unknown>[];
+  clientId: string;
+  opts: { scenarioId?: string; nativeManifest?: DbRow | null; issuerBase?: string };
+  storageBindings: (StorageBinding | null | undefined)[];
+  subjectId: string;
+}): Promise<void> {
+  const failures: { message: string; streams: string[] }[] = [];
+  await forEachSequential(authorizationDetails, async (detail, index) => {
+    let request: PendingRequest;
+    try {
+      request = await normalizePendingGrantRequest({ authorization_details: [detail], client_id: clientId }, opts);
+      const selectedStorageBinding = normalizeStorageBinding(storageBindings[index]);
+      if (selectedStorageBinding) {
+        request.storage_binding = selectedStorageBinding;
+      }
+      requireStructuredPendingRequestShape(request);
+      const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request);
+      request.source_binding = describeSourceBinding(sourceBinding);
+      request.storage_binding = normalizeStorageBinding(storageBinding);
+      const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+      await retainSourceDeclarationSnapshot(request, sourceBinding, storageBinding, manifest, opts);
+      await resolvePendingRequestForApproval(request, sourceBinding, storageBinding, subjectId);
+    } catch (entryError) {
+      // Only eligibility rejections are aggregated. Anything else (malformed
+      // details, unknown connector, unregistered client) is a hard structural
+      // fault that the issuance loop must still surface immediately and
+      // unchanged.
+      if (!(entryError instanceof CoreSourceAuthorizationError)) {
+        throw entryError;
+      }
+      failures.push({ message: entryError.message, streams: [...(entryError.streams ?? [])] });
+    }
+  });
+  if (failures.length === 0) {
+    return;
+  }
+  const streams = Array.from(new Set(failures.flatMap((failure) => failure.streams)));
+  // One error, every offending stream. `streams` is the structured field the
+  // hosted-MCP picker catch already forwards to the wire, so a client can act
+  // on the full set without parsing prose.
+  const err: AuthError = new Error(failures.map((failure) => failure.message).join("; "));
+  err.code = "source.authorization_details_invalid";
+  if (streams.length > 0) {
+    (err as AuthError & { streams?: string[] }).streams = streams;
+  }
+  throw err;
+}
+
 export async function createHostedMcpGrantPackage({
   clientId,
   authorizationDetails,
@@ -8408,6 +8481,24 @@ export async function createHostedMcpGrantPackage({
   if (!registeredClient) {
     throw buildOAuthAuthorizationCodeError("invalid_client", "Unknown client_id");
   }
+
+  // Validate EVERY source's eligibility before writing anything. The issuance
+  // loop below is sequential and has no per-entry catch, so without this pass
+  // the first ineligible source aborts the request and the owner only ever
+  // learns about that one -- fix it, retry, and the next ineligible source
+  // surfaces for the first time. The owner hit exactly that loop in production
+  // (2026-08-29): google-maps failed, and only after retrying did Oura's
+  // `sleep, readiness, activity` appear. One attempt must name them all.
+  //
+  // Running before `insertPackage` also means a rejected approval leaves no
+  // package row and no child grants behind.
+  await requireEveryHostedMcpSourceEligible({
+    authorizationDetails,
+    clientId,
+    opts,
+    storageBindings,
+    subjectId,
+  });
 
   const packageId = generateId("gpkg");
   const traceContext = createTraceContext(opts.scenarioId ? { scenarioId: opts.scenarioId } : {});
