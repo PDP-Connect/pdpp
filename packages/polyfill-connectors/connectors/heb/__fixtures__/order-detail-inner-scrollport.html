@@ -1,0 +1,58 @@
+<!-- Synthetic browser fixture: no owner or provider data. It models the
+     behaviors that must be distinguished by the collector: an inner
+     scrollport, virtual row replacement, and a source-owned load-more control. -->
+<!doctype html>
+<html>
+  <body>
+    <main>
+      <section>
+        <h2 data-qe-id="orderDetailsGroupTitle">Synthetic groceries</h2>
+        <div id="order-items-scrollport" style="height: 120px; overflow-y: auto">
+          <div id="rows" style="position: relative"></div>
+          <button id="load-more" type="button" hidden>Load more</button>
+        </div>
+      </section>
+    </main>
+    <script>
+      const allItems = Array.from({ length: 16 }, (_, index) => ({
+        href: index === 0 || index === 15 ? "/product-detail/repeated/900" : `/product-detail/item/${index}`,
+        name: index === 0 || index === 15 ? "Repeated item" : `Synthetic item ${index}`,
+      }));
+      const rows = document.querySelector("#rows");
+      const scrollport = document.querySelector("#order-items-scrollport");
+      const loadMore = document.querySelector("#load-more");
+      let first = 0;
+      let loaded = false;
+
+      function render() {
+        const available = loaded ? allItems.length : 12;
+        const visible = allItems.slice(first, Math.min(first + 4, available));
+        rows.style.height = `${available * 100}px`;
+        rows.innerHTML = visible
+          .map(
+            (item, offset) =>
+              `<li data-qe-id="itemRow" data-index="${first + offset}">
+                <a data-qe-id="itemRowDetailsName" href="${item.href}">${item.name}</a>
+                <span data-qe-id="checkoutItemPrice">$1.00</span>
+                <span data-qe-id="orderItemQty">Qty: 1</span>
+              </li>`
+          )
+          .join("");
+        loadMore.hidden = loaded || first < 4;
+      }
+
+      scrollport.addEventListener("scroll", () => {
+        const available = loaded ? allItems.length : 12;
+        if (scrollport.scrollTop + scrollport.clientHeight >= scrollport.scrollHeight - 2) {
+          first = Math.min(first + 4, available - 4);
+        }
+        render();
+      });
+      loadMore.addEventListener("click", () => {
+        loaded = true;
+        render();
+      });
+      render();
+    </script>
+  </body>
+</html>

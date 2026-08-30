@@ -514,6 +514,7 @@ const STRUCTURED_QTY_RE = /Qty:\s*(\d+(?:\.\d+)?)/i;
 const DETAIL_PRICE_RE = /Price:\s*\$?(\d+\.\d{2})/i;
 const NUMERIC_RE = /^\d+(\.\d+)?$/;
 const PRODUCT_ID_RE = /^\d+$/;
+const POSITION_RE = /^\d+$/;
 const TRAILING_PERIOD_RE = /\.$/;
 const IMAGE_PRODUCT_ID_PAD_LENGTH = 9;
 
@@ -608,6 +609,8 @@ function parseDetailItem(link: HTMLAnchorElement): DetailItem | null {
   }
   const row = itemRowFor(link);
   const rowText = rawLines(row);
+  const rawPosition = row.getAttribute("data-index") ?? row.getAttribute("aria-posinset");
+  const sourcePosition = rawPosition !== null && POSITION_RE.test(rawPosition.trim()) ? Number(rawPosition) : null;
 
   return {
     department: departmentFor(row),
@@ -617,6 +620,7 @@ function parseDetailItem(link: HTMLAnchorElement): DetailItem | null {
     imageUrl: productImageUrl(productId),
     quantity: parseDetailQuantity(rowText),
     lineTotal: parseLineTotal(row, rowText),
+    sourcePosition,
   };
 }
 
@@ -624,27 +628,20 @@ function parseDetailItem(link: HTMLAnchorElement): DetailItem | null {
 // same product-detail href — an aria-hidden image-wrapper link with empty
 // text (sorts first in document order) and the real name link
 // (a[data-qe-id="itemRowDetailsName"]). Selecting the name anchor directly
-// avoids both failure modes the old a[href*="/product-detail"] + dedup-by-
-// href approach had: the image anchor's empty name would fail the name check
-// silently, and the dedup would then skip the real (second, same-href) name
-// anchor entirely — the exact reason the old selector parsed 0 items against
-// every real order-detail page captured. No recommendation/footer product
-// rail was found on the real captured page (verified: only a "Quick actions"
-// banner with report/reorder buttons, no product-detail links).
+// avoids the empty-name failure from the old broad product-link selector.
+// Do not deduplicate these name anchors by href: two purchased lines can
+// legitimately refer to the same product, and item position is retained in
+// the emitted id for that case. No recommendation/footer product rail was
+// found on the real captured page (verified: only a "Quick actions" banner
+// with report/reorder buttons, no product-detail links).
 export function parseOrderDetailDom(html: string): OrderDetail | null {
   const { document } = parseHTML(html);
   const links = [...document.querySelectorAll<HTMLAnchorElement>('a[data-qe-id="itemRowDetailsName"]')];
   if (links.length === 0) {
     return null;
   }
-  const seenHrefs = new Set<string>();
   const items: DetailItem[] = [];
   for (const link of links) {
-    const href = link.getAttribute("href") ?? "";
-    if (!href || seenHrefs.has(href)) {
-      continue;
-    }
-    seenHrefs.add(href);
     const item = parseDetailItem(link);
     if (item) {
       items.push(item);
@@ -810,20 +807,27 @@ export function buildOrderRecord(listOrder: ListPageOrder, orderDate: string, em
   };
 }
 
-/** Composite item id, Amazon's `${orderId}|${key}` pattern (design doc: "H-E-B
- *  is *better* off than Amazon here because `product_id` comes free from the
- *  detail-page href"). Falls back to a normalized name when product_id is
- *  absent so every item still gets a stable, order-scoped id. The fallback
- *  incorporates `itemIndex` (the item's position within this order's parsed
- *  item list) so two same-name, product-id-null items in one order — e.g. two
- *  malformed/variant hrefs that both fail to yield a product id — get
- *  distinct ids instead of colliding on the same normalized name. */
-export function orderItemId(orderId: string, item: Pick<DetailItem, "productId" | "name">, itemIndex: number): string {
-  if (item.productId) {
-    return `${orderId}|${item.productId}`;
-  }
+/** Keep the historical id for a unique line. A duplicate purchased line gets
+ * an explicit source position so virtualization cannot collapse it. Existing
+ * rows whose old product-only id represented multiple lines still require an
+ * owner-approved migration/tombstone; this connector cannot infer which old
+ * row should survive. */
+export function orderItemId(
+  orderId: string,
+  item: Pick<DetailItem, "productId" | "name" | "sourcePosition">,
+  itemIndex: number,
+  siblingItems: readonly Pick<DetailItem, "productId" | "name" | "sourcePosition">[] = [item]
+): string {
   const normalizedName = item.name.replace(WHITESPACE_RE, " ").trim().toLowerCase() || "unknown";
-  return `${orderId}|${normalizedName}|${itemIndex}`;
+  const key = item.productId || normalizedName;
+  const duplicate = siblingItems.some((sibling, siblingIndex) => {
+    if (siblingIndex === itemIndex) {
+      return false;
+    }
+    const siblingKey = sibling.productId || sibling.name.replace(WHITESPACE_RE, " ").trim().toLowerCase() || "unknown";
+    return siblingKey === key;
+  });
+  return duplicate ? `${orderId}|${key}|${item.sourcePosition ?? itemIndex}` : `${orderId}|${key}`;
 }
 
 export function buildOrderItemRecord(
@@ -831,10 +835,11 @@ export function buildOrderItemRecord(
   orderDate: string,
   item: DetailItem,
   itemIndex: number,
-  emittedAt: string
+  emittedAt: string,
+  siblingItems: readonly DetailItem[] = [item]
 ): OrderItemRecord {
   return {
-    id: orderItemId(orderId, item, itemIndex),
+    id: orderItemId(orderId, item, itemIndex, siblingItems),
     order_id: orderId,
     name: item.name,
     department: item.department,

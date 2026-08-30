@@ -39,6 +39,9 @@ export interface DetailItem {
   productId: string | null;
   productUrl: string | null;
   quantity: number | null;
+  /** Provider/DOM position used only when duplicate purchased lines need a
+   * stable tie-breaker. Null means the source did not expose one. */
+  sourcePosition?: number | null;
 }
 
 export interface OrderDetail {
