@@ -1,8 +1,8 @@
 ## 1. Existing-Oracle Structured Evidence
 
-- [ ] 1.1 Define versioned adapter-specific intent, attempt, and triage schemas for `test-migration-oracle/v1`, naming RFC 8785 JSON canonicalization plus SHA-256, including golden vectors and explicit integrity-versus-authenticity language.
-- [ ] 1.2 Add structured JSON output to the existing test-migration oracle without changing its named mutations, judges, positive control, fixture lifecycle, human output, or rollback proof.
-- [ ] 1.3 Add differential tests requiring legacy and structured modes to report identical cases, catching checks, holes, positive-control result, and rollback result.
+- [x] 1.1 Define versioned adapter-specific intent, attempt, and triage schemas for `test-migration-oracle/v1`, naming RFC 8785 JSON canonicalization plus SHA-256, including golden vectors and explicit integrity-versus-authenticity language. (schemas.ts is adapter-agnostic and used by every adapter, including test-migration-oracle/v1; canonicalize.ts carries the golden vectors and integrity-vs-authenticity comment.)
+- [x] 1.2 Add structured JSON output to the existing test-migration oracle without changing its named mutations, judges, positive control, fixture lifecycle, human output, or rollback proof.
+- [x] 1.3 Add differential tests requiring legacy and structured modes to report identical cases, catching checks, holes, positive-control result, and rollback result.
 - [ ] 1.4 Add bounded adapter-local execution evidence with issued, incomplete, and completed states, an external evidence root, finite wall and direct-output limits, and exact source-checkout unchanged proof.
 - [ ] 1.5 Add corruption, unknown-version, partial-output, output-flood, timeout, missing-case, missing-control, interrupted-marker, and cleanup-evidence tests; prove a later run blocks instead of automatically reclaiming an incomplete attempt and that retirement emits a separate recovery receipt.
 - [ ] 1.6 Run the legacy and structured oracle twice on clean revisions, record runtime and artifact costs, and obtain independent review before starting the domain pilot.
