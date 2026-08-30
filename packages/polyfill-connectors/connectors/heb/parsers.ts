@@ -514,6 +514,7 @@ const STRUCTURED_QTY_RE = /Qty:\s*(\d+(?:\.\d+)?)/i;
 const DETAIL_PRICE_RE = /Price:\s*\$?(\d+\.\d{2})/i;
 const NUMERIC_RE = /^\d+(\.\d+)?$/;
 const PRODUCT_ID_RE = /^\d+$/;
+const POSITION_RE = /^\d+$/;
 const TRAILING_PERIOD_RE = /\.$/;
 const IMAGE_PRODUCT_ID_PAD_LENGTH = 9;
 
@@ -608,6 +609,8 @@ function parseDetailItem(link: HTMLAnchorElement): DetailItem | null {
   }
   const row = itemRowFor(link);
   const rowText = rawLines(row);
+  const rawPosition = row.getAttribute("data-index") ?? row.getAttribute("aria-posinset");
+  const sourcePosition = rawPosition !== null && POSITION_RE.test(rawPosition.trim()) ? Number(rawPosition) : null;
 
   return {
     department: departmentFor(row),
@@ -617,6 +620,7 @@ function parseDetailItem(link: HTMLAnchorElement): DetailItem | null {
     imageUrl: productImageUrl(productId),
     quantity: parseDetailQuantity(rowText),
     lineTotal: parseLineTotal(row, rowText),
+    sourcePosition,
   };
 }
 
@@ -803,16 +807,27 @@ export function buildOrderRecord(listOrder: ListPageOrder, orderDate: string, em
   };
 }
 
-/** Composite item id, Amazon's `${orderId}|${key}` pattern. H-E-B can expose
- * two purchased lines with the same product href, so the parsed position is
- * part of every id; otherwise an ingest upsert would collapse those lines
- * after the DOM parser correctly retained both. */
-export function orderItemId(orderId: string, item: Pick<DetailItem, "productId" | "name">, itemIndex: number): string {
-  if (item.productId) {
-    return `${orderId}|${item.productId}|${itemIndex}`;
-  }
+/** Keep the historical id for a unique line. A duplicate purchased line gets
+ * an explicit source position so virtualization cannot collapse it. Existing
+ * rows whose old product-only id represented multiple lines still require an
+ * owner-approved migration/tombstone; this connector cannot infer which old
+ * row should survive. */
+export function orderItemId(
+  orderId: string,
+  item: Pick<DetailItem, "productId" | "name" | "sourcePosition">,
+  itemIndex: number,
+  siblingItems: readonly Pick<DetailItem, "productId" | "name" | "sourcePosition">[] = [item]
+): string {
   const normalizedName = item.name.replace(WHITESPACE_RE, " ").trim().toLowerCase() || "unknown";
-  return `${orderId}|${normalizedName}|${itemIndex}`;
+  const key = item.productId || normalizedName;
+  const duplicate = siblingItems.some((sibling, siblingIndex) => {
+    if (siblingIndex === itemIndex) {
+      return false;
+    }
+    const siblingKey = sibling.productId || sibling.name.replace(WHITESPACE_RE, " ").trim().toLowerCase() || "unknown";
+    return siblingKey === key;
+  });
+  return duplicate ? `${orderId}|${key}|${item.sourcePosition ?? itemIndex}` : `${orderId}|${key}`;
 }
 
 export function buildOrderItemRecord(
@@ -820,10 +835,11 @@ export function buildOrderItemRecord(
   orderDate: string,
   item: DetailItem,
   itemIndex: number,
-  emittedAt: string
+  emittedAt: string,
+  siblingItems: readonly DetailItem[] = [item]
 ): OrderItemRecord {
   return {
-    id: orderItemId(orderId, item, itemIndex),
+    id: orderItemId(orderId, item, itemIndex, siblingItems),
     order_id: orderId,
     name: item.name,
     department: item.department,

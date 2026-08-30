@@ -34,6 +34,7 @@ import {
   buildOrdersStateCursor,
   classifyEmptyListPage,
   classifyHebDetailFailure,
+  type DetailFailureKind,
   type EmitDeps,
   emitOrderItemsCoverage,
   emitOrdersCoverage,
@@ -197,8 +198,8 @@ function makePageStub(opts: {
             const rows = hasItem
               ? [
                   {
-                    html: '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
-                    key: "/product-detail/widget/500\u001fWidget",
+                    html: '<li data-qe-id="itemRow" data-index="0"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
+                    key: "position:data-index=0",
                   },
                 ]
               : [];
@@ -890,8 +891,8 @@ test("runForwardScan: an order id repeated across two list pages is only process
               rowCount: 1,
               rows: [
                 {
-                  html: '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
-                  key: "/product-detail/widget/500\u001fWidget",
+                  html: '<li data-qe-id="itemRow" data-index="0"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
+                  key: "position:data-index=0",
                 },
               ],
               scrollHeight: 100,
@@ -977,8 +978,8 @@ test("runForwardScan: item-enriched scan (wantsItems: true) still fetches page 2
               rowCount: 1,
               rows: [
                 {
-                  html: '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
-                  key: "/product-detail/widget/500\u001fWidget",
+                  html: '<li data-qe-id="itemRow" data-index="0"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
+                  key: "position:data-index=0",
                 },
               ],
               scrollHeight: 100,
@@ -1994,11 +1995,18 @@ test("recoverPendingOrderItemDetailGapsBeforeForwardRun: order_items out of scop
 test("reasonForDetailFailure and classifyHebDetailFailure cover every current DetailFailureKind", () => {
   const kinds = [
     "deferred_budget",
+    "detail_surface_error",
+    "detail_surface_incomplete",
+    "detail_surface_timeout",
     "navigation_failed_non_retryable",
     "navigation_retry_exhausted",
     "parse_missing",
     "session_repair_required",
   ] as const;
+  type MissingKinds = Exclude<DetailFailureKind, (typeof kinds)[number]>;
+  type UnexpectedKinds = Exclude<(typeof kinds)[number], DetailFailureKind>;
+  const exactUnion: [MissingKinds, UnexpectedKinds] extends [never, never] ? true : false = true;
+  assert.equal(exactUnion, true);
   for (const kind of kinds) {
     assert.doesNotThrow(() => reasonForDetailFailure(kind));
     assert.doesNotThrow(() => classifyHebDetailFailure(kind));
@@ -2196,8 +2204,8 @@ function makeLazyLoadPageStub(totalItems: number): Page {
             const rows = Array.from({ length: lastVisibleItem - firstVisibleItem }, (_, offset) => {
               const index = firstVisibleItem + offset;
               return {
-                html: `<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/item-${index}">Item ${index}</a></li>`,
-                key: `/product-detail/item-${index}\u001fItem ${index}`,
+                html: `<li data-qe-id="itemRow" data-index="${index}"><a data-qe-id="itemRowDetailsName" href="/product-detail/item-${index}">Item ${index}</a></li>`,
+                key: `position:data-index=${index}`,
               };
             });
             const state = {
@@ -2227,7 +2235,7 @@ function makeLazyLoadPageStub(totalItems: number): Page {
             const items = Array.from(
               { length: itemsRendered },
               (_, i) =>
-                `<li data-qe-id="itemRow">
+                `<li data-qe-id="itemRow" data-index="${i}">
                 <a data-qe-id="itemRowDetailsName" href="/product-detail/item-${i}">Item ${i}</a>
               </li>`
             ).join("");
@@ -2281,7 +2289,9 @@ test("fetchOrderDetail: real inner scrollport fixture proves virtualization and 
     );
     assert.deepEqual(
       result.detail?.items.map((item) => item.name),
-      Array.from({ length: 16 }, (_, index) => (index < 2 ? `Repeated item ${index}` : `Synthetic item ${index}`)),
+      Array.from({ length: 16 }, (_, index) =>
+        index === 0 || index === 15 ? "Repeated item" : `Synthetic item ${index}`
+      ),
       "virtualized row replacement does not lose or reorder any canonical item"
     );
     assert.equal(
@@ -2323,6 +2333,94 @@ test("fetchOrderDetail: a surface evaluation error is an observable gap, not swa
   assert.equal(result.failureKind, "detail_surface_error");
   assert.match(result.diagnostic ?? "", /detail_surface_error/);
   assert.match(result.diagnostic ?? "", /synthetic evaluate failure/);
+});
+
+test("fetchOrderDetail: a visible no-op control fails closed when no declared count exists", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-no-op-control.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-NO-OP", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    const result = await fetchOrderDetail(page, "HEB-NO-OP", {
+      detailSurfaceTimeoutMs: 1000,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "detail_surface_timeout");
+    assert.match(result.diagnostic ?? "", /action=control:Load more/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: a delayed control response is observed before settlement", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-delayed-control.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-DELAYED", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    const result = await fetchOrderDetail(page, "HEB-DELAYED", {
+      detailSurfaceTimeoutMs: 3000,
+      expectedItemCount: 2,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(result.detail?.items.length, 2);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: a row without provider or positional identity fails closed", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-missing-row-identity.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-MISSING-IDENTITY", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    const result = await fetchOrderDetail(page, "HEB-MISSING-IDENTITY", {
+      detailSurfaceTimeoutMs: 1000,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "detail_surface_error");
+    assert.match(result.diagnostic ?? "", /explicit positional identity/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: a fully mounted small order uses stable document order when the provider exposes no position", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-STATIC-DETAIL", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    const result = await fetchOrderDetail(page, "HEB-STATIC-DETAIL", {
+      detailSurfaceTimeoutMs: 1000,
+      expectedItemCount: 3,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(result.detail?.items.length, 3);
+  } finally {
+    await browser.close();
+  }
 });
 
 test("fetchOrderDetail: small orders (fit in viewport) parse without scroll", async () => {

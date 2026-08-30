@@ -103,6 +103,7 @@ interface DetailSurfaceRow {
 
 interface DetailSurfaceState {
   actionableControl: string | null;
+  actionPerformed: string | null;
   atEnd: boolean;
   clientHeight: number;
   loading: boolean;
@@ -141,21 +142,6 @@ async function hydrationWait(): Promise<void> {
  * does not depend on H-E-B-specific React internals. */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this serialized probe keeps row capture, scrollport discovery, and source-control honoring atomic
 function inspectAndAdvanceDetailSurface(lastAction: string | null): DetailSurfaceState {
-  const rows = [...document.querySelectorAll<HTMLAnchorElement>('a[data-qe-id="itemRowDetailsName"]')].map((link) => {
-    const row = link.closest("li") ?? link;
-    const identity = ["data-item-id", "data-order-item-id", "data-key", "data-index", "aria-posinset"]
-      .map((attribute) => row.getAttribute(attribute))
-      .find((value) => value);
-    const key = identity ?? `${link.getAttribute("href") ?? ""}\u001f${link.textContent?.trim() ?? ""}`;
-    const department =
-      row.closest("section")?.querySelector('[data-qe-id="orderDetailsGroupTitle"]')?.textContent ?? "";
-    const escapedDepartment = department.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-    const wrappedHtml = escapedDepartment
-      ? `<section><h2 data-qe-id="orderDetailsGroupTitle">${escapedDepartment}</h2>${row.outerHTML}</section>`
-      : row.outerHTML;
-    return { html: wrappedHtml, key };
-  });
-
   const row = document.querySelector('a[data-qe-id="itemRowDetailsName"]')?.closest("li") ?? document.body;
   let scrollPort: Element | Document = document.scrollingElement ?? document.documentElement;
   for (let current: Element | null = row; current; current = current.parentElement) {
@@ -172,6 +158,37 @@ function inspectAndAdvanceDetailSurface(lastAction: string | null): DetailSurfac
     ? Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)
     : scrollPort.scrollHeight;
   const clientHeight = isDocumentScrollPort ? window.innerHeight : scrollPort.clientHeight;
+  const isStaticDocumentSurface =
+    !isDocumentScrollPort &&
+    (scrollPort === document.documentElement || scrollPort === document.scrollingElement) &&
+    scrollHeight <= clientHeight;
+  const rows = [...document.querySelectorAll<HTMLAnchorElement>('a[data-qe-id="itemRowDetailsName"]')].map(
+    (link, itemIndex) => {
+      const itemRow = link.closest("li") ?? link;
+      const positionalIdentity = ["data-index", "aria-posinset"]
+        .map((attribute) => {
+          const value = itemRow.getAttribute(attribute)?.trim();
+          return value ? `position:${attribute}=${value}` : null;
+        })
+        .find((value) => value);
+      // The old full-page fixture and non-virtual small orders have every row
+      // mounted and no provider position. Document order is explicit and
+      // stable for that bounded surface. A scrollable/virtual surface without
+      // provider position remains an error because its local index can repeat
+      // after remount.
+      const key = positionalIdentity ?? (isStaticDocumentSurface ? `position:document-order=${itemIndex}` : null);
+      if (!key) {
+        throw new Error("detail row has no explicit positional identity");
+      }
+      const department =
+        itemRow.closest("section")?.querySelector('[data-qe-id="orderDetailsGroupTitle"]')?.textContent ?? "";
+      const escapedDepartment = department.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+      const wrappedHtml = escapedDepartment
+        ? `<section><h2 data-qe-id="orderDetailsGroupTitle">${escapedDepartment}</h2>${itemRow.outerHTML}</section>`
+        : itemRow.outerHTML;
+      return { html: wrappedHtml, key };
+    }
+  );
   const atEnd = scrollTop + clientHeight >= scrollHeight - 2;
   const loading = Boolean(document.querySelector('[aria-busy="true"], [data-loading="true"]'));
   const controls = [...document.querySelectorAll<HTMLElement>('button, [role="button"]')].filter((candidate) => {
@@ -190,10 +207,14 @@ function inspectAndAdvanceDetailSurface(lastAction: string | null): DetailSurfac
       ) ?? null)
     : null;
   const actionKey = controlText ? `control:${controlText}` : null;
+  let actionPerformed: string | null = null;
   let actionableControl: string | null = null;
+  if (actionKey) {
+    actionableControl = actionKey;
+  }
   if (control && actionKey !== lastAction && (atEnd || scrollHeight <= clientHeight)) {
     control.click();
-    actionableControl = actionKey;
+    actionPerformed = actionKey;
   } else if (!atEnd && scrollHeight > clientHeight) {
     const nextTop = Math.min(scrollTop + Math.max(clientHeight * 0.8, 1), scrollHeight - clientHeight);
     if (isDocumentScrollPort) {
@@ -201,10 +222,11 @@ function inspectAndAdvanceDetailSurface(lastAction: string | null): DetailSurfac
     } else {
       (scrollPort as Element & { scrollTop: number }).scrollTop = nextTop;
     }
-    actionableControl = "scroll";
+    actionPerformed = "scroll";
   }
 
   return {
+    actionPerformed,
     actionableControl,
     atEnd,
     clientHeight,
@@ -247,6 +269,7 @@ async function collectDetailSurface(
   let stablePolls = 0;
   let snapshots = 0;
   let latest: DetailSurfaceState = {
+    actionPerformed: null,
     actionableControl: null,
     atEnd: false,
     clientHeight: 0,
@@ -281,15 +304,21 @@ async function collectDetailSurface(
     } else {
       stablePolls += 1;
     }
-    if (latest.actionableControl) {
-      lastAction = latest.actionableControl;
+    if (latest.actionPerformed) {
+      lastAction = latest.actionPerformed;
     }
     if (onProgress && (progressed || latest.actionableControl)) {
       await onProgress(
         `H-E-B detail surface: ${collected.size} rows observed; action=${latest.actionableControl ?? "settling"}`
       );
     }
-    if (expectedRows !== null && collected.size >= expectedRows) {
+    if (
+      expectedRows !== null &&
+      collected.size >= expectedRows &&
+      latest.atEnd &&
+      !latest.loading &&
+      !latest.actionableControl
+    ) {
       break;
     }
     if (latest.atEnd && !latest.loading && !latest.actionableControl && stablePolls >= DETAIL_SURFACE_STABLE_POLLS) {
@@ -301,8 +330,8 @@ async function collectDetailSurface(
   const timedOut = Date.now() - startedAt >= timeoutMs;
   const complete =
     expectedRows === null
-      ? latest.atEnd && !latest.loading && !latest.actionableControl
-      : collected.size >= expectedRows;
+      ? latest.atEnd && !latest.loading && !latest.actionableControl && stablePolls >= DETAIL_SURFACE_STABLE_POLLS
+      : collected.size >= expectedRows && latest.atEnd && !latest.loading && !latest.actionableControl;
   let settlement: DetailSurfaceSettlement = "incomplete";
   if (lastError) {
     settlement = "error";
@@ -348,7 +377,7 @@ export function hebAllowsInteractiveAuthRepair(env: NodeJS.ProcessEnv = process.
   return triggerKind === "manual";
 }
 
-type DetailFailureKind =
+export type DetailFailureKind =
   | "deferred_budget"
   | "detail_surface_error"
   | "detail_surface_incomplete"
@@ -1132,7 +1161,7 @@ async function recoverPendingOrderItemDetailGapPage(
       for (const [itemIndex, item] of result.detail.items.entries()) {
         await deps.emitRecord(
           "order_items",
-          buildOrderItemRecord(locator.orderId, locator.orderDate, item, itemIndex, deps.emittedAt)
+          buildOrderItemRecord(locator.orderId, locator.orderDate, item, itemIndex, deps.emittedAt, result.detail.items)
         );
       }
       await deps.emit({
@@ -1218,7 +1247,7 @@ async function emitOrderAndItems(
     for (const [itemIndex, item] of detail.items.entries()) {
       await deps.emitRecord(
         "order_items",
-        buildOrderItemRecord(listOrder.orderId, orderDate, item, itemIndex, deps.emittedAt)
+        buildOrderItemRecord(listOrder.orderId, orderDate, item, itemIndex, deps.emittedAt, detail.items)
       );
     }
     // Completeness anchor: H-E-B's own list card declared how many items

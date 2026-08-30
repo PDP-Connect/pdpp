@@ -15,8 +15,8 @@
     </main>
     <script>
       const allItems = Array.from({ length: 16 }, (_, index) => ({
-        href: index < 2 ? "/product-detail/repeated/900" : `/product-detail/item/${index}`,
-        name: index < 2 ? `Repeated item ${index}` : `Synthetic item ${index}`,
+        href: index === 0 || index === 15 ? "/product-detail/repeated/900" : `/product-detail/item/${index}`,
+        name: index === 0 || index === 15 ? "Repeated item" : `Synthetic item ${index}`,
       }));
       const rows = document.querySelector("#rows");
       const scrollport = document.querySelector("#order-items-scrollport");
