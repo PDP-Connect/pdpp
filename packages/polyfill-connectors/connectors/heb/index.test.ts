@@ -986,6 +986,14 @@ test("runForwardScan: item-enriched scan (wantsItems: true) still fetches page 2
               scrollTop: 0,
             });
         }
+        if (prop === "waitForTimeout") {
+          // Detail collection polls a settled surface until it has observed
+          // DETAIL_SURFACE_STABLE_POLLS consecutive stable snapshots, so it
+          // sleeps between polls even when the first snapshot already has
+          // every row. This stub's surface never changes, so the sleep is a
+          // no-op here; what matters to this test is the pagination walk.
+          return (): Promise<void> => Promise.resolve();
+        }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(lastContent);
         }
@@ -2495,8 +2503,13 @@ test("fetchOrderDetail: a fully mounted small order uses stable document order w
       await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
     });
 
+    // The surface is static and complete on the first snapshot, but it starts
+    // scrolled short of the end, so collection needs several polls to reach
+    // atEnd and then DETAIL_SURFACE_STABLE_POLLS more to corroborate
+    // stability: measured 6 snapshots, ~1.5s. A 1s budget times out on a page
+    // that is genuinely complete, so give the stability requirement room.
     const result = await fetchOrderDetail(page, "HEB-STATIC-DETAIL", {
-      detailSurfaceTimeoutMs: 1000,
+      detailSurfaceTimeoutMs: 3000,
       expectedItemCount: 3,
       waitForHydration: immediateWait,
     });
