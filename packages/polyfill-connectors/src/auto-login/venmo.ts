@@ -28,7 +28,11 @@
  *      shape as reddit/amazon's OTP handoff.
  */
 
-import type { ProgressExtra } from "@pdpp/connector-protocol/connector-runtime-protocol";
+import type {
+  AssistanceCompletionStatus,
+  AssistanceRequest,
+  ProgressExtra,
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import type { Locator, Page } from "playwright";
 import { DEADLINE_TIMEOUT, manualBrowserLogin, withDeadline } from "../browser-handoff.ts";
@@ -547,8 +551,34 @@ function describeLandedOrigin(landedOrigin: string | null, landedUrl: string): s
 const noopCheckpoint: SessionCheckpointFn = () => Promise.resolve();
 
 interface EnsureVenmoSessionArgs {
+  /**
+   * Runtime's `assist`/`completeAssistance` hooks (see `BaseCollectContext`
+   * in `connector-runtime.ts`). Threaded through for signature parity with
+   * every other connector's manual-login handoff (see `reddit.ts`,
+   * `usaa.ts`, `chase.ts`), but NOT wired to a self-resolving
+   * `isProbeSuccessful` here: Venmo's only liveness probe
+   * (`probeVenmoAccount`) requires navigating to `venmo.com` for CORS
+   * (`ensureVenmoOrigin`), and every manual handoff in this file
+   * deliberately keeps the page on `id.venmo.com` mid-challenge/OTP so the
+   * owner's in-progress screen is not destroyed (see `waitForManualLogin`'s
+   * doc and the production incidents it cites — `run_1787319714987`,
+   * `run_1787537596833`, `run_1787880916346`). A self-poll loop calling that
+   * probe would navigate the owner off their own captcha/OTP screen on every
+   * poll tick — the exact defect class those fixes closed. Passing `assist`
+   * without `isProbeSuccessful` is a documented no-op in
+   * `manualBrowserLogin` (both are required together), so this keeps
+   * click-first behavior unchanged until a navigation-free liveness signal
+   * exists for Venmo.
+   */
+  assist?: (req: AssistanceRequest) => Promise<string>;
   capture?: CaptureSession | null;
   checkpoint?: SessionCheckpointFn;
+  /** Paired with `assist` — see `ManualBrowserLoginArgs.completeAssistance`. */
+  completeAssistance?: (
+    assistanceRequestId: string,
+    status: AssistanceCompletionStatus,
+    extra?: { message?: string }
+  ) => Promise<void>;
   credentials?: Readonly<Record<string, string>>;
   onCredentialSubmit?: () => void;
   page: Page;
@@ -1013,13 +1043,15 @@ let manualPromptSuppressed = false;
  * non-retryable, owner-facing failure, never a silent green.
  */
 async function waitForManualLogin({
+  assist,
   capture,
+  completeAssistance,
   message,
   page,
   reason,
   resumeFill,
   sendInteraction,
-}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
+}: Pick<EnsureVenmoSessionArgs, "assist" | "capture" | "completeAssistance" | "page" | "sendInteraction"> & {
   readonly message: string;
   readonly reason?: "captcha";
   /**
@@ -1081,7 +1113,15 @@ async function waitForManualLogin({
     await captureLoginState(capture, page, "venmo-handoff-surface-blank");
   }
   await manualBrowserLogin({
+    // Deliberately NOT wired with `isProbeSuccessful`: see `EnsureVenmoSessionArgs.assist`'s
+    // doc for why no self-poll is safe here yet (it would navigate the owner
+    // off their in-progress captcha/OTP screen). `manualBrowserLogin` treats
+    // `assist` without `isProbeSuccessful` as a no-op, so this keeps
+    // click-first behavior unchanged while staying ready to wire the self-
+    // resolve path the moment a navigation-free liveness signal exists.
+    ...(assist ? { assist } : {}),
     ...(capture ? { capture } : {}),
+    ...(completeAssistance ? { completeAssistance } : {}),
     message: painted ? message : `${message} ${HANDOFF_BLANK_SURFACE_SUFFIX}`,
     page,
     probe: async (): Promise<void> => {
@@ -1113,16 +1153,20 @@ async function waitForManualLogin({
 }
 
 async function ensureManualSessionWithoutCredentials({
+  assist,
   capture,
   checkpoint,
+  completeAssistance,
   page,
   sendInteraction,
-}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
+}: Pick<EnsureVenmoSessionArgs, "assist" | "capture" | "completeAssistance" | "page" | "sendInteraction"> & {
   checkpoint: SessionCheckpointFn;
 }): Promise<OwnerHandoffComplete> {
   await checkpoint("venmo-signin-manual-required");
   return await waitForManualLogin({
+    ...(assist ? { assist } : {}),
     ...(capture ? { capture } : {}),
+    ...(completeAssistance ? { completeAssistance } : {}),
     message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
     page,
     sendInteraction,
@@ -1180,12 +1224,14 @@ async function withSuppressedManualPrompts<T>(run: () => Promise<T>): Promise<T>
  * signed in manually.
  */
 async function requestManualLoginForChallenge({
+  assist,
   capture,
+  completeAssistance,
   page,
   reason,
   replaySignIn,
   sendInteraction,
-}: Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction"> & {
+}: Pick<EnsureVenmoSessionArgs, "assist" | "capture" | "completeAssistance" | "page" | "sendInteraction"> & {
   /**
    * Replays the full saved-credential sign-in once the owner clears the
    * challenge. Absent for handoffs raised where no credential exists.
@@ -1200,7 +1246,9 @@ async function requestManualLoginForChallenge({
     return OWNER_HANDOFF_COMPLETE;
   }
   return await waitForManualLogin({
+    ...(assist ? { assist } : {}),
     ...(capture ? { capture } : {}),
+    ...(completeAssistance ? { completeAssistance } : {}),
     message: challengeHandoffMessage(reason, replaySignIn !== undefined),
     page,
     ...(replaySignIn
@@ -1278,7 +1326,10 @@ async function resumeSignInAfterChallenge(
   }
 }
 
-type ManualHandoff = Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInteraction">;
+type ManualHandoff = Pick<
+  EnsureVenmoSessionArgs,
+  "assist" | "capture" | "completeAssistance" | "page" | "sendInteraction"
+>;
 
 /**
  * Fill the password field, advancing Venmo's two-step sign-in when needed.
@@ -1303,7 +1354,15 @@ type ManualHandoff = Pick<EnsureVenmoSessionArgs, "capture" | "page" | "sendInte
 async function fillVenmoPassword(
   args: ManualHandoff & { password: string; passwordScreenTimeoutMs?: number }
 ): Promise<OwnerHandoffComplete | null> {
-  const { capture, page, password, passwordScreenTimeoutMs = PASSWORD_SCREEN_TIMEOUT_MS, sendInteraction } = args;
+  const {
+    assist,
+    capture,
+    completeAssistance,
+    page,
+    password,
+    passwordScreenTimeoutMs = PASSWORD_SCREEN_TIMEOUT_MS,
+    sendInteraction,
+  } = args;
   const passwordIn = page.locator(PASSWORD_SELECTOR).first();
   // A visible password box is NOT proof of a one-screen form. Venmo's step-one
   // screen renders an UNNAMED `input[type="password"]` alongside the
@@ -1336,7 +1395,9 @@ async function fillVenmoPassword(
     // been submitted, and the owner can still finish by hand.
     await captureLoginState(capture, page, "venmo-step-one-submit-missing");
     return await requestManualLoginForChallenge({
+      ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
+      ...(completeAssistance ? { completeAssistance } : {}),
       page,
       reason: "could not advance past the sign-in identifier step",
       sendInteraction,
@@ -1355,7 +1416,9 @@ async function fillVenmoPassword(
   await captureLoginState(capture, page, "venmo-password-screen-missing");
   if (await hasVenmoCaptcha(page)) {
     return await waitForManualLogin({
+      ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
+      ...(completeAssistance ? { completeAssistance } : {}),
       message:
         "Venmo is showing a human-verification challenge (CAPTCHA) that PDPP will not attempt to solve. " +
         "Complete the challenge and finish signing in to Venmo in the secure browser, then respond success.",
@@ -1395,7 +1458,7 @@ async function fillVenmoPassword(
  * evidence.
  */
 async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<OwnerHandoffComplete | null> {
-  const { capture, page, sendInteraction } = args;
+  const { assist, capture, completeAssistance, page, sendInteraction } = args;
   const otpIn = findVenmoOtpInput(page);
   const bodyText = (
     await page
@@ -1426,7 +1489,9 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<OwnerHandof
     // rendered that cannot accept a code. Hand off rather than guess a
     // selector for a UI we can't confirm — and never fabricate a code demand.
     return await requestManualLoginForChallenge({
+      ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
+      ...(completeAssistance ? { completeAssistance } : {}),
       page,
       reason: "verification step did not match a known input",
       sendInteraction,
@@ -1476,10 +1541,26 @@ async function handleVenmoOtpIfPresent(args: ManualHandoff): Promise<OwnerHandof
  * hands off to the owner rather than guessing further, exactly like
  * amazon.ts/reddit.ts.
  */
+/** Bundles the assist/completeAssistance forwarding once so call sites spread one object instead of two separate conditionals each. */
+function venmoAssistHooks({
+  assist,
+  completeAssistance,
+}: {
+  assist: EnsureVenmoSessionArgs["assist"];
+  completeAssistance: EnsureVenmoSessionArgs["completeAssistance"];
+}): Pick<EnsureVenmoSessionArgs, "assist" | "completeAssistance"> {
+  return {
+    ...(assist ? { assist } : {}),
+    ...(completeAssistance ? { completeAssistance } : {}),
+  };
+}
+
 async function loginWithSavedCredentials({
+  assist,
   attempt = 0,
   capture,
   checkpoint,
+  completeAssistance,
   onCredentialSubmit,
   page,
   passwordScreenTimeoutMs,
@@ -1490,7 +1571,14 @@ async function loginWithSavedCredentials({
   password,
 }: Pick<
   EnsureVenmoSessionArgs,
-  "capture" | "page" | "passwordScreenTimeoutMs" | "postSubmitSettleTimeoutMs" | "progress" | "sendInteraction"
+  | "assist"
+  | "capture"
+  | "completeAssistance"
+  | "page"
+  | "passwordScreenTimeoutMs"
+  | "postSubmitSettleTimeoutMs"
+  | "progress"
+  | "sendInteraction"
 > & {
   /**
    * 0 on the first entry; 1 when re-entered after the owner cleared a
@@ -1502,6 +1590,7 @@ async function loginWithSavedCredentials({
   password: string;
   username: string;
 }): Promise<OwnerHandoffComplete | VenmoAccountProbeResult> {
+  const assistHooks = venmoAssistHooks({ assist, completeAssistance });
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
   await captureLoginState(capture, page, "venmo-login-page");
   await checkpoint("venmo-signin-loaded");
@@ -1521,6 +1610,7 @@ async function loginWithSavedCredentials({
       return OWNER_HANDOFF_COMPLETE;
     }
     return await requestManualLoginForChallenge({
+      ...assistHooks,
       ...(capture ? { capture } : {}),
       page,
       reason: "sign-in form did not render",
@@ -1531,6 +1621,7 @@ async function loginWithSavedCredentials({
         ? {
             replaySignIn: (onSubmit: () => void) =>
               loginWithSavedCredentials({
+                ...assistHooks,
                 ...(capture ? { capture } : {}),
                 attempt: 1,
                 checkpoint,
@@ -1562,6 +1653,7 @@ async function loginWithSavedCredentials({
   // a secret, so it deliberately does NOT fire `onCredentialSubmit` — see that
   // function's doc.
   const passwordHandoff = await fillVenmoPassword({
+    ...assistHooks,
     ...(capture ? { capture } : {}),
     page,
     password,
@@ -1593,7 +1685,12 @@ async function loginWithSavedCredentials({
   await captureLoginState(capture, page, "venmo-login-after-submit");
   await checkpoint("venmo-2fa-decision");
 
-  const otpHandoff = await handleVenmoOtpIfPresent({ ...(capture ? { capture } : {}), page, sendInteraction });
+  const otpHandoff = await handleVenmoOtpIfPresent({
+    ...assistHooks,
+    ...(capture ? { capture } : {}),
+    page,
+    sendInteraction,
+  });
   if (otpHandoff) {
     return otpHandoff;
   }
@@ -1652,7 +1749,9 @@ async function loginWithSavedCredentials({
     return finalProbe;
   }
   return await requestManualLoginForChallenge({
+    ...(assist ? { assist } : {}),
     ...(capture ? { capture } : {}),
+    ...(completeAssistance ? { completeAssistance } : {}),
     page,
     reason: "automated sign-in did not complete",
     sendInteraction,
@@ -1677,8 +1776,10 @@ async function loginWithSavedCredentials({
  * let a caller believe a check happened that never did.
  */
 export async function ensureVenmoSession({
+  assist,
   capture,
   checkpoint = noopCheckpoint,
+  completeAssistance,
   credentials = {},
   onCredentialSubmit,
   page,
@@ -1698,8 +1799,10 @@ export async function ensureVenmoSession({
   const password = credentials.VENMO_PASSWORD;
   if (!(username && password)) {
     await ensureManualSessionWithoutCredentials({
+      ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
       checkpoint,
+      ...(completeAssistance ? { completeAssistance } : {}),
       page,
       sendInteraction,
     });
@@ -1708,8 +1811,10 @@ export async function ensureVenmoSession({
   }
 
   const result = await loginWithSavedCredentials({
+    ...(assist ? { assist } : {}),
     ...(capture ? { capture } : {}),
     checkpoint,
+    ...(completeAssistance ? { completeAssistance } : {}),
     ...(onCredentialSubmit ? { onCredentialSubmit } : {}),
     page,
     ...(passwordScreenTimeoutMs === undefined ? {} : { passwordScreenTimeoutMs }),

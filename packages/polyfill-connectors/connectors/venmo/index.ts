@@ -551,17 +551,26 @@ if (isMainModule(import.meta.url)) {
     auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
     browser: { profileName: "venmo" },
     async ensureSession({
+      assist,
       capture,
       checkpoint,
+      completeAssistance,
       credentials,
       onCredentialSubmit,
       page,
       progress,
       sendInteraction,
     }): Promise<void> {
+      // Forwarded for signature parity with every other connector's manual-
+      // login handoff — see `EnsureVenmoSessionArgs.assist`'s doc in
+      // `src/auto-login/venmo.ts` for why this does NOT yet self-resolve
+      // without a click: Venmo's only liveness probe requires a navigation
+      // that would destroy an in-progress captcha/OTP handoff.
       await ensureVenmoSession({
+        assist,
         ...(capture ? { capture } : {}),
         checkpoint,
+        completeAssistance,
         credentials,
         onCredentialSubmit,
         page,

@@ -32,6 +32,10 @@
  * Selectors verified live 2026-04-21. Detailed probe history lives in git.
  */
 
+import type {
+  AssistanceCompletionStatus,
+  AssistanceRequest,
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 import type { BrowserContext, Locator, Page } from "playwright";
 import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
@@ -84,6 +88,23 @@ const CHASE_LOGIN_FIELDS: LoginCredentialFields = {
 };
 
 interface EnsureChaseSessionArgs {
+  /**
+   * Runtime's `assist`/`completeAssistance` hooks (see `BaseCollectContext`
+   * in `connector-runtime.ts`). When both are present, the no-credentials
+   * manual handoff below self-resolves the moment the connector's own probe
+   * (`probeChaseSession`) proves the session is live — mirroring `chatgpt.ts`'s
+   * no-click browser-login flow — instead of always waiting on the owner's
+   * manual "Continue collection" click. Optional so the many internal/test
+   * callers that predate this keep compiling and keep the prior
+   * click-first behavior.
+   */
+  assist?: (req: AssistanceRequest) => Promise<string>;
+  /** Paired with `assist` — see `ManualBrowserLoginArgs.completeAssistance`. */
+  completeAssistance?: (
+    assistanceRequestId: string,
+    status: AssistanceCompletionStatus,
+    extra?: { message?: string }
+  ) => Promise<void>;
   context: BrowserContext;
   /**
    * Credentials the runtime resolved for THIS run's connection (see
@@ -404,6 +425,8 @@ async function submitChaseOtp({
 }
 
 export async function ensureChaseSession({
+  assist,
+  completeAssistance,
   context,
   credentials,
   onCredentialSubmit,
@@ -425,6 +448,9 @@ export async function ensureChaseSession({
   const resolved = resolveLoginCredentials(credentials, CHASE_LOGIN_FIELDS, "chase");
   if (resolved.kind === "absent") {
     const manualProbe = await manualBrowserLogin({
+      ...(assist ? { assist } : {}),
+      ...(completeAssistance ? { completeAssistance } : {}),
+      isProbeSuccessful: (result: { loggedIn: boolean; page: Page }) => result.loggedIn,
       // Names the CREDENTIAL, not the page: an owner reading this must be able
       // to tell "no credential was stored for this connection" apart from
       // "Chase's sign-in page failed to load".

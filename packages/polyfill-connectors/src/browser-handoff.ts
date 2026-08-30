@@ -36,6 +36,10 @@
  */
 
 import { randomBytes } from "node:crypto";
+import type {
+  AssistanceCompletionStatus,
+  AssistanceRequest,
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 import type { Page } from "playwright";
 
 import type { InteractionRequest, InteractionResponse } from "./connector-runtime.ts";
@@ -601,10 +605,48 @@ export async function manualAction(
  * Hand the current browser page to the owner for sign-in, then let the
  * connector prove whether the session is live. The owner response is only a
  * signal to re-probe; site-specific session evidence stays with the connector.
+ *
+ * When `assist` and `isProbeSuccessful` are both supplied (`assist`/
+ * `completeAssistance` are on every connector's collect-context — see
+ * `BaseCollectContext` in `connector-runtime.ts`), this self-resolves like
+ * ChatGPT's browser-login assistance does: it raises a no-response-required
+ * assistance request, polls `probe` on its own for up to `autoProbeWindowMs`,
+ * and resolves/escalates the assistance from that outcome — the owner never
+ * has to click anything if the connector's own evidence (`probe`) proves the
+ * challenge/login is done first. Only once that window elapses without
+ * `probe` succeeding does this fall back to the legacy owner-click gate
+ * (`manualAction`/`sendInteraction`), exactly the escalation path
+ * `chatgpt.ts`'s `handleBrowserLoginAssistance` takes to its own
+ * `manualAction` fallback. Callers that omit `assist`/`isProbeSuccessful` (or
+ * whose runtime predates it) keep the prior click-first behavior unchanged.
  */
 export interface ManualBrowserLoginArgs<Result> {
+  readonly assist?: (req: AssistanceRequest) => Promise<string>;
+  /** Poll interval for the pre-click self-probe phase. Defaults to 3s. */
+  readonly autoProbeIntervalMs?: number;
+  /**
+   * How long to self-probe before escalating to the owner-click fallback.
+   * Defaults to 15s — long enough to catch the common "owner solved the
+   * challenge and the page is already settling" case, short enough that a
+   * connector with no working auto-detection still reaches the click prompt
+   * quickly instead of stalling the run.
+   */
+  readonly autoProbeWindowMs?: number;
   readonly capture?: CaptureSession | null;
+  readonly completeAssistance?: (
+    assistanceRequestId: string,
+    status: AssistanceCompletionStatus,
+    extra?: { message?: string }
+  ) => Promise<void>;
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Required alongside `assist`: `probe`'s result shape varies by connector
+   * (a plain `boolean`, or an object like Chase's `{ loggedIn, page }`), so
+   * this module cannot infer success generically. Ignored when `assist` is
+   * omitted (the legacy click-first path never needs to interpret `probe`
+   * before the click).
+   */
+  readonly isProbeSuccessful?: (result: Result) => boolean;
   readonly message: string;
   readonly page: Page;
   readonly probe: () => Promise<Result>;
@@ -613,9 +655,35 @@ export interface ManualBrowserLoginArgs<Result> {
   readonly timeoutSeconds?: number;
 }
 
+const DEFAULT_AUTO_PROBE_INTERVAL_MS = 3000;
+const DEFAULT_AUTO_PROBE_WINDOW_MS = 15_000;
+
+async function selfProbeBeforeManualClick<Result>(
+  probe: () => Promise<Result>,
+  isProbeSuccessful: (result: Result) => boolean,
+  { intervalMs, windowMs }: { intervalMs: number; windowMs: number }
+): Promise<Result | undefined> {
+  const deadline = Date.now() + windowMs;
+  for (;;) {
+    const result = await probe();
+    if (isProbeSuccessful(result)) {
+      return result;
+    }
+    if (Date.now() >= deadline) {
+      return undefined;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 export async function manualBrowserLogin<Result>({
+  assist,
+  autoProbeIntervalMs = DEFAULT_AUTO_PROBE_INTERVAL_MS,
+  autoProbeWindowMs = DEFAULT_AUTO_PROBE_WINDOW_MS,
   capture,
+  completeAssistance,
   env,
+  isProbeSuccessful,
   message,
   page,
   probe,
@@ -623,6 +691,34 @@ export async function manualBrowserLogin<Result>({
   sendInteraction,
   timeoutSeconds,
 }: ManualBrowserLoginArgs<Result>): Promise<Result> {
+  if (assist && isProbeSuccessful) {
+    const assistanceRequestId = await assist({
+      ...(reason === "captcha" ? { attachments: [{ kind: "browser_surface", role: "streaming_companion" }] } : {}),
+      message,
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "none",
+      ...(timeoutSeconds === undefined ? {} : { timeout_seconds: timeoutSeconds }),
+    });
+    const autoResolved = await selfProbeBeforeManualClick(probe, isProbeSuccessful, {
+      intervalMs: autoProbeIntervalMs,
+      windowMs: autoProbeWindowMs,
+    });
+    if (autoResolved !== undefined) {
+      if (completeAssistance) {
+        await completeAssistance(assistanceRequestId, "resolved", {
+          message: "The connector detected the session was ready and continued automatically.",
+        });
+      }
+      return autoResolved;
+    }
+    if (completeAssistance) {
+      await completeAssistance(assistanceRequestId, "escalated", {
+        message: "Waiting for explicit browser confirmation.",
+      });
+    }
+  }
+
   await manualAction(
     {
       ...(capture ? { capture } : {}),

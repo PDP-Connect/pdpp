@@ -2688,8 +2688,22 @@ if (isMainModule(import.meta.url)) {
     // `design-notes/chase-anti-bot.md`. Isolated-per-connector profile works.
     browser: { profileName: "chase" },
     timeRangeField: chaseTimeRangeField,
-    async ensureSession({ context, credentials, onCredentialSubmit, page, sendInteraction }): Promise<void> {
+    async ensureSession({
+      assist,
+      completeAssistance,
+      context,
+      credentials,
+      onCredentialSubmit,
+      page,
+      sendInteraction,
+    }): Promise<void> {
+      // Forwarding `assist`/`completeAssistance` lets the no-credentials
+      // manual handoff self-resolve (see `ensureChaseSession`'s
+      // `manualBrowserLogin` call) instead of always requiring the owner's
+      // manual "Continue collection" click.
       await ensureChaseSession({
+        assist,
+        completeAssistance,
         context,
         credentials,
         onCredentialSubmit,
