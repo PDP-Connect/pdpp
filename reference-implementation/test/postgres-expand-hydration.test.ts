@@ -102,6 +102,7 @@ if (POSTGRES_URL) {
     const manifest: ManifestLike = {
       capabilities: { human_interaction: [] },
       connector_id: connectorId,
+      manifest_uri: `https://registry.pdpp.dev/connectors/${connectorId}`,
       display_name: "Postgres Expand Hydration Test",
       protocol_version: "0.1.0",
       streams: [
@@ -110,6 +111,7 @@ if (POSTGRES_URL) {
           cursor_field: "saved_at",
           name: parentStream,
           primary_key: ["id"],
+          semantics: "append_only",
           query: {
             expand: [{ default_limit: 10, max_limit: 50, name: "recently_played" }, { name: "metadata" }],
           },
@@ -131,6 +133,7 @@ if (POSTGRES_URL) {
             properties: {
               id: { type: "string" },
               name: { type: "string" },
+              track_id: { type: "string" },
               saved_at: { format: "date-time", type: "string" },
             },
             required: ["id"],
@@ -143,6 +146,7 @@ if (POSTGRES_URL) {
           cursor_field: "played_at",
           name: childStream,
           primary_key: ["id"],
+          semantics: "append_only",
           schema: {
             properties: {
               id: { type: "string" },
@@ -160,6 +164,7 @@ if (POSTGRES_URL) {
           cursor_field: "updated_at",
           name: metadataStream,
           primary_key: ["id"],
+          semantics: "append_only",
           schema: {
             properties: {
               id: { type: "string" },

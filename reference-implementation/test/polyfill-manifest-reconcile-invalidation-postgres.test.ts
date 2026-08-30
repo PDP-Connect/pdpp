@@ -82,11 +82,13 @@ const ingestRecordForInstance = ingestRecordUntyped as (
 if (POSTGRES_URL) {
   const databaseUrl: string = POSTGRES_URL;
   const CONNECTOR_ID = "generation-fixture-pg";
+  const MANIFEST_URI = "https://registry.pdpp.dev/connectors/generation-fixture-pg";
 
   function generationManifestV1(overrides: Partial<Manifest> = {}): Manifest {
     return {
       connector_id: CONNECTOR_ID,
       connector_key: CONNECTOR_ID,
+      manifest_uri: MANIFEST_URI,
       display_name: "Generation fixture connector (Postgres)",
       protocol_version: "0.1.0",
       runtime_requirements: { bindings: { filesystem: { required: true } } },
