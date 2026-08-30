@@ -606,30 +606,21 @@ export async function manualAction(
  * connector prove whether the session is live. The owner response is only a
  * signal to re-probe; site-specific session evidence stays with the connector.
  *
- * When `assist` and `isProbeSuccessful` are both supplied (`assist`/
- * `completeAssistance` are on every connector's collect-context — see
- * `BaseCollectContext` in `connector-runtime.ts`), this self-resolves like
- * ChatGPT's browser-login assistance does: it raises a no-response-required
- * assistance request, polls `probe` on its own for up to `autoProbeWindowMs`,
- * and resolves/escalates the assistance from that outcome — the owner never
- * has to click anything if the connector's own evidence (`probe`) proves the
- * challenge/login is done first. Only once that window elapses without
- * `probe` succeeding does this fall back to the legacy owner-click gate
- * (`manualAction`/`sendInteraction`), exactly the escalation path
- * `chatgpt.ts`'s `handleBrowserLoginAssistance` takes to its own
- * `manualAction` fallback. Callers that omit `assist`/`isProbeSuccessful` (or
- * whose runtime predates it) keep the prior click-first behavior unchanged.
+ * A streamed handoff uses a separate, temporary readiness page in the same
+ * browser context. The connector may navigate that page to prove its session,
+ * while the streamed page remains entirely under the owner's control. The
+ * readiness watcher lasts for the handoff's declared timeout; an owner who
+ * finishes after the first few seconds still resumes collection automatically.
+ * Callers that cannot supply the complete streamed contract retain the legacy
+ * click-first path.
  */
 export interface ManualBrowserLoginArgs<Result> {
   readonly assist?: (req: AssistanceRequest) => Promise<string>;
-  /** Poll interval for the pre-click self-probe phase. Defaults to 3s. */
+  /** Poll interval for the streamed readiness watcher. Defaults to 3s. */
   readonly autoProbeIntervalMs?: number;
   /**
-   * How long to self-probe before escalating to the owner-click fallback.
-   * Defaults to 15s — long enough to catch the common "owner solved the
-   * challenge and the page is already settling" case, short enough that a
-   * connector with no working auto-detection still reaches the click prompt
-   * quickly instead of stalling the run.
+   * How long to watch for browser readiness. Defaults to the declared
+   * handoff timeout, or 30 minutes when no timeout is declared.
    */
   readonly autoProbeWindowMs?: number;
   readonly capture?: CaptureSession | null;
@@ -648,7 +639,14 @@ export interface ManualBrowserLoginArgs<Result> {
    */
   readonly isProbeSuccessful?: (result: Result) => boolean;
   readonly message: string;
+  /** Injectable clock for deterministic readiness-window tests. */
+  readonly now?: () => number;
   readonly page: Page;
+  /**
+   * Navigation-safe session evidence for streamed handoffs. The helper passes
+   * a temporary sibling page, never the owner's streamed page.
+   */
+  readonly readinessProbe?: (page: Page) => Promise<Result>;
   readonly probe: () => Promise<Result>;
   readonly reason?: ManualActionReason;
   readonly sendInteraction: SendInteraction;
@@ -656,67 +654,99 @@ export interface ManualBrowserLoginArgs<Result> {
 }
 
 const DEFAULT_AUTO_PROBE_INTERVAL_MS = 3000;
-const DEFAULT_AUTO_PROBE_WINDOW_MS = 15_000;
+const DEFAULT_AUTO_PROBE_WINDOW_MS = 30 * 60_000;
 
-async function selfProbeBeforeManualClick<Result>(
+function waitForProbeInterval(intervalMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, intervalMs));
+}
+
+async function pollBrowserReadiness<Result>(
   probe: () => Promise<Result>,
   isProbeSuccessful: (result: Result) => boolean,
-  { intervalMs, windowMs }: { intervalMs: number; windowMs: number }
+  { intervalMs, now = Date.now, windowMs }: { intervalMs: number; now?: () => number; windowMs: number }
 ): Promise<Result | undefined> {
-  const deadline = Date.now() + windowMs;
-  for (;;) {
+  const deadline = now() + windowMs;
+
+  const attempt = async (): Promise<Result | undefined> => {
     const result = await probe();
     if (isProbeSuccessful(result)) {
       return result;
     }
-    if (Date.now() >= deadline) {
+    if (now() >= deadline) {
       return undefined;
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    await waitForProbeInterval(intervalMs);
+    return attempt();
+  };
+
+  return attempt();
+}
+
+async function pollNavigationSafeBrowserReadiness<Result>(
+  handoffPage: Page,
+  readinessProbe: (page: Page) => Promise<Result>,
+  isProbeSuccessful: (result: Result) => boolean,
+  options: { intervalMs: number; now?: () => number; windowMs: number }
+): Promise<Result | undefined> {
+  const readinessPage = await handoffPage.context().newPage();
+  try {
+    return await pollBrowserReadiness(() => readinessProbe(readinessPage), isProbeSuccessful, options);
+  } finally {
+    await readinessPage.close().catch((): undefined => undefined);
   }
 }
 
 export async function manualBrowserLogin<Result>({
   assist,
   autoProbeIntervalMs = DEFAULT_AUTO_PROBE_INTERVAL_MS,
-  autoProbeWindowMs = DEFAULT_AUTO_PROBE_WINDOW_MS,
+  autoProbeWindowMs,
   capture,
   completeAssistance,
   env,
   isProbeSuccessful,
   message,
+  now,
   page,
+  readinessProbe,
   probe,
   reason = "login",
   sendInteraction,
   timeoutSeconds,
 }: ManualBrowserLoginArgs<Result>): Promise<Result> {
-  if (assist && isProbeSuccessful) {
+  if (assist && completeAssistance && isProbeSuccessful && readinessProbe) {
     const assistanceRequestId = await assist({
-      ...(reason === "captcha" ? { attachments: [{ kind: "browser_surface", role: "streaming_companion" }] } : {}),
+      attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
       message,
       owner_action: "operate_attachment",
       progress_posture: "blocked",
       response_contract: "none",
       ...(timeoutSeconds === undefined ? {} : { timeout_seconds: timeoutSeconds }),
     });
-    const autoResolved = await selfProbeBeforeManualClick(probe, isProbeSuccessful, {
-      intervalMs: autoProbeIntervalMs,
-      windowMs: autoProbeWindowMs,
-    });
+    const readinessWindowMs =
+      autoProbeWindowMs ?? (timeoutSeconds === undefined ? DEFAULT_AUTO_PROBE_WINDOW_MS : timeoutSeconds * 1000);
+    let autoResolved: Result | undefined;
+    try {
+      autoResolved = await pollNavigationSafeBrowserReadiness(page, readinessProbe, isProbeSuccessful, {
+        intervalMs: autoProbeIntervalMs,
+        ...(now ? { now } : {}),
+        windowMs: readinessWindowMs,
+      });
+    } catch (error) {
+      await completeAssistance(assistanceRequestId, "escalated", {
+        message: "Browser readiness could not be verified; collection stopped safely.",
+      });
+      throw error;
+    }
     if (autoResolved !== undefined) {
-      if (completeAssistance) {
-        await completeAssistance(assistanceRequestId, "resolved", {
-          message: "The connector detected the session was ready and continued automatically.",
-        });
-      }
+      await completeAssistance(assistanceRequestId, "resolved", {
+        message: "The connector detected the session was ready and continued automatically.",
+      });
       return autoResolved;
     }
-    if (completeAssistance) {
-      await completeAssistance(assistanceRequestId, "escalated", {
-        message: "Waiting for explicit browser confirmation.",
-      });
-    }
+    await completeAssistance(assistanceRequestId, "escalated", {
+      message: "Browser sign-in did not become ready before the handoff timed out.",
+    });
+    throw new Error("browser_handoff_readiness_timed_out");
   }
 
   await manualAction(

@@ -62,7 +62,12 @@ function makePage(loginError: Error, bodyText = "Log Off"): FakePageHarness {
   const bodyLocator: Pick<Locator, "innerText"> = {
     innerText: (): Promise<string> => Promise.resolve(bodyText),
   };
-  const fake: Pick<Page, "goto" | "locator" | "waitForTimeout"> = {
+  const fake: Pick<Page, "close" | "context" | "goto" | "locator" | "waitForTimeout"> = {
+    close: (): Promise<void> => Promise.resolve(),
+    context: (): BrowserContext =>
+      ({
+        newPage: (): Promise<Page> => Promise.resolve(fake as Page),
+      }) as BrowserContext,
     goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
       gotoCalls.push(url);
       if (url === LOGIN_URL) {
@@ -484,6 +489,15 @@ test("ensureUsaaSession self-resolves the no-credentials manual handoff via assi
 
     assert.equal(ok, true);
     assert.equal(assistCalls.length, 1);
+    assert.deepEqual(assistCalls[0], {
+      attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
+      message:
+        "No optional USAA sign-in details were provided. Sign in to USAA in the secure browser. PDPP continues automatically when the session is ready.",
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "none",
+      timeout_seconds: 1800,
+    });
     assert.deepEqual(completions, [{ id: "assist_req_usaa_1", status: "resolved" }]);
   });
 });

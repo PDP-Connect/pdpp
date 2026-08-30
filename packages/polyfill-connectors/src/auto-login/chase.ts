@@ -74,7 +74,8 @@ const METHOD_LABELS: Record<string, string> = {
   call: "Call me",
   email: "Email me",
 };
-const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE = "Sign in to Chase in the secure browser, then respond success.";
+const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
+  "Sign in to Chase in the secure browser. PDPP continues automatically when the session is ready.";
 
 /**
  * Where Chase's sign-in pair lives in the runtime-resolved `credentials`
@@ -457,6 +458,7 @@ export async function ensureChaseSession({
       message: `${resolved.reason} ${MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE}`,
       page: activePage,
       probe: () => probeChaseSession(context, activePage),
+      readinessProbe: (probePage) => probeChaseSession(context, probePage),
       sendInteraction,
       timeoutSeconds: 1800,
     });

@@ -137,7 +137,12 @@ function makeLiveLocator(isLive: () => boolean): Locator {
 function makeLivePage(isLive: () => boolean): FakePage {
   const gotoCalls: string[] = [];
   const signOut = makeLiveLocator(isLive);
-  const fake: Pick<Page, "getByText" | "goto" | "isClosed"> = {
+  const fake: Pick<Page, "close" | "context" | "getByText" | "goto" | "isClosed"> = {
+    close: (): Promise<void> => Promise.resolve(),
+    context: (): BrowserContext =>
+      ({
+        newPage: (): Promise<Page> => Promise.resolve(fake as Page),
+      }) as BrowserContext,
     getByText: (): Locator => signOut,
     goto: (url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> => {
       gotoCalls.push(url);
@@ -694,6 +699,15 @@ test("ensureChaseSession self-resolves the no-credentials manual handoff via ass
 
     assert.equal(ok, true);
     assert.equal(assistCalls.length, 1);
+    assert.deepEqual(assistCalls[0], {
+      attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
+      message:
+        "No stored credential for this chase connection (missing: CHASE_USERNAME, CHASE_PASSWORD). Sign in to Chase in the secure browser. PDPP continues automatically when the session is ready.",
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "none",
+      timeout_seconds: 1800,
+    });
     assert.deepEqual(completions, [{ id: "assist_req_chase_1", status: "resolved" }]);
   });
 });
