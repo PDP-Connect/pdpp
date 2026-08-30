@@ -404,6 +404,16 @@ interface RunCalls {
   runConnectorOpts: RuntimeRunConnectorOptions[];
 }
 
+function setupIsolatedControllerDb(t: TestContext): void {
+  closeDb();
+  initDb(tempDbPath());
+  __resetControllerInteractionStateForTests();
+  t.after(() => {
+    __resetControllerInteractionStateForTests();
+    closeDb();
+  });
+}
+
 function setup(
   t: TestContext,
   {
@@ -420,13 +430,7 @@ function setup(
     connectorPathResolver = () => "/tmp/connector.js",
   }: SetupOptions = {}
 ) {
-  closeDb();
-  initDb(tempDbPath());
-  __resetControllerInteractionStateForTests();
-  t.after(() => {
-    __resetControllerInteractionStateForTests();
-    closeDb();
-  });
+  setupIsolatedControllerDb(t);
 
   const calls: RunCalls = {
     clearNonce: 0,
@@ -632,7 +636,9 @@ test("ordinary connector failure keeps a managed lease unavailable until the pre
   );
 });
 
-test("durable active-run row blocks managed manual and recovery admission before browser-surface acquisition", async () => {
+test("durable active-run row blocks managed manual and recovery admission before browser-surface acquisition", async (t) => {
+  setupIsolatedControllerDb(t);
+
   const allocator = createReadyAllocator();
   const manager = createManager();
   const durableRow: ActiveRunRecord = {
