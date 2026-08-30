@@ -171,9 +171,52 @@ export async function postgresLexicalIndexPublishWithClient(
     fields,
   }: RecordScope & { fields: Record<string, unknown> }
 ): Promise<void> {
-  await postgresLexicalIndexDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
   const entries = lexicalTextEntries(fields);
-  await upsertLexicalEntries(entries, 0, { connectorId, connectorInstanceId, recordKey, stream }, client);
+  // Re-collecting a record whose indexed text did not change is the common
+  // case, not the exception: a connector re-reads its window every run and
+  // most rows come back byte-identical. The old body deleted this record's
+  // index rows and re-inserted them unconditionally, so every such re-collect
+  // burned a dead tuple per field even though the resulting rows were the
+  // same. Measured in production 2026-08-30: 195.8M inserts and 192.2M
+  // deletes to hold ~8M live rows, ~22.8M inserts/hour against a ~7M-row
+  // corpus. The resulting autovacuum load starved the connector-maintenance
+  // sweep, which sat at 47 consecutive no-progress passes while a source's
+  // record count stayed visibly stale for hours.
+  //
+  // So read the current rows first and write only what genuinely differs.
+  // This is a WRITE-ELISION optimization only — the post-state is identical
+  // either way, which is what makes it safe.
+  //
+  // There is deliberately NO `if (nothingChanged) return` fast path. Field
+  // granularity below already reduces an all-identical record to zero
+  // statements, so such a branch would be unreachable-by-effect: removing it
+  // leaves every test in lexical-index-skip-unchanged-postgres.test.ts green,
+  // which is exactly the evidence that it earns nothing.
+  const current = await client.query<{ field: string; value: string }>(
+    "SELECT field, value FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3",
+    [connectorInstanceId, stream, recordKey]
+  );
+  const currentByField = new Map(current.rows.map((row) => [row.field, row.value]));
+  // Touch only what actually differs, at field granularity:
+  //
+  //   - delete ONLY fields that are genuinely gone;
+  //   - upsert ONLY fields whose value differs (or that are new).
+  //
+  // Both halves matter. Deleting the survivors would recreate the churn this
+  // guard exists to remove, and re-upserting an identical value is not free
+  // either: `ON CONFLICT ... DO UPDATE` writes a new tuple even when the value
+  // is unchanged, so a record that gains one field would otherwise rewrite
+  // every other field's row alongside it.
+  const nextFields = new Set(entries.map((entry) => entry.field));
+  const removedFields = current.rows.map((row) => row.field).filter((field) => !nextFields.has(field));
+  if (removedFields.length > 0) {
+    await client.query(
+      "DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND field = ANY($4)",
+      [connectorInstanceId, stream, recordKey, removedFields]
+    );
+  }
+  const changedEntries = entries.filter((entry) => currentByField.get(entry.field) !== entry.value);
+  await upsertLexicalEntries(changedEntries, 0, { connectorId, connectorInstanceId, recordKey, stream }, client);
 }
 
 /** Postgres client-scoped lexical delete — see `postgresLexicalIndexPublishWithClient`'s header. */
