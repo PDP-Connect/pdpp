@@ -673,3 +673,75 @@ test("resolveSessionEstablishWatchdogMs falls back to default on missing/invalid
   assert.equal(resolveSessionEstablishWatchdogMs({ PDPP_SESSION_ESTABLISH_WATCHDOG_MS: "0" }), 120_000);
   assert.equal(resolveSessionEstablishWatchdogMs({ PDPP_SESSION_ESTABLISH_WATCHDOG_MS: "nope" }), 120_000);
 });
+
+// ─── establishSession: a probeSession VERIFIES an ensureSession claim ───────
+//
+// Production 2026-08-29/30, run_1788030841840 and run_1788061976811: both ended
+// `venmo_session_expired [endpoint /account]: You did not pass a valid OAuth
+// access token`, and the second raised NO owner interaction at all — 67 seconds
+// start to finish. `ensureSession` had returned normally after replaying an
+// assisted sign-in, carrying no liveness, so the first check of whether
+// authentication actually worked was a 401 mid-collection. Three owner
+// challenges were spent before the cause was found.
+//
+// These pin the correction: when a connector supplies BOTH hooks, a dead probe
+// after a "successful" ensureSession fails the run closed instead of starting
+// collection. That is a session-establishment observable an agent can assert
+// WITHOUT costing the owner a challenge.
+
+test("establishSession: a DEAD probeSession after a successful ensureSession fails the run closed", async () => {
+  let collectionWouldHaveStarted = true;
+  await assert.rejects(
+    establishSession(
+      {
+        // Returns normally — the claim. Exactly what the assisted replay did.
+        ensureSession: () => Promise.resolve(),
+        probeSession: () => Promise.resolve(false),
+      },
+      makeEstablishArgs("venmo")
+    ),
+    (err: unknown) => {
+      collectionWouldHaveStarted = false;
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /venmo_session_unverified_after_establish/);
+      assert.equal(
+        (err as { retryable?: boolean }).retryable,
+        false,
+        "a proven-dead session is not a transient fault; redispatching would re-run the same dead context"
+      );
+      return true;
+    }
+  );
+  assert.equal(collectionWouldHaveStarted, false, "establishSession must not return when the probe says dead");
+});
+
+test("establishSession: a LIVE probeSession after ensureSession returns normally", async () => {
+  let probed = false;
+  await establishSession(
+    {
+      // Non-async: nothing to await in a stub that only makes the claim.
+      ensureSession: () => Promise.resolve(),
+      probeSession: () => {
+        probed = true;
+        return Promise.resolve(true);
+      },
+    },
+    makeEstablishArgs("venmo")
+  );
+  assert.equal(probed, true, "the probe must actually run — a skipped probe verifies nothing");
+});
+
+test("mutation-kill twin: a connector with NO probeSession is unaffected by the verification", async () => {
+  // The guard is additive. Without a probeSession there is nothing to verify
+  // against, and ensureSession's word still stands — otherwise this change
+  // would break every connector that declares only ensureSession.
+  await establishSession(
+    {
+      // Non-async on purpose: this stub has nothing to await, and an async
+      // function with no await is a lint error, not a style preference.
+      ensureSession: () => Promise.resolve(),
+      probeSession: undefined,
+    },
+    makeEstablishArgs("amazon")
+  );
+});

@@ -67,10 +67,11 @@
 import { isMainModule } from "@pdpp/connector-protocol";
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import type { Page } from "playwright";
-import { ensureVenmoOrigin, ensureVenmoSession } from "../../src/auto-login/venmo.ts";
+import { ensureVenmoOrigin, ensureVenmoSession, probeVenmoAccount } from "../../src/auto-login/venmo.ts";
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
+  type ProbeSessionArgs,
   politeDelay,
   runConnector,
 } from "../../src/connector-runtime.ts";
@@ -550,6 +551,26 @@ if (isMainModule(import.meta.url)) {
     retryablePattern: VENMO_RETRYABLE_PATTERN,
     auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
     browser: { profileName: "venmo" },
+    /**
+     * Read-only liveness check: asks Venmo's own API whether THIS browser
+     * context is authenticated. No credential is typed, no owner interaction is
+     * raised, and no OTP is spent — so the walk can assert an established
+     * session without costing the owner a challenge.
+     *
+     * `probeVenmoAccount` establishes the venmo.com origin itself and fetches
+     * `/account` with `credentials: "include"` from the same `page` object
+     * `collect()` later uses, so a live verdict here is a verdict about the
+     * exact context collection will run in — not a proxy for it.
+     *
+     * The runtime runs this after `ensureSession` returns (session-establish.ts)
+     * and fails the run closed when it reports dead. Before that, a replayed
+     * assisted sign-in could return carrying no liveness and the first check of
+     * whether authentication worked was a 401 from `/account` mid-collection.
+     */
+    async probeSession({ page }: ProbeSessionArgs): Promise<boolean> {
+      const probe = await probeVenmoAccount(page, "post_submit");
+      return probe.live;
+    },
     async ensureSession({
       capture,
       checkpoint,

@@ -130,6 +130,34 @@ export function buildSessionEstablishTerminalError(
 }
 
 /**
+ * Check an `ensureSession` claim against the connector's own read-only
+ * predicate, and fail the run closed when the provider says the session is
+ * dead.
+ *
+ * Extracted rather than inlined so `establishSession` stays under the
+ * cognitive-complexity ceiling — and because "verify the claim" is a distinct
+ * step worth naming, not a clause of the establish branch.
+ */
+async function verifyEstablishedSession({
+  checkpoint,
+  context,
+  name,
+  page,
+  probeSession,
+}: {
+  checkpoint: SessionCheckpointFn;
+  context: BrowserContext;
+  name: string;
+  page: Page;
+  probeSession: (args: ProbeSessionArgs) => Promise<boolean>;
+}): Promise<void> {
+  await checkpoint("session-establish:verify-after-ensure");
+  if (!(await probeSession({ context, page }))) {
+    throw new TerminalError(`${name}_session_unverified_after_establish`, { retryable: false });
+  }
+}
+
+/**
  * Run whichever session-management flow the connector configured.
  * Throws TerminalError if the session is dead and we couldn't recover.
  *
@@ -172,6 +200,10 @@ export async function establishSession(
     // process's submission is what's being retried. That's exactly the case
     // this primitive exists to stop: this call is the resubmission risk.
     let credentialSubmitted = false;
+    // Holds the connector's own probe when ensureSession returned normally AND
+    // this connector supplies one to check the claim against. Verified after
+    // the try/catch. Null means "nothing to verify with", not "verified".
+    let establishClaimUnverified: ((args: ProbeSessionArgs) => Promise<boolean>) | null = null;
     try {
       await ensureSession({
         assist,
@@ -187,7 +219,31 @@ export async function establishSession(
         sendInteraction,
         progress,
       });
-      return;
+      // `ensureSession` returning is a CLAIM that a session exists, not proof
+      // of one. Where the connector also supplies `probeSession` — a read-only
+      // predicate that asks the provider itself — verify the claim before
+      // collection starts.
+      //
+      // Production 2026-08-29/30, runs run_1788030841840 and run_1788061976811:
+      // both ended `venmo_session_expired [endpoint /account]: You did not pass
+      // a valid OAuth access token`, and the second fired NO owner interaction
+      // at all — 67 seconds start to finish. The assisted path had replayed
+      // sign-in and returned a constant carrying no liveness, so the FIRST
+      // check of whether authentication actually worked was a 401 surfaced as a
+      // run failure. Three owner challenges were spent before that was found.
+      //
+      // Failing closed here converts that into a session-establishment
+      // observable an agent can assert WITHOUT an owner challenge, which is the
+      // property the owner asked for. A connector with no `probeSession` is
+      // unaffected: this is additive, and the pre-existing
+      // probe-when-no-ensureSession path below is untouched.
+      //
+      // Deliberately flagged here and THROWN BELOW, outside this try: the catch
+      // funnels everything through `buildSessionEstablishTerminalError` with
+      // `credentialSubmitted`, which would re-wrap this verdict and could
+      // reclassify a proven-dead session as retryable. A verification failure is
+      // not an ensureSession fault and must not borrow its retry semantics.
+      establishClaimUnverified = typeof probeSession === "function" ? probeSession : null;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern, credentialSubmitted);
@@ -212,6 +268,12 @@ export async function establishSession(
         ...(code ? { code } : {}),
       });
     }
+    // Outside the try on purpose — see the flag's assignment for why this must
+    // not be funnelled through the ensureSession catch.
+    if (establishClaimUnverified) {
+      await verifyEstablishedSession({ checkpoint, context, name, page, probeSession: establishClaimUnverified });
+    }
+    return;
   }
 
   if (typeof probeSession !== "function") {
