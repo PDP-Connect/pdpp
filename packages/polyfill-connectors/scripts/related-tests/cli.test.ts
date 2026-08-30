@@ -198,3 +198,39 @@ describe("getChangedFiles: real git repository, real rename operations", () => {
     assert.deepEqual(deletedRelativePaths, []);
   });
 });
+
+describe("getChangedFiles: unresolved Git index/worktree entries fail closed", () => {
+  let repoRoot: string;
+
+  before(() => {
+    repoRoot = mkdtempSync(join(tmpdir(), "related-tests-cli-unmerged-"));
+    initRepo(repoRoot);
+    writeFileSync(join(repoRoot, "index.ts"), "export const value = 1;\n");
+    commitAll(repoRoot, "initial: add index.ts");
+  });
+
+  after(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  test("a real UU conflict is returned as unmerged even when both staged and unstaged U diffs exist", () => {
+    const baseRef = git(repoRoot, ["rev-parse", "HEAD"]).trim();
+    git(repoRoot, ["checkout", "-qb", "conflict-source"]);
+    writeFileSync(join(repoRoot, "index.ts"), "export const value = 2;\n");
+    commitAll(repoRoot, "conflict-source: edit index.ts");
+    git(repoRoot, ["checkout", "-q", "-"]);
+    writeFileSync(join(repoRoot, "index.ts"), "export const value = 3;\n");
+    commitAll(repoRoot, "main: edit index.ts");
+    assert.throws(() => git(repoRoot, ["merge", "conflict-source"]));
+
+    assert.equal(git(repoRoot, ["status", "--porcelain=v1"]).trim(), "UU index.ts");
+    assert.equal(git(repoRoot, ["diff", "--cached", "--name-only", "-z", "--diff-filter=U"]), "index.ts\0");
+    assert.equal(git(repoRoot, ["diff", "--name-only", "-z", "--diff-filter=U"]), "index.ts\0");
+
+    const result = getChangedFiles(repoRoot, baseRef);
+
+    assert.deepEqual(result.changedRelativePaths, []);
+    assert.deepEqual(result.deletedRelativePaths, []);
+    assert.deepEqual(result.unmergedRelativePaths, ["index.ts"]);
+  });
+});

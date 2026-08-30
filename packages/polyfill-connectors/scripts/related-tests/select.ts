@@ -81,17 +81,26 @@ export interface SelectTestsInput {
    * only the (now-gone) node's reverse edges could have named.
    */
   readonly deletedRelativePaths: readonly string[];
+  /** Package-relative paths with an unresolved Git index/worktree entry (U* or *U). */
+  readonly unmergedRelativePaths: readonly string[];
   readonly graph: DependencyGraph;
   readonly packageRoot: string;
 }
 
 export function selectRelatedTests(input: SelectTestsInput): SelectionResult {
-  const { packageRoot, graph, allRelativePaths, changedRelativePaths, deletedRelativePaths } = input;
+  const { packageRoot, graph, allRelativePaths, changedRelativePaths, deletedRelativePaths, unmergedRelativePaths } = input;
 
   if (deletedRelativePaths.length > 0) {
     return {
       kind: FULL_SUITE,
       reason: `${deletedRelativePaths.length} deleted path(s) (e.g. "${deletedRelativePaths[0]}"); a deletion is absent from the dependency graph and its dependents cannot be walked`,
+    };
+  }
+
+  if (unmergedRelativePaths.length > 0) {
+    return {
+      kind: FULL_SUITE,
+      reason: `${unmergedRelativePaths.length} unmerged path(s) (e.g. "${unmergedRelativePaths[0]}"); unresolved Git index/worktree entries cannot be classified safely`,
     };
   }
 
