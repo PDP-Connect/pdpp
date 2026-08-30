@@ -5230,7 +5230,14 @@ export async function registerConnector(
   return connectorId;
 }
 
-function normalizeConnectorManifestForStorage(manifest: Record<string, unknown>): {
+/**
+ * Produce the exact manifest representation persisted by `registerConnector`.
+ *
+ * Callers that compare a candidate manifest with storage MUST use this
+ * authority. In particular, legacy manifest projection adds a durable source
+ * declaration that is not present in the shipped JSON.
+ */
+export function normalizeConnectorManifestForStorage(manifest: Record<string, unknown>): {
   connectorId: string;
   storedManifest: Record<string, unknown>;
 } {
