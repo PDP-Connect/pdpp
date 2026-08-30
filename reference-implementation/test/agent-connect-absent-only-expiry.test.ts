@@ -183,6 +183,48 @@ test(
 );
 
 test(
+  "SQLite: replay still returns the normalized body when the healing write fails",
+  withSqlite(async () => {
+    // The healing rewrite is documented as best-effort: the returned body is
+    // already correct before any write is attempted, so a failure writing it
+    // back must never turn a valid, already-normalized redemption into an
+    // error. Force the write to fail with a trigger that rejects exactly the
+    // healing UPDATE, and assert the redemption still succeeds.
+    const grant = legacyGrant("grt_legacy_write_fails");
+    const staleResponse = JSON.stringify({
+      access_token: TOKEN,
+      grant,
+      grant_id: grant.grant_id,
+      token_type: "Bearer",
+    });
+    seedSqliteAttempt("att_write_fails", grant, staleResponse);
+    getDb().exec(`
+      CREATE TRIGGER heal_write_fails
+      BEFORE UPDATE OF response_json ON agent_connect_attempts
+      WHEN NEW.id = 'att_write_fails'
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated healing write failure');
+      END;
+    `);
+
+    const store = createAgentConnectAttemptStore();
+    const result = await store.redeem("att_write_fails", POLLING_CODE);
+
+    assert.equal(result.outcome, "approved", "a failed healing write must not fail the redemption");
+    assert.ok(result.outcome === "approved");
+    assert.equal(result.replay, true);
+    assertExpiryAbsent(result.body, "sqlite replay despite failed healing write");
+
+    // The row itself was never healed, since the write failed -- confirms
+    // this test actually exercised the failure path rather than a no-op.
+    const row = getDb()
+      .prepare("SELECT response_json FROM agent_connect_attempts WHERE id = ?")
+      .get("att_write_fails") as { response_json: string };
+    assert.equal(row.response_json, staleResponse, "the stored row must be untouched by a failed write");
+  })
+);
+
+test(
   "SQLite: the stored response_json is rewritten so the null cannot resurface",
   withSqlite(async () => {
     const grant = legacyGrant("grt_legacy_rewrite");
@@ -456,6 +498,56 @@ test(
       false,
       "stored response must be rewritten in place"
     );
+  })
+);
+
+test(
+  "PostgreSQL: replay still returns the normalized body when the healing write fails",
+  { skip: POSTGRES_SKIP },
+  withPostgres(async () => {
+    // Same best-effort contract as the SQLite case, forced via a trigger
+    // that rejects exactly the healing UPDATE on this one row.
+    const grant = legacyGrant("grt_pg_write_fails");
+    const staleResponse = JSON.stringify({
+      access_token: TOKEN,
+      grant,
+      grant_id: grant.grant_id,
+      token_type: "Bearer",
+    });
+    await seedPostgresAttempt("att_pg_write_fails", grant, staleResponse);
+    await postgresQuery(`
+      CREATE OR REPLACE FUNCTION pg_temp_reject_healing_write() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.id = 'att_pg_write_fails' THEN
+          RAISE EXCEPTION 'simulated healing write failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await postgresQuery(`
+      CREATE TRIGGER reject_healing_write
+      BEFORE UPDATE OF response_json ON agent_connect_attempts
+      FOR EACH ROW EXECUTE FUNCTION pg_temp_reject_healing_write();
+    `);
+    try {
+      const store = createAgentConnectAttemptStore();
+      const result = await store.redeem("att_pg_write_fails", POLLING_CODE);
+
+      assert.equal(result.outcome, "approved", "a failed healing write must not fail the redemption");
+      assert.ok(result.outcome === "approved");
+      assert.equal(result.replay, true);
+      assertExpiryAbsent(result.body, "postgres replay despite failed healing write");
+
+      const row = await postgresQuery<{ response_json: string }>(
+        "SELECT response_json FROM agent_connect_attempts WHERE id = $1",
+        ["att_pg_write_fails"]
+      );
+      assert.equal(row.rows[0]?.response_json, staleResponse, "the stored row must be untouched by a failed write");
+    } finally {
+      await postgresQuery("DROP TRIGGER IF EXISTS reject_healing_write ON agent_connect_attempts");
+      await postgresQuery("DROP FUNCTION IF EXISTS pg_temp_reject_healing_write()");
+    }
   })
 );
 
