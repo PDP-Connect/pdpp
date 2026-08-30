@@ -59,5 +59,10 @@ jobs:
       - name: Check spec docs drift
         run: pnpm spec:check
 
-      - name: Check spec Date headers are not stale
+      - name: Check pull-request spec Date headers are not stale
+        if: github.event_name == 'pull_request'
+        run: pnpm spec:dates -- --base "${{ github.event.pull_request.base.sha }}"
+
+      - name: Check all spec Date headers are not stale
+        if: github.event_name != 'pull_request'
         run: pnpm spec:dates

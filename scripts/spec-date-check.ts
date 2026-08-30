@@ -23,7 +23,6 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
-const WRITE = process.argv.includes("--write");
 
 const SPEC_FILENAME_PATTERN = /^spec-.*\.md$/;
 
@@ -50,6 +49,48 @@ function declaredDate(text: string): { raw: string; iso: string } | null {
 
 function git(args: string[]): string {
   return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" });
+}
+
+interface Options {
+  baseRef?: string;
+  write: boolean;
+}
+
+function parseOptions(args: string[]): Options {
+  let baseRef: string | undefined;
+  let write = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--write") {
+      write = true;
+      continue;
+    }
+    if (arg === "--base") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--") || baseRef) {
+        throw new Error("usage: spec-date-check.ts [--write] [--base <commit-ish>]");
+      }
+      baseRef = value;
+      index += 1;
+      continue;
+    }
+    throw new Error(`unknown argument: ${arg}`);
+  }
+
+  return { baseRef, write };
+}
+
+function resolvedBase(baseRef: string): string {
+  try {
+    return git(["rev-parse", "--verify", `${baseRef}^{commit}`]).trim();
+  } catch {
+    throw new Error(`--base must resolve to a commit: ${baseRef}`);
+  }
+}
+
+function filesChangedFrom(baseCommit: string): string[] {
+  return specFiles().filter((file) => git(["diff", "--name-only", baseCommit, "HEAD", "--", file]).trim() !== "");
 }
 
 // Header block = lines 1-4 (title, blank, Status:, Date:), uniform across
@@ -238,10 +279,28 @@ function reportFailures(stale: StaleReport[], errors: string[]): void {
 }
 
 function main(): void {
-  const files = specFiles();
+  let parsed: Options;
+  try {
+    parsed = parseOptions(process.argv.slice(2));
+  } catch (error) {
+    console.error(`spec:dates failed: ${(error as Error).message}`);
+    process.exit(1);
+  }
+
+  let files = specFiles();
+  if (parsed.baseRef) {
+    let baseCommit: string;
+    try {
+      baseCommit = resolvedBase(parsed.baseRef);
+    } catch (error) {
+      console.error(`spec:dates failed: ${(error as Error).message}`);
+      process.exit(1);
+    }
+    files = filesChangedFrom(baseCommit);
+  }
   const { stale, errors } = collectResults(files);
 
-  if (WRITE) {
+  if (parsed.write) {
     writeStaleDates(stale);
     return;
   }
