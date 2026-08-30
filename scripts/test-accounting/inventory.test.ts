@@ -1098,6 +1098,11 @@ test("the optional PostgreSQL profile is not selected by the required default an
     PDPP_TEST_POSTGRES: undefined,
     PDPP_TEST_POSTGRES_URL: "postgres://postgres@127.0.0.1:5432/pdpp_test",
   };
+  const inheritedMemoryEnvironment = {
+    ...process.env,
+    PDPP_TEST_POSTGRES: undefined,
+    PDPP_TEST_POSTGRES_URL: undefined,
+  };
   const { runs } = selectedRuns(manifestValue, trackedFiles(root), { suites: ["ri-default"] });
   assert.deepEqual(
     runs.map((run) => (typeof run.profile === "string" ? run.profile : run.profile.id)),
@@ -1105,6 +1110,10 @@ test("the optional PostgreSQL profile is not selected by the required default an
   );
   await assert.rejects(
     runAuthority({ root, suites: ["ri-default"], profile: "postgres", env: inheritedPostgresEnvironment }),
+    OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN
+  );
+  await assert.rejects(
+    runAuthority({ root, suites: ["ri-default"], profile: "postgres", env: inheritedMemoryEnvironment }),
     OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN
   );
 });
