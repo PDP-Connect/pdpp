@@ -1089,13 +1089,22 @@ test("the polyfill-connectors default profile declares the exact current skip ba
 test("the optional PostgreSQL profile is not selected by the required default and rejects implicit execution", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
+  // The outer PostgreSQL authority lane inherits a valid URL and its selection
+  // predicate. This assertion instead needs the counterexample: a usable
+  // inherited URL without the optional profile's declared predicate must still
+  // reject before it can spawn the 1,027-file PostgreSQL profile.
+  const inheritedPostgresEnvironment = {
+    ...process.env,
+    PDPP_TEST_POSTGRES: undefined,
+    PDPP_TEST_POSTGRES_URL: "postgres://postgres@127.0.0.1:5432/pdpp_test",
+  };
   const { runs } = selectedRuns(manifestValue, trackedFiles(root), { suites: ["ri-default"] });
   assert.deepEqual(
     runs.map((run) => (typeof run.profile === "string" ? run.profile : run.profile.id)),
     ["memory-default", "postgres"]
   );
   await assert.rejects(
-    runAuthority({ root, suites: ["ri-default"], profile: "postgres" }),
+    runAuthority({ root, suites: ["ri-default"], profile: "postgres", env: inheritedPostgresEnvironment }),
     OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN
   );
 });
