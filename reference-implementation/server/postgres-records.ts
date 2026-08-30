@@ -584,7 +584,13 @@ function fieldsFor(
   }
   if (effective) {
     const seen = new Set(effective);
-    for (const required of requiredFields) {
+    // `fields` is the public projection. A resolved client grant has its
+    // own `instance_ids` property and freezes that projection at grant
+    // resolution. Filtering and record identity are computed separately, so
+    // current manifest requirements cannot add response fields. Owner grants
+    // omit `instance_ids` and retain the current-manifest projection.
+    const projectionRequiredFields = Object.hasOwn(streamGrant, "instance_ids") ? [] : requiredFields;
+    for (const required of projectionRequiredFields) {
       if (!seen.has(required)) {
         effective.push(required);
         seen.add(required);
