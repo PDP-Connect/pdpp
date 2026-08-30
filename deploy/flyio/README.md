@@ -175,7 +175,14 @@ pnpm railway:mcp-query-smoke -- \
 ```
 
 The `railway:mcp-query-smoke` script name is historical; the harness is
-platform-neutral and works against any composed PDPP origin.
+platform-neutral and works against any composed PDPP origin. This default
+(no-flag) invocation is strictly read-only — it proves the hosted MCP endpoint
+refuses anonymous access and returns whatever records already exist, and never
+registers a manifest, ingests, or deletes anything. This is the correct and
+only safe mode against a real launched app with a real owner connection.
+`--disposable-env` additionally seeds a deterministic record set and cleans it
+up before exiting, but refuses to run unless the owner has zero pre-existing
+connections — never pass it here.
 
 Restart-survival proof:
 
@@ -183,8 +190,7 @@ Restart-survival proof:
 fly apps restart "$APP"
 pnpm railway:mcp-query-smoke -- \
   --origin "$ORIGIN" \
-  --owner-password "$OWNER_PASSWORD" \
-  --no-seed
+  --owner-password "$OWNER_PASSWORD"
 ```
 
 ## Storage

@@ -644,7 +644,12 @@ async function main(argv: string[]): Promise<void> {
     await runLiveSmoke({
       origin,
       ownerPassword,
-      seed: true,
+      // This gate always runs against a single-purpose container the operator
+      // just built/started for this acceptance run (see --container), never a
+      // persistent deploy with a real owner connection, so it opts into the
+      // disposable-environment mutation smoke. runLiveSmoke itself still
+      // refuses to seed if the owner unexpectedly already has a connection.
+      disposableEnv: true,
       subjectId: FRIEND_SEED_SUBJECT,
       logger: (message) => steps.push(message),
     });
@@ -795,7 +800,8 @@ async function main(argv: string[]): Promise<void> {
     await runLiveSmoke({
       origin,
       ownerPassword,
-      seed: false,
+      // Default (read-only) mode: proves persistence across restart without
+      // re-seeding or mutating anything.
       subjectId: FRIEND_SEED_SUBJECT,
       logger: (message) => steps.push(message),
     });

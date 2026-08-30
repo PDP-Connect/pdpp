@@ -103,20 +103,49 @@ wait_for() {
 
 seed_and_query() {
   # Seed (the pre-restart baseline) and assert the scoped MCP query returns the
-  # seeded records.
-  node --import tsx "$SCRIPT_DIR/railway-mcp-query-smoke.ts" \
-    --origin "$ORIGIN" \
-    --owner-password "$OWNER_PASSWORD"
+  # seeded records — WITHOUT tombstone-deleting them afterward, because this
+  # harness's own `trap cleanup EXIT` (docker compose down --volumes) destroys
+  # the entire disposable environment, database included, once the restart
+  # proof below completes. Per-record cleanup here would erase the very
+  # records the restart step must prove survived, and would be redundant
+  # regardless since the whole volume is about to be destroyed.
+  #
+  # This calls seedDisposableEnv directly (not the railway-mcp-query-smoke.ts
+  # CLI): that function is deliberately not exposed as a CLI flag, because it
+  # has no cleanup of its own and is only safe for a caller that IS itself a
+  # whole-environment disposable harness with a guaranteed teardown trap, like
+  # this script. It still runs the same fail-closed
+  # assertOwnerHasNoExistingConnections gate as --disposable-env.
+  #
+  # Written into $SCRIPT_DIR (not run from stdin) so its relative import of
+  # ./railway-mcp-query-smoke.ts resolves against this repo's node_modules
+  # (tsx) rather than the shell's CWD.
+  local driver
+  driver="$(mktemp "$SCRIPT_DIR/.railway-sqlite-restart-smoke-seed-driver.XXXXXX.mts")"
+  trap 'rm -f "$driver"' RETURN
+  cat > "$driver" <<'NODE'
+import { seedDisposableEnv } from "./railway-mcp-query-smoke.ts";
+
+const [, , origin, ownerPassword] = process.argv;
+await seedDisposableEnv({
+  origin,
+  ownerPassword,
+  subjectId: process.env.PDPP_OWNER_SUBJECT_ID ?? "owner_local",
+  logger: (message) => process.stdout.write(`  ${message}\n`),
+});
+NODE
+  node --import tsx "$driver" "$ORIGIN" "$OWNER_PASSWORD"
 }
 
 query_only() {
-  # Re-query WITHOUT re-seeding — the authoritative durability proof. If the
-  # records were on the replaced container's writable layer instead of the
-  # volume, --no-seed would find nothing and fail.
+  # Re-query WITHOUT re-seeding — the authoritative durability proof. Default
+  # mode (no flag) is now always read-only, so this is the same invocation as
+  # before minus the removed --no-seed flag: if the records were on the
+  # replaced container's writable layer instead of the volume, this would find
+  # nothing and fail.
   node --import tsx "$SCRIPT_DIR/railway-mcp-query-smoke.ts" \
     --origin "$ORIGIN" \
-    --owner-password "$OWNER_PASSWORD" \
-    --no-seed
+    --owner-password "$OWNER_PASSWORD"
 }
 
 assert_owner_login() {

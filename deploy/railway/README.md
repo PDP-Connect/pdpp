@@ -168,7 +168,11 @@ For a live source project or scratch template deploy:
 5. Confirm AS `issuer`, RS `resource`, and RS `authorization_servers[0]` all
    equal the public origin.
 6. Confirm anonymous `/dashboard` redirects to `/owner/login`.
-7. Run the deterministic MCP smoke:
+7. Run the deterministic MCP smoke in its default, read-only mode — this is
+   the safe acceptance check for a real deploy with a real owner connection.
+   It proves the hosted MCP endpoint refuses anonymous access and returns
+   whatever records already exist; it never registers a manifest, ingests, or
+   deletes anything:
 
    ```sh
    node --import tsx scripts/railway-mcp-query-smoke.ts \
@@ -176,7 +180,14 @@ For a live source project or scratch template deploy:
      --owner-password "$PDPP_OWNER_PASSWORD"
    ```
 
-8. Restart the `core` service, then rerun the smoke with `--no-seed` to prove
+   `--disposable-env` (a separate mode, not used here) additionally seeds a
+   deterministic record set and cleans it up before exiting, but refuses to
+   run unless the owner has zero pre-existing connections — never run it
+   against this or any other deploy with a real owner connection. See
+   `scripts/railway-sqlite-restart-smoke.sh` for the disposable-environment
+   variant of this durability check, which owns its own fresh, disposable
+   Docker Compose project and volume.
+8. Restart the `core` service, then rerun the same read-only command to prove
    stored records and owner login survive restart.
 
 ## Template publication

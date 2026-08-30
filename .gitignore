@@ -86,3 +86,7 @@ design-evidence/**/*.png
 /screenshots-*/
 /perf-results/
 packages/local-collector/dist-collector/
+
+# railway-sqlite-restart-smoke.sh's mktemp'd driver file — removed by its own
+# `trap ... RETURN`; this is a defensive backstop only (e.g. SIGKILL).
+scripts/.railway-sqlite-restart-smoke-seed-driver.*.mts

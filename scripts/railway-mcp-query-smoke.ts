@@ -2,17 +2,28 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Deterministic record-seed + scripted external MCP query for the Railway Core
-// deploy gate (openspec/changes/add-railway-core-deploy-target task 3.2,
-// deploy/railway/README.md "First-live-test gate" steps 5 and 6).
+// Scripted external MCP query for the Railway Core deploy gate
+// (openspec/changes/add-railway-core-deploy-target task 3.2, deploy/railway/
+// README.md "First-live-test gate" steps 5 and 6), split into a read-only
+// production-acceptance path and a disposable-environment mutation smoke.
 //
-// This is the executable proxy for the two live acceptance steps that the
-// offline env-contract check (scripts/check-railway-deploy-env.ts) and the
-// composed-origin smoke (scripts/docker-smoke.sh) do NOT cover:
+// Production acceptance (default, no flag): STRICTLY READ-ONLY. It never
+// registers a manifest, never ingests, and never deletes anything — it only
+// proves the hosted MCP endpoint refuses anonymous access AND completes a
+// scoped tools/list + query_records that returns whatever seed-stream records
+// already exist. This is the safe, repeatable mode against a real,
+// persistent deployment with a real owner connection.
 //
-//   - a small, hand-seeded record set lands WITHOUT running a browser connector;
-//   - the hosted MCP endpoint refuses anonymous access AND completes a scoped
-//     tools/list + query_records that returns exactly that seeded record.
+// Disposable-environment mutation smoke (--disposable-env): the only mode
+// that seeds. It hand-imports a small deterministic record set (no connector
+// run) WITHOUT running a browser connector, then proves the scoped MCP query
+// returns it, then tombstone-deletes and re-verifies before exiting. It
+// refuses to run at all unless the owner has ZERO pre-existing connections
+// (see assertOwnerHasNoExistingConnections below for why this is the only
+// available safety proof) — this closes the defect recorded in
+// FULL-PROTOCOL-TRAIN-CUTOVER-R2-0829.md "Required follow-up", where an
+// earlier unconditional-seed version mutated a pre-existing owner Spotify
+// connection.
 //
 // It uses only the public protocol surface against ONE composed origin — the
 // same surface a real MCP client and a real owner would use. It does not import
@@ -23,34 +34,43 @@
 // real stack (local composed-origin via `pnpm docker:smoke`'s images, or a live
 // Railway origin) only when an --origin is given.
 //
-// Seed path (in-contract, owner-authenticated, no connector run):
+// Seed path (--disposable-env only; in-contract, owner-authenticated, no
+// connector run):
 //   1. POST /owner/login          → owner session cookie (when a password is set)
 //   2. device flow under that session → owner access token
-//   3. POST /connectors           → register a fixture connector manifest
-//   4. POST /v1/ingest/:stream    → NDJSON records (owner-gated ingest)
+//   3. GET  /v1/owner/connections → MUST be empty, or abort before any mutation
+//   4. POST /connectors           → register a fixture connector manifest
+//   5. POST /v1/ingest/:stream    → NDJSON records (owner-gated ingest)
 //
-// Query path (external MCP client, scoped grant):
-//   5. POST/GET /mcp (no auth)    → MUST refuse (401)
-//   6. POST /oauth/register       → dynamic client
+// Query path (external MCP client, scoped grant; both modes):
+//   6. POST/GET /mcp (no auth)    → MUST refuse (401)
+//   7. POST /oauth/register       → dynamic client
 //      GET  /oauth/authorize      → consent request_uri
 //      POST /consent/approve      → authorization code (under owner session)
 //      POST /oauth/token          → client access token (scoped to the connector)
 //      POST /mcp initialize / tools/list / tools/call query_records
-//                                 → seeded record returned
+//                                 → (seeded or pre-existing) record(s) returned
+//
+// Cleanup path (--disposable-env only; guaranteed on every post-seed failure
+// point, not just the success path):
+//   8. DELETE /v1/streams/:stream/records/:key (per seeded key) → 204
+//   9. POST /mcp tools/call query_records → verify zero seeded keys remain live
 //
 // Usage:
 //   node scripts/railway-mcp-query-smoke.ts --origin https://your-console-domain
 //   node scripts/railway-mcp-query-smoke.ts --origin http://localhost:3002 \
 //        --owner-password "$PDPP_OWNER_PASSWORD"
+//   node scripts/railway-mcp-query-smoke.ts --origin <origin> --disposable-env
 //   node scripts/railway-mcp-query-smoke.ts --origin <origin> --json
 //
 // When the deploy follows the documented security posture, PDPP_OWNER_PASSWORD
-// is set; pass it via --owner-password or the env var so the seed step can
-// establish an owner session. Against an open local-dev server (no password)
-// the login step is a no-op and the device flow mints a token directly.
+// is set; pass it via --owner-password or the env var so the client-token
+// consent flow (and, under --disposable-env, the seed step) can establish an
+// owner session. Against an open local-dev server (no password) the login
+// step is a no-op and the device flow mints a token directly.
 //
-// Exit codes: 0 = the seed + MCP query gate passed; 1 = a check failed or the
-// origin was unreachable; 2 = usage error.
+// Exit codes: 0 = the gate passed; 1 = a check, the pre-seed guard, or cleanup
+// failed, or the origin was unreachable; 2 = usage error.
 
 import crypto from "node:crypto";
 import process from "node:process";
@@ -413,6 +433,8 @@ async function registerSeedManifest(
   // declares. Re-register is idempotent (409 on unchanged version is fine).
   const manifest = {
     connector_id: SEED_CONNECTOR_ID,
+    protocol_version: "0.1.0",
+    display_name: "Spotify (Railway seed fixture)",
     name: "Spotify (Railway seed fixture)",
     version: "1.0.0",
     streams: [
@@ -455,6 +477,47 @@ async function registerSeedManifest(
   return manifest;
 }
 
+// Fail-closed pre-mutation gate for the disposable-environment mutation smoke
+// (--disposable-env). The only way this codebase can produce a genuinely
+// disposable connector instance over the public bearer-token HTTP API is to
+// let ingest materialize the deterministic default-account connection for
+// SEED_CONNECTOR_ID (see resolveOwnerConnectorInstanceNamespace /
+// materializeDefaultAccount in reference-implementation/server/stores/
+// connector-instance-store.ts) — and that connection can NEVER be deleted
+// through the public API once created (assertDeletableConnection refuses
+// default-account bindings unconditionally, by design, not as a bug). So the
+// only way to avoid ever mutating a pre-existing owner connection is to prove,
+// immediately before seeding, that the owner has ZERO connections at all: if
+// this is true, the default-account connection ingest is about to create is
+// provably NEW, not a pre-existing one. A non-empty list means this is not a
+// disposable/fresh environment, and the smoke must abort before any mutation.
+async function assertOwnerHasNoExistingConnections(origin: string, ownerToken: string, log: LogFn): Promise<void> {
+  const resp = await fetch(`${origin}/v1/owner/connections`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${ownerToken}` },
+  });
+  const { text, json } = await readBody(resp);
+  if (resp.status !== 200) {
+    throw new SmokeError(`pre-seed connection listing failed ${resp.status}: ${text}`);
+  }
+  const listing = json as { data?: unknown[] } | null;
+  const existing = Array.isArray(listing?.data) ? listing.data : null;
+  if (existing === null) {
+    throw new SmokeError(`pre-seed connection listing returned an unexpected body: ${text}`);
+  }
+  if (existing.length > 0) {
+    const ids = existing
+      .map((entry) => (entry as { connection_id?: unknown }).connection_id)
+      .filter((id): id is string => typeof id === "string");
+    throw new SmokeError(
+      `refusing to seed: this owner already has ${existing.length} connection(s) (${ids.join(", ") || "unknown ids"}). ` +
+        "--disposable-env only runs against an owner with zero pre-existing connections, so seeding can never bind to " +
+        "a pre-existing default connection. Use the default read-only mode against a production/persistent deploy instead."
+    );
+  }
+  log("pre-seed guard: owner has zero pre-existing connections; safe to seed a fresh default-account connection");
+}
+
 async function seedRecords(origin: string, ownerToken: string, log: LogFn): Promise<void> {
   const url = `${origin}/v1/ingest/${encodeURIComponent(SEED_STREAM)}?connector_id=${encodeURIComponent(SEED_CONNECTOR_ID)}`;
   const resp = await fetch(url, {
@@ -476,6 +539,87 @@ async function seedRecords(origin: string, ownerToken: string, log: LogFn): Prom
     );
   }
   log(`seed: ingested ${ingestResult.records_accepted} record(s) into ${SEED_STREAM}`);
+}
+
+export interface CleanupResult {
+  deletedKeys: string[];
+  errors: string[];
+  ok: boolean;
+  residualKeys: string[];
+}
+
+// Best-effort-but-verified teardown for the disposable-environment mutation
+// smoke. The default-account connection created by seedRecords can never be
+// deleted through the public API (assertDeletableConnection refuses
+// default-account bindings unconditionally — see
+// reference-implementation/server/stores/connector-instance-store.ts), so
+// exact cleanup here means record-level tombstone delete of precisely the
+// seeded keys, verified by re-querying afterward. It does not touch any other
+// record, stream, or connection. Every attempted deletion and the final
+// verification query are recorded so a residual record surfaces as a named,
+// non-green failure rather than a silent gap.
+export async function cleanupSeedRecords(
+  origin: string,
+  ownerToken: string,
+  clientToken: string,
+  log: LogFn,
+  records: SeedRecord[] = SEED_RECORDS
+): Promise<CleanupResult> {
+  const deletedKeys: string[] = [];
+  const errors: string[] = [];
+  for (const record of records) {
+    const url =
+      `${origin}/v1/streams/${encodeURIComponent(SEED_STREAM)}/records/${encodeURIComponent(record.key)}` +
+      `?connector_id=${encodeURIComponent(SEED_CONNECTOR_ID)}`;
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential by design — the seed corpus is a fixed, tiny (2-record) list, and deleting one key at a time keeps each attempt's log line and error message unambiguously ordered/attributed for the cleanup receipt.
+      const resp = await fetch(url, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      if (resp.status === 204) {
+        deletedKeys.push(record.key);
+        log(`cleanup: deleted seeded record ${record.key}`);
+      } else {
+        const { text } = await readBody(resp);
+        errors.push(`delete ${record.key} failed ${resp.status}: ${text}`);
+      }
+    } catch (err) {
+      errors.push(`delete ${record.key} threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Verify exactly: re-query and confirm none of the seeded keys are still
+  // live. A record surviving tombstone delete is residue, not a clean run.
+  let residualKeys: string[] = [];
+  try {
+    const query = await mcpPost(origin, clientToken, mcpQueryRecordsMessage(SEED_STREAM, { limit: 50 }));
+    if (query.status === 200) {
+      const returned = extractRecordsFromQueryResult(query.rpc);
+      const returnedKeys = new Set(
+        returned
+          .map((entry) => {
+            const e = entry as { data?: { id?: unknown }; id?: unknown; key?: unknown };
+            return e.key ?? e.id ?? e.data?.id;
+          })
+          .filter((k): k is string | number => k !== null && k !== undefined)
+          .map(String)
+      );
+      residualKeys = records.map((r) => r.key).filter((key) => returnedKeys.has(key));
+    } else {
+      errors.push(`post-cleanup verification query failed ${query.status}: ${query.text}`);
+    }
+  } catch (err) {
+    errors.push(`post-cleanup verification query threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const ok = errors.length === 0 && residualKeys.length === 0;
+  if (ok) {
+    log(`cleanup: verified zero live seeded records remain (${deletedKeys.length} tombstoned)`);
+  } else {
+    log(`cleanup: FAILED — residual keys [${residualKeys.join(", ")}], errors [${errors.join(" | ")}]`);
+  }
+  return { deletedKeys, errors, ok, residualKeys };
 }
 
 async function assertAnonymousMcpRefused(origin: string, log: LogFn): Promise<number> {
@@ -687,32 +831,147 @@ async function runScopedMcpQuery(origin: string, clientToken: string, log: LogFn
   log(`query_records: seeded record(s) returned (${verdict.foundKeys?.join(", ")})`);
 }
 
-export interface RunLiveSmokeOptions {
+export interface SeedDisposableEnvOptions {
   logger?: LogFn;
   origin: string;
   ownerPassword: string;
-  seed?: boolean;
   subjectId: string;
 }
 
-export async function runLiveSmoke(options: RunLiveSmokeOptions): Promise<void> {
-  const { origin, ownerPassword, subjectId, logger, seed = true } = options;
+// Seed-only entry point for a caller that IS itself a whole-environment
+// disposable harness with its own guaranteed teardown (a fresh Docker Compose
+// project + ephemeral volume torn down by a `trap ... EXIT`, e.g.
+// railway-sqlite-restart-smoke.sh). That harness needs the seeded records to
+// remain live across an intermediate step (a container restart) before its
+// OWN trap destroys the entire environment (database included) — a
+// per-record tombstone-delete here would erase the very records the restart
+// step must prove survived, and would be redundant anyway since the whole
+// database is about to be destroyed regardless.
+//
+// This is deliberately NOT a general escape hatch on runLiveSmoke: it does
+// not accept a --skip-cleanup style flag, is not reachable from the CLI, and
+// still runs the exact same fail-closed assertOwnerHasNoExistingConnections
+// gate — it only omits the tombstone-delete step because the caller's own
+// environment-teardown trap is the cleanup. Any caller reaching for this
+// function must own a real whole-environment teardown; a caller that does
+// not must use runLiveSmoke's --disposable-env mode instead, which always
+// self-cleans.
+export async function seedDisposableEnv(options: SeedDisposableEnvOptions): Promise<void> {
+  const { origin, ownerPassword, subjectId, logger } = options;
   const log = logger ?? (() => undefined);
-  // An owner session is needed either way: the seed ingest is owner-gated, and
-  // the client-token consent approval is owner-gated. In --no-seed mode we skip
-  // the manifest/owner-token/ingest steps and only re-query — used by the
-  // restart-survival smoke to prove records persisted WITHOUT re-writing them.
   const sessionCookie = await establishOwnerSession(origin, ownerPassword, log);
-  if (seed) {
-    const ownerToken = await mintOwnerToken(origin, sessionCookie, subjectId, log);
-    await registerSeedManifest(origin, sessionCookie, log);
-    await seedRecords(origin, ownerToken, log);
-  } else {
-    log("seed: skipped (--no-seed); querying existing records only");
-  }
+  const ownerToken = await mintOwnerToken(origin, sessionCookie, subjectId, log);
+  await assertOwnerHasNoExistingConnections(origin, ownerToken, log);
+  await registerSeedManifest(origin, sessionCookie, log);
+  await seedRecords(origin, ownerToken, log);
   await assertAnonymousMcpRefused(origin, log);
   const clientToken = await mintClientToken(origin, sessionCookie, log);
   await runScopedMcpQuery(origin, clientToken, log);
+}
+
+export interface RunLiveSmokeOptions {
+  disposableEnv?: boolean;
+  logger?: LogFn;
+  origin: string;
+  ownerPassword: string;
+  subjectId: string;
+}
+
+// Production acceptance path (default, no flag): strictly read-only. It never
+// registers a manifest, never ingests, and never deletes anything — it only
+// proves the hosted MCP endpoint refuses anonymous access and returns
+// whatever records already exist for the seed stream. Safe to run repeatedly
+// against a real, persistent deployment with a real owner connection.
+//
+// Disposable-environment mutation smoke (--disposable-env): the ONLY mode
+// that seeds. It is gated by assertOwnerHasNoExistingConnections, which
+// refuses to run unless the owner has zero pre-existing connections —
+// proving the default-account connection ingest is about to materialize is
+// new, not a pre-existing owner connection (see that function's comment for
+// why this is the only available proof: the public API has no route to
+// create a non-default disposable instance, and the default-account
+// connection this creates can never itself be deleted). Cleanup of the
+// seeded records is guaranteed on every failure point after seeding —
+// including a thrown assertion from the anonymous-mcp check, client-token
+// minting, or the scoped query itself — by capturing that failure instead of
+// letting it escape immediately, always running cleanup exactly once
+// afterward, then re-throwing. A cleanup failure or residual record throws,
+// so the run cannot report success while leaving the fixture behind.
+export async function runLiveSmoke(options: RunLiveSmokeOptions): Promise<void> {
+  const { origin, ownerPassword, subjectId, logger, disposableEnv = false } = options;
+  const log = logger ?? (() => undefined);
+  // An owner session is needed either way: the client-token consent approval
+  // is owner-gated, and (in --disposable-env mode) so is the seed ingest.
+  const sessionCookie = await establishOwnerSession(origin, ownerPassword, log);
+
+  if (!disposableEnv) {
+    log("mode: production acceptance (read-only); querying existing records only");
+    await assertAnonymousMcpRefused(origin, log);
+    const clientToken = await mintClientToken(origin, sessionCookie, log);
+    await runScopedMcpQuery(origin, clientToken, log);
+    return;
+  }
+
+  log("mode: disposable-environment mutation smoke (--disposable-env)");
+  const ownerToken = await mintOwnerToken(origin, sessionCookie, subjectId, log);
+  await assertOwnerHasNoExistingConnections(origin, ownerToken, log);
+  await registerSeedManifest(origin, sessionCookie, log);
+
+  // Guaranteed cleanup from the seed ingest call onward: `primaryError`
+  // captures a failing seedRecords, assertAnonymousMcpRefused, client-token
+  // mint, or scoped query without letting it escape yet, so cleanup always
+  // gets a chance to mint its own client token (if the failure happened
+  // before one existed) and run exactly once — never skipped, never retried
+  // a second time. seedRecords is deliberately INSIDE this boundary (not
+  // called before it): its ingest HTTP call can itself return 200 with a
+  // PARTIAL accept count and then throw on that mismatch — that throw is a
+  // failure point AFTER a real mutation already happened, so it must still
+  // reach cleanup. Cleanup's per-key DELETE is safe to run even when
+  // seedRecords never ingested a given key at all (a total ingest failure):
+  // the RS delete route returns 204 whether the deleted count was 0 or 1
+  // (reference-implementation/operations/rs-records-delete/index.ts), so a
+  // record that was never created still tombstones as a clean no-op rather
+  // than surfacing as cleanup residue. Any cleanup-stage failure (minting or
+  // the delete/verify itself) is thrown with the prior primaryError (if any)
+  // attached as `cause`, so a doubly-failed run reports both instead of
+  // masking one.
+  let primaryError: unknown;
+  let clientToken: string | undefined;
+  try {
+    await seedRecords(origin, ownerToken, log);
+    await assertAnonymousMcpRefused(origin, log);
+    clientToken = await mintClientToken(origin, sessionCookie, log);
+    await runScopedMcpQuery(origin, clientToken, log);
+  } catch (err) {
+    primaryError = err;
+  }
+
+  const withPrimaryCause = (message: string): SmokeError =>
+    new SmokeError(
+      primaryError
+        ? `${message} (run also failed: ${primaryError instanceof Error ? primaryError.message : String(primaryError)})`
+        : message,
+      primaryError ? { cause: primaryError } : undefined
+    );
+
+  let cleanupClientToken: string;
+  try {
+    cleanupClientToken = clientToken ?? (await mintClientToken(origin, sessionCookie, log));
+  } catch (mintErr) {
+    throw withPrimaryCause(
+      `cleanup could not mint a client token to verify teardown (${mintErr instanceof Error ? mintErr.message : String(mintErr)}); ` +
+        `seeded records for keys [${SEED_RECORDS.map((r) => r.key).join(", ")}] may still be live`
+    );
+  }
+  const cleanup = await cleanupSeedRecords(origin, ownerToken, cleanupClientToken, log);
+  if (!cleanup.ok) {
+    throw withPrimaryCause(
+      `cleanup did not converge: residual keys [${cleanup.residualKeys.join(", ")}], errors [${cleanup.errors.join(" | ")}]`
+    );
+  }
+  if (primaryError) {
+    throw primaryError;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -720,9 +979,9 @@ export async function runLiveSmoke(options: RunLiveSmokeOptions): Promise<void> 
 // ---------------------------------------------------------------------------
 
 interface ParsedArgs {
+  disposableEnv?: boolean;
   help?: boolean;
   json: boolean;
-  noSeed?: boolean;
   origin?: string | undefined;
   ownerPassword?: string | undefined;
   subjectId?: string | undefined;
@@ -736,8 +995,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     const arg = args[i];
     if (arg === "--json") {
       out.json = true;
-    } else if (arg === "--no-seed") {
-      out.noSeed = true;
+    } else if (arg === "--disposable-env") {
+      out.disposableEnv = true;
     } else if (arg === "--origin") {
       i += 1;
       out.origin = args[i];
@@ -762,14 +1021,26 @@ Options:
   --owner-password <secret> Owner password (or set PDPP_OWNER_PASSWORD). Needed
                             when the deploy has owner auth enabled (it should).
   --subject <id>            Owner subject id (default: PDPP_OWNER_SUBJECT_ID or owner_local).
-  --no-seed                 Skip seeding; only re-query existing records. Used by
-                            the restart-survival smoke to prove persistence
-                            without re-writing the records.
+  --disposable-env          Seed a deterministic record set and clean it up before
+                            exiting. REFUSES to run unless the owner has ZERO
+                            pre-existing connections (see the runbook) — never use
+                            against a persistent/production deploy with a real
+                            owner connection. Without this flag the run is strictly
+                            read-only: it only proves the hosted MCP endpoint
+                            refuses anonymous access and returns whatever records
+                            already exist for the seed stream. This is the safe
+                            default for production acceptance and for the
+                            restart-survival check (persistence without
+                            re-writing records).
   --json                    Emit a JSON result object.
   -h, --help                Show this help.
 
-Seeds a deterministic record set (no connector run) and proves the hosted MCP
-endpoint refuses anonymous access and returns those records for a scoped grant.`;
+Default (read-only): proves the hosted MCP endpoint refuses anonymous access and
+returns existing seed-stream records for a scoped grant. Safe against production.
+
+--disposable-env: additionally seeds a deterministic record set (no connector
+run) into a fresh environment, then tombstone-deletes and verifies it before
+exiting — refuses to run at all if the owner already has any connection.`;
 
 const TRAILING_SLASH_PATTERN = /\/$/;
 
@@ -799,7 +1070,7 @@ async function main(argv: string[]): Promise<void> {
     process.stdout.write(`Railway MCP query smoke against ${origin}\n`);
   }
   try {
-    await runLiveSmoke({ origin, ownerPassword, subjectId, logger: log, seed: !opts.noSeed });
+    await runLiveSmoke({ origin, ownerPassword, subjectId, logger: log, disposableEnv: Boolean(opts.disposableEnv) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (opts.json) {
