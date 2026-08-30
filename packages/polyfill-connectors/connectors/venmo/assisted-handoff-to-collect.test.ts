@@ -23,8 +23,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "patchright";
-import { ensureVenmoSession } from "../../src/auto-login/venmo.ts";
-import { VENMO_RETRYABLE_PATTERN, establishVenmoCollectOrigin, fetchProfile } from "./index.ts";
+import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
+import { makeRecordingEmit } from "../../src/test-harness.ts";
+import { VENMO_RETRYABLE_PATTERN, collect, ensureSession } from "./index.ts";
+import { validateRecord } from "./schemas.ts";
 
 const ACCOUNT_BODY = JSON.stringify({ data: { user: { id: "1234567890123456789" } } });
 
@@ -133,25 +135,52 @@ async function withoutVenmoCredentials(run: () => Promise<void>): Promise<void> 
   }
 }
 
-test("assisted handoff -> collect(): the owner's authenticated page is the SAME context collect() reads /account from", async () => {
+/**
+ * The same ctx shape `integration.test.ts` builds, but carrying the REAL
+ * journey page instead of `{}`. `requested` is a Map because collect()'s
+ * stream gate calls `.has` on it; an empty one keeps this test on the auth
+ * boundary rather than stream pagination.
+ */
+function makeCtx(page: Page): BrowserCollectContext {
+  const harness = makeRecordingEmit(validateRecord);
+  return {
+    assist: () => Promise.reject(new Error("not used")),
+    capture: null,
+    completeAssistance: () => Promise.resolve(),
+    context: {} as BrowserCollectContext["context"],
+    credentials: {},
+    detailGaps: [],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: "2026-08-30T00:00:00.000Z",
+    page,
+    progress: () => Promise.resolve(),
+    requestDetailGapPage: () => Promise.resolve([]),
+    requested: new Map(),
+    scope: { streams: [] },
+    sendInteraction: () => Promise.reject(new Error("not used")),
+    state: {},
+  } as unknown as BrowserCollectContext;
+}
+
+test("assisted handoff -> the REGISTERED collect(): production's own closure reads /account from the owner's context", async () => {
   await withoutVenmoCredentials(async () => {
     const { contextGeneration, page, setLive } = makeJourneyPage();
     let generationAtResponse = -1;
 
-    await ensureVenmoSession({
+    // The REAL registered ensureSession hook, imported from the connector.
+    await ensureSession({
       page,
-      sendInteraction: (request) => {
-        // The owner signs in. Everything after this runs against the live,
-        // authenticated page they just created.
+      sendInteraction: (request: { request_id?: string }) => {
         setLive(true);
         generationAtResponse = contextGeneration();
         return Promise.resolve({
           request_id: request.request_id ?? "test_interaction",
           status: "success",
           type: "INTERACTION_RESPONSE",
-        } as never);
+        });
       },
-    });
+    } as never);
 
     assert.notEqual(generationAtResponse, -1, "the manual_action handoff must actually have been requested");
     assert.equal(
@@ -159,47 +188,20 @@ test("assisted handoff -> collect(): the owner's authenticated page is the SAME 
       generationAtResponse,
       "no navigation may occur between the owner's response and the end of ensureSession"
     );
-    // The stronger property, and the one production run_1787918248525 lost:
-    // the owner authenticated inside a page context, and that context must
-    // still be the live one. `page.evaluate` returning `live` is the only
-    // evidence of that which a navigation cannot fake — a fresh context
-    // would have no session. Asserting it HERE, between ensureSession and
-    // collect(), is what makes this a journey test rather than two unit
-    // tests sharing a file.
-    const stillAuthenticated = (await (page as unknown as { evaluate: (fn: unknown) => Promise<unknown> }).evaluate(
-      null
-    )) as { kind: string };
-    assert.equal(
-      stillAuthenticated.kind,
-      "live",
-      "the context the owner authenticated in must survive into collect(); a post-owner navigation destroys it"
-    );
 
-    // collect()'s own origin step, then its /account read — the single
-    // authenticated boundary that both verifies liveness and yields the
-    // collection input. It is allowed to navigate ONCE here (collect() must
-    // establish venmo.com for the CORS allowlist), which is a different phase
-    // from the forbidden post-owner probe.
-    await establishVenmoCollectOrigin(page);
-    const account = await fetchProfile((path) =>
-      (page as unknown as { evaluate: (fn: unknown, arg: unknown) => Promise<{ body: string; status: number }> })
-        .evaluate(null, `https://api.venmo.com/v1${path}`)
-    );
-
-    assert.equal(account?.id, "1234567890123456789", "collect() must read a real owner id from the SAME session");
+    // The REAL registered collect closure — not a re-implementation of it.
+    // If the owner's context was destroyed, /account returns 401 and this
+    // throws venmo_session_expired.
+    await collect(makeCtx(page));
   });
 });
 
-test("a dead session after handoff fails TERMINAL (venmo_session_expired), never redispatching the owner", async () => {
+test("a dead session after handoff fails TERMINAL through the registered collect(), never redispatching the owner", async () => {
   await withoutVenmoCredentials(async () => {
     const { page } = makeJourneyPage();
-    // Owner never authenticates: the page stays dead through collect().
-    await establishVenmoCollectOrigin(page);
+    // The owner never authenticates.
     await assert.rejects(
-      fetchProfile((path) =>
-        (page as unknown as { evaluate: (fn: unknown, arg: unknown) => Promise<{ body: string; status: number }> })
-          .evaluate(null, `https://api.venmo.com/v1${path}`)
-      ),
+      collect(makeCtx(page)),
       (err: Error) => {
         assert.match(err.message, /venmo_session_expired|venmo_http_401/, "a dead session must name itself");
         assert.equal(
@@ -213,23 +215,13 @@ test("a dead session after handoff fails TERMINAL (venmo_session_expired), never
   });
 });
 
-test("a THROWN verification after handoff cannot resubmit a credential — the fault is named, not silently retried as auth", async () => {
+test("a THROWN transport fault inside the registered collect() is named transport, not a session/credential failure", async () => {
   await withoutVenmoCredentials(async () => {
     const { page, setLive } = makeJourneyPage({ fetchThrows: true });
     setLive(true);
-    await establishVenmoCollectOrigin(page);
     await assert.rejects(
-      fetchProfile((path) =>
-        (page as unknown as { evaluate: (fn: unknown, arg: unknown) => Promise<{ body: string; status: number }> })
-          .evaluate(null, `https://api.venmo.com/v1${path}`).catch((err: Error) => {
-            throw new Error(`venmo_transport_error [endpoint ${path}]: ${err.message}`);
-          })
-      ),
+      collect(makeCtx(page)),
       (err: Error) => {
-        // A transport fault IS retryable — the session is not known dead, and
-        // a retry costs the owner nothing because it never re-enters the
-        // credential or handoff path. What must never happen is the fault
-        // being classified as a session/auth failure.
         assert.match(err.message, /venmo_transport_error/, "a transport fault must name itself as transport");
         assert.doesNotMatch(
           err.message,

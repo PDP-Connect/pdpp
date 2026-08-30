@@ -70,6 +70,7 @@ import type { Page } from "playwright";
 import { ensureVenmoOrigin, ensureVenmoSession } from "../../src/auto-login/venmo.ts";
 import {
   type BrowserCollectContext,
+  type EnsureSessionArgs,
   buildDetailCoverageMessage,
   politeDelay,
   runConnector,
@@ -541,6 +542,68 @@ export async function collectAllStreams(
   }
 }
 
+/**
+ * The registered `ensureSession` hook, named so a test can drive the SAME
+ * function production registers rather than a re-implementation of it.
+ *
+ * Forwarded for signature parity with every other connector's manual-login
+ * handoff — see `EnsureVenmoSessionArgs.assist`'s doc in
+ * `src/auto-login/venmo.ts` for why this does NOT yet self-resolve without a
+ * click: Venmo's only liveness probe requires a navigation that would destroy
+ * an in-progress captcha/OTP handoff.
+ */
+export async function ensureSession({
+  assist,
+  capture,
+  checkpoint,
+  completeAssistance,
+  credentials,
+  onCredentialSubmit,
+  page,
+  progress,
+  sendInteraction,
+}: EnsureSessionArgs): Promise<void> {
+  await ensureVenmoSession({
+    assist,
+    ...(capture ? { capture } : {}),
+    checkpoint,
+    completeAssistance,
+    credentials,
+    onCredentialSubmit,
+    page,
+    progress,
+    sendInteraction,
+  });
+}
+
+/**
+ * The registered `collect` closure, extracted verbatim and named.
+ *
+ * It was previously an anonymous property inside the `isMainModule` block,
+ * which made it unreachable from any test — so every Venmo test necessarily
+ * re-implemented the /account read instead of driving this. That is exactly
+ * the gap the R1 re-review named: a test that rebuilds the boundary proves
+ * the pieces, not the closure. Registration below now references this
+ * function, so a test and production run the same code.
+ */
+export async function collect(ctx: BrowserCollectContext): Promise<void> {
+  const { page } = ctx;
+  // `ensureSession` may leave the page wherever sign-in redirected it
+  // (e.g. `id.venmo.com`); `api.venmo.com`'s CORS allowlist only grants
+  // a credentialed fetch from `https://venmo.com`, so collect must
+  // establish that origin itself rather than assume ensureSession left
+  // it there (F3 in /tmp/review-venmo-browser-redesign-0810.md). See
+  // `establishVenmoCollectOrigin`'s doc for why this is wrapped.
+  await establishVenmoCollectOrigin(page);
+  const fetchPath = makePageFetch(page);
+  const account = await fetchProfile(fetchPath);
+  const ownerId = account?.id;
+  if (!ownerId) {
+    throw new Error("venmo_session_expired: /account returned no user id after ensureSession succeeded");
+  }
+  await collectAllStreams(ctx, fetchPath, ownerId, account);
+}
+
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "venmo",
@@ -550,50 +613,7 @@ if (isMainModule(import.meta.url)) {
     retryablePattern: VENMO_RETRYABLE_PATTERN,
     auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
     browser: { profileName: "venmo" },
-    async ensureSession({
-      assist,
-      capture,
-      checkpoint,
-      completeAssistance,
-      credentials,
-      onCredentialSubmit,
-      page,
-      progress,
-      sendInteraction,
-    }): Promise<void> {
-      // Forwarded for signature parity with every other connector's manual-
-      // login handoff — see `EnsureVenmoSessionArgs.assist`'s doc in
-      // `src/auto-login/venmo.ts` for why this does NOT yet self-resolve
-      // without a click: Venmo's only liveness probe requires a navigation
-      // that would destroy an in-progress captcha/OTP handoff.
-      await ensureVenmoSession({
-        assist,
-        ...(capture ? { capture } : {}),
-        checkpoint,
-        completeAssistance,
-        credentials,
-        onCredentialSubmit,
-        page,
-        progress,
-        sendInteraction,
-      });
-    },
-    async collect(ctx: BrowserCollectContext): Promise<void> {
-      const { page } = ctx;
-      // `ensureSession` may leave the page wherever sign-in redirected it
-      // (e.g. `id.venmo.com`); `api.venmo.com`'s CORS allowlist only grants
-      // a credentialed fetch from `https://venmo.com`, so collect must
-      // establish that origin itself rather than assume ensureSession left
-      // it there (F3 in /tmp/review-venmo-browser-redesign-0810.md). See
-      // `establishVenmoCollectOrigin`'s doc for why this is wrapped.
-      await establishVenmoCollectOrigin(page);
-      const fetchPath = makePageFetch(page);
-      const account = await fetchProfile(fetchPath);
-      const ownerId = account?.id;
-      if (!ownerId) {
-        throw new Error("venmo_session_expired: /account returned no user id after ensureSession succeeded");
-      }
-      await collectAllStreams(ctx, fetchPath, ownerId, account);
-    },
+    ensureSession,
+    collect,
   });
 }
