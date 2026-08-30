@@ -55,7 +55,11 @@ interface Options {
   write: boolean;
 }
 
-function parseOptions(args: string[]): Options {
+function parseOptions(rawArgs: string[]): Options {
+  // pnpm 10's bare `pnpm <script> -- <args>` form forwards the `--`
+  // separator itself into the script's argv (npm and `pnpm run` both strip
+  // it), so a single leading `--` is a wrapper artifact, not a real argument.
+  const args = rawArgs[0] === "--" ? rawArgs.slice(1) : rawArgs;
   let baseRef: string | undefined;
   let write = false;
 
