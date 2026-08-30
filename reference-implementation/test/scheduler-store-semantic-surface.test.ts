@@ -745,6 +745,22 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
       });
     }
 
+    assert.equal(
+      (await store.getLatestRunHistoryForConnection(ids[0], "succeeded"))?.schedulerManaged,
+      true,
+      "PostgreSQL single-connection scheduler history preserves scheduler-managed provenance"
+    );
+    assert.deepEqual(
+      (await store.listRunHistory(10))
+        .map((row) => [row.runId, row.schedulerManaged] as const)
+        .sort(([left], [right]) => String(left).localeCompare(String(right))),
+      [
+        ["run_connector-alpha", true],
+        ["run_connector-beta", true],
+      ],
+      "PostgreSQL scheduler history list preserves scheduler-managed provenance"
+    );
+
     const pool = getPostgresPool();
     const originalQuery = pool.query.bind(pool);
     let calls = 0;
