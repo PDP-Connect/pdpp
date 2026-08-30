@@ -157,6 +157,114 @@ if (POSTGRES_URL) {
     });
   });
 
+  // A same-name index that is `indisvalid`/`indisready` and really is an HNSW
+  // index can still accelerate nothing: the wrong dimension, operator class,
+  // or partial predicate all leave the production query unindexed while the
+  // catalog looks healthy. Each case below is a *valid* index, so a repair
+  // check that only tests validity plus the substring "hnsw" accepts it and
+  // reports a build that never happened.
+  const WRONG_GLOBAL_DEFINITIONS = [
+    {
+      label: "wrong dimension",
+      sql: `CREATE INDEX idx_pg_semantic_search_embedding_hnsw ON semantic_search_blob
+              USING hnsw ((embedding::vector(3)) vector_cosine_ops)
+              WHERE (vector_dims(embedding) = 3)`,
+    },
+    {
+      label: "wrong operator class",
+      sql: `CREATE INDEX idx_pg_semantic_search_embedding_hnsw ON semantic_search_blob
+              USING hnsw ((embedding::vector(384)) vector_l2_ops)
+              WHERE (vector_dims(embedding) = 384)`,
+    },
+    {
+      label: "missing partial predicate",
+      sql: `CREATE INDEX idx_pg_semantic_search_embedding_hnsw ON semantic_search_blob
+              USING hnsw ((embedding::vector(384)) vector_cosine_ops)`,
+    },
+    {
+      label: "wrong partial predicate",
+      sql: `CREATE INDEX idx_pg_semantic_search_embedding_hnsw ON semantic_search_blob
+              USING hnsw ((embedding::vector(384)) vector_cosine_ops)
+              WHERE (vector_dims(embedding) = 384 AND record_key <> '')`,
+    },
+  ];
+
+  for (const wrong of WRONG_GLOBAL_DEFINITIONS) {
+    test(`a valid but semantically wrong global HNSW index is rebuilt (${wrong.label})`, async () => {
+      await withTempDatabase(async (url) => {
+        await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+        await postgresQuery("DROP INDEX IF EXISTS idx_pg_semantic_search_embedding_hnsw");
+        await postgresQuery(wrong.sql);
+        const planted = await postgresQuery<{ valid: boolean; definition: string }>(
+          `SELECT ix.indisvalid AS valid, pg_get_indexdef(idx.oid) AS definition
+             FROM pg_class idx
+             JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+             JOIN pg_index ix ON ix.indexrelid = idx.oid
+            WHERE ns.nspname = current_schema()
+              AND idx.relname = 'idx_pg_semantic_search_embedding_hnsw'`
+        );
+        // Guard the test's own premise: the planted index must be the hard
+        // case (valid, and genuinely HNSW), not an easy invalid/non-HNSW one.
+        assert.equal(planted.rows[0]?.valid, true, "the planted wrong index is valid");
+        assert.ok(planted.rows[0]?.definition.includes("hnsw"), "the planted wrong index is genuinely an HNSW index");
+
+        const logs: string[] = [];
+        await runPostgresSemanticHnswMaintenance({ log: (line) => logs.push(line) });
+
+        const repaired = await postgresQuery<{ definition: string }>(
+          `SELECT pg_get_indexdef(idx.oid) AS definition
+             FROM pg_class idx
+             JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+            WHERE ns.nspname = current_schema()
+              AND idx.relname = 'idx_pg_semantic_search_embedding_hnsw'`
+        );
+        assert.equal(repaired.rowCount, 1, "exactly one global HNSW index remains after repair");
+        const definition = repaired.rows[0]?.definition ?? "";
+        assert.ok(definition.includes("vector(384)"), `repaired index is 384-dimensional: ${definition}`);
+        assert.ok(definition.includes("vector_cosine_ops"), `repaired index uses cosine ops: ${definition}`);
+        assert.ok(
+          definition.includes("WHERE (vector_dims(embedding) = 384)"),
+          `repaired index carries the canonical predicate: ${definition}`
+        );
+        assert.ok(
+          logs.some((line) => line.includes("dropping unusable HNSW index")),
+          `the repair says why it rebuilt: ${logs.join(" | ")}`
+        );
+        const state = await postgresQuery<{ state: string }>(
+          "SELECT state FROM semantic_hnsw_index_build WHERE build_key = 'semantic_hnsw'"
+        );
+        assert.equal(state.rows[0]?.state, "ready", "the durable state reports ready only after a real rebuild");
+      });
+    });
+  }
+
+  test("a correct global HNSW index carrying operator tuning options is not rebuilt", async () => {
+    await withTempDatabase(async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      await postgresQuery("DROP INDEX IF EXISTS idx_pg_semantic_search_embedding_hnsw");
+      // `WITH (m = ...)` changes the generated `pg_get_indexdef` text but not
+      // what the index means. Repair must keep an operator's deliberate tuning
+      // instead of dropping and rebuilding it on every startup.
+      await postgresQuery(
+        `CREATE INDEX idx_pg_semantic_search_embedding_hnsw ON semantic_search_blob
+           USING hnsw ((embedding::vector(384)) vector_cosine_ops) WITH (m = 32)
+           WHERE (vector_dims(embedding) = 384)`
+      );
+      const before = await postgresQuery<{ oid: string }>(
+        `SELECT idx.oid::text AS oid FROM pg_class idx JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+          WHERE ns.nspname = current_schema() AND idx.relname = 'idx_pg_semantic_search_embedding_hnsw'`
+      );
+      await runPostgresSemanticHnswMaintenance();
+      const after = await postgresQuery<{ oid: string; definition: string }>(
+        `SELECT idx.oid::text AS oid, pg_get_indexdef(idx.oid) AS definition
+           FROM pg_class idx JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+          WHERE ns.nspname = current_schema() AND idx.relname = 'idx_pg_semantic_search_embedding_hnsw'`
+      );
+      assert.equal(after.rows[0]?.oid, before.rows[0]?.oid, "a tuned but correct index is preserved");
+      assert.ok(after.rows[0]?.definition.includes("m='32'"), "the operator's tuning survives maintenance");
+    });
+  });
+
   test("optional HNSW failure is durable and observable while required bootstrap remains fail-closed", async () => {
     await withTempDatabase(async (url) => {
       await initPostgresStorage({ backend: "postgres", databaseUrl: url });

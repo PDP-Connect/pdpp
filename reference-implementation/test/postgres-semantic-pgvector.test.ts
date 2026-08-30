@@ -606,6 +606,188 @@ if (POSTGRES_URL) {
       await adminPool.end();
     }
   });
+
+  // The ANN candidate window takes a connector-wide `LIMIT` before the grant
+  // scope filter. When the requested scope is rare inside a connector, every
+  // candidate slot can be consumed by rows in scopes the caller cannot see,
+  // and the authorized row is silently dropped: the caller gets an empty
+  // result that is indistinguishable from "nothing matched". This is the
+  // read path used while the optional HNSW index is absent, building, failed,
+  // or wrong-shaped, so the search must not under-return in that window.
+  test("a rare authorized scope is not truncated by the pre-scope ANN candidate window", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const schema = `pdpp_semvec_starve_${suffix}`;
+    const connectorId = `pgvec_starve_${suffix}`;
+    const connectorInstanceId = `cin_pgvec_starve_${suffix}`;
+    const rareScope = '["messages","rare"]';
+    const crowdScope = '["messages","crowd"]';
+    const queryVector = Array.from(deterministicVector(384, 91));
+    const previousCandidateLimit = process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT;
+    const previousExactMaxRows = process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS;
+    // A small candidate window makes the starvation reachable with a tiny
+    // fixture; at production scale the same shape occurs with a rare scope in
+    // a multi-million-row connector. The exact-scan ceiling must drop below
+    // the seeded retained estimate too, or the search stays on the exact path
+    // and never exercises the window at all.
+    process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT = "1";
+    process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS = "1";
+    const adminPool = new pg.Pool({ connectionString: POSTGRES_URL });
+    try {
+      const admin = await adminPool.connect();
+      try {
+        await admin.query(`CREATE SCHEMA ${schema}`);
+        await admin.query("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public");
+      } finally {
+        admin.release();
+      }
+      await initPostgresStorage({ backend: "postgres", databaseUrl: withSearchPath(POSTGRES_URL, schema) });
+      await postgresQuery(
+        `INSERT INTO retained_size_stream(connector_instance_id, connector_id, stream, record_count, dirty, computed_at)
+         VALUES($1, $2, $3, $4, 0, $5)`,
+        [connectorInstanceId, connectorId, "messages", 6000, new Date().toISOString()]
+      );
+      // Eight rows in an unrequested scope, all nearer the query than the one
+      // authorized row, so they fill every slot of a 4-wide candidate window.
+      await Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          postgresSemanticIndexUpsertMany({
+            connectorId,
+            connectorInstanceId,
+            entries: [{ recordKey: `crowd_${index}`, scopeKey: crowdScope, vector: queryVector }],
+            recordKey: `crowd_${index}`,
+            stream: "messages",
+          })
+        )
+      );
+      await postgresSemanticIndexUpsertMany({
+        connectorId,
+        connectorInstanceId,
+        entries: [{ recordKey: "rare_match", scopeKey: rareScope, vector: deterministicVector(384, 404) }],
+        recordKey: "rare_match",
+        stream: "messages",
+      });
+
+      const hits = await postgresSemanticSearch({
+        connectorId,
+        connectorInstanceId,
+        limit: 5,
+        queryVector,
+        scopeKeys: [rareScope],
+        stream: "messages",
+      });
+
+      assert.deepEqual(
+        hits.map((hit) => hit.recordKey),
+        ["rare_match"],
+        "the authorized row survives even though nearer unauthorized rows fill the candidate window"
+      );
+      assert.ok(
+        hits.every((hit) => hit.scopeKey === rareScope),
+        `no unrequested scope leaks into the fallback: ${hits.map((hit) => hit.scopeKey).join(", ")}`
+      );
+    } finally {
+      if (previousCandidateLimit === undefined) {
+        delete process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT;
+      } else {
+        process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT = previousCandidateLimit;
+      }
+      if (previousExactMaxRows === undefined) {
+        delete process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS;
+      } else {
+        process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS = previousExactMaxRows;
+      }
+      await closePostgresStorage();
+      await adminPool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await adminPool.end();
+    }
+  });
+
+  // Same starvation shape, but after the canonical HNSW index exists, so the
+  // candidate window is actually permitted. The truncation probe must still
+  // fall back to the exact scoped scan rather than trusting a starved window.
+  test("a rare authorized scope survives the candidate window once HNSW is built", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const schema = `pdpp_semvec_starve_hnsw_${suffix}`;
+    const connectorId = `pgvec_starve_hnsw_${suffix}`;
+    const connectorInstanceId = `cin_pgvec_starve_hnsw_${suffix}`;
+    const rareScope = '["messages","rare"]';
+    const crowdScope = '["messages","crowd"]';
+    const queryVector = Array.from(deterministicVector(384, 91));
+    const previousCandidateLimit = process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT;
+    const previousExactMaxRows = process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS;
+    process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT = "1";
+    process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS = "1";
+    const adminPool = new pg.Pool({ connectionString: POSTGRES_URL });
+    try {
+      const admin = await adminPool.connect();
+      try {
+        await admin.query(`CREATE SCHEMA ${schema}`);
+        await admin.query("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public");
+      } finally {
+        admin.release();
+      }
+      await initPostgresStorage({ backend: "postgres", databaseUrl: withSearchPath(POSTGRES_URL, schema) });
+      await postgresQuery(
+        `INSERT INTO retained_size_stream(connector_instance_id, connector_id, stream, record_count, dirty, computed_at)
+         VALUES($1, $2, $3, $4, 0, $5)`,
+        [connectorInstanceId, connectorId, "messages", 6000, new Date().toISOString()]
+      );
+      await Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          postgresSemanticIndexUpsertMany({
+            connectorId,
+            connectorInstanceId,
+            entries: [{ recordKey: `crowd_${index}`, scopeKey: crowdScope, vector: queryVector }],
+            recordKey: `crowd_${index}`,
+            stream: "messages",
+          })
+        )
+      );
+      await postgresSemanticIndexUpsertMany({
+        connectorId,
+        connectorInstanceId,
+        entries: [{ recordKey: "rare_match", scopeKey: rareScope, vector: deterministicVector(384, 404) }],
+        recordKey: "rare_match",
+        stream: "messages",
+      });
+      await runPostgresSemanticHnswMaintenance();
+      const built = await postgresQuery<{ definition: string }>(
+        `SELECT pg_get_indexdef(idx.oid) AS definition
+           FROM pg_class idx JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+          WHERE ns.nspname = current_schema() AND idx.relname = 'idx_pg_semantic_search_embedding_hnsw'`
+      );
+      assert.equal(built.rowCount, 1, "the canonical HNSW index exists for this case");
+
+      const hits = await postgresSemanticSearch({
+        connectorId,
+        connectorInstanceId,
+        limit: 5,
+        queryVector,
+        scopeKeys: [rareScope],
+        stream: "messages",
+      });
+
+      assert.deepEqual(
+        hits.map((hit) => hit.recordKey),
+        ["rare_match"],
+        "an indexed candidate window still cannot drop the authorized row"
+      );
+    } finally {
+      if (previousCandidateLimit === undefined) {
+        delete process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT;
+      } else {
+        process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT = previousCandidateLimit;
+      }
+      if (previousExactMaxRows === undefined) {
+        delete process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS;
+      } else {
+        process.env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS = previousExactMaxRows;
+      }
+      await closePostgresStorage();
+      await adminPool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await adminPool.end();
+    }
+  });
 } else {
   test("postgres semantic pgvector migration (skipped: PDPP_TEST_POSTGRES_URL unset)", {
     skip: true,

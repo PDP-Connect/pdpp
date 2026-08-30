@@ -14,6 +14,7 @@
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
 import type { PostgresTransactionClient } from "./postgres-storage.ts";
 import {
+  isPostgresSemanticGlobalHnswUsable,
   isPostgresSemanticIterativeScanSupported,
   isPostgresSemanticVectorEmbedding,
   postgresBulkQuery,
@@ -1159,13 +1160,37 @@ async function postgresSemanticSearchVector({
   const retainedEstimate = broadProductionSearch
     ? await postgresSemanticRetainedRowEstimate({ connectorInstanceId, scopeKeys })
     : null;
+  // The candidate window takes a connector-wide ANN `LIMIT` before the grant
+  // scope filter, so it approximates the scoped ranking. Completeness is
+  // guaranteed downstream by the truncation probe, which falls back to the
+  // exact scoped scan whenever the pre-scope cut could have discarded an
+  // authorized row — that probe, not this condition, is what makes the path
+  // safe.
+  //
+  // This condition is the cost guard. The window is only worth attempting
+  // over a verified-canonical HNSW index; while that index is absent, still
+  // building, failed, or wrong-shaped, the windowed query degrades to a full
+  // sequential scan whose result the probe would then discard, so the search
+  // would pay for two scans to answer with the second. Go exact directly.
   const useCandidateWindow =
-    broadProductionSearch && retainedEstimate !== null && retainedEstimate > postgresSemanticExactMaxRows();
+    broadProductionSearch &&
+    retainedEstimate !== null &&
+    retainedEstimate > postgresSemanticExactMaxRows() &&
+    (await isPostgresSemanticGlobalHnswUsable());
   const candidateLimit = useCandidateWindow ? postgresSemanticCandidateLimit(boundedLimit) : boundedLimit;
   // The HNSW default ef_search (40) would silently cap a larger overscan;
   // clamp to pgvector's [1, 1000] GUC range. Integer-validated above via
   // candidateLimit/boundedLimit (Number(...) || 200, Math.max 1).
   const efSearch = Math.min(Math.max(Math.trunc(candidateLimit), 40), 1000);
+  const exactScopedQuery = `SELECT connector_id, connector_instance_id, scope_key, record_key,
+              (embedding::vector(${dims}) <=> $3::vector(${dims}))::float8 AS distance
+       FROM semantic_search_blob
+       WHERE connector_instance_id = $1
+         AND scope_key = ANY($2::text[])
+         AND vector_dims(embedding) = ${dims}
+         ${recordClause}
+       ORDER BY embedding::vector(${dims}) <=> $3::vector(${dims})
+       LIMIT $4`;
   const result = await withPostgresTransaction(async (client) => {
     await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
     if (isPostgresSemanticIterativeScanSupported()) {
@@ -1179,7 +1204,12 @@ async function postgresSemanticSearchVector({
       // scans. Keep the ANN boundary at the connector, then apply the grant
       // scope filter to that bounded candidate set. Scope keys are still
       // enforced before rows leave the database.
-      return client.query(
+      // `candidates_scanned` rides on a UNION-ed probe row rather than on the
+      // result rows: the case that matters most is the one where scope
+      // filtering leaves NO rows at all, and a per-row column would then have
+      // nowhere to live and would read as "nothing was truncated" — exactly
+      // backwards. The probe row is tagged and stripped below.
+      const windowed = await client.query(
         `WITH ann AS MATERIALIZED (
            SELECT connector_id, connector_instance_id, scope_key, record_key,
                   (embedding::vector(${dims}) <=> $3::vector(${dims}))::float8 AS distance
@@ -1188,30 +1218,37 @@ async function postgresSemanticSearchVector({
               AND vector_dims(embedding) = ${dims}
             ORDER BY embedding::vector(${dims}) <=> $3::vector(${dims})
             LIMIT $4
+         ), scoped AS (
+           SELECT connector_id, connector_instance_id, scope_key, record_key, distance
+             FROM ann
+            WHERE scope_key = ANY($2::text[])
+            ORDER BY distance ASC, connector_id ASC, scope_key ASC, record_key ASC
+            LIMIT $5
          )
-         SELECT connector_id, connector_instance_id, scope_key, record_key, distance
-           FROM ann
-          WHERE scope_key = ANY($2::text[])
-          ORDER BY distance ASC, connector_id ASC, scope_key ASC, record_key ASC
-          LIMIT $5`,
+         SELECT FALSE AS is_probe, connector_id, connector_instance_id, scope_key, record_key, distance,
+                NULL::bigint AS candidates_scanned
+           FROM scoped
+          UNION ALL
+         SELECT TRUE AS is_probe, NULL, NULL, NULL, NULL, NULL,
+                (SELECT COUNT(*) FROM ann)::bigint`,
         [connectorInstanceId, scopeKeys, params[2], candidateLimit, boundedLimit]
       );
+      const probeRow = windowed.rows.find((row) => row.is_probe === true);
+      const scopedRows = windowed.rows.filter((row) => row.is_probe !== true);
+      // The window answers the request only when it did not have to truncate,
+      // or when it still filled the requested limit after scope filtering.
+      // Otherwise the caller's scope is rare enough inside this connector that
+      // the pre-scope cut discarded authorized rows, so re-run exactly.
+      const candidatesScanned = Number(probeRow?.candidates_scanned ?? 0);
+      const truncated = candidatesScanned >= candidateLimit;
+      if (!truncated || scopedRows.length >= boundedLimit) {
+        return { ...windowed, rowCount: scopedRows.length, rows: scopedRows };
+      }
     }
     // Secondary tie-break keys stay out of ORDER BY (they would disqualify
     // the ANN index); the <= LIMIT rows are re-sorted below under the same
     // total order the JSONB brute-force path used.
-    return client.query(
-      `SELECT connector_id, connector_instance_id, scope_key, record_key,
-              (embedding::vector(${dims}) <=> $3::vector(${dims}))::float8 AS distance
-       FROM semantic_search_blob
-       WHERE connector_instance_id = $1
-         AND scope_key = ANY($2::text[])
-         AND vector_dims(embedding) = ${dims}
-         ${recordClause}
-       ORDER BY embedding::vector(${dims}) <=> $3::vector(${dims})
-       LIMIT $4`,
-      params
-    );
+    return client.query(exactScopedQuery, params);
   });
   return result.rows
     .map((row) => ({
