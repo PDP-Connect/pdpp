@@ -8,8 +8,8 @@
  * lifecycle is non-conformant in three specific ways:
  *
  *   1. Pending consent re-approval is allowed (terminal-state violation).
- *   2. Owner-device denial does not transition the row to `denied`, so
- *      the polling exchange never reports `access_denied`.
+ *   2. Owner-device approval reports a denied row as `not_found`, conflating
+ *      a terminal denial with an unknown user code.
  *   3. Owner-device polling-rate enforcement is missing, so a back-to-back
  *      poll returns `authorization_pending` instead of `slow_down`.
  *
@@ -20,7 +20,7 @@
  *
  * Specifically, this test asserts:
  *   - the pending-consent terminal-approval scenario fails (break 1),
- *   - the owner-device denial scenario fails (break 2),
+ *   - the owner-device denial discriminator scenario fails (break 2),
  *   - the owner-device polling-rate scenario fails (break 3).
  *
  * The broken driver is test-only and SHALL NOT be used as a production
@@ -94,8 +94,9 @@ test("harness detects at least one consent/device-auth invariant violation in a 
     )}`
   );
 
-  // BREAK 2: owner-device denial does not flip status, so exchange never
-  // reports access_denied.
+  // BREAK 2: denied approval is incorrectly reported as not_found, although
+  // exchange still reports access_denied. This proves the harness observes
+  // the approval error discriminator rather than only the exchange result.
   // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
   const denialTerminalFailed = failures.some((f) => /owner device auth: denial is terminal/.test(f.name));
   assert.ok(
