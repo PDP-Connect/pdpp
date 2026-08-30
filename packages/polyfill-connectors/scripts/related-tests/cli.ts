@@ -52,17 +52,37 @@ function listAllTsFiles(root: string, dir: string, out: string[]): void {
   }
 }
 
+/**
+ * Changed files = committed divergence from `baseRef` (merge-base diff, so a
+ * feature branch's own history is compared against where it forked, not
+ * against wherever `baseRef` has since moved) UNION uncommitted working-tree
+ * changes (staged + unstaged). The union matters for local iteration: a
+ * developer editing a file has not committed it yet, and this selector's
+ * whole purpose is fast local feedback on exactly that in-progress edit.
+ */
 function getChangedFiles(baseRef: string): string[] {
-  const output = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACMRT", `${baseRef}...HEAD`], {
+  const committed = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACMRT", `${baseRef}...HEAD`], {
+    cwd: PACKAGE_ROOT,
+    encoding: "utf8",
+  });
+  const uncommitted = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACMRT", "HEAD"], {
+    cwd: PACKAGE_ROOT,
+    encoding: "utf8",
+  });
+  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
     cwd: PACKAGE_ROOT,
     encoding: "utf8",
   });
   const packagePrefix = relative(gitRoot(), PACKAGE_ROOT);
-  return output
-    .split("\n")
-    .filter((line) => line.length > 0)
-    .filter((line) => line.startsWith(`${packagePrefix}/`))
-    .map((line) => relative(packagePrefix, line));
+  const changed = new Set<string>();
+  for (const output of [committed, uncommitted, untracked]) {
+    for (const line of output.split("\n")) {
+      if (line.length > 0 && line.startsWith(`${packagePrefix}/`)) {
+        changed.add(relative(packagePrefix, line));
+      }
+    }
+  }
+  return [...changed];
 }
 
 function gitRoot(): string {
