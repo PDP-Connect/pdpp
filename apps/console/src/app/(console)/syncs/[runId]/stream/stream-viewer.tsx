@@ -100,6 +100,13 @@ import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { submitRunInteractionAction } from "../actions.ts";
 import { type MintedStreamSession, mintStreamSessionAction, reportStreamReachFailureAction } from "./actions.ts";
 import {
+  createBoundedRetryState,
+  nextRetryDecision,
+  RESOLUTION_POLL_POLICY,
+  recordRetryAttempt,
+  terminalRetryMessage,
+} from "./bounded-retry.ts";
+import {
   NEKO_MEDIA_LAYOUT_EVENT,
   type NekoClientConfig,
   readNekoMediaSettleSample,
@@ -331,7 +338,9 @@ const INITIAL_INTERACTION_ACTION_STATE = { error: null, status: null } as const;
 // Poll the run timeline so the resolved success state appears the instant
 // the controller observes the upstream interaction is satisfied. The SSE
 // channel won't tell us this — the authoritative signal is the timeline.
-const RESOLUTION_POLL_MS = 2500;
+// The cadence and the hard stop both live in RESOLUTION_POLL_POLICY
+// (`bounded-retry.ts`) — there is deliberately no bare interval constant here
+// to reach for, because that is exactly what produced the refresh storm.
 
 /**
  * Reconnect backoff (ms). EventSource's built-in retry is dumb (constant
@@ -1500,12 +1509,51 @@ export function StreamSurface({
 
   // Poll the timeline. router.refresh() re-runs the page loader so a
   // server-side resolution flips this view to <ResolvedSurface>.
+  //
+  // This is a self-rescheduling BOUNDED loop, not a bare setInterval. Each
+  // refresh re-runs the entire server page loader, so an unbounded cadence on
+  // a dead or reaped session is a self-inflicted denial of service — it froze
+  // the owner's machine. `nextRetryDecision` supplies both the growing delay
+  // and the hard stop; when it says stop, we stop for good and show calm
+  // terminal copy instead of degrading to a slower hammer.
+  const [resolutionPollStop, setResolutionPollStop] = useState<"exhausted" | "reaped" | "resolved" | null>(null);
   useEffect(() => {
     if (!pollForResolution) {
       return;
     }
-    const id = setInterval(() => router.refresh(), RESOLUTION_POLL_MS);
-    return () => clearInterval(id);
+    let state = createBoundedRetryState();
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
+    function scheduleNext(): void {
+      if (cancelled) {
+        return;
+      }
+      const decision = nextRetryDecision(state, RESOLUTION_POLL_POLICY);
+      if (!decision.shouldRetry) {
+        // Terminal. No further network attempts from this effect, ever.
+        setResolutionPollStop(decision.reason);
+        return;
+      }
+      timeoutId = setTimeout(() => {
+        timeoutId = null;
+        if (cancelled) {
+          return;
+        }
+        state = recordRetryAttempt(state, RESOLUTION_POLL_POLICY);
+        router.refresh();
+        scheduleNext();
+      }, decision.delayMs);
+    }
+
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    };
   }, [pollForResolution, router]);
 
   // ─── Open-browser click handler ────────────────────────────────────────────
@@ -1573,6 +1621,17 @@ export function StreamSurface({
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const connectorName = connector?.displayName ?? "the connector";
 
+  // A stopped resolution poll must SAY so. Silence here is the "stuck
+  // skeleton": the page looks like it is still working when it has permanently
+  // stopped checking. The terminal copy outranks a transient trouble message
+  // because it is the durable state — the poll is never coming back.
+  let orientationTroubleMessage: string | null = null;
+  if (resolutionPollStop) {
+    orientationTroubleMessage = terminalRetryMessage(resolutionPollStop);
+  } else if (status.display === "trouble") {
+    orientationTroubleMessage = status.troubleMessage;
+  }
+
   return (
     <main className="relative min-h-dvh">
       <WordmarkCorner />
@@ -1584,7 +1643,7 @@ export function StreamSurface({
           isMinting={isMinting}
           message={interactionMessage}
           onAction={openBrowser}
-          troubleMessage={status.display === "trouble" ? status.troubleMessage : null}
+          troubleMessage={orientationTroubleMessage}
         />
       </div>
 
