@@ -767,12 +767,13 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
         (await batches.listLatestRunHistoryByConnectionIds(ids, "succeeded")).map((row) => [
           row.connectorId,
           row.runId,
+          row.schedulerManaged,
         ]),
         [
-          ["connector-alpha", "run_connector-alpha"],
-          ["connector-beta", "run_connector-beta"],
+          ["connector-alpha", "run_connector-alpha", true],
+          ["connector-beta", "run_connector-beta", true],
         ],
-        "PostgreSQL latest-successful history uses established connector_id/connector_instance_id ordering"
+        "PostgreSQL latest-successful history projects scheduler-managed provenance with established ordering"
       );
       assert.deepEqual(
         (await batches.listLastRunTimesByConnectionIds(ids)).map((row) => row.last_run_time_ms),

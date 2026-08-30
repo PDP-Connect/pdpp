@@ -1392,6 +1392,7 @@ export function createPostgresSchedulerStore(): SchedulerStore {
                   history.completed_at,
                   history.error,
                   history.attempt,
+                  history.scheduler_managed,
                   ROW_NUMBER() OVER (
                     PARTITION BY history.connector_instance_id
                     ORDER BY history.completed_at DESC, history.id DESC
