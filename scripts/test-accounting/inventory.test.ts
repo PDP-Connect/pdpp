@@ -1117,7 +1117,7 @@ test("the optional PostgreSQL profile is not selected by the required default an
     OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN
   );
 });
-test("the authority spawns an issued child and consumes its only valid Git-private receipt", async () => {
+test("default authority selection spawns and completes only required profiles even when an optional predicate is present", async () => {
   const root = await mkdtemp(join(tmpdir(), "pdpp-authority-"));
   await mkdir(join(root, "test"));
   await mkdir(join(root, "other"));
@@ -1141,7 +1141,10 @@ test("the authority spawns an issued child and consumes its only valid Git-priva
         loader: "node-test",
         authority_argument: "--authority",
         command: [process.execPath, "child.mjs"],
-        profiles: [{ id: "default", required: true, skip_reasons: {} }],
+        profiles: [
+          { id: "default", required: true, skip_reasons: {} },
+          { id: "postgres", required: false, optional_predicate: "PDPP_TEST_POSTGRES=1", skip_reasons: {} },
+        ],
         include: ["test/*.test.js"],
       },
       {
@@ -1166,7 +1169,9 @@ test("the authority spawns an issued child and consumes its only valid Git-priva
   await writeFile(join(root, "test-accounting.manifest.json"), `${JSON.stringify(initialManifest)}\n`);
   execFileSync("git", ["add", "test-accounting.manifest.json"], { cwd: root });
   execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
-  assert.deepEqual((await runAuthority({ root, suites: ["node"] })).result.verified, ["node/default"]);
+  assert.deepEqual((await runAuthority({ root, suites: ["node"], env: { PDPP_TEST_POSTGRES: "1" } })).result.verified, [
+    "node/default",
+  ]);
 });
 test("a suite-scoped authority run does not fail closed on an unrelated suite's stale, empty-matching include glob", async () => {
   const root = await mkdtemp(join(tmpdir(), "pdpp-authority-scoped-"));
