@@ -8,6 +8,8 @@ import { closePostgresStorage, initPostgresStorage } from "../../server/postgres
 const dbPath = process.env.PDPP_SUMMARY_FAILURE_FIXTURE_DB_PATH;
 const connectorInstanceId = process.env.PDPP_SUMMARY_FAILURE_FIXTURE_CONNECTOR_INSTANCE_ID;
 const postgresUrl = process.env.PDPP_SUMMARY_FAILURE_FIXTURE_POSTGRES_URL;
+const postgresChildAttachment = process.env.PDPP_SUMMARY_FAILURE_FIXTURE_POSTGRES_CHILD_ATTACHMENT;
+delete process.env.PDPP_SUMMARY_FAILURE_FIXTURE_POSTGRES_CHILD_ATTACHMENT;
 if (!(connectorInstanceId && (dbPath || postgresUrl))) {
   throw new Error(
     "summary evidence failure fixture requires a database path or PostgreSQL URL and a connector instance"
@@ -15,7 +17,13 @@ if (!(connectorInstanceId && (dbPath || postgresUrl))) {
 }
 
 if (postgresUrl) {
-  await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl });
+  if (!postgresChildAttachment) {
+    throw new Error("PostgreSQL summary evidence failure fixture requires a parent child-attachment capability");
+  }
+  await initPostgresStorage(
+    { backend: "postgres", databaseUrl: postgresUrl },
+    { testOnlyAlreadyAdmittedChildAttachment: postgresChildAttachment }
+  );
 } else {
   initDb(dbPath);
 }
