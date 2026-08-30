@@ -2335,7 +2335,7 @@ packages:
     os: [win32]
 
   '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.2.tgz':
-    resolution: {integrity: sha512-01or2nvXToNWP/xQ/V1V+O27jT1ea5F6klbPOxJeeCEz+O2zISofH6b8ubkRGLhs8OODhgUd7xyE/yEZ8G9pYg==, tarball: file:vendor/pdpp-collector-runtime-0.0.2.tgz}
+    resolution: {integrity: sha512-BIkf4Y4YlN4lYnj6wm4MVyKBDl7K3CI7jSZNTGfyO8PIQEPrjx9hhZvA06wFDJuhgNGfbEGcZ0iZuUKpXrTfYg==, tarball: file:vendor/pdpp-collector-runtime-0.0.2.tgz}
     version: 0.0.2
     engines: {node: '>=22.14.0'}
 

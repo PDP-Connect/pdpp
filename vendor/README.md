@@ -2,22 +2,23 @@
 
 ## Current 0.0.2 release-boundary pins
 
-The current PDPP consumers pin both packages to independently SHIP-reviewed
-data-connect #36 artifacts at public source head
-`c4652fc688cccfb36c4510afec03fde775fabfb8` (parent
-`535ee9ab6cc5acae6d086b59ad61df97075598dc`). The final independent review is
-`DATA-CONNECT-36-WITHDRAWAL-INDEPENDENT-R2-FINAL-0829.md` in the review
-evidence directory.
+The current PDPP consumers pin independently accepted data-connect #36
+artifacts. The collector-runtime pin is the source commit
+`6676f900e8ac33e31bcc18901a7b9b02a78f10e4`; the independent acceptance record
+is `DC36-VERIFY-REPAIR-R2-INDEPENDENT-0830.md` in the review evidence
+directory. The connector-protocol pin retains its separately recorded source
+provenance below.
 
-`pdpp-collector-runtime-0.0.2.tgz` was reproduced from that exact source
-head and verified before vendoring. Its SHA-256 is
-`eaf1eda97a2bf0b8a9e28dd43ed179e9ba254e7547b7e1aa0d88e378195d5f42`; its
+`pdpp-collector-runtime-0.0.2.tgz` was reproduced from that exact clean source
+commit under Node `22.23.2` with npm `10.9.8`, and verified before vendoring.
+Its SHA-1 is `821105762caf21b0820a8e2bb9b12e3e0c6c3f60`; its SHA-256 is
+`499d15b7d9acfadf45c02f59097a15b3801ef8b7d5c53bccd23304a0f7c4b49d`; its
 SHA-512 is
-`d35a2bda7bd74e83563ffc50fd5d55f8edbb8d3d5e6b917a9256cf3b125e782133f8edb3212a1f1fa6fcb9b91118b86cf0e38386051def1c84ff2119f06f6962`.
+`04891fe18e1894de256278fac26e0c5722810e5ecadc223b8d264d4c67f23bc3c84043eb8f1f61859bc0d3ac050c9ba180d19f6c419c674899b942a95eb4df62`.
 The producer's source-input digest is
-`34ddadf96d366651f581d31deb5a573dd958963842e99400eb13d7d42fd936fa` and
+`221124a67be0a3aed4e869a85dd08eb2ec6ed6627fdb1d478f3ae0ee2197e41e` and
 declaration digest is
-`93c013bb2a484fea532954431f9bef80e489a47333463dceb37ecd6c6174761a`.
+`046d8bf4c60d70ee047a2e3f8d29e381425bbafe2a4378f2b595477bd48c492a`.
 
 `pdpp-connector-protocol-0.0.2.tgz` is pinned at SHA-256
 `17b8013bc030bc83cbd9e908a14a6096ae756c39cb788139effad2827d5bd124`; its
