@@ -35,7 +35,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { reconcileConnectorSummaryEvidence } from "../server/connector-summary-evidence-engine.ts";
+import {
+  reconcileConnectorSummaryEvidence,
+  remainingStatementBudgetMs,
+} from "../server/connector-summary-evidence-engine.ts";
 import {
   closePostgresStorage,
   getPostgresPool,
@@ -83,7 +86,7 @@ test(
 );
 
 test(
-  "postgresQueryBounded: the floor timeout used by the engine (50ms) still lets an ordinary fast query complete",
+  "postgresQueryBounded: the floor timeout used by the engine (500ms) still lets an ordinary fast query complete",
   withPostgres(async () => {
     // Mirrors MIN_STATEMENT_TIMEOUT_MS in connector-summary-evidence-engine.ts:
     // an index-bounded query genuinely fast in practice must not spuriously
@@ -91,7 +94,7 @@ test(
     const result = await postgresQueryBounded<{ n: number }>(
       "SELECT COUNT(*)::int AS n FROM connector_instances WHERE connector_instance_id = $1",
       ["cin_definitely_does_not_exist_p12_probe"],
-      50
+      500
     );
     assert.equal(result.rows[0]?.n, 0);
   })
@@ -128,18 +131,23 @@ test(
   })
 );
 
+test("remainingStatementBudgetMs: admits live work at the per-unit floor but refuses an expired admission", (t) => {
+  t.mock.method(Date, "now", () => 1_000);
+
+  assert.equal(remainingStatementBudgetMs(null), null, "no deadline preserves the unbounded caller contract");
+  assert.equal(remainingStatementBudgetMs(1_000), 0, "an expired admission must not start an unbounded statement");
+  assert.equal(remainingStatementBudgetMs(1_001), 500, "a live admission receives the production per-unit floor");
+});
+
 /**
- * End-to-end wiring proof (no query interception, just outcomes): a scoped
- * `reconcileConnectorSummaryEvidence` call with a small `maxDurationMs`
- * routes its discovery/repair reads through the per-unit
- * `postgresQueryBounded` floor (`MIN_STATEMENT_TIMEOUT_MS` = 50ms in
- * connector-summary-evidence-engine.ts) and still correctly repairs a
- * genuinely dirty row — proving the floor does not silently break ordinary,
- * fast, index-bounded discovery/repair reads (every query on this path
- * filters by `connector_instance_id`, so 50ms is ample in practice).
+ * The floor/admission contract above is a deterministic unit oracle. This
+ * real-Postgres check keeps the distinct persistence boundary: an expired
+ * admission leaves the row untouched, then an unbounded retry repairs it to
+ * fresh evidence. It deliberately does not claim a 1 ms wall-clock pass can
+ * complete cold discovery under host pressure.
  */
 test(
-  "reconcileConnectorSummaryEvidence: a tiny maxDurationMs (floored per-unit timeout) still correctly repairs a genuinely dirty row",
+  "reconcileConnectorSummaryEvidence: an unbounded retry repairs a row deferred by an expired admission",
   withPostgres(async () => {
     await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [CONNECTOR_ID]);
     await postgresQuery("INSERT INTO connectors(connector_id, manifest, created_at) VALUES($1, $2::jsonb, $3)", [
@@ -157,9 +165,19 @@ test(
         [id, CONNECTOR_ID, NOW]
       );
 
-      // First pass creates the evidence row (cold start).
-      const first = await reconcileConnectorSummaryEvidence([id], { maxDurationMs: 1 });
-      assert.ok(first.repaired >= 1, "cold-start repair lands even with the smallest possible maxDurationMs");
+      await assert.rejects(
+        () => reconcileConnectorSummaryEvidence([id], { deadline: 0 }),
+        PostgresStatementTimeoutError,
+        "an expired admission must not begin discovery"
+      );
+      const beforeRetry = await postgresQuery<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM connector_summary_evidence WHERE connector_instance_id = $1",
+        [id]
+      );
+      assert.equal(beforeRetry.rows[0]?.count, 0, "an expired admission leaves the dirty row for a later retry");
+
+      const retry = await reconcileConnectorSummaryEvidence([id]);
+      assert.ok(retry.repaired >= 1, "an unbounded retry repairs the dirty row");
 
       const row = await postgresQuery<{ dirty: number; state: string }>(
         "SELECT dirty, state FROM connector_summary_evidence WHERE connector_instance_id = $1",
