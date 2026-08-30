@@ -18,7 +18,7 @@
  * the short canonical key (`amazon`) before storing. Those two shapes can
  * never be byte-equal, so every first-party manifest reconciled as
  * "changed" on every single startup, forever. See
- * `normalizeForComparison` in `polyfill-manifest-reconcile.ts`.
+ * `normalizeConnectorManifestForStorage` in `auth.ts`.
  *
  * This oracle proves the fix holds at production-ish record scale: an
  * ordinary startup reconcile pass over an already-registered, unchanged
