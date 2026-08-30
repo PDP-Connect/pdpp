@@ -737,6 +737,7 @@ test("two gmail connections run with distinct injected secrets, scoped per run, 
           connector_id: "gmail",
           // Connection-scoped injection: this run's secret only.
           env: { ...secretEnv },
+          protocol_capabilities: [],
           runtime_requirements: { bindings: { network: { required: true } } },
           streams: ["messages"],
         },

@@ -121,6 +121,8 @@ test("CLI --resources reaches the connector as START scope resources", () => {
     "messages,reactions",
     "--resources",
     "messages:C07JYF0U8BY|C016X99931T",
+    "--protocol-capabilities",
+    "none",
   ]);
   const spec = buildConnectorSpec(options);
   const start = buildCollectorStartMessage(spec.streams, spec.streamsToBackfill, null, spec.resources);

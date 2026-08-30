@@ -20,7 +20,8 @@
  *           --connection-id <id> [--streams a,b,c]
  *           [--resources messages:C123|C456]
  *           [--backfill-streams attachments]
- *           [--command <cmd>] [--args <argv...>] [--run-id <id>]
+ *           [--command <cmd>] [--args <argv...>]
+ *           [--protocol-capabilities <capability,...|none>] [--run-id <id>]
  *     Run the connector under the collector runtime. Gates the
  *     connector against COLLECTOR_RUNTIME_CAPABILITIES before spawn;
  *     a connector requiring a binding the collector does not advertise
@@ -94,6 +95,7 @@ import {
   LocalDeviceOutbox,
   runCollectorConnector,
 } from "@pdpp/collector-runtime";
+import { CONNECTOR_PROTOCOL_CAPABILITIES, type ConnectorProtocolCapability } from "@pdpp/connector-protocol";
 import { LOCAL_COLLECTOR_DEFINITIONS } from "../src/collector-registry.ts";
 import { resolveExecutionRoot } from "../src/execution-root.ts";
 
@@ -115,6 +117,7 @@ export interface CliOptions {
   deviceLabel?: string;
   deviceToken?: string;
   entrypointCommand?: string;
+  protocolCapabilities?: readonly ConnectorProtocolCapability[];
   queuePath: string;
   resources?: Record<string, string[]>;
   /**
@@ -132,6 +135,7 @@ interface ConnectorDefaults {
   args: string[];
   bindings?: Record<string, { required: boolean }>;
   command: string;
+  protocolCapabilities: readonly ConnectorProtocolCapability[];
   streams: string[];
 }
 
@@ -146,6 +150,7 @@ const NON_LOCAL_DEVICE_CONNECTOR_DEFAULTS: Record<string, ConnectorDefaults> = {
   gmail: {
     command: "tsx",
     args: ["connectors/gmail/index.ts"],
+    protocolCapabilities: [],
     streams: ["messages", "message_bodies", "attachments", "threads", "labels"],
     bindings: { network: { required: true } },
   },
@@ -173,6 +178,7 @@ const KNOWN_CONNECTOR_DEFAULTS: Record<string, ConnectorDefaults> = {
       {
         command: "tsx",
         args: [`connectors/${definition.entry}/index.ts`],
+        protocolCapabilities: definition.protocol_capabilities,
         streams: [...definition.streams],
         bindings: { ...definition.bindings },
       },
@@ -331,11 +337,21 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
   const command = options.entrypointCommand ?? defaults?.command ?? "tsx";
   const args = options.args ?? defaults?.args ?? [`connectors/${options.connector}/index.ts`];
   const streams = options.streams ?? defaults?.streams ?? [];
+  const customCommand = options.entrypointCommand !== undefined || options.args !== undefined;
+  const protocolCapabilities = customCommand
+    ? options.protocolCapabilities
+    : (defaults?.protocolCapabilities ?? options.protocolCapabilities);
   if (streams.length === 0) {
     throw new Error(`run requires --streams <a,b,c> for connector ${options.connector}`);
   }
+  if (!protocolCapabilities) {
+    throw new Error(
+      `run requires --protocol-capabilities <capability,...|none> for custom connector ${options.connector}`
+    );
+  }
   return {
     connector_id: options.connector,
+    protocol_capabilities: protocolCapabilities,
     streams,
     ...(options.streamsToBackfill ? { streamsToBackfill: options.streamsToBackfill } : {}),
     ...(options.resources ? { resources: options.resources } : {}),
@@ -451,6 +467,9 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     "--command": (next) => {
       options.entrypointCommand = next;
     },
+    "--protocol-capabilities": (next) => {
+      options.protocolCapabilities = parseProtocolCapabilities(next);
+    },
     "--args": (next) => {
       options.args = next.split(" ").filter(Boolean);
     },
@@ -467,6 +486,22 @@ function parseCsv(value: string): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+function parseProtocolCapabilities(value: string): ConnectorProtocolCapability[] {
+  if (value.trim().toLowerCase() === "none") {
+    return [];
+  }
+  const capabilities = parseCsv(value);
+  const unknown = capabilities.find(
+    (capability) => !CONNECTOR_PROTOCOL_CAPABILITIES.some((known) => known === capability)
+  );
+  if (unknown) {
+    throw new Error(`unknown protocol capability: ${unknown}`);
+  }
+  return capabilities.filter((capability): capability is ConnectorProtocolCapability =>
+    CONNECTOR_PROTOCOL_CAPABILITIES.some((known) => known === capability)
+  );
 }
 
 function parseResources(value: string): Record<string, string[]> {

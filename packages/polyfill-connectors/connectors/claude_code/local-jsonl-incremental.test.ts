@@ -960,6 +960,7 @@ test("M24: Claude mtime touch queues no transcript records while advancing its d
         CLAUDE_CODE_HOME: source.claudeHome,
         CLAUDE_CODE_PROJECTS_DIR: source.projects,
       },
+      protocol_capabilities: [],
       runtime_requirements: { bindings: {} },
       streams: ["sessions", "messages"],
     },
