@@ -4,14 +4,18 @@
 // A STREAM_EVIDENCE claim must not become durable before the records it
 // claims. Records are buffered in memory and flushed to the RS only at
 // BATCH_SIZE (500) or at DONE, but STREAM_EVIDENCE carries an explicit
-// numeric `covered` count the read model trusts verbatim:
+// numeric `outcomes.emitted` count the read model trusts (via a derived
+// `covered`, see connector-gap-bounding.ts) that
 // `evaluateStreamCoherence` (packages/reference-contract/src/evidence/
-// coherence.ts) compares `covered` against `considered` and NEVER consults
+// coherence.ts) compares against `considered` and NEVER consults
 // `collected`. So a connector that emits STREAM_EVIDENCE{considered: N,
-// covered: N} for a batch still sitting in memory, and then dies before
-// that batch flushes, leaves behind a durable claim of full coverage over
-// records that never reached the database -- and the terminal fact block
-// is still written on the failure path, so the lie survives the run.
+// outcomes: {emitted: N, ...}} for a batch still sitting in memory, and then
+// dies before that batch flushes, leaves behind a durable claim of full
+// coverage over records that never reached the database -- and the terminal
+// fact block is still written on the failure path, so the lie survives the
+// run. `handleStreamEvidenceMessage` additionally checks `outcomes.emitted`
+// against this run's own distinct-accepted-key set, which is populated by
+// the SAME flush this test pins the ordering of.
 //
 // handleStreamEvidenceMessage carries `await flushAll()` before tracking the
 // fact, mirroring handleDetailCoverageMessage's identical ordering rule (see
@@ -248,8 +252,9 @@ test("a STREAM_EVIDENCE claim must not outlive its records: the flush precedes t
 
   // Five records -- far under BATCH_SIZE (500), so nothing flushes on its
   // own. Then a STREAM_EVIDENCE claim that accounts for exactly those five
-  // as covered, with the explicit numeric covered/considered pair the read
-  // model trusts verbatim. Then death: no DONE, no end-of-run flush.
+  // as emitted, with the explicit outcomes/considered shape the read model
+  // trusts verbatim (covered is derived as emitted + unchanged at fold time).
+  // Then death: no DONE, no end-of-run flush.
   const messages: Record<string, unknown>[] = [
     {
       data: { cursor: "messages-1" },
@@ -267,7 +272,7 @@ test("a STREAM_EVIDENCE claim must not outlive its records: the flush precedes t
     })),
     {
       considered: RECORD_KEYS.length,
-      covered: RECORD_KEYS.length,
+      outcomes: { emitted: RECORD_KEYS.length, gapped: 0, unaccounted: 0, unchanged: 0 },
       reference_only: true,
       stream: "message_bodies",
       type: "STREAM_EVIDENCE",
@@ -314,7 +319,8 @@ test("a STREAM_EVIDENCE claim must not outlive its records: the flush precedes t
   const evidenceEvent = events.find((e) => e.event_type === "run.stream_evidence_declared");
   assert.ok(evidenceEvent, "the run declared STREAM_EVIDENCE (the claim under test was made)");
   const evidenceData = JSON.parse(evidenceEvent.data_json) as Record<string, unknown>;
-  assert.equal(evidenceData.covered, RECORD_KEYS.length, "the claim asserts full coverage of all five records");
+  const evidenceOutcomes = evidenceData.outcomes as { emitted: number };
+  assert.equal(evidenceOutcomes.emitted, RECORD_KEYS.length, "the claim asserts full coverage of all five records");
   assert.equal(evidenceData.considered, RECORD_KEYS.length);
 
   // The ordering assertion. A `run.batch_ingested` for `message_bodies` must

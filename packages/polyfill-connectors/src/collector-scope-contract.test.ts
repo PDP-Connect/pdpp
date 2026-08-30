@@ -206,6 +206,7 @@ async function runScoped(input: {
         args: [fixture],
         command: "node",
         connector_id: "fixture-scope",
+        protocol_capabilities: [],
         runtime_requirements: { bindings: {} },
         streams: ALL_STREAMS,
         timeScopableStreams: TIME_SCOPABLE,

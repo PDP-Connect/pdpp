@@ -1,16 +1,116 @@
 # Vendored cross-repo dependency tarballs (transitional)
 
-`pdpp-connector-protocol-0.0.1.tgz` was RE-PACKED on 2026-08-29 from
-PDP-Connect/data-connect commit `65fa39cf3bb27abc598f8a15ab20353660b77479`
-("fix(protocol): let a session-first connector skip the credentials prompt") on
-branch `rail/pr36-0828`, packed with `npm pack` from inside that repo's
-workspace so sibling dependencies resolve during the prepack build. Artifact
-SHA-256 `65c1c3a7fd994a8d0b83231a226a0b3c69556377afdeb579c844439274660cc5`
+## Current 0.0.2 release-boundary pins
+
+The current PDPP consumers pin both packages to independently SHIP-reviewed
+data-connect #36 artifacts at public source head
+`c4652fc688cccfb36c4510afec03fde775fabfb8` (parent
+`535ee9ab6cc5acae6d086b59ad61df97075598dc`). The final independent review is
+`DATA-CONNECT-36-WITHDRAWAL-INDEPENDENT-R2-FINAL-0829.md` in the review
+evidence directory.
+
+`pdpp-collector-runtime-0.0.2.tgz` was reproduced from that exact source
+head and verified before vendoring. Its SHA-256 is
+`eaf1eda97a2bf0b8a9e28dd43ed179e9ba254e7547b7e1aa0d88e378195d5f42`; its
+SHA-512 is
+`d35a2bda7bd74e83563ffc50fd5d55f8edbb8d3d5e6b917a9256cf3b125e782133f8edb3212a1f1fa6fcb9b91118b86cf0e38386051def1c84ff2119f06f6962`.
+The producer's source-input digest is
+`34ddadf96d366651f581d31deb5a573dd958963842e99400eb13d7d42fd936fa` and
+declaration digest is
+`93c013bb2a484fea532954431f9bef80e489a47333463dceb37ecd6c6174761a`.
+
+`pdpp-connector-protocol-0.0.2.tgz` is pinned at SHA-256
+`17b8013bc030bc83cbd9e908a14a6096ae756c39cb788139effad2827d5bd124`; its
+accepted source-input digest is
+`d2a715e1aabbb454d7da146197ae849fd02bedef7b62793c113d764a0b43a350` and
+declaration digest is
+`da07e9aaaf84b5b0ec91b657dae90662c544763ca41ff124b1c2fa440617e0ce`.
+Both package archives are verified by
+`scripts/check-pdpp-vendored-package-pins.ts` before the PDPP train can be
+treated as installed.
+
+`pdpp-connector-protocol-0.0.2.tgz` was packed on 2026-08-29 from
+PDP-Connect/data-connect commit `75b4af02bbd18e5830d5e6f8230bf980fdc55014`
+("chore(connector-protocol): regenerate artifact.json against the
+outcomes-partition source head"), packed with `npm pack` from inside that
+repo's workspace so sibling dependencies resolve during the prepack build.
+Artifact SHA-256
+`17b8013bc030bc83cbd9e908a14a6096ae756c39cb788139effad2827d5bd124`
 (see SHA256SUMS); the matching sha512 integrity is pinned in `pnpm-lock.yaml`.
 The tarball is a straight pack of that commit with a clean worktree — no
 post-pack edits to its contents.
 
-It carries one behavior change, in the `env` auth strategy.
+This is the first vendored artifact at package version `0.0.2`
+(`CONNECTOR_PROTOCOL_VERSION` is `"0.0.2"`); every prior pin was `0.0.1`.
+
+It carries one breaking protocol change, in `STREAM_EVIDENCE`
+(`84dd39a63955fdd6ecc37520541269602d8c3406`). The scalar `covered` member is
+gone, replaced by a disjoint partition
+`outcomes: { emitted, unchanged, gapped, unaccounted }` whose four fields MUST
+sum to `considered` exactly. A single `covered` count could not distinguish
+emitted from unchanged from gapped from unaccounted keys, so it silently hid
+gaps a caller needed to see. The sum-check is enforced at the untyped wire
+boundary by the newly exported `validateStreamEvidenceCounts` (bounded to
+`Number.MAX_SAFE_INTEGER`, called right after `JSON.parse`, because the type
+system cannot check an unknown value); collector-runner fails closed when a
+connector emits `STREAM_EVIDENCE` with invalid counts. A reader that wants a
+`covered` projection derives it as `outcomes.emitted + outcomes.unchanged`.
+The `covered` members that remain in `dist/connector-runtime-protocol.d.ts`
+belong to `DetailCoverageMessage` and `RuntimeContinuationFact` — different
+messages that are not affected by this change.
+
+It carries a second breaking change: `LocalCollectorDefinition` now REQUIRES
+`protocol_capabilities: readonly ConnectorProtocolCapability[]`. Upstream
+deliberately treats an omitted field as `"undeclared_capabilities"` rather than
+defaulting it to `[]` — an object missing the field is the exact shape a forged
+legacy-bypass caller produces, and the old `protocol_contract_version: "0.0.1"`
+escape hatch was removed because nothing separated a genuine legacy artifact
+from a caller merely claiming to be one.
+
+Every bundled collector definition in this repo therefore declares the field
+explicitly. All seven declare `[]`: no connector here emits `STREAM_EVIDENCE`,
+so none needs a capability today. Six of the seven mirror data-connect's own
+definitions at the pin commit above and were reconciled to match them exactly;
+`signal` has no canonical counterpart and was derived the same way, from its
+own emissions (`START`/`RECORD`/`SKIP_RESULT`/`DONE`). The declarations are
+pinned against drift by
+`packages/polyfill-connectors/src/collector-definition-protocol-capabilities.test.ts`
+(each definition declares exactly what its source emits) and
+`packages/polyfill-connectors/bin/collector-runner-protocol-capabilities.test.ts`
+(a custom operator-supplied command gets no synthesized declaration).
+
+The prior `pdpp-collector-runtime-0.0.1.tgz` pin had no capability field in its
+`ConnectorPlacementInput`, so that historical state enforced the requirement
+at compile time only. The current `0.0.2` runtime pin carries the withdrawn
+capability placement gate described above.
+
+The same fold classifies `stream_evidence_run_registry` as `backup_required` in
+`reference-implementation/server/backup-table-policy.ts`. That table is
+introduced by this train (accepted P1-2) relative to the base it merges onto,
+and it holds the accepted `(run_id, stream)` claims enforcing
+spec-collection-profile.md rule 5. Rule 5 defines "same run" strictly by
+caller-chosen `run_id` with no restart or restore exception and the rows are
+never deleted, so a claim lost at the durability boundary would let a reused
+`run_id` re-accept and admit duplicate authority. It is retained for the same
+reason `source_webhook_run_receipts` is.
+`reference-implementation/test/stream-evidence-run-registry-durability.test.ts`
+proves the rows — not merely the table — carry the rejection across a
+backup/restore boundary, and that the surviving uniqueness scope is exactly
+`(run_id, stream)`.
+
+Earlier commits in the same source stack pin the package at `0.0.2`, bind
+legacy-artifact identity, close an undeclared-capability bypass, validate
+capability array members via `isConnectorProtocolCapabilityArray`, and bind the
+attestation signer workflow. The head commit only regenerates `artifact.json`
+against the committed tree; it changes no `dist/` output.
+
+The prior artifact, `pdpp-connector-protocol-0.0.1.tgz` (SHA-256
+`65c1c3a7fd994a8d0b83231a226a0b3c69556377afdeb579c844439274660cc5`), was
+RE-PACKED on 2026-08-29 from commit
+`65fa39cf3bb27abc598f8a15ab20353660b77479` ("fix(protocol): let a session-first
+connector skip the credentials prompt") on branch `rail/pr36-0828`. Its
+contents remain contained in this artifact except for the `STREAM_EVIDENCE`
+change above. It carried one behavior change, in the `env` auth strategy.
 `AuthStrategyContext` gains an optional `authOptional`; when it is set and a
 declared credential is missing, the strategy returns the resolved subset
 immediately instead of raising a `credentials` INTERACTION. This unblocks
@@ -35,12 +135,13 @@ and typecheck" as a hard blocker). Both are additive: `boundary_claim` is
 optional and STREAM_EVIDENCE is a new union member, so nothing that compiled
 before stops compiling.
 
-The final source commits add compile-time contract tests and export
-`SkipResultBoundaryClaim` through the public package barrel. The
-`connector-runtime-protocol.ts` SHA-256 remains
-`c27e038e18b2ecf1d08850b4079232819277f927a8eaa244c1a5766fad74430c`,
-while the barrel change is included in this artifact built from the final PR
-head.
+The final source commits of that 0.0.1 lineage add compile-time contract tests
+and export `SkipResultBoundaryClaim` through the public package barrel. Its
+`connector-runtime-protocol.ts` SHA-256 was
+`c27e038e18b2ecf1d08850b4079232819277f927a8eaa244c1a5766fad74430c`; at the
+0.0.2 pin point above that source file is
+`d8886bc91e761400688c1b49409c9a2dafcb7d6098f4a3657ecd52e4e9a4421f`, because the
+`STREAM_EVIDENCE` outcomes partition rewrote it.
 
 The prior artifact was built via `npm pack` from PDP-Connect/data-connect @
 3c8aeb0343dcbcbccb0bba3357f6b6bf543012b1 (branch `fix/skip-result-boundary-claim-0828`,

@@ -533,8 +533,17 @@ interface BuildCollectionFactsInput {
   scopeByStream: Map<string, unknown>;
   /**
    * Accepted STREAM_EVIDENCE facts, keyed by stream name (see
-   * openspec/changes/prove-state-stream-child-coverage). Folded into that
-   * stream's own considered/covered ONLY — never merged into
+   * openspec/changes/prove-state-stream-child-coverage). `covered` for the
+   * shared evidence contract (`@pdpp/reference-contract/evidence`) is derived
+   * here as `emitted + unchanged` — the two outcome terms that genuinely
+   * account for a considered key without leaving it a shortfall. `gapped` and
+   * `unaccounted` are deliberately EXCLUDED from that sum: leaving them out
+   * means `covered < considered` whenever either is nonzero, which routes the
+   * stream to `boundary_shortfall`/`partial` (or, when a durable DETAIL_GAP
+   * backs the gap, `retryable_gap` via `pending_detail_gaps`) through the
+   * SAME unmodified `evaluateStreamCoherence` rule 2 that already gates every
+   * other stream shape — no change to the shared contract was needed. Folded
+   * into that stream's own considered/covered ONLY — never merged into
    * detailCoverageByStateStream, so it can never reach
    * missingDetailCoverageReports/recordDetailCoverageShortfalls or influence
    * checkpoint commit eligibility. DETAIL_COVERAGE wins when both are present
@@ -543,7 +552,10 @@ interface BuildCollectionFactsInput {
    * DETAIL_COVERAGE is rejected for them, but the precedence is made explicit
    * here rather than left to map key overwrite order).
    */
-  streamEvidenceByStream?: Map<string, { considered: number; covered: number }>;
+  streamEvidenceByStream?: Map<
+    string,
+    { considered: number; emitted: number; gapped: number; unaccounted: number; unchanged: number }
+  >;
 }
 
 /**
@@ -731,13 +743,15 @@ export function buildCollectionFacts({
   // fallback only ever fires for that disjoint case; DETAIL_COVERAGE's value
   // is used as-is when both happen to be present (see the
   // streamEvidenceByStream doc comment on BuildCollectionFactsInput).
-  const streamEvidenceForStream = (stream: string): { considered: number; covered: number } | null =>
+  const streamEvidenceForStream = (
+    stream: string
+  ): { considered: number; emitted: number; gapped: number; unaccounted: number; unchanged: number } | null =>
     streamEvidenceByStream?.get(stream) ?? null;
 
   const streams = inScopeStreams.map((stream) => {
     const evidence = streamEvidenceForStream(stream);
     const considered = declaredConsideredForStream(stream) ?? evidence?.considered ?? null;
-    const covered = declaredCoveredForStream(stream) ?? evidence?.covered ?? null;
+    const covered = declaredCoveredForStream(stream) ?? (evidence ? evidence.emitted + evidence.unchanged : null);
     const streamSkip = skipForStream(stream);
     const continuation = streamSkip?.continuation;
     const stateStreams = streamToStateStreams.get(stream) || new Set([stream]);

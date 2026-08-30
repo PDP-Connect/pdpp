@@ -519,6 +519,16 @@ async function migratePostgresConnectorSummaryEvidenceRepairChunkPageSize(client
   `);
 }
 
+async function migratePostgresStreamEvidenceRunRegistry(client: PoolClient): Promise<void> {
+  // Legacy claims remain spent. Nullable columns are deliberate: an old row
+  // cannot be safely upgraded into terminal evidence, so the store rejects it
+  // rather than inventing a replay payload.
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS payload_json TEXT");
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS replay_identity_json TEXT");
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS payload_digest TEXT");
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS event_id TEXT");
+}
+
 async function migratePostgresBrowserSurfaceLeaseLifecycleChecks(client: PoolClient): Promise<void> {
   const constraints = await client.query<ConstraintRow>(`
     SELECT conname, pg_get_constraintdef(oid) AS definition
@@ -2225,6 +2235,27 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_connector_coverage_horizons_instance
         ON connector_coverage_horizons(connector_instance_id);
 
+      -- Cross-invocation STREAM_EVIDENCE duplicate registry — see the
+      -- matching SQLite DDL comment in server/db.ts
+      -- (stream_evidence_run_registry) for the full rationale. Primary key
+      -- is EXACTLY (run_id, stream), matching spec-collection-profile.md
+      -- rule 5's scope; connector_instance_id is informational only. No
+      -- TTL/reap.
+      CREATE TABLE IF NOT EXISTS stream_evidence_run_registry (
+        run_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        payload_json TEXT,
+        replay_identity_json TEXT,
+        payload_digest TEXT,
+        event_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (now()::text),
+        PRIMARY KEY (run_id, stream)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pg_stream_evidence_run_registry_instance
+        ON stream_evidence_run_registry(connector_instance_id);
+
       CREATE TABLE IF NOT EXISTS connector_attention_records (
         attention_id TEXT PRIMARY KEY,
         dedupe_key TEXT NOT NULL,
@@ -2870,10 +2901,10 @@ export async function bootstrapPostgresSchema({
         manifest_generation BIGINT NOT NULL DEFAULT 0,
         schedule_checkpoint TEXT NOT NULL DEFAULT 'unobserved',
         run_lifecycle_event_seq BIGINT,
-        list_summary_projection_json JSONB,
-        list_summary_projection_state TEXT NOT NULL DEFAULT 'unobserved',
-        list_summary_projection_reason_code TEXT,
-        list_summary_projection_computed_at TEXT
+        -- Reason code only: the projection payload columns were removed
+        -- 2026-08-28 because their read was gated on a state value nothing
+        -- wrote. See the matching SQLite column comment in server/db.ts.
+        list_summary_projection_reason_code TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_summary_evidence_connector
         ON connector_summary_evidence(connector_id);
@@ -3017,13 +3048,16 @@ export async function bootstrapPostgresSchema({
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS run_lifecycle_event_seq BIGINT;
       ALTER TABLE connector_summary_evidence
-        ADD COLUMN IF NOT EXISTS list_summary_projection_json JSONB;
-      ALTER TABLE connector_summary_evidence
-        ADD COLUMN IF NOT EXISTS list_summary_projection_state TEXT NOT NULL DEFAULT 'unobserved';
-      ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS list_summary_projection_reason_code TEXT;
+      -- Drop the unreachable list-summary projection cache (2026-08-28): its
+      -- payload read was gated on list_summary_projection_state = 'current',
+      -- which no write ever produced. Bounded, idempotent DDL — it does not
+      -- scan or rewrite rows. See the matching SQLite migration in
+      -- server/db.ts.
       ALTER TABLE connector_summary_evidence
-        ADD COLUMN IF NOT EXISTS list_summary_projection_computed_at TEXT;
+        DROP COLUMN IF EXISTS list_summary_projection_json,
+        DROP COLUMN IF EXISTS list_summary_projection_state,
+        DROP COLUMN IF EXISTS list_summary_projection_computed_at;
       ALTER TABLE connector_maintenance_cursor
         ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 0;
       ALTER TABLE connector_maintenance_cursor
@@ -3252,6 +3286,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
     await migratePostgresConnectorSummaryEvidenceRepairChunkPageSize(client);
+    await migratePostgresStreamEvidenceRunRegistry(client);
     await migratePostgresSemanticEmbeddingToVector(client, log);
     await ensurePostgresLexicalScopedGinIndex(client, log);
     await ensurePostgresRecordsCanonicalCountIndex(client, log);

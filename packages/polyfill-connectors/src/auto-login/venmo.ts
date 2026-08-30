@@ -1205,7 +1205,7 @@ async function requestManualLoginForChallenge({
     page,
     ...(replaySignIn
       ? {
-          resumeFill: async (): Promise<void> => {
+          resumeFill: async () => {
             await withSuppressedManualPrompts(() => resumeSignInAfterChallenge(replaySignIn));
           },
         }

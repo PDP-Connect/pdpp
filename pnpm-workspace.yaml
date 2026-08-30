@@ -23,7 +23,7 @@ overrides:
   # reference-contract to this repo's own real package (not
   # data-connect's minimal same-named stand-in — see its README for why that
   # distinction matters).
-  "@pdpp/connector-protocol": "file:./vendor/pdpp-connector-protocol-0.0.1.tgz"
+  "@pdpp/connector-protocol": "file:./vendor/pdpp-connector-protocol-0.0.2.tgz"
   "@pdpp/reference-contract": "workspace:*"
 # React's own package ships no types, so a dependency's `import * as React from
 # "react"` resolves types by walking up from its isolated pnpm store directory —

@@ -8,15 +8,19 @@
  * cannot emit `DETAIL_COVERAGE` — the runtime rejects that outright — so it
  * has no way to prove its own coverage beyond blind inheritance from its
  * parent's commit. `STREAM_EVIDENCE` lets it report an independently
- * measured `considered`/`covered` fact about itself, which the existing
+ * measured `considered` plus an explicit `outcomes: {emitted, unchanged,
+ * gapped, unaccounted}` partition about itself, which the existing
  * `evaluateStreamCoherence`/`deriveStreamCoverageCondition` machinery
- * evaluates unmodified, without ever gating any checkpoint commit.
+ * evaluates unmodified (via a derived `covered = emitted + unchanged`),
+ * without ever gating any checkpoint commit.
  *
  * Every assertion here is wire-observable (connector JSONL in, spine events /
  * projected coverage condition out), matching the pattern
  * `checkpoint-dependency-profile-conformance.test.ts` and
  * `detail-coverage-flush-ordering.test.ts` already use for this class of
- * protocol contract.
+ * protocol contract. `test/stream-evidence-accepted-keys.test.ts` covers the
+ * distinct-accepted-key closure over `outcomes.emitted`/`outcomes.gapped`
+ * (duplicates, rejections, drift-skip, retry, teardown) this file does not.
  */
 
 import assert from "node:assert/strict";
@@ -37,11 +41,12 @@ import { createRequestConnectorInstanceStore } from "../server/request-store-fac
 import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
 
 const NOT_STATE_STREAM_DECLARED_PATTERN = /which the manifest does not declare with a\s+static state_stream parent/;
-const COVERED_EXCEEDS_CONSIDERED_PATTERN = /covered.*exceeds considered/i;
+const OUTCOMES_SUM_MISMATCH_PATTERN = /outcomes.*do not sum to considered/i;
 const DUPLICATE_STREAM_EVIDENCE_PATTERN = /duplicate STREAM_EVIDENCE/i;
 const DETAIL_COVERAGE_STILL_REJECTED_PATTERN = /MUST NOT emit DETAIL_COVERAGE/;
 const REFERENCE_ONLY_INVALID_PATTERN = /invalid STREAM_EVIDENCE\.reference_only/;
 const UNDECLARED_STREAM_PATTERN = /STREAM_EVIDENCE for undeclared stream/;
+const NOT_A_SAFE_INTEGER_PATTERN = /expected a non-negative integer/i;
 
 // ─── Runtime-level (real connector subprocess + real spine) harness ───
 
@@ -302,7 +307,7 @@ test("STREAM_EVIDENCE: clean coverage with no gaps folds into the child's own co
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'message_bodies', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, covered: 1 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, outcomes: { emitted: 1, unchanged: 0, gapped: 0, unaccounted: 0 } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 2 }) + '\\n');
   rl.close();
   process.exit(0);
@@ -351,9 +356,10 @@ test("STREAM_EVIDENCE: a swallowed-exception shortfall (covered < considered, no
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'message_bodies', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
-  // Two keys considered, only one covered, zero DETAIL_GAP -- the swallowed-
-  // exception case: a key enumerated then lost with no gap report.
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 2, covered: 1 }) + '\\n');
+  // Two keys considered, only one emitted, zero DETAIL_GAP -- the swallowed-
+  // exception case: a key enumerated then lost with no gap report, so it is
+  // unaccounted rather than gapped.
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 2, outcomes: { emitted: 1, unchanged: 0, gapped: 0, unaccounted: 1 } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 2 }) + '\\n');
   rl.close();
   process.exit(0);
@@ -437,7 +443,7 @@ test("STREAM_EVIDENCE naming a parent_streams-declared stream is rejected as a p
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
   // message_attachments is parent_streams-declared, not state_stream --
   // STREAM_EVIDENCE is exclusive to state_stream children.
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_attachments', considered: 1, covered: 1 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_attachments', considered: 1, outcomes: { emitted: 1, unchanged: 0, gapped: 0, unaccounted: 0 } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
   rl.close();
   process.exit(0);
@@ -492,7 +498,7 @@ test("STREAM_EVIDENCE naming a self-mapped stream is rejected as a protocol viol
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
   // 'messages' is self-mapped (its own checkpoint) -- not state_stream-declared.
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'messages', considered: 1, covered: 1 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'messages', considered: 1, outcomes: { emitted: 1, unchanged: 0, gapped: 0, unaccounted: 0 } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
   rl.close();
   process.exit(0);
@@ -531,18 +537,18 @@ test("STREAM_EVIDENCE naming a self-mapped stream is rejected as a protocol viol
   }
 });
 
-test("STREAM_EVIDENCE with covered greater than considered is rejected", async () => {
+test("STREAM_EVIDENCE with outcomes not summing to considered is rejected", async () => {
   const { server, asUrl, rsUrl, ownerToken } = await setupServer();
   try {
-    const manifest = streamEvidenceManifest("stream-evidence-covered-exceeds");
+    const manifest = streamEvidenceManifest("stream-evidence-outcomes-sum-mismatch");
     await registerManifest(asUrl, manifest);
-    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-covered-exceeds-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-outcomes-sum-mismatch-"));
     const connectorPath = writeConnectorStub(
       tmpDir,
       `
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, covered: 2 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, outcomes: { emitted: 2, unchanged: 0, gapped: 0, unaccounted: 0 } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
   rl.close();
   process.exit(0);
@@ -566,8 +572,119 @@ test("STREAM_EVIDENCE with covered greater than considered is rejected", async (
       } catch (err) {
         rejection = err as RuntimeRejectionError;
       }
-      assert.ok(rejection, "STREAM_EVIDENCE with covered > considered must be rejected");
-      assert.match(rejection?.message || "", COVERED_EXCEEDS_CONSIDERED_PATTERN);
+      assert.ok(rejection, "STREAM_EVIDENCE with outcomes not summing to considered must be rejected");
+      assert.match(rejection?.message || "", OUTCOMES_SUM_MISMATCH_PATTERN);
+      assert.equal(
+        rejection?.failure_reason,
+        "connector_protocol_violation",
+        "a STREAM_EVIDENCE protocol violation must classify as connector_protocol_violation, not the retryable runtime_error default"
+      );
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// ── Mid-turn addendum: spec-collection-profile.md now normatively caps
+// every STREAM_EVIDENCE count field at Number.MAX_SAFE_INTEGER
+// (9007199254740991), not an arbitrary-precision non-negative JSON integer.
+// The runtime's `requireNonNegativeIntegerOutcome` already enforces this via
+// `Number.isSafeInteger` (unchanged by this addendum -- only the spec
+// wording was stale); these two tests are the boundary proof the spec
+// reconciliation requires: MAX_SAFE_INTEGER itself must be accepted,
+// MAX_SAFE_INTEGER + 1 must be rejected. `unaccounted` is the field under
+// test because, unlike `emitted` (checked against this run's real
+// distinct-accepted-key count) and `gapped` (checked against this run's
+// real durable DETAIL_GAP count), it carries no downstream reconciliation
+// against another durable count -- so a boundary value here exercises only
+// the `Number.isSafeInteger` shape check the spec addendum is about,
+// without a real run having to durably accept 9 quadrillion records first.
+
+test("STREAM_EVIDENCE.outcomes.unaccounted at exactly Number.MAX_SAFE_INTEGER is accepted", async () => {
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const manifest = streamEvidenceManifest("stream-evidence-max-safe-integer-accepted");
+    await registerManifest(asUrl, manifest);
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-max-safe-integer-accepted-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 9007199254740991, outcomes: { emitted: 0, unchanged: 0, gapped: 0, unaccounted: 9007199254740991 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      const result = (await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
+        collectionMode: "incremental",
+        connectorId: manifest.connector_id,
+        connectorPath,
+        manifest: manifest as unknown as RuntimeManifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      })) as RuntimeRunConnectorResult;
+      assert.equal(
+        result.status,
+        "succeeded",
+        "a STREAM_EVIDENCE whose count fields equal exactly Number.MAX_SAFE_INTEGER must be accepted"
+      );
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("STREAM_EVIDENCE.outcomes.unaccounted at Number.MAX_SAFE_INTEGER + 1 is rejected", async () => {
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const manifest = streamEvidenceManifest("stream-evidence-max-safe-integer-plus-one-rejected");
+    await registerManifest(asUrl, manifest);
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-max-safe-integer-rejected-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 9007199254740992, outcomes: { emitted: 0, unchanged: 0, gapped: 0, unaccounted: 9007199254740992 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      let rejection: RuntimeRejectionError | null = null;
+      try {
+        await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
+          collectionMode: "incremental",
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest: manifest as unknown as RuntimeManifest,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl,
+          state: null,
+        });
+      } catch (err) {
+        rejection = err as RuntimeRejectionError;
+      }
+      assert.ok(
+        rejection,
+        "a STREAM_EVIDENCE count field of Number.MAX_SAFE_INTEGER + 1 must be rejected as not a safe integer"
+      );
+      assert.match(rejection?.message || "", NOT_A_SAFE_INTEGER_PATTERN);
       assert.equal(
         rejection?.failure_reason,
         "connector_protocol_violation",
@@ -592,7 +709,7 @@ test("STREAM_EVIDENCE with reference_only not true is rejected", async () => {
       `
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: false, stream: 'message_bodies', considered: 1, covered: 1 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: false, stream: 'message_bodies', considered: 1, outcomes: { emitted: 1, unchanged: 0, gapped: 0, unaccounted: 0 } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
   rl.close();
   process.exit(0);
@@ -642,7 +759,7 @@ test("STREAM_EVIDENCE naming a stream outside the run's scope is rejected", asyn
       `
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, covered: 1 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, outcomes: { emitted: 1, unchanged: 0, gapped: 0, unaccounted: 0 } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
   rl.close();
   process.exit(0);
@@ -699,8 +816,8 @@ test("a second STREAM_EVIDENCE for the same stream in the same run is rejected a
       `
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, covered: 1 }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 5, covered: 5 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, outcomes: { emitted: 0, unchanged: 1, gapped: 0, unaccounted: 0 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 5, outcomes: { emitted: 0, unchanged: 5, gapped: 0, unaccounted: 0 } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
   rl.close();
   process.exit(0);
@@ -805,7 +922,7 @@ test("STREAM_EVIDENCE acceptance never gates the parent's (or any) checkpoint co
   // Deliberately shortfall (partial coverage for the child) -- this MUST NOT
   // withhold the messages checkpoint, which the manifest declares as
   // message_bodies's parent.
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 3, covered: 1 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 3, outcomes: { emitted: 0, unchanged: 1, gapped: 0, unaccounted: 2 } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
   rl.close();
   process.exit(0);
@@ -901,7 +1018,7 @@ test("mutation control: a durable DETAIL_GAP alongside a STREAM_EVIDENCE shortfa
   process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'message_bodies', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP', stream: 'message_bodies', parent_stream: 'messages', record_key: 'm-2', reason: 'temporary_unavailable', retryable: true }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 2, covered: 1 }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 2, outcomes: { emitted: 1, unchanged: 0, gapped: 1, unaccounted: 0 } }) + '\\n');
   process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 2 }) + '\\n');
   rl.close();
   process.exit(0);

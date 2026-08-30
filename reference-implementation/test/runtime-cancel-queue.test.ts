@@ -110,7 +110,18 @@ async function runCancelQueueScenario(
         }
         setTimeout(() => {
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ records_accepted: body.split("\\n").filter(Boolean).length, records_rejected: 0 }));
+          // Mirror the real hosted RS envelope (server/routes/rs-mutation.ts
+          // always sets hostedRejectionReceipts: true), which the runtime's
+          // strict readIngestResponse (runtime/ingest-failure.ts) requires.
+          const lineCount = body.split("\\n").filter(Boolean).length;
+          res.end(
+            JSON.stringify({
+              records_accepted: lineCount,
+              records_attempted: lineCount,
+              records_rejected: 0,
+              rejections: [],
+            })
+          );
         }, 20).unref();
         return;
       }

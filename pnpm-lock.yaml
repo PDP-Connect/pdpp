@@ -7,7 +7,7 @@ settings:
 overrides:
   '@pdpp/cli': workspace:*
   '@pdpp/read-core': workspace:*
-  '@pdpp/connector-protocol': file:./vendor/pdpp-connector-protocol-0.0.1.tgz
+  '@pdpp/connector-protocol': file:./vendor/pdpp-connector-protocol-0.0.2.tgz
   '@pdpp/reference-contract': workspace:*
 
 importers:
@@ -452,11 +452,11 @@ importers:
   packages/polyfill-connectors:
     dependencies:
       '@pdpp/collector-runtime':
-        specifier: file:../../vendor/pdpp-collector-runtime-0.0.1.tgz
-        version: file:vendor/pdpp-collector-runtime-0.0.1.tgz
+        specifier: file:../../vendor/pdpp-collector-runtime-0.0.2.tgz
+        version: file:vendor/pdpp-collector-runtime-0.0.2.tgz
       '@pdpp/connector-protocol':
-        specifier: file:../../vendor/pdpp-connector-protocol-0.0.1.tgz
-        version: file:vendor/pdpp-connector-protocol-0.0.1.tgz
+        specifier: file:../../vendor/pdpp-connector-protocol-0.0.2.tgz
+        version: file:vendor/pdpp-connector-protocol-0.0.2.tgz
       '@pdpp/reference-contract':
         specifier: workspace:*
         version: link:../reference-contract
@@ -546,11 +546,11 @@ importers:
         specifier: ^4.2.0
         version: 4.2.0
       '@pdpp/collector-runtime':
-        specifier: file:../vendor/pdpp-collector-runtime-0.0.1.tgz
-        version: file:vendor/pdpp-collector-runtime-0.0.1.tgz
+        specifier: file:../vendor/pdpp-collector-runtime-0.0.2.tgz
+        version: file:vendor/pdpp-collector-runtime-0.0.2.tgz
       '@pdpp/connector-protocol':
-        specifier: file:../vendor/pdpp-connector-protocol-0.0.1.tgz
-        version: file:vendor/pdpp-connector-protocol-0.0.1.tgz
+        specifier: file:../vendor/pdpp-connector-protocol-0.0.2.tgz
+        version: file:vendor/pdpp-connector-protocol-0.0.2.tgz
       '@pdpp/display':
         specifier: workspace:*
         version: link:../packages/display
@@ -2334,14 +2334,14 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.1.tgz':
-    resolution: {integrity: sha512-L4CT6KqUc05EjPjDTJ7wYNPCAQvStcNyPGv7OyYq5mTKgLFJevWlISUgg+nTOuptrqG4DwA+cL1XInHXpkzaPQ==, tarball: file:vendor/pdpp-collector-runtime-0.0.1.tgz}
-    version: 0.0.1
+  '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.2.tgz':
+    resolution: {integrity: sha512-01or2nvXToNWP/xQ/V1V+O27jT1ea5F6klbPOxJeeCEz+O2zISofH6b8ubkRGLhs8OODhgUd7xyE/yEZ8G9pYg==, tarball: file:vendor/pdpp-collector-runtime-0.0.2.tgz}
+    version: 0.0.2
     engines: {node: '>=22.14.0'}
 
-  '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-0.0.1.tgz':
-    resolution: {integrity: sha512-K3/ebpm4UcOLuGZvxBndZCCy4OQMH4bHWBNathCIBbeU48KFDzUKIAJ7Fqf05Y8KTOWr2njYDYV302kxJ6f1yQ==, tarball: file:vendor/pdpp-connector-protocol-0.0.1.tgz}
-    version: 0.0.1
+  '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-0.0.2.tgz':
+    resolution: {integrity: sha512-w5mQGT4nqiY4EnbI9K0VJJTD5c8ir1Fu4PzKFUkPt7X5uUFSs1y2AJ77oINPfA2w4wuEHBD0VoIBFV6J1BXeQQ==, tarball: file:vendor/pdpp-connector-protocol-0.0.2.tgz}
+    version: 0.0.2
     engines: {node: '>=22.14.0'}
 
   '@pierre/diffs@1.3.6':
@@ -11104,11 +11104,11 @@ snapshots:
   '@pagefind/windows-x64@1.5.2':
     optional: true
 
-  '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.1.tgz':
+  '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.2.tgz':
     dependencies:
-      '@pdpp/connector-protocol': file:vendor/pdpp-connector-protocol-0.0.1.tgz
+      '@pdpp/connector-protocol': file:vendor/pdpp-connector-protocol-0.0.2.tgz
 
-  '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-0.0.1.tgz':
+  '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-0.0.2.tgz':
     dependencies:
       zod: 4.4.3
 

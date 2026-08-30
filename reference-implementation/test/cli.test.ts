@@ -1197,7 +1197,9 @@ test("PDPP CLI smoke", async (t) => {
 
   await t.test("auth introspect preserves grant_invalid client context", async () => {
     const { dbPath, cleanup } = createTempDbPath();
-    const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8"));
+    const nativeManifest = JSON.parse(
+      readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8")
+    );
     let server = await startServer({
       asPort: 0,
       dbPath,
@@ -6207,7 +6209,7 @@ rl.on('line', (line) => {
         const url = new URL(req.url ?? "/", "http://localhost");
         if (req.method === "POST" && url.pathname === "/v1/ingest/top_artists") {
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+          res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
           return;
         }
 
@@ -7301,7 +7303,7 @@ rl.on('line', (line) => {
       const url = new URL(req.url ?? "/", "http://localhost");
       if (req.method === "POST" && url.pathname.startsWith("/v1/ingest/")) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+        res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
         return;
       }
 
@@ -7920,7 +7922,9 @@ rl.on('line', (line) => {
     "client auth-gate grant_invalid failures still surface request and reference trace ids on stderr",
     async () => {
       const { dbPath, cleanup } = createTempDbPath();
-      const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8"));
+      const nativeManifest = JSON.parse(
+        readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8")
+      );
       let server = await startServer({
         asPort: 0,
         dbPath,
@@ -8338,7 +8342,9 @@ rl.on('line', (line) => {
     "auth-gate record-list failures preserve limit and changes_since through CLI grant timeline and trace readers",
     async () => {
       const { dbPath, cleanup } = createTempDbPath();
-      const nativeManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8"));
+      const nativeManifest = JSON.parse(
+        readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/northstar-hr.json"), "utf8")
+      );
       let server = await startServer({
         asPort: 0,
         dbPath,

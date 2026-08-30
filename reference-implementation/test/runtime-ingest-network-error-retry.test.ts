@@ -137,7 +137,18 @@ async function startStubRs(scripts: { ingest?: ScriptedOutcome[]; statePut?: Scr
         }
         const lines = body.split("\n").filter((l) => l.trim().length > 0);
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ errors: [], records_accepted: lines.length, records_rejected: 0 }));
+        // Mirror the real hosted RS envelope (server/routes/rs-mutation.ts
+        // always sets hostedRejectionReceipts: true), which the runtime's
+        // strict readIngestResponse (runtime/ingest-failure.ts) requires.
+        res.end(
+          JSON.stringify({
+            errors: [],
+            records_accepted: lines.length,
+            records_attempted: lines.length,
+            records_rejected: 0,
+            rejections: [],
+          })
+        );
         return;
       }
 
@@ -278,9 +289,8 @@ test("a STATE commit PUT that hits a raw connection reset is retried and the che
   assert.equal(outcome.thrown, null, "a transient network failure on the terminal STATE commit must not kill the run");
   assert.equal(outcome.result?.status, "succeeded", "run should succeed once the retried STATE PUT is accepted");
   assert.equal(outcome.statePutAttempts, 2, "the STATE PUT must be retried exactly once after the reset");
-  const checkpointSummary = (
-    outcome.result as { checkpoint_summary?: { commit_status?: string } } | null
-  )?.checkpoint_summary;
+  const checkpointSummary = (outcome.result as { checkpoint_summary?: { commit_status?: string } } | null)
+    ?.checkpoint_summary;
   assert.equal(
     checkpointSummary?.commit_status,
     "committed",
