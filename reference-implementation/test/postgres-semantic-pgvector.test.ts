@@ -11,9 +11,8 @@
  *
  *   1. The boot migration converts a seeded legacy JSONB-shape
  *      `semantic_search_blob` to the vector representation, preserving row
- *      count and embedding values across batched backfill, and builds the
- *      HNSW index. (Runs in a scratch schema so the shared test database is
- *      untouched.)
+ *      count and embedding values across batched backfill. HNSW construction
+ *      is tested separately as post-readiness maintenance.
  *   2. The migration resumes safely from a manufactured half-migrated state
  *      (partial `embedding_vec` backfill).
  *   3. `postgresSemanticSearch` ordering and `distance` values match the
@@ -38,6 +37,7 @@ import {
   initPostgresStorage,
   isPostgresSemanticVectorEmbedding,
   postgresQuery,
+  runPostgresSemanticHnswMaintenance,
 } from "../server/postgres-storage.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
@@ -187,14 +187,6 @@ if (POSTGRES_URL) {
         assert.equal(column.rows[0]?.udt_name, "vector", "embedding column must be pgvector");
         assert.equal(column.rows[0]?.is_nullable, "NO", "embedding column must be NOT NULL again");
 
-        const index = await postgresQuery(
-          `SELECT 1 FROM pg_indexes
-            WHERE schemaname = $1 AND tablename = 'semantic_search_blob'
-              AND indexname = 'idx_pg_semantic_search_embedding_hnsw'`,
-          [schema]
-        );
-        assert.equal(index.rowCount, 1, "HNSW index must exist after migration");
-
         const rows = await postgresQuery(
           "SELECT record_key, embedding::text AS embedding FROM semantic_search_blob ORDER BY record_key"
         );
@@ -251,6 +243,23 @@ if (POSTGRES_URL) {
             `distance parity for ${hit.recordKey}: ${hit.distance} vs ${expectedItem?.distance}`
           );
         }
+
+        const indexBeforeMaintenance = await postgresQuery(
+          `SELECT 1 FROM pg_indexes
+            WHERE schemaname = $1 AND tablename = 'semantic_search_blob'
+              AND indexname = 'idx_pg_semantic_search_embedding_hnsw'`,
+          [schema]
+        );
+        assert.equal(indexBeforeMaintenance.rowCount, 0, "HNSW is optional and absent before post-listen maintenance");
+
+        await runPostgresSemanticHnswMaintenance({ log: (line) => logLines.push(String(line)) });
+        const indexAfterMaintenance = await postgresQuery(
+          `SELECT 1 FROM pg_indexes
+            WHERE schemaname = $1 AND tablename = 'semantic_search_blob'
+              AND indexname = 'idx_pg_semantic_search_embedding_hnsw'`,
+          [schema]
+        );
+        assert.equal(indexAfterMaintenance.rowCount, 1, "post-readiness maintenance builds HNSW");
 
         // Idempotence: a second bootstrap over the migrated schema is a no-op.
         await bootstrapPostgresSchema();
