@@ -710,6 +710,8 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
     { connectorId: "connector-beta", connectorInstanceId: "cin_batch_pg_a", enabled: false, rate: 1 },
   ] as const;
   const ids = fixtures.map((fixture) => fixture.connectorInstanceId);
+  const [firstConnectionId] = ids;
+  assert.ok(firstConnectionId, "PostgreSQL scheduler page-batch fixtures include the first connection ID");
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
   try {
     await postgresQuery("DELETE FROM run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
@@ -746,7 +748,7 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
     }
 
     assert.equal(
-      (await store.getLatestRunHistoryForConnection(ids[0], "succeeded"))?.schedulerManaged,
+      (await store.getLatestRunHistoryForConnection(firstConnectionId, "succeeded"))?.schedulerManaged,
       true,
       "PostgreSQL single-connection scheduler history preserves scheduler-managed provenance"
     );
