@@ -5913,11 +5913,34 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   // change, not an authorization change. Scoped to the JSON-null case so a
   // string expiry is never touched, and idempotent so repeated boots are
   // no-ops.
+  //
+  // `json_valid(grant_json)` is load-bearing, not defensive decoration. This
+  // column is TEXT with no database-level JSON constraint, so it can hold a
+  // malformed blob, and SQLite's `json_type()` raises `malformed JSON` rather
+  // than returning NULL when it reads one. Without the guard a single corrupt
+  // historical row — possibly for a long-revoked grant — would abort this
+  // migration and take the whole server down at boot. Availability wins here:
+  // a malformed grant is skipped and reported, never repaired or deleted, and
+  // it stays unusable because the parser that reads it still fails closed.
+  // The PostgreSQL column is JSONB, which cannot hold malformed JSON, so the
+  // equivalent migration there carries no such risk and needs no guard.
+  const malformedGrantIds = runWithSqliteBusyRetrySync(
+    () =>
+      raw.prepare("SELECT grant_id FROM grants WHERE json_valid(grant_json) = 0 ORDER BY grant_id").all() as {
+        grant_id: string;
+      }[]
+  ).map((row) => row.grant_id);
+  if (malformedGrantIds.length > 0) {
+    console.warn(
+      `[db] absent-only grant expiry migration skipped ${malformedGrantIds.length} grant row(s) whose grant_json is not valid JSON; these grants remain unusable and were left untouched: ${malformedGrantIds.join(", ")}`
+    );
+  }
   runWithSqliteBusyRetrySync(() => {
     raw.exec(`
       UPDATE grants
          SET grant_json = json_remove(grant_json, '$.expires_at')
-       WHERE json_type(grant_json, '$.expires_at') = 'null';
+       WHERE json_valid(grant_json)
+         AND json_type(grant_json, '$.expires_at') = 'null';
     `);
   });
   runWithSqliteBusyRetrySync(() => {

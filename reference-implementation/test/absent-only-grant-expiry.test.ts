@@ -232,6 +232,84 @@ test("startup migration drops an explicit-null expires_at from stored grant_json
   }
 });
 
+test("a malformed grant_json blob cannot brick startup, and is reported rather than repaired", () => {
+  // `grants.grant_json` is TEXT with no database-level JSON constraint, so a
+  // corrupt historical row is representable. SQLite's `json_type()` raises
+  // `malformed JSON` rather than returning NULL when it reads one, so an
+  // unguarded migration would abort boot and take the whole server offline
+  // over a single bad row — possibly one belonging to a long-revoked grant.
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-absent-only-expiry-malformed-"));
+  const dbPath = join(dir, "pdpp.sqlite");
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  try {
+    initDb(dbPath);
+    const insert = getDb().prepare(
+      `INSERT INTO grants(grant_id, subject_id, client_id, grant_json, access_mode, issued_at, expires_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?)`
+    );
+    // A blob that is not JSON at all, alongside rows the migration must still
+    // process correctly. If the guard regresses, the reopen below throws.
+    insert.run("grt_malformed", "owner-1", "client-1", "not json at all", "continuous", "2026-08-11T12:00:00Z", null);
+    insert.run(
+      "grt_legacy_null",
+      "owner-1",
+      "client-1",
+      JSON.stringify({ access_mode: "continuous", expires_at: null, grant_id: "grt_legacy_null" }),
+      "continuous",
+      "2026-08-11T12:00:00Z",
+      null
+    );
+    insert.run(
+      "grt_real_expiry",
+      "owner-1",
+      "client-1",
+      JSON.stringify({
+        access_mode: "single_use",
+        expires_at: "2027-04-06T00:00:00Z",
+        grant_id: "grt_real_expiry",
+      }),
+      "single_use",
+      "2026-08-11T12:00:00Z",
+      "2027-04-06T00:00:00Z"
+    );
+    closeDb();
+
+    // The whole point: reopening must not throw.
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    assert.doesNotThrow(() => {
+      initDb(dbPath);
+    }, "one malformed grant blob must not abort startup");
+
+    const rows = getDb().prepare("SELECT grant_id, grant_json FROM grants ORDER BY grant_id").all() as Array<{
+      grant_id: string;
+      grant_json: string;
+    }>;
+    const byId = new Map(rows.map((row) => [row.grant_id, row.grant_json]));
+
+    // The malformed row is preserved verbatim: not repaired, not deleted.
+    // It stays unusable because the grant parser still fails closed on it.
+    assert.equal(byId.get("grt_malformed"), "not json at all", "a malformed blob must be left exactly as found");
+
+    // Well-formed rows are still migrated correctly despite the bad neighbour.
+    const migrated = JSON.parse(byId.get("grt_legacy_null") as string);
+    assert.equal("expires_at" in migrated, false, "an explicit null must still be dropped");
+    const untouched = JSON.parse(byId.get("grt_real_expiry") as string);
+    assert.equal(untouched.expires_at, "2027-04-06T00:00:00Z", "a real expiry must still survive");
+
+    // Silence would make a corrupt row invisible to the operator, so the
+    // migration must name what it skipped.
+    const reported = warnings.filter((line) => line.includes("grt_malformed"));
+    assert.ok(reported.length > 0, "the skipped grant id must be reported, not silently ignored");
+  } finally {
+    console.warn = realWarn;
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 // --- 2. unknown error codes are opaque to clients -----------------------
 
 test("an unrecognized error code stays opaque while status class and type remain usable", () => {
@@ -266,6 +344,74 @@ test("an unknown code on an unmapped status still falls back to a usable class",
   assert.equal(error.status, 418);
   assert.equal(typeFor(error.status), "api_error");
   assert.equal(error.exitCode, 1);
+});
+
+// The four authority cases from the Core rule. Each drives behaviour from the
+// BODY's `error.type`, not from a type derived out of the status, so that a
+// disagreement between the two is actually exercised rather than assumed away.
+
+/**
+ * The client-side reading of an error body under the Core authority rule:
+ * the HTTP status decides the outcome, a recognized body `type` may only
+ * refine presentation, and anything absent/unknown/inconsistent is ignored
+ * for control flow.
+ */
+function dispositionOf(error: PdppHttpError): { outcome: number; refinedBy: string | null } {
+  const body = error.body as { error?: { type?: unknown } } | undefined;
+  const bodyType = body?.error?.type;
+  const statusType = typeFor(error.status);
+  const refines = typeof bodyType === "string" && bodyType === statusType;
+  return { outcome: error.exitCode, refinedBy: refines ? bodyType : null };
+}
+
+test("a body type that contradicts the HTTP status never overrides the status class", () => {
+  // 403 with a body claiming a benign `invalid_request_error`. If the body won,
+  // a client could treat a permission denial as a retryable input mistake.
+  const contradictory = new PdppHttpError("Denied", 403, {
+    error: { code: "future_code", message: "Denied", type: "invalid_request_error" },
+  });
+  const consistent = new PdppHttpError("Denied", 403, {
+    error: { code: "grant_stream_not_allowed", message: "Denied", type: "permission_error" },
+  });
+
+  assert.equal(typeFor(contradictory.status), "permission_error", "status class is unaffected by the body");
+  assert.equal(
+    dispositionOf(contradictory).outcome,
+    dispositionOf(consistent).outcome,
+    "a contradictory body type must not change the outcome"
+  );
+  assert.equal(dispositionOf(contradictory).refinedBy, null, "an inconsistent type must not refine");
+  assert.equal(dispositionOf(consistent).refinedBy, "permission_error", "a consistent type may refine");
+});
+
+test("an absent body type falls back to the status class alone", () => {
+  const noType = new PdppHttpError("Denied", 403, { error: { code: "future_code", message: "Denied" } });
+  assert.equal(dispositionOf(noType).outcome, 4, "outcome still comes from the status");
+  assert.equal(dispositionOf(noType).refinedBy, null, "there is nothing to refine with");
+});
+
+test("an unrecognized body type is opaque and does not disturb the outcome", () => {
+  const unknownType = new PdppHttpError("Denied", 403, {
+    error: { code: "future_code", message: "Denied", type: "some_future_type" },
+  });
+  const known = new PdppHttpError("Denied", 403, {
+    error: { code: "grant_stream_not_allowed", message: "Denied", type: "permission_error" },
+  });
+  assert.equal(dispositionOf(unknownType).outcome, dispositionOf(known).outcome);
+  assert.equal(dispositionOf(unknownType).refinedBy, null);
+  // Preserved verbatim for diagnostics rather than dropped.
+  assert.equal((unknownType.body as { error: { type: string } }).error.type, "some_future_type");
+});
+
+test("an unknown code and an unknown type together never cause a parse failure", () => {
+  assert.doesNotThrow(() => {
+    const both = new PdppHttpError("Odd", 429, {
+      error: { code: "not_yet_invented", message: "Odd", type: "also_not_yet_invented" },
+    });
+    assert.equal(both.status, 429);
+    assert.equal((both.body as { error: { code: string } }).error.code, "not_yet_invented");
+    assert.equal(dispositionOf(both).refinedBy, null);
+  }, "an unknown code/type pair must parse and disposition cleanly");
 });
 
 test("client status-class handling is identical for known and unknown codes", () => {
