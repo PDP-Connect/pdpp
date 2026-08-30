@@ -84,6 +84,20 @@ export interface ConsentPickerBinding {
   [key: string]: unknown;
 }
 
+/**
+ * The active-binding store could not answer, so this is not evidence that the
+ * owner has no connection. The authorize route maps this private sentinel to
+ * its existing safe `server_error` envelope.
+ */
+export class ActiveBindingLookupError extends Error {
+  readonly code = "active_binding_lookup_failed";
+
+  constructor() {
+    super("Unable to load active connection state");
+    this.name = "ActiveBindingLookupError";
+  }
+}
+
 // Picker row shape.
 
 export interface HostedMcpPickerRow {
@@ -392,7 +406,14 @@ async function buildConnectorPickerRows(
     description: typeof stream.description === "string" ? stream.description : null,
     name: stream.name,
   }));
-  const connections = await caps.listActiveBindingsForGrant({ connectorId, ownerSubjectId }).catch(() => []);
+  let connections: ConsentPickerBinding[];
+  try {
+    connections = await caps.listActiveBindingsForGrant({ connectorId, ownerSubjectId });
+  } catch {
+    // Do not render an empty picker as though a failed storage lookup proved
+    // that the owner has no active connection.
+    throw new ActiveBindingLookupError();
+  }
   if (connections.length === 0) {
     // No active connection for this connector at all: the owner has never
     // held any of its data, and the AS has no eligible instance to satisfy a

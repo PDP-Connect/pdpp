@@ -37,6 +37,7 @@ import {
 } from "../server/hosted-mcp-selection.ts";
 import { escapeHtml } from "../server/hosted-ui.ts";
 import {
+  ActiveBindingLookupError,
   type ConsentPickerBinding,
   type ConsentPickerCapabilities,
   type ConsentUiRenderer,
@@ -350,6 +351,21 @@ test("a mix of held and unheld connectors renders rows only for the held ones", 
     rows.some((r) => r.connectorId === GITHUB_ID),
     false,
     "GitHub has zero active bindings and must not appear"
+  );
+});
+
+test("an active-binding storage failure is not rendered as an unconnected source", async () => {
+  const caps = makeCaps({
+    listActiveBindingsForGrant: async () => {
+      throw new Error("injected storage failure");
+    },
+    listRegisteredConnectorIds: async () => [SPOTIFY_ID],
+  });
+
+  await assert.rejects(
+    listHostedMcpPickerRows(caps, "owner_local"),
+    ActiveBindingLookupError,
+    "a failed active-binding lookup must remain distinguishable from an honest empty binding list"
   );
 });
 
