@@ -160,7 +160,7 @@ export function normalizePath(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
     fail("path must be a non-empty string");
   }
-  const path = value.replaceAll("\\", "/").replace(LEADING_DOT_SLASH_PATTERN, "");
+  const path = value.normalize("NFC").replaceAll("\\", "/").replace(LEADING_DOT_SLASH_PATTERN, "");
   if (path.startsWith("/") || path.split("/").includes("..")) {
     fail(`path must be repository-relative: ${value}`);
   }

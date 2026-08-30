@@ -37,6 +37,7 @@ import { type RuntimeEdge, sourceResolvesEdge } from "./packet.ts";
 export const INCREMENTAL_SELECTOR_SCHEMA = "pdpp.test-accounting.incremental-selector/v1";
 export const INCREMENTAL_GRAPH_SCHEMA = "pdpp.test-accounting.incremental-graph/v1";
 export const SHADOW_RECEIPT_SCHEMA = "pdpp.test-accounting.shadow-receipt/v1";
+export const AUTHORITY_REPORT_SCHEMA = "pdpp.test-accounting.authority-report/v1";
 export const SELECTOR_VERSION = "incremental-selector-1";
 export const MAX_REVERSE_TEST_FILES = 20;
 export const MAX_REVERSE_SUITE_FRACTION = 0.25;
@@ -44,6 +45,9 @@ export const MAX_REVERSE_PRODUCTION_FAN_IN = 20;
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const CODE_PATTERN = /\.(?:[cm]?js|tsx?|mts|cts)$/;
+const EXECUTABLE_GRAPH_PATTERN = /\.(?:[cm]?js|tsx?|mts|cts|sh|py)$/;
+const SHELL_OR_PYTHON_PATTERN = /\.(?:sh|py)$/;
+const COMMAND_ARGUMENT_PATTERN = /\s+/;
 const STATUS_PATTERN = /^[ACDMRTUXB][0-9]*$/;
 const SPEC_FILE_PATTERN = /^spec-[^/]+\.md$/;
 const GENERATOR_PATH_PATTERN = /\/generate(?:[-.]|\/)|\/sync-spec-docs\./;
@@ -182,6 +186,12 @@ export interface ShadowReceipt extends ShadowSelection {
   schema: typeof SHADOW_RECEIPT_SCHEMA;
   shadow_only: boolean;
   terminal_status: "shadow-only" | "full-fallback";
+}
+
+export interface AuthorityReport {
+  head_sha: string;
+  schema: typeof AUTHORITY_REPORT_SCHEMA;
+  status: "green";
 }
 
 export interface UnknownShadowReport {
@@ -376,6 +386,16 @@ export function parseNulDiff(input: Buffer | string): DiffEntry[] {
   const fields = raw.toString("utf8").split("\0");
   fields.pop();
   const entries: DiffEntry[] = [];
+  const originalByNormalizedPath = new Map<string, string>();
+  const normalizeDiffPath = (path: string): string => {
+    const normalized = normalizePath(path);
+    const original = originalByNormalizedPath.get(normalized);
+    if (original !== undefined && original !== path) {
+      fail(`Unicode normalization collision: ${JSON.stringify(original)} and ${JSON.stringify(path)}`);
+    }
+    originalByNormalizedPath.set(normalized, path);
+    return normalized;
+  };
   for (let index = 0; index < fields.length; ) {
     const status = fields[index];
     if (!(status && STATUS_PATTERN.test(status))) {
@@ -390,10 +410,10 @@ export function parseNulDiff(input: Buffer | string): DiffEntry[] {
       if (!second) {
         fail(`malformed NUL diff pair for status ${status}`);
       }
-      entries.push({ status, old_path: normalizePath(first), path: normalizePath(second) });
+      entries.push({ status, old_path: normalizeDiffPath(first), path: normalizeDiffPath(second) });
       index += 3;
     } else {
-      entries.push({ status, path: normalizePath(first) });
+      entries.push({ status, path: normalizeDiffPath(first) });
       index += 2;
     }
   }
@@ -446,6 +466,14 @@ interface SpawnOccurrence {
   computed: boolean;
   line: number;
   specifier: string | null;
+}
+
+function shellOrPythonIssue(from: string): GraphIssue {
+  return {
+    from,
+    kind: "unknown-subprocess",
+    detail: "shell and Python executable syntax is not statically modeled",
+  };
 }
 
 function staticTemplate(node: Record<string, unknown> | undefined): { value: string; computed: boolean } | undefined {
@@ -547,9 +575,20 @@ function collectOccurrences(source: string, file: string): { imports: ImportOccu
         source: "filesystem",
       });
     }
-    if (["spawn", "execFile", "execFileSync"].includes(String(callName ?? ""))) {
+    if (
+      ["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync", "fork"].includes(String(callName ?? ""))
+    ) {
       const first = staticTemplate(args[0]);
       spawns.push({ specifier: first ? first.value : null, line, computed: first ? first.computed : true });
+      if (["exec", "execSync"].includes(String(callName ?? "")) && first && !first.computed) {
+        const commandPath = first.value
+          .trim()
+          .split(COMMAND_ARGUMENT_PATTERN)
+          .find((part) => part.startsWith("."));
+        if (commandPath) {
+          spawns.push({ specifier: commandPath, line, computed: false });
+        }
+      }
       for (const arg of args.slice(1)) {
         const literal = staticTemplate(arg);
         if (literal !== undefined) {
@@ -781,7 +820,7 @@ function graphPaths(files: string[]): string[] {
   // and would turn an incomplete graph into an apparently safe mini-run.
   return files
     .filter((path) => {
-      if (!CODE_PATTERN.test(path)) {
+      if (!EXECUTABLE_GRAPH_PATTERN.test(path)) {
         return false;
       }
       return true;
@@ -808,6 +847,11 @@ export function buildIncrementalGraph(
       complete = false;
       issues.push({ from, kind: "parse", detail: "graph construction budget exceeded" });
       break;
+    }
+    if (SHELL_OR_PYTHON_PATTERN.test(from)) {
+      complete = false;
+      issues.push(shellOrPythonIssue(from));
+      continue;
     }
     let occurrences: { imports: ImportOccurrence[]; spawns: SpawnOccurrence[] };
     try {
@@ -845,12 +889,12 @@ export function buildIncrementalGraph(
           detail: error instanceof Error ? error.message : String(error),
         });
       }
-      edges.push({ from, target: resolved.target, kind: occurrence.kind, declaration: null });
-      if (edges.length > limits.max_edges) {
+      if (edges.length >= limits.max_edges) {
         complete = false;
         issues.push({ from, kind: "parse", detail: "graph edge budget exceeded" });
         break;
       }
+      edges.push({ from, target: resolved.target, kind: occurrence.kind, declaration: null });
     }
     for (const occurrence of occurrences.spawns) {
       if (occurrence.computed) {
@@ -896,12 +940,12 @@ export function buildIncrementalGraph(
           detail: error instanceof Error ? error.message : String(error),
         });
       }
-      edges.push({ from, target, kind: "spawn", declaration: null });
-      if (edges.length > limits.max_edges) {
+      if (edges.length >= limits.max_edges) {
         complete = false;
         issues.push({ from, kind: "parse", detail: "graph edge budget exceeded" });
         break;
       }
+      edges.push({ from, target, kind: "spawn", declaration: null });
     }
   }
   const canonical = {
@@ -925,6 +969,7 @@ export interface ClosureResult {
   reason: "closure-budget" | null;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the closure loop keeps every time, depth, node, and reverse-edge bound in one auditable fail-closed path.
 export function boundedReverseClosure(
   graph: IncrementalGraph,
   seeds: string[],
@@ -934,7 +979,23 @@ export function boundedReverseClosure(
   const started = performance.now();
   const reverse = new Map<string, string[]>();
   for (const edge of graph.edges) {
+    if (reverse.size >= limits.max_edges && !reverse.has(edge.target)) {
+      return {
+        files: sortedUnique(seeds),
+        complete: false,
+        reason: "closure-budget",
+        detail: "reverse closure edge budget exceeded",
+      };
+    }
     const importers = reverse.get(edge.target) ?? [];
+    if (importers.length >= limits.max_edges) {
+      return {
+        files: sortedUnique(seeds),
+        complete: false,
+        reason: "closure-budget",
+        detail: "reverse closure importer budget exceeded",
+      };
+    }
     importers.push(edge.from);
     reverse.set(edge.target, importers);
   }
@@ -1406,6 +1467,25 @@ export function verifyShadowReceipt(
   if (receipt.binding_sha256 !== shadowBinding(receipt)) {
     fail("shadow receipt binding is stale");
   }
+}
+
+export function parseAuthorityReport(input: string, expectedHead: string): AuthorityReport {
+  let value: unknown;
+  try {
+    value = JSON.parse(input);
+  } catch (error) {
+    fail(`authority/full-gate report is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const report = value as Partial<AuthorityReport>;
+  if (
+    report.schema !== AUTHORITY_REPORT_SCHEMA ||
+    report.status !== "green" ||
+    report.head_sha !== expectedHead ||
+    !SHA_PATTERN.test(report.head_sha)
+  ) {
+    fail("authority/full-gate report schema, green status, or exact head is invalid");
+  }
+  return report as AuthorityReport;
 }
 
 export function renderShadowReport(receipt: ShadowReceipt | UnknownShadowReport): string {

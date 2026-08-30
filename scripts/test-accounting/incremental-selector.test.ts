@@ -17,6 +17,7 @@ import {
   type IncrementalGraph,
   MAX_REVERSE_TEST_FILES,
   makeShadowReceipt,
+  parseAuthorityReport,
   parseNulDiff,
   readShadowReceiptOrUnknown,
   renderShadowReport,
@@ -38,6 +39,8 @@ const STALE_HEAD_ERROR = /head is stale/;
 const LIST_ERROR = /lists differ/;
 const SORT_ERROR = /canonically sorted/;
 const DUPLICATE_ERROR = /duplicates/;
+const UNICODE_COLLISION_ERROR = /Unicode normalization collision/;
+const AUTHORITY_REPORT_ERROR = /schema, green status, or exact head/;
 const BASE_HEAD_ERROR = /base-head-mismatch/;
 const UNKNOWN_STATUS = /status: unknown/;
 
@@ -94,6 +97,7 @@ test("parses exact NUL records, including newlines, shell characters, and Unicod
   ]);
   assert.throws(() => parseNulDiff(Buffer.from("M\0missing-terminal-delimiter", "utf8")), TERMINAL_NUL_ERROR);
   assert.throws(() => parseNulDiff(Buffer.from("M\0one\0A\0", "utf8")), PATH_ERROR);
+  assert.throws(() => parseNulDiff(Buffer.from("M\0e\u0301.ts\0M\0é.ts\0", "utf8")), UNICODE_COLLISION_ERROR);
 });
 
 test("records both sides of a rename/copy and classifies it before graph traversal", () => {
@@ -184,6 +188,74 @@ test("complete graph scans sibling importers and fails closed on a missing JSONC
   }
 });
 
+test("graph models direct Node subprocess forms and marks shell/Python syntax as unknown", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pdpp-shadow-subprocess-"));
+  try {
+    await mkdir(join(directory, "src"));
+    await mkdir(join(directory, "test"));
+    await writeFile(join(directory, "src/changed.ts"), "export const changed = true;\n");
+    await writeFile(
+      join(directory, "test/subprocess.test.ts"),
+      'spawnSync("node", ["../src/changed.ts"]);\nexecSync("node ../src/changed.ts");\nexec("node ../src/changed.ts");\nfork("../src/changed.ts");\n'
+    );
+    await writeFile(join(directory, "test/subprocess.test.sh"), "#!/bin/sh\nnode src/changed.ts\n");
+    execFileSync("git", ["init", "-q"], { cwd: directory });
+    execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: directory });
+    execFileSync("git", ["config", "user.name", "fixture"], { cwd: directory });
+    execFileSync("git", ["add", "."], { cwd: directory });
+    execFileSync("git", ["commit", "-qm", "fixture"], { cwd: directory });
+    const graphResult = buildIncrementalGraph(directory, gitHead(directory), {
+      max_nodes: 100,
+      max_edges: 100,
+      max_depth: 10,
+      max_millis: 1000,
+    });
+    assert.equal(graphResult.complete, false);
+    assert.equal(
+      graphResult.issues.some((issue) => issue.kind === "unknown-subprocess"),
+      true
+    );
+    assert.equal(graphResult.edges.filter((edge) => edge.target === "src/changed.ts").length >= 4, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("authority report requires the versioned green report and exact head", () => {
+  const head = "a".repeat(40);
+  assert.deepEqual(
+    parseAuthorityReport(
+      JSON.stringify({ schema: "pdpp.test-accounting.authority-report/v1", status: "green", head_sha: head }),
+      head
+    ),
+    {
+      schema: "pdpp.test-accounting.authority-report/v1",
+      status: "green",
+      head_sha: head,
+    }
+  );
+  assert.throws(
+    () =>
+      parseAuthorityReport(
+        JSON.stringify({ schema: "pdpp.test-accounting.authority-report/v1", status: "failed", head_sha: head }),
+        head
+      ),
+    AUTHORITY_REPORT_ERROR
+  );
+  assert.throws(
+    () =>
+      parseAuthorityReport(
+        JSON.stringify({
+          schema: "pdpp.test-accounting.authority-report/v1",
+          status: "green",
+          head_sha: "0".repeat(40),
+        }),
+        head
+      ),
+    AUTHORITY_REPORT_ERROR
+  );
+});
+
 test("graph mutants cannot rewrite an edge or completeness bit behind the old digest", () => {
   const original = graph([{ from: "test/a.test.ts", target: "src/a.ts", kind: "literal", declaration: null }]);
   assert.doesNotThrow(() => verifyIncrementalGraph(original));
@@ -200,7 +272,7 @@ test("advertise-vs-honor is an exact canonical file-list check", () => {
 
 test("shadow receipt binds exact head and remains permanently non-authoritative", () => {
   const root = process.cwd();
-  const reportIdentity = "full-gate-report:sha256:deadbeef";
+  const reportIdentity = `full-gate-report:v1:${"a".repeat(40)}:sha256:${"b".repeat(64)}`;
   const receipt = makeShadowReceipt(selection(), reportIdentity);
   assert.equal(receipt.schema, SHADOW_RECEIPT_SCHEMA);
   assert.equal(receipt.shadow_only, true);
@@ -282,7 +354,10 @@ test("CLI crash-before-receipt writes only unknown report evidence", async () =>
   const reportPath = join(directory, "report.md");
   const authorityReportPath = join(directory, "full-gate-report.md");
   try {
-    await writeFile(authorityReportPath, "full gate report\n");
+    await writeFile(
+      authorityReportPath,
+      JSON.stringify({ schema: "pdpp.test-accounting.authority-report/v1", status: "green", head_sha: gitHead() })
+    );
     await writeFile(receiptPath, JSON.stringify(makeShadowReceipt(selection(), "old-report")));
     assert.throws(
       () =>
@@ -309,6 +384,45 @@ test("CLI crash-before-receipt writes only unknown report evidence", async () =>
     );
     assert.equal(await readShadowReceiptOrUnknown(receiptPath).then((value) => value.terminal_status), "unknown");
     assert.match(await readFile(reportPath, "utf8"), UNKNOWN_STATUS);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CLI publication failure invalidates the prewritten receipt", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pdpp-shadow-publish-"));
+  const receiptPath = join(directory, "receipt.json");
+  const reportDirectory = join(directory, "report-directory");
+  const authorityReportPath = join(directory, "full-gate-report.json");
+  try {
+    const base = execFileSync("git", ["rev-parse", "HEAD^"], { encoding: "utf8" }).trim();
+    await mkdir(reportDirectory);
+    await writeFile(
+      authorityReportPath,
+      JSON.stringify({ schema: "pdpp.test-accounting.authority-report/v1", status: "green", head_sha: gitHead() })
+    );
+    assert.throws(() =>
+      execFileSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "scripts/test-accounting/incremental-shadow.ts",
+          "--base",
+          base,
+          "--head",
+          gitHead(),
+          "--receipt",
+          receiptPath,
+          "--report",
+          reportDirectory,
+          "--authority-report",
+          authorityReportPath,
+        ],
+        { encoding: "utf8" }
+      )
+    );
+    assert.equal(await readShadowReceiptOrUnknown(receiptPath).then((value) => value.terminal_status), "unknown");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

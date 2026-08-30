@@ -1,9 +1,11 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import {
   makeShadowReceipt,
+  parseAuthorityReport,
   renderShadowReport,
   selectIncrementalShadow,
   verifyShadowReceipt,
@@ -38,7 +40,8 @@ async function main(): Promise<void> {
       fail("--authority-report requires the exact full-gate report path");
     }
     await writeUnknownShadowReceipt(receiptPath);
-    const authorityReportIdentity = `full-gate-report:sha256:${contentDigest(await readFile(authorityReportPath))}`;
+    const authorityReport = parseAuthorityReport(await readFile(authorityReportPath, "utf8"), headSha);
+    const authorityReportIdentity = `full-gate-report:v1:${authorityReport.head_sha}:sha256:${contentDigest(await readFile(authorityReportPath))}`;
     const selection = await selectIncrementalShadow({ root, baseSha, headSha });
     if (gitHead(root) !== headSha) {
       fail("head changed before shadow receipt publication");
@@ -50,24 +53,44 @@ async function main(): Promise<void> {
       expectedHead: headSha,
       authorityReportIdentity,
     });
-    await writeShadowReceipt(receiptPath, receipt);
     if (reportPath) {
-      await writeFile(reportPath, renderShadowReport(receipt));
+      const reportDestination = resolve(reportPath);
+      const reportTemporary = `${reportDestination}.${process.pid}.tmp`;
+      await mkdir(dirname(reportDestination), { recursive: true });
+      try {
+        await writeFile(reportTemporary, renderShadowReport(receipt), { flag: "wx" });
+        await rename(reportTemporary, reportDestination);
+      } catch (error) {
+        await unlink(reportTemporary).catch(() => undefined);
+        throw error;
+      }
     }
+    await writeShadowReceipt(receiptPath, receipt);
     process.stdout.write(`${JSON.stringify(receipt)}\n`);
   } catch (error) {
+    await writeUnknownShadowReceipt(receiptPath).catch(() => undefined);
     if (reportPath) {
-      await writeFile(
-        reportPath,
-        renderShadowReport({
-          schema: "pdpp.test-accounting.shadow-receipt/v1",
-          terminal_status: "unknown",
-          shadow_only: true,
-          ci_green: false,
-          reason: "receipt-missing",
-          head_sha: null,
-        })
-      );
+      const reportDestination = resolve(reportPath);
+      const reportTemporary = `${reportDestination}.${process.pid}.unknown.tmp`;
+      await mkdir(dirname(reportDestination), { recursive: true });
+      try {
+        await writeFile(
+          reportTemporary,
+          renderShadowReport({
+            schema: "pdpp.test-accounting.shadow-receipt/v1",
+            terminal_status: "unknown",
+            shadow_only: true,
+            ci_green: false,
+            reason: "receipt-missing",
+            head_sha: null,
+          }),
+          { flag: "wx" }
+        );
+        await rename(reportTemporary, reportDestination);
+      } catch (reportError) {
+        await unlink(reportTemporary).catch(() => undefined);
+        throw reportError;
+      }
     }
     throw error;
   }
