@@ -105,10 +105,17 @@ async function runFocusedCheck(
  * and revalidates its accounting bundle into the evidence store. Returns
  * the axis observation plus the accounting run_id(s) referenced, for
  * embedding in an attempt receipt.
+ *
+ * `runAuthority`'s own `base` option is NOT this pilot's base/mutant commit
+ * — it is an optional cross-check that the checked-out repo's own
+ * `test-accounting.manifest.json`'s declared `inventory_base_sha` equals a
+ * caller-expected value (a manifest-drift guard). This pilot has no
+ * separately-expected value to assert here (the clone's manifest is
+ * whatever the checked-out commit already carries), so `base` is
+ * deliberately omitted rather than misused as "the commit to run against."
  */
 async function runCompleteBackstop(
   repoRoot: string,
-  baseCommitSha: string,
   evidenceStorePolicy: EvidenceStorePolicy,
   attemptId: string
 ): Promise<{
@@ -118,7 +125,7 @@ async function runCompleteBackstop(
 }> {
   let authorityOutcome: Awaited<ReturnType<typeof runAuthority>>;
   try {
-    authorityOutcome = await runAuthority({ suites: [BACKSTOP_SUITE_ID], root: repoRoot, base: baseCommitSha });
+    authorityOutcome = await runAuthority({ suites: [BACKSTOP_SUITE_ID], root: repoRoot });
   } catch (error) {
     return {
       axis: { status: "failed", failure: "backstop_authority_error", detail: (error as Error).message },
@@ -293,8 +300,11 @@ async function computeOperatorAttempt(
     };
   }
 
-  // Focused passed — the mandatory complete mutant backstop now runs.
-  const backstopResult = await runCompleteBackstop(workspace.repoRoot, mutantCommitSha, policy.evidenceStorePolicy, attemptId);
+  // Focused passed — the mandatory complete mutant backstop now runs. The
+  // clone is already checked out at the mutant commit (commitMutant left
+  // HEAD there), so runAuthority observes the mutated tree without any
+  // further checkout here.
+  const backstopResult = await runCompleteBackstop(workspace.repoRoot, policy.evidenceStorePolicy, attemptId);
   return {
     mutantCommitSha,
     evidenceArtifacts: backstopResult.artifacts,
@@ -419,12 +429,7 @@ export async function runGroupMePilotBatch(
     );
     const cleanBackstopAttemptId = randomUUID();
     await issueAttemptMarker(policy.evidenceStorePolicy.evidenceRoot, cleanBackstopAttemptId, intent);
-    const cleanResult = await runCompleteBackstop(
-      cleanWorkspace.repoRoot,
-      intent.baseCommitSha,
-      policy.evidenceStorePolicy,
-      cleanBackstopAttemptId
-    );
+    const cleanResult = await runCompleteBackstop(cleanWorkspace.repoRoot, policy.evidenceStorePolicy, cleanBackstopAttemptId);
     cleanExecutionRawCount += 1;
     if (cleanResult.axis.status !== "ok") {
       throw new Error(

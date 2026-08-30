@@ -91,6 +91,7 @@
         "scripts/*.test.ts",
         "scripts/hermetic/*.test.ts",
         "scripts/lib/*.test.ts",
+        "scripts/mutation-falsification/*.test.ts",
         "scripts/perf/*.test.ts",
         "scripts/ri-suite/*.test.ts",
         "scripts/stream-health-audit/*.test.ts",

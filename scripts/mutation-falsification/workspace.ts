@@ -79,6 +79,30 @@ async function assertFreeSpace(root: string, minFreeBytes: number): Promise<void
  * function never emits a values-list anywhere else — attempt receipts record
  * NAMES only, see schemas.ts's `environmentProfile`).
  */
+let cachedHostPnpmStoreDir: string | undefined;
+/**
+ * Resolves the HOST's real pnpm store directory (`pnpm store path`), the
+ * same read-only content-addressable store `materializeDependencies` reuses
+ * — pnpm config (not a documented env var) is the source of truth for this
+ * path, so it is resolved once via the real `pnpm` CLI rather than guessed
+ * from a hardcoded default that could silently diverge from whatever this
+ * host actually has configured (e.g. via `~/.config/pnpm/rc`).
+ */
+function hostPnpmStoreDir(hostEnv: NodeJS.ProcessEnv): string {
+  // An explicit hostEnv override always wins and is never cached across
+  // calls — only the expensive "ask the real pnpm CLI" fallback path is
+  // memoized, so a caller that supplies its own value (e.g. a test, or a
+  // future policy override) is never shadowed by an earlier call's result.
+  if (hostEnv.npm_config_store_dir) {
+    return hostEnv.npm_config_store_dir;
+  }
+  if (cachedHostPnpmStoreDir) {
+    return cachedHostPnpmStoreDir;
+  }
+  cachedHostPnpmStoreDir = execFileSync("pnpm", ["store", "path"], { encoding: "utf8" }).trim();
+  return cachedHostPnpmStoreDir;
+}
+
 export function buildIsolatedEnvironment(
   workspaceDir: string,
   policy: Pick<WorkspacePolicy, "environmentAllowlist">,
@@ -94,13 +118,34 @@ export function buildIsolatedEnvironment(
     XDG_DATA_HOME: resolve(home, ".local", "share"),
     XDG_STATE_HOME: resolve(home, ".local", "state"),
     PNPM_HOME: resolve(workspaceDir, "pnpm-home"),
-    npm_config_store_dir: resolve(workspaceDir, "pnpm-store"),
+    // npm_config_store_dir deliberately reuses the HOST's real pnpm content-
+    // addressable store (read-only reuse of already-downloaded, immutable,
+    // hash-addressed package tarballs — analogous to the COREPACK_HOME
+    // reuse below), NOT an attempt-local empty directory: pnpm's own
+    // `--offline` flag means "never hit the network," so an attempt-local
+    // empty store dir would make every install fail outright rather than
+    // materialize from anywhere. `--package-import-method=copy` (set by the
+    // caller) still governs how bytes move FROM that shared store INTO this
+    // workspace's own attempt-local node_modules/virtual store below — the
+    // shared store is read-only source content, never a place this
+    // workspace writes new packages into or mutates.
+    npm_config_store_dir: hostPnpmStoreDir(hostEnv),
     npm_config_virtual_store_dir: resolve(workspaceDir, "node_modules", ".pnpm"),
     // A workspace-attempt process still needs a PATH to find `node`/`pnpm`/
     // `git` — this is the one host value that must always be present for
     // ANY command to run at all, so it is not policy-conditional the way
     // every other allowlisted name is.
     PATH: hostEnv.PATH ?? "",
+    // COREPACK_HOME deliberately reuses the HOST's Corepack shim cache
+    // (read-only reuse of the pinned pnpm INTERPRETER binary itself, not a
+    // package/dependency store) — an isolated, empty XDG_CACHE_HOME with no
+    // COREPACK_HOME override makes Corepack try to download pnpm from the
+    // network on every attempt, which is slow, requires network access this
+    // pilot does not declare, and defeats "pin and record the actual pnpm
+    // executable" (design.md Decision #7) by silently fetching a NEW binary
+    // instead of using the one the host already resolved and pinned.
+    COREPACK_HOME: hostEnv.COREPACK_HOME ?? resolve(homedir(), ".cache", "node", "corepack"),
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
   };
   for (const name of policy.environmentAllowlist) {
     const value = hostEnv[name];

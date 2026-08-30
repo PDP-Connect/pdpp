@@ -106,11 +106,26 @@ test("buildIsolatedEnvironment: passes through only policy-allowlisted names, wi
   assert.equal(env.SECRET_TOKEN, undefined);
 });
 
-test("buildIsolatedEnvironment: every writable path resolves beneath the workspace directory", () => {
-  const env = buildIsolatedEnvironment("/workspace/attempt-3", { environmentAllowlist: [] }, {});
-  for (const key of ["HOME", "TMPDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "PNPM_HOME", "npm_config_store_dir"]) {
+test("buildIsolatedEnvironment: every WRITABLE attempt-local path resolves beneath the workspace directory", () => {
+  const env = buildIsolatedEnvironment("/workspace/attempt-3", { environmentAllowlist: [] }, { PATH: "/usr/bin" });
+  for (const key of ["HOME", "TMPDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "PNPM_HOME", "npm_config_virtual_store_dir"]) {
     assert.ok(env[key]?.startsWith("/workspace/attempt-3"), `${key} must resolve under the workspace: ${env[key]}`);
   }
+});
+
+test("buildIsolatedEnvironment: npm_config_store_dir and COREPACK_HOME deliberately reuse shared READ-ONLY host content, not attempt-local paths", () => {
+  const env = buildIsolatedEnvironment(
+    "/workspace/attempt-4",
+    { environmentAllowlist: [] },
+    { PATH: "/usr/bin", npm_config_store_dir: "/host/pnpm-store", COREPACK_HOME: "/host/corepack-cache" }
+  );
+  // These are the two deliberate exceptions to "every writable path is
+  // attempt-local": both point at read-only, content-addressed, pinned
+  // host content (a package store and an interpreter shim cache) that this
+  // workspace only ever READS from, never writes new content into outside
+  // its own attempt-local virtual store/copy-import tree.
+  assert.equal(env.npm_config_store_dir, "/host/pnpm-store");
+  assert.equal(env.COREPACK_HOME, "/host/corepack-cache");
 });
 
 test("defaultWorkspacePolicy: default workspace root is not under /tmp", () => {
