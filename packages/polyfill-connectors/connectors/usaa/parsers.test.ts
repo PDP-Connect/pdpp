@@ -373,6 +373,110 @@ test("parseModernCheckingEra: ignores lines outside section markers", () => {
   assert.equal(txns[0]?.description, "INSIDE");
 });
 
+// ─── parseModernCheckingEra: line-wrapped Debits/Credits/Balance rows ────
+//
+// Root cause of the live `pdf_template_unknown` / `statement_unreconciled`
+// gaps (June-August 2026 checking statements, both real accounts): this
+// era's table is actually Date | Description | Debits | Credits | Balance,
+// not the single-signed-Amount shape MODERN_FIXTURE above exercises. A wide
+// description forces USAA's PDF renderer to wrap one logical row across
+// several physical lines, and text extraction preserves that wrap. Every
+// line shape below was confirmed against this owner's real, already-
+// downloaded statement PDFs (via the connector's own
+// extractStatementPdfTextAndPages) — descriptions/references genericized,
+// structure (line count, column-header text, page-break furniture,
+// interleaved Check# placeholder) verbatim.
+
+const WRAPPED_MODERN_FIXTURE = `
+USAA CLASSIC CHECKING
+Statement Period: 06/05/2026 to 07/03/2026
+Beginning Balance $57,887.13
+Ending Balance $62,398.91
+TRANSACTIONS
+Date Description Debits Credits Balance
+06/05 Beginning Balance
+0 0
+$57,887.13
+06/08 Ach Debit
+MERCHANT ONE
+***********1234
+$60.00 0
+$57,827.13
+06/12 Ach Credit
+MERCHANT TWO
+***********5678
+0
+$4,863.03 $62,690.16
+Page 1 of 4
+
+-- 1 of 4 --
+
+USAA Checking Continued
+Statement Period: 06/05/2026 to 07/03/2026
+Date Description Debits Credits Balance
+06/15 Ach Debit
+MERCHANT THREE
+***********9012
+$291.25 0
+$62,398.91
+07/03 Ending Balance -- -- $62,398.91
+Important Information
+`;
+
+test("parseModernCheckingEra: joins a wrapped row's continuation lines before matching", () => {
+  const closing: StatementClosing = { closingMonth: 7, closingYear: 2026 };
+  const txns = parseModernCheckingEra(WRAPPED_MODERN_FIXTURE, { closing });
+  // Beginning/Ending Balance summary rows excluded; 3 real transactions.
+  assert.equal(txns.length, 3);
+});
+
+test("parseModernCheckingEra: an interleaved Check# placeholder marks a DEBIT (negative)", () => {
+  const closing: StatementClosing = { closingMonth: 7, closingYear: 2026 };
+  const txns = parseModernCheckingEra(WRAPPED_MODERN_FIXTURE, { closing });
+  const debit = txns.find((t) => t.description.includes("MERCHANT ONE"));
+  assert.ok(debit);
+  assert.equal(debit.amount, -6000);
+  assert.equal(debit.balance, 5_782_713);
+});
+
+test("parseModernCheckingEra: no interleaved Check# placeholder marks a CREDIT (positive)", () => {
+  const closing: StatementClosing = { closingMonth: 7, closingYear: 2026 };
+  const txns = parseModernCheckingEra(WRAPPED_MODERN_FIXTURE, { closing });
+  const credit = txns.find((t) => t.description.includes("MERCHANT TWO"));
+  assert.ok(credit);
+  assert.equal(credit.amount, 486_303);
+  assert.equal(credit.balance, 6_269_016);
+});
+
+test("parseModernCheckingEra: a row split across a page break still joins and parses", () => {
+  const closing: StatementClosing = { closingMonth: 7, closingYear: 2026 };
+  const txns = parseModernCheckingEra(WRAPPED_MODERN_FIXTURE, { closing });
+  const afterBreak = txns.find((t) => t.description.includes("MERCHANT THREE"));
+  assert.ok(afterBreak);
+  assert.equal(afterBreak.amount, -29_125);
+  assert.equal(afterBreak.balance, 6_239_891);
+});
+
+test("parseModernCheckingEra: fail-before regression — reconciles against the statement's own printed totals", () => {
+  const closing: StatementClosing = { closingMonth: 7, closingYear: 2026 };
+  const txns = parseModernCheckingEra(WRAPPED_MODERN_FIXTURE, { closing });
+  const observedDelta = txns.reduce((sum, t) => sum + t.amount, 0);
+  // Beginning $57,887.13 -> Ending $62,398.91 per the fixture's own summary.
+  const expectedDelta = 6_239_891 - 5_788_713;
+  assert.equal(observedDelta, expectedDelta);
+});
+
+test("parseModernCheckingEra: single-signed-amount rows (no Debits/Credits split) are unaffected by the join", () => {
+  // MODERN_FIXTURE's shape never interleaves a Check# placeholder and each
+  // row is already one physical line; grouping by date-prefix must reduce
+  // to the pre-existing single-line behavior with zero change.
+  const closing: StatementClosing = { closingMonth: 4, closingYear: 2026 };
+  const txns = parseModernCheckingEra(MODERN_FIXTURE, { closing });
+  assert.equal(txns.length, 3);
+  assert.equal(txns[0]?.amount, -450);
+  assert.equal(txns[1]?.amount, 200_000);
+});
+
 // ─── parseCreditCardEra ──────────────────────────────────────────────────
 
 const CREDIT_FIXTURE = `
