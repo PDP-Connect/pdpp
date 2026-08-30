@@ -148,6 +148,152 @@ let lexicalPgSearchAvailability = "unavailable";
 const SEMANTIC_VECTOR_INDEXED_DIMENSIONS = 384;
 const SEMANTIC_HNSW_INDEX_NAME = "idx_pg_semantic_search_embedding_hnsw";
 const SEMANTIC_HOT_HNSW_INDEX_PREFIX = "idx_pg_semantic_hnsw_hot_";
+
+/**
+ * The catalog shape a semantic HNSW index must have to accelerate the
+ * production read path. `indisvalid`/`indisready` plus the substring "hnsw"
+ * is not enough: a same-name index built over the wrong dimension, the wrong
+ * operator class, or the wrong partial predicate is valid and ready in the
+ * catalog while accelerating nothing. Treating it as ready is a silent
+ * readiness lie, so repair compares these fields and rebuilds on any mismatch.
+ *
+ * The comparison is structural rather than a diff of `pg_get_indexdef` text.
+ * Generated SQL varies with things that do not change what the index means —
+ * a schema needing quotes renders as `"My-Schema".semantic_search_blob`, and
+ * an operator-supplied `WITH (m='32')` tuning clause is emitted verbatim.
+ * Text equality would drop and rebuild those correct indexes on every startup.
+ */
+interface SemanticHnswIndexShape {
+  accessMethod: string;
+  indexExpression: string | null;
+  indexPredicate: string | null;
+  keyColumnCount: number;
+  operatorClass: string | null;
+  ready: boolean;
+  tableName: string;
+  totalColumnCount: number;
+  valid: boolean;
+}
+
+/**
+ * Select the structural shape of a same-name index. Returns at most one row;
+ * no row means no index of that name exists in the current schema.
+ */
+const SEMANTIC_HNSW_INDEX_SHAPE_QUERY = `
+  SELECT ix.indisvalid AS valid,
+         ix.indisready AS ready,
+         am.amname AS access_method,
+         tbl.relname AS table_name,
+         ix.indnkeyatts AS key_column_count,
+         ix.indnatts AS total_column_count,
+         (SELECT opc.opcname FROM pg_opclass opc WHERE opc.oid = ix.indclass[0]) AS operator_class,
+         pg_get_expr(ix.indexprs, ix.indrelid) AS index_expression,
+         pg_get_expr(ix.indpred, ix.indrelid) AS index_predicate
+    FROM pg_class idx
+    JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+    JOIN pg_index ix ON ix.indexrelid = idx.oid
+    JOIN pg_am am ON am.oid = idx.relam
+    JOIN pg_class tbl ON tbl.oid = ix.indrelid
+   WHERE ns.nspname = current_schema() AND idx.relname = $1
+   LIMIT 1`;
+
+/** Keep SQL NULL distinct from the empty string: a missing predicate is not "". */
+function nullableCatalogText(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function readSemanticHnswIndexShape(row: Record<string, unknown> | undefined): SemanticHnswIndexShape | null {
+  if (!row) {
+    return null;
+  }
+  return {
+    accessMethod: String(row.access_method ?? ""),
+    indexExpression: nullableCatalogText(row.index_expression),
+    indexPredicate: nullableCatalogText(row.index_predicate),
+    keyColumnCount: Number(row.key_column_count ?? 0),
+    operatorClass: nullableCatalogText(row.operator_class),
+    ready: row.ready === true,
+    tableName: String(row.table_name ?? ""),
+    totalColumnCount: Number(row.total_column_count ?? 0),
+    valid: row.valid === true,
+  };
+}
+
+/**
+ * `pg_get_expr` renders the 384-dimension cast as `(embedding)::vector(384)`.
+ * Compare against that canonical rendering so a `vector(3)` index, a cast of
+ * a different column, or a multi-expression index all fail the check.
+ */
+const SEMANTIC_HNSW_CANONICAL_EXPRESSION = `(embedding)::vector(${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})`;
+const SEMANTIC_HNSW_CANONICAL_OPERATOR_CLASS = "vector_cosine_ops";
+const SEMANTIC_HNSW_DIMENSION_PREDICATE = `(vector_dims(embedding) = ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})`;
+
+/** True when the index accelerates the production semantic read path as built. */
+function isSemanticHnswIndexUsable(shape: SemanticHnswIndexShape | null, expectedPredicate: string): boolean {
+  if (shape === null) {
+    return false;
+  }
+  return (
+    shape.valid &&
+    shape.ready &&
+    shape.accessMethod === "hnsw" &&
+    shape.tableName === "semantic_search_blob" &&
+    shape.keyColumnCount === 1 &&
+    shape.totalColumnCount === 1 &&
+    shape.operatorClass === SEMANTIC_HNSW_CANONICAL_OPERATOR_CLASS &&
+    shape.indexExpression === SEMANTIC_HNSW_CANONICAL_EXPRESSION &&
+    shape.indexPredicate === expectedPredicate
+  );
+}
+
+/**
+ * Name the first field that makes an existing index unusable, so the drop log
+ * says why the index is being rebuilt instead of only that it was.
+ */
+function describeSemanticHnswIndexMismatch(shape: SemanticHnswIndexShape, expectedPredicate: string): string {
+  if (!shape.valid) {
+    return "not valid";
+  }
+  if (!shape.ready) {
+    return "not ready";
+  }
+  if (shape.accessMethod !== "hnsw") {
+    return `access method ${shape.accessMethod || "unknown"}, expected hnsw`;
+  }
+  if (shape.tableName !== "semantic_search_blob") {
+    return `table ${shape.tableName || "unknown"}, expected semantic_search_blob`;
+  }
+  if (shape.keyColumnCount !== 1 || shape.totalColumnCount !== 1) {
+    return `${shape.totalColumnCount} indexed columns, expected 1`;
+  }
+  if (shape.operatorClass !== SEMANTIC_HNSW_CANONICAL_OPERATOR_CLASS) {
+    return `operator class ${shape.operatorClass ?? "none"}, expected ${SEMANTIC_HNSW_CANONICAL_OPERATOR_CLASS}`;
+  }
+  if (shape.indexExpression !== SEMANTIC_HNSW_CANONICAL_EXPRESSION) {
+    return `expression ${shape.indexExpression ?? "none"}, expected ${SEMANTIC_HNSW_CANONICAL_EXPRESSION}`;
+  }
+  if (shape.indexPredicate !== expectedPredicate) {
+    return `predicate ${shape.indexPredicate ?? "none"}, expected ${expectedPredicate}`;
+  }
+  return "definition mismatch";
+}
+
+/** Required partial predicate for the global (all-connectors) HNSW index. */
+function semanticGlobalHnswPredicate(): string {
+  return SEMANTIC_HNSW_DIMENSION_PREDICATE;
+}
+
+/**
+ * Required partial predicate for one hot-source HNSW index. `pg_get_expr`
+ * renders the connector filter with an explicit `::text` cast and wraps the
+ * conjunction, so the expected text is built to match that rendering.
+ */
+function semanticHotHnswPredicate(connectorInstanceId: string): string {
+  return (
+    `((connector_instance_id = '${connectorInstanceId.replaceAll("'", "''")}'::text) ` +
+    `AND ${SEMANTIC_HNSW_DIMENSION_PREDICATE})`
+  );
+}
 const POSTGRES_SEMANTIC_HNSW_BUILD_LOCK = [482_571, 152];
 const POSTGRES_SEMANTIC_HNSW_BUILD_TIMEOUT_ENV = "PDPP_PG_SEMANTIC_HNSW_BUILD_TIMEOUT_MS";
 const POSTGRES_SEMANTIC_HNSW_BUILD_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1241,6 +1387,9 @@ export async function closePostgresStorage() {
   activeBackend = "sqlite";
   semanticEmbeddingColumnMode = "jsonb";
   semanticIterativeScanSupported = false;
+  // The verified-index cache describes the database being closed, not whatever
+  // database a later initPostgresStorage() attaches.
+  semanticGlobalHnswVerifiedUsable = false;
   lexicalPgSearchAvailability = "unavailable";
   // Storage-lifecycle fence: any deferred index-maintenance work scheduled
   // against the pool this just closed must never run against whatever pool
@@ -3722,24 +3871,18 @@ async function setSemanticHnswStatementTimeout(client: PoolClient, deadline: num
 }
 
 async function ensureSemanticEmbeddingHnswIndex(client: PoolClient, log: StorageLog, deadline: number): Promise<void> {
-  const existing = await client.query(
-    `SELECT ix.indisvalid AS valid, ix.indisready AS ready, pg_get_indexdef(idx.oid) AS definition
-       FROM pg_class idx
-       JOIN pg_namespace ns ON ns.oid = idx.relnamespace
-       JOIN pg_index ix ON ix.indexrelid = idx.oid
-      WHERE ns.nspname = current_schema() AND idx.relname = $1
-      LIMIT 1`,
-    [SEMANTIC_HNSW_INDEX_NAME]
-  );
-  if (
-    existing.rows[0]?.valid === true &&
-    existing.rows[0]?.ready === true &&
-    String(existing.rows[0]?.definition ?? "").includes("hnsw")
-  ) {
+  const existing = await client.query(SEMANTIC_HNSW_INDEX_SHAPE_QUERY, [SEMANTIC_HNSW_INDEX_NAME]);
+  const shape = readSemanticHnswIndexShape(existing.rows[0]);
+  if (isSemanticHnswIndexUsable(shape, semanticGlobalHnswPredicate())) {
     return;
   }
-  if ((existing.rowCount ?? 0) > 0) {
-    log(`[PDPP] Semantic index maintenance: dropping invalid HNSW index ${SEMANTIC_HNSW_INDEX_NAME}`);
+  // The index is about to be absent or replaced; searches must fall back to
+  // the exact scoped scan until a rebuilt index is verified canonical again.
+  semanticGlobalHnswVerifiedUsable = false;
+  if (shape !== null) {
+    log(
+      `[PDPP] Semantic index maintenance: dropping unusable HNSW index ${SEMANTIC_HNSW_INDEX_NAME} (${describeSemanticHnswIndexMismatch(shape, semanticGlobalHnswPredicate())})`
+    );
     await setSemanticHnswStatementTimeout(client, deadline);
     await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${sqlIdentifier(SEMANTIC_HNSW_INDEX_NAME)}`);
   }
@@ -3845,26 +3988,18 @@ async function ensureSemanticHotHnswIndexes(client: PoolClient, log: StorageLog,
     log(
       `[PDPP] Semantic index migration: ensuring hot-source HNSW index ${indexName} (${row.connector_id}, ${row.indexed_rows} rows)`
     );
-    const existing = await client.query(
-      `SELECT ix.indisvalid AS valid, ix.indisready AS ready, pg_get_indexdef(idx.oid) AS definition
-         FROM pg_class idx
-         JOIN pg_namespace ns ON ns.oid = idx.relnamespace
-         JOIN pg_index ix ON ix.indexrelid = idx.oid
-        WHERE ns.nspname = current_schema() AND idx.relname = $1
-        LIMIT 1`,
-      [indexName]
-    );
-    if (
-      existing.rows[0]?.valid !== true ||
-      existing.rows[0]?.ready !== true ||
-      !String(existing.rows[0]?.definition ?? "").includes("hnsw")
-    ) {
-      if ((existing.rowCount ?? 0) > 0) {
-        await setSemanticHnswStatementTimeout(client, deadline);
-        await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${sqlIdentifier(indexName)}`);
-      }
-    } else {
+    const existing = await client.query(SEMANTIC_HNSW_INDEX_SHAPE_QUERY, [indexName]);
+    const shape = readSemanticHnswIndexShape(existing.rows[0]);
+    const expectedPredicate = semanticHotHnswPredicate(String(row.connector_instance_id));
+    if (isSemanticHnswIndexUsable(shape, expectedPredicate)) {
       return;
+    }
+    if (shape !== null) {
+      log(
+        `[PDPP] Semantic index maintenance: dropping unusable hot-source index ${indexName} (${describeSemanticHnswIndexMismatch(shape, expectedPredicate)})`
+      );
+      await setSemanticHnswStatementTimeout(client, deadline);
+      await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${sqlIdentifier(indexName)}`);
     }
     await client.query("SET max_parallel_maintenance_workers = 0");
     try {
@@ -3984,6 +4119,46 @@ export async function runPostgresSemanticHnswMaintenance({
       await client.query("SELECT pg_advisory_unlock($1, $2)", POSTGRES_SEMANTIC_HNSW_BUILD_LOCK).catch(() => undefined);
     }
     client.release();
+  }
+}
+
+/**
+ * Whether the global semantic HNSW index is present in the catalog with the
+ * canonical shape. The search path uses this to decide whether it may take the
+ * bounded ANN candidate window; while the answer is false it must stay on the
+ * exact scoped scan, which is slower but cannot under-return.
+ *
+ * Only the positive answer is cached. A verified-canonical index is dropped
+ * only by this module's own maintenance (which clears the cache), so caching
+ * `true` cannot outlive the index. A negative answer is never cached, so a
+ * search issued while the builder is still running picks the index up on the
+ * first call after the build commits.
+ */
+let semanticGlobalHnswVerifiedUsable = false;
+
+export function __resetPostgresSemanticHnswReadinessCacheForTest(): void {
+  semanticGlobalHnswVerifiedUsable = false;
+}
+
+export async function isPostgresSemanticGlobalHnswUsable(): Promise<boolean> {
+  if (!isPostgresStorageBackend()) {
+    return false;
+  }
+  if (semanticGlobalHnswVerifiedUsable) {
+    return true;
+  }
+  try {
+    const existing = await postgresQuery(SEMANTIC_HNSW_INDEX_SHAPE_QUERY, [SEMANTIC_HNSW_INDEX_NAME]);
+    const usable = isSemanticHnswIndexUsable(
+      readSemanticHnswIndexShape(existing.rows[0] as Record<string, unknown> | undefined),
+      semanticGlobalHnswPredicate()
+    );
+    semanticGlobalHnswVerifiedUsable = usable;
+    return usable;
+  } catch {
+    // A catalog read failure must not upgrade the read path to the
+    // possibly-truncating candidate window.
+    return false;
   }
 }
 
