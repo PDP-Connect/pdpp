@@ -13,7 +13,7 @@ import {
 } from "../server/hosted-mcp-selection.ts";
 import { mountAsAuthorize } from "../server/routes/as-authorize.ts";
 
-type CapturedRouteHandler = (req: unknown, res: unknown) => Promise<unknown>;
+type CapturedRouteHandler = (...args: unknown[]) => unknown;
 
 interface TestApp {
   get: (path: string, ...handlers: unknown[]) => TestApp;
@@ -25,13 +25,16 @@ test("POST /oauth/authorize/mcp-package reports an active-binding storage failur
   // 400. This route-level harness injects that failed read and verifies the
   // OAuth error writer sees the established 500/server_error contract before
   // any package-creation effect can run.
-  let postHandler: CapturedRouteHandler | null = null;
+  const postHandlers = new Map<string, CapturedRouteHandler>();
   let packageCreateCalls = 0;
   const oauthErrors: Array<{ code: string; message: string; status: number }> = [];
   const app: TestApp = {
     get: () => app,
     post: (_path: string, ...handlers: Array<unknown>) => {
-      postHandler = handlers.at(-1) as CapturedRouteHandler;
+      const handler = handlers.findLast((value): value is CapturedRouteHandler => typeof value === "function");
+      if (handler) {
+        postHandlers.set(_path, handler);
+      }
       return app;
     },
   };
@@ -84,9 +87,8 @@ test("POST /oauth/authorize/mcp-package reports an active-binding storage failur
     stageOAuthAuthorizationCodeRequest: async () => undefined,
   });
 
-  if (!postHandler) {
-    assert.fail("mount must register the package POST handler");
-  }
+  const postHandler = postHandlers.get("/oauth/authorize/mcp-package");
+  assert.ok(postHandler, "mount must register the package POST handler");
   await postHandler(
     {
       body: {
