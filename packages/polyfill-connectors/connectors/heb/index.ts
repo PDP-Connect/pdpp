@@ -305,7 +305,7 @@ async function collectDetailSurface(
       occurrenceByKey.set(row.key, occurrence);
       collected.set(`${row.key}\u001f${occurrence}`, row.html);
     }
-    const signature = `${latest.scrollTop}:${latest.scrollHeight}:${[...collected.keys()].join("|")}`;
+    const signature = `${latest.scrollTop}:${latest.scrollHeight}:${[...collected.keys()].join("|")}:${latest.rows.map((row) => `${row.key}=${row.html}`).join("|")}`;
     const progressed = signature !== lastSignature;
     lastSignature = signature;
     if (progressed) {
@@ -323,15 +323,12 @@ async function collectDetailSurface(
       );
     }
     if (
-      expectedRows !== null &&
-      collected.size >= expectedRows &&
       latest.atEnd &&
       !latest.loading &&
-      !latest.actionableControl
+      !latest.actionableControl &&
+      stablePolls >= DETAIL_SURFACE_STABLE_POLLS &&
+      (expectedRows === null || collected.size >= expectedRows)
     ) {
-      break;
-    }
-    if (latest.atEnd && !latest.loading && !latest.actionableControl && stablePolls >= DETAIL_SURFACE_STABLE_POLLS) {
       break;
     }
     await page.waitForTimeout(DETAIL_SURFACE_POLL_MS);
@@ -339,9 +336,11 @@ async function collectDetailSurface(
 
   const timedOut = Date.now() - startedAt >= timeoutMs;
   const complete =
-    expectedRows === null
-      ? latest.atEnd && !latest.loading && !latest.actionableControl && stablePolls >= DETAIL_SURFACE_STABLE_POLLS
-      : collected.size >= expectedRows && latest.atEnd && !latest.loading && !latest.actionableControl;
+    latest.atEnd &&
+    !latest.loading &&
+    !latest.actionableControl &&
+    stablePolls >= DETAIL_SURFACE_STABLE_POLLS &&
+    (expectedRows === null || collected.size >= expectedRows);
   let settlement: DetailSurfaceSettlement = "incomplete";
   if (lastError) {
     settlement = "error";

@@ -2516,3 +2516,61 @@ test("fetchOrderDetail: small orders (fit in viewport) parse without scroll", as
   assert.equal(result.status, "hydrated");
   assert.equal(result.detail?.items.length, 8, "all 8 items collected without scroll");
 });
+
+test("fetchOrderDetail: a declared-count match does not settle on a transient snapshot and waits for stability after remount", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-declared-count-remount.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-DECLARED-REMOUNT", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // The initial snapshot has 2 transient rows matching expectedItemCount=2.
+    // The collector must not complete on snapshot 1 with transient data; it
+    // must observe the remount at T=400ms, update stability, and settle only
+    // after consecutive stable polls on the true settled content.
+    const result = await fetchOrderDetail(page, "HEB-DECLARED-REMOUNT", {
+      detailSurfaceTimeoutMs: 3000,
+      expectedItemCount: 2,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(result.detail?.items.length, 2);
+    assert.deepEqual(
+      result.detail?.items.map((item) => item.name),
+      ["Settled item 1", "Settled item 2"]
+    );
+    const snapshotsMatch = result.diagnostic?.match(/snapshots=(\d+)/);
+    const snapshots = snapshotsMatch ? Number(snapshotsMatch[1]) : 0;
+    assert.ok(snapshots >= 4, `expected multiple polls for stability, got diagnostic=${result.diagnostic}`);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: continuous remounts with matching count fail closed without consecutive stable polls", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-declared-count-unstable.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-DECLARED-UNSTABLE", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // Every snapshot matches expectedItemCount=2, but the DOM mutates every
+    // 150ms. The surface never satisfies DETAIL_SURFACE_STABLE_POLLS and must
+    // fail closed on timeout instead of minting false completion.
+    const result = await fetchOrderDetail(page, "HEB-DECLARED-UNSTABLE", {
+      detailSurfaceTimeoutMs: 1000,
+      expectedItemCount: 2,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "detail_surface_timeout");
+  } finally {
+    await browser.close();
+  }
+});

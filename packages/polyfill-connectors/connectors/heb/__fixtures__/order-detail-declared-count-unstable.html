@@ -1,0 +1,35 @@
+<!-- Synthetic adversarial fixture: mounted rows continuously mutate every 150ms.
+     Even though the count matches the declared count on each snapshot, the
+     surface never demonstrates consecutive stable polls and must fail closed. -->
+<!doctype html>
+<html>
+  <head>
+    <style>
+      #app {
+        height: 100px;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="app">
+      <ul id="rows">
+        <li data-qe-id="itemRow">
+          <a data-qe-id="itemRowDetailsName" href="/product-detail/item/gen-0-1">Generation 0 item 1</a>
+        </li>
+        <li data-qe-id="itemRow">
+          <a data-qe-id="itemRowDetailsName" href="/product-detail/item/gen-0-2">Generation 0 item 2</a>
+        </li>
+      </ul>
+    </main>
+    <script>
+      let gen = 1;
+      setInterval(() => {
+        document.querySelector("#rows").innerHTML =
+          '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/item/gen-' + gen + '-1">Generation ' + gen + ' item 1</a></li>' +
+          '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/item/gen-' + gen + '-2">Generation ' + gen + ' item 2</a></li>';
+        gen++;
+      }, 150);
+    </script>
+  </body>
+</html>
