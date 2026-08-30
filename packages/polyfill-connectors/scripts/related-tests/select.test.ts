@@ -20,10 +20,10 @@ import { fileURLToPath } from "node:url";
 import { containsDynamicImportOrRequire, isFixturePath } from "./fallback-inventory.ts";
 import { assertGraphIsTrustworthy, buildDependencyGraph, UntrustworthyGraphError } from "./graph.ts";
 import { FULL_SUITE, selectRelatedTests } from "./select.ts";
-import { writeFixtureTree } from "./test-support/write-fixture-tree.ts";
+import { writeFixtureTree } from "./test/write-fixture-tree.ts";
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url));
-const FIXTURES_ROOT = join(THIS_DIR, "test-support", "fixture-trees");
+const FIXTURES_ROOT = join(THIS_DIR, "test", "fixture-trees");
 
 describe("selectRelatedTests: direct connector edit selects only its related tests", () => {
   let packageRoot: string;
