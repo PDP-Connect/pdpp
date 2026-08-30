@@ -5765,6 +5765,60 @@ async function migratePostgresLocalDeviceConnectorRow(
  * migration re-attempts on the next boot (an operator may have reconciled the
  * collision since) but can never be mistaken for a finished one.
  */
+/**
+ * Fail closed when two local-device `connector_instances` rows still describe
+ * the same real binding and both hold owned state.
+ *
+ * WHY THIS SURVIVES THE COMPLETION RECEIPT
+ *
+ * The ledger retires the migration's ROW-REWRITING work — the multi-GB,
+ * pre-listen index walks that were the incident. It must not retire the
+ * safety property, and `device-enroll-postgres-admission-decoupling.test.ts`
+ * ("D9: restart rejects colliding duplicate-owned state without changing
+ * either identity") states that property as a per-RESTART contract, not a
+ * one-time migration check. Gating the check behind the receipt regressed
+ * that test, which is how the distinction surfaced.
+ *
+ * So the two are separated by cost, not by trust: this sentinel reads only
+ * `connector_instances` (bounded by an owner's connection count, not by
+ * record volume), joins it to itself on the binding identity carried in
+ * `source_binding_json`, and confirms both claimants hold `connector_state`
+ * before refusing. It issues no UPDATE, touches no projection, and never
+ * looks at `records`, `record_changes`, or the search tables.
+ *
+ * The thrown message deliberately matches
+ * `mergeEquivalentPostgresConnectorInstances`'s wording: an operator seeing
+ * this on a converged deployment is looking at the same unresolved
+ * condition, reached by a different route, and should not have to learn a
+ * second vocabulary for it.
+ */
+async function assertNoUnresolvedPostgresLocalDeviceBindingCollision(client: PoolClient): Promise<void> {
+  const collisions = await client.query<{ canonical_id: string; legacy_id: string }>(
+    `SELECT canonical.connector_instance_id AS canonical_id,
+            legacy.connector_instance_id    AS legacy_id
+       FROM connector_instances canonical
+       JOIN connector_instances legacy
+         ON legacy.owner_subject_id = canonical.owner_subject_id
+        AND legacy.connector_id     = canonical.connector_id
+        AND legacy.source_kind      = 'local_device'
+        AND legacy.source_binding_json = canonical.source_binding_json
+        AND legacy.source_binding_key <> canonical.source_binding_key
+        AND legacy.connector_instance_id > canonical.connector_instance_id
+      WHERE canonical.source_kind = 'local_device'
+        AND canonical.source_binding_json <> '{}'::jsonb
+        AND EXISTS(SELECT 1 FROM connector_state WHERE connector_instance_id = canonical.connector_instance_id)
+        AND EXISTS(SELECT 1 FROM connector_state WHERE connector_instance_id = legacy.connector_instance_id)
+      ORDER BY canonical.connector_instance_id, legacy.connector_instance_id
+      LIMIT 1`
+  );
+  const [collision] = collisions.rows;
+  if (collision) {
+    throw new Error(
+      `Cannot coalesce local-device connector instance ${collision.legacy_id} → ${collision.canonical_id}: connector_state has colliding owned state; manual reconciliation required.`
+    );
+  }
+}
+
 async function migratePostgresLocalDeviceConnectorInstances(
   client: PoolClient,
   { log = NOOP_STORAGE_LOG }: { log?: StorageLog } = {}
@@ -5782,6 +5836,10 @@ async function migratePostgresLocalDeviceConnectorInstances(
     nowIso: new Date().toISOString(),
   });
   if (!claim) {
+    // The receipt retires the ROW-REWRITING work, not the safety check. See
+    // `assertNoUnresolvedPostgresLocalDeviceBindingCollision` for why the
+    // collision sentinel still runs on every boot.
+    await assertNoUnresolvedPostgresLocalDeviceBindingCollision(client);
     return skipped;
   }
 
