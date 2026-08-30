@@ -311,6 +311,7 @@ jobs:
           PDPP_TEST_CONCURRENCY: "2"
           PDPP_TEST_FILE_HARD_TIMEOUT_MS: "900000"
           PDPP_TEST_FILE_TIMEOUT_MS: "120000"
+          PDPP_TEST_PROFILE: "memory-default"
         run: pnpm --dir reference-implementation run test
 
   verify:
