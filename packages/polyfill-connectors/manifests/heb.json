@@ -333,6 +333,7 @@
     "selector_drift": "The page layout changed and we couldn't find what we needed",
     "source_auth_or_challenge": "We need you to sign in or pass a verification check to continue",
     "source_reported_empty": "H-E-B showed us your order history and it has no orders in it",
+    "source_reported_empty_after_retention": "H-E-B reported no order history, and every order we previously collected for this account is older than H-E-B's retention window. Your stored orders are retained and untouched. This is what a healthy account looks like once its last order ages out of H-E-B's own records, so there is nothing for you to fix",
     "unparseable_order_date": "We skipped some orders because their dates couldn't be read"
   }
 }
