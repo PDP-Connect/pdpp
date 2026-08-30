@@ -118,6 +118,80 @@ test("synthesizes envelope for plain-text errors", async () => {
   assert.match(result.error.message ?? "", INSUFFICIENT_SCOPE);
 });
 
+test("429 status is authoritative and Retry-After is honored", async () => {
+  const fetch = async () =>
+    new Response(JSON.stringify({ error: { type: "rate_limit_error", code: "rate_limit_exceeded" } }), {
+      status: 429,
+      headers: { "content-type": "application/json", "retry-after": "30" },
+    });
+
+  const rs = new RsClient({ providerUrl: "https://x", accessToken: "t", fetch });
+  const result = await rs.getJson("/v1/streams/orders/records");
+
+  assert.equal(result.status, 429);
+  assert.equal(result.ok, false);
+  if (result.ok) {
+    throw new Error("expected an error envelope");
+  }
+  assert.equal(result.retryAfter, "30");
+});
+
+test("410 triggers re-sync regardless of error.type", async () => {
+  const fetch = async () =>
+    new Response(JSON.stringify({ error: { type: "gone_error", code: "cursor_expired" } }), {
+      status: 410,
+      headers: { "content-type": "application/json" },
+    });
+
+  const rs = new RsClient({ providerUrl: "https://x", accessToken: "t", fetch });
+  const result = await rs.getJson("/v1/streams/orders/records", { query: { changes_since: "stale-cursor" } });
+
+  assert.equal(result.status, 410);
+  assert.equal(result.ok, false);
+  if (result.ok) {
+    throw new Error("expected an error envelope");
+  }
+  assert.equal(result.error.code, "cursor_expired");
+});
+
+test("unknown error code with a recognized status is handled by status alone", async () => {
+  const fetch = async () =>
+    new Response(JSON.stringify({ error: { type: "not_a_real_type", code: "brand_new_future_code" } }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+
+  const rs = new RsClient({ providerUrl: "https://x", accessToken: "t", fetch });
+  const result = await rs.getJson("/v1/streams/orders/records");
+
+  assert.equal(result.status, 403);
+  assert.equal(result.ok, false);
+  if (result.ok) {
+    throw new Error("expected an error envelope");
+  }
+  // Unknown type/code must not prevent a client from still branching on the
+  // actual status code, and must not cause a parse failure.
+  assert.equal(result.error.type, "not_a_real_type");
+  assert.equal(result.error.code, "brand_new_future_code");
+});
+
+test("status-incompatible error.type does not override the transport outcome", async () => {
+  // Server reports a 200 success but the body carries a stale/incompatible
+  // error-shaped type. The actual status code (success) is authoritative;
+  // the incompatible `type` MUST NOT flip a successful response into a failure.
+  const fetch = async () =>
+    new Response(JSON.stringify({ error: { type: "permission_error" }, ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const rs = new RsClient({ providerUrl: "https://x", accessToken: "t", fetch });
+  const result = await rs.getJson("/v1/streams/orders/records");
+
+  assert.equal(result.status, 200);
+  assert.equal(result.ok, true);
+});
+
 test("getRaw returns a Buffer for binary payloads", async () => {
   const bytes = new Uint8Array([1, 2, 3, 4]);
   const fetch = async () =>

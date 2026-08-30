@@ -27,6 +27,7 @@ export interface RsErrorResponse {
   error: RsErrorEnvelope;
   ok: false;
   requestId: string | null;
+  retryAfter: string | null;
   status: number;
 }
 
@@ -181,6 +182,7 @@ async function parseRsResponse<Body>(
   const { status } = response;
   const contentType = response.headers?.get?.("content-type") ?? "";
   const requestId = response.headers?.get?.("x-request-id") ?? null;
+  const retryAfter = response.headers?.get?.("retry-after") ?? null;
 
   if (status >= 200 && status < 300) {
     if (expectJson) {
@@ -212,7 +214,7 @@ async function parseRsResponse<Body>(
     envelope.request_id = requestId;
   }
 
-  return { ok: false, status, error: envelope, requestId, contentType };
+  return { ok: false, status, error: envelope, requestId, retryAfter, contentType };
 }
 
 function normalizeErrorEnvelope(body: unknown, status: number): RsErrorEnvelope {
