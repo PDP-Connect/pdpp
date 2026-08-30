@@ -2588,23 +2588,28 @@ export function createController(opts: ControllerOptions = {}): Controller {
     await schedulerStore.deleteActiveRun(connectorInstanceId, runId);
   }
 
-  async function runAlreadyTerminal(runId: string): Promise<boolean> {
+  async function runAlreadyTerminal(runId: string, connectorInstanceId: string): Promise<boolean> {
     if (isPostgresStorageBackend()) {
       const { rows } = await postgresQuery(
         `
         SELECT 1 AS present
         FROM spine_events
         WHERE run_id = $1
+          AND connector_instance_id = $2
           AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
         LIMIT 1
         `,
-        [runId]
+        [runId, connectorInstanceId]
       );
       return Boolean(rows[0]);
     }
 
-    const row = getOne<TerminalRunRow>(referenceQueries.spineCheckRunTerminal, [runId]);
+    const row = getOne<TerminalRunRow>(referenceQueries.spineCheckRunTerminal, [runId, connectorInstanceId]);
     return Boolean(row);
+  }
+
+  async function runIdHasTerminalEvent(runId: string): Promise<boolean> {
+    return (await getRunTerminalStatus(runId)) !== null;
   }
 
   /**
@@ -3369,13 +3374,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
    * as failed, indefinitely.
    *
    * The spine is the honest record of whether a run reached a terminal
-   * state (`runAlreadyTerminal`, the same oracle the watchdog and the boot
-   * reconciler both defer to). A durable row whose run_id already has a
-   * terminal spine event is provably stale — the run finished, only the
+   * state (`runAlreadyTerminal`, the same identity-fenced oracle the watchdog
+   * defers to). A durable row whose (run_id, connector_instance_id) already
+   * has a terminal spine event is provably stale — the run finished, only the
    * flight-table delete failed or raced — so it is safe to clear here and
    * allow the new run, mirroring the in-memory reclamation above.
    *
-   * - If stale (row's run has a terminal spine event): clears the orphaned
+   * - If stale (the row's full runtime identity has a terminal spine event): clears the orphaned
    *   row and returns (allows new run).
    * - If live (no terminal event yet): throws 409 run_already_active. This
    *   is the fail-closed default — a run with no observed terminal event is
@@ -3388,12 +3393,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!existing) {
       return;
     }
-    if (await runAlreadyTerminal(existing.run_id)) {
+    const existingConnectorInstanceId = existing.connector_instance_id ?? existing.connector_id;
+    if (await runAlreadyTerminal(existing.run_id, existingConnectorInstanceId)) {
       log.warn?.(
         `[controller] reclaiming stale controller_active_runs row for ${existing.connector_id} ` +
-          `(run_id=${existing.run_id}); its run already reached a terminal state — allowing new run`
+          `(run_id=${existing.run_id}, connector_instance_id=${existingConnectorInstanceId}); ` +
+          "its run already reached a terminal state — allowing new run"
       );
-      await clearPersistedActiveRun(existing.connector_instance_id ?? existing.connector_id, existing.run_id);
+      await clearPersistedActiveRun(existingConnectorInstanceId, existing.run_id);
       return;
     }
     throw new ControllerError(`Connector already has an active run: ${existing.run_id}`, "run_already_active", {
@@ -3759,7 +3766,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       }
       const emitAndFinalize = async () => {
         try {
-          if (!(await runAlreadyTerminal(runId))) {
+          if (!(await runAlreadyTerminal(runId, connectorInstanceId))) {
             await emitSpineEvent({
               actor_id: connectorId,
               actor_type: "runtime",
@@ -4135,7 +4142,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         // reconciler uses, because post-spawn rejections reach this catch
         // AFTER the runtime already recorded its own terminal event.
         try {
-          if (!(await runAlreadyTerminal(runId))) {
+          if (!(await runAlreadyTerminal(runId, connectorInstanceId))) {
             await emitSpineEvent({
               actor_id: connectorId,
               actor_type: "runtime",
@@ -4404,7 +4411,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       // No in-memory active run for this id. Distinguish a run that already
       // reached a terminal state (nothing to cancel) from one we never knew
       // about, so the owner gets an honest typed result either way.
-      if (await runAlreadyTerminal(runId)) {
+      if (await runIdHasTerminalEvent(runId)) {
         return { run_id: runId, status: "already_terminal" };
       }
       return { run_id: runId, status: "no_active_run" };

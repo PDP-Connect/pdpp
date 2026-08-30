@@ -1,5 +1,5 @@
 -- @terminator: one
--- True/false probe for whether a run already has a terminal event
+-- True/false probe for whether a connection-owned run already has a terminal event
 -- (run.completed | run.failed | run.browser_surface_failed |
 -- run.cancelled | run.abandoned) on the
 -- spine. Used by the controller's run-completion paths before writing a
@@ -12,5 +12,6 @@
 SELECT 1 AS present
 FROM spine_events
 WHERE run_id = ?
+  AND connector_instance_id = ?
   AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
 LIMIT 1
