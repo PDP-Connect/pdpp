@@ -29,7 +29,7 @@ import { startFileProcessWatchdog } from "./file-process-watchdog.ts";
 import { discoverSelectedTestFiles } from "./run-tests-discovery.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
 import { buildScrubbedTestEnv } from "./test-env.ts";
-import { assertUngatedProfileIsExplicit, storageProfileEnvironment } from "./test-profile-env.ts";
+import { requireExplicitTestProfile, storageProfileEnvironment } from "./test-profile-env.ts";
 
 /** The `run-authority` JSON file shape accepted via `--accounting-authority`. */
 interface AccountingAuthority {
@@ -129,15 +129,11 @@ if (
 ) {
   throw new Error("accounting authority does not bind the selected RI profile");
 }
-if (accountingAuthority?.profile === "postgres" && !process.env.PDPP_TEST_POSTGRES_URL) {
-  throw new Error("postgres profile requires PDPP_TEST_POSTGRES_URL");
-}
-// See assertUngatedProfileIsExplicit for why an ungated invocation (no bound
-// accounting authority) must not be allowed to silently default its profile.
-if (!accountingAuthority) {
-  assertUngatedProfileIsExplicit(process.env);
-}
-const selectedProfile = accountingAuthority?.profile ?? process.env.PDPP_TEST_PROFILE ?? "memory-default";
+// The bound authority check above establishes authority.profile === this
+// environment value. Reuse the same explicit-profile policy for both bound
+// and unbound invocations, so malformed metadata cannot select the old
+// memory-default fallback or reach child execution.
+const selectedProfile = requireExplicitTestProfile(process.env);
 const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY || "", 10);
 // Boot-time schedule auto-enrollment is OFF by default under the test harness.
 //

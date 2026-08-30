@@ -13,21 +13,20 @@ export function storageProfileEnvironment(profile: string, source: ProcessEnvLik
 }
 
 /**
- * Require an explicit, valid PDPP_TEST_PROFILE for an ungated run-tests.ts
- * invocation (no --accounting-authority bound). Twice (the 2026-08-30 #238
+ * Return the explicit, valid PDPP_TEST_PROFILE selected for a run-tests.ts
+ * invocation. Twice (the 2026-08-30 #238
  * gate and the prior day's #242 verification) an absent PDPP_TEST_PROFILE
  * silently fell through to a memory-default fallback, deleting
  * PDPP_TEST_POSTGRES_URL out from under an operator who believed they were
  * running the postgres profile and skipping every PostgreSQL-only path with
- * no error. Fail closed instead: an ungated run must name a real profile
+ * no error. Fail closed instead: every run must name a real profile
  * explicitly, and postgres must carry its URL.
  *
- * A bound accounting authority is exempt: `run-tests.ts` already requires
- * `accountingAuthority.profile === process.env.PDPP_TEST_PROFILE` before
- * this seam runs, so an authority-driven run has already proven the profile
- * explicit and matching.
+ * A bound accounting authority must match this environment value before this
+ * seam runs. Validating the environment here makes the profile policy the
+ * same for bound and unbound invocations.
  */
-export function assertUngatedProfileIsExplicit(source: ProcessEnvLike): void {
+export function requireExplicitTestProfile(source: ProcessEnvLike): "memory-default" | "postgres" {
   const requestedProfile = source.PDPP_TEST_PROFILE;
   if (requestedProfile !== "memory-default" && requestedProfile !== "postgres") {
     throw new Error(
@@ -37,4 +36,5 @@ export function assertUngatedProfileIsExplicit(source: ProcessEnvLike): void {
   if (requestedProfile === "postgres" && !source.PDPP_TEST_POSTGRES_URL) {
     throw new Error("postgres profile requires PDPP_TEST_POSTGRES_URL");
   }
+  return requestedProfile;
 }
