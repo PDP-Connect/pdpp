@@ -85,6 +85,8 @@ function diffPathsInPackage(packageRoot: string, args: readonly string[]): strin
 export interface ChangedAndDeleted {
   readonly changedRelativePaths: string[];
   readonly deletedRelativePaths: string[];
+  /** Package-relative paths reported by Git's cached or working-tree U diff. */
+  readonly unmergedRelativePaths: string[];
 }
 
 /**
@@ -139,7 +141,19 @@ export function getChangedFiles(packageRoot: string, baseRef: string): ChangedAn
     deletedRelativePaths.add(path);
   }
 
-  return { changedRelativePaths: [...changedRelativePaths], deletedRelativePaths: [...deletedRelativePaths] };
+  const unmergedRelativePaths = new Set<string>();
+  for (const path of [
+    ...diffPathsInPackage(packageRoot, ["diff", "--no-renames", "--name-only", "-z", "--diff-filter=U", "--cached"]),
+    ...diffPathsInPackage(packageRoot, ["diff", "--no-renames", "--name-only", "-z", "--diff-filter=U"]),
+  ]) {
+    unmergedRelativePaths.add(path);
+  }
+
+  return {
+    changedRelativePaths: [...changedRelativePaths],
+    deletedRelativePaths: [...deletedRelativePaths],
+    unmergedRelativePaths: [...unmergedRelativePaths],
+  };
 }
 
 function gitRoot(packageRoot: string): string {
@@ -157,8 +171,9 @@ function main(): void {
 
   let changedRelativePaths: string[];
   let deletedRelativePaths: string[];
+  let unmergedRelativePaths: string[];
   try {
-    ({ changedRelativePaths, deletedRelativePaths } = getChangedFiles(PACKAGE_ROOT, baseRef));
+    ({ changedRelativePaths, deletedRelativePaths, unmergedRelativePaths } = getChangedFiles(PACKAGE_ROOT, baseRef));
   } catch (error) {
     console.error(`[related-tests] failed to compute changed files via git: ${(error as Error).message}`);
     console.error("[related-tests] treat this as FULL_SUITE — do not skip tests.");
@@ -178,6 +193,7 @@ function main(): void {
         allRelativePaths,
         changedRelativePaths,
         deletedRelativePaths,
+        unmergedRelativePaths,
       });
       emit(result, asJson);
     })

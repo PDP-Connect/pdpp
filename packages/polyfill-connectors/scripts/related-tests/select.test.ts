@@ -51,6 +51,7 @@ describe("selectRelatedTests: direct connector edit selects only its related tes
       allRelativePaths: allPaths,
       changedRelativePaths: ["connectors/alpha/index.ts"],
       deletedRelativePaths: [],
+      unmergedRelativePaths: [],
     });
 
     assert.equal(result.kind, "related");
@@ -85,6 +86,7 @@ describe("selectRelatedTests: shared runtime edit expands to every dependent con
       allRelativePaths: allPaths,
       changedRelativePaths: ["src/shared-runtime.ts"],
       deletedRelativePaths: [],
+      unmergedRelativePaths: [],
     });
 
     assert.equal(result.kind, "related");
@@ -109,6 +111,7 @@ describe("selectRelatedTests: fixture-only change forces the full suite", () => 
         allRelativePaths: allPaths,
         changedRelativePaths: ["fixtures/alpha/sample.json"],
         deletedRelativePaths: [],
+        unmergedRelativePaths: [],
       });
 
       assert.equal(result.kind, FULL_SUITE);
@@ -144,6 +147,7 @@ describe("selectRelatedTests: a file containing a dynamic import forces the full
         allRelativePaths: allPaths,
         changedRelativePaths: ["src/dynamic-loader.ts"],
         deletedRelativePaths: [],
+        unmergedRelativePaths: [],
       });
 
       assert.equal(result.kind, FULL_SUITE);
@@ -181,6 +185,7 @@ describe("selectRelatedTests: unknown/unparseable dependency shapes force the fu
         allRelativePaths: allPaths,
         changedRelativePaths: ["src/unparseable.ts"],
         deletedRelativePaths: [],
+        unmergedRelativePaths: [],
       });
 
       assert.equal(result.kind, FULL_SUITE);
@@ -197,6 +202,7 @@ describe("selectRelatedTests: unknown/unparseable dependency shapes force the fu
       allRelativePaths: [],
       changedRelativePaths: ["package.json"],
       deletedRelativePaths: [],
+      unmergedRelativePaths: [],
     });
 
     assert.equal(result.kind, FULL_SUITE);
@@ -212,6 +218,7 @@ describe("selectRelatedTests: deletions and renames force the full suite", () =>
       allRelativePaths: [],
       changedRelativePaths: [],
       deletedRelativePaths: ["src/manifest-registry.ts"],
+      unmergedRelativePaths: [],
     });
 
     assert.equal(result.kind, FULL_SUITE);
@@ -225,6 +232,7 @@ describe("selectRelatedTests: deletions and renames force the full suite", () =>
       allRelativePaths: [],
       changedRelativePaths: [],
       deletedRelativePaths: ["connectors/alpha/index.test.ts"],
+      unmergedRelativePaths: [],
     });
 
     assert.equal(result.kind, FULL_SUITE);
@@ -238,6 +246,7 @@ describe("selectRelatedTests: deletions and renames force the full suite", () =>
       allRelativePaths: [],
       changedRelativePaths: [],
       deletedRelativePaths: ["fixtures/alpha/sample.json"],
+      unmergedRelativePaths: [],
     });
 
     assert.equal(result.kind, FULL_SUITE);
@@ -251,6 +260,7 @@ describe("selectRelatedTests: deletions and renames force the full suite", () =>
       allRelativePaths: [],
       changedRelativePaths: ["connectors/alpha/index-renamed.ts"],
       deletedRelativePaths: ["connectors/alpha/index.ts"],
+      unmergedRelativePaths: [],
     });
 
     assert.equal(result.kind, FULL_SUITE);
@@ -264,11 +274,26 @@ describe("selectRelatedTests: deletions and renames force the full suite", () =>
       allRelativePaths: [],
       changedRelativePaths: [],
       deletedRelativePaths: [],
+      unmergedRelativePaths: [],
     });
 
     assert.equal(result.kind, "related");
     assert.deepEqual(result.testFiles, []);
     assert.match(result.reason, /no changed files/);
+  });
+
+  test("an unresolved index/worktree entry forces FULL_SUITE before empty selection", () => {
+    const result = selectRelatedTests({
+      packageRoot: "/unused",
+      graph: { modules: new Map() },
+      allRelativePaths: [],
+      changedRelativePaths: [],
+      deletedRelativePaths: [],
+      unmergedRelativePaths: ["connectors/alpha/index.ts"],
+    });
+
+    assert.equal(result.kind, FULL_SUITE);
+    assert.match(result.reason, /unmerged path/);
   });
 });
 
