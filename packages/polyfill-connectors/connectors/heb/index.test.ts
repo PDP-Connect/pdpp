@@ -2357,6 +2357,33 @@ test("fetchOrderDetail: a visible no-op control fails closed when no declared co
   }
 });
 
+test("fetchOrderDetail: a visible no-op control blocks the declared-count settlement branch", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-no-op-control.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-NO-OP-DECLARED", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // The matching count permits document-order keys, but it cannot prove
+    // completion while a visible source control remains actionable. This is
+    // the counter-mutant for dropping !latest.actionableControl from the
+    // declared-count settlement branch.
+    const result = await fetchOrderDetail(page, "HEB-NO-OP-DECLARED", {
+      detailSurfaceTimeoutMs: 1000,
+      expectedItemCount: 1,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "detail_surface_timeout");
+    assert.match(result.diagnostic ?? "", /action=control:Load more/);
+  } finally {
+    await browser.close();
+  }
+});
+
 test("fetchOrderDetail: a delayed control response is observed before settlement", async () => {
   const browser = await chromium.launch({ headless: true });
   try {
@@ -2396,6 +2423,64 @@ test("fetchOrderDetail: a row without provider or positional identity fails clos
     assert.equal(result.status, "failed");
     assert.equal(result.failureKind, "detail_surface_error");
     assert.match(result.diagnostic ?? "", /explicit positional identity/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: an unanchored remounting window fails closed instead of using document order", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-unanchored-remount.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-UNANCHORED-REMOUNT", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // No declared count and no provider position means the initial quiet
+    // window cannot prove that the remounting surface is complete. The
+    // current HEAD falsely hydrates before the delayed replacement; this
+    // browser fixture is required because a parser test cannot observe that
+    // settlement race or the hidden overflow shell.
+    const result = await fetchOrderDetail(page, "HEB-UNANCHORED-REMOUNT", {
+      detailSurfaceTimeoutMs: 1200,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "detail_surface_error");
+    assert.match(result.diagnostic ?? "", /static_evidence=none/);
+    assert.match(result.diagnostic ?? "", /explicit positional identity/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: a tall fully mounted static list uses document order only with a matching declared count", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-static-tall.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-STATIC-TALL", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // This is the counterweight to the fail-closed case. The list is taller
+    // than the viewport, so layout alone cannot identify it as static; the
+    // provider-declared count matching all mounted rows is the affirmative
+    // evidence that permits document-order keys.
+    const result = await fetchOrderDetail(page, "HEB-STATIC-TALL", {
+      detailSurfaceTimeoutMs: 3000,
+      expectedItemCount: 20,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(result.detail?.items.length, 20);
+    assert.deepEqual(
+      result.detail?.items.map((item) => item.name),
+      Array.from({ length: 20 }, (_, index) => `Static item ${index}`)
+    );
   } finally {
     await browser.close();
   }
