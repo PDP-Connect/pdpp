@@ -36,7 +36,11 @@ import {
   LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID,
   readPostgresMigrationLedgerRow,
 } from "./postgres-migration-ledger.ts";
-import { assertTestDatabase, testDatabaseGuardActive } from "./postgres-test-database-guard.ts";
+import {
+  assertTestDatabase,
+  claimAlreadyAdmittedTestDatabaseChildAttachment,
+  testDatabaseGuardActive,
+} from "./postgres-test-database-guard.ts";
 import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
 
@@ -1362,7 +1366,8 @@ export async function initPostgresStorage(
       /* no-op */
     },
     bootstrapLockTimeoutMs,
-  }: { log?: StorageLog; bootstrapLockTimeoutMs?: number } = {}
+    testOnlyAlreadyAdmittedChildAttachment,
+  }: { log?: StorageLog; bootstrapLockTimeoutMs?: number; testOnlyAlreadyAdmittedChildAttachment?: string } = {}
 ) {
   if (config?.backend !== "postgres") {
     activeBackend = "sqlite";
@@ -1379,7 +1384,11 @@ export async function initPostgresStorage(
   // See server/postgres-test-database-guard.ts for why this is a sentinel
   // rather than a production-URL blacklist.
   if (testDatabaseGuardActive()) {
-    await assertTestDatabase(config.databaseUrl);
+    if (testOnlyAlreadyAdmittedChildAttachment === undefined) {
+      await assertTestDatabase(config.databaseUrl);
+    } else {
+      await claimAlreadyAdmittedTestDatabaseChildAttachment(config.databaseUrl, testOnlyAlreadyAdmittedChildAttachment);
+    }
   }
 
   if (pool) {

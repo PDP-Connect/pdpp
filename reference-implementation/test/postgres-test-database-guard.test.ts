@@ -26,6 +26,8 @@ import test from "node:test";
 import pg from "pg";
 import {
   assertTestDatabase,
+  claimAlreadyAdmittedTestDatabaseChildAttachment,
+  createAlreadyAdmittedTestDatabaseChildAttachment,
   ProductionDatabaseRefusedError,
   provisionTestDatabase,
   TEST_DATABASE_SENTINEL_TABLE,
@@ -162,6 +164,82 @@ test("guard REFUSES a sentinel-stamped database that already holds owner data", 
       `expected refusal for sentinel-stamped DB holding owner data, got: ${String(error)}`
     );
     assert.match(error.message, OWNER_ROW_COUNT_PATTERN);
+  });
+});
+
+test("guard permits only a parent-minted, one-use child attachment for an already-admitted database", {
+  skip: POSTGRES_SKIP,
+}, async () => {
+  assert.ok(POSTGRES_URL);
+  await withScratchDatabase(POSTGRES_URL, async (admittedUrl) => {
+    await provisionTestDatabase(admittedUrl);
+    const attachment = await createAlreadyAdmittedTestDatabaseChildAttachment(admittedUrl);
+    await exec(
+      admittedUrl,
+      `CREATE TABLE records (
+         id bigserial PRIMARY KEY,
+         connector_id text NOT NULL,
+         stream text NOT NULL,
+         record_key text NOT NULL,
+         record_json jsonb NOT NULL
+       );
+       INSERT INTO records (connector_id, stream, record_key, record_json)
+       VALUES ('test-fixture', 'messages', 'parent-written-row', '{}'::jsonb);`
+    );
+
+    // The ordinary guard remains globally fail-closed after the parent write.
+    await assert.rejects(assertTestDatabase(admittedUrl), ProductionDatabaseRefusedError);
+
+    await withScratchDatabase(POSTGRES_URL, async (productionShapedUrl) => {
+      await exec(
+        productionShapedUrl,
+        `CREATE TABLE records (
+           id bigserial PRIMARY KEY,
+           connector_id text NOT NULL,
+           stream text NOT NULL,
+           record_key text NOT NULL,
+           record_json jsonb NOT NULL
+         );
+         INSERT INTO records (connector_id, stream, record_key, record_json)
+         VALUES ('production-shaped', 'messages', 'must-stay-refused', '{}'::jsonb);`
+      );
+
+      // A capability from a test parent is never an admission bypass for an
+      // unmarked production-shaped database.
+      await assert.rejects(
+        claimAlreadyAdmittedTestDatabaseChildAttachment(productionShapedUrl, attachment),
+        ProductionDatabaseRefusedError
+      );
+    });
+
+    await withScratchDatabase(POSTGRES_URL, async (unrelatedUrl) => {
+      await provisionTestDatabase(unrelatedUrl);
+      await exec(
+        unrelatedUrl,
+        `CREATE TABLE records (
+           id bigserial PRIMARY KEY,
+           connector_id text NOT NULL,
+           stream text NOT NULL,
+           record_key text NOT NULL,
+           record_json jsonb NOT NULL
+         );
+         INSERT INTO records (connector_id, stream, record_key, record_json)
+         VALUES ('arbitrary-db', 'messages', 'must-stay-refused', '{}'::jsonb);`
+      );
+
+      // Mutant: accepting any sentinel-bearing populated database instead of
+      // requiring a database-local parent capability makes this assertion fail.
+      await assert.rejects(
+        claimAlreadyAdmittedTestDatabaseChildAttachment(unrelatedUrl, attachment),
+        ProductionDatabaseRefusedError
+      );
+    });
+
+    await claimAlreadyAdmittedTestDatabaseChildAttachment(admittedUrl, attachment);
+    await assert.rejects(
+      claimAlreadyAdmittedTestDatabaseChildAttachment(admittedUrl, attachment),
+      ProductionDatabaseRefusedError
+    );
   });
 });
 
