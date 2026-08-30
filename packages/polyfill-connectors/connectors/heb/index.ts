@@ -243,6 +243,21 @@ function inspectAndAdvanceDetailSurface(input: {
   };
 }
 
+/** The identity scheme a snapshot's rows are keyed under (the key prefix up to
+ *  `=`, e.g. `position:data-index`). Keys minted under different schemes are
+ *  not comparable, so collection may not accumulate across a change. Returns
+ *  null for an empty snapshot, which carries no scheme and must not reset an
+ *  established one. A mixed snapshot reports its first row's scheme; the
+ *  clear-on-change rule still keeps the accumulator single-scheme. */
+function identitySchemeOf(rows: readonly DetailSurfaceRow[]): string | null {
+  const [first] = rows;
+  if (!first) {
+    return null;
+  }
+  const separator = first.key.indexOf("=");
+  return separator === -1 ? first.key : first.key.slice(0, separator);
+}
+
 function detailSurfaceErrorMessage(diagnostics: DetailSurfaceDiagnostics): string {
   return [
     `detail_surface_${diagnostics.settlement}`,
@@ -269,6 +284,7 @@ async function collectDetailSurface(
   const expectedRows =
     typeof expectedItemCount === "number" && Number.isInteger(expectedItemCount) ? expectedItemCount : null;
   const collected = new Map<string, string>();
+  let collectedScheme: string | null = null;
   const startedAt = Date.now();
   let lastSignature = "";
   let lastAction: string | null = null;
@@ -299,6 +315,18 @@ async function collectDetailSurface(
       break;
     }
     snapshots += 1;
+    // Row keys live in disjoint namespaces ("position:data-index=N" vs
+    // "position:document-order=N"), so a surface that remounts under a
+    // different identity scheme would add a second entry for every row
+    // instead of overwriting the first. Because completion tests
+    // `collected.size >= expectedRows`, that inflation satisfies the gate
+    // more easily than the truth. Only rows sharing the latest snapshot's
+    // scheme are comparable, so a scheme change restarts collection.
+    const scheme = identitySchemeOf(latest.rows);
+    if (scheme !== null && scheme !== collectedScheme) {
+      collected.clear();
+      collectedScheme = scheme;
+    }
     const occurrenceByKey = new Map<string, number>();
     for (const row of latest.rows) {
       const occurrence = (occurrenceByKey.get(row.key) ?? 0) + 1;
