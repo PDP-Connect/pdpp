@@ -61,11 +61,11 @@ jobs:
 
       - name: Check pull-request spec Date headers are not stale
         if: github.event_name == 'pull_request'
-        run: pnpm spec:dates -- --base "${{ github.event.pull_request.base.sha }}"
+        run: pnpm spec:dates --base "${{ github.event.pull_request.base.sha }}"
 
       - name: Check push spec Date headers are not stale
         if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
-        run: pnpm spec:dates -- --base "${{ github.event.before }}"
+        run: pnpm spec:dates --base "${{ github.event.before }}"
 
       # GitHub represents branch creation with an all-zero `before` SHA. There
       # is no prior tree to compare, so run the full check instead of skipping.

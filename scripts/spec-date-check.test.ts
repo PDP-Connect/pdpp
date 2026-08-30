@@ -81,12 +81,13 @@ function withFixture(action: (repo: Fixture) => void, date?: string): void {
   }
 }
 
-test("workflow supplies the pull-request base SHA to the date checker", () => {
+test("workflow passes the pull-request base SHA without a doubled pnpm argument boundary", () => {
   const workflow = readFileSync(WORKFLOW, "utf8");
   assert.match(
     workflow,
-    /name: Check pull-request spec Date headers are not stale\n\s+if: github\.event_name == 'pull_request'\n\s+run: pnpm spec:dates -- --base "\$\{\{ github\.event\.pull_request\.base\.sha \}\}"/
+    /name: Check pull-request spec Date headers are not stale\n\s+if: github\.event_name == 'pull_request'\n\s+run: pnpm spec:dates --base "\$\{\{ github\.event\.pull_request\.base\.sha \}\}"/
   );
+  assert.doesNotMatch(workflow, /pnpm spec:dates -- --base/);
 });
 
 test("workflow supplies the immutable push before SHA and fully checks branch creation", () => {
@@ -94,7 +95,7 @@ test("workflow supplies the immutable push before SHA and fully checks branch cr
   assert.match(
     workflow,
     new RegExp(
-      `name: Check push spec Date headers are not stale\\n\\s+if: github\\.event_name == 'push' && github\\.event\\.before != '${ZERO_SHA}'\\n\\s+run: pnpm spec:dates -- --base "\\$\\{\\{ github\\.event\\.before \\}\\}"`
+      `name: Check push spec Date headers are not stale\\n\\s+if: github\\.event_name == 'push' && github\\.event\\.before != '${ZERO_SHA}'\\n\\s+run: pnpm spec:dates --base "\\$\\{\\{ github\\.event\\.before \\}\\}"`
     )
   );
   assert.match(
