@@ -152,3 +152,70 @@ test("default mode checks every root spec", () => {
     assert.match(result.stderr, /spec-fixture\.md: Date: 2026-01-01 is stale/);
   });
 });
+
+test("a deletion-only body edit is substantive, even though its new-side range collapses to the header boundary", () => {
+  withFixture((repo) => {
+    // Base body is a single line, so deleting it produces `@@ -6 +5,0 @@` from
+    // a real `git -U0` diff: new-side start(5)+count(0)-1 = 4, which sits
+    // exactly at HEADER_LINE_COUNT. The old code only ever looked at the new
+    // side, so this collapsed range was misread as "still inside the header"
+    // and the deletion was silently ignored.
+    repo.writeSpec("# Fixture\n\nStatus: Draft\nDate: 2026-01-01\n\n");
+    repo.commit("delete the only body line", "2026-01-02");
+
+    const result = run(repo.root, ["--base", repo.base]);
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /spec-fixture\.md: Date: 2026-01-01 is stale/);
+  });
+});
+
+test("a replacement hunk that crosses from the header into the body is substantive", () => {
+  withFixture((repo) => {
+    // Base spec has a one-line header gap; rewrite lines 4-5 (Date line plus
+    // the following blank line) together with a body change so the hunk's
+    // range spans both the header and the body in one edit.
+    repo.writeSpec("# Fixture\n\nStatus: Draft\nDate: 2026-01-01\nRevised body.\n");
+    repo.commit("replace across header/body boundary", "2026-01-02");
+
+    const result = run(repo.root, ["--base", repo.base]);
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /spec-fixture\.md: Date: 2026-01-01 is stale/);
+  });
+});
+
+test("an insertion-only body edit is substantive", () => {
+  withFixture((repo) => {
+    repo.writeSpec("# Fixture\n\nStatus: Draft\nDate: 2026-01-01\n\nBase body.\nInserted line.\n");
+    repo.commit("insert a new body line", "2026-01-02");
+
+    const result = run(repo.root, ["--base", repo.base]);
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /spec-fixture\.md: Date: 2026-01-01 is stale/);
+  });
+});
+
+test("a pure header edit (Date stamp) is not substantive", () => {
+  withFixture((repo) => {
+    repo.writeSpec("# Fixture\n\nStatus: Draft\nDate: 2026-01-02\n\nBase body.\n");
+    repo.commit("stamp date only", "2026-01-02");
+
+    const result = run(repo.root, ["--base", repo.base]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /passed \(1 spec checked\)/);
+  });
+});
+
+test("a body-only whitespace edit (blank-line reflow) is not substantive", () => {
+  withFixture((repo) => {
+    // isHeaderOnlyOrWhitespaceHunk treats an added/removed line as
+    // whitespace-only when its trimmed content is empty — a blank-line
+    // reflow, per the file's own policy comment — not a trailing-space
+    // change to a line that has real content (that's a content-line change).
+    repo.writeSpec("# Fixture\n\nStatus: Draft\nDate: 2026-01-01\n\nBase body.\n\n");
+    repo.commit("blank-line reflow only", "2026-01-02");
+
+    const result = run(repo.root, ["--base", repo.base]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /passed \(1 spec checked\)/);
+  });
+});
