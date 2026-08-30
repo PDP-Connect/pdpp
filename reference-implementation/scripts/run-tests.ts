@@ -29,7 +29,7 @@ import { startFileProcessWatchdog } from "./file-process-watchdog.ts";
 import { discoverSelectedTestFiles } from "./run-tests-discovery.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
 import { buildScrubbedTestEnv } from "./test-env.ts";
-import { storageProfileEnvironment } from "./test-profile-env.ts";
+import { assertUngatedProfileIsExplicit, storageProfileEnvironment } from "./test-profile-env.ts";
 
 /** The `run-authority` JSON file shape accepted via `--accounting-authority`. */
 interface AccountingAuthority {
@@ -132,7 +132,11 @@ if (
 if (accountingAuthority?.profile === "postgres" && !process.env.PDPP_TEST_POSTGRES_URL) {
   throw new Error("postgres profile requires PDPP_TEST_POSTGRES_URL");
 }
-// biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- Biome's narrowing conflates the equality guard above (only reachable when accountingAuthority is set) with the accountingAuthority-undefined branch, where PDPP_TEST_PROFILE is genuinely string|undefined; an isolated tsc repro confirms both `??` fallbacks are real, live branches.
+// See assertUngatedProfileIsExplicit for why an ungated invocation (no bound
+// accounting authority) must not be allowed to silently default its profile.
+if (!accountingAuthority) {
+  assertUngatedProfileIsExplicit(process.env);
+}
 const selectedProfile = accountingAuthority?.profile ?? process.env.PDPP_TEST_PROFILE ?? "memory-default";
 const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY || "", 10);
 // Boot-time schedule auto-enrollment is OFF by default under the test harness.
