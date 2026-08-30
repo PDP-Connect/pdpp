@@ -4,7 +4,7 @@ import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
 import { defineConfig, defineDocs } from "fumadocs-mdx/config";
 
 // src/lib/remark-legacy-heading-ids.ts
-var LEGACY_ID_PATTERN = /\s*\{#([A-Za-z0-9_-]+)\}\s*$/;
+var LEGACY_ID_PATTERN = /\s*[[{]#([A-Za-z0-9_-]+)[\]}]\s*$/;
 function visit(node, visitor) {
   visitor(node);
   if (!node.children) {

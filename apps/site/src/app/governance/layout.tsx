@@ -3,6 +3,7 @@
 
 import type { ReactNode } from "react";
 import { SpecificationShell } from "@/components/specification/shell.tsx";
+import { getGovernanceFrontMatter } from "@/lib/spec-front-matter.ts";
 import "@/styles/surfaces/concept/index.css";
 import "@/styles/surfaces/specification.css";
 
@@ -11,10 +12,15 @@ import "@/styles/surfaces/specification.css";
 // shell is also what puts the rail on this page, so a reader who arrives at
 // /governance can still see the specification set beside it.
 //
-// specFrontMatter={null} drops the rail's VERSION/STATUS/DATE/EDITORS block.
-// That block describes the SPECIFICATION; showing "Status: Normative draft"
-// beside a document whose own callout says it is not normative protocol text
-// would contradict the page.
+// railFrontMatter is tagged "governance" and carries GOVERNANCE.md's own
+// Status/Circulated/Formal review/Programme live facts, not the
+// specification's VERSION/STATUS/DATE/EDITORS block. That block describes the
+// SPECIFICATION; showing "Status: Normative draft" beside a document whose own
+// callout says it is not normative protocol text would contradict the page.
 export default function Layout({ children }: { children: ReactNode }) {
-  return <SpecificationShell specFrontMatter={null}>{children}</SpecificationShell>;
+  return (
+    <SpecificationShell railFrontMatter={{ kind: "governance", value: getGovernanceFrontMatter() }}>
+      {children}
+    </SpecificationShell>
+  );
 }
