@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import {
   buildPendingConsentRequestUri,
+  countGrantPackagesForOwner,
   getGrantPackageAccess,
   revokeGrant,
   revokeGrantPackage,
@@ -3111,7 +3112,7 @@ test("POST /oauth/authorize/mcp-package renders picker error when every selected
   }
 });
 
-test("POST /oauth/authorize/mcp-package returns an actionable 4xx (never 500) when a stream has zero eligible instances", async () => {
+test("POST /oauth/authorize/mcp-package reports declared zero-eligible streams and creates no package", async () => {
   // Production regression (owner-reported 2026-08-23, and again 2026-08-30 as
   // "the consent picker shows streams the owner does not have"): approving a
   // source whose declared stream has no installed connector instance
@@ -3145,10 +3146,11 @@ test("POST /oauth/authorize/mcp-package returns an actionable 4xx (never 500) wh
     const state = "zero-eligible-instances";
     const challenge = pkceChallenge(verifier);
 
+    const packageCountBefore = await countGrantPackagesForOwner();
     const params = buildHostedMcpPickerForm({
       challenge,
       client,
-      sourceSelections: [{ connectorId: spotify.connector_id, streamNames: ["saved_tracks"] }],
+      sourceSelections: [{ connectorId: spotify.connector_id, streamNames: ["saved_tracks", "archive_jobs"] }],
       state,
     });
 
@@ -3172,6 +3174,16 @@ test("POST /oauth/authorize/mcp-package returns an actionable 4xx (never 500) wh
       String(body.error_description),
       /no active connection/i,
       `error must name the connector as having no active connection, got: ${JSON.stringify(body)}`
+    );
+    assert.deepEqual(
+      body.streams,
+      ["saved_tracks"],
+      "the structured envelope names the declared zero-eligible stream, not a submitted undeclared stream"
+    );
+    assert.equal(
+      await countGrantPackagesForOwner(),
+      packageCountBefore,
+      "a rejected zero-eligible submission must not create a package"
     );
   } finally {
     await closeServer(server);
