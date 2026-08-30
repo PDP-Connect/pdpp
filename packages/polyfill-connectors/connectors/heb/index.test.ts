@@ -2550,6 +2550,37 @@ test("fetchOrderDetail: a declared-count match does not settle on a transient sn
   }
 });
 
+test("fetchOrderDetail: a remount that changes identity scheme does not accumulate duplicate rows", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-identity-scheme-switch.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-SCHEME-SWITCH", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // The same two items mount first under data-index keys, then remount
+    // without them under document-order keys. The two key namespaces are
+    // disjoint, so an accumulator that spans schemes holds 4 entries for a
+    // 2-item order -- and `collected >= expected` passes *more* easily on the
+    // inflation. Collection must key on the settled scheme only.
+    const result = await fetchOrderDetail(page, "HEB-SCHEME-SWITCH", {
+      detailSurfaceTimeoutMs: 3000,
+      expectedItemCount: 2,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(result.detail?.items.length, 2, `expected exactly 2 rows, diagnostic=${result.diagnostic}`);
+    assert.deepEqual(
+      result.detail?.items.map((item) => item.name),
+      ["Settled item 1", "Settled item 2"]
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
 test("fetchOrderDetail: continuous remounts with matching count fail closed without consecutive stable polls", async () => {
   const browser = await chromium.launch({ headless: true });
   try {
