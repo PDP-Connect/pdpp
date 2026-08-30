@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { startServer } from "../server/index.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 interface JsdomModule {
   JSDOM: new (html: string, options?: { runScripts?: "dangerously" }) => { readonly window: unknown };
@@ -93,6 +94,27 @@ async function registerFixture(asUrl: string, fixtureName: string): Promise<Reco
   return manifest;
 }
 
+async function seedActiveFixtureBinding(manifest: Record<string, unknown>): Promise<void> {
+  const connectorId = mustExist(
+    typeof manifest.connector_id === "string" ? manifest.connector_id : null,
+    "registered fixture must have a connector id"
+  );
+  const connectorInstanceId = `cin_picker_${connectorId}`;
+  const now = new Date().toISOString();
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId,
+    connectorInstanceId,
+    createdAt: now,
+    displayName: `${connectorId} picker fixture`,
+    ownerSubjectId: "owner_local",
+    sourceBinding: { fixture: connectorInstanceId },
+    sourceBindingKey: connectorInstanceId,
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
 async function registerClient(asUrl: string): Promise<{ client_id: string }> {
   const resp = await fetch(`${asUrl}/oauth/register`, {
     body: JSON.stringify({
@@ -134,16 +156,21 @@ function mustExist<T>(value: T | null | undefined, description: string): T {
   return value;
 }
 
-// Boot the AS, register two same-shape connectors, and fetch the live picker
-// HTML the way the browser would (GET /oauth/authorize with no
-// authorization_details / connector_id). Returns a jsdom window with the inline
-// picker script executed, plus helpers to drive and inspect it.
+// Boot the AS, register three connectors, seed two active owner bindings, and
+// fetch the live picker HTML the way the browser would (GET /oauth/authorize
+// with no authorization_details / connector_id). The unheld third catalog entry
+// proves the picker filters registered sources through owner holdings. Returns a
+// jsdom window with the inline picker script executed, plus helpers to drive and
+// inspect it.
 async function openPickerDom() {
   const server = await startOpenTestServer();
   try {
     const asUrl = `http://localhost:${server.asPort}`;
-    await registerFixture(asUrl, "spotify");
-    await registerFixture(asUrl, "github");
+    const spotify = await registerFixture(asUrl, "spotify");
+    const github = await registerFixture(asUrl, "github");
+    await registerFixture(asUrl, "reddit");
+    await seedActiveFixtureBinding(spotify);
+    await seedActiveFixtureBinding(github);
     const client = await registerClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -221,6 +248,15 @@ test("picker runtime: all sources render collapsed by default (no auto-expand)",
       p.sources().every((s) => !s.open),
       "no <details> source may start open"
     );
+  } finally {
+    await p.close();
+  }
+});
+
+test("picker runtime: a registered source without an active owner binding does not render", async () => {
+  const p = await openPickerDom();
+  try {
+    assert.equal(p.sources().length, 2, "only the two active owner bindings may render as picker sources");
   } finally {
     await p.close();
   }
