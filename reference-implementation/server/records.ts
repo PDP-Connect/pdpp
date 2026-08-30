@@ -125,6 +125,7 @@ import { currentStorageGeneration, isCurrentStorageGeneration } from "./storage-
 import {
   getChangeHistoryLimit,
   nowIso,
+  RecordIngestRunTerminalError,
   resolveStorageConnectorId,
   resolveStorageConnectorInstanceId,
 } from "./storage-utils.ts";
@@ -888,21 +889,6 @@ export function classifyIngestFailure(err: unknown): ClassifiedIngestFailure {
     return { code, message, retryable: false };
   }
   return { code: code || "ingest_storage_error", message, retryable: true };
-}
-
-// A write already admitted into the per-connector-instance write coordinator
-// for a run that has since reached a terminal state (owner-cancelled, timed
-// out, or otherwise closed). The runtime's own cancellation signal is a
-// client-side AbortSignal that cannot retroactively un-admit a write the
-// server already accepted; this is the storage-layer fence that refuses it
-// instead. See harden-ingest-run-admission-fence.
-export class RecordIngestRunTerminalError extends Error {
-  code: string;
-  constructor(runId: string) {
-    super(`run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`);
-    this.name = "RecordIngestRunTerminalError";
-    this.code = "run_terminal";
-  }
 }
 
 // Admission accounting is GENERATION-SCOPED (one bucket per

@@ -58,6 +58,7 @@ import { firstSemanticTimeValue, SEMANTIC_TIME_UNKNOWN } from "./semantic-time-c
 import {
   getChangeHistoryLimit,
   nowIso,
+  RecordIngestRunTerminalError,
   resolveStorageConnectorId,
   resolveStorageConnectorInstanceId,
 } from "./storage-utils.ts";
@@ -1804,9 +1805,7 @@ async function assertPostgresRunStillAdmitted(
   );
   const runStatus = runStatusResult.rows[0]?.status;
   if (!runStatus || runStatus !== "running") {
-    throw new Error(
-      `run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`
-    );
+    throw new RecordIngestRunTerminalError(runId);
   }
 }
 
