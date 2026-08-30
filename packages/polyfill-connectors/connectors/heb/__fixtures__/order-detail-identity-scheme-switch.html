@@ -1,0 +1,38 @@
+<!-- Synthetic adversarial fixture: the same two items are mounted twice under
+     two different identity schemes. The first render carries provider
+     positional attributes (data-index); the remount drops them, so the row
+     keys fall back to document order. The two key namespaces are disjoint, so
+     a monotonic accumulator keyed by row identity would hold four entries for
+     a two-item order and satisfy a `collected >= expected` completion check
+     with duplicated rows. Collection must key on the settled identity scheme,
+     not accumulate across schemes. -->
+<!doctype html>
+<html>
+  <head>
+    <style>
+      #app {
+        height: 100px;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="app">
+      <ul id="rows">
+        <li data-qe-id="itemRow" data-index="0">
+          <a data-qe-id="itemRowDetailsName" href="/product-detail/item/settled-1">Settled item 1</a>
+        </li>
+        <li data-qe-id="itemRow" data-index="1">
+          <a data-qe-id="itemRowDetailsName" href="/product-detail/item/settled-2">Settled item 2</a>
+        </li>
+      </ul>
+    </main>
+    <script>
+      setTimeout(() => {
+        document.querySelector("#rows").innerHTML =
+          '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/item/settled-1">Settled item 1</a></li>' +
+          '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/item/settled-2">Settled item 2</a></li>';
+      }, 400);
+    </script>
+  </body>
+</html>

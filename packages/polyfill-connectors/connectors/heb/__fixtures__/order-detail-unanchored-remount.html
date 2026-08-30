@@ -1,0 +1,29 @@
+<!-- Synthetic adversarial fixture: the page hides a remounting window inside
+     an overflow-hidden shell. There is no provider position or declared count,
+     so document order is not evidence of complete collection. -->
+<!doctype html>
+<html>
+  <head>
+    <style>
+      #app {
+        height: 100px;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="app">
+      <ul id="rows">
+        <li data-qe-id="itemRow">
+          <a data-qe-id="itemRowDetailsName" href="/product-detail/window/1">Window item 1</a>
+        </li>
+      </ul>
+    </main>
+    <script>
+      setTimeout(() => {
+        document.querySelector("#rows").innerHTML =
+          '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/window/2">Window item 2</a></li>';
+      }, 1_500);
+    </script>
+  </body>
+</html>

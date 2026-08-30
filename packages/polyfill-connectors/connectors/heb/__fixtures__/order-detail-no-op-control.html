@@ -1,0 +1,21 @@
+<!-- Synthetic adversarial fixture: the visible control never changes the
+     surface. It must not settle as complete when no count is declared. -->
+<!doctype html>
+<html>
+  <body>
+    <main>
+      <section>
+        <div id="order-items-scrollport" style="height: 120px; overflow-y: auto">
+          <ul>
+            <li data-qe-id="itemRow" data-index="0">
+              <a data-qe-id="itemRowDetailsName" href="/product-detail/no-op/1">No-op item</a>
+              <span data-qe-id="checkoutItemPrice">$1.00</span>
+              <span data-qe-id="orderItemQty">Qty: 1</span>
+            </li>
+          </ul>
+          <button type="button">Load more</button>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
