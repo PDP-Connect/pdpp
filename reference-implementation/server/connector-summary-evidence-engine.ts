@@ -2628,11 +2628,13 @@ async function readAndPersistPostgresCanonicalScanPage(
   const pageSize = normalizedChunkScanPageSize(existingChunk?.page_size);
   let recordsResult: { rowCount: number | null; rows: Row[] };
   try {
+    // The leading equality keys preserve the public id order while making the
+    // required btree order explicit to PostgreSQL.
     recordsResult = await postgresRepairTransactionQuery<Row>(
       client,
       `SELECT id, stream, emitted_at FROM records
         WHERE connector_instance_id = $1 AND deleted = FALSE AND id > $2
-        ORDER BY id ASC LIMIT $3`,
+        ORDER BY connector_instance_id ASC, deleted ASC, id ASC LIMIT $3`,
       [connectorInstanceId, resumeAfterId, pageSize],
       deadline
     );
