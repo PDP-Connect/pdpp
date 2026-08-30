@@ -28,7 +28,11 @@ import { runConnector } from "../runtime/index.ts";
 import { initDb } from "../server/db.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
-import { admitOwnerRunConnection } from "../server/stores/connector-instance-store.ts";
+import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
+import {
+  admitOwnerRunConnection,
+  makeDefaultAccountConnectorInstanceId,
+} from "../server/stores/connector-instance-store.ts";
 
 /**
  * The two stub-RS retry tests below drive `runConnector` against a bare
@@ -1920,6 +1924,535 @@ test("STREAM_EVIDENCE: the cross-invocation run_id registry never evicts — the
       assert.equal(rejection?.failure_reason, "connector_protocol_violation");
     } finally {
       rmSync(tmpDir2, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// ── Recovered-gap reconciliation (pdpp#238 provisional review P1-1): a gap
+// recovered THIS run must not still count toward outcomes.gapped. The append
+// log records the same gap_id more than once across a run (e.g. pending from
+// a prior run, then recovered), and the fix must reconcile against the FINAL
+// status per gap_id, not raw membership. ──
+
+const LATE_GAP_RECOVERED_AFTER_EVIDENCE_PATTERN =
+  /DETAIL_GAP_RECOVERED for stream 'message_bodies' after already reporting STREAM_EVIDENCE/i;
+
+/**
+ * `getDefaultConnectorDetailGapStore()` returns `unknown` (the SQLite/Postgres
+ * backends are not modeled as a shared exported interface); narrow to only
+ * the methods these tests call, matching the existing pattern in
+ * detail-coverage-recovered-gap-regression.test.ts.
+ */
+interface DetailGapForTest {
+  readonly gap_id: string;
+  readonly status: string;
+  readonly [key: string]: unknown;
+}
+
+interface DetailGapStoreForTest {
+  getGapById: (gapId: string) => Promise<DetailGapForTest | null>;
+  markGapStatus: (gapId: string, status: string, options?: { runId?: string }) => Promise<DetailGapForTest | null>;
+  upsertPendingGap: (input: Record<string, unknown>) => Promise<DetailGapForTest | null>;
+}
+
+function getTestDetailGapStore(): DetailGapStoreForTest {
+  return getDefaultConnectorDetailGapStore() as DetailGapStoreForTest;
+}
+
+/** Seeds a durable pending detail gap on `message_bodies` as a prior run would have left it. */
+async function seedPriorRunPendingGap(
+  store: DetailGapStoreForTest,
+  connectorId: string,
+  recordKey: string
+): Promise<DetailGapForTest> {
+  const seeded = await store.upsertPendingGap({
+    connectorId,
+    connectorInstanceId: makeDefaultAccountConnectorInstanceId("test_user", connectorId),
+    detailLocator: { key: recordKey },
+    discoveredRunId: "prior",
+    grantId: null,
+    lastError: null,
+    lastRunId: "prior",
+    listCursor: null,
+    parentStream: "messages",
+    reason: "temporary_unavailable",
+    recordKey,
+    scope: null,
+    source: { id: connectorId, kind: "connector" },
+    stream: "message_bodies",
+  });
+  assert.ok(seeded, "seeded prior-run pending gap is persisted");
+  return seeded as DetailGapForTest;
+}
+
+test("STREAM_EVIDENCE: a prior-run pending gap recovered THIS run passes honest gapped:0 (not counted as still-gapped)", async () => {
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const m = manifest("stream-evidence-recovered-gap-gapped-zero");
+    await registerManifest(asUrl, m);
+    const store = getTestDetailGapStore();
+    const seeded = await seedPriorRunPendingGap(store, m.connector_id, "m-a");
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-recovered-gapped-zero-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP_RECOVERED', stream: 'message_bodies', record_key: 'm-a', reference_only: true, gap_id: '${seeded.gap_id}' }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'message_bodies', key: 'm-a', data: { id: 'm-a' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, outcomes: { emitted: 1, unchanged: 0, gapped: 0, unaccounted: 0 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 2 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      const result = (await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
+        collectionMode: "incremental",
+        connectorId: m.connector_id,
+        connectorPath,
+        manifest: m as unknown as RuntimeManifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      })) as RuntimeRunConnectorResult;
+      assert.equal(
+        result.status,
+        "succeeded",
+        "an honest gapped:0 after recovering the only prior-run pending gap this run must be accepted"
+      );
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("STREAM_EVIDENCE: a gap recovered by an EARLIER run then re-deferred THIS run counts as gapped:1 (reopened to pending, final status wins)", async () => {
+  // The store's upsertPendingGap ON CONFLICT only keeps a `recovered` status
+  // sticky when `recovered_run_id` equals the re-defer's OWN run_id (a
+  // same-run re-defer of a gap this SAME run already recovered -- covered by
+  // the "new gap discovered and recovered within the SAME run" test above,
+  // and by detail-coverage-recovered-gap-regression.test.ts's "stays
+  // recovered and suppressed" case). A re-defer from a DIFFERENT run than
+  // the one that recovered it reopens the row to `pending` -- so THIS run's
+  // durable append log for the gap ends the run with status `pending`, not
+  // `recovered`, and must count toward gapped.
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const m = manifest("stream-evidence-recovered-then-redeferred");
+    await registerManifest(asUrl, m);
+    const store = getTestDetailGapStore();
+    const seeded = await seedPriorRunPendingGap(store, m.connector_id, "m-a");
+    await store.markGapStatus(seeded.gap_id, "recovered", { runId: "prior" });
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-recovered-redeferred-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP', stream: 'message_bodies', parent_stream: 'messages', record_key: 'm-a', reason: 'temporary_unavailable', retryable: true }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, outcomes: { emitted: 0, unchanged: 0, gapped: 1, unaccounted: 0 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      const result = (await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
+        collectionMode: "incremental",
+        connectorId: m.connector_id,
+        connectorPath,
+        manifest: m as unknown as RuntimeManifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      })) as RuntimeRunConnectorResult;
+      assert.equal(
+        result.status,
+        "succeeded",
+        "a gap recovered by an earlier run and reopened to pending by this run's re-defer must count gapped:1"
+      );
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("STREAM_EVIDENCE: a new gap discovered and recovered within the SAME run (no prior seed) passes honest gapped:0", async () => {
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const m = manifest("stream-evidence-same-run-new-then-recovered");
+    await registerManifest(asUrl, m);
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-same-run-new-recovered-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP', stream: 'message_bodies', parent_stream: 'messages', record_key: 'm-a', reason: 'temporary_unavailable', retryable: true }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      const probeResult = (await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
+        collectionMode: "incremental",
+        connectorId: m.connector_id,
+        connectorPath,
+        manifest: m as unknown as RuntimeManifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      })) as RuntimeRunConnectorResult;
+      const [firstGap] = probeResult.detail_gaps ?? [];
+      assert.ok(firstGap, "the probe run recorded one fresh detail gap");
+      const discoveredGapId = firstGap.gap_id as string;
+      assert.ok(discoveredGapId, "the fresh gap has an id");
+
+      const connectorPath2 = writeConnectorStub(
+        tmpDir,
+        `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-2', data: { id: 'm-2' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-2' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP_RECOVERED', stream: 'message_bodies', record_key: 'm-a', reference_only: true, gap_id: '${discoveredGapId}' }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'message_bodies', key: 'm-a', data: { id: 'm-a' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, outcomes: { emitted: 1, unchanged: 0, gapped: 0, unaccounted: 0 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 2 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+      );
+      const result = (await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
+        collectionMode: "incremental",
+        connectorId: m.connector_id,
+        connectorPath: connectorPath2,
+        manifest: m as unknown as RuntimeManifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      })) as RuntimeRunConnectorResult;
+      assert.equal(
+        result.status,
+        "succeeded",
+        "a gap discovered and recovered within the same run must pass honest gapped:0"
+      );
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("STREAM_EVIDENCE: mixed recovered/pending/terminal durable gaps reconcile exactly (equality, not ceiling)", async () => {
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const m = manifest("stream-evidence-mixed-gap-statuses");
+    await registerManifest(asUrl, m);
+    const store = getTestDetailGapStore();
+    // Seed THREE prior-run gaps: one will be recovered this run, one stays
+    // pending, one is marked terminal (simulating a permanently-unavailable
+    // classification from a prior run's terminate pass). `durableDetailGaps`
+    // is a run-scoped append log populated only by messages THIS run
+    // actually processes -- a durable row untouched by any message this run
+    // never enters it -- so the pending/terminal gaps must be re-observed
+    // (re-deferred) via DETAIL_GAP this run, exactly as a real connector
+    // re-lists still-outstanding work every run until it resolves.
+    const recoveredSeed = await seedPriorRunPendingGap(store, m.connector_id, "m-recovered");
+    await seedPriorRunPendingGap(store, m.connector_id, "m-pending");
+    const terminalSeed = await seedPriorRunPendingGap(store, m.connector_id, "m-terminal");
+    await store.markGapStatus(terminalSeed.gap_id, "terminal", { runId: "prior" });
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-mixed-gap-statuses-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP_RECOVERED', stream: 'message_bodies', record_key: 'm-recovered', reference_only: true, gap_id: '${recoveredSeed.gap_id}' }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'message_bodies', key: 'm-recovered', data: { id: 'm-recovered' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP', stream: 'message_bodies', parent_stream: 'messages', record_key: 'm-pending', reason: 'temporary_unavailable', retryable: true }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP', stream: 'message_bodies', parent_stream: 'messages', record_key: 'm-terminal', reason: 'permanent_unavailable', retryable: false }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 3, outcomes: { emitted: 1, unchanged: 0, gapped: 2, unaccounted: 0 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 2 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      const result = (await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
+        collectionMode: "incremental",
+        connectorId: m.connector_id,
+        connectorPath,
+        manifest: m as unknown as RuntimeManifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      })) as RuntimeRunConnectorResult;
+      assert.equal(
+        result.status,
+        "succeeded",
+        "gapped:2 (the still-pending + terminal gaps, excluding the recovered one) must be accepted"
+      );
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("mutation control: mixed recovered/pending/terminal gaps reject a gapped count that still includes the recovered gap", async () => {
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const m = manifest("stream-evidence-mixed-gap-statuses-over-claim");
+    await registerManifest(asUrl, m);
+    const store = getTestDetailGapStore();
+    const recoveredSeed = await seedPriorRunPendingGap(store, m.connector_id, "m-recovered");
+    await seedPriorRunPendingGap(store, m.connector_id, "m-pending");
+    const terminalSeed = await seedPriorRunPendingGap(store, m.connector_id, "m-terminal");
+    await store.markGapStatus(terminalSeed.gap_id, "terminal", { runId: "prior" });
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-mixed-gap-over-claim-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP_RECOVERED', stream: 'message_bodies', record_key: 'm-recovered', reference_only: true, gap_id: '${recoveredSeed.gap_id}' }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'message_bodies', key: 'm-recovered', data: { id: 'm-recovered' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP', stream: 'message_bodies', parent_stream: 'messages', record_key: 'm-pending', reason: 'temporary_unavailable', retryable: true }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP', stream: 'message_bodies', parent_stream: 'messages', record_key: 'm-terminal', reason: 'permanent_unavailable', retryable: false }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 4, outcomes: { emitted: 1, unchanged: 0, gapped: 3, unaccounted: 0 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 2 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      let rejection: RuntimeRejectionError | null = null;
+      try {
+        await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
+          collectionMode: "incremental",
+          connectorId: m.connector_id,
+          connectorPath,
+          manifest: m as unknown as RuntimeManifest,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl,
+          state: null,
+        });
+      } catch (err) {
+        rejection = err as RuntimeRejectionError;
+      }
+      assert.ok(
+        rejection,
+        "gapped:3 (still counting the recovered gap) must be rejected even though 3 durable rows exist for the stream"
+      );
+      assert.match(rejection?.message || "", GAPPED_MISMATCH_PATTERN);
+      assert.equal(rejection?.failure_reason, "connector_protocol_violation");
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("STREAM_EVIDENCE: a DETAIL_GAP_RECOVERED for the same stream after its accepted STREAM_EVIDENCE is rejected (evidence is a terminal fact; no retroactive reinterpretation)", async () => {
+  // Ordering invariant: STREAM_EVIDENCE is a terminal fact per stream per
+  // run, exactly like the existing late-RECORD and late-DETAIL_GAP guards.
+  // A late recovery arriving after that fact was already accepted must be
+  // rejected before it can mutate the gap store/append log -- it must not be
+  // silently allowed to durably recover a gap the runtime has already
+  // finalized a gapped count for. The connector emits an honest gapped:1
+  // (matching the one real pending durable gap at evidence time), then
+  // attempts to recover that same gap afterward.
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const m = manifest("stream-evidence-late-recovery-after-evidence");
+    await registerManifest(asUrl, m);
+    const store = getTestDetailGapStore();
+    const seeded = await seedPriorRunPendingGap(store, m.connector_id, "m-a");
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-late-recovery-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP', stream: 'message_bodies', parent_stream: 'messages', record_key: 'm-a', reason: 'temporary_unavailable', retryable: true }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, outcomes: { emitted: 0, unchanged: 0, gapped: 1, unaccounted: 0 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP_RECOVERED', stream: 'message_bodies', record_key: 'm-a', reference_only: true, gap_id: '${seeded.gap_id}' }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      let rejection: RuntimeRejectionError | null = null;
+      try {
+        await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
+          collectionMode: "incremental",
+          connectorId: m.connector_id,
+          connectorPath,
+          manifest: m as unknown as RuntimeManifest,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl,
+          state: null,
+        });
+      } catch (err) {
+        rejection = err as RuntimeRejectionError;
+      }
+      assert.ok(
+        rejection,
+        "a DETAIL_GAP_RECOVERED for a stream after its accepted STREAM_EVIDENCE must be rejected, not silently applied"
+      );
+      assert.match(rejection?.message || "", LATE_GAP_RECOVERED_AFTER_EVIDENCE_PATTERN);
+      assert.equal(rejection?.failure_reason, "connector_protocol_violation");
+      // The rejection must land BEFORE the store mutation -- the gap must
+      // still be pending, not recovered, proving no retroactive reinterpretation.
+      const storedRow = await store.getGapById(seeded.gap_id);
+      assert.ok(storedRow, "the durable gap row still exists after the run terminated");
+      assert.equal(
+        storedRow?.status,
+        "pending",
+        "the rejected DETAIL_GAP_RECOVERED must not have durably recovered the gap"
+      );
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("mutation control: a DETAIL_GAP_RECOVERED for a DIFFERENT stream after STREAM_EVIDENCE for the first stream is still accepted", async () => {
+  // Guards against an over-broad fix that rejects ANY DETAIL_GAP_RECOVERED
+  // after ANY STREAM_EVIDENCE, rather than only a same-stream one. This
+  // manifest has two independent state_stream children of `messages`
+  // (message_bodies, message_attachments) so a recovery on the SECOND
+  // stream, after evidence was already accepted for the FIRST, must remain
+  // allowed -- STREAM_EVIDENCE's terminal-fact rule is scoped per stream,
+  // not per run.
+  const { server, asUrl, rsUrl, ownerToken } = await setupServer();
+  try {
+    const m = {
+      capabilities: { human_interaction: [] },
+      connector_id: "stream-evidence-recovery-different-stream-ok",
+      display_name: "stream-evidence-recovery-different-stream-ok",
+      manifest_uri: "https://sources.example/stream-evidence-recovery-different-stream-ok",
+      protocol_version: "0.1.0",
+      streams: [
+        {
+          name: "messages",
+          primary_key: ["id"],
+          schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+          selection: { fields: true, resources: true },
+          semantics: "mutable_state",
+        },
+        {
+          coverage_strategy: "checkpoint_window",
+          name: "message_bodies",
+          primary_key: ["id"],
+          schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+          selection: { fields: true, resources: true },
+          semantics: "append_only",
+          state_stream: "messages",
+        },
+        {
+          coverage_strategy: "checkpoint_window",
+          name: "message_attachments",
+          primary_key: ["id"],
+          schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+          selection: { fields: true, resources: true },
+          semantics: "append_only",
+          state_stream: "messages",
+        },
+      ],
+      version: "0.1.0",
+    };
+    await registerManifest(asUrl, m as unknown as ReturnType<typeof manifest>);
+    const store = getTestDetailGapStore();
+    const seeded = await store.upsertPendingGap({
+      connectorId: m.connector_id,
+      connectorInstanceId: makeDefaultAccountConnectorInstanceId("test_user", m.connector_id),
+      detailLocator: { key: "a-1" },
+      discoveredRunId: "prior",
+      grantId: null,
+      lastError: null,
+      lastRunId: "prior",
+      listCursor: null,
+      parentStream: "messages",
+      reason: "temporary_unavailable",
+      recordKey: "a-1",
+      scope: null,
+      source: { id: m.connector_id, kind: "connector" },
+      stream: "message_attachments",
+    });
+    assert.ok(seeded, "seeded prior-run pending gap on message_attachments is persisted");
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-stream-evidence-recovery-different-stream-"));
+    const connectorPath = writeConnectorStub(
+      tmpDir,
+      `
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'messages', key: 'm-1', data: { id: 'm-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STATE', stream: 'messages', cursor: { cursor: 'messages-1' } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'message_bodies', key: 'm-a', data: { id: 'm-a' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_bodies', considered: 1, outcomes: { emitted: 1, unchanged: 0, gapped: 0, unaccounted: 0 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DETAIL_GAP_RECOVERED', stream: 'message_attachments', record_key: 'a-1', reference_only: true, gap_id: '${seeded.gap_id}' }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'message_attachments', key: 'a-1', data: { id: 'a-1' }, emitted_at: new Date().toISOString() }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'STREAM_EVIDENCE', reference_only: true, stream: 'message_attachments', considered: 1, outcomes: { emitted: 1, unchanged: 0, gapped: 0, unaccounted: 0 } }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 3 }) + '\\n');
+  rl.close();
+  process.exit(0);
+`
+    );
+    try {
+      const result = (await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
+        collectionMode: "incremental",
+        connectorId: m.connector_id,
+        connectorPath,
+        manifest: m as unknown as RuntimeManifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      })) as RuntimeRunConnectorResult;
+      assert.equal(
+        result.status,
+        "succeeded",
+        "a DETAIL_GAP_RECOVERED for a DIFFERENT stream after STREAM_EVIDENCE for the first stream must remain accepted"
+      );
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
     }
   } finally {
     await closeServer(server);

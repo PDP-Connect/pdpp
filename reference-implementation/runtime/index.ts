@@ -8,6 +8,7 @@
  * handles INTERACTION, and ingests RECORDs to the RS via owner token.
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
@@ -2634,14 +2635,23 @@ function assertStreamEvidenceGappedMatchesDurableGaps(
   evidenceGapped: number,
   durableDetailGaps: readonly DurableDetailGap[]
 ): void {
-  const durableGapIdsForStream = new Set(
-    durableDetailGaps.filter((gap) => gap.stream === stream).map((gap) => gap.gap_id)
-  );
-  if (evidenceGapped !== durableGapIdsForStream.size) {
+  // The append log can record the same gap_id more than once in a run (e.g.
+  // pending, then later recovered): last-write-wins per gap_id reflects the
+  // truthful end-of-run status. A gap recovered this run was hydrated this
+  // run, so it must not count toward outcomes.gapped even though it was
+  // pending earlier in the same run.
+  const finalStatusByGapId = new Map<string, string | undefined>();
+  for (const gap of durableDetailGaps) {
+    if (gap.stream === stream) {
+      finalStatusByGapId.set(gap.gap_id, gap.status);
+    }
+  }
+  const outstandingGapCount = [...finalStatusByGapId.values()].filter((status) => status !== "recovered").length;
+  if (evidenceGapped !== outstandingGapCount) {
     throw new Error(
       `Connector emitted invalid STREAM_EVIDENCE for stream '${stream}': outcomes.gapped ` +
         `(${evidenceGapped}) does not equal this run's distinct durable DETAIL_GAP count for the stream ` +
-        `(${durableGapIdsForStream.size})`
+        `(${outstandingGapCount})`
     );
   }
 }
@@ -2792,7 +2802,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // Compute runId before spawn so it can be threaded into the child env
   // alongside the streaming registration token. The traceContext is
   // computed below alongside the rest of the run-scoped state.
-  const spawnRunId = opts.runId || `run_${Date.now()}`;
+  // A cryptographically strong UUID keeps the fallback globally
+  // collision-resistant: run_id is the sole uniqueness key for the durable
+  // STREAM_EVIDENCE claim registry, and a millisecond-granularity fallback
+  // can collide across unrelated concurrent runs.
+  const spawnRunId = opts.runId || `run_${randomUUID()}`;
 
   const launchConfig = buildConnectorLaunchConfig({
     automationMode,
@@ -5452,6 +5466,18 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // Proven by the validator: non-empty gap_id and in-scope stream.
       const recoveredGapId = msg.gap_id as string;
       const recoveredStream = msg.stream as string;
+      // Same terminal-fact rule as handleRecordMessage/handleDetailGapMessage:
+      // STREAM_EVIDENCE is a terminal fact per stream per run. A recovery for
+      // the same stream afterward must not be allowed to durably mutate the
+      // gap store or append log -- doing so would let a late recovery
+      // retroactively reinterpret a gapped count the runtime already
+      // accepted as final, rather than being reconciled by a LATER run. This
+      // check runs before any store/append-log mutation below.
+      if (streamEvidenceByStream.has(recoveredStream)) {
+        throw new Error(
+          `Connector emitted DETAIL_GAP_RECOVERED for stream '${recoveredStream}' after already reporting STREAM_EVIDENCE for it this run`
+        );
+      }
       await flushAll();
       const lease = allServedGapLeases.get(recoveredGapId);
       if (msg.lease_id && (!lease || lease.leaseId !== msg.lease_id)) {

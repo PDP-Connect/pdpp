@@ -23,6 +23,7 @@
  * guard → preRunGate → launchRun), pre-run gate, or dispatch governor.
  */
 
+import { randomUUID } from "node:crypto";
 import {
   BROWSER_SURFACE_LEASE_STATUSES,
   // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
@@ -1042,7 +1043,13 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     const originalOnProgress = call.onProgress;
     const activeRunStore = selectActiveRunStore();
     const watchdog = createAttemptWatchdog(maxRunWallClockMs);
-    const runId = call.runId || `run_${Date.now()}`;
+    // A cryptographically strong UUID keeps this fallback globally
+    // collision-resistant: run_id is the sole uniqueness key for the durable
+    // STREAM_EVIDENCE claim registry, and a millisecond-granularity fallback
+    // can collide across unrelated concurrent runs. In practice
+    // buildAttemptCall always populates call.runId before this is reached,
+    // so this is a defensive fallback for direct callers of this function.
+    const runId = call.runId || `run_${randomUUID()}`;
     const traceContext = call.traceContext ?? createTraceContext();
     const admitted = await reserveActiveRunRow(
       activeRunStore,
@@ -1163,7 +1170,12 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     return {
       ...call,
       automationMode: attemptPolicy.automation_mode,
-      runId: call.runId ?? `run_${Date.now()}_${attempt}`,
+      // A cryptographically strong UUID keeps this fallback globally
+      // collision-resistant across concurrently dispatched schedules (two
+      // connectors triggered in the same scheduler tick, both on their first
+      // attempt, previously produced an identical run_<ms>_1 id). The
+      // `_${attempt}` suffix is kept for attempt-number diagnostics.
+      runId: call.runId ?? `run_${randomUUID()}_${attempt}`,
       traceContext: call.traceContext ?? createTraceContext(),
       triggerKind: attemptPolicy.trigger_kind,
     };
