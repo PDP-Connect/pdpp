@@ -41,7 +41,10 @@ if (!(manifestsDir && referenceFixturesDir)) {
 }
 
 initDb(":memory:");
-await initPostgresStorage({ backend: "postgres", databaseUrl });
+await initPostgresStorage(
+  { backend: "postgres", databaseUrl },
+  { testOnlyAlreadyAdmittedChildAttachment: process.env.RACE_CHILD_ATTACHMENT }
+);
 process.stdout.write(`${JSON.stringify({ pid: process.pid, ready: true })}\n`);
 
 try {
