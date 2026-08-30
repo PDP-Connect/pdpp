@@ -1241,7 +1241,8 @@ export function createPostgresSchedulerStore(): SchedulerStore {
            started_at,
            completed_at,
            error,
-           attempt
+           attempt,
+           scheduler_managed
          FROM run_history
          WHERE connector_instance_id = $1
            AND status <> 'running'
@@ -1542,7 +1543,8 @@ export function createPostgresSchedulerStore(): SchedulerStore {
            started_at,
            completed_at,
            error,
-           attempt
+           attempt,
+           scheduler_managed
          FROM (
            SELECT *
            FROM run_history
