@@ -367,8 +367,9 @@ export function buildHostedMcpAuthorizationDetailForConnector(
 
 /**
  * Fetches the hosted MCP picker rows for the given owner. One row per
- * configured connection (or one unconfigured-connector row if no connections
- * exist). Sorted by connector type label then connection name.
+ * configured connection. A connector the owner has never connected renders
+ * no row at all — see `listHostedMcpPickerRows` for why. Sorted by connector
+ * type label then connection name.
  */
 async function buildConnectorPickerRows(
   connectorId: string,
@@ -383,10 +384,10 @@ async function buildConnectorPickerRows(
   const connectorLabel = ownerFacingConnectorLabel(manifest.display_name || manifest.name, connectorMetaToken);
   const manifestStreams = Array.isArray(manifest.streams) ? manifest.streams : [];
   // The manifest list stays the full grantable catalog for the checkbox rows
-  // (`HostedMcpPickerRow.streams`): the owner may pre-authorize a stream that
-  // has no data yet, and hiding it here would silently shrink what a
-  // continuous grant can ever cover. Only the owner-facing "available" COUNT
-  // must reflect real holdings — see `listStreamsWithRecords` below.
+  // (`HostedMcpPickerRow.streams`): a held connection may pre-authorize a
+  // stream that has no data yet, and hiding it here would silently shrink
+  // what a continuous grant can ever cover. Only the owner-facing "available"
+  // COUNT must reflect real holdings — see `listStreamsWithRecords` below.
   const streamSummaries = manifestStreams.map((stream) => ({
     description: typeof stream.description === "string" ? stream.description : null,
     name: stream.name,
@@ -394,27 +395,15 @@ async function buildConnectorPickerRows(
   const connections = await caps.listActiveBindingsForGrant({ connectorId, ownerSubjectId }).catch(() => []);
   if (connections.length === 0) {
     // No active connection for this connector at all: the owner has never
-    // held any of its data, so "N streams available" would state a catalog
-    // fact as a holdings fact. Say the true thing instead — this source
-    // isn't connected — while still letting the owner pre-authorize it below
-    // (streams stays the manifest list; the checkbox stays enabled).
-    return [
-      {
-        connectionId: null,
-        connectionName: null,
-        connectorId,
-        connectorTypeLabel: connectorLabel,
-        formValue: caps.encodeHostedMcpSelection({ connectionId: null, connectorId }),
-        meta: buildPickerRowMeta({
-          connectorKey: connectorMetaToken,
-          connectorLabel,
-          notConnected: true,
-          streamCount: 0,
-        }),
-        sourceKey: caps.hostedMcpSourceKey({ connectionId: null, connectorId }),
-        streams: streamSummaries,
-      },
-    ];
+    // held any of its data, and the AS has no eligible instance to satisfy a
+    // grant against it. Rendering a row here (and letting it into
+    // `authorization_details`) is exactly the defect this fixes: the picker
+    // offered sources the owner does not have, and a select-all over them
+    // hard-failed the whole submission with
+    // `source.authorization_details_invalid` once the AS found zero eligible
+    // instances. Emit no row — the registry catalog is not the owner's
+    // holdings.
+    return [];
   }
   return await Promise.all(
     connections.map(async (conn) => {
@@ -526,25 +515,23 @@ function buildPickerRowMeta({
   connectorLabel,
   connectorKey,
   streamCount,
-  notConnected = false,
   suffix,
 }: {
   connectorLabel: string;
   connectorKey: string;
   streamCount: number;
-  notConnected?: boolean;
   suffix?: string;
 }): string {
   const parts: string[] = [];
   // `streamCount` here is real holdings (streams with at least one record),
-  // never manifest cardinality — see `buildConnectorPickerRows`. A source the
-  // owner has never connected gets its own honest phrase instead of "0
-  // streams available", which would read as a broken empty connection rather
-  // than "you don't have this yet". A connected-but-not-yet-synced source
-  // still says "0 streams available": that IS the true current holdings, and
-  // "available" there means "available right now", not "will exist".
+  // never manifest cardinality — see `buildConnectorPickerRows`. Every row
+  // reaching this function is for a connection the owner actually holds (a
+  // connector with zero active bindings renders no row at all), so a
+  // connected-but-not-yet-synced source says "0 streams available": that IS
+  // the true current holdings, and "available" there means "available right
+  // now", not "will exist".
   const availabilityPhrase = streamCount === 1 ? "1 stream available" : `${streamCount} streams available`;
-  parts.push(notConnected ? "Not connected yet" : availabilityPhrase);
+  parts.push(availabilityPhrase);
   // Only surface the technical connector key when the owner-facing label does
   // not already carry it, so we never repeat the same identity twice.
   if (normalizeConnectorLabel(connectorLabel) !== normalizeConnectorLabel(connectorKey)) {
