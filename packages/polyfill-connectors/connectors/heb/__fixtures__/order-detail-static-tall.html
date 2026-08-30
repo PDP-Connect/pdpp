@@ -1,0 +1,26 @@
+<!-- Synthetic static-list fixture: every row is mounted in document order,
+     the document is taller than the viewport, and H-E-B's declared count is
+     supplied by the order-list card. No row exposes a positional attribute. -->
+<!doctype html>
+<html>
+  <head>
+    <style>
+      li {
+        min-height: 80px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <ul id="rows"></ul>
+    </main>
+    <script>
+      const rows = document.querySelector("#rows");
+      rows.innerHTML = Array.from(
+        { length: 20 },
+        (_, index) =>
+          `<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/static/${index}">Static item ${index}</a><span data-qe-id="checkoutItemPrice">$1.00</span><span data-qe-id="orderItemQty">Qty: 1</span></li>`
+      ).join("");
+    </script>
+  </body>
+</html>

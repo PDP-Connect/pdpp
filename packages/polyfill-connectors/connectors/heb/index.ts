@@ -95,6 +95,7 @@ const DETAIL_SURFACE_POLL_MS = 250;
 const DETAIL_SURFACE_STABLE_POLLS = 3;
 
 type DetailSurfaceSettlement = "complete" | "incomplete" | "timeout" | "error";
+type StaticListEvidence = "declared_count" | null;
 
 interface DetailSurfaceRow {
   html: string;
@@ -111,6 +112,7 @@ interface DetailSurfaceState {
   rows: DetailSurfaceRow[];
   scrollHeight: number;
   scrollTop: number;
+  staticListEvidence: StaticListEvidence;
 }
 
 interface DetailSurfaceDiagnostics {
@@ -125,6 +127,7 @@ interface DetailSurfaceDiagnostics {
   scrollTop: number;
   settlement: DetailSurfaceSettlement;
   snapshots: number;
+  staticListEvidence: StaticListEvidence;
 }
 
 interface DetailSurfaceResult {
@@ -141,7 +144,11 @@ async function hydrationWait(): Promise<void> {
  * serialized into the browser by Playwright, so it has no connector state and
  * does not depend on H-E-B-specific React internals. */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this serialized probe keeps row capture, scrollport discovery, and source-control honoring atomic
-function inspectAndAdvanceDetailSurface(lastAction: string | null): DetailSurfaceState {
+function inspectAndAdvanceDetailSurface(input: {
+  expectedItemCount: number | null;
+  lastAction: string | null;
+}): DetailSurfaceState {
+  const { expectedItemCount, lastAction } = input;
   const row = document.querySelector('a[data-qe-id="itemRowDetailsName"]')?.closest("li") ?? document.body;
   let scrollPort: Element | Document = document.scrollingElement ?? document.documentElement;
   for (let current: Element | null = row; current; current = current.parentElement) {
@@ -158,37 +165,34 @@ function inspectAndAdvanceDetailSurface(lastAction: string | null): DetailSurfac
     ? Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)
     : scrollPort.scrollHeight;
   const clientHeight = isDocumentScrollPort ? window.innerHeight : scrollPort.clientHeight;
-  const isStaticDocumentSurface =
-    !isDocumentScrollPort &&
-    (scrollPort === document.documentElement || scrollPort === document.scrollingElement) &&
-    scrollHeight <= clientHeight;
-  const rows = [...document.querySelectorAll<HTMLAnchorElement>('a[data-qe-id="itemRowDetailsName"]')].map(
-    (link, itemIndex) => {
-      const itemRow = link.closest("li") ?? link;
-      const positionalIdentity = ["data-index", "aria-posinset"]
-        .map((attribute) => {
-          const value = itemRow.getAttribute(attribute)?.trim();
-          return value ? `position:${attribute}=${value}` : null;
-        })
-        .find((value) => value);
-      // The old full-page fixture and non-virtual small orders have every row
-      // mounted and no provider position. Document order is explicit and
-      // stable for that bounded surface. A scrollable/virtual surface without
-      // provider position remains an error because its local index can repeat
-      // after remount.
-      const key = positionalIdentity ?? (isStaticDocumentSurface ? `position:document-order=${itemIndex}` : null);
-      if (!key) {
-        throw new Error("detail row has no explicit positional identity");
-      }
-      const department =
-        itemRow.closest("section")?.querySelector('[data-qe-id="orderDetailsGroupTitle"]')?.textContent ?? "";
-      const escapedDepartment = department.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-      const wrappedHtml = escapedDepartment
-        ? `<section><h2 data-qe-id="orderDetailsGroupTitle">${escapedDepartment}</h2>${itemRow.outerHTML}</section>`
-        : itemRow.outerHTML;
-      return { html: wrappedHtml, key };
+  const rowLinks = [...document.querySelectorAll<HTMLAnchorElement>('a[data-qe-id="itemRowDetailsName"]')];
+  // A quiet, viewport-fitting document is not evidence that every row is
+  // mounted: an unanchored virtualizer can hide its reserve with overflow.
+  // Document order is safe only when H-E-B's declared count matches the
+  // complete mounted row set on this snapshot. Otherwise position-free rows
+  // must fail closed rather than become a local index that can repeat.
+  const staticListEvidence: StaticListEvidence =
+    expectedItemCount !== null && rowLinks.length === expectedItemCount ? "declared_count" : null;
+  const rows = rowLinks.map((link, itemIndex) => {
+    const itemRow = link.closest("li") ?? link;
+    const positionalIdentity = ["data-index", "aria-posinset"]
+      .map((attribute) => {
+        const value = itemRow.getAttribute(attribute)?.trim();
+        return value ? `position:${attribute}=${value}` : null;
+      })
+      .find((value) => value);
+    const key = positionalIdentity ?? (staticListEvidence ? `position:document-order=${itemIndex}` : null);
+    if (!key) {
+      throw new Error("detail row has no explicit positional identity");
     }
-  );
+    const department =
+      itemRow.closest("section")?.querySelector('[data-qe-id="orderDetailsGroupTitle"]')?.textContent ?? "";
+    const escapedDepartment = department.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    const wrappedHtml = escapedDepartment
+      ? `<section><h2 data-qe-id="orderDetailsGroupTitle">${escapedDepartment}</h2>${itemRow.outerHTML}</section>`
+      : itemRow.outerHTML;
+    return { html: wrappedHtml, key };
+  });
   const atEnd = scrollTop + clientHeight >= scrollHeight - 2;
   const loading = Boolean(document.querySelector('[aria-busy="true"], [data-loading="true"]'));
   const controls = [...document.querySelectorAll<HTMLElement>('button, [role="button"]')].filter((candidate) => {
@@ -235,6 +239,7 @@ function inspectAndAdvanceDetailSurface(lastAction: string | null): DetailSurfac
     rows,
     scrollHeight,
     scrollTop,
+    staticListEvidence,
   };
 }
 
@@ -247,6 +252,7 @@ function detailSurfaceErrorMessage(diagnostics: DetailSurfaceDiagnostics): strin
     `scroll_top=${Math.round(diagnostics.scrollTop)}`,
     `scroll_height=${Math.round(diagnostics.scrollHeight)}`,
     `client_height=${Math.round(diagnostics.clientHeight)}`,
+    `static_evidence=${diagnostics.staticListEvidence ?? "none"}`,
     `loading=${diagnostics.loading}`,
     `action=${diagnostics.lastAction ?? "none"}`,
     ...(diagnostics.lastError ? [`error=${diagnostics.lastError.slice(0, 160)}`] : []),
@@ -278,12 +284,16 @@ async function collectDetailSurface(
     rows: [],
     scrollHeight: 0,
     scrollTop: 0,
+    staticListEvidence: null,
   };
   let lastError: string | null = null;
 
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      latest = await page.evaluate(inspectAndAdvanceDetailSurface, lastAction);
+      latest = await page.evaluate(inspectAndAdvanceDetailSurface, {
+        expectedItemCount: expectedRows,
+        lastAction,
+      });
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
       break;
@@ -350,6 +360,7 @@ async function collectDetailSurface(
     loading: latest.loading,
     scrollHeight: latest.scrollHeight,
     scrollTop: latest.scrollTop,
+    staticListEvidence: latest.staticListEvidence,
     settlement,
     snapshots,
   };
