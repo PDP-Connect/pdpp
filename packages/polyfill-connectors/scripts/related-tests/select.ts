@@ -70,14 +70,30 @@ function collectDependentTestFiles(graph: DependencyGraph, changedFile: string):
 export interface SelectTestsInput {
   /** Every package-relative *.ts path the package considers source (used to build the fallback inventory). */
   readonly allRelativePaths: readonly string[];
-  /** Package-relative paths that changed, as reported by git. */
+  /** Package-relative paths that changed (added/copied/modified/renamed/type-changed), as reported by git. */
   readonly changedRelativePaths: readonly string[];
+  /**
+   * Package-relative paths git reports as deleted (diff-filter=D), on either
+   * side of a rename. A deleted path can never appear in the dependency
+   * graph to be walked, so it is handled as its own fail-closed case rather
+   * than being folded into `changedRelativePaths`: any element here forces
+   * FULL_SUITE unconditionally, because a deletion may break dependents that
+   * only the (now-gone) node's reverse edges could have named.
+   */
+  readonly deletedRelativePaths: readonly string[];
   readonly graph: DependencyGraph;
   readonly packageRoot: string;
 }
 
 export function selectRelatedTests(input: SelectTestsInput): SelectionResult {
-  const { packageRoot, graph, allRelativePaths, changedRelativePaths } = input;
+  const { packageRoot, graph, allRelativePaths, changedRelativePaths, deletedRelativePaths } = input;
+
+  if (deletedRelativePaths.length > 0) {
+    return {
+      kind: FULL_SUITE,
+      reason: `${deletedRelativePaths.length} deleted path(s) (e.g. "${deletedRelativePaths[0]}"); a deletion is absent from the dependency graph and its dependents cannot be walked`,
+    };
+  }
 
   if (changedRelativePaths.length === 0) {
     return { kind: "related", testFiles: [], reason: "no changed files" };

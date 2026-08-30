@@ -53,36 +53,63 @@ function listAllTsFiles(root: string, dir: string, out: string[]): void {
 }
 
 /**
+ * Package-relative paths reported by a git diff filtered to a single set of
+ * `--diff-filter` letters, restricted to this package's own subtree.
+ */
+function diffPathsInPackage(args: readonly string[]): string[] {
+  const output = execFileSync("git", [...args], {
+    cwd: PACKAGE_ROOT,
+    encoding: "utf8",
+  });
+  const packagePrefix = relative(gitRoot(), PACKAGE_ROOT);
+  const paths = new Set<string>();
+  for (const line of output.split("\n")) {
+    if (line.length > 0 && line.startsWith(`${packagePrefix}/`)) {
+      paths.add(relative(packagePrefix, line));
+    }
+  }
+  return [...paths];
+}
+
+export interface ChangedAndDeleted {
+  readonly changedRelativePaths: string[];
+  readonly deletedRelativePaths: string[];
+}
+
+/**
  * Changed files = committed divergence from `baseRef` (merge-base diff, so a
  * feature branch's own history is compared against where it forked, not
  * against wherever `baseRef` has since moved) UNION uncommitted working-tree
  * changes (staged + unstaged). The union matters for local iteration: a
  * developer editing a file has not committed it yet, and this selector's
  * whole purpose is fast local feedback on exactly that in-progress edit.
+ *
+ * Deletions are tracked separately from `--diff-filter=ACMRT` changes: `D`
+ * (Deleted) is deliberately excluded from that filter because a deleted path
+ * can never be looked up in the dependency graph. A rename is reported by
+ * git (with the default `diff.renames` config in this repo) as a delete of
+ * the old path plus an add of the new path, so it is covered by the same
+ * deleted-paths query with no separate handling.
  */
-function getChangedFiles(baseRef: string): string[] {
-  const committed = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACMRT", `${baseRef}...HEAD`], {
-    cwd: PACKAGE_ROOT,
-    encoding: "utf8",
-  });
-  const uncommitted = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACMRT", "HEAD"], {
-    cwd: PACKAGE_ROOT,
-    encoding: "utf8",
-  });
-  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
-    cwd: PACKAGE_ROOT,
-    encoding: "utf8",
-  });
-  const packagePrefix = relative(gitRoot(), PACKAGE_ROOT);
-  const changed = new Set<string>();
-  for (const output of [committed, uncommitted, untracked]) {
-    for (const line of output.split("\n")) {
-      if (line.length > 0 && line.startsWith(`${packagePrefix}/`)) {
-        changed.add(relative(packagePrefix, line));
-      }
-    }
+function getChangedFiles(baseRef: string): ChangedAndDeleted {
+  const changedRelativePaths = new Set<string>();
+  for (const path of [
+    ...diffPathsInPackage(["diff", "--name-only", "--diff-filter=ACMRT", `${baseRef}...HEAD`]),
+    ...diffPathsInPackage(["diff", "--name-only", "--diff-filter=ACMRT", "HEAD"]),
+    ...diffPathsInPackage(["ls-files", "--others", "--exclude-standard"]),
+  ]) {
+    changedRelativePaths.add(path);
   }
-  return [...changed];
+
+  const deletedRelativePaths = new Set<string>();
+  for (const path of [
+    ...diffPathsInPackage(["diff", "--name-only", "--diff-filter=D", `${baseRef}...HEAD`]),
+    ...diffPathsInPackage(["diff", "--name-only", "--diff-filter=D", "HEAD"]),
+  ]) {
+    deletedRelativePaths.add(path);
+  }
+
+  return { changedRelativePaths: [...changedRelativePaths], deletedRelativePaths: [...deletedRelativePaths] };
 }
 
 function gitRoot(): string {
@@ -99,8 +126,9 @@ function main(): void {
   }
 
   let changedRelativePaths: string[];
+  let deletedRelativePaths: string[];
   try {
-    changedRelativePaths = getChangedFiles(baseRef);
+    ({ changedRelativePaths, deletedRelativePaths } = getChangedFiles(baseRef));
   } catch (error) {
     console.error(`[related-tests] failed to compute changed files via git: ${(error as Error).message}`);
     console.error("[related-tests] treat this as FULL_SUITE — do not skip tests.");
@@ -119,6 +147,7 @@ function main(): void {
         graph,
         allRelativePaths,
         changedRelativePaths,
+        deletedRelativePaths,
       });
       emit(result, asJson);
     })
