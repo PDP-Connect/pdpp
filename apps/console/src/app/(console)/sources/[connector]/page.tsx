@@ -53,6 +53,7 @@ import {
   type RefConnectionHealthSnapshot,
   type RefConnectorRunSummary,
   type RefConnectorSummary,
+  type RefCoverageHorizon,
   type RefRenderedVerdict,
   type RefRequiredAction,
   type RefSchedule,
@@ -74,8 +75,10 @@ import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } fr
 import { findManifestForConnectorId } from "../lib/relationships.ts";
 import { formatConnectorHeaderCount } from "../sources-view-model.ts";
 import { pauseConnectionAction, resumeConnectionAction, resumeConnectorScheduleAction } from "./actions.ts";
+import { acknowledgeConnectionLossAction, confirmCoverageHorizonAction } from "./confirmation-actions.ts";
 import type { ConfigRevisionWire, ConnectionConfigWire } from "./connection-config-view-model.ts";
 import { ConnectionConfiguration } from "./connection-configuration.tsx";
+import { ConnectionConfirmation } from "./connection-confirmation.tsx";
 import { ConnectionDangerZone } from "./connection-danger-zone.tsx";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { RenameConnection } from "./rename-connection.tsx";
@@ -156,9 +159,13 @@ export interface ConnectorPageModel {
   connectionRenderedVerdict: RefRenderedVerdict | null;
   connectorId: string;
   connectorInstanceId: string | null;
+  /** Current durable horizon disclosures from the reference owner projection. */
+  coverageHorizons: readonly RefCoverageHorizon[];
   deviceLabels: string[];
   displayName: string;
   headerCount: string;
+  /** Latest-run structured gap evidence; never derived from rendered copy. */
+  latestKnownGaps: readonly unknown[] | null | undefined;
   manifest: ConnectorManifest;
   manualUploadHref: string | null;
   overview: ConnectorOverview;
@@ -457,6 +464,7 @@ async function loadConnectorPageModel(
   const { schedule } = diagnostics;
   const overview = toConnectorOverview(summary, streams);
   const recentRuns = connectionRecentRuns(summary);
+  const latestKnownGaps = summary.last_run?.known_gaps;
   const totalRecords = summary.total_records;
   // Per-stream collection facts from the reference's derived `collection_report`
   // (absent on references predating the field → empty map → Streams section
@@ -519,9 +527,11 @@ async function loadConnectorPageModel(
     connectionRenderedVerdict: summary.rendered_verdict ?? null,
     connectorId,
     connectorInstanceId,
+    coverageHorizons: summary.coverage_horizons ?? [],
     deviceLabels,
     displayName,
     headerCount,
+    latestKnownGaps,
     manifest,
     manualUploadHref: manualUploadHrefForConnection(connectorId, connectionId, manifest),
     overview,
@@ -653,9 +663,11 @@ function ConnectorPageView({
     connectorId,
     connectorInstanceId,
     connectionLabelSeed,
+    coverageHorizons,
     deviceLabels,
     displayName,
     headerCount,
+    latestKnownGaps,
     manifest,
     manualUploadHref,
     overview,
@@ -809,6 +821,17 @@ function ConnectorPageView({
       <AcquisitionCoverageSection
         connectionId={connectorInstanceId ?? connectionId}
         coverage={overview.acquisitionCoverage ?? null}
+      />
+
+      <ConnectionConfirmation
+        acknowledgeConnectionLossAction={acknowledgeConnectionLossAction}
+        acknowledgedLoss={connectionRenderedVerdict?.detail.acknowledged_loss ?? null}
+        confirmCoverageHorizonAction={confirmCoverageHorizonAction}
+        connectionId={connectorInstanceId ?? connectionId}
+        error={dangerError}
+        latestKnownGaps={latestKnownGaps}
+        message={dangerMessage}
+        pendingHorizons={coverageHorizons}
       />
 
       <Section

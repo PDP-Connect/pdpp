@@ -304,6 +304,12 @@ export interface RenderedProgress {
  * attention layer drops. Owner-only — never grant-scoped.
  */
 export interface VerdictDetail {
+  /**
+   * Durable owner acknowledgement, carried verbatim from the projection.
+   * This is structured evidence for owner controls; it is never inferred from
+   * the rendered forward statement and is removed by the grant-scoped mapper.
+   */
+  readonly acknowledged_loss: AcknowledgedLossRecord | null;
   readonly collection_rate: ConnectionHealthSnapshot["collection_rate"];
   readonly conditions: ConnectionHealthSnapshot["conditions"];
   /**
@@ -2736,9 +2742,11 @@ function buildSuppressed(
 function buildDetail(
   snapshot: ConnectionHealthSnapshot,
   disposition: ForwardDisposition,
-  suppressed: readonly SuppressedSignal[]
+  suppressed: readonly SuppressedSignal[],
+  acknowledgedLoss: AcknowledgedLossRecord | null = null
 ): VerdictDetail {
   return {
+    acknowledged_loss: acknowledgedLoss,
     collection_rate: snapshot.collection_rate,
     conditions: snapshot.conditions,
     coverage_horizons: snapshot.coverage_horizons,
@@ -3045,11 +3053,14 @@ function assertInvariants(
 }
 
 /** A minimal, honest grey verdict used as the prod fallback on an invariant failure. */
-function safeGreyVerdict(snapshot: ConnectionHealthSnapshot): RenderedVerdict {
+function safeGreyVerdict(
+  snapshot: ConnectionHealthSnapshot,
+  acknowledgedLoss: AcknowledgedLossRecord | null = null
+): RenderedVerdict {
   return {
     annotations: [],
     channel: "calm",
-    detail: buildDetail(snapshot, "complete", []),
+    detail: buildDetail(snapshot, "complete", [], acknowledgedLoss),
     forward_statement: "Status could not be classified.",
     pill: { label: "Not measured", tone: "grey" },
     progress: buildProgress(null, "checking", [], snapshot.badges.syncing),
@@ -3177,7 +3188,7 @@ export function synthesizeRenderedVerdict(
 
   // ── inspection layer: suppressed signals routed to detail, never deleted ──
   const suppressed = buildSuppressed(snapshot, channel, runtime_ok);
-  const detail = buildDetail(snapshot, disposition, suppressed);
+  const detail = buildDetail(snapshot, disposition, suppressed, acknowledgedLoss);
 
   const primary = actions[0] ?? null;
   const trace: CalibrationTrace = {
@@ -3210,7 +3221,7 @@ export function synthesizeRenderedVerdict(
     if (shouldThrowOnViolation()) {
       throw new VerdictInvariantError(violations.join("; "));
     }
-    return safeGreyVerdict(snapshot);
+    return safeGreyVerdict(snapshot, acknowledgedLoss);
   }
   return verdict;
 }
