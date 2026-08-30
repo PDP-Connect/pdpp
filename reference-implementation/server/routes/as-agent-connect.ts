@@ -263,12 +263,23 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
    *
    * The rewrite is best-effort: the returned body is already correct, so a
    * lost race or a failed write must not turn a valid redemption into an
-   * error. It only means the next replay normalizes again on read.
+   * error. It only means the next replay normalizes again on read. The write
+   * is therefore wrapped in its own try/catch: an uncaught rejection here
+   * (e.g. a dropped connection) would otherwise propagate out of `redeem`
+   * and fail an already-normalized, already-valid redemption.
    */
   const replayStoredResponse = async (id: string, responseJson: string): Promise<Record<string, unknown>> => {
     const { body, rewritten } = parseStoredResponse(responseJson);
     if (rewritten) {
-      await rewriteStoredResponse(id, responseJson, JSON.stringify(body));
+      try {
+        await rewriteStoredResponse(id, responseJson, JSON.stringify(body));
+      } catch (err) {
+        console.error(
+          `[agent-connect] best-effort response_json healing write failed for attempt ${id}, returning normalized body anyway: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
     }
     return body;
   };
