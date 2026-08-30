@@ -509,11 +509,11 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
  *
  *   - `source_structure_changed` — the export affordance or its date-range
  *     dialog was missing/unrecognized (`no_export_affordance`,
- *     `export_dialog_unexpected_shape`). These are the two phases the ladder
- *     already treats as fatal (`isFatalDiagPhase`): they don't get better with
- *     a shorter window, so retrying is pointless until the connector's
- *     selectors are revisited. This is the "source UI/API changed or terminally
- *     unsupported" outcome.
+ *     `export_dialog_unexpected_shape`, `export_dialog_fill_failed`). These
+ *     phases are structural and the ladder treats them as fatal
+ *     (`isFatalDiagPhase`): they don't get better with a shorter window, so
+ *     retrying is pointless until the connector's selectors are revisited.
+ *     This is the "source UI/API changed or terminally unsupported" outcome.
  *   - `export_pressure` — the affordance and dialog were found and the export
  *     was submitted, but the download/body never materialized, the click
  *     failed, or the dialog reported a transient error
@@ -1371,21 +1371,22 @@ async function emitDialogUnexpectedShapeDiagnostic(
   });
 }
 
-/** Click Export, then confirm the date-range selector rendered.
+async function isVisibleActionableField(field: Locator): Promise<boolean> {
+  try {
+    await field.waitFor({ state: "visible", timeout: EXPORT_DIALOG_DELAY_MS });
+    return (await field.isEnabled()) && (await field.isEditable());
+  } catch {
+    return false;
+  }
+}
+
+/** Click Export, select date-range when offered, then confirm the date fields.
  *
- * The readiness check is a bounded WAIT (`waitFor`), not a fixed sleep
- * followed by a single immediate `.count()`. A one-shot count taken after a
- * fixed delay cannot tell "the dialog will never render this select" apart
- * from "the dialog just hasn't finished rendering yet" — on a page that
- * renders a moment slower than `EXPORT_DIALOG_DELAY_MS` (network jitter,
- * client-side render variance), the one-shot check reads a false
- * `export_dialog_unexpected_shape`, which `tryExportLadder` treats as fatal
- * and reports as `export_affordance_missing` (a "source changed, needs a
- * code fix" outcome) instead of the transient rendering delay it actually
- * was. `waitFor` polls up to the same overall budget and resolves the
- * instant the select appears, so a slow-but-real render still succeeds;
- * only a select that never appears within the budget reaches the existing
- * unexpected-shape/Escape path, unchanged. */
+ * Both waits are bounded. The selection control is optional, but when it is
+ * present it must be applied before checking the date fields because USAA can
+ * render or enable those fields as a consequence of choosing date-range.
+ * The date-field check is therefore the post-selection structural gate.
+ */
 async function openExportDialog(page: Page, located: LocatedExportPage, options: DriveExportOptions): Promise<boolean> {
   const { onDiagnostics } = options;
   try {
@@ -1395,14 +1396,45 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
     return false;
   }
 
-  const selectLocator = page.locator('[role="dialog"] select[name="selectionType"], select[name="selectionType"]');
+  const dialog = page.locator('[role="dialog"]').first();
+  const dialogCount = await dialog.count().catch((): number => 0);
+  if (dialogCount === 0) {
+    if (onDiagnostics) {
+      await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
+    }
+    await captureExportCheckpoint(page, options, "dialog-not-open");
+    await page.keyboard.press("Escape").catch((): undefined => undefined);
+    return false;
+  }
+
+  const selectLocator = dialog.locator('select[name="selectionType"]');
   const rendered = await selectLocator
     .first()
     .waitFor({ state: "visible", timeout: EXPORT_DIALOG_DELAY_MS })
     .then((): boolean => true)
     .catch((): boolean => false);
   const selectCount = rendered ? await selectLocator.count().catch((): number => 0) : 0;
-  if (!selectCount) {
+
+  if (selectCount > 0) {
+    try {
+      await selectLocator.first().selectOption("date-range");
+    } catch {
+      if (onDiagnostics) {
+        await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
+      }
+      await captureExportCheckpoint(page, options, "dialog-not-open");
+      await page.keyboard.press("Escape").catch((): undefined => undefined);
+      return false;
+    }
+    await politeDelay(EXPORT_STATE_DELAY_MS);
+  }
+
+  const startInput = dialog.locator('input[name="fromDate"], input[name="startDate"]').first();
+  const endInput = dialog.locator('input[name="endDate"]').first();
+  const hasActionableDateRange =
+    (await isVisibleActionableField(startInput)) && (await isVisibleActionableField(endInput));
+
+  if (!hasActionableDateRange) {
     if (onDiagnostics) {
       await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
     }
@@ -1412,26 +1444,59 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
     await page.keyboard.press("Escape").catch((): undefined => undefined);
     return false;
   }
+
+  // A missing selection control is tolerated after the dialog has proved it
+  // contains the visible, enabled, editable date-range pair used by the fill
+  // path. A present control was selected above before this gate ran.
   return true;
 }
 
-/** Fill the date-range inputs via select → clear → type. */
-async function fillExportDateRange(page: Page, sinceDate: string, untilDate: string): Promise<void> {
-  await page.selectOption('select[name="selectionType"]', "date-range").catch((): string[] => []);
-  await politeDelay(EXPORT_STATE_DELAY_MS);
+/** Fill the date-range inputs via clear → type.
+ *
+ * Resilient to USAA dialog structure changes: the selection control is
+ * optional, but both date fields must be in the active dialog and every fill
+ * operation must succeed before submission is allowed.
+ */
+async function fillExportDateRange(page: Page, dialog: Locator, sinceDate: string, untilDate: string): Promise<void> {
+  const fromIn = dialog.locator('input[name="fromDate"], input[name="startDate"]').first();
+  const endIn = dialog.locator('input[name="endDate"]').first();
 
-  const fromIn = page.locator('input[name="fromDate"], input[name="startDate"]').first();
-  const endIn = page.locator('input[name="endDate"]').first();
-  await fromIn.click().catch((): undefined => undefined);
-  await page.keyboard.press("Control+A").catch((): undefined => undefined);
-  await page.keyboard.press("Delete").catch((): undefined => undefined);
-  await fromIn.pressSequentially(mmddyyyy(sinceDate), { delay: KEY_TYPE_DELAY_MS }).catch((): undefined => undefined);
-  await endIn.click().catch((): undefined => undefined);
-  await page.keyboard.press("Control+A").catch((): undefined => undefined);
-  await page.keyboard.press("Delete").catch((): undefined => undefined);
-  await endIn.pressSequentially(mmddyyyy(untilDate), { delay: KEY_TYPE_DELAY_MS }).catch((): undefined => undefined);
+  // Do not catch these operations: an incomplete range must fail before
+  // submitExportAndAwait rather than silently producing an unbounded export.
+  await fromIn.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await fromIn.pressSequentially(mmddyyyy(sinceDate), { delay: KEY_TYPE_DELAY_MS });
+
+  await endIn.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await endIn.pressSequentially(mmddyyyy(untilDate), { delay: KEY_TYPE_DELAY_MS });
   await politeDelay(EXPORT_STATE_DELAY_MS);
   await politeDelay(EXPORT_STATE_DELAY_MS);
+}
+
+async function tryFillExportDateRange(
+  page: Page,
+  dialog: Locator,
+  sinceDate: string,
+  untilDate: string,
+  onDiagnostics: DriveExportOptions["onDiagnostics"]
+): Promise<boolean> {
+  try {
+    await fillExportDateRange(page, dialog, sinceDate, untilDate);
+    return true;
+  } catch (err) {
+    if (onDiagnostics) {
+      const message = err instanceof Error ? err.message : String(err);
+      onDiagnostics({
+        diag: await capturePageDiagnostics(page),
+        error: message.slice(0, ID_TEXT_SNIP),
+        phase: "export_dialog_fill_failed",
+      });
+    }
+    return false;
+  }
 }
 
 async function captureExportCheckpoint(page: Page, options: DriveExportOptions, suffix: string): Promise<void> {
@@ -1658,7 +1723,10 @@ export async function driveExport(
     return { kind: "failed" };
   }
 
-  await fillExportDateRange(page, sinceDate, untilDate);
+  const dialog = page.locator('[role="dialog"]').first();
+  if (!(await tryFillExportDateRange(page, dialog, sinceDate, untilDate, onDiagnostics))) {
+    return { kind: "failed" };
+  }
   await captureExportCheckpoint(page, options, "before-submit");
 
   const tempDir = mkdtempSync(join(tmpdir(), "usaa-export-"));
@@ -1908,6 +1976,7 @@ export type AttemptOutcome =
   | { kind: "empty" }
   | { kind: "retry" }
   | { kind: "session_dead" }
+  | { kind: "structure_changed" }
   | { kind: "success"; csvPath: string };
 
 function exportCaptureLabel(a: DashboardAccount, sinceDate: string, untilDate: string): string {
@@ -1938,6 +2007,11 @@ export async function runSingleLadderAttempt({
     stream: "transactions",
     message: `Export wait: account ${accountOrdinal}/${accountTotal}, window ${attemptOrdinal}/${attemptTotal}`,
   });
+  let attemptDiagnostic: DiagnosticInfo | null = null;
+  const recordDiagnostic = (info: DiagnosticInfo): void => {
+    attemptDiagnostic = info;
+    onDiagnostics(info);
+  };
   try {
     const exportResult = await driveExport(page, `https://www.usaa.com${a.account_url}`, {
       sinceDate,
@@ -1945,13 +2019,16 @@ export async function runSingleLadderAttempt({
       accountType: a.account_type,
       capture: deps.capture ?? null,
       captureLabel: exportCaptureLabel(a, sinceDate, todayIso),
-      onDiagnostics,
+      onDiagnostics: recordDiagnostic,
       ...(settleDelayMs === undefined ? {} : { settleDelayMs }),
     });
     if (exportResult.kind === "artifact") {
       return { kind: "success", csvPath: exportResult.path };
     }
-    return exportResult.kind === "empty" ? { kind: "empty" } : { kind: "retry" };
+    if (exportResult.kind === "empty") {
+      return { kind: "empty" };
+    }
+    return isFatalDiagPhase(attemptDiagnostic) ? { kind: "structure_changed" } : { kind: "retry" };
   } catch (err) {
     if (err instanceof SessionDeadRedirectError) {
       const ok = await reauthAfterSessionLapse(
@@ -1980,10 +2057,16 @@ export async function runSingleLadderAttempt({
 }
 
 function isFatalDiagPhase(diag: DiagnosticInfo | null): diag is DiagnosticInfo {
-  return Boolean(diag && (diag.phase === "no_export_affordance" || diag.phase === "export_dialog_unexpected_shape"));
+  return Boolean(
+    diag &&
+      (diag.phase === "no_export_affordance" ||
+        diag.phase === "export_dialog_unexpected_shape" ||
+        diag.phase === "export_dialog_fill_failed")
+  );
 }
 
-async function tryExportLadder(
+/** Run the finite export-window ladder; exported for production-path regression coverage. */
+export async function tryExportLadder(
   deps: EmitDeps,
   context: BrowserContext,
   page: Page,
@@ -2037,6 +2120,22 @@ async function tryExportLadder(
       });
       return { csvPath: null, exportEmpty: true, usedSince: sinceDate, lastDiag: diagBox.current };
     }
+    if (outcome.kind === "structure_changed") {
+      const diagNow = diagBox.current;
+      if (diagNow) {
+        await deps.emit({
+          type: "PROGRESS",
+          stream: "transactions",
+          message: `Export diagnostic: account ${accountOrdinal}/${accountTotal}, window ${i + 1}/${candidateStarts.length}, ${formatDiagnosticInfo(diagNow)}`,
+        });
+      }
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "transactions",
+        message: `Export diagnostic: ${diagNow?.phase ?? "source_structure_changed"}; skipping retries for account ${accountOrdinal}/${accountTotal}`,
+      });
+      break;
+    }
     const diagNow = diagBox.current;
     if (diagNow) {
       await deps.emit({
@@ -2044,14 +2143,6 @@ async function tryExportLadder(
         stream: "transactions",
         message: `Export diagnostic: account ${accountOrdinal}/${accountTotal}, window ${i + 1}/${candidateStarts.length}, ${formatDiagnosticInfo(diagNow)}`,
       });
-    }
-    if (isFatalDiagPhase(diagNow)) {
-      await deps.emit({
-        type: "PROGRESS",
-        stream: "transactions",
-        message: `Export diagnostic: ${diagNow.phase}; skipping retries for account ${accountOrdinal}/${accountTotal}`,
-      });
-      break;
     }
     await deps.emit({
       type: "PROGRESS",
@@ -2475,9 +2566,10 @@ async function processAccountTransactions(
       };
     }
     await emitExportFailure(deps, a, lastDiag);
+    const errorClass = lastDiag && isFatalDiagPhase(lastDiag) ? "source_structure_changed" : "export_no_download";
     return {
       last_date: priorLastDate,
-      outcome: { accountId, kind: "gap", reason: "temporary_unavailable", errorClass: "export_no_download" },
+      outcome: { accountId, kind: "gap", reason: "temporary_unavailable", errorClass },
     };
   }
   const csvResult = await emitCsvTransactions(
