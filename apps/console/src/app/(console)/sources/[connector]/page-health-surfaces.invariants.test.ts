@@ -46,6 +46,12 @@ const RE_ACQUISITION_COVERAGE_OWNER_COPY = /coverage receipts, not generic sync 
 const RE_ACQUISITION_COVERAGE_SOURCE_NEUTRAL = /\bWhatsApp\b|\bTimeline\b|\bGoogle\b/i;
 const RE_STORED_CREDENTIAL_ACTION_USES_EXPLICIT_COPY = /case "stored_credential"[\s\S]*label: "Update credential"/;
 const RE_BROWSER_SESSION_ACTION_USES_SERVER_CTA = /case "browser_session"[\s\S]*label: action\.cta/;
+const RE_CONFIRMATION_IMPORT = /import \{ ConnectionConfirmation \} from "\.\/connection-confirmation\.tsx"/;
+const RE_CONFIRMATION_RENDER = /<ConnectionConfirmation[\s\S]*pendingHorizons=\{coverageHorizons\}/;
+const RE_CONFIRMATION_STRUCTURED_ACK =
+  /acknowledgedLoss=\{connectionRenderedVerdict\?\.detail\.acknowledged_loss \?\? null\}/;
+const RE_CONFIRMATION_GAP_WIRING = /latestKnownGaps=\{latestKnownGaps\}/;
+const RE_NO_RENDERED_FORWARD_STATEMENT = /renderedForwardStatement=/;
 
 // Owner-found 2026-08-28: the "Complete the requested action" chip was dead —
 // `provider_interaction` fell through to `default` and pointed at the
@@ -143,6 +149,19 @@ test("connector detail page labels each reauthentication surface precisely", asy
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, RE_STORED_CREDENTIAL_ACTION_USES_EXPLICIT_COPY);
   assert.match(src, RE_BROWSER_SESSION_ACTION_USES_SERVER_CTA);
+});
+
+test("owner confirmation is reachable from the connection detail page through structured backend evidence", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, RE_CONFIRMATION_IMPORT);
+  assert.match(src, RE_CONFIRMATION_RENDER);
+  assert.match(src, RE_CONFIRMATION_STRUCTURED_ACK);
+  assert.match(src, RE_CONFIRMATION_GAP_WIRING);
+  assert.doesNotMatch(
+    src,
+    RE_NO_RENDERED_FORWARD_STATEMENT,
+    "confirmation eligibility must not depend on rendered prose"
+  );
 });
 
 // The defect this pins: `exactSyncTargetFromAttention` reads `run_id` off the

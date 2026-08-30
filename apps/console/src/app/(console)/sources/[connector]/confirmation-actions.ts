@@ -62,9 +62,9 @@ export async function confirmCoverageHorizonAction(formData: FormData): Promise<
     await confirmCoverageHorizon(connectionId, {
       basis,
       earliest_available: earliestAvailable || null,
+      ...(note ? { note } : {}),
       reason,
       stream: stream || null,
-      ...(note ? { note } : {}),
     });
     message = "Coverage boundary confirmed. This records disclosure only — nothing retained changes.";
   } catch (err) {
@@ -103,9 +103,9 @@ export async function acknowledgeConnectionLossAction(formData: FormData): Promi
   try {
     await acknowledgeConnectionLoss(connectionId, acknowledgedBy, {
       cause,
+      ...(note ? { note } : {}),
       scope,
       ...(stream ? { streams: [stream] } : {}),
-      ...(note ? { note } : {}),
     });
     message = "Loss acknowledged. This does not recover the data — it records that you've seen and accepted it.";
   } catch (err) {

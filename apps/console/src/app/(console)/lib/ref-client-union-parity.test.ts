@@ -223,6 +223,14 @@ const PAIR_LOCATORS: readonly UnionPair[] = [
     mirror: { kind: "type-alias", name: "RefRemoteSurfaceAxis" },
     producer: { kind: "type-alias", file: "runtime/connection-health.ts", name: "RemoteSurfaceAxis" },
   },
+  {
+    mirror: { kind: "type-alias", name: "RefAcknowledgedLossCause" },
+    producer: { kind: "type-alias", file: "runtime/acknowledged-loss.ts", name: "AcknowledgedLossCause" },
+  },
+  {
+    mirror: { kind: "type-alias", name: "RefAcknowledgedLossScope" },
+    producer: { kind: "type-alias", file: "runtime/acknowledged-loss.ts", name: "AcknowledgedLossScope" },
+  },
 
   // --- Producers whose location is NOT derivable from the mirror name -------
   // Transposed words: `…TerminalSetup…` on the console, `SetupTerminal…` on the

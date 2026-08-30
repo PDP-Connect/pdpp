@@ -1,56 +1,67 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-/**
- * Generic, provider-agnostic evidence derivation for the owner-facing
- * coverage-horizon confirmation and loss-acknowledgement controls.
- *
- * Both controls confirm facts the reference already computed and put on the
- * wire (`known_gaps`, `coverage_horizons`); neither branches on connector
- * id anywhere — eligibility is derived purely from the evidence shape.
- *
- * COVERAGE HORIZON: eligible when the latest run's `known_gaps` contains a
- * gap the connector itself typed with `boundary_claim: "provider_history_boundary"`,
- * for a stream with no CURRENT (non-superseded) coverage horizon on record.
- * A horizon never classifies the gap away — it is disclosure only — so this
- * predicate exists purely to decide whether the confirmation control has
- * something bounded to show.
- *
- * LOSS ACKNOWLEDGEMENT: eligible when the latest run's `known_gaps` contains a
- * gap typed with `recovery_action: "not_retriable"` and the rendered verdict's
- * forward statement does not already match the fixed acknowledged-loss template.
- */
+import type {
+  RefAcknowledgedLossCause,
+  RefAcknowledgedLossRecord,
+  RefAcknowledgedLossScope,
+  RefCoverageHorizon,
+} from "./ref-client.ts";
 
 export type KnownGapLike = Readonly<Record<string, unknown>>;
+export type CoverageHorizonBasis = RefCoverageHorizon["basis"];
+export type CoverageHorizonReason = RefCoverageHorizon["reason"];
+
+export const COVERAGE_HORIZON_BASES: readonly CoverageHorizonBasis[] = [
+  "inferred_from_stable_boundary",
+  "provider_confirmed",
+  "provider_stated",
+];
+export const COVERAGE_HORIZON_REASONS: readonly CoverageHorizonReason[] = [
+  "consent_window",
+  "provider_deleted_history",
+  "provider_never_had_data",
+  "provider_retention_policy",
+];
+export const LOSS_CAUSES: readonly RefAcknowledgedLossCause[] = [
+  "provider_access_withdrawn",
+  "provider_data_contradictory",
+  "provider_deleted_upstream",
+];
+export const LOSS_SCOPES: readonly RefAcknowledgedLossScope[] = ["partial", "total"];
 
 function isRecord(value: unknown): value is KnownGapLike {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function stringField(gap: KnownGapLike, key: string): string | null {
-  const value = gap[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
+function stringField(value: KnownGapLike, key: string): string | null {
+  const field = value[key];
+  return typeof field === "string" && field.trim().length > 0 ? field.trim() : null;
 }
 
-/**
- * A gap typed by the connector as a provider-retention boundary.
- * The connector itself makes this claim via `boundary_claim`; we never infer it.
- */
+function enumField<T extends string>(value: KnownGapLike, key: string, values: readonly T[]): T | null {
+  const field = stringField(value, key);
+  return field && values.includes(field as T) ? (field as T) : null;
+}
+
+function recoveryAction(gap: KnownGapLike): string | null {
+  const direct = stringField(gap, "recovery_action");
+  if (direct) {
+    return direct;
+  }
+  const hint = gap.recovery_hint;
+  if (typeof hint === "string") {
+    return hint;
+  }
+  return isRecord(hint) ? stringField(hint, "action") : null;
+}
+
 export function isBoundaryClaimGap(gap: unknown): boolean {
-  if (!isRecord(gap)) {
-    return false;
-  }
-  return stringField(gap, "boundary_claim") === "provider_history_boundary";
+  return isRecord(gap) && stringField(gap, "boundary_claim") === "provider_history_boundary";
 }
 
-/**
- * A gap typed by the connector as terminal and non-retriable loss.
- */
 export function isTerminalLossGap(gap: unknown): boolean {
-  if (!isRecord(gap)) {
-    return false;
-  }
-  return stringField(gap, "recovery_action") === "not_retriable";
+  return isRecord(gap) && recoveryAction(gap) === "not_retriable";
 }
 
 export interface CoverageHorizonLike {
@@ -58,125 +69,137 @@ export interface CoverageHorizonLike {
   readonly supersededAt: string | null;
 }
 
-/**
- * Streams already covered by a CURRENT (non-superseded) horizon.
- */
-function streamsWithCurrentHorizon(horizons: readonly CoverageHorizonLike[] | null | undefined): {
-  readonly all: boolean;
-  readonly streams: ReadonlySet<string>;
-} {
-  const streams = new Set<string>();
-  let all = false;
-  for (const horizon of horizons ?? []) {
-    if (horizon.supersededAt !== null) {
-      continue;
-    }
-    if (horizon.stream === "*") {
-      all = true;
-      break;
-    }
-    streams.add(horizon.stream);
-  }
-  return { all, streams };
+export interface CoverageHorizonCandidate {
+  readonly basis: CoverageHorizonBasis | null;
+  readonly earliestAvailable: string | null;
+  readonly note: string | null;
+  readonly reason: CoverageHorizonReason | null;
+  readonly stream: string;
 }
 
-/**
- * True when the gap is a boundary claim and has no current horizon covering it.
- */
-export function isPendingHorizonConfirmation(gap: unknown, horizons: readonly CoverageHorizonLike[] | null | undefined): boolean {
-  if (!isBoundaryClaimGap(gap)) {
-    return false;
-  }
-  const stream = stringField(gap as KnownGapLike, "stream");
-  if (!stream) {
-    return false;
-  }
-  const { all, streams } = streamsWithCurrentHorizon(horizons);
-  return !all && !streams.has(stream);
+function horizonCoversStream(horizons: readonly CoverageHorizonLike[] | null | undefined, stream: string): boolean {
+  return (horizons ?? []).some(
+    (horizon) => horizon.supersededAt === null && (horizon.stream === "*" || horizon.stream === stream)
+  );
 }
 
-/**
- * The fixed sentence template that marks an acknowledged loss in the
- * rendered verdict's forward statement. Mirrors
- * `reference-implementation/runtime/acknowledged-loss.ts#acknowledgedLossStatement`.
- */
-const ACKNOWLEDGED_LOSS_STATEMENT_TEMPLATE = /^Provider deleted this data upstream — owner-confirmed \d{4}-\d{2}-\d{2}\.$/;
-
-/**
- * True when the forward statement matches the fixed acknowledged-loss template.
- */
-export function isAcknowledgedLossStatement(statement: string | null | undefined): boolean {
-  return typeof statement === "string" && ACKNOWLEDGED_LOSS_STATEMENT_TEMPLATE.test(statement);
+function horizonCandidate(gap: KnownGapLike): CoverageHorizonCandidate | null {
+  const stream = stringField(gap, "stream");
+  return stream
+    ? {
+        basis: enumField(gap, "basis", COVERAGE_HORIZON_BASES),
+        earliestAvailable: stringField(gap, "earliest_available"),
+        note: stringField(gap, "note"),
+        reason:
+          enumField(gap, "reason_code", COVERAGE_HORIZON_REASONS) ??
+          enumField(gap, "horizon_reason", COVERAGE_HORIZON_REASONS),
+        stream,
+      }
+    : null;
 }
 
-/**
- * True when the gap is terminal and NOT already acknowledged.
- */
-export function isPendingLossAcknowledgement(gap: unknown, forwardStatement: string | null | undefined): boolean {
-  if (!isTerminalLossGap(gap)) {
-    return false;
-  }
-  return !isAcknowledgedLossStatement(forwardStatement);
-}
-
-/**
- * Collect all boundary-claim gaps from a list, one per stream.
- */
-export function boundaryClaimGaps(knownGaps: readonly unknown[] | null | undefined): readonly KnownGapLike[] {
+export function boundaryClaimGaps(
+  knownGaps: readonly unknown[] | null | undefined
+): readonly CoverageHorizonCandidate[] {
   const seen = new Set<string>();
-  const results: KnownGapLike[] = [];
+  const candidates: CoverageHorizonCandidate[] = [];
   for (const gap of knownGaps ?? []) {
     if (!isBoundaryClaimGap(gap)) {
       continue;
     }
-    const stream = stringField(gap as KnownGapLike, "stream");
-    if (!stream || seen.has(stream)) {
-      continue;
+    const candidate = horizonCandidate(gap as KnownGapLike);
+    if (candidate && !seen.has(candidate.stream)) {
+      seen.add(candidate.stream);
+      candidates.push(candidate);
     }
-    seen.add(stream);
-    results.push(gap as KnownGapLike);
   }
-  return results;
+  return candidates;
 }
 
-/**
- * Collect all terminal-loss gaps from a list, one per stream.
- */
-export function terminalLossGaps(knownGaps: readonly unknown[] | null | undefined): readonly KnownGapLike[] {
+export function pendingHorizonConfirmations(
+  knownGaps: readonly unknown[] | null | undefined,
+  horizons: readonly CoverageHorizonLike[] | null | undefined
+): readonly CoverageHorizonCandidate[] {
+  return boundaryClaimGaps(knownGaps).filter((candidate) => !horizonCoversStream(horizons, candidate.stream));
+}
+
+export function isValidAcknowledgedLossRecord(value: unknown): value is RefAcknowledgedLossRecord {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const cause = stringField(value, "cause");
+  const scope = stringField(value, "scope");
+  const actor = stringField(value, "acknowledgedBy");
+  const at = stringField(value, "acknowledgedAt");
+  if (
+    !(
+      cause &&
+      LOSS_CAUSES.includes(cause as RefAcknowledgedLossCause) &&
+      scope &&
+      LOSS_SCOPES.includes(scope as RefAcknowledgedLossScope) &&
+      actor &&
+      at &&
+      !Number.isNaN(Date.parse(at))
+    )
+  ) {
+    return false;
+  }
+  if (value.note !== undefined && value.note !== null && typeof value.note !== "string") {
+    return false;
+  }
+  return (
+    value.streams === undefined ||
+    (Array.isArray(value.streams) && value.streams.every((stream) => typeof stream === "string"))
+  );
+}
+
+function lossCoversStream(record: RefAcknowledgedLossRecord, stream: string): boolean {
+  return !record.streams || record.streams.length === 0 || record.streams.includes(stream);
+}
+
+export interface LossAcknowledgementCandidate {
+  readonly cause: RefAcknowledgedLossCause | null;
+  readonly note: string | null;
+  readonly scope: RefAcknowledgedLossScope | null;
+  readonly stream: string;
+}
+
+function lossCandidate(gap: KnownGapLike): LossAcknowledgementCandidate | null {
+  const stream = stringField(gap, "stream");
+  return stream
+    ? {
+        cause: enumField(gap, "cause", LOSS_CAUSES),
+        note: stringField(gap, "note"),
+        scope: enumField(gap, "scope", LOSS_SCOPES),
+        stream,
+      }
+    : null;
+}
+
+export function pendingLossAcknowledgements(
+  knownGaps: readonly unknown[] | null | undefined,
+  acknowledgedLoss: unknown
+): readonly LossAcknowledgementCandidate[] {
+  const record = isValidAcknowledgedLossRecord(acknowledgedLoss) ? acknowledgedLoss : null;
   const seen = new Set<string>();
-  const results: KnownGapLike[] = [];
+  const candidates: LossAcknowledgementCandidate[] = [];
   for (const gap of knownGaps ?? []) {
     if (!isTerminalLossGap(gap)) {
       continue;
     }
-    const stream = stringField(gap as KnownGapLike, "stream");
-    if (!stream || seen.has(stream)) {
-      continue;
+    const candidate = lossCandidate(gap as KnownGapLike);
+    if (candidate && !seen.has(candidate.stream) && !(record && lossCoversStream(record, candidate.stream))) {
+      seen.add(candidate.stream);
+      candidates.push(candidate);
     }
-    seen.add(stream);
-    results.push(gap as KnownGapLike);
   }
-  return results;
+  return candidates;
 }
 
-/**
- * Pending horizon confirmations from the latest run, given the current
- * horizon records.
- */
-export function pendingHorizonConfirmations(
-  knownGaps: readonly unknown[] | null | undefined,
-  horizons: readonly CoverageHorizonLike[] | null | undefined
-): readonly KnownGapLike[] {
-  return boundaryClaimGaps(knownGaps).filter((gap) => isPendingHorizonConfirmation(gap, horizons));
+export function coverageHorizonCandidateDisclosure(candidate: CoverageHorizonCandidate): string {
+  return `The provider marked the ${candidate.stream} history as bounded. Confirming this records a disclosure only; it does not change what is retained or the connection's health.`;
 }
 
-/**
- * Pending loss acknowledgements from the latest run, given the current
- * forward verdict statement.
- */
-export function pendingLossAcknowledgements(
-  knownGaps: readonly unknown[] | null | undefined,
-  forwardStatement: string | null | undefined
-): readonly KnownGapLike[] {
-  return terminalLossGaps(knownGaps).filter((gap) => isPendingLossAcknowledgement(gap, forwardStatement));
+export function lossAcknowledgementCandidateDisclosure(candidate: LossAcknowledgementCandidate): string {
+  return `The backend marked missing ${candidate.stream} data as not retriable. Acknowledging it records your review; it does not recover data or change the connection's health.`;
 }

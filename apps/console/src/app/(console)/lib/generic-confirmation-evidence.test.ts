@@ -1,138 +1,119 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-/**
- * Fail-before tests proving the confirmation evidence UI may render only
- * durable facts actually supplied by the backend, and that absent evidence
- * stays absent. No provider-specific branches, no invented facts.
- */
-
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isBoundaryClaimGap, isTerminalLossGap, isPendingHorizonConfirmation, isPendingLossAcknowledgement } from "./generic-confirmation-evidence.ts";
+import {
+  boundaryClaimGaps,
+  COVERAGE_HORIZON_BASES,
+  COVERAGE_HORIZON_REASONS,
+  isTerminalLossGap,
+  isValidAcknowledgedLossRecord,
+  LOSS_CAUSES,
+  LOSS_SCOPES,
+  pendingHorizonConfirmations,
+  pendingLossAcknowledgements,
+} from "./generic-confirmation-evidence.ts";
 
-const GROUPME_SHAPED_BOUNDARY_GAP = {
-  boundary_claim: "provider_history_boundary",
-  kind: "skip_result",
-  reason: "history_ended_before_provider_count",
-  recovery_action: "retry_by_runtime",
-  severity: "transient",
-  stream: "group_messages",
+const BOUNDARY_GAPS = [
+  {
+    boundary_claim: "provider_history_boundary",
+    earliest_available: "2021-04-03",
+    reason_code: "provider_retention_policy",
+    stream: "messages",
+  },
+  { boundary_claim: "provider_history_boundary", horizon_reason: "consent_window", stream: "orders" },
+] as const;
+
+const LOSS_GAPS = [
+  { recovery_hint: { action: "not_retriable" }, stream: "messages" },
+  { recovery_action: "not_retriable", stream: "orders" },
+] as const;
+
+const ACK = {
+  acknowledgedAt: "2026-08-21T00:00:00.000Z",
+  acknowledgedBy: "Owner",
+  cause: "provider_deleted_upstream",
+  note: "Support case retained in the audit trail.",
+  scope: "partial",
+  streams: ["messages"],
 } as const;
 
-const LIVE_RATE_LIMIT_GAP = {
-  kind: "skip_result",
-  reason: "upstream_rate_limited",
-  recovery_action: "retry_by_runtime",
-  severity: "transient",
-  stream: "group_messages",
-} as const;
-
-const TERMINAL_LOSS_GAP = {
-  kind: "skip_result",
-  reason: "provider_purged_upstream",
-  recovery_action: "not_retriable",
-  severity: "terminal",
-  stream: "orders",
-} as const;
-
-const HORIZON = {
-  stream: "group_messages",
-  supersededAt: null,
-};
-
-test("isBoundaryClaimGap: identifies gaps typed with boundary_claim: provider_history_boundary", () => {
-  assert.equal(isBoundaryClaimGap(GROUPME_SHAPED_BOUNDARY_GAP), true);
+test("boundary evidence carries earliest availability and supported reason", () => {
+  assert.deepEqual(boundaryClaimGaps(BOUNDARY_GAPS), [
+    {
+      basis: null,
+      earliestAvailable: "2021-04-03",
+      note: null,
+      reason: "provider_retention_policy",
+      stream: "messages",
+    },
+    { basis: null, earliestAvailable: null, note: null, reason: "consent_window", stream: "orders" },
+  ]);
 });
 
-test("isBoundaryClaimGap: rejects gaps with no boundary_claim field", () => {
-  assert.equal(isBoundaryClaimGap(LIVE_RATE_LIMIT_GAP), false);
+test("only the closed vocabularies are advertised", () => {
+  assert.deepEqual(COVERAGE_HORIZON_BASES, ["inferred_from_stable_boundary", "provider_confirmed", "provider_stated"]);
+  assert.deepEqual(COVERAGE_HORIZON_REASONS, [
+    "consent_window",
+    "provider_deleted_history",
+    "provider_never_had_data",
+    "provider_retention_policy",
+  ]);
+  assert.deepEqual(LOSS_CAUSES, [
+    "provider_access_withdrawn",
+    "provider_data_contradictory",
+    "provider_deleted_upstream",
+  ]);
+  assert.deepEqual(LOSS_SCOPES, ["partial", "total"]);
 });
 
-test("isBoundaryClaimGap: rejects non-objects and non-boundary claims", () => {
-  assert.equal(isBoundaryClaimGap(null), false);
-  assert.equal(isBoundaryClaimGap(undefined), false);
-  assert.equal(isBoundaryClaimGap({ boundary_claim: "wrong_value" }), false);
+test("a structured recovery hint is terminal-loss authority", () => {
+  assert.equal(isTerminalLossGap(LOSS_GAPS[0]), true);
+  assert.equal(isTerminalLossGap({ recovery_action: "retry_by_runtime", stream: "orders" }), false);
 });
 
-test("isTerminalLossGap: identifies gaps typed with recovery_action: not_retriable", () => {
-  assert.equal(isTerminalLossGap(TERMINAL_LOSS_GAP), true);
-});
-
-test("isTerminalLossGap: rejects gaps with recovery_action: retry_by_runtime", () => {
-  assert.equal(isTerminalLossGap(GROUPME_SHAPED_BOUNDARY_GAP), false);
-  assert.equal(isTerminalLossGap(LIVE_RATE_LIMIT_GAP), false);
-});
-
-test("isTerminalLossGap: rejects non-objects and non-not_retriable gaps", () => {
-  assert.equal(isTerminalLossGap(null), false);
-  assert.equal(isTerminalLossGap(undefined), false);
-  assert.equal(isTerminalLossGap({ recovery_action: "wrong_value" }), false);
-});
-
-test("isPendingHorizonConfirmation: a boundary-claim gap with no confirmed horizon is pending", () => {
-  assert.equal(isPendingHorizonConfirmation(GROUPME_SHAPED_BOUNDARY_GAP, []), true);
-});
-
-test("isPendingHorizonConfirmation: a gap with no boundary_claim is not pending", () => {
-  assert.equal(isPendingHorizonConfirmation(LIVE_RATE_LIMIT_GAP, []), false);
-});
-
-test("isPendingHorizonConfirmation: a stream already covered by a current horizon is not pending", () => {
-  assert.equal(isPendingHorizonConfirmation(GROUPME_SHAPED_BOUNDARY_GAP, [HORIZON]), false);
-});
-
-test("isPendingHorizonConfirmation: a SUPERSEDED horizon does not suppress eligibility", () => {
+test("missing or malformed acknowledgement never suppresses loss evidence", () => {
+  assert.equal(isValidAcknowledgedLossRecord(null), false);
+  assert.equal(isValidAcknowledgedLossRecord({ ...ACK, cause: "other" }), false);
+  assert.equal(isValidAcknowledgedLossRecord({ ...ACK, acknowledgedBy: "" }), false);
+  assert.equal(isValidAcknowledgedLossRecord({ ...ACK, streams: [1] }), false);
+  assert.equal(pendingLossAcknowledgements(LOSS_GAPS, null).length, 2);
   assert.equal(
-    isPendingHorizonConfirmation(GROUPME_SHAPED_BOUNDARY_GAP, [{ stream: "group_messages", supersededAt: "2026-01-01T00:00:00.000Z" }]),
-    true
+    pendingLossAcknowledgements(LOSS_GAPS, { forward_statement: "Everything before 2021 is unavailable." }).length,
+    2
   );
 });
 
-test("isPendingHorizonConfirmation: a connection-wide '*' current horizon covers every stream", () => {
-  assert.equal(isPendingHorizonConfirmation(GROUPME_SHAPED_BOUNDARY_GAP, [{ stream: "*", supersededAt: null }]), false);
+test("stream-scoped acknowledgement suppresses only that stream", () => {
+  assert.deepEqual(pendingLossAcknowledgements(LOSS_GAPS, ACK), [
+    { cause: null, note: null, scope: null, stream: "orders" },
+  ]);
+  assert.deepEqual(pendingLossAcknowledgements(LOSS_GAPS, { ...ACK, streams: [] }), []);
 });
 
-test("isPendingHorizonConfirmation: null/undefined gaps stay absent", () => {
-  assert.equal(isPendingHorizonConfirmation(null, []), false);
-  assert.equal(isPendingHorizonConfirmation(undefined, []), false);
+test("all supported loss causes and notes remain structured inputs", () => {
+  for (const cause of LOSS_CAUSES) {
+    const record = { ...ACK, cause, note: `note for ${cause}` };
+    assert.equal(isValidAcknowledgedLossRecord(record), true);
+    assert.equal(record.note?.startsWith("note for"), true);
+  }
+  assert.deepEqual(
+    pendingLossAcknowledgements([{ recovery_hint: { action: "not_retriable" }, stream: "events" }], {
+      ...ACK,
+      streams: ["other"],
+    }),
+    [{ cause: null, note: null, scope: null, stream: "events" }]
+  );
 });
 
-test("isPendingLossAcknowledgement: a not_retriable gap with no prior ack is pending", () => {
-  assert.equal(isPendingLossAcknowledgement(TERMINAL_LOSS_GAP, null), true);
-  assert.equal(isPendingLossAcknowledgement(TERMINAL_LOSS_GAP, "Something else"), true);
-});
-
-test("isPendingLossAcknowledgement: an already-acknowledged forward statement suppresses eligibility", () => {
-  const acknowledgedSentence = "Provider deleted this data upstream — owner-confirmed 2026-08-21.";
-  assert.equal(isPendingLossAcknowledgement(TERMINAL_LOSS_GAP, acknowledgedSentence), false);
-});
-
-test("isPendingLossAcknowledgement: a retryable gap is not pending", () => {
-  assert.equal(isPendingLossAcknowledgement(GROUPME_SHAPED_BOUNDARY_GAP, null), false);
-  assert.equal(isPendingLossAcknowledgement(LIVE_RATE_LIMIT_GAP, null), false);
-});
-
-test("isPendingLossAcknowledgement: null/undefined gaps stay absent", () => {
-  assert.equal(isPendingLossAcknowledgement(null, null), false);
-  assert.equal(isPendingLossAcknowledgement(undefined, null), false);
-});
-
-test("PROOF: UI renders ONLY evidence supplied by backend, never invented provider facts", () => {
-  // GroupMe-shaped gap proves boundary claim exists and can be confirmed.
-  const gap = GROUPME_SHAPED_BOUNDARY_GAP;
-
-  // The UI checks: (1) does boundary_claim field exist and equal the closed value?
-  assert.equal(isBoundaryClaimGap(gap), true);
-
-  // (2) is there already a current horizon for this stream? If yes, skip.
-  assert.equal(isPendingHorizonConfirmation(gap, []), true); // No horizon = pending
-  assert.equal(isPendingHorizonConfirmation(gap, [HORIZON]), false); // Horizon exists = not pending
-
-  // The UI then renders what the backend gave us: the gap's own fields (stream, reason).
-  // It does NOT invent: provider name, provider retention policy, inferred vs. stated boundary.
-  // Those facts may come from owner-entered form fields only, never derived.
-  assert.match(JSON.stringify({ boundary_claim: gap.boundary_claim, reason: gap.reason, stream: gap.stream }), /group_messages/);
-  assert.doesNotMatch(JSON.stringify(gap), /provider_retention_policy/); // Not in the gap itself
-  assert.doesNotMatch(JSON.stringify(gap), /inferred_from_stable_boundary/); // Not in the gap itself
+test("only current horizons suppress boundary confirmation", () => {
+  assert.equal(pendingHorizonConfirmations(BOUNDARY_GAPS, []).length, 2);
+  assert.equal(pendingHorizonConfirmations(BOUNDARY_GAPS, [{ stream: "messages", supersededAt: null }]).length, 1);
+  assert.equal(
+    pendingHorizonConfirmations(BOUNDARY_GAPS, [{ stream: "messages", supersededAt: "2026-08-21T00:00:00.000Z" }])
+      .length,
+    2
+  );
+  assert.equal(pendingHorizonConfirmations(BOUNDARY_GAPS, [{ stream: "*", supersededAt: null }]).length, 0);
 });
