@@ -271,7 +271,7 @@ function reportFailures(stale: StaleReport[], errors: string[]): void {
     console.error(
       `\n- ${entry.file}: Date: ${entry.declared} is stale — last substantive commit was ${entry.lastSubstantive} ` +
         `(${entry.daysStale} day${entry.daysStale === 1 ? "" : "s"} behind). ` +
-        `Run 'pnpm spec:dates -- --write' to stamp, or update Date by hand if you disagree it's substantive.`
+        `Run 'pnpm spec:dates:write' to stamp, or update Date by hand if you disagree it's substantive.`
     );
   }
   process.exit(1);

@@ -106,6 +106,12 @@ test("workflow supplies the immutable push before SHA and fully checks branch cr
   );
 });
 
+test("stale-date advice uses the dedicated write script entrypoint", () => {
+  const checker = readFileSync(CHECKER, "utf8");
+  assert.match(checker, /Run 'pnpm spec:dates:write' to stamp/);
+  assert.doesNotMatch(checker, /pnpm spec:dates -- --write/);
+});
+
 test("--base excludes a restored spec across a no-fast-forward merge whose final blob matches that base", () => {
   withFixture((repo) => {
     git(repo.root, ["switch", "--quiet", "-c", "topic"]);
