@@ -233,3 +233,96 @@ test("a THROWN transport fault inside the registered collect() is named transpor
     );
   });
 });
+
+// ─── Registered-config coverage the R1 re-review asked for ────────────────
+//
+// live/dead/transport are proven above through the registered collect().
+// These add the two the set was missing — a challenge that the owner clears,
+// and the two budgets that bound owner cost — driven through the same
+// registered exports rather than through re-implementations.
+
+test("challenge cleared by the owner: the run continues to the collector without a second prompt", async () => {
+  await withoutVenmoCredentials(async () => {
+    const { page, setLive } = makeJourneyPage();
+    let prompts = 0;
+
+    await ensureSession({
+      page,
+      sendInteraction: (request: { request_id?: string }) => {
+        prompts += 1;
+        // The owner clears a bot check / sign-in wall in the live browser.
+        setLive(true);
+        return Promise.resolve({
+          request_id: request.request_id ?? "test_interaction",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        });
+      },
+    } as never);
+
+    assert.equal(prompts, 1, "the owner must be asked exactly once — never twice for the same run");
+    // And the cleared challenge must actually carry into the collector.
+    await collect(makeCtx(page));
+  });
+});
+
+test("one-interaction budget: a dead session that the owner does NOT clear still asks only once", async () => {
+  await withoutVenmoCredentials(async () => {
+    const { page } = makeJourneyPage();
+    let prompts = 0;
+
+    await ensureSession({
+      page,
+      sendInteraction: (request: { request_id?: string }) => {
+        prompts += 1;
+        // Owner responds but the session stays dead (they gave up / wrong account).
+        return Promise.resolve({
+          request_id: request.request_id ?? "test_interaction",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        });
+      },
+    } as never);
+
+    assert.equal(prompts, 1, "a still-dead session must NOT re-prompt the owner inside the same run");
+
+    // The run then fails at the collector boundary, terminally, so the runtime
+    // cannot redispatch and ask again.
+    await assert.rejects(collect(makeCtx(page)), (err: Error) => {
+      assert.equal(
+        VENMO_RETRYABLE_PATTERN.test(err.message),
+        false,
+        "an uncleared dead session must be terminal — a retry is a second ask"
+      );
+      return true;
+    });
+  });
+});
+
+test("credential budget: no saved credentials means the connector never submits one", async () => {
+  await withoutVenmoCredentials(async () => {
+    const { page, setLive } = makeJourneyPage();
+    let credentialSubmits = 0;
+
+    await ensureSession({
+      page,
+      onCredentialSubmit: () => {
+        credentialSubmits += 1;
+      },
+      sendInteraction: (request: { request_id?: string }) => {
+        setLive(true);
+        return Promise.resolve({
+          request_id: request.request_id ?? "test_interaction",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        });
+      },
+    } as never);
+
+    assert.equal(
+      credentialSubmits,
+      0,
+      "the manual-handoff path must never submit a credential — there is none, and a submit would be an anti-automation strike"
+    );
+  });
+});
