@@ -26,10 +26,12 @@ import {
 import { collectChildProcessOutput } from "./child-process-output.ts";
 import { deriveDedicatedPostgresDbNameForFile } from "./dedicated-postgres-db-name.ts";
 import { startFileProcessWatchdog } from "./file-process-watchdog.ts";
+import { assertPostgresProfilePreflight } from "./postgres-profile-preflight.ts";
 import { discoverSelectedTestFiles } from "./run-tests-discovery.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
 import { buildScrubbedTestEnv } from "./test-env.ts";
 import { requireExplicitTestProfile, storageProfileEnvironment } from "./test-profile-env.ts";
+import { assertWorkspaceRuntimeDependencies } from "./workspace-runtime-dependency-preflight.ts";
 
 /** The `run-authority` JSON file shape accepted via `--accounting-authority`. */
 interface AccountingAuthority {
@@ -134,6 +136,7 @@ if (
 // and unbound invocations, so malformed metadata cannot select the old
 // memory-default fallback or reach child execution.
 const selectedProfile = requireExplicitTestProfile(process.env);
+await assertWorkspaceRuntimeDependencies(dirname(repoRoot));
 const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY || "", 10);
 // Boot-time schedule auto-enrollment is OFF by default under the test harness.
 //
@@ -159,16 +162,22 @@ const testHarnessEnv: NodeJS.ProcessEnv = {
 };
 const scrubbedBaseEnv = storageProfileEnvironment(selectedProfile, buildScrubbedTestEnv(testHarnessEnv));
 const configuredPostgresTestUrl = scrubbedBaseEnv.PDPP_TEST_POSTGRES_URL;
+const configuredPostgresRestoreUrl = scrubbedBaseEnv.PDPP_TEST_POSTGRES_RESTORE_URL;
 const dedicatedBasePostgresTestUrl: string | null = configuredPostgresTestUrl
   ? dedicatedPostgresTestUrl(configuredPostgresTestUrl)
   : null;
 
-// Validate before the runner derives its admin URL or opens a connection.
-// `pg` lets query parameters override connection-string authority and path,
-// so only the narrow helper contract may enter the real-Postgres lane.
-if (configuredPostgresTestUrl && !dedicatedBasePostgresTestUrl) {
-  throw new Error("PDPP_TEST_POSTGRES_URL must be a query- and fragment-free dedicated loopback PostgreSQL test URL");
-}
+// Validate every persistent PostgreSQL target before the runner derives an
+// admin URL, opens a connection, or starts a test child. `pg` lets query
+// parameters override connection-string authority and path, so only the
+// narrow dedicated-url contract reaches the real-Postgres lane. The restore
+// target is not per-file allocated and must therefore be independently
+// sentinel-provisioned before the backup oracle can touch it.
+await assertPostgresProfilePreflight({
+  primaryUrl: configuredPostgresTestUrl,
+  profile: selectedProfile,
+  restoreUrl: configuredPostgresRestoreUrl,
+});
 
 // --- Per-file Postgres database isolation ---
 //
