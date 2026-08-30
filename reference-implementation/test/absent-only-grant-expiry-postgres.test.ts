@@ -34,8 +34,9 @@
  * cannot close that seam -- so it is asserted here end-to-end through the real
  * attempt store to prove the two repairs compose on PostgreSQL.
  *
- * Gated on `PDPP_TEST_POSTGRES_URL`. When unset the file registers a single
- * skipped test naming the reason, so a skip is visible rather than silent.
+ * Gated on `PDPP_TEST_POSTGRES_URL`. When unset each PostgreSQL case names
+ * the reason, so coverage remains visible without adding a duplicate umbrella
+ * skip.
  */
 
 import assert from "node:assert/strict";
@@ -125,12 +126,6 @@ async function readGrants(): Promise<Map<string, GrantRow>> {
       { expires_at: row.expires_at, grant_json: row.grant_json as Record<string, unknown> },
     ])
   );
-}
-
-if (POSTGRES_SKIP) {
-  test(`absent-only expiry PostgreSQL migration regression (${POSTGRES_SKIP})`, { skip: POSTGRES_SKIP }, () => {
-    /* Skipped with an explicit reason rather than silently absent. */
-  });
 }
 
 test(
