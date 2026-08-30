@@ -627,6 +627,53 @@ if (POSTGRES_URL) {
     });
   });
 
+  test("a stale running receipt from a hard crash is re-claimed, never treated as complete", async () => {
+    // The failure mode with no rollback path: the process dies (OOM, SIGKILL,
+    // node crash) between a batch commit and the next, so neither
+    // `blockPostgresMigration` nor `completePostgresMigration` ever runs and
+    // the ledger is left `running`. That row must be re-claimable and must
+    // NOT short-circuit the data phase — a `running` row that a later boot
+    // read as "someone else has this" would strand the migration forever.
+    await withTempDb(POSTGRES_URL, async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      const pool = getPostgresPool();
+      await seedStaleLocalDeviceIdentity(pool, {
+        instanceId: "cin_stale_running",
+        recordCount: 6,
+        sourceInstanceId: "src_a",
+      });
+      // A live-looking claim from a process that no longer exists: status
+      // running, cursor unset, lease still in the future. Inserted rather
+      // than updated because the seed helper clears the ledger row (see
+      // `resetCanonicalizationReceipt`), so an UPDATE here would match
+      // nothing and the test would silently assert the wrong thing.
+      await pool.query(
+        `INSERT INTO storage_migration_ledger(
+           migration_id, status, cursor, lease_owner, lease_expires_at, attempt_count, changed_rows, started_at, updated_at)
+         VALUES ('local_device_connector_canonicalization_v1', 'running', NULL, 'ghost@dead-process',
+                 '2099-01-01T00:00:00.000Z', 1, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`
+      );
+
+      await bootstrapPostgresSchema();
+
+      const rows = await pool.query<{ connector_id: string; n: string }>(
+        "SELECT connector_id, count(*)::text AS n FROM records GROUP BY connector_id"
+      );
+      assert.deepEqual(
+        rows.rows.map((row) => row.connector_id),
+        [CONNECTOR_KEY],
+        "a stale running claim must not stop the next boot from finishing the migration"
+      );
+
+      const receipt = await readPostgresLocalDeviceCanonicalizationReceipt();
+      assert.equal(receipt?.status, "complete", "the re-claimed run must converge to a complete receipt");
+      assert.ok(
+        (receipt?.attemptCount ?? 0) >= 2,
+        "re-claiming a stale running row must count as a new attempt, not silently reuse the dead one"
+      );
+    });
+  });
+
   test("a blocked receipt is re-attempted and converges once the collision is reconciled", async () => {
     await withTempDb(POSTGRES_URL, async (url) => {
       await initPostgresStorage({ backend: "postgres", databaseUrl: url });
