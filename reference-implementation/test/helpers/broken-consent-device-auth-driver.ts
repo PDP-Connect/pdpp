@@ -16,13 +16,10 @@
  *      re-approved twice. The harness's durable-resume scenario pins this:
  *      the second call may succeed, but it MUST return the persisted result.
  *
- *   2. Owner-device denial does not transition the row to a terminal
- *      `denied` status; it simply removes the public-lookup entry. The
- *      polling exchange therefore reports `authorization_pending` (the
- *      poller never learns the request was denied). The harness's
- *      "denial is terminal — exchange throws access_denied" scenario
- *      pins this — under this broken driver it MUST fail because the
- *      exchange does not return `access_denied`.
+ *   2. Owner-device approval collapses a denied row into `not_found`, the
+ *      code for an unknown user_code. The polling exchange still reports
+ *      `access_denied`, isolating the approval-error discriminator that the
+ *      harness must reject.
  *
  *   3. Polling-rate enforcement is missing. A back-to-back poll always
  *      returns `authorization_pending` regardless of how recently the
@@ -147,16 +144,17 @@ export function createBrokenInMemoryConsentDeviceAuthDriver() {
 
     // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
     async denyOwnerDeviceAuth(userCode: string): Promise<void> {
-      // BREAK 2: drop the user_code from public lookup but DO NOT mark
-      // the row's status as `denied`. Pollers see it as pending forever
-      // (until expiry), so the exchange returns `authorization_pending`
-      // instead of `access_denied`.
+      // BREAK 2: keep the terminal status so exchange remains correct, but
+      // approveOwnerDeviceAuth maps this denied row to not_found instead of
+      // approval_conflict.
       const deviceCode = userCodeToDeviceCode.get(userCode);
       if (!deviceCode) {
         return;
       }
-      userCodeToDeviceCode.delete(userCode);
-      // Note: we leave row.status === 'pending'.
+      const row = ownerDeviceAuth.get(deviceCode);
+      if (row) {
+        row.status = "denied";
+      }
     },
 
     // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
@@ -325,8 +323,9 @@ export function createBrokenInMemoryConsentDeviceAuthDriver() {
     },
 
     // -----------------------------------------------------------------
-    // Owner device authorization — break (2): denial is silent;
-    //                              break (3): polling is unenforced.
+    // Owner device authorization — break (2): denied approval is reported
+    //                              as unknown; break (3): polling is
+    //                              unenforced.
     // -----------------------------------------------------------------
 
     // biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
