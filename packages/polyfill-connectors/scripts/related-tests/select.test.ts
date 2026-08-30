@@ -50,6 +50,7 @@ describe("selectRelatedTests: direct connector edit selects only its related tes
       graph,
       allRelativePaths: allPaths,
       changedRelativePaths: ["connectors/alpha/index.ts"],
+      deletedRelativePaths: [],
     });
 
     assert.equal(result.kind, "related");
@@ -83,6 +84,7 @@ describe("selectRelatedTests: shared runtime edit expands to every dependent con
       graph,
       allRelativePaths: allPaths,
       changedRelativePaths: ["src/shared-runtime.ts"],
+      deletedRelativePaths: [],
     });
 
     assert.equal(result.kind, "related");
@@ -106,6 +108,7 @@ describe("selectRelatedTests: fixture-only change forces the full suite", () => 
         graph: { modules: new Map() },
         allRelativePaths: allPaths,
         changedRelativePaths: ["fixtures/alpha/sample.json"],
+        deletedRelativePaths: [],
       });
 
       assert.equal(result.kind, FULL_SUITE);
@@ -140,6 +143,7 @@ describe("selectRelatedTests: a file containing a dynamic import forces the full
         graph,
         allRelativePaths: allPaths,
         changedRelativePaths: ["src/dynamic-loader.ts"],
+        deletedRelativePaths: [],
       });
 
       assert.equal(result.kind, FULL_SUITE);
@@ -176,6 +180,7 @@ describe("selectRelatedTests: unknown/unparseable dependency shapes force the fu
         graph: { modules: new Map() },
         allRelativePaths: allPaths,
         changedRelativePaths: ["src/unparseable.ts"],
+        deletedRelativePaths: [],
       });
 
       assert.equal(result.kind, FULL_SUITE);
@@ -191,10 +196,79 @@ describe("selectRelatedTests: unknown/unparseable dependency shapes force the fu
       graph: { modules: new Map() },
       allRelativePaths: [],
       changedRelativePaths: ["package.json"],
+      deletedRelativePaths: [],
     });
 
     assert.equal(result.kind, FULL_SUITE);
     assert.match(result.reason, /not a \.ts source file/);
+  });
+});
+
+describe("selectRelatedTests: deletions and renames force the full suite", () => {
+  test("a deleted source file forces FULL_SUITE even though it can no longer appear in changedRelativePaths", () => {
+    const result = selectRelatedTests({
+      packageRoot: "/unused",
+      graph: { modules: new Map() },
+      allRelativePaths: [],
+      changedRelativePaths: [],
+      deletedRelativePaths: ["src/manifest-registry.ts"],
+    });
+
+    assert.equal(result.kind, FULL_SUITE);
+    assert.match(result.reason, /deleted path/);
+  });
+
+  test("a deleted test file forces FULL_SUITE, not a silent empty selection", () => {
+    const result = selectRelatedTests({
+      packageRoot: "/unused",
+      graph: { modules: new Map() },
+      allRelativePaths: [],
+      changedRelativePaths: [],
+      deletedRelativePaths: ["connectors/alpha/index.test.ts"],
+    });
+
+    assert.equal(result.kind, FULL_SUITE);
+    assert.match(result.reason, /deleted path/);
+  });
+
+  test("a deleted fixture file forces FULL_SUITE via the same deletion gate, not the fixture-path gate", () => {
+    const result = selectRelatedTests({
+      packageRoot: "/unused",
+      graph: { modules: new Map() },
+      allRelativePaths: [],
+      changedRelativePaths: [],
+      deletedRelativePaths: ["fixtures/alpha/sample.json"],
+    });
+
+    assert.equal(result.kind, FULL_SUITE);
+    assert.match(result.reason, /deleted path/);
+  });
+
+  test("a rename (git-reported as delete-of-old-path plus add-of-new-path) forces FULL_SUITE via the deletion gate", () => {
+    const result = selectRelatedTests({
+      packageRoot: "/unused",
+      graph: { modules: new Map() },
+      allRelativePaths: [],
+      changedRelativePaths: ["connectors/alpha/index-renamed.ts"],
+      deletedRelativePaths: ["connectors/alpha/index.ts"],
+    });
+
+    assert.equal(result.kind, FULL_SUITE);
+    assert.match(result.reason, /deleted path/);
+  });
+
+  test("a truly empty diff (no changes, no deletions) still selects an empty related set, not FULL_SUITE", () => {
+    const result = selectRelatedTests({
+      packageRoot: "/unused",
+      graph: { modules: new Map() },
+      allRelativePaths: [],
+      changedRelativePaths: [],
+      deletedRelativePaths: [],
+    });
+
+    assert.equal(result.kind, "related");
+    assert.deepEqual(result.testFiles, []);
+    assert.match(result.reason, /no changed files/);
   });
 });
 
