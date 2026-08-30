@@ -1392,6 +1392,22 @@ Every non-2xx response returns a structured error:
 
 Clients MUST treat unrecognized error codes as opaque and fall back to the HTTP status class and the error `type`.
 
+**Authority when `type` and HTTP status disagree.** A response carries two
+signals that can conflict, so exactly one is authoritative:
+
+1. The HTTP status is the authoritative transport outcome. A client MUST decide
+   success, retry, and failure handling from the status class.
+2. A recognized `error.type` MAY refine the category or user-facing presentation
+   within that outcome, but MUST NOT change it.
+3. An `error.type` that is absent, unrecognized, or inconsistent with the status
+   class is opaque. It MUST NOT override the status class, and a client MUST
+   fall back to the status class alone.
+4. An unrecognized `code` or `type` MUST NOT cause parse failure. Clients MUST
+   preserve both verbatim for diagnostics.
+
+This makes a future error code safe to introduce: an older client keeps handling
+the response by status, whatever the new `code` or `type` says.
+
 | Code | HTTP Status | Type | Meaning |
 |------|------------|------|---------|
 | `invalid_cursor` | 400 | `invalid_request_error` | Cursor token is malformed or unrecognized. |
@@ -1496,7 +1512,7 @@ A conformant client:
 4. Stores `next_changes_since` from the terminal page of a `changes_since` response for use in the next sync session.
 5. Respects HTTP 410 `cursor_expired` responses by performing a full re-sync rather than retrying with the expired cursor.
 6. Honors retention commitments declared in the grant.
-7. Treats unrecognized error codes as opaque, falling back to the HTTP status class and the error `type` rather than failing on an unknown code.
+7. Treats unrecognized error codes as opaque, falling back to the HTTP status class rather than failing on an unknown code. Takes the HTTP status as the authoritative outcome; uses a recognized `error.type` only to refine category or presentation within that outcome; ignores an absent, unrecognized, or status-inconsistent `type` for control flow; and never fails to parse on an unknown `code` or `type`.
 
 ### Conformance test suite
 
