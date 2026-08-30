@@ -172,7 +172,8 @@
       "include": [
         "packages/polyfill-connectors/bin/**/*.test.ts",
         "packages/polyfill-connectors/connectors/**/*.test.ts",
-        "packages/polyfill-connectors/src/**/*.test.ts"
+        "packages/polyfill-connectors/src/**/*.test.ts",
+        "packages/polyfill-connectors/scripts/related-tests/*.test.ts"
       ]
     },
     {

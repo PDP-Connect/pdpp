@@ -24,7 +24,8 @@
     "conformance": "tsx scripts/conformance.ts",
     "fix": "ultracite fix",
     "postinstall": "node ./scripts/install-patchright-browser.ts",
-    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx --test-concurrency=2 --test-timeout=120000 \"bin/**/*.test.ts\" \"connectors/**/*.test.ts\" \"src/**/*.test.ts\"'",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- bash -c 'node --test --import tsx --test-concurrency=2 --test-timeout=120000 \"bin/**/*.test.ts\" \"connectors/**/*.test.ts\" \"src/**/*.test.ts\" \"scripts/related-tests/*.test.ts\"'",
+    "test:related": "node --import tsx scripts/related-tests/run.ts",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm check && pnpm check:noAwaitInLoops-conformance && pnpm check:noDirectCredentialEnv && pnpm check:noUnnecessaryConditions-expiry"
   },
@@ -52,6 +53,7 @@
     "@biomejs/biome": "2.5.11",
     "@types/better-sqlite3": "^9.6.0",
     "@types/ws": "^8.18.1",
+    "dependency-cruiser": "^18.2.0",
     "ultracite": "7.10.7"
   }
 }

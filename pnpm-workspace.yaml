@@ -29,6 +29,22 @@ overrides:
 publicHoistPattern:
   - "@types/react"
   - "@types/react-dom"
+# dependency-cruiser@18.2.0 declares no dependency on typescript at all (not
+# even a peerDependency) — it resolves whatever `typescript` module happens
+# to be reachable by walking up from its own install location at runtime,
+# and silently degrades (every .ts file treated as unparseable, 5 modules
+# found instead of 751 in packages/polyfill-connectors, with NO thrown error)
+# if that walk finds nothing or finds something outside its supported range
+# (>=2.0.0 <7.0.0). The workspace root pins typescript@^7.0.2, which is
+# outside that range. This packageExtensions entry gives dependency-cruiser
+# its own isolated, compatible typescript — verified end-to-end (751 modules,
+# zero environment issues) — without changing what `tsc` resolves for any
+# workspace package's own typecheck (each package that runs tsc pins its own
+# typescript devDependency already; this does not touch any of those).
+packageExtensions:
+  dependency-cruiser:
+    dependencies:
+      typescript: "^5.9.0"
 onlyBuiltDependencies:
   - "@pdpp/collector-runtime"
   - "@pdpp/connector-protocol"
