@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { findCanonicalEntrypointBypasses, formatRatchetFindings } from "./canonical-entrypoints.ts";
 
 const repositoryRoot = new URL("../..", import.meta.url);
+const workflowsDirectory = new URL("../../.github/workflows/", import.meta.url);
+const DIRECT_RI_TEST_COMMAND = /^\s*run:\s*pnpm --dir reference-implementation run test\s*$/m;
+const MEMORY_DEFAULT_PROFILE = /^\s*PDPP_TEST_PROFILE:\s*"memory-default"\s*$/m;
 
 async function fixtureRepository(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "pdpp-scratch-ratchet-"));
@@ -28,6 +31,31 @@ test("repository-derived package, workflow, and host-writer inventories have no 
   const root = new URL(".", repositoryRoot).pathname;
   const findings = await findCanonicalEntrypointBypasses(root);
   assert.deepEqual(findings, [], formatRatchetFindings(findings, root));
+});
+
+test("every direct workflow RI test command explicitly selects memory-default", async () => {
+  const workflowFiles = await readdir(workflowsDirectory, { withFileTypes: true });
+  const omissions: string[] = [];
+  let directInvocationCount = 0;
+
+  for (const workflowFile of workflowFiles) {
+    if (!workflowFile.isFile() || !workflowFile.name.endsWith(".yml")) {
+      continue;
+    }
+    const workflow = await readFile(new URL(workflowFile.name, workflowsDirectory), "utf8");
+    for (const step of workflow.split(/(?=^\s*-\s+)/m)) {
+      if (!DIRECT_RI_TEST_COMMAND.test(step)) {
+        continue;
+      }
+      directInvocationCount += 1;
+      if (!MEMORY_DEFAULT_PROFILE.test(step)) {
+        omissions.push(workflowFile.name);
+      }
+    }
+  }
+
+  assert.ok(directInvocationCount > 0, "expected at least one direct workflow RI test command");
+  assert.deepEqual(omissions, [], "every direct workflow RI test command must declare PDPP_TEST_PROFILE");
 });
 
 test("root vendor verification must invoke the scratch owner", async () => {
