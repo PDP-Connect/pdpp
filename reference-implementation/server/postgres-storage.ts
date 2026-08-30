@@ -27,12 +27,28 @@ import {
   connectorInstanceLockWaitMs,
 } from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
+import {
+  advancePostgresMigrationCursor,
+  blockPostgresMigration,
+  claimPostgresMigration,
+  completePostgresMigration,
+  ensurePostgresMigrationLedger,
+  LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID,
+  readPostgresMigrationLedgerRow,
+} from "./postgres-migration-ledger.ts";
 import { assertTestDatabase, testDatabaseGuardActive } from "./postgres-test-database-guard.ts";
 import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
 
 const VALID_BACKENDS = new Set(["sqlite", "postgres"]);
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = "owner_local";
+// Distinguishes two boots of the same pid (container restart, pid reuse) in
+// the migration ledger's lease_owner. Diagnostic only: the advisory bootstrap
+// lock, not this string, is what serializes concurrent boots.
+const POSTGRES_MIGRATION_LEASE_OWNER_NONCE = createHash("sha256")
+  .update(`${process.pid}:${Date.now()}:${Math.random()}`)
+  .digest("hex")
+  .slice(0, 12);
 
 type StorageBackend = "postgres" | "sqlite";
 type StorageLog = (message: string) => void;
@@ -3232,7 +3248,11 @@ export async function bootstrapPostgresSchema({
     await migratePostgresConnectorMaintenanceCursorNameCheck(client);
     await migratePostgresRecordsBlobSearchInstanceColumns(client);
     await migratePostgresClientEventSubscriptionAuthority(client);
-    await migratePostgresLocalDeviceConnectorInstances(client);
+    // Install the ledger BEFORE the first data migration that consults it.
+    // A migration that reads a missing ledger table would have to guess its
+    // own completion, which is the defect the ledger exists to remove.
+    await ensurePostgresMigrationLedger(client);
+    await migratePostgresLocalDeviceConnectorInstances(client, { log });
     await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
     await migratePostgresConnectorSummaryEvidenceRepairChunkPageSize(client);
@@ -5374,164 +5394,524 @@ async function localDeviceMigrationIsTombstoned(
   return tombstone.rows.length > 0;
 }
 
-async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient): Promise<void> {
-  const rows = await client.query(`
-    SELECT
-      dsi.source_instance_id,
-      dsi.device_id,
-      dsi.connector_id,
-      dsi.connector_instance_id,
-      dsi.local_binding_id,
-      COALESCE(dsi.display_name, de.display_name, dsi.local_binding_id) AS display_name,
-      dsi.status,
-      dsi.created_at,
-      dsi.updated_at,
-      dsi.revoked_at,
-      de.owner_subject_id
-    FROM device_source_instances dsi
-    JOIN device_exporters de ON de.device_id = dsi.device_id
-    ORDER BY dsi.created_at, dsi.source_instance_id
-  `);
+/**
+ * Authoritative connector-scoped tables the identity migration rewrites in
+ * the SAME transaction as the identity change.
+ *
+ * These are not reconstructible from anything else: `record_changes` is the
+ * retained change-history authority, `version_counter` is per-stream record
+ * history state, `blobs`/`blob_bindings` carry payload bindings, and the
+ * schedule/run tables are operator/audit state. A connector-id rewrite here
+ * is safe only once the exact connector-instance identity and every
+ * collision check has succeeded, so it stays inside the fail-closed
+ * transaction and never becomes best-effort background work.
+ */
+const PG_LOCAL_DEVICE_AUTHORITATIVE_REWRITE_TABLES = [
+  "connector_state",
+  "grant_connector_state",
+  "connector_detail_gaps",
+  "records",
+  "record_changes",
+  "version_counter",
+  "blobs",
+  "blob_bindings",
+  "connector_schedules",
+  "controller_active_runs",
+  "run_history",
+  "scheduler_last_run_times",
+] as const;
 
-  if (rows.rows.length === 0) {
-    return;
+/**
+ * Derived projection tables the identity migration deliberately does NOT
+ * rewrite inline.
+ *
+ * Their source of truth is canonical `records` plus the registered manifest,
+ * and the ordinary reconcile path already rebuilds them
+ * (`search-index-reconcile.ts`). Rewriting them here was the incident: the
+ * two largest tables on the deployment (24 GB `lexical_search_index`, 9.8 GB
+ * `record_changes`) were both scanned before the server bound a listener,
+ * because `connector_id` is only a residual filter on every instance-leading
+ * index these tables have.
+ *
+ * A stale legacy `connector_id` here is not merely cosmetic: the semantic
+ * reads in `postgres-search.ts` (`postgresListSemanticConnectorInstanceIds`,
+ * `postgresListSemanticStreamsForConnector`) select BY `connector_id`, so a
+ * legacy-keyed projection row is invisible to them. That is why these rows
+ * are deleted rather than repointed — the same disposition
+ * `mergeEquivalentPostgresConnectorInstances` already applies to
+ * `PG_REBUILDABLE_INSTANCE_REFERENCE_TABLES` — and why the scope is marked
+ * dirty in the identity transaction so the read surface reports the backlog
+ * honestly until the rebuild lands.
+ */
+const PG_LOCAL_DEVICE_DERIVED_PROJECTION_TABLES = [
+  "lexical_search_index",
+  "lexical_search_meta",
+  "semantic_search_blob",
+  "semantic_search_meta",
+  "semantic_search_backfill_progress",
+] as const;
+
+/**
+ * Source rows committed per transaction. Small on purpose: the batch is the
+ * crash-resume granularity, and each batch commits its identity writes, its
+ * authoritative rewrites, its projection-repair marks, and its cursor
+ * advance together. A larger batch buys nothing (the per-row work dominates)
+ * and costs a longer lock hold plus more repeated work after a crash.
+ */
+const PG_LOCAL_DEVICE_MIGRATION_DEFAULT_BATCH_SIZE = 25;
+
+/**
+ * Batch size, overridable so a test can force observable batch boundaries.
+ *
+ * Batch boundaries ARE the crash-resume semantics, and at the default size a
+ * small fixture fits in one batch — which would make a resume oracle assert
+ * nothing. The override exists for that oracle, not as a tuning knob:
+ * production leaves the variable unset and gets the default.
+ */
+function pgLocalDeviceMigrationBatchSize(): number {
+  const raw = Number.parseInt(process.env.PDPP_LOCAL_DEVICE_MIGRATION_BATCH_SIZE ?? "", 10);
+  return Number.isInteger(raw) && raw > 0 ? raw : PG_LOCAL_DEVICE_MIGRATION_DEFAULT_BATCH_SIZE;
+}
+
+const PG_LOCAL_DEVICE_MIGRATION_LEASE_MS = 15 * 60 * 1000;
+
+export interface LocalDeviceCanonicalizationReceipt {
+  /** Rows this run actually mutated, summed across authoritative tables. */
+  readonly changedRows: number;
+  /** Source rows this run committed. Zero on a boot that skipped the phase. */
+  readonly processedSourceRows: number;
+  /** Projection scopes this run enqueued for post-readiness repair. */
+  readonly repairScopesEnqueued: number;
+  /** `true` when a durable `complete` receipt made this boot skip the data phase. */
+  readonly skippedByReceipt: boolean;
+}
+
+interface LocalDeviceRowOutcome {
+  readonly changedRows: number;
+  readonly repairScopes: number;
+}
+
+/**
+ * Rewrite one authoritative table's legacy connector-id references for a
+ * single connector instance, returning the rows actually changed.
+ *
+ * The `connector_id IS DISTINCT FROM $1` guard is a COST guard, not the
+ * correctness mechanism — the ledger receipt is what makes the migration
+ * exactly-once. It matters because the pre-guard statement issued a write
+ * for every matching row on every boot even when the value was already
+ * canonical, and because the returned count is the only honest way to say
+ * "this run changed nothing" without inferring it from
+ * `pg_stat_user_tables`.
+ */
+async function rewritePostgresAuthoritativeConnectorId(
+  client: PoolClient,
+  table: string,
+  {
+    connectorInstanceId,
+    newConnectorId,
+    oldConnectorId,
+  }: {
+    connectorInstanceId: string;
+    newConnectorId: string;
+    oldConnectorId: string;
+  }
+): Promise<number> {
+  const result = await client.query(
+    `UPDATE ${pgIdentifier(table)}
+        SET connector_id = $1
+      WHERE connector_id = $2
+        AND connector_instance_id = $3
+        AND connector_id IS DISTINCT FROM $1`,
+    [newConnectorId, oldConnectorId, connectorInstanceId]
+  );
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Drop this instance's legacy-keyed projection rows and enqueue the affected
+ * scopes for post-readiness rebuild.
+ *
+ * The streams are read from the projection tables themselves (not from
+ * `records`) because a scope only needs repair if a legacy-keyed projection
+ * row exists for it — enqueuing every stream the connector ever wrote would
+ * hand the maintenance sweep work it does not need to do.
+ *
+ * Both the delete and the dirty mark run on the caller's transaction client,
+ * so a rollback discards them together with the identity change. A dirty
+ * mark that survived a rolled-back identity change would point the sweep at
+ * a scope whose canonical identity does not exist yet.
+ */
+async function enqueuePostgresLocalDeviceProjectionRepair(
+  client: PoolClient,
+  {
+    connectorInstanceId,
+    newConnectorId,
+    nowIso,
+    oldConnectorId,
+  }: {
+    connectorInstanceId: string;
+    newConnectorId: string;
+    nowIso: string;
+    oldConnectorId: string;
+  }
+): Promise<number> {
+  const scopes = new Set<string>();
+  await sequentially(PG_LOCAL_DEVICE_DERIVED_PROJECTION_TABLES, async (table) => {
+    if (!(await hasPostgresColumn(client, table, "connector_instance_id"))) {
+      return;
+    }
+    // `semantic_search_blob` is keyed by scope_key, not stream. Its rows are
+    // rebuilt from the same per-stream backfill as the rest, so it only
+    // contributes the delete; the stream set comes from the stream-keyed
+    // projections.
+    if (await hasPostgresColumn(client, table, "stream")) {
+      const streams = await client.query<{ stream: string }>(
+        `SELECT DISTINCT stream FROM ${pgIdentifier(table)}
+          WHERE connector_id = $1 AND connector_instance_id = $2`,
+        [oldConnectorId, connectorInstanceId]
+      );
+      for (const { stream } of streams.rows) {
+        scopes.add(stream);
+      }
+    }
+    await client.query(`DELETE FROM ${pgIdentifier(table)} WHERE connector_id = $1 AND connector_instance_id = $2`, [
+      oldConnectorId,
+      connectorInstanceId,
+    ]);
+  });
+
+  await sequentially([...scopes].sort(), async (stream) => {
+    // Deliberately inlined rather than imported from
+    // `stores/search-index-dirty-store.ts`: that module imports THIS one, and
+    // `postgres-storage.ts` is a leaf on purpose so schema bootstrap cannot
+    // be made to depend on store initialization order. The statement is a
+    // verbatim copy of `markSearchIndexDirtyPostgres`, including the
+    // in-statement `revision` increment that the reconcile clear CAS's on;
+    // `postgres-boot-migration-resume.test.ts` asserts the two stay
+    // equivalent, so a drift in either shows up as a test failure rather
+    // than a silently un-reconciled scope.
+    await client.query(
+      `INSERT INTO search_index_dirty(connector_instance_id, connector_id, stream, dirty, marked_at, revision)
+       VALUES ($1, $2, $3, 1, $4, 1)
+       ON CONFLICT(connector_instance_id, stream) DO UPDATE SET
+         connector_id = excluded.connector_id,
+         dirty = 1,
+         marked_at = excluded.marked_at,
+         revision = search_index_dirty.revision + 1`,
+      [connectorInstanceId, newConnectorId, stream, nowIso]
+    );
+  });
+  return scopes.size;
+}
+
+async function migratePostgresLocalDeviceConnectorRow(
+  client: PoolClient,
+  row: LocalDeviceMigrationRow & Record<string, unknown>
+): Promise<LocalDeviceRowOutcome> {
+  // The live enrollment path keys this binding by its stable collector
+  // name. device_id/source_instance_id are per-enrollment facts, so using
+  // them here makes a completed enrollment look like a conflicting second
+  // connector instance on every later boot.
+  const sourceBindingIdentity = {
+    kind: "local_device",
+    local_binding_name: row.local_binding_id,
+  };
+  const sourceBinding = {
+    device_id: row.device_id,
+    kind: "local_device",
+    local_binding_name: row.local_binding_id,
+    source_instance_id: row.source_instance_id,
+  };
+  const sourceBindingKey = makeConnectorInstanceSourceBindingKey(sourceBindingIdentity);
+  // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
+  // connector key, mirroring the SQLite migration and the live ingest/read
+  // paths. Connection isolation is carried by connector_instance_id. See
+  // canonicalize-connector-keys design Decision 7.
+  const connectorKey = canonicalConnectorKey(row.connector_id) ?? row.connector_id;
+  const newConnectorId = connectorKey;
+  const oldConnectorId = legacyLocalDeviceConnectorId(row.connector_id, row.source_instance_id);
+
+  const identity = await resolveLocalDeviceMigrationIdentity(
+    client,
+    row,
+    connectorKey,
+    oldConnectorId,
+    sourceBinding,
+    sourceBindingKey
+  );
+  if (!identity) {
+    return { changedRows: 0, repairScopes: 0 };
+  }
+  const { existingBindingInstanceId, legacyInstanceId } = identity;
+
+  const connectorInstanceId =
+    row.connector_instance_id ||
+    existingBindingInstanceId ||
+    legacyInstanceId ||
+    makeConnectorInstanceId(row.owner_subject_id, connectorKey, "local_device", sourceBindingKey);
+  const now = new Date().toISOString();
+  const manifest = {
+    connector_id: connectorKey,
+    display_name: (row.display_name as string) || connectorKey,
+    streams: [],
+  };
+
+  await client.query(
+    `INSERT INTO connectors(connector_id, manifest, created_at)
+     VALUES($1, $2::jsonb, $3)
+     ON CONFLICT(connector_id) DO NOTHING`,
+    [connectorKey, JSON.stringify(manifest), row.created_at || now]
+  );
+
+  // Existing connector lifecycle is owner authority. The device row is
+  // migration input only and may remain active after a zero-cascade revoke.
+  await client.query(
+    `INSERT INTO connector_instances(
+       connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+     )
+     VALUES($1, $2, $3, $4, $5, 'local_device', $6, $7::jsonb, $8, $9, $10)
+     ON CONFLICT (connector_instance_id) DO UPDATE
+       SET owner_subject_id = EXCLUDED.owner_subject_id,
+           connector_id = EXCLUDED.connector_id,
+           display_name = EXCLUDED.display_name,
+           source_kind = EXCLUDED.source_kind,
+           source_binding_key = EXCLUDED.source_binding_key,
+           source_binding_json = EXCLUDED.source_binding_json,
+           updated_at = GREATEST(connector_instances.updated_at, EXCLUDED.updated_at)`,
+    [
+      connectorInstanceId,
+      row.owner_subject_id,
+      connectorKey,
+      row.display_name,
+      row.status === "revoked" ? "revoked" : "active",
+      sourceBindingKey,
+      JSON.stringify(sourceBinding),
+      row.created_at,
+      row.updated_at || now,
+      row.status === "revoked" ? row.revoked_at || row.updated_at || now : null,
+    ]
+  );
+
+  await client.query(
+    `UPDATE device_source_instances
+        SET connector_instance_id = $1,
+            connector_id = $2,
+            updated_at = CASE WHEN updated_at > $3 THEN updated_at ELSE $3 END
+      WHERE device_id = $4 AND source_instance_id = $5`,
+    [connectorInstanceId, connectorKey, now, row.device_id, row.source_instance_id]
+  );
+
+  let changedRows = 0;
+  await sequentially(PG_LOCAL_DEVICE_AUTHORITATIVE_REWRITE_TABLES, async (table) => {
+    changedRows += await rewritePostgresAuthoritativeConnectorId(client, table, {
+      connectorInstanceId,
+      newConnectorId,
+      oldConnectorId,
+    });
+  });
+
+  const repairScopes = await enqueuePostgresLocalDeviceProjectionRepair(client, {
+    connectorInstanceId,
+    newConnectorId,
+    nowIso: now,
+    oldConnectorId,
+  });
+  return { changedRows, repairScopes };
+}
+
+/**
+ * Versioned, exactly-once, crash-resumable local-device canonicalization.
+ *
+ * WHAT CHANGED AND WHY (2026-08-29)
+ *
+ * This ran as an unconditional boot migration with no durable completion
+ * marker. Every restart enumerated every `device_source_instances` row and
+ * issued one `UPDATE` per row per table across 17 tables — including the
+ * deployment's two largest, `lexical_search_index` (24 GB) and
+ * `record_changes` (9.8 GB) — inside a single transaction that had to commit
+ * before the server bound a listener. `EXPLAIN` on the production shape
+ * confirmed the statements use the instance-leading primary keys with
+ * `connector_id` as a residual FILTER, so an already-canonical instance still
+ * walked millions of index entries to update zero rows. The whole operation
+ * committed once at the end, so any later error rolled everything back and
+ * the next boot repeated it from the beginning.
+ *
+ * The three separable defects, and the three separate fixes:
+ *
+ *  1. NO COMPLETION RECEIPT. The guard was table shape plus row presence, not
+ *     "this migration completed." Fixed by the migration ledger
+ *     (`postgres-migration-ledger.ts`): a `complete` row makes this function
+ *     return without reading `device_source_instances` at all.
+ *
+ *  2. NO RESUME BOUNDARY. One transaction for the whole table meant a crash
+ *     lost all progress. Fixed by committing per batch, with the cursor
+ *     advance in the SAME transaction as the batch's writes — a cursor that
+ *     committed separately would skip a batch after a crash between the two
+ *     commits.
+ *
+ *  3. PROJECTION REWRITES ON THE READINESS PATH. Fixed by removing the
+ *     derived tables from the identity transaction entirely; their stale
+ *     legacy-keyed rows are dropped and the scope is enqueued to the
+ *     EXISTING `search_index_dirty` queue that the post-listen maintenance
+ *     sweep already drains, with the read surface already disclosing that
+ *     backlog honestly (`routes/rs-read.ts`).
+ *
+ * Fail-closed behavior is unchanged and deliberately NOT relaxed: every
+ * collision, ambiguity, and unknown-reference check in
+ * `resolveLocalDeviceMigrationIdentity` /
+ * `mergeEquivalentPostgresConnectorInstances` still throws, the batch rolls
+ * back, and the ledger records `blocked` — never `complete`. A blocked
+ * migration re-attempts on the next boot (an operator may have reconciled the
+ * collision since) but can never be mistaken for a finished one.
+ */
+async function migratePostgresLocalDeviceConnectorInstances(
+  client: PoolClient,
+  { log = NOOP_STORAGE_LOG }: { log?: StorageLog } = {}
+): Promise<LocalDeviceCanonicalizationReceipt> {
+  const skipped: LocalDeviceCanonicalizationReceipt = {
+    changedRows: 0,
+    processedSourceRows: 0,
+    repairScopesEnqueued: 0,
+    skippedByReceipt: true,
+  };
+
+  const claim = await claimPostgresMigration(client, LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID, {
+    leaseDurationMs: PG_LOCAL_DEVICE_MIGRATION_LEASE_MS,
+    leaseOwner: `${process.pid}@${POSTGRES_MIGRATION_LEASE_OWNER_NONCE}`,
+    nowIso: new Date().toISOString(),
+  });
+  if (!claim) {
+    return skipped;
   }
 
-  await client.query("BEGIN");
-  try {
-    await sequentially(rows.rows, async (row) => {
-      // The live enrollment path keys this binding by its stable collector
-      // name. device_id/source_instance_id are per-enrollment facts, so using
-      // them here makes a completed enrollment look like a conflicting second
-      // connector instance on every later boot.
-      const sourceBindingIdentity = {
-        kind: "local_device",
-        local_binding_name: row.local_binding_id,
-      };
-      const sourceBinding = {
-        device_id: row.device_id,
-        kind: "local_device",
-        local_binding_name: row.local_binding_id,
-        source_instance_id: row.source_instance_id,
-      };
-      const sourceBindingKey = makeConnectorInstanceSourceBindingKey(sourceBindingIdentity);
-      // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
-      // connector key, mirroring the SQLite migration and the live ingest/read
-      // paths. Connection isolation is carried by connector_instance_id. See
-      // canonicalize-connector-keys design Decision 7.
-      const connectorKey = canonicalConnectorKey(row.connector_id) ?? row.connector_id;
-      const newConnectorId = connectorKey;
-      const oldConnectorId = legacyLocalDeviceConnectorId(row.connector_id, row.source_instance_id);
+  let { cursor } = claim;
+  let changedRows = 0;
+  let processedSourceRows = 0;
+  let repairScopesEnqueued = 0;
 
-      const identity = await resolveLocalDeviceMigrationIdentity(
-        client,
-        row,
-        connectorKey,
-        oldConnectorId,
-        sourceBinding,
-        sourceBindingKey
-      );
-      if (!identity) {
-        return;
-      }
-      const { existingBindingInstanceId, legacyInstanceId } = identity;
-
-      const connectorInstanceId =
-        row.connector_instance_id ||
-        existingBindingInstanceId ||
-        legacyInstanceId ||
-        makeConnectorInstanceId(row.owner_subject_id, connectorKey, "local_device", sourceBindingKey);
-      const now = new Date().toISOString();
-      const manifest = {
-        connector_id: connectorKey,
-        display_name: row.display_name || connectorKey,
-        streams: [],
-      };
-
-      await client.query(
-        `INSERT INTO connectors(connector_id, manifest, created_at)
-         VALUES($1, $2::jsonb, $3)
-         ON CONFLICT(connector_id) DO NOTHING`,
-        [connectorKey, JSON.stringify(manifest), row.created_at || now]
-      );
-
-      // Existing connector lifecycle is owner authority. The device row is
-      // migration input only and may remain active after a zero-cascade revoke.
-      await client.query(
-        `INSERT INTO connector_instances(
-           connector_instance_id, owner_subject_id, connector_id, display_name, status,
-           source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
-         )
-         VALUES($1, $2, $3, $4, $5, 'local_device', $6, $7::jsonb, $8, $9, $10)
-         ON CONFLICT (connector_instance_id) DO UPDATE
-           SET owner_subject_id = EXCLUDED.owner_subject_id,
-               connector_id = EXCLUDED.connector_id,
-               display_name = EXCLUDED.display_name,
-               source_kind = EXCLUDED.source_kind,
-               source_binding_key = EXCLUDED.source_binding_key,
-               source_binding_json = EXCLUDED.source_binding_json,
-               updated_at = GREATEST(connector_instances.updated_at, EXCLUDED.updated_at)`,
-        [
-          connectorInstanceId,
-          row.owner_subject_id,
-          connectorKey,
-          row.display_name,
-          row.status === "revoked" ? "revoked" : "active",
-          sourceBindingKey,
-          JSON.stringify(sourceBinding),
-          row.created_at,
-          row.updated_at || now,
-          row.status === "revoked" ? row.revoked_at || row.updated_at || now : null,
-        ]
-      );
-
-      await client.query(
-        `UPDATE device_source_instances
-            SET connector_instance_id = $1,
-                connector_id = $2,
-                updated_at = CASE WHEN updated_at > $3 THEN updated_at ELSE $3 END
-          WHERE device_id = $4 AND source_instance_id = $5`,
-        [connectorInstanceId, connectorKey, now, row.device_id, row.source_instance_id]
-      );
-
-      await sequentially(
-        [
-          "connector_state",
-          "grant_connector_state",
-          "connector_detail_gaps",
-          "records",
-          "record_changes",
-          "version_counter",
-          "blobs",
-          "blob_bindings",
-          "lexical_search_index",
-          "lexical_search_meta",
-          "semantic_search_blob",
-          "semantic_search_meta",
-          "semantic_search_backfill_progress",
-          "connector_schedules",
-          "controller_active_runs",
-          "run_history",
-          "scheduler_last_run_times",
-        ],
-        async (table) => {
-          await client.query(
-            `UPDATE ${table}
-              SET connector_id = $1
-            WHERE connector_id = $2 AND connector_instance_id = $3`,
-            [newConnectorId, oldConnectorId, connectorInstanceId]
-          );
-        }
-      );
-    });
-    await client.query("COMMIT");
-  } catch (err) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {
-      // Rollback failure must not hide the original migration error.
+  for (;;) {
+    // Keyset page over the SAME total order the cursor records, so a resumed
+    // boot re-reads exactly the rows the previous boot did not commit. Read
+    // outside the transaction: a page that turns out to be empty must not
+    // leave an open transaction behind, and every row it returns is
+    // re-validated by the fail-closed identity resolution inside the
+    // transaction anyway.
+    //
+    // The ordering key changed from `(created_at, source_instance_id)` to
+    // `source_instance_id` alone. A keyset cursor needs a UNIQUE, stable,
+    // never-rewritten column, and `source_instance_id` is the table's
+    // primary key while `created_at` is a mutable text timestamp that would
+    // make the resume boundary ambiguous. The previous order carried no
+    // semantics: each source row's canonicalization is independent, and
+    // every cross-row interaction (coalescence, collision, tombstone) is
+    // resolved by `resolveLocalDeviceMigrationIdentity` from the DATA, not
+    // from the position a row happens to occupy in the scan.
+    // biome-ignore lint/performance/noAwaitInLoops: Batches are sequential by contract — each page's cursor is only valid after the previous page committed, and concurrency here would defeat the resume boundary.
+    const page = await client.query<LocalDeviceMigrationRow & Record<string, unknown>>(
+      `SELECT
+         dsi.source_instance_id,
+         dsi.device_id,
+         dsi.connector_id,
+         dsi.connector_instance_id,
+         dsi.local_binding_id,
+         COALESCE(dsi.display_name, de.display_name, dsi.local_binding_id) AS display_name,
+         dsi.status,
+         dsi.created_at,
+         dsi.updated_at,
+         dsi.revoked_at,
+         de.owner_subject_id
+       FROM device_source_instances dsi
+       JOIN device_exporters de ON de.device_id = dsi.device_id
+       WHERE $1::text IS NULL OR dsi.source_instance_id > $1::text
+       ORDER BY dsi.source_instance_id
+       LIMIT $2`,
+      [cursor, pgLocalDeviceMigrationBatchSize()]
+    );
+    if (page.rows.length === 0) {
+      break;
     }
-    throw err;
+
+    await client.query("BEGIN");
+    try {
+      let batchChangedRows = 0;
+      let batchRepairScopes = 0;
+      await sequentially(page.rows, async (row) => {
+        const outcome = await migratePostgresLocalDeviceConnectorRow(client, row);
+        batchChangedRows += outcome.changedRows;
+        batchRepairScopes += outcome.repairScopes;
+      });
+      const batchCursor = String(page.rows.at(-1)?.source_instance_id);
+      // Same transaction as the batch's writes. See the function doc: a
+      // cursor that commits separately is not a resume boundary.
+      await advancePostgresMigrationCursor(client, LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID, {
+        changedRows: batchChangedRows,
+        cursor: batchCursor,
+        nowIso: new Date().toISOString(),
+      });
+      await client.query("COMMIT");
+      cursor = batchCursor;
+      changedRows += batchChangedRows;
+      processedSourceRows += page.rows.length;
+      repairScopesEnqueued += batchRepairScopes;
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Rollback failure must not hide the original migration error.
+      }
+      // `blocked` is written on its own connection state AFTER the rollback,
+      // so the receipt survives the discarded batch. It is never `complete`:
+      // a fail-closed stop must not let a later boot skip the data phase.
+      try {
+        await blockPostgresMigration(client, LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID, {
+          error: err instanceof Error ? err.message : String(err),
+          nowIso: new Date().toISOString(),
+        });
+      } catch {
+        // A ledger write failure must not hide the original migration error.
+      }
+      throw err;
+    }
+  }
+
+  await completePostgresMigration(client, LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID, {
+    nowIso: new Date().toISOString(),
+  });
+  if (processedSourceRows > 0) {
+    log(
+      `[PDPP] Local-device canonicalization: ${processedSourceRows} source rows, ${changedRows} authoritative rows changed, ${repairScopesEnqueued} projection scopes queued for post-readiness repair`
+    );
+  }
+  return { changedRows, processedSourceRows, repairScopesEnqueued, skippedByReceipt: false };
+}
+
+/**
+ * Read-only view of the local-device canonicalization receipt, for the boot
+ * path and for tests that must assert a second boot skipped the data phase
+ * without inferring it from timing.
+ */
+export async function readPostgresLocalDeviceCanonicalizationReceipt(): Promise<{
+  attemptCount: number;
+  changedRows: number;
+  cursor: string | null;
+  lastError: string | null;
+  status: string;
+} | null> {
+  const client = await getPostgresPool().connect();
+  try {
+    const row = await readPostgresMigrationLedgerRow(client, LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID);
+    return row
+      ? {
+          attemptCount: row.attemptCount,
+          changedRows: row.changedRows,
+          cursor: row.cursor,
+          lastError: row.lastError,
+          status: row.status,
+        }
+      : null;
+  } finally {
+    client.release();
   }
 }
 

@@ -325,6 +325,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Disclosure-spine events are durable audit state.",
   },
+  storage_migration_ledger: {
+    classification: "backup_required",
+    reason:
+      "The completion receipt for data migrations that rewrite rows (server/postgres-migration-ledger.ts). It cannot be rebuilt from the data it describes — inferring completion from row shape is precisely the guess the ledger replaced — so a lost row makes the next boot re-run a completed migration against a restored database, reinstating the repeated pre-listen rewrite this table exists to prevent. A lost `blocked` row is worse: it erases an operator-visible fail-closed stop and lets a later boot re-attempt a collision silently.",
+  },
   stream_evidence_run_registry: {
     classification: "backup_required",
     reason:

@@ -2300,6 +2300,35 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
 CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
   ON connector_summary_evidence(connector_id);
 
+-- Completion receipt for data migrations that rewrite rows. Mirrors the
+-- Postgres table installed by server/postgres-migration-ledger.ts; see that
+-- module for the semantics of each column and why completion may never be
+-- inferred from the data.
+--
+-- SQLite has no writer for it today, and that is deliberate rather than an
+-- omission: this backend's local-device canonicalization
+-- (migrateLocalDeviceConnectorInstances below) is a synchronous
+-- single-file transaction whose cost profile is not the one the Postgres
+-- ledger exists to bound -- there is no pre-listen multi-GB index scan and
+-- no 503 window to protect. The table is created here so the two backends'
+-- schemas stay at parity (backup-table-policy.ts's parity invariant, proven
+-- by test/backup-table-inventory.test.ts) and so a SQLite deployment that
+-- later needs the same receipt does not require a schema migration to get
+-- one.
+CREATE TABLE IF NOT EXISTS storage_migration_ledger (
+  migration_id      TEXT PRIMARY KEY,
+  status            TEXT NOT NULL CHECK(status IN ('pending', 'running', 'complete', 'blocked')),
+  cursor            TEXT,
+  lease_owner       TEXT,
+  lease_expires_at  TEXT,
+  attempt_count     INTEGER NOT NULL DEFAULT 0,
+  changed_rows      INTEGER NOT NULL DEFAULT 0,
+  last_error        TEXT,
+  started_at        TEXT,
+  updated_at        TEXT NOT NULL,
+  completed_at      TEXT
+);
+
 -- Durable scheduling cursors for bounded, periodic maintenance sweeps
 -- (name-keyed, one row per stage). Not evidence, not owner-visible data.
 CREATE TABLE IF NOT EXISTS connector_maintenance_cursor (
