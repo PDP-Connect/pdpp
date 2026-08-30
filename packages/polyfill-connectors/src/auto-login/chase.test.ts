@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { BrowserContext, Locator, Page } from "playwright";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import { classifyChaseBrowserSurface, ensureChaseSession, probeChaseSession } from "./chase.ts";
+import { noStoredCredentialReason } from "./login-credentials.ts";
 
 const DASHBOARD_URL = "https://secure.chase.com/web/auth/dashboard";
 const STREAMING_ENV_KEYS = [
@@ -701,8 +702,7 @@ test("ensureChaseSession self-resolves the no-credentials manual handoff via ass
     assert.equal(assistCalls.length, 1);
     assert.deepEqual(assistCalls[0], {
       attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
-      message:
-        "No stored credential for this chase connection (missing: CHASE_USERNAME, CHASE_PASSWORD). Sign in to Chase in the secure browser. PDPP continues automatically when the session is ready.",
+      message: `${noStoredCredentialReason("chase", ["CHASE_USERNAME", "CHASE_PASSWORD"])} Sign in to Chase in the secure browser. PDPP continues automatically when the session is ready.`,
       owner_action: "operate_attachment",
       progress_posture: "blocked",
       response_contract: "none",

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { EmittedMessage } from "@pdpp/connector-protocol";
 import type { BrowserContext, Page } from "playwright";
-import { manualBrowserLogin } from "./browser-handoff.ts";
+import { manualBrowserLogin, type PrepareBrowserInteractionTargetArgs } from "./browser-handoff.ts";
 import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
@@ -180,8 +180,9 @@ test("a self-resolved browser handoff registers before emission and unregisters 
     },
     nextAssistanceRequestId: () => "assist_streamed_login",
     page: ownerPage,
-    prepareTarget: ({ interactionId }) => {
+    prepareTarget: ({ interactionId }: PrepareBrowserInteractionTargetArgs) => {
       lifecycleSteps.push("register");
+      assert.ok(interactionId, "the lifecycle supplies the generated assistance ID to the registration target");
       registrations.push(interactionId);
       return Promise.resolve({ interactionId, registered: true });
     },
