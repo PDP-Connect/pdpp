@@ -293,6 +293,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Dirty flags are reconciled by bounded search-index repair.",
   },
+  semantic_hnsw_index_build: {
+    classification: "backup_required",
+    reason:
+      "Scheduling/diagnostic state for the optional HNSW catalog-acceleration build (server/postgres-storage.ts runPostgresSemanticHnswMaintenance). A restore that drops the row is safe: bootstrap reseeds it to 'pending' via INSERT ... ON CONFLICT DO NOTHING, and maintenance rebuilds the index with CREATE INDEX CONCURRENTLY IF NOT EXISTS, so no reader depends on the row surviving. It is still captured, like connector_summary_evidence_repair_chunk, so the inventory stays a complete census rather than a judgement call about which rows matter.",
+  },
   semantic_search_backfill_progress: {
     classification: "backup_required",
     reason: "Semantic backfill progress is recomputed while rebuilding semantic search.",
@@ -357,6 +362,10 @@ const POSTGRES_LAZY_APPLICATION_TABLES = [
   "explore_cursor_store",
 ] as const;
 const POSTGRES_SQLITE_ONLY_TABLES = ["semantic_search_rowid"] as const;
+// pgvector/HNSW has no SQLite counterpart; the build-progress row only ever exists
+// under the Postgres backend, so it is the Postgres-side mirror of the
+// SQLite-only exception above rather than part of the shared storage seam.
+const SQLITE_POSTGRES_ONLY_TABLES = ["semantic_hnsw_index_build"] as const;
 
 export function isInternalBackupCatalogTable(name: string): boolean {
   return SQLITE_INTERNAL_TABLES.has(name) || isShadowTable(name);
@@ -365,6 +374,7 @@ export function isInternalBackupCatalogTable(name: string): boolean {
 export const SQLITE_LAZY_STORAGE_TABLES = Object.freeze([...SQLITE_LAZY_APPLICATION_TABLES]);
 export const POSTGRES_LAZY_STORAGE_TABLES = Object.freeze([...POSTGRES_LAZY_APPLICATION_TABLES]);
 export const POSTGRES_SQLITE_ONLY_STORAGE_TABLES = Object.freeze([...POSTGRES_SQLITE_ONLY_TABLES]);
+export const SQLITE_POSTGRES_ONLY_STORAGE_TABLES = Object.freeze([...SQLITE_POSTGRES_ONLY_TABLES]);
 
 export const POSTGRES_STORAGE_TABLES = Object.freeze(
   Object.keys(BACKUP_TABLE_INVENTORY).filter((name) => name !== "semantic_search_rowid")

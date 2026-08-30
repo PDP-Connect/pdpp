@@ -17,6 +17,7 @@ import {
   POSTGRES_SQLITE_ONLY_STORAGE_TABLES,
   POSTGRES_STORAGE_TABLES,
   SQLITE_LAZY_STORAGE_TABLES,
+  SQLITE_POSTGRES_ONLY_STORAGE_TABLES,
 } from "../server/backup-table-policy.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import {
@@ -171,8 +172,8 @@ test("backup inventory has deterministic SQLite/Postgres table parity", () => {
   );
   assert.deepEqual(
     sorted([...postgresTables].filter((table) => !sqliteTables.has(table))),
-    [],
-    "Postgres storage table seam must not contain tables absent from bootstrapped SQLite"
+    sorted(SQLITE_POSTGRES_ONLY_STORAGE_TABLES),
+    "Postgres storage table seam must not contain tables absent from bootstrapped SQLite beyond the declared Postgres-only exceptions"
   );
 });
 
@@ -288,7 +289,10 @@ test("SQLite stopped backup preserves every required durable table", () => {
     closeDb();
 
     const restoredTables = new Set(sqliteCatalogTables(backupPath));
-    const missingTables = missingRequiredTables(restoredTables, new Set(SQLITE_LAZY_STORAGE_TABLES));
+    const missingTables = missingRequiredTables(
+      restoredTables,
+      new Set([...SQLITE_LAZY_STORAGE_TABLES, ...SQLITE_POSTGRES_ONLY_STORAGE_TABLES])
+    );
 
     assert.deepEqual(sorted(missingTables), [], "SQLite backup artifact must contain every non-lazy required table");
     assert.equal(sqliteQueryRows(backupPath, "SELECT COUNT(*) FROM source_webhook_run_receipts")[0], "1");
