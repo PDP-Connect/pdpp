@@ -55,17 +55,28 @@ function listAllTsFiles(root: string, dir: string, out: string[]): void {
 /**
  * Package-relative paths reported by a git diff filtered to a single set of
  * `--diff-filter` letters, restricted to this package's own subtree.
+ *
+ * `args` must request NUL-terminated output (git's `-z` flag) rather than
+ * newline-terminated output: by default git quotes and escapes any path
+ * containing non-ASCII bytes or other "unusual" characters (e.g.
+ * `café.ts` becomes `"caf\303\251.ts"`), and a plain line-based split would
+ * silently fail to match such a quoted line against the raw `packagePrefix`
+ * string, dropping the file from the result entirely — an add/modify that
+ * disappears is exactly the kind of silent under-reporting this selector
+ * must never produce. `-z` disables path quoting unconditionally regardless
+ * of `core.quotepath`.
  */
-function diffPathsInPackage(args: readonly string[]): string[] {
+function diffPathsInPackage(packageRoot: string, args: readonly string[]): string[] {
   const output = execFileSync("git", [...args], {
-    cwd: PACKAGE_ROOT,
+    cwd: packageRoot,
     encoding: "utf8",
   });
-  const packagePrefix = relative(gitRoot(), PACKAGE_ROOT);
+  const packagePrefix = relative(gitRoot(packageRoot), packageRoot);
+  const requiredPrefix = packagePrefix === "" ? "" : `${packagePrefix}/`;
   const paths = new Set<string>();
-  for (const line of output.split("\n")) {
-    if (line.length > 0 && line.startsWith(`${packagePrefix}/`)) {
-      paths.add(relative(packagePrefix, line));
+  for (const entry of output.split("\0")) {
+    if (entry.length > 0 && entry.startsWith(requiredPrefix)) {
+      paths.add(relative(packagePrefix, entry));
     }
   }
   return [...paths];
@@ -84,27 +95,46 @@ export interface ChangedAndDeleted {
  * developer editing a file has not committed it yet, and this selector's
  * whole purpose is fast local feedback on exactly that in-progress edit.
  *
- * Deletions are tracked separately from `--diff-filter=ACMRT` changes: `D`
+ * Deletions are tracked separately from `--diff-filter=ACMT` changes: `D`
  * (Deleted) is deliberately excluded from that filter because a deleted path
- * can never be looked up in the dependency graph. A rename is reported by
- * git (with the default `diff.renames` config in this repo) as a delete of
- * the old path plus an add of the new path, so it is covered by the same
+ * can never be looked up in the dependency graph. Every diff query below
+ * passes `--no-renames`: git's own rename detection (`-M`, unconditional,
+ * NOT controlled by the `diff.renames` config key — that key only affects
+ * `log`/`show`-family rename *following*) would otherwise collapse a rename
+ * into a single `R`-classified entry naming only the new path, silently
+ * dropping the old path from both this query and the deletion query below.
+ * `--no-renames` forces git to always report a rename as a plain
+ * delete-of-old-path + add-of-new-path pair, so it is covered by the
  * deleted-paths query with no separate handling.
  */
-function getChangedFiles(baseRef: string): ChangedAndDeleted {
+export function getChangedFiles(packageRoot: string, baseRef: string): ChangedAndDeleted {
   const changedRelativePaths = new Set<string>();
   for (const path of [
-    ...diffPathsInPackage(["diff", "--name-only", "--diff-filter=ACMRT", `${baseRef}...HEAD`]),
-    ...diffPathsInPackage(["diff", "--name-only", "--diff-filter=ACMRT", "HEAD"]),
-    ...diffPathsInPackage(["ls-files", "--others", "--exclude-standard"]),
+    ...diffPathsInPackage(packageRoot, [
+      "diff",
+      "--no-renames",
+      "--name-only",
+      "-z",
+      "--diff-filter=ACMT",
+      `${baseRef}...HEAD`,
+    ]),
+    ...diffPathsInPackage(packageRoot, ["diff", "--no-renames", "--name-only", "-z", "--diff-filter=ACMT", "HEAD"]),
+    ...diffPathsInPackage(packageRoot, ["ls-files", "-z", "--others", "--exclude-standard"]),
   ]) {
     changedRelativePaths.add(path);
   }
 
   const deletedRelativePaths = new Set<string>();
   for (const path of [
-    ...diffPathsInPackage(["diff", "--name-only", "--diff-filter=D", `${baseRef}...HEAD`]),
-    ...diffPathsInPackage(["diff", "--name-only", "--diff-filter=D", "HEAD"]),
+    ...diffPathsInPackage(packageRoot, [
+      "diff",
+      "--no-renames",
+      "--name-only",
+      "-z",
+      "--diff-filter=D",
+      `${baseRef}...HEAD`,
+    ]),
+    ...diffPathsInPackage(packageRoot, ["diff", "--no-renames", "--name-only", "-z", "--diff-filter=D", "HEAD"]),
   ]) {
     deletedRelativePaths.add(path);
   }
@@ -112,8 +142,8 @@ function getChangedFiles(baseRef: string): ChangedAndDeleted {
   return { changedRelativePaths: [...changedRelativePaths], deletedRelativePaths: [...deletedRelativePaths] };
 }
 
-function gitRoot(): string {
-  return execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+function gitRoot(packageRoot: string): string {
+  return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: packageRoot, encoding: "utf8" }).trim();
 }
 
 function main(): void {
@@ -128,7 +158,7 @@ function main(): void {
   let changedRelativePaths: string[];
   let deletedRelativePaths: string[];
   try {
-    ({ changedRelativePaths, deletedRelativePaths } = getChangedFiles(baseRef));
+    ({ changedRelativePaths, deletedRelativePaths } = getChangedFiles(PACKAGE_ROOT, baseRef));
   } catch (error) {
     console.error(`[related-tests] failed to compute changed files via git: ${(error as Error).message}`);
     console.error("[related-tests] treat this as FULL_SUITE — do not skip tests.");
