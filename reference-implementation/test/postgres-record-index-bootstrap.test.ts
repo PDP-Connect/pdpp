@@ -4,7 +4,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { closePostgresStorage, getPostgresPool, initPostgresStorage } from "../server/postgres-storage.ts";
+import {
+  __acquirePostgresBootstrapLockForTest,
+  closePostgresStorage,
+  getPostgresPool,
+  initPostgresStorage,
+} from "../server/postgres-storage.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
@@ -41,6 +46,37 @@ async function readIndex(
 }
 
 if (POSTGRES_URL) {
+  test("bootstrap lock contender survives a real holder that releases before the deadline", async () => {
+    await withTempDb(POSTGRES_URL, async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      const holder = await getPostgresPool().connect();
+      const contender = await getPostgresPool().connect();
+      const logs: string[] = [];
+      try {
+        await holder.query("SELECT pg_advisory_lock($1, $2)", [482_571, 150]);
+        const releaseTimer = setTimeout(() => {
+          holder.query("SELECT pg_advisory_unlock($1, $2)", [482_571, 150]).catch(() => undefined);
+        }, 75);
+        try {
+          await __acquirePostgresBootstrapLockForTest(contender, {
+            budget: { databaseSizeBytes: 128 * 1024 * 1024, timeoutMs: 2000 },
+            log: (line) => logs.push(line),
+          });
+        } finally {
+          clearTimeout(releaseTimer);
+        }
+        assert.ok(logs.some((line) => line.includes("bootstrap lock waiting")));
+        assert.ok(logs.some((line) => line.includes("bootstrap lock acquired")));
+        await contender.query("SELECT pg_advisory_unlock($1, $2)", [482_571, 150]);
+      } finally {
+        // The holder may already be unlocked by the release timer.
+        await holder.query("SELECT pg_advisory_unlock($1, $2)", [482_571, 150]).catch(() => undefined);
+        contender.release();
+        holder.release();
+      }
+    });
+  });
+
   test("record index bootstrap keeps matching indexes across restart", async () => {
     await withTempDb(POSTGRES_URL, async (url) => {
       await initPostgresStorage({ backend: "postgres", databaseUrl: url });

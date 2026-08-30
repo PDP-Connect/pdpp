@@ -789,6 +789,7 @@ interface ServerOpts {
     bindsNonLoopback?: boolean;
   } | null;
   ownerToken?: string | null;
+  postgresBootstrapLockTimeoutMs?: number;
   preRegisteredPublicClients?: unknown;
   presentationScreenStateStore?: PresentationScreenStateStore | null;
   presentationTerminalBarrier?: {
@@ -801,6 +802,7 @@ interface ServerOpts {
   publicDynamicClientRegistrationRateLimit?: { windowMs?: number; max?: number } | null;
   quiet?: boolean;
   reconcilePolyfillManifests?: boolean;
+  reconcilePolyfillManifestsImpl?: typeof reconcilePolyfillManifests;
   recoveryOnly?: boolean;
   referenceBaseUrl?: string | null;
   referenceMode?: string | null;
@@ -1201,6 +1203,45 @@ function scheduleRetrievalStartupBackfill({
       }
       logger.warn({ err }, "retrieval startup backfill crashed");
     });
+}
+
+function schedulePolyfillManifestReconciliation({
+  enabled,
+  logger,
+  reconcile = reconcilePolyfillManifests,
+}: {
+  enabled: boolean;
+  logger: LoggerLike;
+  reconcile?: typeof reconcilePolyfillManifests;
+}): Promise<void> {
+  logger.info({ enabled }, "polyfill manifest reconciliation scheduled after AS/RS listen");
+  return new Promise((resolve) => setImmediate(resolve))
+    .then(async () => {
+      const summary = await reconcile({
+        enabled,
+        includeUnlisted: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT === "1",
+        log: (msg) => logger.info(msg),
+      });
+      if (summary.scanned > 0) {
+        logger.info(summary, "polyfill manifest reconcile summary");
+      }
+    })
+    .catch((err: unknown) => {
+      // Reconciliation is a repair accelerator. A missing manifest directory,
+      // malformed shipped manifest, or transient DB failure must not take down
+      // listeners that already passed required schema bootstrap. The periodic
+      // maintenance path remains the correctness backstop.
+      logger.warn({ err }, "polyfill manifest reconciliation failed after listeners; maintenance will retry");
+    });
+}
+
+/** Test-only seam for proving post-listen maintenance failure isolation. */
+export function __schedulePolyfillManifestReconciliationForTest(options: {
+  enabled: boolean;
+  logger: LoggerLike;
+  reconcile: typeof reconcilePolyfillManifests;
+}): Promise<void> {
+  return schedulePolyfillManifestReconciliation(options);
 }
 
 function pdppError(
@@ -7786,6 +7827,9 @@ export async function startServer(opts: ServerOpts = {}) {
   // before this point would persist pre-registered clients to SQLite even in
   // Postgres mode.
   await initPostgresStorage(storageBackend as unknown as Parameters<typeof initPostgresStorage>[0], {
+    ...(opts.postgresBootstrapLockTimeoutMs === undefined
+      ? {}
+      : { bootstrapLockTimeoutMs: opts.postgresBootstrapLockTimeoutMs }),
     log: (msg: string) => logger.info(msg),
   });
   if (storageBackend.backend === "postgres") {
@@ -7872,24 +7916,11 @@ export async function startServer(opts: ServerOpts = {}) {
 
   (configureNativeManifest as (m: ConnectorManifest | null) => void)(nativeConfig?.nativeManifest || null);
 
-  // Polyfill-mode manifest reconciliation. The reference persists connector
-  // manifests in the DB; when we ship corrections to first-party manifests
-  // (schema typing, cursor_field format, etc.), existing databases need to
-  // self-heal rather than continue using stale schema declarations. Scoped
-  // to the shipped `packages/polyfill-connectors/manifests/` set; custom
-  // connectors are left alone.
-  //
-  // Default behavior:
-  //   - Enabled when `PDPP_DB_PATH` / `opts.dbPath` points at the canonical
-  //     polyfill-connectors data directory (the real deployment) so the
-  //     owner's server self-heals on restart after a reference ships manifest
-  //     fixes.
-  //   - Disabled everywhere else (tests, unknown ad-hoc databases) to avoid
-  //     clobbering connector manifests that happen to share ids with shipped
-  //     polyfill manifests but have test-specific shape.
-  //
-  // `opts.reconcilePolyfillManifests` and `PDPP_RECONCILE_POLYFILL_MANIFESTS`
-  // always override the default.
+  // Resolve whether polyfill reconciliation is enabled now, but do not run it
+  // until the AS/RS listeners are serving. Reconciliation can re-register
+  // manifests and trigger record/index work; it is correctness maintenance,
+  // not required schema bootstrap or listener readiness.
+  let reconcilePolyfillManifestsEnabled = false;
   if (!nativeConfig?.nativeManifest) {
     const resolvedDbPath = opts.dbPath || DB_PATH;
     const envToggle = process.env.PDPP_RECONCILE_POLYFILL_MANIFESTS;
@@ -7899,21 +7930,13 @@ export async function startServer(opts: ServerOpts = {}) {
       dbPath: resolvedDbPath,
       storageBackendKind: storageBackend.backend,
     });
-    const reconcileEnabled =
+    reconcilePolyfillManifestsEnabled =
       opts.reconcilePolyfillManifests === undefined
         ? // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
           envEnabled === undefined
           ? defaultEnabled
           : envEnabled
         : !!opts.reconcilePolyfillManifests;
-    const summary = await reconcilePolyfillManifests({
-      enabled: reconcileEnabled,
-      includeUnlisted: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT === "1",
-      log: (msg) => logger.info(msg),
-    });
-    if (summary.scanned > 0) {
-      logger.info(summary, "polyfill manifest reconcile summary");
-    }
   }
 
   // Semantic retrieval experimental extension — configure the embedding
@@ -7944,16 +7967,6 @@ export async function startServer(opts: ServerOpts = {}) {
   scheduleSemanticEmbeddingWarmup({
     log: (message) => logger.warn({ message }, "semantic embedding preparation did not complete"),
   }).catch(() => undefined);
-
-  // Startup retrieval backfill. Existing data should become searchable after
-  // restart without requiring re-ingest, but a large local corpus can take
-  // minutes to rebuild. Capture the boot-time manifest set now, then schedule
-  // the actual index work after AS/RS are already listening. New connector
-  // registrations still backfill synchronously in registerConnector.
-  const startupBackfillManifests = await collectRetrievalStartupBackfillManifests({
-    logger,
-    nativeManifest: nativeConfig?.nativeManifest || null,
-  });
 
   const providerName: string =
     opts.providerName ||
@@ -8472,6 +8485,20 @@ export async function startServer(opts: ServerOpts = {}) {
   await controller.promoteBrowserSurfaceLeasesAfterBoot();
   logger.info({ port: rsPort, url: `http://localhost:${rsPort}` }, "resource server listening");
 
+  // Manifest reconciliation is optional maintenance, not a listener gate.
+  // Start it only after both protocol listeners bind. Retrieval backfill waits
+  // for this step so a manifest correction cannot race an index rebuild using
+  // the previous declaration.
+  const manifestReconciliationDone = nativeConfig?.nativeManifest
+    ? Promise.resolve()
+    : schedulePolyfillManifestReconciliation({
+        enabled: reconcilePolyfillManifestsEnabled,
+        logger,
+        ...(opts.reconcilePolyfillManifestsImpl === undefined
+          ? {}
+          : { reconcile: opts.reconcilePolyfillManifestsImpl }),
+      });
+
   // Auto-enroll proven, env-wired connectors before the scheduler manager
   // hydrates. Idempotent: never overrides an existing schedule row, never
   // inspects secret env values, only checks presence and non-emptiness.
@@ -8566,11 +8593,26 @@ export async function startServer(opts: ServerOpts = {}) {
   });
   await schedulerManager.start();
   const startupBackfillAbortController = new AbortController();
-  const startupBackfillDone = scheduleRetrievalStartupBackfill({
-    logger,
-    manifests: startupBackfillManifests,
-    signal: startupBackfillAbortController.signal,
-  });
+  const startupBackfillDone = manifestReconciliationDone
+    .then(() =>
+      collectRetrievalStartupBackfillManifests({
+        logger,
+        nativeManifest: nativeConfig?.nativeManifest || null,
+      })
+    )
+    .then((manifests) =>
+      scheduleRetrievalStartupBackfill({
+        logger,
+        manifests,
+        signal: startupBackfillAbortController.signal,
+      })
+    )
+    .catch((err: unknown) => {
+      // A post-listen maintenance discovery failure must not turn a healthy
+      // listener into a supervisor restart. The next periodic maintenance
+      // pass can retry the same work.
+      logger.warn({ err }, "startup retrieval maintenance could not be scheduled");
+    });
   // Bounded, multi-round startup observation: best-effort acceleration,
   // never the correctness authority (design.md "Startup is acceleration,
   // not authority"). Off the request path, after listen, runs the SAME
@@ -8752,6 +8794,7 @@ export async function startServer(opts: ServerOpts = {}) {
     // in this file and `lib/controller-boot.ts`.
     controller,
     logger,
+    manifestReconciliationDone,
     rsPort,
     rsServer,
     schedulerManager,

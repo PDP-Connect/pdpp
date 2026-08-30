@@ -366,9 +366,45 @@ const POSTGRES_LEASE_PRIORITY_MIGRATION_LOCK = [482_571, 151];
 // bootstrapped legacy-priority starter; the priority migration retains its own
 // transaction-scoped lock below so its catalog decision is independently safe.
 const POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK = [482_571, 150];
-const POSTGRES_BOOTSTRAP_LOCK_MAX_ATTEMPTS = 120;
 const POSTGRES_BOOTSTRAP_LOCK_INITIAL_DELAY_MS = 25;
 const POSTGRES_BOOTSTRAP_LOCK_MAX_DELAY_MS = 250;
+const POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_ENV = "PDPP_POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_MS";
+const POSTGRES_BOOTSTRAP_LOCK_EMPTY_DATABASE_TIMEOUT_MS = 2 * 60 * 1000;
+const POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_TIMEOUT_MS = 10 * 60 * 1000;
+const POSTGRES_BOOTSTRAP_LOCK_HARD_MAX_TIMEOUT_MS = 30 * 60 * 1000;
+const POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_BYTES = 64 * 1024 * 1024;
+const POSTGRES_BOOTSTRAP_LOCK_PROGRESS_INTERVAL_MS = 5 * 1000;
+const POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_PATTERN = /^\d+$/;
+
+export interface PostgresBootstrapLockBudget {
+  databaseSizeBytes: number | null;
+  timeoutMs: number;
+}
+
+export function resolvePostgresBootstrapLockTimeoutMs({
+  databaseSizeBytes = null,
+  env = process.env,
+  overrideMs,
+}: {
+  databaseSizeBytes?: number | null;
+  env?: NodeJS.ProcessEnv;
+  overrideMs?: number;
+} = {}): number {
+  const configuredValue = overrideMs ?? env[POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_ENV];
+  let configured = Number.NaN;
+  if (typeof configuredValue === "number") {
+    configured = configuredValue;
+  } else if (POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_PATTERN.test(configuredValue?.trim() ?? "")) {
+    configured = Number(configuredValue);
+  }
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.min(configured, POSTGRES_BOOTSTRAP_LOCK_HARD_MAX_TIMEOUT_MS);
+  }
+  return (databaseSizeBytes ?? POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_BYTES) >=
+    POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_BYTES
+    ? POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_TIMEOUT_MS
+    : POSTGRES_BOOTSTRAP_LOCK_EMPTY_DATABASE_TIMEOUT_MS;
+}
 
 function samePostgresEnumMembers(actual: readonly string[], expected: readonly string[]): boolean {
   return actual.length === expected.length && actual.every((value) => expected.includes(value));
@@ -1150,7 +1186,8 @@ export async function initPostgresStorage(
     log = () => {
       /* no-op */
     },
-  }: { log?: StorageLog } = {}
+    bootstrapLockTimeoutMs,
+  }: { log?: StorageLog; bootstrapLockTimeoutMs?: number } = {}
 ) {
   if (config?.backend !== "postgres") {
     activeBackend = "sqlite";
@@ -1186,7 +1223,7 @@ export async function initPostgresStorage(
   // never touch this new one.
   bumpStorageGeneration();
 
-  await bootstrapPostgresSchema({ log });
+  await bootstrapPostgresSchema({ log, ...(bootstrapLockTimeoutMs === undefined ? {} : { bootstrapLockTimeoutMs }) });
   return pool;
 }
 
@@ -1221,13 +1258,26 @@ export async function bootstrapPostgresSchema({
   log = (() => {
     /* no-op */
   }) as StorageLog,
+  bootstrapLockTimeoutMs,
 }: {
   log?: StorageLog;
+  bootstrapLockTimeoutMs?: number;
 } = {}): Promise<void> {
   const client = await getPostgresPool().connect();
   let bootstrapLockHeld = false;
   try {
-    await acquirePostgresBootstrapLock(client);
+    const databaseSizeBytes = await readPostgresDatabaseSize(client);
+    const lockBudget = {
+      databaseSizeBytes,
+      timeoutMs: resolvePostgresBootstrapLockTimeoutMs({
+        databaseSizeBytes,
+        ...(bootstrapLockTimeoutMs === undefined ? {} : { overrideMs: bootstrapLockTimeoutMs }),
+      }),
+    };
+    log(
+      `postgres bootstrap lock wait budget: ${lockBudget.timeoutMs}ms (database_size_bytes=${lockBudget.databaseSizeBytes ?? "unknown"}, source=${bootstrapLockTimeoutMs === undefined ? "data-aware/default" : "configured"})`
+    );
+    await acquirePostgresBootstrapLock(client, { budget: lockBudget, log });
     bootstrapLockHeld = true;
     // pgvector is optional. When available, the boot migration below moves
     // semantic embeddings to the pgvector representation; without it the
@@ -3520,6 +3570,19 @@ function bootstrapLockDelay(attempt: number): number {
   );
 }
 
+async function readPostgresDatabaseSize(client: PoolClient): Promise<number | null> {
+  try {
+    const result = await client.query("SELECT pg_database_size(current_database()) AS bytes");
+    const bytes = Number(result.rows[0]?.bytes);
+    return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null;
+  } catch {
+    // The size probe is advisory. A restricted Postgres role can still run the
+    // schema bootstrap, so an unavailable probe must not turn into a boot
+    // failure. The resolver uses the populated-database budget when unknown.
+    return null;
+  }
+}
+
 /**
  * Names who is holding the bootstrap lock, for the timeout error only.
  *
@@ -3563,27 +3626,67 @@ async function describeBootstrapLockHolders(client: PoolClient): Promise<string>
   }
 }
 
-async function acquirePostgresBootstrapLock(client: PoolClient): Promise<void> {
-  const tryAcquire = async (attempt: number): Promise<void> => {
+interface BootstrapLockWaitOptions {
+  budget: PostgresBootstrapLockBudget;
+  log?: StorageLog;
+  now?: () => number;
+  sleep?: (delayMs: number) => Promise<void>;
+}
+
+async function acquirePostgresBootstrapLock(
+  client: PoolClient,
+  {
+    budget,
+    log = NOOP_STORAGE_LOG,
+    now = () => performance.now(),
+    sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  }: BootstrapLockWaitOptions
+): Promise<void> {
+  const startedAt = now();
+  const deadline = startedAt + budget.timeoutMs;
+  let attempt = 0;
+  let nextProgressAt = startedAt;
+
+  for (;;) {
+    // biome-ignore lint/performance/noAwaitInLoops: This is the bounded polling loop whose deadline is the behavior under test.
     const result = await client.query(
       "SELECT pg_try_advisory_lock($1, $2) AS locked",
       POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK
     );
     if (result.rows[0]?.locked === true) {
+      log(`postgres bootstrap lock acquired after ${now() - startedAt}ms (attempt=${attempt})`);
       return;
     }
+
     // pg_try_advisory_lock completes before this application-side sleep. A
     // contender therefore has no active virtual transaction that could block
     // CREATE/DROP INDEX CONCURRENTLY in the lock holder.
-    await new Promise((resolve) => setTimeout(resolve, bootstrapLockDelay(attempt)));
-    if (attempt + 1 >= POSTGRES_BOOTSTRAP_LOCK_MAX_ATTEMPTS) {
-      throw new Error(
-        `Timed out waiting for PostgreSQL bootstrap serialization lock.${await describeBootstrapLockHolders(client)}`
-      );
+    const current = now();
+    const remainingMs = deadline - current;
+    if (remainingMs <= 0) {
+      break;
     }
-    await tryAcquire(attempt + 1);
-  };
-  await tryAcquire(0);
+    if (current >= nextProgressAt) {
+      log(
+        `postgres bootstrap lock waiting (attempt=${attempt}, elapsed_ms=${current - startedAt}, remaining_ms=${remainingMs}, database_size_bytes=${budget.databaseSizeBytes ?? "unknown"})`
+      );
+      nextProgressAt = current + POSTGRES_BOOTSTRAP_LOCK_PROGRESS_INTERVAL_MS;
+    }
+    await sleep(Math.min(bootstrapLockDelay(attempt), remainingMs));
+    attempt += 1;
+  }
+
+  throw new Error(
+    `Timed out waiting for PostgreSQL bootstrap serialization lock after ${budget.timeoutMs}ms.${await describeBootstrapLockHolders(client)}`
+  );
+}
+
+/** Test-only seam for the real deadline loop; production uses bootstrapPostgresSchema. */
+export function __acquirePostgresBootstrapLockForTest(
+  client: PoolClient,
+  options: BootstrapLockWaitOptions
+): Promise<void> {
+  return acquirePostgresBootstrapLock(client, options);
 }
 
 async function hasPgvectorExtension(client: PoolClient): Promise<boolean> {
