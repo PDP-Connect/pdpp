@@ -455,6 +455,39 @@ test("ensureUsaaSession hands off to the secure browser when optional credential
   });
 });
 
+test("ensureUsaaSession self-resolves the no-credentials manual handoff via assist/completeAssistance when the connector's own probe proves the session is live, without ever sending a manual_action interaction", async () => {
+  await withoutUsaaCredentials(async () => {
+    // First cookies() call (ensureUsaaSession's own initial probe) reports no
+    // session; every call after that (manualBrowserLogin's self-probe) reports
+    // one — modeling the owner completing sign-in in the streaming companion
+    // before any click-gated interaction would even be requested.
+    const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
+    const { page } = makePage(new Error(`page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at ${LOGIN_URL}`), "Log Off");
+    const assistCalls: unknown[] = [];
+    const completions: { id: string; status: string }[] = [];
+
+    const ok = await ensureUsaaSession({
+      assist: (req) => {
+        assistCalls.push(req);
+        return Promise.resolve("assist_req_usaa_1");
+      },
+      completeAssistance: (id, status) => {
+        completions.push({ id, status });
+        return Promise.resolve();
+      },
+      context,
+      page,
+      sendInteraction(): Promise<InteractionResponse> {
+        throw new Error("sendInteraction must not be called when the self-probe resolves the assistance");
+      },
+    });
+
+    assert.equal(ok, true);
+    assert.equal(assistCalls.length, 1);
+    assert.deepEqual(completions, [{ id: "assist_req_usaa_1", status: "resolved" }]);
+  });
+});
+
 test("ensureUsaaSession emits manual_action when USAA login navigation trips HTTP/2 bot failure", async () => {
   await withUsaaCredentials(async () => {
     const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);

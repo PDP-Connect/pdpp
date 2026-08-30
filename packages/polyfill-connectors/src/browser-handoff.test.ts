@@ -798,6 +798,119 @@ test("manualBrowserLogin re-probes after the owner handoff instead of trusting t
   assert.equal(requests[0]?.timeout_seconds, 1800);
 });
 
+test("manualBrowserLogin self-resolves via assist/completeAssistance when probe succeeds first, without ever sending a manual_action interaction", async () => {
+  const page = makeMockPage();
+  const assistRequests: unknown[] = [];
+  const completions: { id: string; status: string }[] = [];
+  let probeCalls = 0;
+  const result = await manualBrowserLogin({
+    assist: (req) => {
+      assistRequests.push(req);
+      return Promise.resolve("assist_req_1");
+    },
+    autoProbeIntervalMs: 1,
+    autoProbeWindowMs: 50,
+    completeAssistance: (id, status) => {
+      completions.push({ id, status });
+      return Promise.resolve();
+    },
+    isProbeSuccessful: (loggedIn: boolean) => loggedIn,
+    message: "Solve the challenge in the secure browser.",
+    page,
+    probe: (): Promise<boolean> => {
+      probeCalls += 1;
+      return Promise.resolve(true);
+    },
+    reason: "captcha",
+    sendInteraction: () => {
+      throw new Error("sendInteraction must not be called when the self-probe resolves the assistance");
+    },
+  });
+
+  assert.equal(result, true);
+  assert.equal(probeCalls, 1);
+  assert.equal(assistRequests.length, 1);
+  assert.deepEqual(assistRequests[0], {
+    attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
+    message: "Solve the challenge in the secure browser.",
+    owner_action: "operate_attachment",
+    progress_posture: "blocked",
+    response_contract: "none",
+  });
+  assert.deepEqual(completions, [{ id: "assist_req_1", status: "resolved" }]);
+});
+
+test("manualBrowserLogin escalates to the owner-click fallback when the self-probe window elapses without success", async () => {
+  const page = makeMockPage();
+  const completions: { id: string; status: string }[] = [];
+  const requests: InteractionRequest[] = [];
+  // Gated on the click, not a call count: under test-runner concurrency the
+  // self-probe loop's actual iteration count within a short window is not
+  // deterministic, so a "succeeds on the Nth call" heuristic can flip the
+  // probe true WHILE the self-probe phase is still polling, masking the
+  // escalation path this test exists to prove.
+  let clickResolved = false;
+  const result = await manualBrowserLogin({
+    assist: () => Promise.resolve("assist_req_2"),
+    autoProbeIntervalMs: 1,
+    autoProbeWindowMs: 5,
+    completeAssistance: (id, status) => {
+      completions.push({ id, status });
+      return Promise.resolve();
+    },
+    isProbeSuccessful: (loggedIn: boolean) => loggedIn,
+    message: "Solve the challenge in the secure browser.",
+    page,
+    // Never succeeds during the auto-probe window; succeeds only once the
+    // owner-click fallback below has resolved (the same "probe again after
+    // the click" contract the legacy-only test above asserts).
+    probe: (): Promise<boolean> => Promise.resolve(clickResolved),
+    sendInteraction: (req) => {
+      requests.push(req);
+      clickResolved = true;
+      return Promise.resolve({
+        type: "INTERACTION_RESPONSE",
+        request_id: req.request_id ?? "",
+        status: "success",
+      });
+    },
+    timeoutSeconds: 1800,
+  });
+
+  assert.equal(result, true);
+  assert.deepEqual(completions, [{ id: "assist_req_2", status: "escalated" }]);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.kind, "manual_action");
+});
+
+test("manualBrowserLogin keeps the legacy click-first behavior when isProbeSuccessful is omitted, even if assist is supplied", async () => {
+  const page = makeMockPage();
+  const requests: InteractionRequest[] = [];
+  let assistCalls = 0;
+  const result = await manualBrowserLogin({
+    assist: () => {
+      assistCalls += 1;
+      return Promise.resolve("assist_req_3");
+    },
+    message: "Sign in in the secure browser.",
+    page,
+    probe: (): Promise<string> => Promise.resolve("session-live"),
+    sendInteraction: (req) => {
+      requests.push(req);
+      return Promise.resolve({
+        type: "INTERACTION_RESPONSE",
+        request_id: req.request_id ?? "",
+        status: "success",
+      });
+    },
+  });
+
+  assert.equal(result, "session-live");
+  assert.equal(assistCalls, 0);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.kind, "manual_action");
+});
+
 // ─── withDeadline + bounded metadata read ──────────────────────────────────
 //
 // The session-establishment wedge: a wedged renderer can hang `page.title()`
