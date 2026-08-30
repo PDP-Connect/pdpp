@@ -219,6 +219,7 @@ function renderedVerdict(
     annotations: [],
     channel,
     detail: {
+      acknowledged_loss: null,
       collection_rate: null,
       conditions: [],
       coverage_horizons: [],

@@ -85,6 +85,7 @@ function renderedVerdict(requiredActions: readonly RequiredAction[]): RenderedVe
     annotations: [],
     channel: "calm",
     detail: {
+      acknowledged_loss: null,
       collection_rate: null,
       conditions: [],
       coverage_horizons: [],
