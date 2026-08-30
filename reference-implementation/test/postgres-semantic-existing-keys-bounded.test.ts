@@ -50,7 +50,7 @@ async function seedIndexedKeys(url: string): Promise<void> {
     const values = Array.from({ length: TOTAL_INDEXED_RECORDS }, (_, i) => `rec_${String(i).padStart(5, "0")}`);
     await pool.query(
       `INSERT INTO semantic_search_blob (connector_id, connector_instance_id, scope_key, record_key, embedding)
-       SELECT $1, $2, $3, key, '[]'::jsonb FROM unnest($4::text[]) AS key`,
+       SELECT $1, $2, $3, key, '[0]' FROM unnest($4::text[]) AS key`,
       [CONNECTOR_ID, CONNECTOR_INSTANCE_ID, scopeKey, values]
     );
   } finally {
@@ -135,7 +135,7 @@ test("postgresListExistingSemanticKeysForRecords: does not leak keys from anothe
         // backfill would silently skip embedding a record it never indexed.
         await pool.query(
           `INSERT INTO semantic_search_blob (connector_id, connector_instance_id, scope_key, record_key, embedding)
-             VALUES ($1, $2, $3, $4, '[]'::jsonb)`,
+             VALUES ($1, $2, $3, $4, '[0]')`,
           [CONNECTOR_ID, CONNECTOR_INSTANCE_ID, JSON.stringify(["attachments", "content"]), "rec_00000"]
         );
       } finally {
