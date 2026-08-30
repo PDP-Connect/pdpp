@@ -18,7 +18,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Page } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import {
@@ -666,6 +666,25 @@ test("establishVenmoCollectOrigin: a successful navigation to venmo.com resolves
   await assert.doesNotReject(establishVenmoCollectOrigin(page as Page));
 });
 
+/**
+ * Fakes just enough of `BrowserContext.request` (an `APIRequestContext`) for
+ * `probeVenmoSession`/`probeVenmoAccountViaContext` — see those functions'
+ * docs for why this is a Node-side HTTP client, not a page, and touches no
+ * `Page` API at all.
+ */
+function fakeContextWithAccountResponse(
+  respond: () => { body: unknown; ok: boolean } | Promise<never>
+): Pick<BrowserContext, "request"> {
+  return {
+    request: {
+      async get(): Promise<{ json: () => Promise<unknown>; ok: () => boolean }> {
+        const result = await respond();
+        return { json: () => Promise.resolve(result.body), ok: () => result.ok };
+      },
+    } as unknown as BrowserContext["request"],
+  };
+}
+
 // Regression for production run_1788030841840 / run_1788061976811: the
 // assisted-login (no-credential) handoff in ensureVenmoSession returns
 // without ever probing the page (see venmo.ts's OWNER_HANDOFF_COMPLETE doc),
@@ -673,36 +692,24 @@ test("establishVenmoCollectOrigin: a successful navigation to venmo.com resolves
 // undetected. probeVenmoSession is what the runtime's establishSession now
 // calls to verify that claim BEFORE collect() starts, with no owner
 // challenge — see session-establish.ts's verifyEstablishedSession.
-test("probeVenmoSession: reports true for a live, authenticated session", async () => {
-  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
-    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
-    async evaluate(): Promise<unknown> {
-      return { kind: "live", ownerId: "1234567890123456789" };
-    },
-    goto(): ReturnType<Page["goto"]> {
-      return Promise.resolve(null);
-    },
-    url(): string {
-      return "https://venmo.com/";
-    },
-  };
-  assert.equal(await probeVenmoSession({ context: {} as never, page: page as Page }), true);
+//
+// Deliberately fakes only `context.request`, never `page` — independent
+// review (PR238-NEXT-TRAIN-CONSTITUENTS-INDEPENDENT-R1-0830.md §8, P1) found
+// an earlier version of this wiring called `probeVenmoAccount(page)`, which
+// navigates the owner's own page. A test that still faked `page.goto`/
+// `page.evaluate` here could not have caught that: it would pass whether or
+// not probeVenmoSession touched the page. Faking only `context.request`
+// makes navigating the owner's page a type error, not just an unasserted
+// behavior.
+test("probeVenmoSession: reports true for a live, authenticated session, touching no Page API", async () => {
+  const context = fakeContextWithAccountResponse(() => ({
+    body: { data: { user: { id: "1234567890123456789" } } },
+    ok: true,
+  }));
+  assert.equal(await probeVenmoSession({ context: context as BrowserContext, page: undefined as never }), true);
 });
 
 test("probeVenmoSession: reports false — not a throw — for a handoff that completed without ever authenticating (the exact production defect)", async () => {
-  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
-    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
-    async evaluate(): Promise<unknown> {
-      // The reachable-but-signed-out shape probeVenmoAccount reports as `dead`
-      // — the same 401 collect()'s own /account call hit in production.
-      return { kind: "dead" };
-    },
-    goto(): ReturnType<Page["goto"]> {
-      return Promise.resolve(null);
-    },
-    url(): string {
-      return "https://venmo.com/";
-    },
-  };
-  assert.equal(await probeVenmoSession({ context: {} as never, page: page as Page }), false);
+  const context = fakeContextWithAccountResponse(() => ({ body: null, ok: false }));
+  assert.equal(await probeVenmoSession({ context: context as BrowserContext, page: undefined as never }), false);
 });

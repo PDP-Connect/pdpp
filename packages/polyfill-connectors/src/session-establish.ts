@@ -131,8 +131,26 @@ export function buildSessionEstablishTerminalError(
 
 /**
  * Check an `ensureSession` claim against the connector's own read-only
- * predicate, and fail the run closed when the provider says the session is
- * dead.
+ * predicate, and fail the run closed — non-retryable — when the provider
+ * says the session is dead OR when the check itself cannot complete.
+ *
+ * This runs AFTER owner/credential work has already happened (an assisted
+ * handoff response, or a submitted saved password): both a `false` result
+ * and a THROWN verification fault (a transport blip hitting the probe itself)
+ * must be forced non-retryable here, in the same place, with the same
+ * TerminalError — never left to escape as a plain Error that the runtime's
+ * generic retryablePattern classification could match. A connector's own
+ * transport-fault name (e.g. Venmo's `venmo_probe_transport_error`) is
+ * deliberately RETRYABLE pre-submit, because retrying costs nothing before
+ * any owner/credential work has happened — but the exact same fault name
+ * thrown from THIS post-establish check is happening after that work, and
+ * letting it fall through to the connector's retryablePattern would redispatch
+ * the run and repeat the owner's challenge or resubmit their credential. See
+ * `establishSession`'s doc for why this must stay outside the ensureSession
+ * catch (it is not an ensureSession fault and must not borrow that catch's
+ * retry semantics), and why it must ALSO not defer to the runtime's own
+ * unexpected-error fallback (that fallback is exactly the retryable path this
+ * exists to close).
  *
  * Extracted rather than inlined so `establishSession` stays under the
  * cognitive-complexity ceiling — and because "verify the claim" is a distinct
@@ -152,7 +170,17 @@ async function verifyEstablishedSession({
   probeSession: (args: ProbeSessionArgs) => Promise<boolean>;
 }): Promise<void> {
   await checkpoint("session-establish:verify-after-ensure");
-  if (!(await probeSession({ context, page }))) {
+  let live: boolean;
+  try {
+    live = await probeSession({ context, page });
+  } catch (err) {
+    // The check itself could not complete — a transport blip hitting the
+    // verifier, not proof the session is dead, but still not safe to retry
+    // post-owner-work. Forced non-retryable exactly like a `false` result;
+    // `cause` keeps the underlying fault legible in diagnostics.
+    throw new TerminalError(`${name}_session_unverified_after_establish`, { cause: err, retryable: false });
+  }
+  if (!live) {
     throw new TerminalError(`${name}_session_unverified_after_establish`, { retryable: false });
   }
 }

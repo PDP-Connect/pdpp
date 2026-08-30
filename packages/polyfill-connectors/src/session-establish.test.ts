@@ -101,6 +101,47 @@ test("establishSession: a connector with no probeSession is unaffected — the e
   assert.equal(ensureSessionCalled, true);
 });
 
+// Independent review of an earlier version of this file
+// (PR238-NEXT-TRAIN-CONSTITUENTS-INDEPENDENT-R1-0830.md §8, P1 "a
+// verification transport fault remains retryable"): a THROWN probeSession
+// fault (e.g. Venmo's own venmo_probe_transport_error, which is deliberately
+// RETRYABLE pre-submit) previously escaped verifyEstablishedSession as a
+// plain Error, reached the runtime's generic retryablePattern classification,
+// and could redispatch the run — resubmitting a credential or repeating an
+// owner challenge that had already happened. A thrown post-establish
+// verification fault must be forced non-retryable exactly like a `false`
+// result, never left to the connector's retryablePattern.
+test("establishSession: a THROWN post-establish probeSession fault is forced non-retryable, even when its message matches the connector's own retryablePattern", async () => {
+  await assert.rejects(
+    establishSession(
+      {
+        ensureSession: async () => {
+          /* claims success but never actually authenticated */
+        },
+        // biome-ignore lint/suspicious/useAwait: throws synchronously to mirror a transport blip hitting the verifier itself
+        probeSession: async (_args: ProbeSessionArgs) => {
+          // Deliberately named to match a connector's retryablePattern (e.g.
+          // Venmo's VENMO_RETRYABLE_PATTERN matches "venmo_probe_transport_error")
+          // — this must NOT be enough to make the run retryable here.
+          throw new Error("venmo_probe_transport_error: socket hang up");
+        },
+      },
+      baseArgs({ retryablePattern: /venmo_probe_transport_error/ })
+    ),
+    (err: unknown) => {
+      assert.ok(err instanceof TerminalError);
+      assert.match(err.message, /venmo_session_unverified_after_establish/);
+      assert.equal(
+        err.retryable,
+        false,
+        "a thrown verification fault after owner/credential work must never be retryable, regardless of the connector's retryablePattern"
+      );
+      assert.ok(err.cause instanceof Error, "the underlying transport fault must stay attached for diagnostics");
+      return true;
+    }
+  );
+});
+
 test("establishSession: an ensureSession throw is classified through the ordinary retryablePattern path, never through probeSession verification", async () => {
   let probeCalled = false;
   await assert.rejects(

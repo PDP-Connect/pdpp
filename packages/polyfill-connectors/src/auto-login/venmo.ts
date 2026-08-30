@@ -30,7 +30,7 @@
 
 import type { ProgressExtra } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
-import type { Locator, Page } from "playwright";
+import type { BrowserContext, Locator, Page } from "playwright";
 import { DEADLINE_TIMEOUT, manualBrowserLogin, withDeadline } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
@@ -705,6 +705,58 @@ export async function probeVenmoAccount(
     throw new Error(`${name}: ${detail}`);
   }
   return outcome.kind === "live" ? { live: true, ownerId: outcome.ownerId } : { live: false, ownerId: null };
+}
+
+/** Bounds the context-level probe request the same way {@link PROBE_FETCH_TIMEOUT_MS} bounds the page-context one. */
+const CONTEXT_PROBE_TIMEOUT_MS = 8000;
+
+/**
+ * Verify session liveness WITHOUT touching the owner's page at all — no
+ * navigation, no `page.evaluate`, no `page.goto`, nothing that could
+ * re-render or redirect whatever screen the owner is currently looking at.
+ *
+ * Independent review of `2bac6f538` (PR238-NEXT-TRAIN-CONSTITUENTS-
+ * INDEPENDENT-R1-0830.md §8, P1 "reintroduces the post-owner page probe"):
+ * the runtime's post-establish verification called `probeVenmoAccount(page)`,
+ * which calls `ensureVenmoOrigin(page)`, which calls `page.goto` on that same
+ * page when it is not already on `venmo.com` — exactly the post-response
+ * navigation `waitForManualLogin`'s doc identifies as the mechanism that
+ * destroyed an authenticated/challenge page in production (see that
+ * function's doc and `auto-login/venmo.test.ts`'s "no navigation or
+ * page-context probe runs after the owner responds" tests). Moving the call
+ * site from inside `ensureVenmoSession` to the runtime's next statement did
+ * not remove the navigation; it only moved where it happened.
+ *
+ * Playwright's `BrowserContext.request` (`APIRequestContext`) is a Node-side
+ * HTTP client that shares the context's own cookie jar — "populate request
+ * cookies from the context" per Playwright's own contract — and is NOT
+ * subject to a browser's CORS/`Origin` enforcement at all (CORS is a
+ * fetch/XHR restriction the browser enforces on IN-PAGE calls; a Node HTTP
+ * client issuing the request directly is not a browser fetch and has no
+ * `Origin` header for `api.venmo.com`'s CORS allowlist to check). That is
+ * why this needs no `ensureVenmoOrigin` companion at all: the venmo.com-only
+ * origin precondition {@link probeVenmoAccount} enforces exists solely to
+ * satisfy CORS on a same-page `fetch`, which does not apply here.
+ *
+ * Returns the same `{ live, ownerId }` shape as `probeVenmoAccount` so a
+ * caller cannot tell which probe ran from the result shape alone. A
+ * transport fault THROWS (not a classified/named error — the runtime's
+ * `verifyEstablishedSession` forces every outcome of this call, thrown or
+ * false, non-retryable; see that function's doc) rather than being
+ * swallowed into `live: false`, so a network blip is never misreported as a
+ * proven-dead session.
+ */
+export async function probeVenmoAccountViaContext(context: BrowserContext): Promise<VenmoAccountProbeResult> {
+  const response = await context.request.get(ACCOUNT_PROBE_URL, {
+    headers: { accept: "application/json" },
+    timeout: CONTEXT_PROBE_TIMEOUT_MS,
+  });
+  if (!response.ok()) {
+    return { live: false, ownerId: null };
+  }
+  const body = (await response.json().catch(() => null)) as { data?: { user?: { id?: string } } } | null;
+  const ownerId = body?.data?.user?.id ?? null;
+  return ownerId ? { live: true, ownerId } : { live: false, ownerId: null };
 }
 
 /**

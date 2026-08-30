@@ -67,9 +67,10 @@
 import { isMainModule } from "@pdpp/connector-protocol";
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import type { Page } from "playwright";
-import { ensureVenmoOrigin, ensureVenmoSession, probeVenmoAccount } from "../../src/auto-login/venmo.ts";
+import { ensureVenmoOrigin, ensureVenmoSession, probeVenmoAccountViaContext } from "../../src/auto-login/venmo.ts";
 import {
   type BrowserCollectContext,
+  type BrowserConnectorConfig,
   buildDetailCoverageMessage,
   type ProbeSessionArgs,
   politeDelay,
@@ -544,7 +545,7 @@ export async function collectAllStreams(
 
 /**
  * `runConnector`'s `probeSession` hook — extracted so it is unit-testable
- * without a real Playwright `page` (same reasoning as
+ * without a real Playwright `page`/`context` (same reasoning as
  * `establishVenmoCollectOrigin`'s doc above).
  *
  * `ensureSession` returning is a CLAIM the session is live, not proof — the
@@ -556,57 +557,84 @@ export async function collectAllStreams(
  * `probeSession` here lets the runtime's `establishSession` verify that claim
  * — read-only, no owner challenge — before `collect()` ever starts (see
  * session-establish.ts's verifyEstablishedSession).
+ *
+ * Deliberately calls `probeVenmoAccountViaContext`, NOT `probeVenmoAccount`.
+ * Independent review of an earlier version of this wiring (PR238-NEXT-TRAIN-
+ * CONSTITUENTS-INDEPENDENT-R1-0830.md §8, P1): `probeVenmoAccount(page)` calls
+ * `ensureVenmoOrigin(page)`, which navigates the OWNER'S page — this runs
+ * after `ensureSession` returns, i.e. after the owner has already responded
+ * to a handoff, so it can re-render or redirect whatever screen they were
+ * just looking at. `probeVenmoAccountViaContext` reads the same `/account`
+ * endpoint through the browser context's own cookie-jar-backed HTTP client
+ * instead, touching no page at all. See that function's doc for the full
+ * CORS/navigation reasoning.
  */
-export async function probeVenmoSession({ page }: ProbeSessionArgs): Promise<boolean> {
-  const result = await probeVenmoAccount(page);
+export async function probeVenmoSession({ context }: ProbeSessionArgs): Promise<boolean> {
+  const result = await probeVenmoAccountViaContext(context);
   return result.live;
 }
 
-if (isMainModule(import.meta.url)) {
-  runConnector({
-    name: "venmo",
-    validateRecord,
-    // See VENMO_RETRYABLE_PATTERN's doc above for why this is an exact-name
-    // pattern rather than the wildcard/bare-vocabulary form it replaced (B4).
-    retryablePattern: VENMO_RETRYABLE_PATTERN,
-    auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
-    browser: { profileName: "venmo" },
-    async ensureSession({
-      capture,
+/**
+ * The EXACT config object the real entrypoint registers with `runConnector`
+ * — exported so a test can drive the real `ensureSession`/`probeSession`/
+ * `collect` closures directly, rather than reassembling a stand-in that
+ * could silently drift from what production actually runs.
+ *
+ * Independent review (PR238-NEXT-TRAIN-CONSTITUENTS-INDEPENDENT-R1-0830.md
+ * §8, P1/P2): a prior version's own tests substituted both `ensureSession`
+ * and `probeSession` and never entered the private registered `collect(ctx)`
+ * closure, so a future registration/sequencing regression could stay green.
+ * `isMainModule(import.meta.url)` is only ever true when this file is the
+ * real process entrypoint (`process.argv[1]`), never under a test runner —
+ * so the registration itself is otherwise untestable without this export.
+ */
+export const venmoConnectorConfig: BrowserConnectorConfig = {
+  name: "venmo",
+  validateRecord,
+  // See VENMO_RETRYABLE_PATTERN's doc above for why this is an exact-name
+  // pattern rather than the wildcard/bare-vocabulary form it replaced (B4).
+  retryablePattern: VENMO_RETRYABLE_PATTERN,
+  auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
+  browser: { profileName: "venmo" },
+  async ensureSession({
+    capture,
+    checkpoint,
+    credentials,
+    onCredentialSubmit,
+    page,
+    progress,
+    sendInteraction,
+  }): Promise<void> {
+    await ensureVenmoSession({
+      ...(capture ? { capture } : {}),
       checkpoint,
       credentials,
       onCredentialSubmit,
       page,
       progress,
       sendInteraction,
-    }): Promise<void> {
-      await ensureVenmoSession({
-        ...(capture ? { capture } : {}),
-        checkpoint,
-        credentials,
-        onCredentialSubmit,
-        page,
-        progress,
-        sendInteraction,
-      });
-    },
-    probeSession: probeVenmoSession,
-    async collect(ctx: BrowserCollectContext): Promise<void> {
-      const { page } = ctx;
-      // `ensureSession` may leave the page wherever sign-in redirected it
-      // (e.g. `id.venmo.com`); `api.venmo.com`'s CORS allowlist only grants
-      // a credentialed fetch from `https://venmo.com`, so collect must
-      // establish that origin itself rather than assume ensureSession left
-      // it there (F3 in /tmp/review-venmo-browser-redesign-0810.md). See
-      // `establishVenmoCollectOrigin`'s doc for why this is wrapped.
-      await establishVenmoCollectOrigin(page);
-      const fetchPath = makePageFetch(page);
-      const account = await fetchProfile(fetchPath);
-      const ownerId = account?.id;
-      if (!ownerId) {
-        throw new Error("venmo_session_expired: /account returned no user id after ensureSession succeeded");
-      }
-      await collectAllStreams(ctx, fetchPath, ownerId, account);
-    },
-  });
+    });
+  },
+  probeSession: probeVenmoSession,
+  async collect(ctx: BrowserCollectContext): Promise<void> {
+    const { page } = ctx;
+    // `ensureSession` may leave the page wherever sign-in redirected it
+    // (e.g. `id.venmo.com`); `api.venmo.com`'s CORS allowlist only grants
+    // a credentialed fetch from `https://venmo.com`, so collect must
+    // establish that origin itself rather than assume ensureSession left
+    // it there (F3 in /tmp/review-venmo-browser-redesign-0810.md). See
+    // `establishVenmoCollectOrigin`'s doc for why this is wrapped.
+    await establishVenmoCollectOrigin(page);
+    const fetchPath = makePageFetch(page);
+    const account = await fetchProfile(fetchPath);
+    const ownerId = account?.id;
+    if (!ownerId) {
+      throw new Error("venmo_session_expired: /account returned no user id after ensureSession succeeded");
+    }
+    await collectAllStreams(ctx, fetchPath, ownerId, account);
+  },
+};
+
+if (isMainModule(import.meta.url)) {
+  runConnector(venmoConnectorConfig);
 }
