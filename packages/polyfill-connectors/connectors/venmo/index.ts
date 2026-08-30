@@ -67,10 +67,11 @@
 import { isMainModule } from "@pdpp/connector-protocol";
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import type { Page } from "playwright";
-import { ensureVenmoOrigin, ensureVenmoSession } from "../../src/auto-login/venmo.ts";
+import { ensureVenmoOrigin, ensureVenmoSession, probeVenmoAccount } from "../../src/auto-login/venmo.ts";
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
+  type ProbeSessionArgs,
   politeDelay,
   runConnector,
 } from "../../src/connector-runtime.ts";
@@ -541,6 +542,26 @@ export async function collectAllStreams(
   }
 }
 
+/**
+ * `runConnector`'s `probeSession` hook — extracted so it is unit-testable
+ * without a real Playwright `page` (same reasoning as
+ * `establishVenmoCollectOrigin`'s doc above).
+ *
+ * `ensureSession` returning is a CLAIM the session is live, not proof — the
+ * assisted-login (no-credential) handoff and the challenge-replay path both
+ * return without ever probing (see venmo.ts's OWNER_HANDOFF_COMPLETE doc).
+ * Production run_1788061976811: the assisted-login flow completed, no owner
+ * interaction fired, and `collect()`'s own `/account` call was the first
+ * thing to discover the session was never authenticated. Supplying
+ * `probeSession` here lets the runtime's `establishSession` verify that claim
+ * — read-only, no owner challenge — before `collect()` ever starts (see
+ * session-establish.ts's verifyEstablishedSession).
+ */
+export async function probeVenmoSession({ page }: ProbeSessionArgs): Promise<boolean> {
+  const result = await probeVenmoAccount(page);
+  return result.live;
+}
+
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "venmo",
@@ -569,6 +590,7 @@ if (isMainModule(import.meta.url)) {
         sendInteraction,
       });
     },
+    probeSession: probeVenmoSession,
     async collect(ctx: BrowserCollectContext): Promise<void> {
       const { page } = ctx;
       // `ensureSession` may leave the page wherever sign-in redirected it

@@ -1441,14 +1441,14 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/venmo/index.ts",
-    line: 323,
+    line: 324,
     column: 5,
     category: "ordered_protocol_emission",
     note: "emitRecord(): Collection Profile protocol emission requiring in-order delivery",
   },
   {
     path: "connectors/venmo/index.ts",
-    line: 449,
+    line: 450,
     column: 7,
     category: "ordered_protocol_emission",
     note: "emitRecord(): Collection Profile protocol emission requiring in-order delivery",

@@ -28,6 +28,7 @@ import {
   fetchAllFriends,
   MAX_FRIENDS_PAGES,
   MAX_TRANSACTION_PAGES,
+  probeVenmoSession,
   type VenmoPageFetch,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -663,4 +664,45 @@ test("establishVenmoCollectOrigin: a successful navigation to venmo.com resolves
     },
   };
   await assert.doesNotReject(establishVenmoCollectOrigin(page as Page));
+});
+
+// Regression for production run_1788030841840 / run_1788061976811: the
+// assisted-login (no-credential) handoff in ensureVenmoSession returns
+// without ever probing the page (see venmo.ts's OWNER_HANDOFF_COMPLETE doc),
+// so a completed-but-unauthenticated handoff previously reached collect()
+// undetected. probeVenmoSession is what the runtime's establishSession now
+// calls to verify that claim BEFORE collect() starts, with no owner
+// challenge — see session-establish.ts's verifyEstablishedSession.
+test("probeVenmoSession: reports true for a live, authenticated session", async () => {
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      return { kind: "live", ownerId: "1234567890123456789" };
+    },
+    goto(): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "https://venmo.com/";
+    },
+  };
+  assert.equal(await probeVenmoSession({ context: {} as never, page: page as Page }), true);
+});
+
+test("probeVenmoSession: reports false — not a throw — for a handoff that completed without ever authenticating (the exact production defect)", async () => {
+  const page: Pick<Page, "evaluate" | "goto" | "url"> = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      // The reachable-but-signed-out shape probeVenmoAccount reports as `dead`
+      // — the same 401 collect()'s own /account call hit in production.
+      return { kind: "dead" };
+    },
+    goto(): ReturnType<Page["goto"]> {
+      return Promise.resolve(null);
+    },
+    url(): string {
+      return "https://venmo.com/";
+    },
+  };
+  assert.equal(await probeVenmoSession({ context: {} as never, page: page as Page }), false);
 });
