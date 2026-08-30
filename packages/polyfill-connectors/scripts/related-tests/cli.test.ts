@@ -214,13 +214,13 @@ describe("getChangedFiles: unresolved Git index/worktree entries fail closed", (
   });
 
   test("a real UU conflict is returned as unmerged even when both staged and unstaged U diffs exist", () => {
-    const baseRef = git(repoRoot, ["rev-parse", "HEAD"]).trim();
     git(repoRoot, ["checkout", "-qb", "conflict-source"]);
     writeFileSync(join(repoRoot, "index.ts"), "export const value = 2;\n");
     commitAll(repoRoot, "conflict-source: edit index.ts");
     git(repoRoot, ["checkout", "-q", "-"]);
     writeFileSync(join(repoRoot, "index.ts"), "export const value = 3;\n");
     commitAll(repoRoot, "main: edit index.ts");
+    const baseRef = git(repoRoot, ["rev-parse", "HEAD"]).trim();
     assert.throws(() => git(repoRoot, ["merge", "conflict-source"]));
 
     assert.equal(git(repoRoot, ["status", "--porcelain=v1"]).trim(), "UU index.ts");
@@ -229,7 +229,10 @@ describe("getChangedFiles: unresolved Git index/worktree entries fail closed", (
 
     const result = getChangedFiles(repoRoot, baseRef);
 
-    assert.deepEqual(result.changedRelativePaths, []);
+    // `git diff HEAD` compares the worktree against HEAD and classifies the
+    // conflicted worktree content as modified, while the cached/worktree U
+    // queries preserve the unresolved index state separately.
+    assert.deepEqual(result.changedRelativePaths, ["index.ts"]);
     assert.deepEqual(result.deletedRelativePaths, []);
     assert.deepEqual(result.unmergedRelativePaths, ["index.ts"]);
   });
