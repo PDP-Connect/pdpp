@@ -29,11 +29,14 @@ export const EXPECTED_PACKAGES = [
   },
 ] as const;
 
-type PackageManifest = {
+interface PackageManifest {
   dependencies?: Record<string, string>;
   name?: string;
   version?: string;
-};
+}
+
+const SHA256_SUM_LINE = /^(?<sha>[0-9a-f]{64}) {2}(?<path>vendor\/[^\s]+)$/;
+const LOCK_INTEGRITY = /resolution: \{integrity: sha512-([^,}]+)/;
 
 function fail(message: string): never {
   throw new Error(`PDPP vendored package pin verification failed: ${message}`);
@@ -57,9 +60,7 @@ function archivePackageManifest(path: string): PackageManifest {
       execFileSync("tar", ["-xOf", path, "package/package.json"], { encoding: "utf8" })
     ) as PackageManifest;
   } catch (error) {
-    fail(
-      `cannot read package/package.json from ${path}: ${error instanceof Error ? error.message : String(error)}`
-    );
+    fail(`cannot read package/package.json from ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -67,18 +68,17 @@ function readSha256Sums(repoRoot: string): Map<string, string> {
   const sums = readFileSync(join(repoRoot, "vendor/SHA256SUMS"), "utf8");
   const records = new Map<string, string>();
   for (const line of sums.split("\n")) {
-    const match = /^(?<sha>[0-9a-f]{64})  (?<path>vendor\/[^\s]+)$/.exec(line);
-    if (match?.groups) records.set(match.groups.path, match.groups.sha);
+    const match = SHA256_SUM_LINE.exec(line);
+    const sha = match?.groups?.sha;
+    const path = match?.groups?.path;
+    if (sha && path) {
+      records.set(path, sha);
+    }
   }
   return records;
 }
 
-function assertConsumerPin(
-  repoRoot: string,
-  relativePath: string,
-  packageName: string,
-  archive: string
-): void {
+function assertConsumerPin(repoRoot: string, relativePath: string, packageName: string, archive: string): void {
   const manifest = readJson(join(repoRoot, relativePath));
   const expectedSpecifier = `file:${relativePath.startsWith("reference-implementation/") ? "../" : "../../"}${archive}`;
   const actual = manifest.dependencies?.[packageName];
@@ -90,10 +90,7 @@ function assertConsumerPin(
 export function verifyPdppVendoredPackagePins(repoRoot: string): void {
   const sums = readSha256Sums(repoRoot);
   const lockfile = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
-  const consumerPaths = [
-    "reference-implementation/package.json",
-    "packages/polyfill-connectors/package.json",
-  ];
+  const consumerPaths = ["reference-implementation/package.json", "packages/polyfill-connectors/package.json"];
 
   for (const expected of EXPECTED_PACKAGES) {
     const archivePath = join(repoRoot, expected.archive);
@@ -115,9 +112,15 @@ export function verifyPdppVendoredPackagePins(repoRoot: string): void {
     const lockNeedle = `  '${expected.name}@file:${expected.archive}':`;
     const lockStart = lockfile.indexOf(lockNeedle);
     const lockSection = lockStart === -1 ? "" : lockfile.slice(lockStart, lockStart + 320);
-    const lockMatch = /resolution: \{integrity: sha512-([^,}]+)/.exec(lockSection);
-    if (!lockMatch) fail(`pnpm-lock.yaml has no integrity for ${expected.archive}`);
-    const decodedLockSha512 = Buffer.from(lockMatch[1], "base64").toString("hex");
+    const lockMatch = LOCK_INTEGRITY.exec(lockSection);
+    if (!lockMatch) {
+      fail(`pnpm-lock.yaml has no integrity for ${expected.archive}`);
+    }
+    const [, encodedLockSha512] = lockMatch;
+    if (!encodedLockSha512) {
+      fail(`pnpm-lock.yaml has an empty integrity for ${expected.archive}`);
+    }
+    const decodedLockSha512 = Buffer.from(encodedLockSha512, "base64").toString("hex");
     if (decodedLockSha512 !== actualSha512) {
       fail(`${expected.archive} SHA-512 does not match pnpm-lock.yaml`);
     }

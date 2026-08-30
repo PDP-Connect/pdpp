@@ -1,5 +1,34 @@
 # Vendored cross-repo dependency tarballs (transitional)
 
+## Current 0.0.2 release-boundary pins
+
+The current PDPP consumers pin both packages to independently SHIP-reviewed
+data-connect #36 artifacts at public source head
+`c4652fc688cccfb36c4510afec03fde775fabfb8` (parent
+`535ee9ab6cc5acae6d086b59ad61df97075598dc`). The final independent review is
+`DATA-CONNECT-36-WITHDRAWAL-INDEPENDENT-R2-FINAL-0829.md` in the review
+evidence directory.
+
+`pdpp-collector-runtime-0.0.2.tgz` was reproduced from that exact source
+head and verified before vendoring. Its SHA-256 is
+`eaf1eda97a2bf0b8a9e28dd43ed179e9ba254e7547b7e1aa0d88e378195d5f42`; its
+SHA-512 is
+`d35a2bda7bd74e83563ffc50fd5d55f8edbb8d3d5e6b917a9256cf3b125e782133f8edb3212a1f1fa6fcb9b91118b86cf0e38386051def1c84ff2119f06f6962`.
+The producer's source-input digest is
+`34ddadf96d366651f581d31deb5a573dd958963842e99400eb13d7d42fd936fa` and
+declaration digest is
+`93c013bb2a484fea532954431f9bef80e489a47333463dceb37ecd6c6174761a`.
+
+`pdpp-connector-protocol-0.0.2.tgz` is pinned at SHA-256
+`17b8013bc030bc83cbd9e908a14a6096ae756c39cb788139effad2827d5bd124`; its
+accepted source-input digest is
+`d2a715e1aabbb454d7da146197ae849fd02bedef7b62793c113d764a0b43a350` and
+declaration digest is
+`da07e9aaaf84b5b0ec91b657dae90662c544763ca41ff124b1c2fa440617e0ce`.
+Both package archives are verified by
+`scripts/check-pdpp-vendored-package-pins.ts` before the PDPP train can be
+treated as installed.
+
 `pdpp-connector-protocol-0.0.2.tgz` was packed on 2026-08-29 from
 PDP-Connect/data-connect commit `75b4af02bbd18e5830d5e6f8230bf980fdc55014`
 ("chore(connector-protocol): regenerate artifact.json against the
@@ -50,10 +79,10 @@ pinned against drift by
 `packages/polyfill-connectors/bin/collector-runner-protocol-capabilities.test.ts`
 (a custom operator-supplied command gets no synthesized declaration).
 
-Note the asymmetry this leaves: `pdpp-collector-runtime-0.0.1.tgz` is still on
-0.0.1, and its `ConnectorPlacementInput` has no capability field at all. So the
-requirement is enforced here at COMPILE time only; the runtime `evaluatePlacement`
-gate ships with the collector-runtime bump, not this one.
+The prior `pdpp-collector-runtime-0.0.1.tgz` pin had no capability field in its
+`ConnectorPlacementInput`, so that historical state enforced the requirement
+at compile time only. The current `0.0.2` runtime pin carries the withdrawn
+capability placement gate described above.
 
 The same fold classifies `stream_evidence_run_registry` as `backup_required` in
 `reference-implementation/server/backup-table-policy.ts`. That table is

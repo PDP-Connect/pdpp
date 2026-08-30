@@ -452,8 +452,8 @@ importers:
   packages/polyfill-connectors:
     dependencies:
       '@pdpp/collector-runtime':
-        specifier: file:../../vendor/pdpp-collector-runtime-0.0.1.tgz
-        version: file:vendor/pdpp-collector-runtime-0.0.1.tgz
+        specifier: file:../../vendor/pdpp-collector-runtime-0.0.2.tgz
+        version: file:vendor/pdpp-collector-runtime-0.0.2.tgz
       '@pdpp/connector-protocol':
         specifier: file:../../vendor/pdpp-connector-protocol-0.0.2.tgz
         version: file:vendor/pdpp-connector-protocol-0.0.2.tgz
@@ -546,8 +546,8 @@ importers:
         specifier: ^4.2.0
         version: 4.2.0
       '@pdpp/collector-runtime':
-        specifier: file:../vendor/pdpp-collector-runtime-0.0.1.tgz
-        version: file:vendor/pdpp-collector-runtime-0.0.1.tgz
+        specifier: file:../vendor/pdpp-collector-runtime-0.0.2.tgz
+        version: file:vendor/pdpp-collector-runtime-0.0.2.tgz
       '@pdpp/connector-protocol':
         specifier: file:../vendor/pdpp-connector-protocol-0.0.2.tgz
         version: file:vendor/pdpp-connector-protocol-0.0.2.tgz
@@ -2334,9 +2334,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.1.tgz':
-    resolution: {integrity: sha512-L4CT6KqUc05EjPjDTJ7wYNPCAQvStcNyPGv7OyYq5mTKgLFJevWlISUgg+nTOuptrqG4DwA+cL1XInHXpkzaPQ==, tarball: file:vendor/pdpp-collector-runtime-0.0.1.tgz}
-    version: 0.0.1
+  '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.2.tgz':
+    resolution: {integrity: sha512-01or2nvXToNWP/xQ/V1V+O27jT1ea5F6klbPOxJeeCEz+O2zISofH6b8ubkRGLhs8OODhgUd7xyE/yEZ8G9pYg==, tarball: file:vendor/pdpp-collector-runtime-0.0.2.tgz}
+    version: 0.0.2
     engines: {node: '>=22.14.0'}
 
   '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-0.0.2.tgz':
@@ -11104,7 +11104,7 @@ snapshots:
   '@pagefind/windows-x64@1.5.2':
     optional: true
 
-  '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.1.tgz':
+  '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-0.0.2.tgz':
     dependencies:
       '@pdpp/connector-protocol': file:vendor/pdpp-connector-protocol-0.0.2.tgz
 

@@ -32,7 +32,7 @@ test("withdrawn device runtime rejects STREAM_EVIDENCE while protocol 0.0.2 stil
   assert.doesNotThrow(() =>
     protocol.validateStreamEvidenceCounts({
       considered: 4,
-      outcomes: { emitted: 1, unchanged: 1, gapped: 1, unaccounted: 1 },
+      outcomes: { emitted: 1, gapped: 1, unaccounted: 1, unchanged: 1 },
     })
   );
   assert.equal(runtime.COLLECTOR_RUNTIME_CAPABILITIES.protocolVersion, "0.0.2");
