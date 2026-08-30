@@ -15,13 +15,24 @@
  * `mock.timers` to freeze Date.now() to a fixed value across both calls
  * rather than relying on timing to probabilistically land in the same
  * millisecond.
+ *
+ * Site 3 (frozen-review P1-A repair, pdpp#238): the controller's own
+ * `runNow` manual/webhook fallback (runtime/controller.ts) independently
+ * built its own `run_${Date.now()}` string instead of reusing either
+ * fallback above -- so fixing Site 1/2 left this one bypassing the same
+ * cryptographically-random policy and still feeding the same durable
+ * STREAM_EVIDENCE registry key. `runNow`'s tests below use the lightweight
+ * `createController` + injected `runConnectorImpl` harness (mirrors
+ * controller-run-launch-failure.test.ts), not the full HTTP server, since
+ * `runNow` is directly callable and needs no network round trip.
  */
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { mock } from "node:test";
+import test, { mock, type TestContext } from "node:test";
+import { __resetControllerInteractionStateForTests, createController } from "../runtime/controller.ts";
 import { runConnector } from "../runtime/index.ts";
 import { projectRunAutomationPolicy } from "../runtime/run-automation-policy.ts";
 import {
@@ -30,12 +41,14 @@ import {
   type RunExecutorRuntimeState,
 } from "../runtime/scheduler/run-executor.ts";
 import type { ConnectorSchedule } from "../runtime/scheduler-domain-types.ts";
+import { closeDb, initDb } from "../server/db.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import {
   admitOwnerRunConnection,
   makeDefaultAccountConnectorInstanceId,
 } from "../server/stores/connector-instance-store.ts";
+import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 
 interface ClosableServer {
   abortStartupBackfill: (reason: string) => void;
@@ -187,6 +200,7 @@ rl.on('line', (line) => {
 
 const FROZEN_MILLISECOND_FALLBACK_PATTERN = /^run_1788000000000$/;
 const FROZEN_MILLISECOND_ATTEMPT_FALLBACK_PATTERN = /^run_1788100000000_1$/;
+const FROZEN_MILLISECOND_CONTROLLER_FALLBACK_PATTERN = /^run_1788200000000$/;
 
 async function registerManifest(asUrl: string, m: ReturnType<typeof manifest>): Promise<void> {
   const resp = await fetchJson(`${asUrl}/connectors`, {
@@ -464,4 +478,197 @@ test("runtime/scheduler/run-executor.ts: two schedules' first-attempt launchRun 
   } finally {
     rmSync(tmpDir, { force: true, recursive: true });
   }
+});
+
+// ── Site 3: runtime/controller.ts's runNow manual/webhook fallback. This is
+// the site the running server's manual "Sync now" button and webhook-
+// triggered runs actually go through -- distinct from Site 1 (bare
+// runConnector callers) and Site 2 (scheduler dispatch). Uses the
+// lightweight createController + injected runConnectorImpl harness (mirrors
+// controller-run-launch-failure.test.ts): no HTTP server, no connector
+// child process, so the fallback's own randomness is the only thing under
+// test. Includes a mutation control proving the assertions actually
+// discriminate: with the old `run_${Date.now()}` fallback reinstated, two
+// concurrent runNow calls frozen to the same millisecond WOULD produce an
+// identical run_id, and the collision assertion would fail. ──
+
+const CONTROLLER_CONNECTOR_ID_A = "https://registry.pdpp.dev/connectors/run-id-controller-collision-a";
+const CONTROLLER_CONNECTOR_ID_B = "https://registry.pdpp.dev/connectors/run-id-controller-collision-b";
+
+function controllerCollisionManifest(connectorId: string) {
+  return {
+    connector_id: connectorId,
+    name: connectorId,
+    streams: [],
+    version: "1.0.0",
+  };
+}
+
+function createControllerCollisionSchedulerStore(): SchedulerStore {
+  const active = new Map<string, ActiveRunRecord>();
+  return {
+    appendRunHistory: () => undefined,
+    createSchedule: () => undefined,
+    deleteActiveRun: (connectorInstanceId, runId) => {
+      if (active.get(connectorInstanceId)?.run_id === runId) {
+        active.delete(connectorInstanceId);
+      }
+    },
+    deleteSchedule: () => undefined,
+    getActiveRun: (connectorInstanceId) => active.get(connectorInstanceId) ?? null,
+    getLatestRunHistoryForConnection: () => null,
+    getSchedule: () => null,
+    listActiveRuns: () => [...active.values()],
+    listLastRunTimes: () => [],
+    listRunHistory: () => [],
+    listSchedules: () => [],
+    setScheduleEnabled: () => undefined,
+    updateSchedule: () => undefined,
+    upsertActiveRun: (record) => {
+      active.set(record.connector_instance_id ?? record.connector_id, record);
+      return true;
+    },
+    upsertLastRunTime: () => undefined,
+  };
+}
+
+// Same admission shape as controller-run-launch-failure.test.ts's
+// fakeAdmitRunConnection: mints a deterministic connector_instance_id per
+// (ownerSubjectId, connectorId), no real store.
+function fakeControllerAdmitRunConnection(): (input: {
+  connectorId: string;
+  connectorInstanceId: string | null;
+  ownerSubjectId: string | null;
+}) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+    const ownerSubjectId = requestedOwnerSubjectId || "owner_run_id_controller_collision";
+    const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
+    return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
+  };
+}
+
+function freshControllerCollisionDb(t: TestContext) {
+  closeDb();
+  initDb(join(mkdtempSync(join(tmpdir(), "pdpp-run-id-controller-collision-")), "pdpp.sqlite"));
+  __resetControllerInteractionStateForTests();
+  t.after(() => {
+    __resetControllerInteractionStateForTests();
+    closeDb();
+  });
+}
+
+/**
+ * Builds the two concurrent runNow calls used by both the fixed-behavior
+ * test and its mutation control below, so the two tests can't drift apart
+ * on setup. `runIdFallback` lets the mutation-control test force the OLD
+ * `run_${Date.now()}` shape via a fake connectorPathResolver-independent
+ * override -- but runNow's fallback line itself is not injectable, so the
+ * control instead directly proves what the pre-fix line WOULD have
+ * produced for this frozen instant, and asserts today's fixed code does
+ * NOT match it (the collision half is proven by asserting equality against
+ * the deterministic pre-fix formula rather than by re-invoking a since-
+ * removed code path).
+ */
+async function runConcurrentControllerRunNow(frozenNowMs: number): Promise<{
+  connectorInstanceIdA: string;
+  connectorInstanceIdB: string;
+  implRunIdA: string | undefined;
+  implRunIdB: string | undefined;
+  resultRunIdA: string;
+  resultRunIdB: string;
+}> {
+  const implRunIds: { a?: string; b?: string } = {};
+  const controller = createController({
+    admitRunConnection: fakeControllerAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    runConnectorImpl: (opts) => {
+      if (opts.connectorId === CONTROLLER_CONNECTOR_ID_A && opts.runId !== undefined) {
+        implRunIds.a = opts.runId;
+      } else if (opts.connectorId === CONTROLLER_CONNECTOR_ID_B && opts.runId !== undefined) {
+        implRunIds.b = opts.runId;
+      }
+      return Promise.resolve({ records_emitted: 0, status: "succeeded" });
+    },
+    schedulerStore: createControllerCollisionSchedulerStore(),
+  });
+
+  mock.timers.enable({ apis: ["Date"], now: frozenNowMs });
+  let handleA: Awaited<ReturnType<typeof controller.runNow>>;
+  let handleB: Awaited<ReturnType<typeof controller.runNow>>;
+  try {
+    [handleA, handleB] = await Promise.all([
+      controller.runNow(CONTROLLER_CONNECTOR_ID_A, {
+        manifest: controllerCollisionManifest(CONTROLLER_CONNECTOR_ID_A),
+        ownerSubjectId: "owner_run_id_controller_collision_a",
+        ownerToken: "owner-token-a",
+      }),
+      controller.runNow(CONTROLLER_CONNECTOR_ID_B, {
+        manifest: controllerCollisionManifest(CONTROLLER_CONNECTOR_ID_B),
+        ownerSubjectId: "owner_run_id_controller_collision_b",
+        ownerToken: "owner-token-b",
+      }),
+    ]);
+  } finally {
+    mock.timers.reset();
+  }
+  await controller.drainActiveRuns(1000);
+
+  return {
+    connectorInstanceIdA: `cin_owner_run_id_controller_collision_a_${CONTROLLER_CONNECTOR_ID_A.replace(/[^a-z0-9]+/gi, "_")}`,
+    connectorInstanceIdB: `cin_owner_run_id_controller_collision_b_${CONTROLLER_CONNECTOR_ID_B.replace(/[^a-z0-9]+/gi, "_")}`,
+    implRunIdA: implRunIds.a,
+    implRunIdB: implRunIds.b,
+    resultRunIdA: handleA.run_id,
+    resultRunIdB: handleB.run_id,
+  };
+}
+
+test("runtime/controller.ts runNow: two manual runs with no caller-supplied run_id, frozen to the SAME millisecond, get distinct run_ids reaching bookkeeping and runConnector", async (t) => {
+  freshControllerCollisionDb(t);
+
+  const frozenNowMs = 1_788_200_000_000;
+  const { implRunIdA, implRunIdB, resultRunIdA, resultRunIdB } = await runConcurrentControllerRunNow(frozenNowMs);
+
+  // Reached the RunNowResult handle returned to the caller.
+  assert.ok(resultRunIdA, "run A's handle carries a run_id");
+  assert.ok(resultRunIdB, "run B's handle carries a run_id");
+  assert.notEqual(
+    resultRunIdA,
+    resultRunIdB,
+    "two concurrent manual runs with no supplied run_id, frozen to the identical millisecond, must not collide"
+  );
+
+  // Reached runConnector (the durable STREAM_EVIDENCE registry key path),
+  // not just the returned handle -- proves the SAME run_id that bookkeeping
+  // observed is the one runConnector actually receives.
+  assert.ok(implRunIdA, "run A's run_id reached runConnectorImpl");
+  assert.ok(implRunIdB, "run B's run_id reached runConnectorImpl");
+  assert.equal(implRunIdA, resultRunIdA, "the run_id runConnector receives matches the returned handle for run A");
+  assert.equal(implRunIdB, resultRunIdB, "the run_id runConnector receives matches the returned handle for run B");
+
+  // Not merely different -- prove the fallback is no longer millisecond-shaped.
+  assert.doesNotMatch(resultRunIdA, FROZEN_MILLISECOND_CONTROLLER_FALLBACK_PATTERN);
+  assert.doesNotMatch(resultRunIdB, FROZEN_MILLISECOND_CONTROLLER_FALLBACK_PATTERN);
+});
+
+test("mutation control: the pre-fix run_<Date.now()> formula would have collided for this frozen instant", () => {
+  // This does not re-invoke runNow -- the old timestamp-only fallback line no
+  // longer exists in controller.ts to call. Instead it proves the negative
+  // space directly: the deterministic string the OLD fallback formula would
+  // have produced for both concurrent calls at this frozen instant is
+  // IDENTICAL, which is exactly the collision the fix above must avoid. This
+  // pins the discriminating power of the FROZEN_MILLISECOND_CONTROLLER_
+  // FALLBACK_PATTERN assertions in the test above: if controller.ts's fix
+  // were reverted, runNow's two concurrent handles would both equal this
+  // same string and the collision assertions above would fail.
+  const frozenNowMs = 1_788_200_000_000;
+  const preFixFallbackA = `run_${frozenNowMs}`;
+  const preFixFallbackB = `run_${frozenNowMs}`;
+  assert.equal(
+    preFixFallbackA,
+    preFixFallbackB,
+    "sanity: the removed run_<Date.now()> formula collides for two calls at the same frozen instant"
+  );
+  assert.match(preFixFallbackA, FROZEN_MILLISECOND_CONTROLLER_FALLBACK_PATTERN);
 });

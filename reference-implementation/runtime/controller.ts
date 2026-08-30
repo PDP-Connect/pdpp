@@ -17,7 +17,7 @@
 // come from `server/auth.js` directly; the controller does not re-export
 // them.
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -3816,7 +3816,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const traceContext =
       options.traceContext ??
       (options.scenarioId ? createTraceContext({ scenarioId: options.scenarioId }) : createTraceContext());
-    const runId = options.runId || `run_${Date.now()}`;
+    const runId = options.runId || `run_${randomUUID()}`;
     const startedAt = nowIso();
 
     // Resolve connection-scoped static-secret credentials before acquiring any
