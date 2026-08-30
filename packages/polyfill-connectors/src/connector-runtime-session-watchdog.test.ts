@@ -58,7 +58,9 @@ function makeStubPage(): Page {
 // clock and let the event loop turn so a tick can observe it.
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5));
 
-const nonblockingAssistance = (progressPosture: AssistanceRequest["progress_posture"] = "running"): AssistanceRequest => ({
+const nonblockingAssistance = (
+  progressPosture: AssistanceRequest["progress_posture"] = "running"
+): AssistanceRequest => ({
   message: "Approve this request in the source app.",
   owner_action: "act_elsewhere",
   progress_posture: progressPosture,

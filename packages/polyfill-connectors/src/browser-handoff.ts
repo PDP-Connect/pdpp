@@ -642,12 +642,12 @@ export interface ManualBrowserLoginArgs<Result> {
   /** Injectable clock for deterministic readiness-window tests. */
   readonly now?: () => number;
   readonly page: Page;
+  readonly probe: () => Promise<Result>;
   /**
    * Navigation-safe session evidence for streamed handoffs. The helper passes
    * a temporary sibling page, never the owner's streamed page.
    */
   readonly readinessProbe?: (page: Page) => Promise<Result>;
-  readonly probe: () => Promise<Result>;
   readonly reason?: ManualActionReason;
   readonly sendInteraction: SendInteraction;
   readonly timeoutSeconds?: number;
@@ -660,7 +660,7 @@ function waitForProbeInterval(intervalMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, intervalMs));
 }
 
-async function pollBrowserReadiness<Result>(
+function pollBrowserReadiness<Result>(
   probe: () => Promise<Result>,
   isProbeSuccessful: (result: Result) => boolean,
   { intervalMs, now = Date.now, windowMs }: { intervalMs: number; now?: () => number; windowMs: number }

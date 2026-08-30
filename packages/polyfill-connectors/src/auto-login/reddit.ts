@@ -529,8 +529,7 @@ async function ensureRedditManualSession({
       message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
       page,
       probe: () => isSessionLiveWithRetry(page, { ...sessionProbe, ...manualHandoffProbeRetry }),
-      readinessProbe: (probePage) =>
-        isSessionLiveWithRetry(probePage, { ...sessionProbe, ...manualHandoffProbeRetry }),
+      readinessProbe: (probePage) => isSessionLiveWithRetry(probePage, { ...sessionProbe, ...manualHandoffProbeRetry }),
       sendInteraction,
       timeoutSeconds: 1800,
     })
@@ -562,8 +561,7 @@ async function recoverRedditBlockedLogin({
       message,
       page,
       probe: () => isSessionLiveWithRetry(page, { ...sessionProbe, ...manualHandoffProbeRetry }),
-      readinessProbe: (probePage) =>
-        isSessionLiveWithRetry(probePage, { ...sessionProbe, ...manualHandoffProbeRetry }),
+      readinessProbe: (probePage) => isSessionLiveWithRetry(probePage, { ...sessionProbe, ...manualHandoffProbeRetry }),
       reason: "captcha",
       sendInteraction,
       timeoutSeconds: 1800,

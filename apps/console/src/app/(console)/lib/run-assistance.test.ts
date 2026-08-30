@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { selectNoAssistanceStreamState } from "../syncs/[runId]/stream/stream-state.ts";
 import type { SpineEvent } from "./ref-client.ts";
 import {
   getCurrentBrowserSurfaceAssistance,
@@ -12,7 +13,6 @@ import {
   hasResolvedBrowserSurfaceAssistance,
   requiresBrowserSurfaceAssistance,
 } from "./run-assistance.ts";
-import { selectNoAssistanceStreamState } from "../syncs/[runId]/stream/stream-state.ts";
 
 function event(event_type: string, data: Record<string, unknown>): SpineEvent {
   return {
