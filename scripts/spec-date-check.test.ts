@@ -142,6 +142,17 @@ test("--base fails closed when its commit cannot be resolved, including GitHub's
   });
 });
 
+test("tolerates a leading -- separator, which pnpm 10's bare `pnpm <script> -- <args>` forwards literally", () => {
+  withFixture((repo) => {
+    repo.writeSpec("# Fixture\n\nStatus: Draft\nDate: 2026-01-01\n\nChanged body.\n");
+    repo.commit("substantive edit", "2026-01-02");
+
+    const result = run(repo.root, ["--", "--base", repo.base]);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /spec-fixture\.md: Date: 2026-01-01 is stale/);
+  });
+});
+
 test("default mode checks every root spec", () => {
   withFixture((repo) => {
     repo.writeSpec("# Fixture\n\nStatus: Draft\nDate: 2026-01-01\n\nChanged body.\n");
