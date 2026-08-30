@@ -282,7 +282,7 @@ function manifestCommandTargets(root: string, from: string): ManifestCommandTarg
   }
   return values;
 }
-interface RuntimeEdge {
+export interface RuntimeEdge {
   declaration?: string | null;
   from: string;
   kind: "literal" | "dynamic" | "spawn" | "manifest-command";
