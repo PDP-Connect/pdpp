@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<!--
+  The login form for an account whose only sign-in method is an emailed
+  one-time code, reduced to the elements that drive surface classification.
+
+  Live shape observed in run_1787364399455 (connector_instance
+  cin_8997c...b36a8) at https://accounts.heb.com/interaction/<id>/login. The
+  run recorded the page itself in its own failure message:
+
+    "PDPP could not identify what H-E-B is showing. The page at
+     https://accounts.heb.com/interaction/8k87SSs1r3k0H4pPQxNd1/login had
+     NO PASSWORD FIELD and no dialog overlay, which does not match any
+     surface PDPP recognizes."
+
+  That "no password field" is the whole point, and it is what separates this
+  fixture from `email-first-login-page.html`. On THAT page the password input
+  is present in the DOM and merely invisible inside a `w-0 h-0` fieldset. Here
+  H-E-B never renders a password input at all, because this account has no
+  password credential to offer — the account is OTP-only, so the chooser
+  collapses to the single "Email me a one-time code" option.
+
+  `countsMatchLoginForm` required a password input to EXIST (`presentPassword
+  Count > 0`) to call a form a login form. Zero present meant "not a login
+  form", so this page fell through to the unclassified fallback and the owner
+  was handed a browser for a page that is an ordinary H-E-B login form.
+
+  Keep the absence of any `input[type="password"]` exactly as-is. The missing
+  field is not an omission in this fixture — it IS the regression it pins.
+
+  No verification code has been sent at this point: the radio is an OFFER to
+  send one, and there is no code input on the page. Classifying this as
+  `verification_code` would fabricate an OTP prompt, which is why the
+  login-form branch must win here.
+
+  Deliberately carries NO alternate-credential ("log in with a pass-key")
+  affordance, and this comment deliberately avoids spelling that word as one
+  token. The classifier tests its regexes against raw `page.content()`, which
+  INCLUDES HTML comments, so the word appearing anywhere in this file — even
+  here in prose — would make the fixture classify as a challenge surface and
+  quietly stop testing what it claims to test. The live run reported `unknown`,
+  which is the recorded proof that no such control was on the page.
+-->
+<html>
+<body>
+  <main>
+    <img alt="H-E-B logo" src="/logo.svg" />
+    <form novalidate class="relative flex flex-col align-items-start mt-2">
+      <input type="hidden" data-testid="requestId" name="requestId" value="UNSET" />
+      <input type="hidden" name="step" value="1" />
+      <div>
+        <h1 class="text-2xl font-extrabold text-center">Log in</h1>
+        <h2 class="text-center mt-4"></h2>
+      </div>
+      <div class="flex flex-col">
+        <div class="form-control-group">
+          <input
+            autocomplete="username webauthn"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
+            aria-hidden="false"
+            autofocus
+            enterkeyhint="go"
+            class="form-control bg-transparent rounded-none"
+            type="email"
+            id="email-input"
+            placeholder="Email"
+            aria-label="Email"
+            name="email"
+          />
+        </div>
+        <label class="ml-1 text-xs form-label order-1" for="email-input">Email</label>
+      </div>
+      <fieldset
+        role="none"
+        aria-hidden="true"
+        tabindex="-1"
+        data-testid="credentials-fieldset"
+        class="flex flex-col gap-5 overflow-hidden w-0 h-0"
+      >
+        <label for="emailOtp" role="none" aria-hidden="true" tabindex="-1">
+          <input
+            type="radio"
+            id="emailOtp"
+            role="none"
+            aria-hidden="true"
+            tabindex="-1"
+            class="peer mr-2"
+            name="authType"
+            checked
+            value="otp"
+          />
+          <span role="none" aria-hidden="true" tabindex="-1" class="peer-checked:font-bold">Email me a one-time code</span><br />
+          <div class="ml-6 font-normal text-sm break-all"></div>
+        </label>
+      </fieldset>
+      <div>
+        <button
+          class="w-full rounded-3xl font-extrabold px-2 py-2.5 text-white bg-dark-gray mb-4"
+          type="submit"
+          aria-disabled="false"
+        >
+          Continue
+        </button>
+      </div>
+      <div>
+        Don&#8217;t have an account?
+        <a href="/interaction/synthetic-interaction-id/register">Create one</a>
+      </div>
+    </form>
+  </main>
+  <p>Copyright &copy; 2026 H&#8209;E&#8209;B, LP</p>
+</body>
+</html>
