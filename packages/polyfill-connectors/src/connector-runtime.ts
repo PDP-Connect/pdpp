@@ -1278,6 +1278,66 @@ function makeEmitRecord(deps: {
   return { emit: emitRecord, counters };
 }
 
+interface BrowserSurfaceAssistanceLifecycleDependencies {
+  readonly assist: BaseCollectContext["assist"];
+  readonly completeAssistance: BaseCollectContext["completeAssistance"];
+  readonly nextAssistanceRequestId: () => string;
+  readonly page: Page;
+  readonly prepareTarget?: typeof prepareBrowserInteractionTarget;
+  readonly unregisterTarget?: typeof unregisterBrowserInteractionTarget;
+}
+
+/**
+ * Keep the streamed-page target's lifecycle coupled to the structured
+ * assistance request. This is deliberately separate from session logic: a
+ * failed readiness probe must still terminally close the assistance and free
+ * the target before its error reaches the run lifecycle.
+ */
+export function createBrowserSurfaceAssistanceLifecycle({
+  assist,
+  completeAssistance,
+  nextAssistanceRequestId,
+  page,
+  prepareTarget = prepareBrowserInteractionTarget,
+  unregisterTarget = unregisterBrowserInteractionTarget,
+}: BrowserSurfaceAssistanceLifecycleDependencies): {
+  assist: BaseCollectContext["assist"];
+  close: () => Promise<void>;
+  complete: BaseCollectContext["completeAssistance"];
+} {
+  const openAssistanceIds = new Set<string>();
+
+  return {
+    assist: async (request) => {
+      const assistanceRequestId = request.assistance_request_id ?? nextAssistanceRequestId();
+      if (request.attachments?.some((attachment) => attachment.kind === "browser_surface")) {
+        openAssistanceIds.add(assistanceRequestId);
+        // Registration precedes ASSISTANCE so the reference server can mint a
+        // stream only for this exact ready (run, assistance) target.
+        await prepareTarget({
+          interactionId: assistanceRequestId,
+          page,
+          reason: "manual_action",
+        });
+      }
+      return assist({ ...request, assistance_request_id: assistanceRequestId });
+    },
+    complete: async (assistanceRequestId, status, extra = {}) => {
+      try {
+        await completeAssistance(assistanceRequestId, status, extra);
+      } finally {
+        if (openAssistanceIds.delete(assistanceRequestId)) {
+          await unregisterTarget({ interactionId: assistanceRequestId });
+        }
+      }
+    },
+    close: async () => {
+      await Promise.all([...openAssistanceIds].map((interactionId) => unregisterTarget({ interactionId })));
+      openAssistanceIds.clear();
+    },
+  };
+}
+
 /** Run collect() inside an acquired browser context, with session + tracing. */
 async function runInBrowser(args: {
   browser: BrowserConfig;
@@ -1336,37 +1396,17 @@ async function runInBrowser(args: {
   baseCtx.capture?.setTraceCheckpointHook?.((label) => tracer.checkpoint(label));
   let page: Page | null = null;
   let runSucceeded = false;
-  const openBrowserSurfaceAssistanceIds = new Set<string>();
+  let browserSurfaceAssistance: ReturnType<typeof createBrowserSurfaceAssistanceLifecycle> | null = null;
   try {
     page = await selectBrowserPageForRun(ctx, browser);
-    const browserAssist: BaseCollectContext["assist"] = async (req) => {
-      const assistanceRequestId = req.assistance_request_id ?? nextAssistanceRequestId();
-      if (req.attachments?.some((attachment) => attachment.kind === "browser_surface")) {
-        openBrowserSurfaceAssistanceIds.add(assistanceRequestId);
-        // Registration must happen before ASSISTANCE reaches the reference
-        // server. The server's owner-authenticated mint route can then fail
-        // closed unless this exact (run, assistance) target is ready.
-        await prepareBrowserInteractionTarget({
-          interactionId: assistanceRequestId,
-          page: page as Page,
-          reason: "manual_action",
-        });
-      }
-      return assist({ ...req, assistance_request_id: assistanceRequestId });
-    };
-    const browserCompleteAssistance: BaseCollectContext["completeAssistance"] = async (
-      assistanceRequestId,
-      status,
-      extra = {}
-    ) => {
-      try {
-        await completeAssistance(assistanceRequestId, status, extra);
-      } finally {
-        if (openBrowserSurfaceAssistanceIds.delete(assistanceRequestId)) {
-          await unregisterBrowserInteractionTarget({ interactionId: assistanceRequestId });
-        }
-      }
-    };
+    browserSurfaceAssistance = createBrowserSurfaceAssistanceLifecycle({
+      assist,
+      completeAssistance,
+      nextAssistanceRequestId,
+      page: page as Page,
+    });
+    const browserAssist = browserSurfaceAssistance.assist;
+    const browserCompleteAssistance = browserSurfaceAssistance.complete;
     const browserSendInteraction = makeBrowserInteractionKeepalive({
       context: ctx,
       diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
@@ -1439,14 +1479,7 @@ async function runInBrowser(args: {
     throw err;
   } finally {
     await finalizeDiagnostics();
-    if (page) {
-      await Promise.all(
-        [...openBrowserSurfaceAssistanceIds].map((assistanceRequestId) =>
-          unregisterBrowserInteractionTarget({ interactionId: assistanceRequestId })
-        )
-      );
-      openBrowserSurfaceAssistanceIds.clear();
-    }
+    await browserSurfaceAssistance?.close();
     if (shouldCloseBrowserPageAfterRun(browser, runSucceeded)) {
       await closeBrowserPage(page);
     }
@@ -2164,8 +2197,12 @@ export function makeSessionEstablishWatchdog(args: {
     }
   };
 
-  const assistancePausesWatchdog = (req: AssistanceRequest): boolean =>
-    req.progress_posture === "running" && req.response_contract === "none";
+  // A no-response assistance is owned by the connector: the runtime keeps
+  // working or watching for readiness while the owner acts elsewhere or on a
+  // browser surface. It must pause the establishment watchdog regardless of
+  // posture, otherwise a blocked streamed login is killed at the ordinary
+  // no-progress deadline before its declared handoff timeout can elapse.
+  const assistancePausesWatchdog = (req: AssistanceRequest): boolean => req.response_contract === "none";
 
   const pruneExpiredAssistance = (): void => {
     const current = now();

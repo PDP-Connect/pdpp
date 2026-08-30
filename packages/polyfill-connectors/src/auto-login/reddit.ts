@@ -40,7 +40,7 @@ const SUBMIT_SELECTOR = 'button[type="submit"]:has-text("Log In"), button[type="
 const OTP_SELECTOR = 'input[name="otp"], input[name="verification_code"], input[autocomplete="one-time-code"]';
 const SUBMIT_BUTTON_NAME_RE = /^(log in|continue)$/i;
 const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
-  "No optional Reddit sign-in details were provided. Sign in to Reddit in the secure browser, then respond success.";
+  "No optional Reddit sign-in details were provided. Sign in to Reddit in the secure browser. PDPP continues automatically when the session is ready.";
 
 const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
   {
@@ -453,9 +453,9 @@ async function clickRedditLoginSubmit(page: Page, onCredentialSubmit?: () => voi
 
 function loginBlockedMessage(cfSignals: string[]): string {
   if (cfSignals.length > 0) {
-    return `Cloudflare challenge confirmed (signals: ${cfSignals.join(", ")}). Complete the "Verify you are human" check on reddit.com in the browser window and re-run.`;
+    return `Cloudflare challenge confirmed (signals: ${cfSignals.join(", ")}). Complete the "Verify you are human" check on reddit.com in the secure browser. PDPP continues automatically when the session is ready.`;
   }
-  return "Reddit login page did not render expected inputs and no Cloudflare challenge was detected (the page may have changed). Log in to reddit.com in the browser window and re-run.";
+  return "Reddit login page did not render expected inputs and no Cloudflare challenge was detected (the page may have changed). Log in to reddit.com in the secure browser. PDPP continues automatically when the session is ready.";
 }
 
 /**
@@ -529,6 +529,8 @@ async function ensureRedditManualSession({
       message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
       page,
       probe: () => isSessionLiveWithRetry(page, { ...sessionProbe, ...manualHandoffProbeRetry }),
+      readinessProbe: (probePage) =>
+        isSessionLiveWithRetry(probePage, { ...sessionProbe, ...manualHandoffProbeRetry }),
       sendInteraction,
       timeoutSeconds: 1800,
     })
@@ -560,6 +562,8 @@ async function recoverRedditBlockedLogin({
       message,
       page,
       probe: () => isSessionLiveWithRetry(page, { ...sessionProbe, ...manualHandoffProbeRetry }),
+      readinessProbe: (probePage) =>
+        isSessionLiveWithRetry(probePage, { ...sessionProbe, ...manualHandoffProbeRetry }),
       reason: "captcha",
       sendInteraction,
       timeoutSeconds: 1800,

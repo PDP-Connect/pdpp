@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { EmittedMessage } from "@pdpp/connector-protocol";
 import type { BrowserContext, Page } from "playwright";
+import { manualBrowserLogin } from "./browser-handoff.ts";
 import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
@@ -14,6 +15,7 @@ import {
   closeBrowserContextPagesExcept,
   closeBrowserPage,
   composeNormalizedTerminalError,
+  createBrowserSurfaceAssistanceLifecycle,
   createConnectorFailure,
   decorateBrowserManualAction,
   describeUnexpectedFailure,
@@ -149,6 +151,65 @@ test("closeBrowserPage ignores remote target cleanup errors", async () => {
 
   assert.equal(await closeBrowserPage(page), false);
   assert.equal(closeCalls, 1);
+});
+
+test("a self-resolved browser handoff registers before emission and unregisters after terminal completion", async () => {
+  const emitted: Array<{ assistance_request_id?: string }> = [];
+  const completions: Array<{ id: string; status: string }> = [];
+  const registrations: string[] = [];
+  const unregistrations: string[] = [];
+  const lifecycleSteps: string[] = [];
+  const readinessPage = {
+    close: () => Promise.resolve(),
+  } as Page;
+  const ownerPage = {
+    context: () => ({
+      newPage: () => Promise.resolve(readinessPage),
+    }),
+  } as Page;
+  const lifecycle = createBrowserSurfaceAssistanceLifecycle({
+    assist: (request) => {
+      lifecycleSteps.push("emit");
+      emitted.push(request);
+      return Promise.resolve(request.assistance_request_id ?? "missing");
+    },
+    completeAssistance: (id, status) => {
+      lifecycleSteps.push(`complete:${status}`);
+      completions.push({ id, status });
+      return Promise.resolve();
+    },
+    nextAssistanceRequestId: () => "assist_streamed_login",
+    page: ownerPage,
+    prepareTarget: ({ interactionId }) => {
+      lifecycleSteps.push("register");
+      registrations.push(interactionId);
+      return Promise.resolve({ interactionId, registered: true });
+    },
+    unregisterTarget: ({ interactionId }) => {
+      lifecycleSteps.push("unregister");
+      unregistrations.push(interactionId);
+      return Promise.resolve(true);
+    },
+  });
+
+  await manualBrowserLogin({
+    assist: lifecycle.assist,
+    completeAssistance: lifecycle.complete,
+    isProbeSuccessful: (ready: boolean) => ready,
+    message: "Finish sign-in in the secure browser. PDPP continues automatically.",
+    page: ownerPage,
+    probe: (): Promise<boolean> => Promise.resolve(false),
+    readinessProbe: (): Promise<boolean> => Promise.resolve(true),
+    sendInteraction: () => Promise.reject(new Error("manual interaction must not run")),
+  });
+  await lifecycle.close();
+
+  assert.deepEqual(registrations, ["assist_streamed_login"]);
+  assert.equal(emitted.length, 1);
+  assert.equal(emitted[0]?.assistance_request_id, "assist_streamed_login");
+  assert.deepEqual(completions, [{ id: "assist_streamed_login", status: "resolved" }]);
+  assert.deepEqual(unregistrations, ["assist_streamed_login"]);
+  assert.deepEqual(lifecycleSteps, ["register", "emit", "complete:resolved", "unregister"]);
 });
 
 test("closeBrowserPage abandons a wedged remote target close after the deadline", async () => {

@@ -655,7 +655,12 @@ function makePageBlockedButAlreadyLive(): Page {
     waitFor: (): Promise<void> => Promise.reject(new Error("Timeout waiting for locator")),
   };
   const nav = makeNavigation();
-  const fake: Pick<Page, "evaluate" | "goto" | "locator" | "url"> = {
+  const fake: Pick<Page, "close" | "context" | "evaluate" | "goto" | "locator" | "url"> = {
+    close: (): Promise<void> => Promise.resolve(),
+    context: (): BrowserContext =>
+      ({
+        newPage: (): Promise<Page> => Promise.resolve(fake as Page),
+      }) as BrowserContext,
     evaluate(): ReturnType<Page["evaluate"]> {
       if (new URL(nav.url()).origin !== REDDIT_JSON_ORIGIN) {
         return Promise.resolve({ status: 0 });
@@ -700,7 +705,7 @@ test("ensureRedditSession self-resolves the Cloudflare-blocked handoff via assis
     assert.deepEqual(assistCalls[0], {
       attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
       message:
-        "Reddit login page did not render expected inputs and no Cloudflare challenge was detected (the page may have changed). Log in to reddit.com in the browser window and re-run.",
+        "Reddit login page did not render expected inputs and no Cloudflare challenge was detected (the page may have changed). Log in to reddit.com in the secure browser. PDPP continues automatically when the session is ready.",
       owner_action: "operate_attachment",
       progress_posture: "blocked",
       response_contract: "none",
