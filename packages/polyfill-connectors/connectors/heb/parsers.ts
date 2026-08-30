@@ -674,17 +674,40 @@ export function parseOrderDetailDom(html: string): OrderDetail | null {
 //
 // Matched structurally on the incident-report field set rather than on the
 // prose, which is localized and has changed before. `errorCode` alone is too
-// generic to key on: H-E-B's own API errors use that name too, so require the
-// `incidentId` + `hostName` pair that only Imperva's report carries.
+// generic to key on: H-E-B's own API errors use that name too, so require
+// `incidentId` PLUS a second Imperva-only field that a normal page never
+// carries alongside it.
+//
+// Two such corroborating fields are observed, and which one appears depends on
+// the edge that served the block:
+//   - `hostName`  — the ~650-byte report seen against /my-account/order-history
+//                   on 2026-08-20 (the shape this detector was written for).
+//   - `proxyId`   — the raw JSON body seen against /my-account/your-orders,
+//                   `{"errorCode":"15","errorDescription":"Incapsula incident
+//                   ID: ...","incidentId":"...","proxyId":"..."}`, with no
+//                   `hostName` field at all. Playwright's `page.content()`
+//                   wraps a non-HTML response body in a synthetic
+//                   `<html><body><pre>…</pre></body></html>` shell, so the JSON
+//                   still appears verbatim.
+//
+// Requiring `incidentId` + (`hostName` OR `proxyId`) keeps the original pair's
+// precision — a page mentioning only `errorCode`, or only `incidentId`, still
+// does not fire — while covering both observed bodies with ONE predicate. The
+// byte bound stays: a real H-E-B page is never this small, which is what stops
+// a large page that happens to quote these field names from matching.
 const IMPERVA_INCIDENT_ID_RE = /"incidentId"\s*:/;
 const IMPERVA_HOST_NAME_RE = /"hostName"\s*:/;
+const IMPERVA_PROXY_ID_RE = /"proxyId"\s*:/;
 const IMPERVA_INCIDENT_MAX_BYTES = 4000;
 
 function isImpervaIncidentReport(html: string): boolean {
   if (html.length > IMPERVA_INCIDENT_MAX_BYTES) {
     return false;
   }
-  return IMPERVA_INCIDENT_ID_RE.test(html) && IMPERVA_HOST_NAME_RE.test(html);
+  if (!IMPERVA_INCIDENT_ID_RE.test(html)) {
+    return false;
+  }
+  return IMPERVA_HOST_NAME_RE.test(html) || IMPERVA_PROXY_ID_RE.test(html);
 }
 
 export function isIncapsulaBlocked(html: string): boolean {

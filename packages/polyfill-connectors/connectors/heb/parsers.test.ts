@@ -634,9 +634,41 @@ test("an Imperva incident report sets the block flag the classifier branches on 
 
 test("isIncapsulaBlocked does not fire on a real page that merely mentions incidentId", () => {
   // H-E-B's own API error envelopes use `errorCode`; only Imperva's report
-  // carries the incidentId+hostName pair, and a real page is never this small.
+  // carries incidentId plus a corroborating field, and a real page is never
+  // this small.
   const realPage = `<html><body><h3>Order history</h3><div data-testid="order-list">${"x".repeat(5000)}<span>"errorCode" : "15"</span></div></body></html>`;
   assert.equal(isIncapsulaBlocked(realPage), false);
+});
+
+// The second observed JSON body, served against /my-account/your-orders:
+// incidentId + proxyId, with NO hostName field. The hostName-only predicate
+// returned false here, so this shape reached the zero-order path and was
+// misreported as selector_drift — the same misclassification the hostName
+// shape caused, from a different edge.
+test("isIncapsulaBlocked detects the incidentId+proxyId JSON body that carries no hostName", () => {
+  const html = fixture("incapsula-json-block.html");
+  assert.ok(!html.includes('"hostName"'), "premise: this fixture genuinely has no hostName field");
+  assert.equal(isIncapsulaBlocked(html), true);
+});
+
+// Discriminating pair for the widened predicate. `incidentId` alone must not
+// fire: widening to `incidentId + (hostName OR proxyId)` must not collapse
+// into "incidentId is enough", which would let any small page quoting that one
+// field be classified as bot protection.
+test("isIncapsulaBlocked requires a corroborating field, not incidentId alone", () => {
+  const incidentIdOnly = `<html><body><pre>{"errorCode":"15","incidentId":"123456789012345678-987654321098765432"}</pre></body></html>`;
+  assert.equal(isIncapsulaBlocked(incidentIdOnly), false);
+
+  const proxyIdOnly = `<html><body><pre>{"errorCode":"15","proxyId":"abcdef12"}</pre></body></html>`;
+  assert.equal(isIncapsulaBlocked(proxyIdOnly), false);
+});
+
+// The byte bound is what stops a large real page that happens to quote both
+// field names from being called a block. Widening the field set must not
+// widen the size envelope.
+test("the incidentId+proxyId shape stays bounded by the incident-report size limit", () => {
+  const oversized = `<html><body><pre>{"errorCode":"15","incidentId":"1-2","proxyId":"abcdef12"}${"x".repeat(5000)}</pre></body></html>`;
+  assert.equal(isIncapsulaBlocked(oversized), false);
 });
 
 test("isIncapsulaBlocked is false for a legitimate empty terminal page (has h3/breadcrumb/testid)", () => {
