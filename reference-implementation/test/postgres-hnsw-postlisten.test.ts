@@ -340,6 +340,147 @@ if (POSTGRES_URL) {
       await assert.rejects(initPostgresStorage({ backend: "postgres", databaseUrl: url }), RE_INCOMPATIBLE_SCHEMA);
     });
   });
+
+  // A hot-source index is per-connection: its whole value is the partial
+  // predicate pinning it to ONE connector_instance_id. An index built for a
+  // different connection is valid, is genuinely HNSW, and carries the right
+  // dimension and operator class — so every check except the identity
+  // comparison accepts it, while the queries it is supposed to accelerate scan
+  // unindexed. This is the "wrong hot-source identity" case the R1 review asked
+  // for and the R2 review recorded as still untested (P2-1).
+  test("a hot-source HNSW index built for the wrong connector identity is dropped and rebuilt", async () => {
+    await withTempDatabase(async (url) => {
+      // Make one connection "hot" without seeding 10k rows.
+      const previousMinRows = process.env.PDPP_PG_SEMANTIC_HOT_INDEX_MIN_ROWS;
+      process.env.PDPP_PG_SEMANTIC_HOT_INDEX_MIN_ROWS = "1";
+      try {
+        await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+
+        const HOT_CONNECTOR = "hotconn";
+        const HOT_INSTANCE = "cin_hot0001";
+        const OTHER_INSTANCE = "cin_other999";
+        const embedding = JSON.stringify(Array.from({ length: 384 }, (_, i) => (i % 7) / 7));
+
+        // After the pgvector migration `embedding` is a `vector`, not JSONB.
+        await postgresQuery(
+          `INSERT INTO semantic_search_blob (connector_id, connector_instance_id, scope_key, record_key, embedding)
+           VALUES ($1, $2, $3, $4, $5::vector)`,
+          [HOT_CONNECTOR, HOT_INSTANCE, '["messages","body"]', "rec_hot_1", embedding]
+        );
+        await postgresQuery(
+          `INSERT INTO retained_size_stream (connector_instance_id, connector_id, stream, record_count, dirty)
+           VALUES ($1, $2, $3, $4, 0)`,
+          [HOT_INSTANCE, HOT_CONNECTOR, "messages", 1]
+        );
+
+        // Learn the exact index name from a clean maintenance pass rather than
+        // reimplementing semanticHotHnswIndexName's slug/truncation rules here;
+        // a hand-derived name that silently missed would make this test pass
+        // vacuously against no index at all.
+        await runPostgresSemanticHnswMaintenance();
+        const created = await postgresQuery<{ name: string }>(
+          `SELECT idx.relname AS name
+             FROM pg_class idx
+             JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+            WHERE ns.nspname = current_schema()
+              AND idx.relname LIKE 'idx_pg_semantic_hnsw_hot_%'`
+        );
+        assert.equal(created.rowCount, 1, "the hot path built exactly one index for the hot connection");
+        const indexName = created.rows[0]?.name ?? "";
+
+        // Replace it with an index that is correct in every respect EXCEPT the
+        // identity it is pinned to.
+        await postgresQuery(`DROP INDEX ${indexName}`);
+        await postgresQuery(
+          `CREATE INDEX ${indexName} ON semantic_search_blob
+             USING hnsw ((embedding::vector(384)) vector_cosine_ops)
+             WHERE connector_instance_id = '${OTHER_INSTANCE}'
+               AND vector_dims(embedding) = 384`
+        );
+
+        const planted = await postgresQuery<{ valid: boolean; definition: string }>(
+          `SELECT ix.indisvalid AS valid, pg_get_indexdef(idx.oid) AS definition
+             FROM pg_class idx
+             JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+             JOIN pg_index ix ON ix.indexrelid = idx.oid
+            WHERE ns.nspname = current_schema()
+              AND idx.relname = $1`,
+          [indexName]
+        );
+        // Guard the test's own premise: this must be the hard case — a valid,
+        // genuinely-HNSW, correctly-dimensioned index that is wrong ONLY in
+        // whose rows it covers.
+        assert.equal(planted.rows[0]?.valid, true, "the planted wrong-identity index is valid");
+        const plantedDefinition = planted.rows[0]?.definition ?? "";
+        assert.ok(plantedDefinition.includes("hnsw"), `planted index is genuinely HNSW: ${plantedDefinition}`);
+        assert.ok(plantedDefinition.includes("vector(384)"), `planted index is 384-dimensional: ${plantedDefinition}`);
+        assert.ok(
+          plantedDefinition.includes("vector_cosine_ops"),
+          `planted index uses cosine ops: ${plantedDefinition}`
+        );
+        assert.ok(
+          plantedDefinition.includes(OTHER_INSTANCE),
+          `planted index is pinned to the WRONG connection: ${plantedDefinition}`
+        );
+
+        const logs: string[] = [];
+        await runPostgresSemanticHnswMaintenance({ log: (line) => logs.push(line) });
+
+        // THE DISCRIMINATING ORACLE. The rebuild's CREATE INDEX derives its
+        // predicate straight from `row.connector_instance_id`, independently of
+        // `semanticHotHnswPredicate` — so asserting only that the final index
+        // looks right passes even when the identity comparison is removed
+        // entirely (verified: that mutant survives a rebuilt-shape-only
+        // assertion). What a broken identity check actually changes is whether
+        // the wrong index is RECOGNISED as unusable, so assert on the drop
+        // decision and its stated reason.
+        assert.ok(
+          logs.some((line) => line.includes("dropping unusable hot-source index") && line.includes(indexName)),
+          `the wrong-identity index was recognised as unusable and dropped: ${logs.join(" | ")}`
+        );
+        assert.ok(
+          logs.some((line) => line.includes(OTHER_INSTANCE) || line.includes("predicate")),
+          `the drop names the predicate mismatch as the reason, not something else: ${logs.join(" | ")}`
+        );
+
+        const repaired = await postgresQuery<{ definition: string }>(
+          `SELECT pg_get_indexdef(idx.oid) AS definition
+             FROM pg_class idx
+             JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+            WHERE ns.nspname = current_schema()
+              AND idx.relname = $1`,
+          [indexName]
+        );
+        assert.equal(repaired.rowCount, 1, "exactly one hot-source index remains after repair");
+        const definition = repaired.rows[0]?.definition ?? "";
+        assert.ok(definition.includes(HOT_INSTANCE), `repaired index is pinned to the hot connection: ${definition}`);
+        assert.ok(
+          !definition.includes(OTHER_INSTANCE),
+          `the wrong-identity predicate is gone, not merely appended to: ${definition}`
+        );
+        assert.ok(definition.includes("vector(384)"), `repaired index is 384-dimensional: ${definition}`);
+        assert.ok(definition.includes("vector_cosine_ops"), `repaired index uses cosine ops: ${definition}`);
+
+        // Second pass over the now-correct index must be a no-op. This is the
+        // half a removed identity comparison actually breaks: with the
+        // comparison gone, the expected predicate no longer matches the
+        // correctly-rebuilt index either, so maintenance drops and rebuilds it
+        // on every startup instead of leaving it alone.
+        const secondPassLogs: string[] = [];
+        await runPostgresSemanticHnswMaintenance({ log: (line) => secondPassLogs.push(line) });
+        assert.ok(
+          !secondPassLogs.some((line) => line.includes("dropping unusable hot-source index")),
+          `a correct hot-source index is left alone on the next pass: ${secondPassLogs.join(" | ")}`
+        );
+      } finally {
+        if (previousMinRows === undefined) {
+          delete process.env.PDPP_PG_SEMANTIC_HOT_INDEX_MIN_ROWS;
+        } else {
+          process.env.PDPP_PG_SEMANTIC_HOT_INDEX_MIN_ROWS = previousMinRows;
+        }
+      }
+    });
+  });
 } else {
   test("Postgres HNSW post-listen tests (skipped: PDPP_TEST_POSTGRES_URL unset)", { skip: true }, () => {
     // skip
