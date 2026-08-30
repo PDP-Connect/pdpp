@@ -25,6 +25,10 @@ import { readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isMainModule } from "@pdpp/connector-protocol";
+import type {
+  AssistanceCompletionStatus,
+  AssistanceRequest,
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 import type { BrowserContext, Locator, Page } from "playwright";
 import { ensureUsaaSession } from "../../src/auto-login/usaa.ts";
 import {
@@ -3568,22 +3572,36 @@ if (isMainModule(import.meta.url)) {
     auth: { kind: "env", required: ["USAA_USERNAME", "USAA_PASSWORD"] },
     browser: { profileName: "usaa" },
     async ensureSession({
+      assist,
       capture,
+      completeAssistance,
       context,
       credentials,
       onCredentialSubmit,
       page,
       sendInteraction,
     }: {
+      assist?: (req: AssistanceRequest) => Promise<string>;
       capture?: EmitDeps["capture"];
+      completeAssistance?: (
+        assistanceRequestId: string,
+        status: AssistanceCompletionStatus,
+        extra?: { message?: string }
+      ) => Promise<void>;
       context: BrowserContext;
       credentials: Readonly<Record<string, string>>;
       onCredentialSubmit: () => void;
       page: Page;
       sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
     }): Promise<void> {
+      // Forwarding `assist`/`completeAssistance` lets the manual-login handoffs
+      // self-resolve (see `ensureUsaaSession`'s `requestManualLoginRecovery`
+      // calls) instead of always requiring the owner's manual "Continue
+      // collection" click.
       await ensureUsaaSession({
+        ...(assist ? { assist } : {}),
         capture: capture ?? null,
+        ...(completeAssistance ? { completeAssistance } : {}),
         context,
         credentials,
         onCredentialSubmit,

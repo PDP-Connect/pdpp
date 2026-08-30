@@ -661,6 +661,43 @@ test("ensureChaseSession hands off when optional credentials are absent", async 
   });
 });
 
+test("ensureChaseSession self-resolves the no-credentials manual handoff via assist/completeAssistance when the connector's own probe proves the session is live, without ever sending a manual_action interaction", async () => {
+  await withoutChaseCredentials(async () => {
+    // First probe call (ensureChaseSession's own initial check) reports not
+    // live; every call after that (manualBrowserLogin's self-probe) reports
+    // live — modeling the owner completing sign-in in the streaming companion
+    // before any click-gated interaction would even be requested.
+    let probeCalls = 0;
+    const { page } = makeLivePage(() => {
+      probeCalls += 1;
+      return probeCalls > 1;
+    });
+    const context = makeLiveContext(page);
+    const assistCalls: unknown[] = [];
+    const completions: { id: string; status: string }[] = [];
+
+    const ok = await ensureChaseSession({
+      assist: (req) => {
+        assistCalls.push(req);
+        return Promise.resolve("assist_req_chase_1");
+      },
+      completeAssistance: (id, status) => {
+        completions.push({ id, status });
+        return Promise.resolve();
+      },
+      context,
+      page,
+      sendInteraction(): Promise<InteractionResponse> {
+        throw new Error("sendInteraction must not be called when the self-probe resolves the assistance");
+      },
+    });
+
+    assert.equal(ok, true);
+    assert.equal(assistCalls.length, 1);
+    assert.deepEqual(completions, [{ id: "assist_req_chase_1", status: "resolved" }]);
+  });
+});
+
 test("the identity-challenge copy alone never dispatches a code when the delivery option is absent", async () => {
   // "Confirm Your Identity" also appears on Chase's interstitial and error
   // variants of that page. Clicking a delivery option is what makes Chase send

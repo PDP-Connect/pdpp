@@ -302,6 +302,48 @@ test("ensureVenmoSession: hands off to manual_action when no credentials are sav
   });
 });
 
+test("ensureVenmoSession: forwarding assist/completeAssistance to the no-credentials manual handoff is a documented no-op — the owner's click is still required (no safe self-resolve probe exists for Venmo)", async () => {
+  // Unlike reddit/usaa/chase, Venmo's only liveness probe (probeVenmoAccount)
+  // must navigate to venmo.com for CORS, and every manual handoff here
+  // deliberately keeps the page on id.venmo.com so an in-progress
+  // captcha/OTP screen is not destroyed (see waitForManualLogin's doc and the
+  // production incidents it cites). So `assist`/`completeAssistance` are
+  // threaded through to the `manualBrowserLogin` call site, but
+  // `isProbeSuccessful` is intentionally NOT — and `manualBrowserLogin` only
+  // invokes `assist` at all when BOTH are present together. This proves that
+  // wiring is a true no-op here: neither hook fires, and the click-gated
+  // sendInteraction path still runs exactly as before this change.
+  await withoutVenmoCredentials(async () => {
+    const { page } = makeProbePage(false);
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const assistCalls: unknown[] = [];
+    const completions: { id: string; status: string }[] = [];
+
+    const result = await ensureVenmoSession({
+      assist: (req) => {
+        assistCalls.push(req);
+        return Promise.resolve("assist_req_venmo_1");
+      },
+      completeAssistance: (id, status) => {
+        completions.push({ id, status });
+        return Promise.resolve();
+      },
+      page,
+      sendInteraction,
+    });
+
+    assert.equal(result, null);
+    // manualBrowserLogin gates its self-resolve block on `assist &&
+    // isProbeSuccessful` together — Venmo's call site supplies only `assist`,
+    // so neither hook is ever invoked; the legacy click-first path is
+    // unchanged.
+    assert.equal(assistCalls.length, 0);
+    assert.deepEqual(completions, []);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.kind, "manual_action");
+  });
+});
+
 test("ensureVenmoSession: ignores provider credential environment variables and uses the setup bundle", async () => {
   await withVenmoCredentials(async () => {
     const { page } = makeProbePage(false);
