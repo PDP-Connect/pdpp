@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import test from "node:test";
 
 import { emitSpineEvent } from "../lib/spine.ts";
@@ -15,6 +16,7 @@ import { startServer } from "../server/index.ts";
 import { closePostgresStorage } from "../server/postgres-storage.ts";
 import { ingestRecord } from "../server/records.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 type SourceKind = "connector" | "provider_native";
 
@@ -37,6 +39,18 @@ interface TestServer {
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const CLIENT_ID = "concert_recommendation_app";
 const OWNER_ID = "owner_local";
+
+function withIsolatedPostgresJourney<T>(journey: (databaseUrl: string) => Promise<T>): Promise<T> {
+  assert.ok(POSTGRES_URL, "PostgreSQL journeys require the dedicated test listener URL");
+  return withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: POSTGRES_URL,
+      databaseName: `pdpp_test_sourcekind_${randomBytes(4).toString("hex")}_1`,
+    },
+    journey
+  ) as Promise<T>;
+}
 
 function runtimeManifest(connectorKey: string): JsonObject {
   return {
@@ -387,7 +401,9 @@ test("source.kind is provenance while local connector storage fulfills reads on 
   assert.ok(POSTGRES_URL);
   for (const kind of ["connector", "provider_native"] as const) {
     // biome-ignore lint/performance/noAwaitInLoops: The runtime backend is process-global, so these journeys must be serialized.
-    await t.test(kind, () => runConsentGrantRead({ databaseUrl: POSTGRES_URL, name: "postgres" }, kind));
+    await t.test(kind, () =>
+      withIsolatedPostgresJourney((databaseUrl) => runConsentGrantRead({ databaseUrl, name: "postgres" }, kind))
+    );
   }
 });
 
@@ -395,10 +411,11 @@ test("configured fulfillment default is identical for connector and provider_nat
   skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL is required",
 }, async () => {
   assert.ok(POSTGRES_URL);
-  const connector = await approveConfiguredDefault({ databaseUrl: POSTGRES_URL, name: "postgres" }, "connector");
-  const providerNative = await approveConfiguredDefault(
-    { databaseUrl: POSTGRES_URL, name: "postgres" },
-    "provider_native"
+  const connector = await withIsolatedPostgresJourney((databaseUrl) =>
+    approveConfiguredDefault({ databaseUrl, name: "postgres" }, "connector")
+  );
+  const providerNative = await withIsolatedPostgresJourney((databaseUrl) =>
+    approveConfiguredDefault({ databaseUrl, name: "postgres" }, "provider_native")
   );
   assert.deepEqual(providerNative, connector);
 });
