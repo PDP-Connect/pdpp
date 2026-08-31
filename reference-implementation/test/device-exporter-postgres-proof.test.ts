@@ -23,12 +23,14 @@ import {
   postgresQuery,
   withPostgresTransaction,
 } from "../server/postgres-storage.ts";
-import { ingestRecord, setClientEventEnqueueHook } from "../server/records.ts";
+import { drainConnectorInstanceIndexWorkForTests, ingestRecord, setClientEventEnqueueHook } from "../server/records.ts";
+import { runSearchIndexDirtyReconcileRound } from "../server/search-index-reconcile.ts";
 import { makeLocalTransformerBackend } from "../server/search-semantic.ts";
 import {
   advancePostgresDeviceIngestPrefix,
   createPostgresDeviceExporterStore,
 } from "../server/stores/device-exporter-store.ts";
+import { isSearchIndexScopeDirty } from "../server/stores/search-index-dirty-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
@@ -939,7 +941,7 @@ if (DEDICATED_POSTGRES_URL) {
     });
   });
 
-  test("PostgreSQL retry rereads a newer writer and repairs derived facts without a third version or notification", async () => {
+  test("PostgreSQL deferred semantic failure accepts durable state and reconcile preserves a newer writer", async () => {
     let failFirst = true;
     const backend = deterministicBackend({
       onEmbed: (text) => {
@@ -966,12 +968,21 @@ if (DEDICATED_POSTGRES_URL) {
             batch,
             authHeaders(device.device_token)
           );
-          assert.equal(first.status, 503, JSON.stringify(first.body));
-          assert.equal(
-            requiredString(requiredJsonRecord(first.body.error, "first ingest error"), "code", "first ingest error"),
-            "device_ingest_retryable"
-          );
+          // Durable acknowledgement is intentionally independent from the
+          // deferred index lane. Drain the lane before asserting the fault's
+          // dirty-scope consequence; the HTTP receipt itself must stay 201.
+          assert.equal(first.status, 201, JSON.stringify(first.body));
           assert.doesNotMatch(JSON.stringify(first.body), PRIVATE_PG_SEMANTIC_SENTINEL);
+          await drainConnectorInstanceIndexWorkForTests();
+          assert.equal(
+            await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+            true,
+            "the failed deferred publish leaves the durable scope for reconcile"
+          );
+
+          // The barrier above proves the first publish already failed before
+          // the direct writer commits. This adversarial order distinguishes
+          // reconcile of the authoritative row from a stale batch retry.
           await ingestRecord(
             { connector_id: "codex", connector_instance_id: device.connector_instance_id },
             {
@@ -987,6 +998,7 @@ if (DEDICATED_POSTGRES_URL) {
             }
           );
           assert.equal(notifications.length, 2);
+          await drainConnectorInstanceIndexWorkForTests();
           const directCurrent = await postgresQuery(
             `SELECT record_json, emitted_at, cursor_value, semantic_time
                FROM records WHERE connector_instance_id = $1 AND stream = 'messages' AND record_key = 'same-key'`,
@@ -997,26 +1009,35 @@ if (DEDICATED_POSTGRES_URL) {
             new Date(requiredFirstRow(directCurrent.rows, "direct current record").emitted_at).toISOString(),
             "2026-07-16T00:00:01.000Z"
           );
-          const retry = await postJson(
+          await runSearchIndexDirtyReconcileRound({ maxDurationMs: 5000, pageSize: 100 });
+          assert.equal(
+            await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+            false,
+            "the existing dirty-scope reconcile converges after semantic capacity returns"
+          );
+          const callsBeforeReplay = backend.calls();
+          const replay = await postJson(
             `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
             batch,
             authHeaders(device.device_token)
           );
-          assert.equal(retry.status, 201, JSON.stringify(retry.body));
+          assert.equal(replay.status, 201, JSON.stringify(replay.body));
+          assert.deepEqual(replay.body, first.body);
+          assert.equal(backend.calls(), callsBeforeReplay, "accepted replay must not repeat semantic work");
           const durable = await postgresQuery(
             `SELECT version, record_json, cursor_value, primary_key_text, semantic_time
                FROM records WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3`,
             [device.connector_instance_id, "messages", "same-key"]
           );
-          assert.equal(Number(requiredFirstRow(durable.rows, "durable repaired record").version), 2);
-          assert.equal(requiredFirstRow(durable.rows, "durable repaired record").record_json.content, "payload-b");
+          assert.equal(Number(requiredFirstRow(durable.rows, "durable authoritative record").version), 2);
+          assert.equal(requiredFirstRow(durable.rows, "durable authoritative record").record_json.content, "payload-b");
           assert.equal(
-            requiredFirstRow(durable.rows, "durable repaired record").cursor_value,
+            requiredFirstRow(durable.rows, "durable authoritative record").cursor_value,
             "2026-07-16T00:00:01.000Z"
           );
-          assert.equal(requiredFirstRow(durable.rows, "durable repaired record").primary_key_text, "same-key");
+          assert.equal(requiredFirstRow(durable.rows, "durable authoritative record").primary_key_text, "same-key");
           assert.equal(
-            requiredFirstRow(durable.rows, "durable repaired record").semantic_time,
+            requiredFirstRow(durable.rows, "durable authoritative record").semantic_time,
             "2026-07-16T00:00:01.000Z"
           );
           assert.equal(notifications.length, 2);
@@ -1025,7 +1046,7 @@ if (DEDICATED_POSTGRES_URL) {
               WHERE connector_instance_id = $1 AND stream = 'messages' AND record_key = 'same-key' AND field = 'content'`,
             [device.connector_instance_id]
           );
-          assert.equal(requiredFirstRow(lexical.rows, "repaired lexical record").value, "payload-b");
+          assert.equal(requiredFirstRow(lexical.rows, "authoritative lexical record").value, "payload-b");
           const semantic = await postgresQuery(
             `SELECT embedding::text AS embedding FROM semantic_search_blob
               WHERE connector_instance_id = $1 AND scope_key LIKE '["messages",%' AND record_key = 'same-key'`,
@@ -1033,7 +1054,7 @@ if (DEDICATED_POSTGRES_URL) {
           );
           assert.equal(semantic.rowCount, 1);
           assert.match(
-            requiredFirstRow(semantic.rows, "repaired semantic record").embedding,
+            requiredFirstRow(semantic.rows, "authoritative semantic record").embedding,
             SEMANTIC_VECTOR_COMPONENT
           );
         } finally {
