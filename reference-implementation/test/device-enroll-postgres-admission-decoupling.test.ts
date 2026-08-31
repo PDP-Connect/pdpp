@@ -25,6 +25,7 @@ import test from "node:test";
 import pg from "pg";
 
 import { COLLECTOR_PROTOCOL_VERSION } from "../server/collector-protocol.ts";
+import { makeConnectorInstanceSourceBindingKey } from "../server/connector-instance-utils.ts";
 import {
   ConnectorInstanceAdmissionError,
   connectorInstanceAdvisoryLockKey,
@@ -105,6 +106,28 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+// Bounds the D9 rendezvous hook's discovery wait so a fixture/product
+// mismatch that stops the hook from ever firing (as `seedD9ExactDuplicateClass`
+// did before its stable-key fix) fails this one test with a diagnostic
+// message, instead of hanging until the external per-file watchdog kills the
+// whole process and discards every test that already passed in the run.
+async function awaitD9DiscoveryRendezvous(discovered: Promise<void>, label: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      discovered,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label}: discovery hook was never invoked — the seeded class was not found`)),
+          15_000
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function seedD9ExactDuplicateClass({
   canonicalId,
   deviceId,
@@ -127,6 +150,16 @@ async function seedD9ExactDuplicateClass({
     local_binding_name: localBindingName,
     source_instance_id: sourceInstanceId,
   };
+  // The canonical row must carry the STABLE key (hash of {kind,
+  // local_binding_name} alone) — findExactPostgresLocalDeviceBindingClass
+  // only recognizes a canonical row whose stored source_binding_key equals
+  // this reduction, matching the post-enrollment live shape. Legacy rows
+  // keep the obsolete full-binding-hash key so they remain distinguishable
+  // duplicates under the same source_binding_json.
+  const stableBindingKey = makeConnectorInstanceSourceBindingKey({
+    kind: "local_device",
+    local_binding_name: localBindingName,
+  });
   await postgresQuery(
     `INSERT INTO connectors(connector_id, manifest) VALUES('codex', '{"connector_id":"codex","streams":[]}'::jsonb) ON CONFLICT DO NOTHING`
   );
@@ -145,9 +178,11 @@ async function seedD9ExactDuplicateClass({
           id,
           ownerSubjectId,
           localBindingName,
-          createHash("sha256")
-            .update(`${index}:${JSON.stringify(binding)}`)
-            .digest("hex"),
+          id === canonicalId
+            ? stableBindingKey
+            : createHash("sha256")
+                .update(`${index}:${JSON.stringify(binding)}`)
+                .digest("hex"),
           JSON.stringify(binding),
           now,
         ]
@@ -2065,7 +2100,7 @@ test("D9 adversarial (Postgres): binding mutation after discovery is revalidated
           rsPort: 0,
           storageBackend: "postgres",
         });
-        await discovered.promise;
+        await awaitD9DiscoveryRendezvous(discovered.promise, "binding mutation after discovery");
         await createPostgresConnectorInstanceStore().updateSourceBindingPatch(legacyId, {
           sourceBindingPatch: { source_instance_id: "dsrc_d9_binding_changed" },
           updatedAt: new Date().toISOString(),
@@ -2154,7 +2189,7 @@ test("D9 adversarial (Postgres): state mutation after discovery rejects the lock
           rsPort: 0,
           storageBackend: "postgres",
         });
-        await discovered.promise;
+        await awaitD9DiscoveryRendezvous(discovered.promise, "state mutation after discovery");
         await createPostgresConnectorStateStore().putState(
           { connectorId: "codex", connectorInstanceId: canonicalId },
           { messages: { cursor: "canonical" } }
@@ -2247,7 +2282,7 @@ test("D9 adversarial (Postgres): a different-stream state mutation after discove
           rsPort: 0,
           storageBackend: "postgres",
         });
-        await discovered.promise;
+        await awaitD9DiscoveryRendezvous(discovered.promise, "different-stream state mutation after discovery");
         // The canonical identity now authoritatively owns a DIFFERENT stream
         // than the one the legacy identity owns. A same-stream-only collision
         // check would miss this and let the merge combine both state
@@ -2345,7 +2380,10 @@ test("D9 adversarial (Postgres): a different-stream grant-scoped state mutation 
           rsPort: 0,
           storageBackend: "postgres",
         });
-        await discovered.promise;
+        await awaitD9DiscoveryRendezvous(
+          discovered.promise,
+          "different-stream grant-scoped state mutation after discovery"
+        );
         // Same race, but the state is owned by the grant rather than the
         // connector instance directly: the canonical identity's grant now
         // authoritatively owns a DIFFERENT stream than the legacy identity's
@@ -2461,7 +2499,7 @@ test("D9 adversarial (Postgres): a different-stream terminal-run commit after di
           rsPort: 0,
           storageBackend: "postgres",
         });
-        await discovered.promise;
+        await awaitD9DiscoveryRendezvous(discovered.promise, "different-stream terminal-run commit after discovery");
         // Drive the REAL production terminal-run writer (not the
         // createPostgresConnectorStateStore().putState helper the sibling
         // tests use) against the canonical identity, for a DIFFERENT stream
