@@ -23,6 +23,7 @@ import {
   postgresQuery,
   withPostgresTransaction,
 } from "../server/postgres-storage.ts";
+import { createAlreadyAdmittedTestDatabaseChildAttachment } from "../server/postgres-test-database-guard.ts";
 import { drainConnectorInstanceIndexWorkForTests, ingestRecord, setClientEventEnqueueHook } from "../server/records.ts";
 import { runSearchIndexDirtyReconcileRound } from "../server/search-index-reconcile.ts";
 import { __setDeviceIngestPhaseFaultHookForTest } from "../server/routes/ref-device-exporters.ts";
@@ -512,7 +513,8 @@ async function within<T>(promise: Promise<T>, timeoutMs: number, message: string
 
 async function startFailStopServerFixture(
   postgresDatabaseUrl: string,
-  mode: string
+  mode: string,
+  childAttachment: string
 ): Promise<{
   asUrl: string;
   child: import("node:child_process").ChildProcess;
@@ -530,6 +532,7 @@ async function startFailStopServerFixture(
   const child = spawn(process.execPath, [FAILSTOP_SERVER_FIXTURE], {
     env: {
       ...process.env,
+      PDPP_FAILSTOP_FIXTURE_CHILD_ATTACHMENT: childAttachment,
       PDPP_FAILSTOP_FIXTURE_DATABASE_URL: postgresDatabaseUrl,
       PDPP_FAILSTOP_FIXTURE_MODE: mode,
     },
@@ -595,6 +598,39 @@ function stopServerFixture(fixture: {
     fixture.child.kill("SIGTERM");
   }
   return awaitFixtureExit(fixture);
+}
+
+async function installAcceptedTransitionBarrier(databaseUrl: string): Promise<() => Promise<void>> {
+  const lockClass = 482_571;
+  const lockKey = 320;
+  const functionName = "pdpp_test_device_ingest_acceptance_barrier";
+  const triggerName = "pdpp_test_device_ingest_acceptance_barrier_trigger";
+  const blocker = new Pool({ connectionString: databaseUrl });
+  await blocker.query("SELECT pg_advisory_lock($1, $2)", [lockClass, lockKey]);
+  await blocker.query(`
+    CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.status = 'accepted' AND OLD.status IS DISTINCT FROM 'accepted' THEN
+        PERFORM pg_advisory_xact_lock(${lockClass}, ${lockKey});
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+  `);
+  await blocker.query(`
+    CREATE TRIGGER ${triggerName}
+      BEFORE UPDATE OF status ON device_ingest_batch_outcomes
+      FOR EACH ROW EXECUTE FUNCTION ${functionName}()
+  `);
+  return async () => {
+    try {
+      await blocker.query("SELECT pg_advisory_unlock($1, $2)", [lockClass, lockKey]);
+      await blocker.query(`DROP TRIGGER IF EXISTS ${triggerName} ON device_ingest_batch_outcomes`);
+      await blocker.query(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    } finally {
+      await blocker.end();
+    }
+  };
 }
 
 if (DEDICATED_POSTGRES_URL) {
@@ -1336,16 +1372,28 @@ if (DEDICATED_POSTGRES_URL) {
     }
   });
 
-  test("spawned server fail-stops on unconfirmed child exit and restart resumes the PostgreSQL reservation", async () => {
+  test("spawned server preserves the durable acknowledgement before deferred child fail-stop", async () => {
     await withTempPostgres(async (url) => {
       const payloadSentinel = "private-spawned-failstop-record-sentinel";
+      const timingMutation = process.env.PDPP_FAILSTOP_TIMING_MUTATION_ORACLE === "1";
       let failedServer: Awaited<ReturnType<typeof startFailStopServerFixture>> | null = null;
       let recoveryServer: Awaited<ReturnType<typeof startFailStopServerFixture>> | null = null;
+      let releaseAcceptedTransitionBarrier: (() => Promise<void>) | null = null;
       try {
-        failedServer = await startFailStopServerFixture(url, "fail");
+        const failedAttachment = await createAlreadyAdmittedTestDatabaseChildAttachment(url);
+        const recoveryAttachment = await createAlreadyAdmittedTestDatabaseChildAttachment(url);
+        failedServer = await startFailStopServerFixture(url, "fail", failedAttachment);
+        // Start the recovery child while the guarded database is still empty.
+        // Its independent process stays idle until the fail-stop child exits,
+        // then proves an accepted batch is a durable replay rather than a
+        // response emitted by the crashed process.
+        recoveryServer = await startFailStopServerFixture(url, "recover", recoveryAttachment);
         const device = await enrollDevice(failedServer.asUrl, `pg-failstop-${Date.now()}`);
         const records = [recordFor("failstop-record", payloadSentinel)];
         const batch = batchFor(device, "pg-spawned-failstop-restart", records);
+        if (timingMutation) {
+          releaseAcceptedTransitionBarrier = await installAcceptedTransitionBarrier(url);
+        }
         type InFlightResult =
           | { error: unknown; kind: "error" }
           | { kind: "response"; response: { body: HttpResponseBody; status: number } };
@@ -1357,17 +1405,55 @@ if (DEDICATED_POSTGRES_URL) {
           (response) => ({ kind: "response", response }),
           (error: unknown) => ({ error, kind: "error" })
         );
-        const failedExit = await awaitFixtureExit(failedServer, 10_000);
-        assert.deepEqual(
-          failedExit,
-          { code: 1, signal: null },
-          "unconfirmed SIGKILL receipt must fail-stop the server nonzero"
-        );
-        const interrupted = await inFlight;
-        assert.equal(interrupted.kind, "error", "the fail-stopped parent must not acknowledge the interrupted request");
-        if (interrupted.kind === "error") {
-          assert.ok(interrupted.error);
+        const failedExit = timingMutation ? await awaitFixtureExit(failedServer, 10_000) : null;
+        const acknowledged = await inFlight;
+        if (timingMutation) {
+          assert.deepEqual(
+            failedExit,
+            { code: 1, signal: null },
+            "the timing mutant must fail-stop before the accepted transition can commit"
+          );
+          assert.equal(acknowledged.kind, "error", "a pre-acceptance child fail-stop must not return 201");
+          const releaseBarrier = releaseAcceptedTransitionBarrier;
+          if (!releaseBarrier) {
+            throw new Error("timing mutation acceptance barrier was not installed");
+          }
+          await releaseBarrier();
+          releaseAcceptedTransitionBarrier = null;
+          const verify = new Pool({ connectionString: url });
+          try {
+            const processing = await verify.query(
+              "SELECT status, durable_prefix_count FROM device_ingest_batch_outcomes WHERE device_id = $1 AND batch_id = $2",
+              [device.device_id, batch.batch_id]
+            );
+            assert.deepEqual(requiredFirstRow(processing.rows, "timing-mutant processing reservation"), {
+              durable_prefix_count: 1,
+              status: "processing",
+            });
+          } finally {
+            await verify.end();
+          }
+          return;
         }
+        assert.equal(
+          acknowledged.kind,
+          "response",
+          "a post-acceptance child failure must preserve the durable acknowledgement"
+        );
+        if (acknowledged.kind === "response") {
+          assert.equal(acknowledged.response.status, 201, JSON.stringify(acknowledged.response.body));
+        }
+
+        const confirmedFailedExit = await awaitFixtureExit(failedServer, 10_000);
+        assert.deepEqual(
+          confirmedFailedExit,
+          { code: 1, signal: null },
+          "an unconfirmed SIGKILL receipt must fail-stop the server nonzero after acknowledgement"
+        );
+        assert.ok(
+          failedServer.output().includes('"event":"transformer-child-sigkill"'),
+          "the fixture must reach the child SIGKILL path after durable acceptance"
+        );
 
         const verify = new Pool({ connectionString: url });
         try {
@@ -1382,19 +1468,18 @@ if (DEDICATED_POSTGRES_URL) {
           );
           assert.deepEqual(
             {
-              changes: requiredFirstRow(processing.rows, "fail-stop processing state").changes,
-              prefix: Number(requiredFirstRow(processing.rows, "fail-stop processing state").prefix),
-              records: requiredFirstRow(processing.rows, "fail-stop processing state").records,
-              status: requiredFirstRow(processing.rows, "fail-stop processing state").status,
-              version: Number(requiredFirstRow(processing.rows, "fail-stop processing state").version),
+              changes: requiredFirstRow(processing.rows, "fail-stop accepted state").changes,
+              prefix: Number(requiredFirstRow(processing.rows, "fail-stop accepted state").prefix),
+              records: requiredFirstRow(processing.rows, "fail-stop accepted state").records,
+              status: requiredFirstRow(processing.rows, "fail-stop accepted state").status,
+              version: Number(requiredFirstRow(processing.rows, "fail-stop accepted state").version),
             },
-            { changes: 1, prefix: 1, records: 1, status: "processing", version: 1 }
+            { changes: 1, prefix: 1, records: 1, status: "accepted", version: 1 }
           );
         } finally {
           await verify.end();
         }
 
-        recoveryServer = await startFailStopServerFixture(url, "recover");
         const resumed = await postJson(
           `${recoveryServer.asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
           batch,
@@ -1430,7 +1515,10 @@ if (DEDICATED_POSTGRES_URL) {
               status: requiredFirstRow(accepted.rows, "fail-stop accepted state").status,
               version: Number(requiredFirstRow(accepted.rows, "fail-stop accepted state").version),
             },
-            { changes: 1, lexical: 1, prefix: 1, semantic: 1, status: "accepted", version: 1 }
+            // The child died while acknowledgement-independent index work was
+            // pending. The durable reply must replay exactly; reconcile owns
+            // any later projection convergence.
+            { changes: 1, lexical: 0, prefix: 1, semantic: 0, status: "accepted", version: 1 }
           );
         } finally {
           await after.end();
@@ -1443,6 +1531,7 @@ if (DEDICATED_POSTGRES_URL) {
         assert.equal(captured.includes(device.device_token), false);
         assert.equal(captured.includes("pdpp_test"), false);
       } finally {
+        await releaseAcceptedTransitionBarrier?.();
         if (failedServer?.child.exitCode === null && failedServer?.child.signalCode === null) {
           failedServer.child.kill("SIGKILL");
         }

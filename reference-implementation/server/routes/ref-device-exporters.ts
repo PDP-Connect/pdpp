@@ -2845,6 +2845,42 @@ async function processDeviceIngestBatch(
       // for throughput/scheduling. Correctness against a same-instance direct
       // writer racing this batch's publish comes from the single
       // `records.version` CAS in `maintainRecordIndexes`, not queue ordering.
+      // Deliberately NO deadline check between the last publish and
+      // `completeProcessingBatch`: once the publish loop is done the only
+      // remaining step is the status transition, and throwing there would
+      // strand a fully-durable reservation for no benefit.
+      const response = {
+        accepted_record_count: records.length,
+        batch_id: batchId,
+        body_hash: bodyHash,
+        connector_instance_id: connectorInstanceId,
+        device_id: deviceId,
+        object: "device_ingest_batch_result",
+        rejected_record_count: 0,
+        source_instance_id: sourceInstanceId,
+        status: "accepted",
+      };
+      maybeDeviceIngestStoreFault("before-complete-processing-batch");
+      await ctx.deviceExporterStore.completeProcessingBatch({
+        acceptedAt: new Date().toISOString(),
+        batchId,
+        batchSeq,
+        bodyHash,
+        connectorId,
+        connectorInstanceId,
+        deviceId,
+        getCurrentSemanticCapabilityIdentity: () => ctx.getSemanticCapabilityIdentity(),
+        httpStatus: 201,
+        manifestFingerprint: attemptContext.manifestFingerprint,
+        response,
+        semanticCapabilityIdentity: attemptContext.semanticCapabilityIdentity,
+        sourceInstanceId,
+      });
+      await maybeDeviceIngestPhaseFault("after-accepted-commit", phaseFaultRequestIdentity);
+      // Start noncritical derived work only after the accepted transition has
+      // committed. Its local-transformer child may fail-stop this process; it
+      // must therefore never race ahead of the durable acknowledgement that
+      // makes the collector's retry/replay contract safe.
       ctx
         .enqueueDeviceIndexMaintenance(connectorInstanceId, async () => {
           await mapWithConcurrency(
@@ -2879,38 +2915,6 @@ async function processDeviceIngestBatch(
               `the dirty scope remains for reconcile (code=${code})`
           );
         });
-      // Deliberately NO deadline check between the last publish and
-      // `completeProcessingBatch`: once the publish loop is done the only
-      // remaining step is the status transition, and throwing there would
-      // strand a fully-durable reservation for no benefit.
-      const response = {
-        accepted_record_count: records.length,
-        batch_id: batchId,
-        body_hash: bodyHash,
-        connector_instance_id: connectorInstanceId,
-        device_id: deviceId,
-        object: "device_ingest_batch_result",
-        rejected_record_count: 0,
-        source_instance_id: sourceInstanceId,
-        status: "accepted",
-      };
-      maybeDeviceIngestStoreFault("before-complete-processing-batch");
-      await ctx.deviceExporterStore.completeProcessingBatch({
-        acceptedAt: new Date().toISOString(),
-        batchId,
-        batchSeq,
-        bodyHash,
-        connectorId,
-        connectorInstanceId,
-        deviceId,
-        getCurrentSemanticCapabilityIdentity: () => ctx.getSemanticCapabilityIdentity(),
-        httpStatus: 201,
-        manifestFingerprint: attemptContext.manifestFingerprint,
-        response,
-        semanticCapabilityIdentity: attemptContext.semanticCapabilityIdentity,
-        sourceInstanceId,
-      });
-      await maybeDeviceIngestPhaseFault("after-accepted-commit", phaseFaultRequestIdentity);
       res.status(201).json(response);
     } catch (err) {
       // Server-log-only diagnosability, mirroring the ingest-rejection
