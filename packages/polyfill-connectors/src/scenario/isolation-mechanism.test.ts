@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -20,6 +21,10 @@ const bwrapUsable =
   process.platform === "linux" &&
   spawnSync("bwrap", ["--unshare-net", "--dev-bind", "/", "/", "true"], { stdio: "ignore", timeout: 5000 }).status ===
     0;
+
+const unshareUsable =
+  process.platform === "linux" &&
+  spawnSync("unshare", ["-r", "-n", "-m", "true"], { stdio: "ignore", timeout: 5000 }).status === 0;
 
 test("a host that denies `unshare` but ships a working bwrap still reports isolation AVAILABLE", {
   skip: !bwrapUsable,
@@ -167,3 +172,126 @@ test("spawnWithNetworkIsolation given a bare `true` DOES re-probe (documents the
     rmSync(fakeBinDir, { recursive: true, force: true });
   }
 });
+
+// ─── Pathname-UDS filesystem escape (FIX 5) — negative controls ───────────
+//
+// External review (independently reproduced): `--net`/`--unshare-net` only
+// constrains the NETWORK namespace. A native descendant the isolated child
+// spawns — `curl --unix-socket <path>`, never routed through this package's
+// JS-layer fetch/http/net patching at all — could previously still dial ANY
+// pathname UDS reachable on the shared filesystem, because the isolated
+// child's filesystem view was left completely unrestricted. Reported repro:
+// `unshare -r -n -- curl --unix-socket /tmp/foreign.sock
+// http://localhost/probe` reached a socket the isolated process was never
+// supposed to see.
+//
+// These tests are the reviewer's exact design, run against BOTH mechanisms:
+// a plain Node http server (NOT this module's own code) listens on a
+// pathname UDS the isolated child was never given — its own workspace
+// directory, passed as `filesystemBindPath`, is a SIBLING, DIFFERENT
+// directory. The isolated child then spawns native `curl --unix-socket
+// <foreign path>` — a real OS-level descendant, exactly the escape class
+// the JS-layer preload in subprocess-fetch-preloads.ts cannot see or deny.
+// Passing (closing the escape) requires BOTH: the curl connect attempt
+// fails, AND the foreign server's own hit counter — the authoritative
+// signal, since a compromised/malicious child could lie about its own exit
+// code — stays at zero.
+
+/** Starts a plain (non-preloaded, not this module's code) HTTP server on a
+ *  pathname UDS and returns a live request counter plus a close() to tear
+ *  it down. This stands in for "an unrelated parent-namespace process
+ *  listening on a UDS the isolated child should never be able to reach" —
+ *  deliberately NOT `startFetchBridgeServer` from subprocess-fetch-preloads.ts,
+ *  so this test proves the OS-layer closure, not anything about the bridge
+ *  being well-behaved. */
+function startForeignUdsServer(socketPath: string): { close: () => Promise<void>; hits: () => number } {
+  let hitCount = 0;
+  const server = createServer((_req, res) => {
+    hitCount += 1;
+    res.writeHead(200);
+    res.end("should never be reached by an isolated child");
+  });
+  rmSync(socketPath, { force: true });
+  server.listen(socketPath);
+  return {
+    hits: () => hitCount,
+    close: () =>
+      new Promise((resolve) => {
+        server.close(() => {
+          rmSync(socketPath, { force: true });
+          resolve();
+        });
+      }),
+  };
+}
+
+/** Runs `curl --unix-socket <foreignSocketPath> http://localhost/probe`
+ *  inside a `spawnWithNetworkIsolation`-wrapped child, with `workspaceDir`
+ *  (a directory that does NOT contain `foreignSocketPath`) passed as
+ *  `filesystemBindPath` — the exact shape a real scenario-verify.ts run
+ *  uses (its own evidence workspace re-exposed, everything else masked).
+ *  Resolves curl's exit code (0 only on a successful connect+response). */
+function runIsolatedCurlAgainstForeignSocket(
+  mechanism: "bwrap" | "unshare",
+  foreignSocketPath: string,
+  workspaceDir: string
+): Promise<number | null> {
+  return new Promise((resolve) => {
+    const child = spawnWithNetworkIsolation(
+      "curl",
+      ["-s", "-o", "/dev/null", "--max-time", "3", "--unix-socket", foreignSocketPath, "http://localhost/probe"],
+      { isolate: mechanism, filesystemBindPath: workspaceDir, stdio: "ignore" }
+    );
+    child.on("close", resolve);
+    child.on("error", () => resolve(-1));
+  });
+}
+
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
+  test(`[${mechanism}] a native descendant (curl --unix-socket) cannot dial a foreign pathname UDS outside filesystemBindPath`, {
+    skip: !usable,
+  }, async () => {
+    const foreignDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-foreign-"));
+    const workspaceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-workspace-"));
+    const foreignSocketPath = join(foreignDir, "foreign.sock");
+    const foreign = startForeignUdsServer(foreignSocketPath);
+    try {
+      const exitCode = await runIsolatedCurlAgainstForeignSocket(mechanism, foreignSocketPath, workspaceDir);
+      assert.notEqual(
+        exitCode,
+        0,
+        `curl must NOT succeed dialing a foreign UDS from inside ${mechanism} isolation — exit 0 means the escape is still open`
+      );
+      assert.equal(
+        foreign.hits(),
+        0,
+        `the foreign server's own hit counter is authoritative — any nonzero count means the isolated child reached it, regardless of curl's reported exit code`
+      );
+    } finally {
+      await foreign.close();
+      rmSync(foreignDir, { recursive: true, force: true });
+      rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  test(`[${mechanism}] the isolated child's OWN bridge socket, inside filesystemBindPath, stays reachable`, {
+    skip: !usable,
+  }, async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-workspace-"));
+    const bridgeSocketPath = join(workspaceDir, "bridge.sock");
+    const bridge = startForeignUdsServer(bridgeSocketPath);
+    try {
+      const exitCode = await runIsolatedCurlAgainstForeignSocket(mechanism, bridgeSocketPath, workspaceDir);
+      assert.equal(
+        exitCode,
+        0,
+        `curl must succeed dialing the bridge's own socket inside filesystemBindPath under ${mechanism} isolation — FIX 5 must not break the legitimate bridge path`
+      );
+      assert.equal(bridge.hits(), 1, "the bridge server must have received exactly the one legitimate request");
+    } finally {
+      await bridge.close();
+      rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+}
