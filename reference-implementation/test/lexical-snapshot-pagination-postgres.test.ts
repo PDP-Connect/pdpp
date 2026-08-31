@@ -46,6 +46,23 @@ interface DeviceTokenBody {
   access_token: string;
 }
 
+function withCoreSourceDeclaration<
+  T extends { connector_id: string; display_name: string; protocol_version: string; streams: unknown[] },
+>(manifest: T) {
+  return {
+    ...manifest,
+    manifest_uri: `https://implementations.example/connectors/${manifest.connector_id}`,
+    source_declaration: {
+      declaration_version: `${manifest.connector_id}-declaration-v1`,
+      display: { name: manifest.display_name },
+      protocol_version: manifest.protocol_version,
+      publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+      source: { id: `https://registry.pdpp.dev/connectors/${manifest.connector_id}`, kind: "connector" },
+      streams: manifest.streams,
+    },
+  };
+}
+
 interface LexicalRecord {
   emitted_at?: string;
   id: string;
@@ -173,7 +190,7 @@ if (POSTGRES_URL) {
     const suffix = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `pg_snap_pagination_${suffix}`;
     const term = `pgsnapterm${suffix}`;
-    const manifest = {
+    const manifest = withCoreSourceDeclaration({
       capabilities: { human_interaction: ["credentials"] },
       connector_id: connectorId,
       display_name: "Postgres Snapshot Pagination",
@@ -199,7 +216,7 @@ if (POSTGRES_URL) {
         },
       ],
       version: "1.0.0",
-    };
+    });
 
     let server: StartedServer | null = null;
     const previousDatabaseUrl = process.env.PDPP_DATABASE_URL;

@@ -672,7 +672,7 @@ if (POSTGRES_URL) {
     const suffix = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `pg_lexical_recall_${suffix}`;
     const term = `pgwindowterm${suffix}`;
-    const manifest = {
+    const manifest = withCoreSourceDeclaration({
       capabilities: { human_interaction: ["credentials"] },
       connector_id: connectorId,
       display_name: "Postgres Lexical Recall",
@@ -698,7 +698,7 @@ if (POSTGRES_URL) {
         },
       ],
       version: "1.0.0",
-    };
+    });
     let server: StartedServer | null = null;
     const priorDatabaseUrl = process.env.PDPP_DATABASE_URL;
     const priorStorageBackend = process.env.PDPP_STORAGE_BACKEND;
