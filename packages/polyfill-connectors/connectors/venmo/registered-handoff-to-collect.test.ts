@@ -76,22 +76,24 @@ function makeOwnerPage(): { page: Page; pageEvaluates: number; setLive: (live: b
 
 function makeContext(verified: boolean | "throw"): { context: BrowserContext; requests: number } {
   let requests = 0;
-  const context = {
-    request: {
-      get(): Promise<APIResponse> {
-        requests += 1;
-        if (verified === "throw") {
-          return Promise.reject(new Error("socket hang up"));
-        }
-        const response = {} as APIResponse;
-        response.json = () => Promise.resolve(verified ? { data: { user: { id: OWNER_ID } } } : null);
-        response.ok = () => verified;
-        return Promise.resolve(response);
-      },
+  const request: Pick<BrowserContext["request"], "get"> = {
+    get(): ReturnType<BrowserContext["request"]["get"]> {
+      requests += 1;
+      if (verified === "throw") {
+        return Promise.reject(new Error("socket hang up"));
+      }
+      const response: Pick<APIResponse, "json" | "ok"> = {
+        json: () => Promise.resolve(verified ? { data: { user: { id: OWNER_ID } } } : null),
+        ok: () => verified,
+      };
+      return Promise.resolve(response as APIResponse);
     },
-  } as unknown as BrowserContext;
+  };
+  const context: Pick<BrowserContext, "request"> = {
+    request: request as BrowserContext["request"],
+  };
   return {
-    context,
+    context: context as BrowserContext,
     get requests() {
       return requests;
     },
