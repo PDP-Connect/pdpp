@@ -32,6 +32,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { parseHTML } from "linkedom";
 import type { BrowserContext, Locator, Page } from "playwright";
 import { establishSession } from "../../src/session-establish.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
@@ -151,12 +152,21 @@ function makeFakeOwnerPage(): {
  * the context request client instead. The fixture is intentionally separate
  * from the verifier response so this cannot pass by echoing page state.
  */
-function makeAccountHandoffMirrorPage(): {
+function makeAccountHandoffMirrorPage(fixtureHtml: string): {
   handoffCompleted: () => void;
+  ownerPageHtml: () => string;
   page: Page;
 } {
+  const { document } = parseHTML(fixtureHtml);
+  const accountHome = document.querySelector('[data-testid="account-home"]');
+  if (!accountHome?.textContent?.includes("Welcome back")) {
+    throw new Error("account.venmo.com handoff fixture is missing its account home content");
+  }
   let ownerResponded = false;
-  const page: Pick<Page, "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"> = {
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
     evaluate(): ReturnType<Page["evaluate"]> {
       if (ownerResponded) {
         return Promise.reject(new Error("verification touched the owner's account.venmo.com page"));
@@ -186,6 +196,7 @@ function makeAccountHandoffMirrorPage(): {
     handoffCompleted: () => {
       ownerResponded = true;
     },
+    ownerPageHtml: () => (ownerResponded ? document.toString() : ""),
     page: page as Page,
   };
 }
@@ -333,8 +344,7 @@ test("registered seam: a handoff that completes but never authenticates is rejec
 });
 
 test("registered seam: the account.venmo.com handoff mirror rejects page.goto or page.evaluate after the owner responds", async () => {
-  assert.match(ACCOUNT_HANDOFF_MIRROR, /data-testid="account-home"/, "fixture must model the owner account destination");
-  const { handoffCompleted, page } = makeAccountHandoffMirrorPage();
+  const { handoffCompleted, ownerPageHtml, page } = makeAccountHandoffMirrorPage(ACCOUNT_HANDOFF_MIRROR);
   const { context, setVerifiedLive } = makeFakeVerifierContext();
   const { counts: interactionCounts, sendInteraction } = oneOwnerSuccessInteraction();
   setVerifiedLive(true);
@@ -351,6 +361,11 @@ test("registered seam: the account.venmo.com handoff mirror rejects page.goto or
     })
   );
 
+  assert.match(
+    ownerPageHtml(),
+    /Your Venmo account is ready\./,
+    "the simulated owner page must render the handoff fixture"
+  );
   assert.equal(interactionCounts.requests, 1, "the owner is asked once before the context-only verification");
 });
 

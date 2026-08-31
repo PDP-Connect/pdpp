@@ -2288,7 +2288,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/venmo/registered-handoff-to-collect.test.ts",
-    line: 370,
+    line: 385,
     column: 5,
     category: "test_assertion_sequencing",
     note: "registered handoff test: each simulated dispatch waits for the prior terminal retryable verdict before consuming the next budget slot",
