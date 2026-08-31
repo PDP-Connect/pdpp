@@ -1064,14 +1064,15 @@ if (DEDICATED_POSTGRES_URL) {
     });
   });
 
-  test("PostgreSQL manifest drift repairs cursor, primary-key, and semantic durable facts", async () => {
+  test("PostgreSQL manifest drift keeps the failed reservation bound until retry", async () => {
     let changed = false;
     const backend = deterministicBackend({
       model: () => (changed ? "pg-drift-b" : "pg-drift-a"),
-      onEmbed: async () => {
-        if (!changed) {
+      onEmbed: async (text) => {
+        if (!changed && text.includes("drift-content")) {
           changed = true;
           await setMessagesManifest((messages) => {
+            messages.schema.properties.__device_exporter_manifest_drift_marker = { type: "string" };
             messages.schema.properties.updated_at = { format: "date-time", type: "string" };
             messages.cursor_field = "updated_at";
             messages.consent_time_field = "updated_at";
@@ -1084,6 +1085,26 @@ if (DEDICATED_POSTGRES_URL) {
     await withTempPostgres(async (url) => {
       await withServer(url, { semanticRetrievalBackend: backend }, async ({ asUrl }) => {
         const device = await enrollDevice(asUrl, `pg-drift-${Date.now()}`);
+        // Other journeys mutate this shared fixture shape. Establish an
+        // observably distinct attempt snapshot before the deferred callback
+        // changes it, rather than assuming the bootstrap manifest is pristine.
+        await setMessagesManifest((messages) => {
+          delete messages.schema.properties.__device_exporter_manifest_drift_marker;
+          delete messages.schema.properties.updated_at;
+          messages.cursor_field = "timestamp";
+          messages.consent_time_field = "timestamp";
+          messages.primary_key = ["id"];
+          messages.query.search.semantic_fields = ["content"];
+        });
+        const initialManifest = requiredFirstRow(
+          (
+            await postgresQuery<{ manifest: JsonValue }>("SELECT manifest FROM connectors WHERE connector_id = $1", [
+              "codex",
+            ])
+          ).rows,
+          "initial connector manifest"
+        ).manifest;
+        const initialManifestFingerprint = fingerprintDeviceAttemptManifest(initialManifest);
         const records = [recordFor("same-key", "drift-content")];
         requiredFirstRow(records, "manifest drift record").data.updated_at = "2026-07-16T13:00:00.000Z";
         const batch = batchFor(device, "pg-manifest-drift", records);
@@ -1093,13 +1114,14 @@ if (DEDICATED_POSTGRES_URL) {
           authHeaders(device.device_token)
         );
         assert.equal(first.status, 503, JSON.stringify(first.body));
+        assert.equal(changed, true, "the deferred embedding callback mutates the registered manifest");
         const stale = await postgresQuery(
           `SELECT cursor_value, primary_key_text, semantic_time
              FROM records WHERE connector_instance_id = $1 AND stream = 'messages' AND record_key = 'same-key'`,
           [device.connector_instance_id]
         );
         const staleOutcome = await postgresQuery(
-          `SELECT durable_prefix_count FROM device_ingest_batch_outcomes
+          `SELECT durable_prefix_count, manifest_fingerprint FROM device_ingest_batch_outcomes
              WHERE device_id = $1 AND batch_id = $2`,
           [device.device_id, batch.batch_id]
         );
@@ -1116,19 +1138,16 @@ if (DEDICATED_POSTGRES_URL) {
           "changed connector manifest"
         ).manifest;
         const changedManifestFingerprint = fingerprintDeviceAttemptManifest(changedManifest);
-        const staleReservation = requiredFirstRow(
-          (
-            await postgresQuery<{ manifest_fingerprint: string }>(
-              "SELECT manifest_fingerprint FROM device_ingest_batch_outcomes WHERE device_id = $1 AND batch_id = $2",
-              [device.device_id, batch.batch_id]
-            )
-          ).rows,
-          "stale reservation"
+        const staleReservation = requiredFirstRow(staleOutcome.rows, "stale reservation");
+        assert.equal(
+          staleReservation.manifest_fingerprint,
+          initialManifestFingerprint,
+          "the failed reservation remains bound to the manifest captured before deferred work"
         );
         assert.notEqual(
           staleReservation.manifest_fingerprint,
           changedManifestFingerprint,
-          "the first attempt must remain bound to the manifest it actually used"
+          "the deferred mutation must differ from the manifest captured by the first attempt"
         );
         const retry = await postJson(
           `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
@@ -1148,7 +1167,7 @@ if (DEDICATED_POSTGRES_URL) {
         assert.equal(
           refreshedReservation.manifest_fingerprint,
           changedManifestFingerprint,
-          "the retry must bind the processing reservation to the re-read manifest"
+          "the retry binds the processing reservation to the re-read manifest"
         );
         const repaired = await postgresQuery(
           `SELECT cursor_value, primary_key_text, semantic_time
