@@ -394,6 +394,19 @@ export async function runExtend(args: {
     // Guarded update: only raise target_uid, and only if it still holds the
     // value we planned against. A concurrent connector STATE commit changes
     // that value and this write then matches zero rows rather than clobbering.
+    // That CAS guard covers a concurrent cursor write on the SAME id; it does
+    // NOT cover D9 coalescence, which merges ownership across a different
+    // connector_instance_id. No pg_advisory_xact_lock on connectorInstanceId
+    // is taken here (unlike commitTerminalRun/createPostgresConnectorStateStore
+    // ().putState in production) — this is an operator-invoked offline CLI
+    // tool (invokedAsScript gate below; no server/automated code path imports
+    // this module's exports — see D9 coalescence race audit,
+    // PR238-POSTGRES-D9-FIX-R4-0831.md). connector_state has no FK to
+    // connector_instances (postgres-storage.ts:2368-2387), so a write here
+    // concurrent with in-flight coalescence could in principle land on a
+    // legacy id mid-merge or resurrect a just-deleted one. Accepted as
+    // operator-discipline risk, not fenced: an operator is expected not to
+    // run this against an instance mid-coalescence.
     const updated = await client.query(
       `UPDATE connector_state
           SET state_json = jsonb_set(

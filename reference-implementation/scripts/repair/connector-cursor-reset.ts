@@ -301,6 +301,18 @@ export async function runCursorReset({
       [connectorInstanceId, present]
     );
 
+    // No pg_advisory_xact_lock on connectorInstanceId here (unlike
+    // commitTerminalRun/createPostgresConnectorStateStore().putState in
+    // production). This is an operator-invoked offline CLI tool
+    // (invokedAsScript gate below; no server/automated code path imports
+    // this module's exports — see D9 coalescence race audit,
+    // PR238-POSTGRES-D9-FIX-R4-0831.md) targeting one connector_instance_id
+    // at a time. connector_state has no FK to connector_instances
+    // (postgres-storage.ts:2368-2387), so a write here concurrent with
+    // in-flight coalescence could in principle land on a legacy id mid-merge
+    // or resurrect a just-deleted one. Accepted as operator-discipline risk,
+    // not fenced: an operator is expected not to run this against an
+    // instance mid-coalescence.
     const reset = await client.query(
       `UPDATE connector_state
           SET state_json = '{}'::jsonb,
