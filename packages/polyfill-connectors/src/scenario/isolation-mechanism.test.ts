@@ -295,3 +295,106 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
     }
   });
 }
+
+// ─── /run closure (independent second-pass review) — negative controls ────
+//
+// The FIX 5 controls above prove `/tmp` is masked. Independent review found
+// a second, unclaimed instance of the SAME escape class: `/run` was never
+// masked under bwrap at all, and was masked under `unshare` only as a side
+// effect of the escape-hatch staging logic (which only runs when
+// `filesystemBindPath` is set) — so `/run/user/<uid>`, the XDG runtime
+// directory that on a real host holds live sockets for ssh-agent, the
+// D-Bus session bus, PipeWire, etc., stayed fully reachable from an
+// isolated child. Reproduced live on the review host. These tests are the
+// same reviewer-specified shape as the FIX 5 controls above, run against a
+// socket placed directly under `/run/user/<uid>` instead of under
+// `os.tmpdir()`, proving `ALWAYS_MASKED_DIRS` closes this independently of
+// `worldWritableTempDirs()`/`filesystemBindPath`.
+
+const runtimeDir = process.getuid ? `/run/user/${String(process.getuid())}` : undefined;
+const runtimeDirWritable = (() => {
+  if (runtimeDir === undefined) {
+    return false;
+  }
+  try {
+    const probePath = join(runtimeDir, `pdpp-isolation-writable-probe-${String(process.pid)}`);
+    writeFileSync(probePath, "");
+    rmSync(probePath, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = (mechanism === "bwrap" ? bwrapUsable : unshareUsable) && runtimeDirWritable;
+  test(`[${mechanism}] a native descendant (curl --unix-socket) cannot dial a foreign pathname UDS under /run/user/<uid>`, {
+    skip: !usable,
+  }, async () => {
+    if (runtimeDir === undefined) {
+      return;
+    }
+    const workspaceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-workspace-"));
+    const foreignSocketPath = join(runtimeDir, `pdpp-isolation-run-foreign-${String(process.pid)}.sock`);
+    const foreign = startForeignUdsServer(foreignSocketPath);
+    try {
+      const exitCode = await runIsolatedCurlAgainstForeignSocket(mechanism, foreignSocketPath, workspaceDir);
+      assert.notEqual(
+        exitCode,
+        0,
+        `curl must NOT succeed dialing a foreign UDS under /run/user/<uid> from inside ${mechanism} isolation — exit 0 means /run is still reachable`
+      );
+      assert.equal(
+        foreign.hits(),
+        0,
+        "the foreign server's own hit counter is authoritative — any nonzero count means the isolated child reached a live /run/user/<uid> socket (ssh-agent, dbus, etc. on a real host)"
+      );
+    } finally {
+      await foreign.close();
+      rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  // Finding 2 (independent review): under `unshare`, `/run` masking used to
+  // be an ACCIDENTAL side effect of the escape-hatch staging logic, which
+  // only ran when `filesystemBindPath` was set — so a call to
+  // `spawnWithNetworkIsolation` with `isolate` set but NO
+  // `filesystemBindPath` (the type signature allows this) got zero `/run`
+  // masking under `unshare`, even though bwrap's masking was unconditional
+  // by construction. This test calls `spawnWithNetworkIsolation` with
+  // `filesystemBindPath` OMITTED ENTIRELY, proving `/run` closure is now a
+  // standalone, declared invariant under both mechanisms rather than an
+  // emergent property of some other feature's plumbing.
+  test(`[${mechanism}] /run/user/<uid> is masked even when filesystemBindPath is NOT passed at all`, {
+    skip: !usable,
+  }, async () => {
+    if (runtimeDir === undefined) {
+      return;
+    }
+    const foreignSocketPath = join(runtimeDir, `pdpp-isolation-run-nobindpath-${String(process.pid)}.sock`);
+    const foreign = startForeignUdsServer(foreignSocketPath);
+    try {
+      const exitCode = await new Promise<number | null>((resolve) => {
+        const child = spawnWithNetworkIsolation(
+          "curl",
+          ["-s", "-o", "/dev/null", "--max-time", "3", "--unix-socket", foreignSocketPath, "http://localhost/probe"],
+          { isolate: mechanism, stdio: "ignore" }
+        );
+        child.on("close", resolve);
+        child.on("error", () => resolve(-1));
+      });
+      assert.notEqual(
+        exitCode,
+        0,
+        `curl must NOT succeed dialing a /run/user/<uid> UDS under ${mechanism} isolation even with no filesystemBindPath passed`
+      );
+      assert.equal(
+        foreign.hits(),
+        0,
+        "the foreign server's hit counter must stay 0 — /run masking must not depend on filesystemBindPath being set"
+      );
+    } finally {
+      await foreign.close();
+    }
+  });
+}
