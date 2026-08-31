@@ -550,7 +550,7 @@ if (POSTGRES_URL) {
 
   test("postgres lexical backfill rebuilds partial historical indexes", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-    const connectorId = `pg_lexical_backfill_${suffix}`;
+    const connectorId = `https://test.pdpp.dev/connectors/pg_lexical_backfill_${suffix}`;
     const connectorInstanceId = `cin_pg_lexical_backfill_${suffix}`;
     const stream = "messages";
     const manifest = {
@@ -1835,7 +1835,7 @@ if (POSTGRES_URL) {
   //       #"Counts").
   test("postgres records list honors canonical sort and graded count", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-    const connectorId = `pg_canonical_${suffix}`;
+    const connectorId = `https://test.pdpp.dev/connectors/pg_canonical_${suffix}`;
     const connectorInstanceId = makeDefaultAccountConnectorInstanceId("owner_local", connectorId);
     const stream = "events";
     const grant = {
