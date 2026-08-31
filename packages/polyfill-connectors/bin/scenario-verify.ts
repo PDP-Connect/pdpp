@@ -888,6 +888,13 @@ function runReplaySubprocess(args: {
   timeoutSeconds: number;
   udsPath?: string;
   userInteractions: readonly ScenarioUserInteraction[];
+  /** Passed to `spawnWithNetworkIsolation` as `filesystemBindPath` — the
+   *  one directory (this run's UDS bridge socket lives inside it) that
+   *  stays visible at its real path when isolation masks every conventional
+   *  world-writable temp directory (isolation.ts's FIX 5). Required even
+   *  when `isolate` is `false` for this call because the field is always
+   *  present on `args` — `spawnWithNetworkIsolation` itself ignores it
+   *  whenever `isolate` is falsy. */
   workspace: ScenarioEvidenceWorkspace;
 }): Promise<{ code: number | null; messages: ProtocolMessage[]; stderr: string }> {
   return new Promise((resolvePromise, rejectPromise) => {
@@ -904,6 +911,7 @@ function runReplaySubprocess(args: {
       },
       stdio: ["pipe", "pipe", "pipe"],
       isolate: args.isolate,
+      filesystemBindPath: args.workspace.dir,
     });
     // `spawnWithNetworkIsolation` returns a plain `child_process.ChildProcess`
     // typed against the general `SpawnOptions` overload, so TS sees

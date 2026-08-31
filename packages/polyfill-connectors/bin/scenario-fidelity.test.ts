@@ -685,6 +685,7 @@ test("scenario-fidelity: under namespace isolation, a spawned curl cannot reach 
           },
           stdio: ["pipe", "pipe", "pipe"],
           isolate: capability.mechanism,
+          filesystemBindPath: workspace.dir,
         }
       );
 
