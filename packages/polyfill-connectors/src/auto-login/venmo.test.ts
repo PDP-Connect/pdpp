@@ -3,11 +3,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Locator, Page } from "playwright";
-import { VENMO_RETRYABLE_PATTERN } from "../../connectors/venmo/index.ts";
+import type { BrowserContext, Locator, Page } from "playwright";
+import { VENMO_RETRYABLE_PATTERN, venmoConnectorConfig } from "../../connectors/venmo/index.ts";
 import { API_BASE } from "../../connectors/venmo/parsers.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
+import { establishSession } from "../session-establish.ts";
 import {
   ACCOUNT_PROBE_URL,
   ensureVenmoOrigin,
@@ -15,6 +16,7 @@ import {
   isVenmoFamilyUrl,
   isVenmoSignInUrl,
   probeVenmoAccount,
+  probeVenmoAccountViaContext,
   VENMO_POST_SUBMIT_PROBE_TRANSPORT_ERROR,
   VENMO_PROBE_TRANSPORT_ERROR,
 } from "./venmo.ts";
@@ -2565,6 +2567,88 @@ test("probeVenmoAccount: normal live and dead sessions are unaffected by the bou
   assert.deepEqual(dead, { live: false, ownerId: null });
 });
 
+// ─── probeVenmoAccountViaContext: post-owner verification that never touches the page ───
+//
+// Independent review (PR238-NEXT-TRAIN-CONSTITUENTS-INDEPENDENT-R1-0830.md
+// §8, P1 "reintroduces the post-owner page probe"): the runtime's
+// post-establish verifier previously called `probeVenmoAccount(page)`, which
+// calls `ensureVenmoOrigin(page)`, which calls `page.goto` on the SAME page
+// the owner just responded on — the exact class of post-response navigation
+// `waitForManualLogin`'s doc identifies as having destroyed an authenticated/
+// challenge page in production. `probeVenmoAccountViaContext` reads the same
+// `/account` endpoint through `context.request` (a Node-side HTTP client that
+// shares the context's cookie jar) instead, so these tests fake ONLY
+// `context.request` — never `page` — making a page touch a type error rather
+// than an unasserted behavior.
+
+/** `get` shape used below mirrors Playwright's `APIRequestContext.get`, narrowed to what `probeVenmoAccountViaContext` calls. */
+function makeContextWithApiResponse(
+  respond: () => Promise<{ json: () => Promise<unknown>; ok: () => boolean }>
+): BrowserContext {
+  return {
+    request: { get: respond } as unknown as BrowserContext["request"],
+  } as unknown as BrowserContext;
+}
+
+test("probeVenmoAccountViaContext: reports live=true with the owner id for an authenticated session, via context.request only", async () => {
+  let calledUrl: string | undefined;
+  let calledOptions: Record<string, unknown> | undefined;
+  const context = {
+    request: {
+      get: (url: string, options?: Record<string, unknown>) => {
+        calledUrl = url;
+        calledOptions = options;
+        return Promise.resolve({ json: () => Promise.resolve({ data: { user: { id: "42" } } }), ok: () => true });
+      },
+    } as unknown as BrowserContext["request"],
+  } as unknown as BrowserContext;
+
+  const result = await probeVenmoAccountViaContext(context);
+  assert.deepEqual(result, { live: true, ownerId: "42" });
+  assert.equal(calledUrl, ACCOUNT_PROBE_URL, "must read the same /account endpoint the page-context probe uses");
+  assert.equal(
+    (calledOptions?.headers as Record<string, string> | undefined)?.accept,
+    "application/json",
+    "must ask for the JSON shape fetchProfile/collectProfile already parse"
+  );
+});
+
+test("probeVenmoAccountViaContext: reports live=false — not a throw — for a reachable-but-signed-out session (the exact production defect)", async () => {
+  const context = makeContextWithApiResponse(async () => ({
+    json: () => Promise.resolve(null),
+    ok: () => false,
+  }));
+  const result = await probeVenmoAccountViaContext(context);
+  assert.deepEqual(result, { live: false, ownerId: null });
+});
+
+test("probeVenmoAccountViaContext: a 2xx body with no user id is dead, not live", async () => {
+  const context = makeContextWithApiResponse(async () => ({
+    json: () => Promise.resolve({ data: {} }),
+    ok: () => true,
+  }));
+  const result = await probeVenmoAccountViaContext(context);
+  assert.deepEqual(result, { live: false, ownerId: null });
+});
+
+test("probeVenmoAccountViaContext: a transport fault THROWS rather than being swallowed into live:false", async () => {
+  const context = makeContextWithApiResponse(() => Promise.reject(new Error("socket hang up")));
+  await assert.rejects(probeVenmoAccountViaContext(context), /socket hang up/);
+});
+
+test("probeVenmoAccountViaContext: touches no Page API — a context with no `page`-shaped members at all still succeeds", async () => {
+  // The strongest form of "never touches the owner's page": the fake context
+  // carries nothing page-shaped for a regression to accidentally call.
+  const context = {
+    request: {
+      get: (): Promise<{ json: () => Promise<unknown>; ok: () => boolean }> =>
+        Promise.resolve({ json: () => Promise.resolve({ data: { user: { id: "7" } } }), ok: () => true }),
+    },
+  } as unknown as BrowserContext;
+  const result = await probeVenmoAccountViaContext(context);
+  assert.deepEqual(result, { live: true, ownerId: "7" });
+});
+
 // ─── Step one carries an UNNAMED password input (production run_1787319714987) ───
 //
 // GROUND TRUTH, from this file's own live CDP reading of `run_1787164654406`
@@ -3259,6 +3343,61 @@ test("the owner is prompted exactly once across challenge -> submit -> unrecogni
     1,
     "the owner must be asked exactly once per run — a replay that re-prompts wastes the challenge he already cleared"
   );
+});
+
+// Required delta from PR238-NEXT-TRAIN-CONSTITUENTS-INDEPENDENT-R1-0830.md §8
+// (Required delta #3): the challenge-replay path (owner clears a bot check,
+// the stored credential replays through the real sign-in form) must ALSO be
+// gated by the runtime's post-establish `probeSession` verification, driven
+// through the REGISTERED `venmoConnectorConfig` — not a scripted stand-in —
+// with a one-interaction budget across the whole handoff+verify sequence.
+test("registered seam: a cleared challenge replays the stored credential, and the runtime's post-establish verifier still gates before collect() with one owner interaction", async () => {
+  const { page, reveal } = makePageWithChallengeThenForm();
+  let promptCount = 0;
+  const sendInteraction = (_req: InteractionRequest): Promise<InteractionResponse> => {
+    promptCount += 1;
+    reveal();
+    return Promise.resolve({
+      request_id: "req-1",
+      status: "success",
+      type: "INTERACTION_RESPONSE",
+    } as InteractionResponse);
+  };
+  let verifierCalls = 0;
+  const context = {
+    request: {
+      get(): Promise<{ json: () => Promise<unknown>; ok: () => boolean }> {
+        verifierCalls += 1;
+        // The provider-side verifier independently reports dead, even though
+        // the page-context replay believes it just signed in — proving this
+        // is a real second check, not a read of the same page state.
+        return Promise.resolve({ json: () => Promise.resolve(null), ok: () => false });
+      },
+    } as unknown as BrowserContext["request"],
+  } as unknown as BrowserContext;
+
+  await assert.rejects(
+    establishSession(
+      { ensureSession: venmoConnectorConfig.ensureSession, probeSession: venmoConnectorConfig.probeSession },
+      {
+        assist: () => Promise.reject(new Error("not used")),
+        capture: null,
+        checkpoint: () => Promise.resolve(),
+        completeAssistance: () => Promise.resolve(),
+        context,
+        credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+        name: venmoConnectorConfig.name,
+        page,
+        progress: () => Promise.resolve(),
+        retryablePattern: venmoConnectorConfig.retryablePattern ?? /never_matches/,
+        sendInteraction,
+      }
+    ),
+    /venmo_session_unverified_after_establish/
+  );
+
+  assert.equal(promptCount, 1, "exactly one owner interaction across challenge -> replay -> verification");
+  assert.ok(verifierCalls >= 1, "the registered post-establish verifier must actually run after a challenge replay");
 });
 
 /**
