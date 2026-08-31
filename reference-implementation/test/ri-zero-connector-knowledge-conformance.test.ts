@@ -731,15 +731,15 @@ test("falsifiability: a dynamic manifest-root selection (the legitimate 'pick a 
     }
   );
 
-  const readAtLine = (line: number) =>
+  const readAtLine = (line: number, readCall: string, jsonFlow: string) =>
     withSyntheticProductionFile(
       `synthetic-exact-generic-read-${line}.ts`,
       [
         'import { readFile } from "node:fs/promises";',
         ...Array.from({ length: line - 3 }, (_, index) => `// line ${index + 2}`),
         "async function readManifestJson(path: string) {",
-        '  const raw = await readFile(path, "utf8");',
-        "  return JSON.parse(raw);",
+        `  const raw = ${readCall};`,
+        `  ${jsonFlow}`,
         "}",
         "",
       ].join("\n"),
@@ -751,11 +751,28 @@ test("falsifiability: a dynamic manifest-root selection (the legitimate 'pick a 
         )
     );
 
-  assert.deepEqual(readAtLine(98), [], "the reviewed polyfill manifest call site must match its exact current line pin");
+  assert.deepEqual(
+    readAtLine(98, 'await readFile(path, "utf8")', "return JSON.parse(raw);"),
+    [],
+    "the reviewed polyfill manifest call site must match its exact current line pin and call shape"
+  );
   assert.ok(
-    readAtLine(99).some((violation) => violation.rule === "unresolvable-data-resource-load"),
+    readAtLine(99, 'await readFile(path, "utf8")', "return JSON.parse(raw);").some(
+      (violation) => violation.rule === "unresolvable-data-resource-load"
+    ),
     "moving the identical call one line must invalidate the exemption and fail closed"
   );
+  for (const [mutation, readCall, jsonFlow] of [
+    ["callee", 'await readFileSync(path, "utf8")', "return JSON.parse(raw);"],
+    ["encoding/options", 'await readFile(path, { encoding: "utf8" })', "return JSON.parse(raw);"],
+    ["path source", 'await readFile(manifestPath, "utf8")', "return JSON.parse(raw);"],
+    ["missing JSON consumption", 'await readFile(path, "utf8")', "return raw;"],
+  ] as const) {
+    assert.ok(
+      readAtLine(98, readCall, jsonFlow).length > 0,
+      `${mutation} mutation at the approved line must fail closed`
+    );
+  }
 });
 
 test("falsifiability (P3 fix): EXEMPT_DIR_SEGMENTS no longer exempts a nested directory sharing a name at any depth", () => {
