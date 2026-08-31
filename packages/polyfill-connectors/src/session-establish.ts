@@ -129,6 +129,30 @@ export function buildSessionEstablishTerminalError(
   };
 }
 
+async function verifyEstablishedSession({
+  checkpoint,
+  context,
+  name,
+  page,
+  probeSession,
+}: {
+  checkpoint: SessionCheckpointFn;
+  context: BrowserContext;
+  name: string;
+  page: Page;
+  probeSession: (args: ProbeSessionArgs) => Promise<boolean>;
+}): Promise<void> {
+  await checkpoint("session-establish:verify-after-ensure");
+  try {
+    if (await probeSession({ context, page })) {
+      return;
+    }
+  } catch (err) {
+    throw new TerminalError(`${name}_session_unverified_after_establish`, { cause: err, retryable: false });
+  }
+  throw new TerminalError(`${name}_session_unverified_after_establish`, { retryable: false });
+}
+
 /**
  * Run whichever session-management flow the connector configured.
  * Throws TerminalError if the session is dead and we couldn't recover.
@@ -172,6 +196,7 @@ export async function establishSession(
     // process's submission is what's being retried. That's exactly the case
     // this primitive exists to stop: this call is the resubmission risk.
     let credentialSubmitted = false;
+    let establishClaimUnverified: ((args: ProbeSessionArgs) => Promise<boolean>) | null = null;
     try {
       await ensureSession({
         assist,
@@ -187,7 +212,7 @@ export async function establishSession(
         sendInteraction,
         progress,
       });
-      return;
+      establishClaimUnverified = typeof probeSession === "function" ? probeSession : null;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern, credentialSubmitted);
@@ -212,6 +237,16 @@ export async function establishSession(
         ...(code ? { code } : {}),
       });
     }
+    if (establishClaimUnverified) {
+      await verifyEstablishedSession({
+        checkpoint,
+        context,
+        name,
+        page,
+        probeSession: establishClaimUnverified,
+      });
+    }
+    return;
   }
 
   if (typeof probeSession !== "function") {

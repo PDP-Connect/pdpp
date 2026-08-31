@@ -34,7 +34,7 @@ import type {
   ProgressExtra,
 } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
-import type { Locator, Page } from "playwright";
+import type { BrowserContext, Locator, Page } from "playwright";
 import { DEADLINE_TIMEOUT, manualBrowserLogin, withDeadline } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
@@ -735,6 +735,34 @@ export async function probeVenmoAccount(
     throw new Error(`${name}: ${detail}`);
   }
   return outcome.kind === "live" ? { live: true, ownerId: outcome.ownerId } : { live: false, ownerId: null };
+}
+
+/**
+ * Verify Venmo session liveness through the browser context's request client.
+ * This deliberately does not use the owner's Page: no navigation, evaluate,
+ * or page-context fetch can disturb a handoff screen after the owner responds.
+ */
+export async function probeVenmoAccountViaContext(context: BrowserContext): Promise<VenmoAccountProbeResult> {
+  const response = await context.request.get(ACCOUNT_PROBE_URL, {
+    headers: { accept: "application/json" },
+    timeout: 8000,
+  });
+  if (!response.ok()) {
+    return { live: false, ownerId: null };
+  }
+  const body: unknown = await response.json().catch(() => null);
+  if (typeof body !== "object" || body === null || !("data" in body)) {
+    return { live: false, ownerId: null };
+  }
+  const { data } = body;
+  if (typeof data !== "object" || data === null || !("user" in data)) {
+    return { live: false, ownerId: null };
+  }
+  const { user } = data;
+  if (typeof user !== "object" || user === null || !("id" in user) || typeof user.id !== "string" || !user.id) {
+    return { live: false, ownerId: null };
+  }
+  return { live: true, ownerId: user.id };
 }
 
 /**

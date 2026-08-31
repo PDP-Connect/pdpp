@@ -67,10 +67,12 @@
 import { isMainModule } from "@pdpp/connector-protocol";
 import { redactTransportDetail } from "@pdpp/connector-protocol/http-retry";
 import type { Page } from "playwright";
-import { ensureVenmoOrigin, ensureVenmoSession } from "../../src/auto-login/venmo.ts";
+import { ensureVenmoOrigin, ensureVenmoSession, probeVenmoAccountViaContext } from "../../src/auto-login/venmo.ts";
 import {
   type BrowserCollectContext,
+  type BrowserConnectorConfig,
   buildDetailCoverageMessage,
+  type ProbeSessionArgs,
   politeDelay,
   runConnector,
 } from "../../src/connector-runtime.ts";
@@ -541,18 +543,31 @@ export async function collectAllStreams(
   }
 }
 
-if (isMainModule(import.meta.url)) {
-  runConnector({
-    name: "venmo",
-    validateRecord,
-    // See VENMO_RETRYABLE_PATTERN's doc above for why this is an exact-name
-    // pattern rather than the wildcard/bare-vocabulary form it replaced (B4).
-    retryablePattern: VENMO_RETRYABLE_PATTERN,
-    auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
-    browser: { profileName: "venmo" },
-    async ensureSession({
+export async function probeVenmoSession({ context }: ProbeSessionArgs): Promise<boolean> {
+  const result = await probeVenmoAccountViaContext(context);
+  return result.live;
+}
+
+export const venmoConnectorConfig: BrowserConnectorConfig = {
+  name: "venmo",
+  validateRecord,
+  retryablePattern: VENMO_RETRYABLE_PATTERN,
+  auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
+  browser: { profileName: "venmo" },
+  async ensureSession({
+    assist,
+    capture,
+    checkpoint,
+    completeAssistance,
+    credentials,
+    onCredentialSubmit,
+    page,
+    progress,
+    sendInteraction,
+  }): Promise<void> {
+    await ensureVenmoSession({
       assist,
-      capture,
+      ...(capture ? { capture } : {}),
       checkpoint,
       completeAssistance,
       credentials,
@@ -560,40 +575,22 @@ if (isMainModule(import.meta.url)) {
       page,
       progress,
       sendInteraction,
-    }): Promise<void> {
-      // Forwarded for signature parity with every other connector's manual-
-      // login handoff — see `EnsureVenmoSessionArgs.assist`'s doc in
-      // `src/auto-login/venmo.ts` for why this does NOT yet self-resolve
-      // without a click: Venmo's only liveness probe requires a navigation
-      // that would destroy an in-progress captcha/OTP handoff.
-      await ensureVenmoSession({
-        assist,
-        ...(capture ? { capture } : {}),
-        checkpoint,
-        completeAssistance,
-        credentials,
-        onCredentialSubmit,
-        page,
-        progress,
-        sendInteraction,
-      });
-    },
-    async collect(ctx: BrowserCollectContext): Promise<void> {
-      const { page } = ctx;
-      // `ensureSession` may leave the page wherever sign-in redirected it
-      // (e.g. `id.venmo.com`); `api.venmo.com`'s CORS allowlist only grants
-      // a credentialed fetch from `https://venmo.com`, so collect must
-      // establish that origin itself rather than assume ensureSession left
-      // it there (F3 in /tmp/review-venmo-browser-redesign-0810.md). See
-      // `establishVenmoCollectOrigin`'s doc for why this is wrapped.
-      await establishVenmoCollectOrigin(page);
-      const fetchPath = makePageFetch(page);
-      const account = await fetchProfile(fetchPath);
-      const ownerId = account?.id;
-      if (!ownerId) {
-        throw new Error("venmo_session_expired: /account returned no user id after ensureSession succeeded");
-      }
-      await collectAllStreams(ctx, fetchPath, ownerId, account);
-    },
-  });
+    });
+  },
+  probeSession: probeVenmoSession,
+  async collect(ctx: BrowserCollectContext): Promise<void> {
+    const { page } = ctx;
+    await establishVenmoCollectOrigin(page);
+    const fetchPath = makePageFetch(page);
+    const account = await fetchProfile(fetchPath);
+    const ownerId = account?.id;
+    if (!ownerId) {
+      throw new Error("venmo_session_expired: /account returned no user id after ensureSession succeeded");
+    }
+    await collectAllStreams(ctx, fetchPath, ownerId, account);
+  },
+};
+
+if (isMainModule(import.meta.url)) {
+  runConnector(venmoConnectorConfig);
 }
