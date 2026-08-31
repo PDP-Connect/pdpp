@@ -92,6 +92,7 @@ import {
 import { evaluateClaimEligibility } from "../src/scenario/claims.ts";
 import type { ConnectorScenario, ScenarioUserInteraction } from "../src/scenario/format.ts";
 import {
+  type IsolationMechanism,
   isNamespaceIsolationAvailable,
   type NamespaceIsolationCapability,
   spawnWithNetworkIsolation,
@@ -874,7 +875,10 @@ function runReplaySubprocess(args: {
    *  subprocess's Date.now()/new Date() so wall-clock-dependent request
    *  planning replays deterministically. */
   fixedNow?: string;
-  isolate: boolean;
+  /** The mechanism the caller's single upfront `isNamespaceIsolationAvailable()`
+   *  probe already selected (or `false` when isolation isn't available) —
+   *  never a bare `true`, so `spawnWithNetworkIsolation` never re-probes. */
+  isolate: false | IsolationMechanism;
   preloadPath: string;
   startState: Record<string, unknown> | null;
   streamNames: readonly string[];
@@ -1243,6 +1247,16 @@ function printReplayTimeBanner(declaredDrivers: readonly ("recorded-http" | "rec
   }
 }
 
+/**
+ * Narrows a single upfront `isNamespaceIsolationAvailable()` probe result
+ * down to the value every `runReplaySubprocess` call this run makes must
+ * pass as `isolate` — the already-selected mechanism (never a bare
+ * boolean), so `spawnWithNetworkIsolation` never re-probes per run.
+ */
+function resolveIsolationMechanism(capability: NamespaceIsolationCapability): false | IsolationMechanism {
+  return capability.available ? capability.mechanism : false;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const connectorPath = resolveConnectorPath(args);
@@ -1306,6 +1320,7 @@ async function main(): Promise<void> {
   // block, rather than silently claiming a stronger guarantee than what
   // actually happened.
   const isolationCapability: NamespaceIsolationCapability = isNamespaceIsolationAvailable();
+  const isolationMechanism = resolveIsolationMechanism(isolationCapability);
   const isolationLine = isolationCapability.available
     ? "network isolation: os-namespace"
     : `network isolation: process-local only (${isolationCapability.reason})`;
@@ -1446,7 +1461,7 @@ async function main(): Promise<void> {
         streamNames: streamNamesFromScenario(scenario, runIndex),
         timeoutSeconds: args.timeoutSeconds,
         userInteractions: run.user_interactions ?? [],
-        isolate: isolationCapability.available,
+        isolate: isolationMechanism,
         workspace: isolationWorkspace,
       });
     } catch (err) {
@@ -1489,7 +1504,7 @@ async function main(): Promise<void> {
           streamNames: streamNamesFromScenario(scenario, runIndex),
           timeoutSeconds: args.timeoutSeconds,
           userInteractions: scenario.runs[runIndex]?.user_interactions ?? [],
-          isolate: isolationCapability.available,
+          isolate: isolationMechanism,
           workspace: isolationWorkspace,
           ...(udsPath === undefined ? {} : { udsPath }),
         });

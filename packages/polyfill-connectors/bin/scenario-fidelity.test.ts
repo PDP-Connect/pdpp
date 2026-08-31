@@ -684,7 +684,7 @@ test("scenario-fidelity: under namespace isolation, a spawned curl cannot reach 
             PDPP_SCENARIO_FIDELITY_CANARY_URL: canaryUrl,
           },
           stdio: ["pipe", "pipe", "pipe"],
-          isolate: true,
+          isolate: capability.mechanism,
         }
       );
 
@@ -769,6 +769,149 @@ test("scenario-fidelity: under namespace isolation, a spawned curl cannot reach 
     await new Promise<void>((resolve) => canaryServer.close(() => resolve()));
     cleanupScenarioEvidenceWorkspace(workspace);
     rmSync(udsPath, { force: true });
+  }
+});
+
+// ─── UDS bridge egress guard: own bridge allowed, foreign socket denied ───
+
+test("scenario-fidelity: the UDS replay bridge's own http.request({socketPath}) call succeeds, and a connector dialing a DIFFERENT unix socket directly is denied", async () => {
+  const provider = await startStandaloneProvider();
+  const workspace = createScenarioEvidenceWorkspace();
+  const udsPath = join(workspace.dir, "bridge.sock");
+
+  // A real, listening, foreign UDS server this fixture must be denied
+  // access to — a real listener means a "denied" result can only be the
+  // egress guard, not ENOENT/ECONNREFUSED from a nonexistent socket.
+  const foreignSocketPath = join(workspace.dir, "foreign.sock");
+  let foreignHits = 0;
+  const foreignServer = createServer((_req, res) => {
+    foreignHits += 1;
+    res.writeHead(200);
+    res.end("should never be reached");
+  });
+  await new Promise<void>((resolve) => foreignServer.listen(foreignSocketPath, () => resolve()));
+
+  try {
+    const replay = createReplayFetch({ interactions: [] as ScenarioInteraction[] } as unknown as Parameters<
+      typeof createReplayFetch
+    >[0]);
+    const passthroughFetch: typeof fetch = (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === "/ping") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } })
+        );
+      }
+      return replay.fetch(input, init);
+    };
+    const bridge = await startFetchBridgeServer(passthroughFetch, udsPath);
+    try {
+      const preloadPath = writeReplayBridgePreload(bridge.url, {
+        udsSocketPath: udsPath,
+        workspace,
+      });
+      const child = spawn(
+        process.execPath,
+        ["--import", "tsx", join(FIXTURES_DIR, "scenario-fidelity-uds-guard-connector.ts")],
+        {
+          cwd: PACKAGE_ROOT,
+          env: {
+            ...subprocessEnv(),
+            NODE_OPTIONS: `--import ${preloadPath}`,
+            PDPP_SCENARIO_FIDELITY_BASE_URL: provider.url,
+            PDPP_SCENARIO_FIDELITY_FOREIGN_SOCKET: foreignSocketPath,
+          },
+          stdio: ["pipe", "pipe", "pipe"],
+        }
+      );
+
+      const messages: ProtocolMessage[] = [];
+      let stdoutBuffer = "";
+      let stderr = "";
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdoutBuffer += chunk.toString();
+        let newlineIndex = stdoutBuffer.indexOf("\n");
+        while (newlineIndex !== -1) {
+          const line = stdoutBuffer.slice(0, newlineIndex);
+          stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+          if (line.trim()) {
+            try {
+              messages.push(JSON.parse(line) as ProtocolMessage);
+            } catch {
+              // ignore
+            }
+          }
+          newlineIndex = stdoutBuffer.indexOf("\n");
+        }
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+
+      const exitCode: number | null = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(new Error(`uds-guard subprocess timed out; stderr=${stderr}`));
+        }, 30_000);
+        child.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          resolve(code);
+        });
+        child.stdin?.write(`${JSON.stringify({ type: "START", scope: { streams: [{ name: "items" }] } })}\n`);
+        child.stdin?.end();
+      });
+
+      assert.equal(exitCode, 0, `uds-guard connector must exit 0; stderr=${stderr}`);
+      assert.equal(
+        foreignHits,
+        0,
+        "the foreign UDS server must observe zero hits — the guard must deny before connect completes"
+      );
+
+      const { records } = messagesToRecordsAndState(messages);
+
+      const ownBridgeRecord = records.find((r) => r.id === "own-bridge-fetch");
+      assert.ok(ownBridgeRecord, `expected an own-bridge-fetch record; messages=${JSON.stringify(messages)}`);
+      assert.equal(
+        (ownBridgeRecord?.data as { ok: boolean } | undefined)?.ok,
+        true,
+        "the preload's own UDS bridge call (http.request({socketPath})) must succeed under the fixed guard"
+      );
+
+      const foreignRecord = records.find((r) => r.id === "foreign-uds-escape-attempt");
+      assert.ok(foreignRecord, `expected a foreign-uds-escape-attempt record; messages=${JSON.stringify(messages)}`);
+      const foreignData = foreignRecord?.data as
+        | { foreign_connect_denied: boolean; foreign_connect_error_message: string }
+        | undefined;
+      assert.equal(
+        foreignData?.foreign_connect_denied,
+        true,
+        `a connector dialing a foreign unix socket directly must be denied; got ${JSON.stringify(foreignData)}`
+      );
+      assert.match(
+        foreignData?.foreign_connect_error_message ?? "",
+        /scenario replay: egress denied/,
+        "the denial must come from the egress guard, not a connection-level error"
+      );
+
+      assert.equal(
+        messages.find((m) => m.type === "DONE")?.status,
+        "succeeded",
+        "the run must still complete successfully overall"
+      );
+    } finally {
+      await bridge.close();
+    }
+  } finally {
+    await provider.close();
+    await new Promise<void>((resolve) => foreignServer.close(() => resolve()));
+    cleanupScenarioEvidenceWorkspace(workspace);
+    rmSync(udsPath, { force: true });
+    rmSync(foreignSocketPath, { force: true });
   }
 });
 

@@ -792,13 +792,19 @@ export function scaleReplayDelayMs(delayMs: number | undefined): number {
  * factory functions would (a) miss `new net.Socket().connect(...)` entirely
  * and (b) — discovered while building this fix — break the bridge itself,
  * since undici calls `net.connect` directly for the bridge's own outbound
- * request (TCP mode only — UDS mode uses `http.request({socketPath})`,
- * which does not go through `net.Socket.prototype.connect` at all, so it is
- * unaffected by this guard entirely rather than needing an allowlist entry).
- * Patching the one shared prototype method closes the raw-socket gap AND
- * the named-import gap in one place, and a single allowlist check (bridge
- * host+port only) keeps the TCP bridge's `fetch` call working while still
- * denying every other destination.
+ * request (TCP mode only). UDS mode uses `http.request({socketPath})`, but
+ * that call still internally constructs a `net.Socket` and calls
+ * `.connect({path: socketPath, ...})` on it — `path`, not `socketPath`,
+ * is the field Node's http module actually sets on the connect-options
+ * object it hands to `net.Socket.prototype.connect` (confirmed
+ * empirically) — so it DOES route through this same prototype method, and
+ * the guard below carries an explicit `path === UDS_PATH` allowlist branch
+ * for it, alongside the existing host+port branch for the TCP bridge.
+ * Patching the one shared
+ * prototype method closes the raw-socket gap AND the named-import gap in
+ * one place, and the two allowlist checks (TCP bridge host+port, UDS
+ * bridge's own socket path) keep the bridge's own call working in either
+ * mode while still denying every other destination.
  *
  * `http.request`/`http.get`/`https.request`/`https.get` are denied
  * unconditionally on the default-export object in TCP mode (the bridge
@@ -891,13 +897,26 @@ https.get = denyDirectApi("https.get");
 // internally and call .connect(...) on it - patching this single prototype
 // method also covers every path that would otherwise bypass the explicit
 // http/https denials above. UDS-mode bridge calls use
-// http.request({socketPath}) and never touch this prototype method at all,
-// so they need no allowlist entry here.
+// http.request({socketPath}) - Node's http module internally normalizes
+// that into a connect-options object carrying path (confirmed empirically:
+// net.connect({path}) and http.request({socketPath}) both end up calling
+// .connect({..., path: (the socket path), ...})), so it DOES route through
+// this same prototype method and DOES read as a "path" option, never
+// "socketPath". The allowlist below has two branches: the TCP bridge's own
+// host+port, and (UDS mode only) the bridge's own known UDS_PATH via an
+// exact path match - both narrow to "this call is the bridge dialing
+// itself", denying every other destination including a foreign UDS path.
 const realSocketConnect = net.Socket.prototype.connect;
 net.Socket.prototype.connect = function scenarioGuardedConnect(...args) {
   const first = Array.isArray(args[0]) && args[0].length > 0 && typeof args[0][0] === "object" && args[0][0] !== null
     ? args[0][0]
     : args[0];
+  if (first && typeof first === "object" && typeof first.path === "string") {
+    if (UDS_PATH !== null && first.path === UDS_PATH) {
+      return realSocketConnect.apply(this, args);
+    }
+    throw new ScenarioEgressDeniedError("net.connect (or net.createConnection / a raw net.Socket) to a UDS path");
+  }
   const targetHost =
     first && typeof first === "object"
       ? String(first.host ?? "localhost")

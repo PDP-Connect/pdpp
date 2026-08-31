@@ -164,7 +164,10 @@ function probeBwrap(): NamespaceIsolationCapability {
   }
   if (probe.status !== 0) {
     const stderr = probe.stderr ? probe.stderr.toString("utf8").trim() : "";
-    return { available: false, reason: `bwrap --unshare-net exited ${String(probe.status)}${stderr ? `: ${stderr}` : ""}` };
+    return {
+      available: false,
+      reason: `bwrap --unshare-net exited ${String(probe.status)}${stderr ? `: ${stderr}` : ""}`,
+    };
   }
   return { available: true, mechanism: "bwrap" };
 }
@@ -229,7 +232,11 @@ export function spawnWithNetworkIsolation(
     // `--dev-bind / /` keeps the filesystem view identical to the parent so
     // this stays a drop-in for the unshare path; only the network namespace
     // differs. bwrap brings up loopback itself, so no `ip link` prelude.
-    return spawn("bwrap", ["--unshare-net", "--dev-bind", "/", "/", "--", "sh", "-c", `exec ${innerCommand}`], spawnOpts);
+    return spawn(
+      "bwrap",
+      ["--unshare-net", "--dev-bind", "/", "/", "--", "sh", "-c", `exec ${innerCommand}`],
+      spawnOpts
+    );
   }
   return spawn("unshare", ["--map-root-user", "--net", "--", "sh", "-c", shScript], spawnOpts);
 }
