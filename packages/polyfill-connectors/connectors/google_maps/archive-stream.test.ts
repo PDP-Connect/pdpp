@@ -14,11 +14,11 @@
  */
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createWriteStream, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { spawnHeapCappedOracle } from "../../src/test-harness.ts";
 import {
   GoogleMapsElementTooLargeError,
   GoogleMapsUnsupportedShapeError,
@@ -196,7 +196,8 @@ test("a huge timelinePath stays bounded under a hard heap limit while unrelated 
     );
 
     const childPath = new URL("./oversized-element-oracle.test.child.ts", import.meta.url);
-    const result = spawnHeapCappedOracle(
+    const result = spawnSync(
+      process.execPath,
       ["--max-old-space-size=96", "--import", "tsx", childPath.pathname, path, String(statSync(path).size), "stream"],
       { encoding: "utf8", timeout: 60_000 }
     );
