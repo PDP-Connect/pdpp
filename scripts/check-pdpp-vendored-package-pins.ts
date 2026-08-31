@@ -16,16 +16,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const EXPECTED_PACKAGE_VERSION = "0.0.2";
+export const EXPECTED_PACKAGE_VERSION = "1.0.0";
+const PRIOR_PACKAGE_VERSION = "0.0.2";
 
 export const EXPECTED_PACKAGES = [
   {
     name: "@pdpp/collector-runtime",
-    archive: "vendor/pdpp-collector-runtime-0.0.2.tgz",
+    archive: "vendor/pdpp-collector-runtime-1.0.0.tgz",
   },
   {
     name: "@pdpp/connector-protocol",
-    archive: "vendor/pdpp-connector-protocol-0.0.2.tgz",
+    archive: "vendor/pdpp-connector-protocol-1.0.0.tgz",
   },
 ] as const;
 
@@ -128,14 +129,14 @@ export function verifyPdppVendoredPackagePins(repoRoot: string): void {
     for (const consumerPath of consumerPaths) {
       assertConsumerPin(repoRoot, consumerPath, expected.name, expected.archive);
     }
-    if (lockfile.includes(expected.archive.replace("0.0.2", "0.0.1"))) {
-      fail(`pnpm-lock.yaml retains a stale 0.0.1 pin for ${expected.name}`);
+    if (lockfile.includes(expected.archive.replace(EXPECTED_PACKAGE_VERSION, PRIOR_PACKAGE_VERSION))) {
+      fail(`pnpm-lock.yaml retains a stale ${PRIOR_PACKAGE_VERSION} pin for ${expected.name}`);
     }
   }
 
   const runtimeManifest = archivePackageManifest(join(repoRoot, EXPECTED_PACKAGES[0].archive));
   if (runtimeManifest.dependencies?.["@pdpp/connector-protocol"] !== EXPECTED_PACKAGE_VERSION) {
-    fail("collector-runtime must depend on connector-protocol 0.0.2 exactly");
+    fail(`collector-runtime must depend on connector-protocol ${EXPECTED_PACKAGE_VERSION} exactly`);
   }
 }
 

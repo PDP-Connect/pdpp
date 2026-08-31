@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 import { verifyPdppVendoredPackagePins } from "../../scripts/check-pdpp-vendored-package-pins.ts";
 
-test("PDPP consumes both reviewed data-connect 0.0.2 artifacts at exact hashes", () => {
+test("PDPP consumes both reviewed data-connect package-release 1.0.0 artifacts at exact hashes", () => {
   verifyPdppVendoredPackagePins(fileURLToPath(new URL("../../", import.meta.url)));
 });
 

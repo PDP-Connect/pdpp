@@ -1,48 +1,77 @@
 # Vendored cross-repo dependency tarballs (transitional)
 
-## Current 0.0.2 release-boundary pins
+## Current 1.0.0 release-boundary pins
 
-The current PDPP consumers pin independently accepted data-connect #36
-artifacts. The collector-runtime pin is the source commit
-`6676f900e8ac33e31bcc18901a7b9b02a78f10e4`; the independent acceptance record
-is `DC36-VERIFY-REPAIR-R2-INDEPENDENT-0830.md` in the review evidence
-directory. The connector-protocol pin retains its separately recorded source
-provenance below.
+Both consumers now pin data-connect PR #36's exact reviewer-confirmed head,
+`10f25a3cd6ab1e11aabab08a88dbf8fa301a919b` ("chore: add missing Apache-2.0
+SPDX headers to package-artifact scripts"). Prior pins had a per-package
+provenance because `pdpp-collector-runtime-0.0.2.tgz` and
+`pdpp-connector-protocol-0.0.2.tgz` were packed from two different commits
+(`6676f900e` and `75b4af02b` respectively) that coincidentally shared the
+`0.0.2` package-version string. That is no longer the case: both packages are
+lockstep-versioned by data-connect's own semantic-release pipeline
+(`.releaserc.yaml`, one release computes one `nextRelease.version` and applies
+it to both `packages/connector-protocol` and `packages/collector-runtime` via
+two `@semantic-release/npm` `pkgRoot` entries), so both artifacts below are
+packed from the same source commit at the same package version, `1.0.0`.
 
-`pdpp-collector-runtime-0.0.2.tgz` was reproduced from that exact clean source
-commit under Node `22.23.2` with npm `10.9.8`, and verified before vendoring.
-Its SHA-1 is `821105762caf21b0820a8e2bb9b12e3e0c6c3f60`; its SHA-256 is
-`499d15b7d9acfadf45c02f59097a15b3801ef8b7d5c53bccd23304a0f7c4b49d`; its
-SHA-512 is
-`04891fe18e1894de256278fac26e0c5722810e5ecadc223b8d264d4c67f23bc3c84043eb8f1f61859bc0d3ac050c9ba180d19f6c419c674899b942a95eb4df62`.
-The producer's source-input digest is
-`221124a67be0a3aed4e869a85dd08eb2ec6ed6627fdb1d478f3ae0ee2197e41e` and
-declaration digest is
-`046d8bf4c60d70ee047a2e3f8d29e381425bbafe2a4378f2b595477bd48c492a`.
+`packages/collector-runtime/package.json` commits `@pdpp/connector-protocol`
+pinned to `0.0.1` in-repo — a floor for local installs, not what gets
+published. The actual publish-time pin comes from a `prepareCmd` step,
+`scripts/pin-collector-runtime-protocol-dependency.ts`, wired in
+`.releaserc.yaml` before both `@semantic-release/npm` prepare entries: it
+rewrites the dependency to the release's computed `nextRelease.version` in the
+ephemeral checkout only (see data-connect PR #36 comment 5479509596, commit
+`fe91a83`, for the root-cause writeup and Verdaccio-registry proof this fix
+was correct). Left unrepinned, a published `collector-runtime` install would
+resolve `connector-protocol` from whatever version was last committed, not the
+version actually released alongside it — broken whenever connector-protocol's
+release adds exports collector-runtime imports, which PR #36 does.
 
-`pdpp-connector-protocol-0.0.2.tgz` is pinned at SHA-256
-`17b8013bc030bc83cbd9e908a14a6096ae756c39cb788139effad2827d5bd124`; its
-accepted source-input digest is
-`d2a715e1aabbb454d7da146197ae849fd02bedef7b62793c113d764a0b43a350` and
-declaration digest is
-`da07e9aaaf84b5b0ec91b657dae90662c544763ca41ff124b1c2fa440617e0ce`.
+Both tarballs below were produced by running that same real, unmodified
+`.releaserc.yaml` pipeline (`semantic-release`, `@semantic-release/exec`'s
+`prepareCmd`/`publishCmd` steps, both `@semantic-release/npm` prepare/publish
+steps — GitHub-release and provenance-signing steps skipped, since those need
+real CI credentials/OIDC and aren't part of what's being verified here)
+against a local scratch npm registry (Verdaccio), seeded with the actual
+currently-published `@pdpp/connector-protocol@0.0.1` and
+`@pdpp/collector-runtime@0.0.1` tarballs (pulled via `npm pack` from the real
+registry, matching production exactly) and PR #36's real commit history at
+`10f25a3cd6ab1e11aabab08a88dbf8fa301a919b`. `@semantic-release/commit-analyzer`
+computed `nextRelease.version = 1.0.0` (a `fix(protocol)!:` breaking-change
+commit in the batch, on an unpublished-above-`0.0.1` baseline), matching the
+version data-connect PR #36 commit `90a8f0c` independently proved by the same
+method. The pin script then rewrote collector-runtime's committed
+`connector-protocol` dependency to `1.0.0` before either package's
+`npm pack`/`npm publish` step ran. Verified directly by extracting each packed
+tarball's `package/package.json`:
+
+```
+@pdpp/collector-runtime@1.0.0 dependencies: {"@pdpp/connector-protocol": "1.0.0"}
+```
+
+`pdpp-collector-runtime-1.0.0.tgz` SHA-256 is
+`326cb45acdcb0b7ff31883cc7c9e6f17f0aee9f11cb238c3520291cdc76d594b`; SHA-512
+integrity is pinned in `pnpm-lock.yaml`
+(`sha512-f7qp3BSTZ0oKOq1zgDXRPUabsPSsf0peG6z86Kj5YgnHLV9gGf577zeeSaJlmO/LI+8KQ826VJyh0XGRdk4kCg==`).
+
+`pdpp-connector-protocol-1.0.0.tgz` SHA-256 is
+`6b5bccc7508427f73332bf6b2c03697754bd55b6bdec5e367e3b25f42d8781a4`; SHA-512
+integrity is pinned in `pnpm-lock.yaml`
+(`sha512-+H24ROEYbbkLgkM02gv9v/3z4S5xzFQ9EY5E7+GeJjyZp1hHOT9kjUzLHS25J5H/G77B4Y0UkocjodOYK4LfBQ==`).
+
 Both package archives are verified by
 `scripts/check-pdpp-vendored-package-pins.ts` before the PDPP train can be
 treated as installed.
 
-`pdpp-connector-protocol-0.0.2.tgz` was packed on 2026-08-29 from
-PDP-Connect/data-connect commit `75b4af02bbd18e5830d5e6f8230bf980fdc55014`
-("chore(connector-protocol): regenerate artifact.json against the
-outcomes-partition source head"), packed with `npm pack` from inside that
-repo's workspace so sibling dependencies resolve during the prepack build.
-Artifact SHA-256
-`17b8013bc030bc83cbd9e908a14a6096ae756c39cb788139effad2827d5bd124`
-(see SHA256SUMS); the matching sha512 integrity is pinned in `pnpm-lock.yaml`.
-The tarball is a straight pack of that commit with a clean worktree — no
-post-pack edits to its contents.
-
-This is the first vendored artifact at package version `0.0.2`
-(`CONNECTOR_PROTOCOL_VERSION` is `"0.0.2"`); every prior pin was `0.0.1`.
+`CONNECTOR_PROTOCOL_VERSION` (the wire-contract constant, unrelated to the
+npm package-release version above) remains `"0.0.2"` in this pin — unchanged
+from the prior pin. See `packages/connector-protocol/src/connector-runtime-protocol.ts`
+in data-connect: the wire-contract number bumps only when message shapes
+change, and PR #36's commits after the `0.0.2` wire pin (STREAM_EVIDENCE
+outcomes partition, capability gating, the connector-protocol version-pin fix
+itself) are release-process and dependency-resolution fixes, not wire-shape
+changes.
 
 It carries one breaking protocol change, in `STREAM_EVIDENCE`
 (`84dd39a63955fdd6ecc37520541269602d8c3406`). The scalar `covered` member is
