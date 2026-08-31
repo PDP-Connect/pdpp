@@ -293,6 +293,34 @@ function worldWritableTempDirs(): readonly string[] {
 }
 
 /**
+ * Directories masked UNCONDITIONALLY, under BOTH mechanisms, regardless of
+ * whether the caller passes `filesystemBindPath` — a declared invariant,
+ * not an emergent side effect of some other feature's plumbing. Independent
+ * review (external, second pass): `/run` — specifically `/run/user/<uid>`,
+ * the XDG runtime directory — was reachable from an isolated child even
+ * after FIX 5's original `worldWritableTempDirs()` masking, because `/run`
+ * was never in that list at all (bwrap never masked it, under any
+ * circumstance) and `unshare`'s masking of `/run` was only ever an
+ * incidental side effect of the escape-hatch staging logic below, which
+ * only runs when `filesystemBindPath` is set — so a caller invoking
+ * `spawnWithNetworkIsolation` with `isolate` set but no `filesystemBindPath`
+ * (the type signature allows this) got zero `/run` masking under `unshare`
+ * either. Reproduced live: `/run/user/<uid>` on a real host holds sockets
+ * for ssh-agent, the D-Bus session bus, PipeWire, and other same-uid
+ * tooling — reachable by the isolated child because `--map-root-user`/
+ * `unshare -r` only remaps the UID *inside* the new user namespace; the
+ * underlying host UID (and therefore same-uid `/run/user/<uid>` access) is
+ * unchanged. This is the exact escape class the original review flagged,
+ * one directory over. `ALWAYS_MASKED_DIRS` is kept separate from
+ * `worldWritableTempDirs()` (rather than folding `/run` into that list) so
+ * the "masked no matter what, no conditional path" property is visible at
+ * a glance in both `bwrapFilesystemClosureArgs` and
+ * `filesystemClosureShellPrelude` — both mask this list first and
+ * unconditionally, before anything that depends on `filesystemBindPath`.
+ */
+const ALWAYS_MASKED_DIRS: readonly string[] = ["/run"];
+
+/**
  * FIX 5 — closes the pathname-UDS filesystem escape this module's doc
  * comment describes (external review, independently reproduced): `--net`/
  * `--unshare-net` only isolates the NETWORK namespace, so a native
@@ -306,25 +334,36 @@ function worldWritableTempDirs(): readonly string[] {
  * MECHANISM (bwrap): after the existing `--dev-bind / /` (which keeps
  * everything a connector legitimately needs — cwd, `node_modules`, browser
  * binaries, the rest of the filesystem — working exactly as before),
- * `--tmpfs <dir>` is appended for every `worldWritableTempDirs()` entry.
- * bwrap applies mount operations in argv order, so each `--tmpfs` masks
- * that directory with a fresh, empty tmpfs, hiding whatever real files
+ * `--tmpfs <dir>` is appended for every `ALWAYS_MASKED_DIRS` entry FIRST,
+ * unconditionally, then every `worldWritableTempDirs()` entry. bwrap
+ * applies mount operations in argv order, so each `--tmpfs` masks that
+ * directory with a fresh, empty tmpfs, hiding whatever real files
  * (including a foreign UDS) live there on the host — proved empirically: a
  * `curl --unix-socket` to a socket bound outside `filesystemBindPath` fails
  * with "No such file or directory" under this construction, while a normal
  * write to e.g. `/tmp/scratch` still succeeds (the tmpfs is real, just
  * fresh). `--bind <filesystemBindPath> <filesystemBindPath>` is appended
- * last (after the masking `--tmpfs` calls) ONLY when `filesystemBindPath`
- * is provided, re-exposing that one directory at its real path — this is
- * how the caller's own evidence workspace (and the UDS bridge socket inside
- * it) stays reachable even though the temp-dir tree around it is now empty.
+ * last (after every masking `--tmpfs`) ONLY when `filesystemBindPath` is
+ * provided, re-exposing that one directory at its real path — this is how
+ * the caller's own evidence workspace (and the UDS bridge socket inside it)
+ * stays reachable even though the temp-dir tree around it is now empty.
+ * `ALWAYS_MASKED_DIRS` is masked whether or not `filesystemBindPath` is
+ * set — it does not depend on that option at all.
  *
  * MECHANISM (unshare): `unshare --net` alone shares the parent's existing
  * mount namespace unchanged, so there is nothing to mask without also
  * unsharing mounts. `-m`/`--mount` is added (composes with the existing
  * `--map-root-user --net`) to give the child its own mount namespace, then
- * the `sh -c` prelude this function builds masks each `worldWritableTempDirs()`
- * entry with a fresh tmpfs (`mount -t tmpfs tmpfs <dir>`).
+ * the `sh -c` prelude this function builds masks every `ALWAYS_MASKED_DIRS`
+ * entry FIRST, unconditionally (`mount -t tmpfs tmpfs <dir>`), then every
+ * `worldWritableTempDirs()` entry the same way — mirroring bwrap's ordering
+ * exactly, and, critically, NOT gated on whether `filesystemBindPath` is
+ * set (a prior version of this function nested `/run`'s masking inside the
+ * `filesystemBindPath` branch below, as a side effect of the escape-hatch
+ * staging step alone — independent review found this meant `/run` was left
+ * completely open under `unshare` whenever a caller omitted
+ * `filesystemBindPath`, since the type signature allows that. Masking is
+ * now a standalone, declared step that runs regardless).
  *
  * `filesystemBindPath` needs an "escape hatch" to survive that masking, NOT
  * a naive `mount --bind <path> <path>` run AFTER the mask: once
@@ -337,32 +376,36 @@ function worldWritableTempDirs(): readonly string[] {
  * "couldn't connect" — under exactly this naive ordering). The fix: bind
  * `filesystemBindPath` into a namespace-private staging point BEFORE any
  * masking touches its ancestor, then bind that staging copy back onto the
- * real path AFTER masking. The staging point itself lives inside a fresh
- * tmpfs mounted over `/run` (a standard FHS directory on every Linux host,
- * safe to mask for the same reason `/tmp` is — ephemeral runtime state a
- * connector has no legitimate reason to depend on during an isolated replay
- * run): masking `/run` first, then `mkdir`-ing and bind-mounting the
- * staging directory INSIDE that fresh tmpfs, guarantees nothing is ever
- * written to the real host filesystem (the tmpfs — and everything created
- * inside it — is discarded when the namespace exits) while still giving the
- * bind mount a stable anchor that survives `/tmp` (or wherever
- * `filesystemBindPath` lives) being masked afterward. `--map-root-user`
- * already grants the capabilities (`CAP_SYS_ADMIN` inside the new
- * user+mount namespace) every `mount` call here needs; no additional
- * privilege is required beyond what unprivileged user-namespace creation
- * already grants.
+ * real path AFTER masking. The staging point itself lives inside `/run`
+ * (already masked, unconditionally, by the `ALWAYS_MASKED_DIRS` step above
+ * — a standard FHS directory on every Linux host, safe to mask for the same
+ * reason `/tmp` is: ephemeral runtime state a connector has no legitimate
+ * reason to depend on during an isolated replay run) so `mkdir`-ing and
+ * bind-mounting the staging directory INSIDE that fresh tmpfs guarantees
+ * nothing is ever written to the real host filesystem (the tmpfs — and
+ * everything created inside it — is discarded when the namespace exits)
+ * while still giving the bind mount a stable anchor that survives `/tmp`
+ * (or wherever `filesystemBindPath` lives) being masked afterward.
+ * `--map-root-user` already grants the capabilities (`CAP_SYS_ADMIN` inside
+ * the new user+mount namespace) every `mount` call here needs; no
+ * additional privilege is required beyond what unprivileged user-namespace
+ * creation already grants.
  */
 const UNSHARE_FS_ESCAPE_HATCH_DIR = "/run/pdpp-scenario-isolation-fsclosure-escape";
 function filesystemClosureShellPrelude(filesystemBindPath: string | undefined): string {
   const statements: string[] = [];
+  // Declared invariant, unconditional, first — see ALWAYS_MASKED_DIRS's doc
+  // comment: this must NOT depend on filesystemBindPath being set.
+  for (const dir of ALWAYS_MASKED_DIRS) {
+    statements.push(`mount -t tmpfs tmpfs ${shQuote(dir)} >/dev/null 2>&1`);
+  }
   const escapeHatch = shQuote(UNSHARE_FS_ESCAPE_HATCH_DIR);
   if (filesystemBindPath !== undefined) {
     // Stage BEFORE any masking below touches filesystemBindPath's ancestor
     // — see this function's doc comment for why a post-mask bind onto the
-    // same path does not work. /run is masked first so the staging
-    // directory itself is namespace-private (discarded on exit, never
-    // written to the real host filesystem).
-    statements.push("mount -t tmpfs tmpfs /run >/dev/null 2>&1");
+    // same path does not work. /run is already masked (above), so the
+    // staging directory itself is namespace-private (discarded on exit,
+    // never written to the real host filesystem).
     statements.push(`mkdir -p ${escapeHatch} >/dev/null 2>&1`);
     statements.push(`mount --bind ${shQuote(filesystemBindPath)} ${escapeHatch} >/dev/null 2>&1`);
   }
@@ -378,6 +421,12 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined): 
 
 function bwrapFilesystemClosureArgs(filesystemBindPath: string | undefined): string[] {
   const args: string[] = [];
+  // Declared invariant, unconditional, first — mirrors
+  // filesystemClosureShellPrelude's ordering; see ALWAYS_MASKED_DIRS's doc
+  // comment.
+  for (const dir of ALWAYS_MASKED_DIRS) {
+    args.push("--tmpfs", dir);
+  }
   for (const dir of worldWritableTempDirs()) {
     args.push("--tmpfs", dir);
   }
