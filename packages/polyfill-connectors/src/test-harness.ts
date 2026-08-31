@@ -22,7 +22,7 @@
  * factories and pure helpers.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { DetailGapStartEntry, EmittedMessage, RecordData, ValidateRecord } from "./connector-runtime.ts";
 import { stringifyForJsonl } from "./safe-emit.ts";
@@ -148,6 +148,25 @@ export function makeRecordingEmit(validateRecord?: ValidateRecord): RecordingEmi
   };
 
   return { emit, emitRecord, emitted, events, skipped, protocolMessages };
+}
+
+/**
+ * Runs a Node child under a `--max-old-space-size` heap ceiling, for oracle
+ * tests where an intentionally-regressed code path is expected to abort the
+ * child with SIGABRT/OOM (the discriminator IS the crash). A bare
+ * `spawnSync(process.execPath, [...])` here lets the child's core dump land
+ * on disk and get picked up by systemd-coredump, which pages the owner's
+ * desktop for a crash the test fully expects and immediately asserts on.
+ * Wrapping via `prlimit --core=0 --` (no shell involved, so no quoting/
+ * injection surface) sets RLIMIT_CORE=0 for the child before exec, which
+ * suppresses the dump while leaving the abort signal and exit status the
+ * tests assert on (SIGABRT / 134) untouched.
+ */
+export function spawnHeapCappedOracle(
+  nodeArgs: readonly string[],
+  options: { encoding: "utf8"; timeout: number }
+): SpawnSyncReturns<string> {
+  return spawnSync("prlimit", ["--core=0", "--", process.execPath, ...nodeArgs], options);
 }
 
 /**
