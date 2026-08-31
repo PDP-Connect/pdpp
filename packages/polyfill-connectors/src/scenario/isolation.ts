@@ -93,7 +93,10 @@ import { type ChildProcess, type SpawnOptions, spawn, spawnSync } from "node:chi
  *  (user+net) namespace pair right now. `available: false` always carries a
  *  human-readable `reason` so a caller can print an honest capability
  *  statement instead of silently downgrading. */
-export type NamespaceIsolationCapability = { available: true } | { available: false; reason: string };
+export type IsolationMechanism = "unshare" | "bwrap";
+export type NamespaceIsolationCapability =
+  | { available: true; mechanism: IsolationMechanism }
+  | { available: false; reason: string };
 
 /**
  * Test-spawns `unshare -r -n true` (equivalent unshare short flags for
@@ -115,16 +118,55 @@ export function isNamespaceIsolationAvailable(): NamespaceIsolationCapability {
   }
   const probe = spawnSync("unshare", ["-r", "-n", "true"], { stdio: ["ignore", "ignore", "pipe"], timeout: 5000 });
   if (probe.error) {
-    return { available: false, reason: `unshare not runnable: ${probe.error.message}` };
+    const viaBwrap = probeBwrap();
+    return viaBwrap.available
+      ? viaBwrap
+      : { available: false, reason: `unshare not runnable: ${probe.error.message}; ${viaBwrap.reason}` };
   }
   if (probe.status !== 0) {
     const stderr = probe.stderr ? probe.stderr.toString("utf8").trim() : "";
+    // The common real-world case: AppArmor's restrict_unprivileged_userns
+    // denies a bare `unshare` while still permitting `bwrap`. Try it before
+    // declaring the host incapable.
+    const viaBwrap = probeBwrap();
+    if (viaBwrap.available) {
+      return viaBwrap;
+    }
     return {
       available: false,
-      reason: `unshare -r -n true exited ${String(probe.status)}${stderr ? `: ${stderr}` : ""} — unprivileged user namespaces are unavailable on this host (kernel sysctl or an LSM policy such as AppArmor's unprivileged-userns restriction is the usual cause)`,
+      reason: `unshare -r -n true exited ${String(probe.status)}${stderr ? `: ${stderr}` : ""} — unprivileged user namespaces are unavailable on this host (kernel sysctl or an LSM policy such as AppArmor's unprivileged-userns restriction is the usual cause); ${viaBwrap.reason}`,
     };
   }
-  return { available: true };
+  return { available: true, mechanism: "unshare" };
+}
+
+/**
+ * Second mechanism, tried only when `unshare` is denied.
+ *
+ * On Ubuntu 24.04+ the AppArmor profile `bwrap-userns-restrict` grants
+ * bubblewrap exactly the unprivileged-userns capability that
+ * `apparmor_restrict_unprivileged_userns=1` withholds from a bare
+ * `unshare`. So a host can report `kernel.unprivileged_userns_clone=1`,
+ * refuse `unshare -r -n true`, and still isolate correctly through
+ * `bwrap` — which is precisely the configuration this pilot first hit.
+ *
+ * Probed the same way and for the same reason as `unshare`: by actually
+ * spawning it. A profile can be absent, modified, or unloaded, so the
+ * only honest answer comes from running the thing.
+ */
+function probeBwrap(): NamespaceIsolationCapability {
+  const probe = spawnSync("bwrap", ["--unshare-net", "--dev-bind", "/", "/", "true"], {
+    stdio: ["ignore", "ignore", "pipe"],
+    timeout: 5000,
+  });
+  if (probe.error) {
+    return { available: false, reason: `bwrap not runnable: ${probe.error.message}` };
+  }
+  if (probe.status !== 0) {
+    const stderr = probe.stderr ? probe.stderr.toString("utf8").trim() : "";
+    return { available: false, reason: `bwrap --unshare-net exited ${String(probe.status)}${stderr ? `: ${stderr}` : ""}` };
+  }
+  return { available: true, mechanism: "bwrap" };
 }
 
 export interface SpawnWithNetworkIsolationOptions extends SpawnOptions {
@@ -136,7 +178,7 @@ export interface SpawnWithNetworkIsolationOptions extends SpawnOptions {
    * should set this from a prior `isNamespaceIsolationAvailable()` check
    * rather than assuming isolation is possible.
    */
-  isolate?: boolean;
+  isolate?: boolean | IsolationMechanism;
 }
 
 /**
@@ -166,6 +208,11 @@ function shQuote(value: string): string {
  * when isolation was requested but unavailable would be exactly the kind of
  * false safety claim this whole fix exists to prevent).
  */
+function detectMechanism(): IsolationMechanism {
+  const cap = isNamespaceIsolationAvailable();
+  return cap.available ? cap.mechanism : "unshare";
+}
+
 export function spawnWithNetworkIsolation(
   cmd: string,
   args: readonly string[],
@@ -177,5 +224,12 @@ export function spawnWithNetworkIsolation(
   }
   const innerCommand = [cmd, ...args].map(shQuote).join(" ");
   const shScript = `ip link set lo up >/dev/null 2>&1; exec ${innerCommand}`;
+  const mechanism = isolate === true ? detectMechanism() : isolate;
+  if (mechanism === "bwrap") {
+    // `--dev-bind / /` keeps the filesystem view identical to the parent so
+    // this stays a drop-in for the unshare path; only the network namespace
+    // differs. bwrap brings up loopback itself, so no `ip link` prelude.
+    return spawn("bwrap", ["--unshare-net", "--dev-bind", "/", "/", "--", "sh", "-c", `exec ${innerCommand}`], spawnOpts);
+  }
   return spawn("unshare", ["--map-root-user", "--net", "--", "sh", "-c", shScript], spawnOpts);
 }
