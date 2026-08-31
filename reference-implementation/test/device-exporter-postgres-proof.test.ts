@@ -1067,12 +1067,14 @@ if (DEDICATED_POSTGRES_URL) {
 
   test("PostgreSQL manifest drift keeps the failed reservation bound until retry", async () => {
     let changed = false;
+    let targetTriggerFires = 0;
     const backend = deterministicBackend({
       model: () => "pg-drift",
     });
     await withTempPostgres(async (url) => {
       await withServer(url, { semanticRetrievalBackend: backend }, async ({ asUrl }) => {
         const device = await enrollDevice(asUrl, `pg-drift-${Date.now()}`);
+        const unrelatedDevice = await enrollDevice(asUrl, `pg-drift-unrelated-${Date.now()}`);
         await setMessagesManifest((messages) => {
           // biome-ignore lint/performance/noDelete: establish the optional-field-absent baseline for this manifest proof.
           delete messages.schema.properties.updated_at;
@@ -1094,13 +1096,20 @@ if (DEDICATED_POSTGRES_URL) {
         const records = [recordFor("same-key", "drift-content")];
         requiredFirstRow(records, "manifest drift record").data.updated_at = "2026-07-16T13:00:00.000Z";
         const batch = batchFor(device, "pg-manifest-drift", records);
-        __setDeviceIngestPhaseFaultHookForTest(async (point, inputIndex) => {
-          // This fixture contains one target record. The hook is bounded to
-          // that record's durable boundary, never to deferred index work.
-          if (point !== "after-durable-record" || inputIndex !== 0 || changed) {
+        __setDeviceIngestPhaseFaultHookForTest(async (point, inputIndex, requestIdentity) => {
+          // The hook is a process-global test seam. Its request identity keeps
+          // this mutation bound to the target's durable boundary only.
+          if (
+            point !== "after-durable-record" ||
+            inputIndex !== 0 ||
+            requestIdentity?.deviceId !== device.device_id ||
+            requestIdentity.batchId !== batch.batch_id ||
+            changed
+          ) {
             return;
           }
           changed = true;
+          targetTriggerFires += 1;
           await setMessagesManifest((messages) => {
             messages.schema.properties.updated_at = { format: "date-time", type: "string" };
             messages.cursor_field = "updated_at";
@@ -1111,6 +1120,14 @@ if (DEDICATED_POSTGRES_URL) {
         });
         let first: Awaited<ReturnType<typeof postJson>>;
         try {
+          const unrelated = await postJson(
+            `${asUrl}/_ref/device-exporters/${encodeURIComponent(unrelatedDevice.device_id)}/ingest-batches`,
+            batchFor(unrelatedDevice, "pg-manifest-drift-unrelated", [recordFor("unrelated-key", "unrelated-content")]),
+            authHeaders(unrelatedDevice.device_token)
+          );
+          assert.equal(unrelated.status, 201, JSON.stringify(unrelated.body));
+          assert.equal(changed, false, "an unrelated batch cannot mutate the target manifest trigger");
+          assert.equal(targetTriggerFires, 0, "an unrelated batch cannot consume the target trigger");
           first = await postJson(
             `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
             batch,
@@ -1120,6 +1137,7 @@ if (DEDICATED_POSTGRES_URL) {
           __setDeviceIngestPhaseFaultHookForTest(null);
         }
         assert.equal(changed, true, "the target record mutates the registered manifest");
+        assert.equal(targetTriggerFires, 1, "the target trigger fires exactly once");
         assert.equal(
           backend.model(),
           initialSemanticCapabilityIdentity,

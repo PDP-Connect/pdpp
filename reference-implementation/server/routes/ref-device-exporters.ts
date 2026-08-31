@@ -76,7 +76,18 @@ const DEFAULT_FINAL_INDEX_PLAN_CONCURRENCY = 4;
 const DEFAULT_BATCH_ATTEMPT_DEADLINE_MS = 60_000;
 
 let deviceIngestStoreFaultHook: ((point: string) => void) | null = null;
-let deviceIngestPhaseFaultHook: ((point: string, inputIndex?: number) => void | Promise<void>) | null = null;
+interface DeviceIngestPhaseFaultRequestIdentity {
+  readonly batchId: string;
+  readonly deviceId: string;
+}
+
+type DeviceIngestPhaseFaultHook = (
+  point: string,
+  inputIndex?: number,
+  requestIdentity?: DeviceIngestPhaseFaultRequestIdentity
+) => void | Promise<void>;
+
+let deviceIngestPhaseFaultHook: DeviceIngestPhaseFaultHook | null = null;
 
 export function __setDeviceIngestStoreFaultHookForTest(hook: ((point: string) => void) | null): void {
   deviceIngestStoreFaultHook = typeof hook === "function" ? hook : null;
@@ -88,9 +99,7 @@ export function __setDeviceIngestStoreFaultHookForTest(hook: ((point: string) =>
  * phases adjacent to their committed boundaries lets the conformance oracle
  * prove restart behavior without replacing shipped route dependencies.
  */
-export function __setDeviceIngestPhaseFaultHookForTest(
-  hook: ((point: string, inputIndex?: number) => void | Promise<void>) | null
-): void {
+export function __setDeviceIngestPhaseFaultHookForTest(hook: DeviceIngestPhaseFaultHook | null): void {
   deviceIngestPhaseFaultHook = typeof hook === "function" ? hook : null;
 }
 
@@ -98,8 +107,12 @@ function maybeDeviceIngestStoreFault(point: string): void {
   deviceIngestStoreFaultHook?.(point);
 }
 
-async function maybeDeviceIngestPhaseFault(point: string, inputIndex?: number): Promise<void> {
-  await deviceIngestPhaseFaultHook?.(point, inputIndex);
+async function maybeDeviceIngestPhaseFault(
+  point: string,
+  requestIdentity: DeviceIngestPhaseFaultRequestIdentity,
+  inputIndex?: number
+): Promise<void> {
+  await deviceIngestPhaseFaultHook?.(point, inputIndex, requestIdentity);
 }
 
 // Serializes concurrent HTTP attempts for the SAME (deviceId, batchId) — an
@@ -2680,6 +2693,7 @@ async function processDeviceIngestBatch(
     // Accepted replays returned above intentionally do not consult the current
     // manifest or semantic backend. Every new/processing attempt does.
     const attemptContext = await compileDeviceAttemptContext(ctx, connectorId, records);
+    const phaseFaultRequestIdentity = Object.freeze({ batchId, deviceId });
 
     maybeDeviceIngestStoreFault("before-ensure-processing-batch");
     let reservation = await ctx.deviceExporterStore.ensureProcessingBatch({
@@ -2699,7 +2713,7 @@ async function processDeviceIngestBatch(
       res.status(reservation.httpStatus ?? 201).json(reservation.response ?? {});
       return;
     }
-    await maybeDeviceIngestPhaseFault("after-reservation");
+    await maybeDeviceIngestPhaseFault("after-reservation", phaseFaultRequestIdentity);
     // A retry can find a processing row from a prior manifest/backend. Keep its
     // durable cursor intact, replace only frozen facts, and repair every final
     // key below under the rebuilt attempt context.
@@ -2774,10 +2788,10 @@ async function processDeviceIngestBatch(
         ) {
           durableVersionByInputIndex.set(inputIndex, ingestOutcome.version);
         }
-        await maybeDeviceIngestPhaseFault("after-durable-record", inputIndex);
+        await maybeDeviceIngestPhaseFault("after-durable-record", phaseFaultRequestIdentity, inputIndex);
         assertBatchAttemptBefore(attemptDeadline);
       }
-      await maybeDeviceIngestPhaseFault("after-durable-phase");
+      await maybeDeviceIngestPhaseFault("after-durable-phase", phaseFaultRequestIdentity);
 
       // From here on every record is durable, so all that remains is derived
       // repair/publish plus the reservation's status transition.
@@ -2896,7 +2910,7 @@ async function processDeviceIngestBatch(
         semanticCapabilityIdentity: attemptContext.semanticCapabilityIdentity,
         sourceInstanceId,
       });
-      await maybeDeviceIngestPhaseFault("after-accepted-commit");
+      await maybeDeviceIngestPhaseFault("after-accepted-commit", phaseFaultRequestIdentity);
       res.status(201).json(response);
     } catch (err) {
       // Server-log-only diagnosability, mirroring the ingest-rejection
