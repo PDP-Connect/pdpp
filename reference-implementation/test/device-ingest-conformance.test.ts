@@ -1289,6 +1289,55 @@ async function runPhaseFaultMatrix(driver: Driver): Promise<void> {
     );
     assert.deepEqual(notificationVersions(notifications), committed ? [1] : []);
 
+    if (phase === "after-accepted-commit") {
+      // The acknowledgement is already durable, but deferred indexing has not
+      // been enqueued. A retry must replay that exact stored 201 without
+      // crediting any immediate projection; reconcile is the only convergence
+      // path exercised by this crash window.
+      assertStoredAcceptedResponse(beforeResume, device, request);
+      const replay = await driver.ingest(device, request);
+      assert.equal(replay.status, 201);
+      assert.deepEqual(replay.body, beforeResume.response_json, "the replay returns the exact stored 201 body");
+      assert.equal(
+        await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+        true,
+        "accepted-before-deferred-work retains the dirty scope before projection"
+      );
+      assert.deepEqual(
+        await driver.lexical(device.connector_instance_id, key),
+        [],
+        "immediate lexical projection must not be credited before reconcile"
+      );
+      assert.deepEqual(
+        await driver.semantic(device.connector_instance_id, key),
+        [],
+        "immediate semantic projection must not be credited before reconcile"
+      );
+
+      const reconcile = await runSearchIndexDirtyReconcileRound({ maxDurationMs: 5000, pageSize: 100 });
+      assert.deepEqual(
+        reconcile,
+        { attempted: 1, failed: 0, incomplete: false, recontended: 0, succeeded: 1 },
+        "the retained scope must converge through a successful reconcile, not a hidden failure"
+      );
+      assert.equal(
+        await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+        false,
+        "successful reconcile clears the accepted batch's dirty scope"
+      );
+      await assertAcceptedFinalState(driver, {
+        batchId: request.batch_id,
+        changes: 1,
+        content: `content-${phase}`,
+        device,
+        key,
+        notifications,
+        request,
+        version: 1,
+      });
+      return;
+    }
+
     const resumed = await driver.ingest(device, request);
     assert.equal(resumed.status, 201);
     const replay = await driver.ingest(device, request);
