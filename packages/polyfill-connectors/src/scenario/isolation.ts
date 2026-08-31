@@ -352,24 +352,41 @@ interface FilesystemBind {
  *   `/usr/bin/node` — hardcoding a "standard" location would silently break
  *   on exactly this kind of setup, which is the failure mode default-deny
  *   exists to convert from silent to loud.
- * - `~/.cache/ms-playwright` (ro), when it exists: Patchright/Playwright's
- *   browser-binary cache (`browser-har-replay.ts`'s `import("patchright")`
- *   path) resolves Chromium/Firefox/WebKit binaries here by default, outside
- *   `REPO_ROOT` — confirmed via this package's own
+ * - The Playwright/Patchright browser-binary cache (ro), when it exists:
+ *   `PLAYWRIGHT_BROWSERS_PATH`, if set in this process's own environment, is
+ *   read and honored — Playwright/Patchright itself resolves browser
+ *   binaries relative to that override when present (confirmed via
+ *   Playwright's own resolution order), so a caller running with a
+ *   non-default browser path gets that path bound, not silently ignored in
+ *   favor of the default. Absent an override, this falls back to
+ *   `~/.cache/ms-playwright` (`browser-har-replay.ts`'s
+ *   `import("patchright")` path resolves Chromium/Firefox/WebKit binaries
+ *   here by default, outside `REPO_ROOT` — confirmed via this package's own
  *   `scripts/install-patchright-browser.ts`, which downloads into exactly
- *   this location absent a `PLAYWRIGHT_BROWSERS_PATH` override. Optional
- *   (bind-if-present) because a `recorded-http`-only run never launches a
- *   browser and the directory may not exist in that environment (e.g. a
- *   minimal CI image) — that absence is not a defect in THIS fix.
+ *   this location absent the env override). Optional (bind-if-present)
+ *   because a `recorded-http`-only run never launches a browser and the
+ *   directory may not exist in that environment (e.g. a minimal CI image) —
+ *   that absence is not a defect in THIS fix. If `PLAYWRIGHT_BROWSERS_PATH`
+ *   IS set but the directory it names does not exist, nothing is bound for
+ *   it — a run that then launches a browser fails loudly with ENOENT against
+ *   the real configured path, not a silent fallback to the wrong cache.
  * - `/usr` (ro): dynamic linking (`ld-linux`, `libc`, `libcurl`, etc. — every
  *   entry `ldd node` / `ldd curl` reports on this host resolves under
  *   `/usr/lib*`) and every binary this module's own inner command can name
  *   (`node`, `curl`, `sh`).
- * - `/etc` (ro): `/etc/ssl` (TLS trust roots — even though this child's
- *   network is namespace-isolated, code paths that construct a TLS context
- *   before attempting to connect must not crash on a missing trust store)
- *   and `/etc/os-release`/`nsswitch.conf`-class files some runtime/library
- *   code probes unconditionally.
+ * - `/etc` (ro), bound WHOLE, not a narrow subset: `/etc/ssl` (TLS trust
+ *   roots), `nsswitch.conf`/`passwd`/`group` (glibc NSS resolution),
+ *   `os-release`, and `ld.so.cache`/`ld.so.preload` are all confirmed
+ *   touched by `node`/`curl` alone (via `strace -e trace=openat`); a
+ *   Playwright-launched browser reads substantially more of `/etc`
+ *   (fontconfig, D-Bus machine-id, locale data, its own crypto/cert config)
+ *   that varies by distro and browser engine. Binding a curated subset risked
+ *   silently under-provisioning that browser surface on some future host;
+ *   the whole directory is bound instead and left readable — no new
+ *   privilege, since DAC still applies (the isolated child runs as the same
+ *   real UID as the parent, confirmed: `--map-root-user`/`--unshare-pid`
+ *   only remap namespaces, not the underlying UID `/etc/shadow`-class files
+ *   are already protected by on this host).
  * - `/proc`, `/dev` (bwrap's own `--proc`/`--dev`, not a bind of the host's):
  *   every process needs `/proc/self`, `/dev/null`, `/dev/urandom`, etc. to
  *   function as a process at all; bwrap synthesizes fresh, namespace-private
@@ -405,7 +422,7 @@ export function requiredFilesystemBinds(): readonly FilesystemBind[] {
     { path: "/usr", mode: "ro" },
     { path: "/etc", mode: "ro" },
   ];
-  const playwrightCache = join(homedir(), ".cache", "ms-playwright");
+  const playwrightCache = process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(), ".cache", "ms-playwright");
   if (existsSync(playwrightCache)) {
     binds.push({ path: playwrightCache, mode: "ro" });
   }
@@ -484,11 +501,24 @@ function requiredFhsCompatSymlinks(): readonly FhsCompatSymlink[] {
  * a Bitwarden vault socket, the codex-approval control socket — 24 live
  * sockets total) no matter how many directories got masked.
  *
- * MECHANISM (bwrap): the child's root is `--tmpfs /` — an empty, private
- * tmpfs, NOT the host's `/` — so nothing exists in the isolated view except
- * what this function explicitly binds back in: `--proc /proc`, `--dev
- * /dev`, every `requiredFilesystemBinds()` entry (`--ro-bind` or `--bind`
- * per its `mode`), and, last, `filesystemBindPath` if the caller passed one.
+ * MECHANISM (bwrap): `--unshare-pid` gives the child its own PID namespace
+ * (composing with the pre-existing `--unshare-net`) — without it, bwrap's
+ * `--proc /proc` mounts a FRESH procfs instance that still reflects the
+ * HOST's PID namespace (procfs is a view of whichever PID namespace the
+ * mounting process belongs to, independent of the mount being "fresh"), so
+ * an isolated child could enumerate and read `/proc/<pid>/cmdline` — full
+ * argv, which routinely carries secrets (`--token=...`, connection strings)
+ * — for every process on the host, not just its own subtree. Confirmed via
+ * an independent review's repro: without `--unshare-pid`, an isolated
+ * child's `ls /proc | grep -cE '^[0-9]+$'` showed 1683 of 1681 host
+ * processes (essentially the entire host process table); with it, the same
+ * probe shows only the child's own tiny subtree, matching what `unshare
+ * --pid --fork` (below) already did correctly. The child's root is
+ * `--tmpfs /` — an empty, private tmpfs, NOT the host's `/` — so nothing
+ * exists in the isolated view except what this function explicitly binds
+ * back in: `--proc /proc`, `--dev /dev`, every `requiredFilesystemBinds()`
+ * entry (`--ro-bind` or `--bind` per its `mode`), and, last,
+ * `filesystemBindPath` if the caller passed one.
  * A foreign UDS under `$HOME/.ssh/agent`, `/run/user/<uid>`, or any other
  * path outside that finite set has NO node in the isolated child's mount
  * table to be reached through — `curl --unix-socket <foreign-path>` fails
@@ -579,7 +609,7 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined): 
 }
 
 function bwrapFilesystemClosureArgs(filesystemBindPath: string | undefined): string[] {
-  const args: string[] = ["--tmpfs", "/", "--proc", "/proc", "--dev", "/dev"];
+  const args: string[] = ["--unshare-pid", "--tmpfs", "/", "--proc", "/proc", "--dev", "/dev"];
   for (const bind of requiredFilesystemBinds()) {
     args.push(bind.mode === "ro" ? "--ro-bind" : "--bind", bind.path, bind.path);
   }
