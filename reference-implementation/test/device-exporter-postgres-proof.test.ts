@@ -1229,6 +1229,11 @@ if (DEDICATED_POSTGRES_URL) {
           const elapsedMs = performance.now() - started;
           assert.equal(accepted.status, 201, JSON.stringify(accepted.body));
           assert.ok(elapsedMs < 6500, `deterministic overlap latency ${elapsedMs.toFixed(1)}ms exceeded 6500ms`);
+          // `201` proves durable acceptance, not immediate search visibility.
+          // Use the deferred lane's own settlement barrier before reading the
+          // lexical/semantic projections; the latency assertion above remains
+          // deliberately independent from deferred convergence.
+          await drainConnectorInstanceIndexWorkForTests();
           const counts = await postgresQuery(
             `SELECT
                (SELECT COUNT(*) FROM records WHERE connector_instance_id = $1 AND stream = 'messages' AND deleted = FALSE)::integer AS records,
