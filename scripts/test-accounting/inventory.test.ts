@@ -1036,6 +1036,10 @@ test("the PostgreSQL profile declares its exact live-gate skip baseline", async 
     "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
     "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
+    "requires --experimental-test-module-mocks (npm run test:whatsapp-no-whole-file-read)": 4,
+    "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)": 3,
+    "requires --experimental-test-module-mocks (spawns test/fixtures/manual-upload-write-error-server.ts directly)": 1,
+    "requires --experimental-test-module-mocks (npm run test:run-generation-fencing-terminal-write-failure)": 1,
   });
 });
 // FIFTH-PASS GATE FIX (2026-07-30): this hardcoded literal must track
@@ -1070,6 +1074,7 @@ test("the memory-default profile declares the exact current skip baseline", asyn
     "PDPP_TEST_POSTGRES_URL not set": 12,
     "PDPP_TEST_POSTGRES_URL unset or not a dedicated test URL": 2,
     "PDPP_TEST_POSTGRES_URL and PDPP_TEST_POSTGRES_RESTORE_URL are not both set": 1,
+    "bootstrap retry: an ordinary, uncontended bootstrap against real Postgres still completes normally": 1,
   });
 });
 test("the polyfill-connectors default profile declares the exact current skip baseline", async () => {
