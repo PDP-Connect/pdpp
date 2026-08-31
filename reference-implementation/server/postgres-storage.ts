@@ -1240,6 +1240,22 @@ async function acquireConnectorInstanceXactLock(client: PoolClient, connectorIns
 }
 
 /**
+ * Acquire a class of connector-instance locks in one stable order.  A class
+ * merge must never acquire A then B while another transaction acquires B then
+ * A: sorting the identity values makes that order independent of discovery.
+ */
+async function acquireConnectorInstanceXactLocks(
+  client: PoolClient,
+  connectorInstanceIds: readonly string[]
+): Promise<void> {
+  const ids = [...new Set(connectorInstanceIds)].sort();
+  for (const connectorInstanceId of ids) {
+    // biome-ignore lint/performance/noAwaitInLoops: advisory locks must be acquired in one deterministic order.
+    await acquireConnectorInstanceXactLock(client, connectorInstanceId);
+  }
+}
+
+/**
  * Test-only direct-invocation seam for `acquireConnectorInstanceXactLock`
  * (2026-08-10 red-team follow-up): the prior dedicated-lock-pool design had
  * a deterministic default-CI test (`__setConnectorInstancePostgresLockPoolForTest`)
@@ -1269,13 +1285,16 @@ export type PostgresTransactionClient = PoolClient;
 
 export async function withPostgresTransaction<T>(
   fn: (client: PoolClient) => Promise<T>,
-  options?: { lockConnectorInstanceId?: string }
+  options?: { lockConnectorInstanceId?: string; lockConnectorInstanceIds?: readonly string[] }
 ): Promise<T> {
   const client = await getPostgresPool().connect();
   try {
     await client.query("BEGIN");
     if (options?.lockConnectorInstanceId) {
       await acquireConnectorInstanceXactLock(client, options.lockConnectorInstanceId);
+    }
+    if (options?.lockConnectorInstanceIds) {
+      await acquireConnectorInstanceXactLocks(client, options.lockConnectorInstanceIds);
     }
     const value = await fn(client);
     await client.query("COMMIT");
@@ -5754,6 +5773,30 @@ async function mergeEquivalentPostgresConnectorInstances(
       }
       return;
     }
+    if (PG_ANY_TWO_OWNERS_TABLES.has(table)) {
+      // connector_state and grant_connector_state fail closed on any
+      // two-sided ownership, not only a same-stream collision: a legacy row
+      // on one stream and a canonical row on a different stream are both
+      // authoritative state that was never reconciled, and must not be
+      // silently combined. This matches the class-level preflight above and
+      // holds even if this function is ever called outside that preflight.
+      const both = await client.query(
+        `SELECT
+           EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $1) AS legacy_present,
+           EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $2) AS canonical_present`,
+        [legacyId, canonicalId]
+      );
+      if (both.rows[0].legacy_present && both.rows[0].canonical_present) {
+        throw new Error(
+          `Cannot coalesce local-device connector instance ${legacyId} → ${canonicalId}: ${table} has colliding owned state; manual reconciliation required.`
+        );
+      }
+      await client.query(`UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`, [
+        canonicalId,
+        legacyId,
+      ]);
+      return;
+    }
     const keys = await client.query(`SELECT ${uniqueCols.join(", ")} FROM ${table} WHERE connector_instance_id = $1`, [
       legacyId,
     ]);
@@ -6283,7 +6326,7 @@ async function assertNoUnresolvedPostgresLocalDeviceBindingCollision(client: Poo
     `SELECT canonical.connector_instance_id AS canonical_id,
             legacy.connector_instance_id    AS legacy_id
        FROM connector_instances canonical
-       JOIN connector_instances legacy
+        JOIN connector_instances legacy
          ON legacy.owner_subject_id = canonical.owner_subject_id
         AND legacy.connector_id     = canonical.connector_id
         AND legacy.source_kind      = 'local_device'
@@ -6305,6 +6348,213 @@ async function assertNoUnresolvedPostgresLocalDeviceBindingCollision(client: Poo
   }
 }
 
+interface ExactLocalDeviceBindingClass {
+  readonly canonicalId: string;
+  readonly connectorInstanceIds: readonly string[];
+  readonly legacyIds: readonly string[];
+}
+
+let postgresLocalDeviceDuplicateDiscoveryHookForTest:
+  | ((bindingClass: ExactLocalDeviceBindingClass) => Promise<void> | void)
+  | null = null;
+
+/** Narrow test seam for a writer that commits after discovery but before the class locks. */
+export function __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(
+  hook: ((bindingClass: ExactLocalDeviceBindingClass) => Promise<void> | void) | null
+): void {
+  postgresLocalDeviceDuplicateDiscoveryHookForTest = hook;
+}
+
+/**
+ * Read the complete duplicate class rooted at one enrolled canonical id.
+ * Repeating this query after the deterministic instance locks are held is the
+ * identity/source-binding revalidation boundary; it deliberately does not
+ * trust a pre-transaction candidate.
+ */
+async function findExactPostgresLocalDeviceBindingClass(
+  client: PoolClient,
+  canonicalId?: string
+): Promise<ExactLocalDeviceBindingClass | null> {
+  const canonical = await client.query<{ canonical_id: string }>(
+    `SELECT canonical.connector_instance_id AS canonical_id
+       FROM device_source_instances dsi
+       JOIN device_exporters de ON de.device_id = dsi.device_id
+       JOIN connector_instances canonical
+         ON canonical.connector_instance_id = dsi.connector_instance_id
+        AND canonical.owner_subject_id = de.owner_subject_id
+        AND canonical.connector_id = dsi.connector_id
+        AND canonical.source_kind = 'local_device'
+       WHERE dsi.source_kind = 'local_device'
+         AND canonical.source_binding_json <> '{}'::jsonb
+         ${canonicalId ? "AND canonical.connector_instance_id = $1" : ""}
+         AND EXISTS(
+           SELECT 1
+             FROM connector_instances legacy
+            WHERE legacy.owner_subject_id = canonical.owner_subject_id
+              AND legacy.connector_id = canonical.connector_id
+              AND legacy.source_kind = 'local_device'
+              AND legacy.source_binding_json = canonical.source_binding_json
+              AND legacy.source_binding_key <> canonical.source_binding_key
+              AND legacy.connector_instance_id <> canonical.connector_instance_id
+         )
+      ORDER BY canonical.connector_instance_id
+      LIMIT 1`,
+    canonicalId ? [canonicalId] : []
+  );
+  const [canonicalRow] = canonical.rows;
+  if (!canonicalRow) {
+    return null;
+  }
+
+  const legacy = await client.query<{ connector_instance_id: string }>(
+    `SELECT legacy.connector_instance_id
+       FROM connector_instances canonical
+       JOIN connector_instances legacy
+         ON legacy.owner_subject_id = canonical.owner_subject_id
+        AND legacy.connector_id = canonical.connector_id
+        AND legacy.source_kind = 'local_device'
+        AND legacy.source_binding_json = canonical.source_binding_json
+        AND legacy.source_binding_key <> canonical.source_binding_key
+        AND legacy.connector_instance_id <> canonical.connector_instance_id
+      WHERE canonical.connector_instance_id = $1
+      ORDER BY legacy.connector_instance_id`,
+    [canonicalRow.canonical_id]
+  );
+  const legacyIds = legacy.rows.map((row) => row.connector_instance_id);
+  if (legacyIds.length === 0) {
+    return null;
+  }
+  return {
+    canonicalId: canonicalRow.canonical_id,
+    connectorInstanceIds: [canonicalRow.canonical_id, ...legacyIds].sort(),
+    legacyIds,
+  };
+}
+
+async function assertPostgresConnectorInstanceClassCanMerge(
+  client: PoolClient,
+  bindingClass: ExactLocalDeviceBindingClass
+): Promise<void> {
+  const existingTables: string[] = [];
+  await sequentially(PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES, async (table) => {
+    if (await hasPostgresColumn(client, table, "connector_instance_id")) {
+      existingTables.push(table);
+    }
+  });
+
+  const references = await client.query<{ table_name: string }>(
+    `SELECT table_name
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND column_name = 'connector_instance_id'
+        AND table_name <> 'connector_instances'`
+  );
+  await sequentially(references.rows, async ({ table_name: table }) => {
+    if (existingTables.includes(table)) {
+      return;
+    }
+    const present = await client.query(
+      `SELECT 1 FROM ${pgIdentifier(table)} WHERE connector_instance_id = ANY($1::text[]) LIMIT 1`,
+      [bindingClass.legacyIds]
+    );
+    if ((present.rowCount ?? 0) > 0) {
+      throw new Error(
+        `Cannot coalesce local-device connector instance class ${bindingClass.canonicalId}: unhandled reference in ${table}; manual reconciliation required.`
+      );
+    }
+  });
+
+  await sequentially(existingTables, async (table) => {
+    if (PG_REBUILDABLE_INSTANCE_REFERENCE_TABLES.has(table)) {
+      return;
+    }
+    const uniqueCols = pgUniqueColumnsForLegacyRewrite(table);
+    if (uniqueCols === null) {
+      return;
+    }
+    if (uniqueCols.length === 0 || PG_ANY_TWO_OWNERS_TABLES.has(table)) {
+      // Some tables (singleton rows, or connector_state/grant_connector_state
+      // by policy below) must never have two class members each own an
+      // authoritative row, even when their per-key columns differ. A
+      // same-stream-only collision check would let a legacy row on stream A
+      // and a canonical row on stream B both survive the preflight, then
+      // silently combine two independently owned state histories that were
+      // never reconciled. Fail closed on any two-sided ownership instead.
+      const owners = await client.query<{ count: string }>(
+        `SELECT count(DISTINCT connector_instance_id)::text AS count
+           FROM ${pgIdentifier(table)}
+          WHERE connector_instance_id = ANY($1::text[])`,
+        [bindingClass.connectorInstanceIds]
+      );
+      if (Number(owners.rows[0]?.count ?? 0) > 1) {
+        throw new Error(
+          `Cannot coalesce local-device connector instance ${bindingClass.legacyIds[0]} → ${bindingClass.canonicalId}: ${table} has colliding owned state; manual reconciliation required.`
+        );
+      }
+      return;
+    }
+    const collision = await client.query(
+      `SELECT 1
+         FROM ${pgIdentifier(table)}
+        WHERE connector_instance_id = ANY($1::text[])
+        GROUP BY ${uniqueCols.join(", ")}
+       HAVING count(DISTINCT connector_instance_id) > 1
+        LIMIT 1`,
+      [bindingClass.connectorInstanceIds]
+    );
+    if ((collision.rowCount ?? 0) > 0) {
+      throw new Error(
+        `Cannot coalesce local-device connector instance ${bindingClass.legacyIds[0]} → ${bindingClass.canonicalId}: ${table} has colliding owned state; manual reconciliation required.`
+      );
+    }
+  });
+}
+
+/**
+ * Coalesce an exact post-enrollment legacy/stable duplicate after the
+ * canonicalization receipt is complete. A complete equivalence class is
+ * locked, revalidated, preflighted, and merged in one transaction. If a
+ * supported writer changes the class after discovery, this loop either sees
+ * that newer shape before mutation or rolls back and retries from scratch.
+ */
+async function coalesceExactPostgresLocalDeviceBindingDuplicates(client: PoolClient): Promise<void> {
+  for (;;) {
+    // biome-ignore lint/performance/noAwaitInLoops: each completed class changes the next class discovery and must commit independently.
+    const discovered = await findExactPostgresLocalDeviceBindingClass(client);
+    if (!discovered) {
+      return;
+    }
+    await postgresLocalDeviceDuplicateDiscoveryHookForTest?.(discovered);
+
+    await client.query("BEGIN");
+    try {
+      await acquireConnectorInstanceXactLocks(client, discovered.connectorInstanceIds);
+      const revalidated = await findExactPostgresLocalDeviceBindingClass(client, discovered.canonicalId);
+      if (
+        !revalidated ||
+        revalidated.connectorInstanceIds.length !== discovered.connectorInstanceIds.length ||
+        revalidated.connectorInstanceIds.some((id, index) => id !== discovered.connectorInstanceIds[index])
+      ) {
+        await client.query("ROLLBACK");
+        continue;
+      }
+      await assertPostgresConnectorInstanceClassCanMerge(client, revalidated);
+      for (const legacyId of revalidated.legacyIds) {
+        // biome-ignore lint/performance/noAwaitInLoops: each generic merger operates on the same locked class transaction.
+        await mergeEquivalentPostgresConnectorInstances(client, legacyId, revalidated.canonicalId);
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Rollback failure must not hide the coalescence failure.
+      }
+      throw err;
+    }
+  }
+}
+
 async function migratePostgresLocalDeviceConnectorInstances(
   client: PoolClient,
   { log = NOOP_STORAGE_LOG }: { log?: StorageLog } = {}
@@ -6322,10 +6572,11 @@ async function migratePostgresLocalDeviceConnectorInstances(
     nowIso: new Date().toISOString(),
   });
   if (!claim) {
-    // The receipt retires the ROW-REWRITING work, not the safety check. See
-    // `assertNoUnresolvedPostgresLocalDeviceBindingCollision` for why the
-    // collision sentinel still runs on every boot.
+    // The receipt retires the historical row scan, not exact identities
+    // created after it completed. Reject conflicting state first, then merge
+    // only exact one-sided duplicates through the existing fail-closed path.
     await assertNoUnresolvedPostgresLocalDeviceBindingCollision(client);
+    await coalesceExactPostgresLocalDeviceBindingDuplicates(client);
     return skipped;
   }
 
@@ -6460,6 +6711,7 @@ export async function readPostgresLocalDeviceCanonicalizationReceipt(): Promise<
 }
 
 const PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES = [
+  "connector_instance_credentials",
   "connector_state",
   "grant_connector_state",
   "records",
@@ -6499,8 +6751,21 @@ const PG_REBUILDABLE_INSTANCE_REFERENCE_TABLES = new Set([
   "connector_summary_evidence",
 ]);
 
+// connector_state and grant_connector_state are keyed per-stream, but a
+// same-stream-only collision check is not sufficient: a legacy identity can
+// authoritatively own state for one stream while a live writer commits new
+// state for a different stream on the canonical identity between discovery
+// and lock acquisition. Both sides then own part of the class's state, on
+// different streams, and a stream-keyed rewrite would silently combine two
+// state histories that were never reconciled. Treat any two-sided ownership
+// in these two tables as a fail-closed collision, exactly like the singleton
+// tables above, regardless of which streams are involved.
+const PG_ANY_TWO_OWNERS_TABLES = new Set(["connector_state", "grant_connector_state"]);
+
 function pgUniqueColumnsForLegacyRewrite(table: string): readonly string[] | null {
   switch (table) {
+    case "connector_instance_credentials":
+      return [];
     case "connector_state":
       return ["stream"];
     case "grant_connector_state":
