@@ -201,13 +201,12 @@ const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
   // reconcilePolyfillManifests's `referenceFixturesDir`/`manifestsDir` params) —
   // one hop deeper than this scanner's bounded parameter resolver follows.
   // Verified by direct inspection, not by the scanner, hence the allowlist entry.
-  // Re-derived 2026-08-10 (manual-upload-large-artifact RI-owner ruling closure):
-  // moved from line 96 to 103 after unrelated edits earlier in the file (a
-  // multi-line import and a multi-line type alias) added 7 net lines above
-  // this call site -- the function itself is unchanged. This entry is
+  // Re-derived 2026-08-30: the call site moved from line 103 to 98 after
+  // unrelated edits removed five lines above it -- the function itself is
+  // unchanged. This entry is
   // line-pinned by design (see this array's own doc comment above); it must
   // be re-derived whenever an edit anywhere above the call site shifts it.
-  "reference-implementation/server/polyfill-manifest-reconcile.ts:103",
+  "reference-implementation/server/polyfill-manifest-reconcile.ts:98",
   // readReviewedCompactionResidueMap() in version-disposition.ts:
   // readFileSync(path, "utf8") where `path` is compactionResidueReviewPath()
   // — process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH, an OPERATOR-supplied
