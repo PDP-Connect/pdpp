@@ -5773,6 +5773,30 @@ async function mergeEquivalentPostgresConnectorInstances(
       }
       return;
     }
+    if (PG_ANY_TWO_OWNERS_TABLES.has(table)) {
+      // connector_state and grant_connector_state fail closed on any
+      // two-sided ownership, not only a same-stream collision: a legacy row
+      // on one stream and a canonical row on a different stream are both
+      // authoritative state that was never reconciled, and must not be
+      // silently combined. This matches the class-level preflight above and
+      // holds even if this function is ever called outside that preflight.
+      const both = await client.query(
+        `SELECT
+           EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $1) AS legacy_present,
+           EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $2) AS canonical_present`,
+        [legacyId, canonicalId]
+      );
+      if (both.rows[0].legacy_present && both.rows[0].canonical_present) {
+        throw new Error(
+          `Cannot coalesce local-device connector instance ${legacyId} → ${canonicalId}: ${table} has colliding owned state; manual reconciliation required.`
+        );
+      }
+      await client.query(`UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`, [
+        canonicalId,
+        legacyId,
+      ]);
+      return;
+    }
     const keys = await client.query(`SELECT ${uniqueCols.join(", ")} FROM ${table} WHERE connector_instance_id = $1`, [
       legacyId,
     ]);
@@ -6448,12 +6472,21 @@ async function assertPostgresConnectorInstanceClassCanMerge(
     if (uniqueCols === null) {
       return;
     }
-    if (uniqueCols.length === 0) {
-      const singleton = await client.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM ${pgIdentifier(table)} WHERE connector_instance_id = ANY($1::text[])`,
+    if (uniqueCols.length === 0 || PG_ANY_TWO_OWNERS_TABLES.has(table)) {
+      // Some tables (singleton rows, or connector_state/grant_connector_state
+      // by policy below) must never have two class members each own an
+      // authoritative row, even when their per-key columns differ. A
+      // same-stream-only collision check would let a legacy row on stream A
+      // and a canonical row on stream B both survive the preflight, then
+      // silently combine two independently owned state histories that were
+      // never reconciled. Fail closed on any two-sided ownership instead.
+      const owners = await client.query<{ count: string }>(
+        `SELECT count(DISTINCT connector_instance_id)::text AS count
+           FROM ${pgIdentifier(table)}
+          WHERE connector_instance_id = ANY($1::text[])`,
         [bindingClass.connectorInstanceIds]
       );
-      if (Number(singleton.rows[0]?.count ?? 0) > 1) {
+      if (Number(owners.rows[0]?.count ?? 0) > 1) {
         throw new Error(
           `Cannot coalesce local-device connector instance ${bindingClass.legacyIds[0]} → ${bindingClass.canonicalId}: ${table} has colliding owned state; manual reconciliation required.`
         );
@@ -6717,6 +6750,17 @@ const PG_REBUILDABLE_INSTANCE_REFERENCE_TABLES = new Set([
   "semantic_search_backfill_progress",
   "connector_summary_evidence",
 ]);
+
+// connector_state and grant_connector_state are keyed per-stream, but a
+// same-stream-only collision check is not sufficient: a legacy identity can
+// authoritatively own state for one stream while a live writer commits new
+// state for a different stream on the canonical identity between discovery
+// and lock acquisition. Both sides then own part of the class's state, on
+// different streams, and a stream-keyed rewrite would silently combine two
+// state histories that were never reconciled. Treat any two-sided ownership
+// in these two tables as a fail-closed collision, exactly like the singleton
+// tables above, regardless of which streams are involved.
+const PG_ANY_TWO_OWNERS_TABLES = new Set(["connector_state", "grant_connector_state"]);
 
 function pgUniqueColumnsForLegacyRewrite(table: string): readonly string[] | null {
   switch (table) {

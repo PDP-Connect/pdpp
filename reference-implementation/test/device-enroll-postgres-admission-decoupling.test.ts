@@ -2187,6 +2187,202 @@ test("D9 adversarial (Postgres): state mutation after discovery rejects the lock
   );
 });
 
+test("D9 adversarial (Postgres): a different-stream state mutation after discovery rejects the locked class with zero changes", {
+  skip: DEDICATED_POSTGRES_URL ? false : "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener",
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: DEDICATED_POSTGRES_URL ?? "",
+      databaseName: tempDbName(),
+    },
+    async (url) => {
+      initDb(":memory:");
+      const server = await startServer({
+        asPort: 0,
+        autoEnrollEligibleSchedules: false,
+        databaseUrl: url,
+        dbPath: ":memory:",
+        quiet: true,
+        rsPort: 0,
+        storageBackend: "postgres",
+      });
+      await server.startupBackfillDone.catch(() => undefined);
+      const canonicalId = "cin_d9_other_stream_canonical";
+      const legacyId = "cin_d9_other_stream_legacy";
+      try {
+        await seedD9ExactDuplicateClass({
+          canonicalId,
+          deviceId: "dexp_d9_other_stream",
+          legacyIds: [legacyId],
+          localBindingName: "other-stream-race",
+          sourceInstanceId: "dsrc_d9_other_stream",
+        });
+        await createPostgresConnectorStateStore().putState(
+          { connectorId: "codex", connectorInstanceId: legacyId },
+          { messages: { cursor: "legacy" } }
+        );
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+
+        const discovered = deferred();
+        const continueCoalescence = deferred();
+        __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(async () => {
+          discovered.resolve();
+          await continueCoalescence.promise;
+        });
+        const startup = startServer({
+          asPort: 0,
+          autoEnrollEligibleSchedules: false,
+          databaseUrl: url,
+          dbPath: ":memory:",
+          quiet: true,
+          rsPort: 0,
+          storageBackend: "postgres",
+        });
+        await discovered.promise;
+        // The canonical identity now authoritatively owns a DIFFERENT stream
+        // than the one the legacy identity owns. A same-stream-only collision
+        // check would miss this and let the merge combine both state
+        // histories before deleting the legacy identity.
+        await createPostgresConnectorStateStore().putState(
+          { connectorId: "codex", connectorInstanceId: canonicalId },
+          { photos: { cursor: "canonical" } }
+        );
+        continueCoalescence.resolve();
+        await assert.rejects(startup, RE_CANNOT_COALESCE);
+        await closePostgresStorage().catch(() => undefined);
+
+        const verificationPool = new Pool({ connectionString: url });
+        try {
+          const identities = await verificationPool.query(
+            "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = ANY($1::text[]) ORDER BY connector_instance_id",
+            [[canonicalId, legacyId]]
+          );
+          assert.deepEqual(identities.rows, [
+            { connector_instance_id: canonicalId },
+            { connector_instance_id: legacyId },
+          ]);
+          const state = await verificationPool.query(
+            "SELECT connector_instance_id, stream, state_json FROM connector_state ORDER BY connector_instance_id, stream"
+          );
+          assert.deepEqual(state.rows, [
+            { connector_instance_id: canonicalId, state_json: { cursor: "canonical" }, stream: "photos" },
+            { connector_instance_id: legacyId, state_json: { cursor: "legacy" }, stream: "messages" },
+          ]);
+        } finally {
+          await verificationPool.end();
+        }
+      } finally {
+        __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(null);
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    }
+  );
+});
+
+test("D9 adversarial (Postgres): a different-stream grant-scoped state mutation after discovery rejects the locked class with zero changes", {
+  skip: DEDICATED_POSTGRES_URL ? false : "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener",
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: DEDICATED_POSTGRES_URL ?? "",
+      databaseName: tempDbName(),
+    },
+    async (url) => {
+      initDb(":memory:");
+      const server = await startServer({
+        asPort: 0,
+        autoEnrollEligibleSchedules: false,
+        databaseUrl: url,
+        dbPath: ":memory:",
+        quiet: true,
+        rsPort: 0,
+        storageBackend: "postgres",
+      });
+      await server.startupBackfillDone.catch(() => undefined);
+      const canonicalId = "cin_d9_grant_other_stream_canonical";
+      const legacyId = "cin_d9_grant_other_stream_legacy";
+      const grantId = "grant_d9_other_stream";
+      try {
+        await seedD9ExactDuplicateClass({
+          canonicalId,
+          deviceId: "dexp_d9_grant_other_stream",
+          legacyIds: [legacyId],
+          localBindingName: "grant-other-stream-race",
+          sourceInstanceId: "dsrc_d9_grant_other_stream",
+        });
+        await createPostgresConnectorStateStore().putState(
+          { connectorId: "codex", connectorInstanceId: legacyId, grantId },
+          { messages: { cursor: "legacy" } }
+        );
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+
+        const discovered = deferred();
+        const continueCoalescence = deferred();
+        __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(async () => {
+          discovered.resolve();
+          await continueCoalescence.promise;
+        });
+        const startup = startServer({
+          asPort: 0,
+          autoEnrollEligibleSchedules: false,
+          databaseUrl: url,
+          dbPath: ":memory:",
+          quiet: true,
+          rsPort: 0,
+          storageBackend: "postgres",
+        });
+        await discovered.promise;
+        // Same race, but the state is owned by the grant rather than the
+        // connector instance directly: the canonical identity's grant now
+        // authoritatively owns a DIFFERENT stream than the legacy identity's
+        // grant does.
+        await createPostgresConnectorStateStore().putState(
+          { connectorId: "codex", connectorInstanceId: canonicalId, grantId },
+          { photos: { cursor: "canonical" } }
+        );
+        continueCoalescence.resolve();
+        await assert.rejects(startup, RE_CANNOT_COALESCE);
+        await closePostgresStorage().catch(() => undefined);
+
+        const verificationPool = new Pool({ connectionString: url });
+        try {
+          const identities = await verificationPool.query(
+            "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = ANY($1::text[]) ORDER BY connector_instance_id",
+            [[canonicalId, legacyId]]
+          );
+          assert.deepEqual(identities.rows, [
+            { connector_instance_id: canonicalId },
+            { connector_instance_id: legacyId },
+          ]);
+          const grantState = await verificationPool.query(
+            "SELECT connector_instance_id, stream, state_json FROM grant_connector_state WHERE grant_id = $1 ORDER BY connector_instance_id, stream",
+            [grantId]
+          );
+          assert.deepEqual(grantState.rows, [
+            { connector_instance_id: canonicalId, state_json: { cursor: "canonical" }, stream: "photos" },
+            { connector_instance_id: legacyId, state_json: { cursor: "legacy" }, stream: "messages" },
+          ]);
+        } finally {
+          await verificationPool.end();
+        }
+      } finally {
+        __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(null);
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    }
+  );
+});
+
 test("D9 adversarial (Postgres): a three-row two-credential class rolls back as one unit", {
   skip: DEDICATED_POSTGRES_URL ? false : "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener",
 }, async () => {
