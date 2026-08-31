@@ -185,7 +185,9 @@ test("bootstrap retry: an error with no SQLSTATE code rethrows immediately", asy
 // ---------------------------------------------------------------------------
 
 test("bootstrap retry: an ordinary, uncontended bootstrap against real Postgres still completes normally", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_URL
+    ? false
+    : "bootstrap retry: an ordinary, uncontended bootstrap against real Postgres still completes normally",
   timeout: 30_000,
 }, async () => {
   const databaseName = "pdpp_test_bootstrap_deadlock_retry_smoke";
