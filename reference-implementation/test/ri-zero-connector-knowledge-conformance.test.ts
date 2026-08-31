@@ -730,6 +730,32 @@ test("falsifiability: a dynamic manifest-root selection (the legitimate 'pick a 
       );
     }
   );
+
+  const readAtLine = (line: number) =>
+    withSyntheticProductionFile(
+      `synthetic-exact-generic-read-${line}.ts`,
+      [
+        'import { readFile } from "node:fs/promises";',
+        ...Array.from({ length: line - 3 }, (_, index) => `// line ${index + 2}`),
+        "async function readManifestJson(path: string) {",
+        '  const raw = await readFile(path, "utf8");',
+        "  return JSON.parse(raw);",
+        "}",
+        "",
+      ].join("\n"),
+      (relPath) =>
+        scanFileDataLoads(
+          join(repoRoot, relPath),
+          "reference-implementation/server/polyfill-manifest-reconcile.ts",
+          repoRoot
+        )
+    );
+
+  assert.deepEqual(readAtLine(98), [], "the reviewed polyfill manifest call site must match its exact current line pin");
+  assert.ok(
+    readAtLine(99).some((violation) => violation.rule === "unresolvable-data-resource-load"),
+    "moving the identical call one line must invalidate the exemption and fail closed"
+  );
 });
 
 test("falsifiability (P3 fix): EXEMPT_DIR_SEGMENTS no longer exempts a nested directory sharing a name at any depth", () => {
