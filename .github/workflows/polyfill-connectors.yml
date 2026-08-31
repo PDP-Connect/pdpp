@@ -26,6 +26,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  write-freeze-guard:
+    # Move A ownership flip: connector source now begins in
+    # PDP-Connect/data-connectors. This repo's copy keeps running the
+    # product (DUALHOME-AUDIT.md: ~150 consuming files) but is frozen for
+    # direct connector-source edits. Fails a PR that touches connector
+    # source under packages/polyfill-connectors/connectors/** unless it
+    # carries the `connector-write-freeze-override` label. Deliberately
+    # narrower than the workflow's own path trigger: fixtures, docs, and
+    # scripts changes are not source edits and are not frozen.
+    name: write-freeze guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check for frozen-path connector source edits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HAS_OVERRIDE: ${{ contains(github.event.pull_request.labels.*.name, 'connector-write-freeze-override') }}
+        run: |
+          set -euo pipefail
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'packages/polyfill-connectors/connectors/**')
+          if [ -z "$CHANGED" ]; then
+            echo "No frozen connector-source paths touched."
+            exit 0
+          fi
+          echo "Frozen connector-source paths touched:"
+          echo "$CHANGED"
+          if [ "$HAS_OVERRIDE" = "true" ]; then
+            echo "connector-write-freeze-override label present — allowing."
+            exit 0
+          fi
+          echo ""
+          echo "packages/polyfill-connectors/connectors/ is frozen for direct edits."
+          echo "Connector work now begins in PDP-Connect/data-connectors — see AUTHORING.md there."
+          echo "Add the 'connector-write-freeze-override' label if this PR is an intentional exception."
+          exit 1
+
   verify:
     name: verify + test
     runs-on: ubuntu-latest
