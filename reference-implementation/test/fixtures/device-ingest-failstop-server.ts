@@ -3,7 +3,7 @@ import { PassThrough, Writable } from "node:stream";
 
 import { closeDb } from "../../server/db.ts";
 import { startServer } from "../../server/index.ts";
-import { closePostgresStorage, postgresQuery } from "../../server/postgres-storage.ts";
+import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../../server/postgres-storage.ts";
 import { makeLocalTransformerBackend } from "../../server/search-semantic.ts";
 
 class NeverExitingTransformerChild extends EventEmitter {
@@ -11,9 +11,11 @@ class NeverExitingTransformerChild extends EventEmitter {
   readonly stdout: PassThrough;
   readonly stderr: PassThrough;
   readonly stdin: Writable;
+  readonly onKill: (signal: NodeJS.Signals) => void;
 
-  constructor() {
+  constructor(onKill: (signal: NodeJS.Signals) => void) {
     super();
+    this.onKill = onKill;
     this.pid = process.pid;
     this.stdout = new PassThrough();
     this.stderr = new PassThrough();
@@ -24,7 +26,8 @@ class NeverExitingTransformerChild extends EventEmitter {
     });
   }
 
-  kill() {
+  kill(signal: NodeJS.Signals) {
+    this.onKill(signal);
     return true;
   }
 }
@@ -60,7 +63,12 @@ function failStopBackend() {
         deadlineMs: 30,
         killGraceMs: 30,
         queueLimit: 1,
-        spawnChild: () => new NeverExitingTransformerChild(),
+        spawnChild: () =>
+          new NeverExitingTransformerChild((signal) => {
+            if (signal === "SIGKILL") {
+              process.stdout.write(`${JSON.stringify({ event: "transformer-child-sigkill" })}\n`);
+            }
+          }),
         termGraceMs: 30,
         workLimit: 1,
       },
@@ -70,13 +78,21 @@ function failStopBackend() {
   // Automatic startup warmup would consume the deliberately nonresponsive
   // child before the fixture can publish its ready receipt, testing a
   // different lifecycle phase and making the intended request unreachable.
-  return { ...backend, prepare: undefined };
+  const { close } = backend;
+  return {
+    ...backend,
+    close: async () => {
+      await close?.();
+    },
+    prepare: undefined,
+  };
 }
 
 const mode = process.env.PDPP_FAILSTOP_FIXTURE_MODE;
 const databaseUrl = process.env.PDPP_FAILSTOP_FIXTURE_DATABASE_URL;
-if (!databaseUrl || (mode !== "fail" && mode !== "recover")) {
-  throw new Error("fail-stop fixture requires mode and database URL");
+const childAttachment = process.env.PDPP_FAILSTOP_FIXTURE_CHILD_ATTACHMENT;
+if (!(databaseUrl && childAttachment) || (mode !== "fail" && mode !== "recover")) {
+  throw new Error("fail-stop fixture requires mode, database URL, and a parent-minted child attachment");
 }
 
 process.env.PDPP_INGEST_BATCH_ATTEMPT_DEADLINE_MS = "5000";
@@ -86,6 +102,15 @@ process.env.DATABASE_URL = databaseUrl;
 process.env.PDPP_STORAGE_BACKEND = "postgres";
 
 const backend = mode === "fail" ? failStopBackend() : deterministicRecoveryBackend();
+// The parent admits this empty, guarded database before either child process
+// starts, then mints one single-use attachment per child. Claim it here before
+// the parent creates device rows; `startServer` still performs its ordinary
+// startup admission after this bootstrap, while the recovery child can safely
+// attach to the accepted rows it must replay.
+await initPostgresStorage(
+  { backend: "postgres", databaseUrl },
+  { testOnlyAlreadyAdmittedChildAttachment: childAttachment }
+);
 const server = await startServer({
   asPort: 0,
   awaitStartupBackfill: true,
@@ -124,7 +149,7 @@ async function shutdown() {
   await Promise.allSettled([
     new Promise((resolve) => server.asServer.close(resolve)),
     new Promise((resolve) => server.rsServer.close(resolve)),
-    backend.close?.(),
+    backend.close(),
     server.startupSummaryEvidenceSweepDone,
     server.stopClientEventDeliveryWorker(),
   ]);
