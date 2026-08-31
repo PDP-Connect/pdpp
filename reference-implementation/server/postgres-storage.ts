@@ -20,6 +20,7 @@ import {
   makeConnectorInstanceId,
   makeConnectorInstanceSourceBindingKey,
   nonEmptyString,
+  stableJson,
 } from "./connector-instance-utils.ts";
 import {
   ConnectorInstanceAdmissionError,
@@ -5696,7 +5697,8 @@ function legacyLocalDeviceConnectorId(connectorId: string, sourceInstanceId: str
 async function mergeEquivalentPostgresConnectorInstances(
   client: PoolClient,
   legacyId: string,
-  canonicalId: string
+  canonicalId: string,
+  { skipDeviceSourceInstanceRewrite = false }: { skipDeviceSourceInstanceRewrite?: boolean } = {}
 ): Promise<void> {
   if (legacyId === canonicalId) {
     return;
@@ -5704,6 +5706,9 @@ async function mergeEquivalentPostgresConnectorInstances(
 
   const existingTables: string[] = [];
   await sequentially(PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES, async (table) => {
+    if (skipDeviceSourceInstanceRewrite && table === "device_source_instances") {
+      return;
+    }
     if (await hasPostgresColumn(client, table, "connector_instance_id")) {
       existingTables.push(table);
     }
@@ -5721,7 +5726,7 @@ async function mergeEquivalentPostgresConnectorInstances(
         AND table_name <> 'connector_instances'`
   );
   await sequentially(references.rows, async ({ table_name: table }) => {
-    if (existingTables.includes(table)) {
+    if (existingTables.includes(table) || (skipDeviceSourceInstanceRewrite && table === "device_source_instances")) {
       return;
     }
     const present = await client.query(
@@ -6077,11 +6082,14 @@ async function enqueuePostgresLocalDeviceProjectionRepair(
     newConnectorId,
     nowIso,
     oldConnectorId,
+    repairConnectorInstanceId = connectorInstanceId,
   }: {
     connectorInstanceId: string;
     newConnectorId: string;
     nowIso: string;
     oldConnectorId: string;
+    /** The canonical identity that owns the rebuilt projection. */
+    repairConnectorInstanceId?: string;
   }
 ): Promise<number> {
   const scopes = new Set<string>();
@@ -6127,7 +6135,7 @@ async function enqueuePostgresLocalDeviceProjectionRepair(
          dirty = 1,
          marked_at = excluded.marked_at,
          revision = search_index_dirty.revision + 1`,
-      [connectorInstanceId, newConnectorId, stream, nowIso]
+      [repairConnectorInstanceId, newConnectorId, stream, nowIso]
     );
   });
   return scopes.size;
@@ -6350,8 +6358,37 @@ async function assertNoUnresolvedPostgresLocalDeviceBindingCollision(client: Poo
 
 interface ExactLocalDeviceBindingClass {
   readonly canonicalId: string;
+  readonly connectorId: string;
   readonly connectorInstanceIds: readonly string[];
   readonly legacyIds: readonly string[];
+}
+
+interface LocalDeviceBindingCandidate {
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly owner_subject_id: string;
+  readonly source_binding_json: unknown;
+  readonly source_binding_key: string;
+}
+
+/**
+ * Returns the stable local-device key only for a complete enrolled binding.
+ *
+ * This is the same identity reduction the enrollment and migration paths use:
+ * device and source ids identify an enrollment, while `local_binding_name`
+ * identifies the enduring connection. Keeping it here lets the COMPLETE
+ * receipt path recognize a stale full-binding key without reopening the
+ * migration input table.
+ */
+function stablePostgresLocalDeviceBindingKey(sourceBinding: unknown): string | null {
+  if (!sourceBinding || typeof sourceBinding !== "object" || Array.isArray(sourceBinding)) {
+    return null;
+  }
+  const localBindingName = (sourceBinding as { local_binding_name?: unknown }).local_binding_name;
+  if (typeof localBindingName !== "string" || localBindingName.length === 0) {
+    return null;
+  }
+  return makeConnectorInstanceSourceBindingKey({ kind: "local_device", local_binding_name: localBindingName });
 }
 
 let postgresLocalDeviceDuplicateDiscoveryHookForTest:
@@ -6366,8 +6403,13 @@ export function __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(
 }
 
 /**
- * Read the complete duplicate class rooted at one enrolled canonical id.
- * Repeating this query after the deterministic instance locks are held is the
+ * Read the complete duplicate class rooted at one stable-key canonical id.
+ *
+ * A COMPLETE canonicalization receipt forbids reading
+ * `device_source_instances`: it is the migration's unbounded input table.
+ * The durable connector-instance binding already contains all identity facts
+ * needed to recognize a post-enrollment stale full-binding key. Repeating
+ * this query after the deterministic instance locks are held remains the
  * identity/source-binding revalidation boundary; it deliberately does not
  * trust a pre-transaction candidate.
  */
@@ -6375,60 +6417,50 @@ async function findExactPostgresLocalDeviceBindingClass(
   client: PoolClient,
   canonicalId?: string
 ): Promise<ExactLocalDeviceBindingClass | null> {
-  const canonical = await client.query<{ canonical_id: string }>(
-    `SELECT canonical.connector_instance_id AS canonical_id
-       FROM device_source_instances dsi
-       JOIN device_exporters de ON de.device_id = dsi.device_id
-       JOIN connector_instances canonical
-         ON canonical.connector_instance_id = dsi.connector_instance_id
-        AND canonical.owner_subject_id = de.owner_subject_id
-        AND canonical.connector_id = dsi.connector_id
-        AND canonical.source_kind = 'local_device'
-       WHERE dsi.source_kind = 'local_device'
-         AND canonical.source_binding_json <> '{}'::jsonb
-         ${canonicalId ? "AND canonical.connector_instance_id = $1" : ""}
-         AND EXISTS(
-           SELECT 1
-             FROM connector_instances legacy
-            WHERE legacy.owner_subject_id = canonical.owner_subject_id
-              AND legacy.connector_id = canonical.connector_id
-              AND legacy.source_kind = 'local_device'
-              AND legacy.source_binding_json = canonical.source_binding_json
-              AND legacy.source_binding_key <> canonical.source_binding_key
-              AND legacy.connector_instance_id <> canonical.connector_instance_id
-         )
-      ORDER BY canonical.connector_instance_id
-      LIMIT 1`,
+  const candidates = await client.query<LocalDeviceBindingCandidate>(
+    `SELECT connector_instance_id, owner_subject_id, connector_id, source_binding_key, source_binding_json
+       FROM connector_instances
+      WHERE source_kind = 'local_device'
+        AND source_binding_json <> '{}'::jsonb
+        ${canonicalId ? "AND connector_instance_id = $1" : ""}
+      ORDER BY connector_instance_id`,
     canonicalId ? [canonicalId] : []
   );
-  const [canonicalRow] = canonical.rows;
-  if (!canonicalRow) {
-    return null;
+  for (const canonical of candidates.rows) {
+    const stableKey = stablePostgresLocalDeviceBindingKey(canonical.source_binding_json);
+    if (stableKey === null || canonical.source_binding_key !== stableKey) {
+      continue;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: candidate iteration stops at the first stable duplicate class; serial queries keep its identity selection deterministic.
+    const legacy = await client.query<{ connector_instance_id: string }>(
+      `SELECT connector_instance_id
+         FROM connector_instances
+        WHERE owner_subject_id = $1
+          AND connector_id = $2
+          AND source_kind = 'local_device'
+          AND source_binding_json = $3::jsonb
+          AND source_binding_key <> $4
+          AND connector_instance_id <> $5
+        ORDER BY connector_instance_id`,
+      [
+        canonical.owner_subject_id,
+        canonical.connector_id,
+        stableJson(canonical.source_binding_json),
+        canonical.source_binding_key,
+        canonical.connector_instance_id,
+      ]
+    );
+    if (legacy.rows.length > 0) {
+      const legacyIds = legacy.rows.map((row) => row.connector_instance_id);
+      return {
+        canonicalId: canonical.connector_instance_id,
+        connectorId: canonical.connector_id,
+        connectorInstanceIds: [canonical.connector_instance_id, ...legacyIds].sort(),
+        legacyIds,
+      };
+    }
   }
-
-  const legacy = await client.query<{ connector_instance_id: string }>(
-    `SELECT legacy.connector_instance_id
-       FROM connector_instances canonical
-       JOIN connector_instances legacy
-         ON legacy.owner_subject_id = canonical.owner_subject_id
-        AND legacy.connector_id = canonical.connector_id
-        AND legacy.source_kind = 'local_device'
-        AND legacy.source_binding_json = canonical.source_binding_json
-        AND legacy.source_binding_key <> canonical.source_binding_key
-        AND legacy.connector_instance_id <> canonical.connector_instance_id
-      WHERE canonical.connector_instance_id = $1
-      ORDER BY legacy.connector_instance_id`,
-    [canonicalRow.canonical_id]
-  );
-  const legacyIds = legacy.rows.map((row) => row.connector_instance_id);
-  if (legacyIds.length === 0) {
-    return null;
-  }
-  return {
-    canonicalId: canonicalRow.canonical_id,
-    connectorInstanceIds: [canonicalRow.canonical_id, ...legacyIds].sort(),
-    legacyIds,
-  };
+  return null;
 }
 
 async function assertPostgresConnectorInstanceClassCanMerge(
@@ -6517,12 +6549,13 @@ async function assertPostgresConnectorInstanceClassCanMerge(
  * supported writer changes the class after discovery, this loop either sees
  * that newer shape before mutation or rolls back and retries from scratch.
  */
-async function coalesceExactPostgresLocalDeviceBindingDuplicates(client: PoolClient): Promise<void> {
+async function coalesceExactPostgresLocalDeviceBindingDuplicates(client: PoolClient): Promise<number> {
+  let repairScopesEnqueued = 0;
   for (;;) {
     // biome-ignore lint/performance/noAwaitInLoops: each completed class changes the next class discovery and must commit independently.
     const discovered = await findExactPostgresLocalDeviceBindingClass(client);
     if (!discovered) {
-      return;
+      return repairScopesEnqueued;
     }
     await postgresLocalDeviceDuplicateDiscoveryHookForTest?.(discovered);
 
@@ -6541,7 +6574,20 @@ async function coalesceExactPostgresLocalDeviceBindingDuplicates(client: PoolCli
       await assertPostgresConnectorInstanceClassCanMerge(client, revalidated);
       for (const legacyId of revalidated.legacyIds) {
         // biome-ignore lint/performance/noAwaitInLoops: each generic merger operates on the same locked class transaction.
-        await mergeEquivalentPostgresConnectorInstances(client, legacyId, revalidated.canonicalId);
+        repairScopesEnqueued += await enqueuePostgresLocalDeviceProjectionRepair(client, {
+          connectorInstanceId: legacyId,
+          newConnectorId: revalidated.connectorId,
+          nowIso: new Date().toISOString(),
+          oldConnectorId: revalidated.connectorId,
+          repairConnectorInstanceId: revalidated.canonicalId,
+        });
+        // A COMPLETE receipt is the authority that the source table already
+        // points at the stable identity. This branch may not even inspect
+        // that unbounded migration input; ordinary/blocked/resume claims use
+        // the default path above and keep its source-row rewrite intact.
+        await mergeEquivalentPostgresConnectorInstances(client, legacyId, revalidated.canonicalId, {
+          skipDeviceSourceInstanceRewrite: true,
+        });
       }
       await client.query("COMMIT");
     } catch (err) {
@@ -6576,8 +6622,10 @@ async function migratePostgresLocalDeviceConnectorInstances(
     // created after it completed. Reject conflicting state first, then merge
     // only exact one-sided duplicates through the existing fail-closed path.
     await assertNoUnresolvedPostgresLocalDeviceBindingCollision(client);
-    await coalesceExactPostgresLocalDeviceBindingDuplicates(client);
-    return skipped;
+    return {
+      ...skipped,
+      repairScopesEnqueued: await coalesceExactPostgresLocalDeviceBindingDuplicates(client),
+    };
   }
 
   let { cursor } = claim;

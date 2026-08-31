@@ -49,6 +49,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { makeConnectorInstanceSourceBindingKey } from "../server/connector-instance-utils.ts";
 import {
   bootstrapPostgresSchema,
   closePostgresStorage,
@@ -409,6 +410,125 @@ if (POSTGRES_URL) {
         Number(after.rows[0]?.seq_scan) - Number(before.rows[0]?.seq_scan),
         0,
         "a complete receipt must skip the data phase before it reads device_source_instances at all"
+      );
+    });
+  });
+
+  test("a complete receipt coalesces a post-enrollment duplicate without reading the migration input", async () => {
+    await withTempDb(POSTGRES_URL, async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      const pool = getPostgresPool();
+      const completeReceipt = await readPostgresLocalDeviceCanonicalizationReceipt();
+      assert.equal(completeReceipt?.status, "complete", "the duplicate must be introduced after the receipt completed");
+      const now = "2026-01-01T00:00:00.000Z";
+      const sourceInstanceId = "src_complete_duplicate";
+      const canonicalId = "cin_complete_duplicate";
+      const legacyId = "cin_complete_duplicate_legacy";
+      const sourceBinding = {
+        device_id: DEVICE,
+        kind: "local_device",
+        local_binding_name: "complete-duplicate",
+        source_instance_id: sourceInstanceId,
+      };
+      const stableBindingKey = makeConnectorInstanceSourceBindingKey({
+        kind: "local_device",
+        local_binding_name: "complete-duplicate",
+      });
+
+      await pool.query(
+        `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+         VALUES ($1, $2, 'boot migration device', 'active', $3, $3)`,
+        [DEVICE, OWNER, now]
+      );
+      await pool.query(
+        `INSERT INTO connectors(connector_id, manifest, created_at)
+         VALUES ($1, '{"connector_id":"codex","streams":[]}'::jsonb, $2)`,
+        [CONNECTOR_KEY, now]
+      );
+      await pool.query(
+        `INSERT INTO connector_instances(
+           connector_instance_id, owner_subject_id, connector_id, display_name, status,
+           source_kind, source_binding_key, source_binding_json, created_at, updated_at)
+         VALUES ($1, $2, $3, 'Codex', 'active', 'local_device', $4, $5::jsonb, $6, $6),
+                ($7, $2, $3, 'Codex', 'active', 'local_device', $8, $5::jsonb, $6, $6)`,
+        [
+          canonicalId,
+          OWNER,
+          CONNECTOR_KEY,
+          stableBindingKey,
+          JSON.stringify(sourceBinding),
+          now,
+          legacyId,
+          makeConnectorInstanceSourceBindingKey(sourceBinding),
+        ]
+      );
+      await pool.query(
+        `INSERT INTO device_source_instances(
+           source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id,
+           source_kind, display_name, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'complete-duplicate', 'local_device', 'Codex', 'active', $5, $5)`,
+        [sourceInstanceId, DEVICE, CONNECTOR_KEY, canonicalId, now]
+      );
+      await pool.query(
+        `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+         VALUES ($1, $2, 'messages', '{"cursor":"preserved"}'::jsonb, $3)`,
+        [CONNECTOR_KEY, legacyId, now]
+      );
+      await pool.query(
+        `INSERT INTO lexical_search_index(connector_id, connector_instance_id, stream, record_key, field, value)
+         VALUES ($1, $2, 'messages', 'rk_complete_duplicate', 'body', 'legacy projection')`,
+        [CONNECTOR_KEY, legacyId]
+      );
+      await pool.query(
+        `INSERT INTO lexical_search_meta(connector_id, connector_instance_id, stream, fields_fingerprint, updated_at)
+         VALUES ($1, $2, 'messages', 'legacy-fingerprint', $3)`,
+        [CONNECTOR_KEY, legacyId, now]
+      );
+
+      const scansBefore = await scanCounts(pool, ["device_source_instances"]);
+      await bootstrapPostgresSchema();
+      const scansAfter = await scanCounts(pool, ["device_source_instances"]);
+
+      assert.equal(
+        delta(scansBefore, scansAfter, "device_source_instances"),
+        0,
+        "a COMPLETE boot must coalesce through connector_instances without reopening the migration input"
+      );
+      const instances = await pool.query<{ connector_instance_id: string }>(
+        "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = ANY($1::text[]) ORDER BY connector_instance_id",
+        [[canonicalId, legacyId]]
+      );
+      assert.deepEqual(
+        instances.rows,
+        [{ connector_instance_id: canonicalId }],
+        "the exact stale duplicate must still be coalesced on a COMPLETE boot"
+      );
+      const state = await pool.query<{ connector_instance_id: string }>(
+        "SELECT connector_instance_id FROM connector_state WHERE connector_instance_id = $1",
+        [canonicalId]
+      );
+      assert.deepEqual(
+        state.rows,
+        [{ connector_instance_id: canonicalId }],
+        "legacy-owned state must survive the coalescence"
+      );
+      const projections = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM lexical_search_index WHERE connector_instance_id = $1",
+        [legacyId]
+      );
+      assert.equal(
+        projections.rows[0]?.count,
+        "0",
+        "legacy rebuildable projections must be discarded, never repointed"
+      );
+      const dirty = await pool.query<{ connector_id: string; dirty: number; revision: string; stream: string }>(
+        "SELECT connector_id, stream, dirty, revision::text AS revision FROM search_index_dirty WHERE connector_instance_id = $1",
+        [canonicalId]
+      );
+      assert.deepEqual(
+        dirty.rows,
+        [{ connector_id: CONNECTOR_KEY, dirty: 1, revision: "1", stream: "messages" }],
+        "discarded post-receipt projections must queue canonical repair in the same transaction"
       );
     });
   });
