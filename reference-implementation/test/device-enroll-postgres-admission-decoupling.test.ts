@@ -25,18 +25,24 @@ import test from "node:test";
 import pg from "pg";
 
 import { COLLECTOR_PROTOCOL_VERSION } from "../server/collector-protocol.ts";
-import { withConnectorInstanceWrite } from "../server/connector-instance-write-coordinator.ts";
+import {
+  ConnectorInstanceAdmissionError,
+  connectorInstanceAdvisoryLockKey,
+  withConnectorInstanceWrite,
+} from "../server/connector-instance-write-coordinator.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { startServer as startServerBase } from "../server/index.ts";
 import {
   __setPostgresLocalDeviceDuplicateDiscoveryHookForTest,
   closePostgresStorage,
+  initPostgresStorage,
   postgresQuery,
 } from "../server/postgres-storage.ts";
 import { __setEnrollPhaseFaultHookForTest } from "../server/routes/ref-device-exporters.ts";
 import { createPostgresConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 import { createPostgresConnectorStateStore } from "../server/stores/connector-state-store.ts";
 import { createPostgresDeviceExporterStore } from "../server/stores/device-exporter-store.ts";
+import { commitTerminalRun, type ResolvedTerminalRunCommit } from "../server/stores/terminal-run-commit-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
@@ -2375,6 +2381,375 @@ test("D9 adversarial (Postgres): a different-stream grant-scoped state mutation 
         }
       } finally {
         __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(null);
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    }
+  );
+});
+
+function terminalRunCommitInput(overrides: Partial<ResolvedTerminalRunCommit> = {}): ResolvedTerminalRunCommit {
+  return {
+    collectionBoundary: "unscoped",
+    commitId: "commit-d9-terminal-race-1",
+    connectorId: "codex",
+    connectorInstanceId: "cin_d9_terminal_race_canonical",
+    deviceId: "dexp_d9_terminal_race",
+    envelopeHash: "a".repeat(64),
+    normalizedFacts: [{ checkpoint: "committed", collected: 0, coverage_statuses: ["collected"], stream: "photos" }],
+    runId: "run-d9-terminal-race-1",
+    sourceInstanceId: "dsrc_d9_terminal_race",
+    stateDelta: { photos: { cursor: "canonical-terminal-run" } },
+    ...overrides,
+  };
+}
+
+test("D9 adversarial (Postgres): a different-stream terminal-run commit after discovery rejects the locked class with zero changes", {
+  skip: DEDICATED_POSTGRES_URL ? false : "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener",
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: DEDICATED_POSTGRES_URL ?? "",
+      databaseName: tempDbName(),
+    },
+    async (url) => {
+      initDb(":memory:");
+      const server = await startServer({
+        asPort: 0,
+        autoEnrollEligibleSchedules: false,
+        databaseUrl: url,
+        dbPath: ":memory:",
+        quiet: true,
+        rsPort: 0,
+        storageBackend: "postgres",
+      });
+      await server.startupBackfillDone.catch(() => undefined);
+      const canonicalId = "cin_d9_terminal_race_canonical";
+      const legacyId = "cin_d9_terminal_race_legacy";
+      try {
+        await seedD9ExactDuplicateClass({
+          canonicalId,
+          deviceId: "dexp_d9_terminal_race",
+          legacyIds: [legacyId],
+          localBindingName: "terminal-race",
+          sourceInstanceId: "dsrc_d9_terminal_race",
+        });
+        // Legacy identity authoritatively owns "messages", exactly like the
+        // sibling different-stream tests above.
+        await createPostgresConnectorStateStore().putState(
+          { connectorId: "codex", connectorInstanceId: legacyId },
+          { messages: { cursor: "legacy" } }
+        );
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+
+        const discovered = deferred();
+        const continueCoalescence = deferred();
+        __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(async () => {
+          discovered.resolve();
+          await continueCoalescence.promise;
+        });
+        const startup = startServer({
+          asPort: 0,
+          autoEnrollEligibleSchedules: false,
+          databaseUrl: url,
+          dbPath: ":memory:",
+          quiet: true,
+          rsPort: 0,
+          storageBackend: "postgres",
+        });
+        await discovered.promise;
+        // Drive the REAL production terminal-run writer (not the
+        // createPostgresConnectorStateStore().putState helper the sibling
+        // tests use) against the canonical identity, for a DIFFERENT stream
+        // ("photos") than the legacy identity owns ("messages"). Matches the
+        // sibling tests' exact race shape: the hook has already fired
+        // (post-discovery, pre-lock), so the coalescer has not yet started
+        // its own transaction/lock acquisition on this connector instance —
+        // this write is therefore uncontended and commits normally. THEN
+        // continueCoalescence resolves, letting the coalescer proceed to
+        // BEGIN, acquire the class's connector-instance locks (now including
+        // canonicalId, already released by this commit), and revalidate.
+        // Revalidation must see the canonical identity now authoritatively
+        // owns "photos" (a different stream than legacy's "messages") and
+        // fail closed via assertPostgresConnectorInstanceClassCanMerge's
+        // any-two-owners check on connector_state — exactly the same
+        // detection path the sibling different-stream tests exercise, but
+        // reached through the real production terminal-run writer instead
+        // of the createPostgresConnectorStateStore().putState helper. This
+        // also exercises the lock-topology fix directly: commitTerminalRun's
+        // withPostgresTransaction call now takes lockConnectorInstanceId,
+        // so it acquires and releases the SAME advisory lock the coalescer
+        // will acquire next, in the same key space and (trivially, since
+        // uncontended here) succeeds before the coalescer ever contends it.
+        const terminalRunAttempt = await commitTerminalRun(
+          terminalRunCommitInput({ connectorInstanceId: canonicalId })
+        );
+        assert.equal(terminalRunAttempt.replayed, false);
+        continueCoalescence.resolve();
+        await assert.rejects(startup, RE_CANNOT_COALESCE);
+        await closePostgresStorage().catch(() => undefined);
+
+        const verificationPool = new Pool({ connectionString: url });
+        try {
+          const identities = await verificationPool.query(
+            "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = ANY($1::text[]) ORDER BY connector_instance_id",
+            [[canonicalId, legacyId]]
+          );
+          assert.deepEqual(identities.rows, [
+            { connector_instance_id: canonicalId },
+            { connector_instance_id: legacyId },
+          ]);
+          const state = await verificationPool.query(
+            "SELECT connector_instance_id, stream, state_json FROM connector_state ORDER BY connector_instance_id, stream"
+          );
+          // The terminal-run commit landed and committed BEFORE the
+          // coalescer ever contended the canonical identity's lock (it ran
+          // to completion during the discovery-hook pause, before
+          // continueCoalescence.resolve()), so it is a durable, legitimate,
+          // independent write. It must NOT be combined with legacy's row
+          // under one identity — the coalescer's own separate transaction
+          // is what fails closed and rolls back (already asserted above via
+          // assert.rejects(startup, RE_CANNOT_COALESCE)).
+          assert.deepEqual(state.rows, [
+            { connector_instance_id: canonicalId, state_json: { cursor: "canonical-terminal-run" }, stream: "photos" },
+            { connector_instance_id: legacyId, state_json: { cursor: "legacy" }, stream: "messages" },
+          ]);
+          // The terminal-run commit's own transaction (event + run-history +
+          // state, one commit/rollback unit) committed durably — it is not
+          // part of the coalescer's failed transaction, so its receipt must
+          // be fully present, not rolled back.
+          const events = await verificationPool.query("SELECT event_id FROM spine_events WHERE run_id = $1", [
+            "run-d9-terminal-race-1",
+          ]);
+          assert.equal(events.rows.length, 1);
+          const runs = await verificationPool.query("SELECT run_id, status FROM run_history WHERE run_id = $1", [
+            "run-d9-terminal-race-1",
+          ]);
+          assert.deepEqual(runs.rows, [{ run_id: "run-d9-terminal-race-1", status: "succeeded" }]);
+        } finally {
+          await verificationPool.end();
+        }
+      } finally {
+        __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(null);
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    }
+  );
+});
+
+test("D9 lock (Postgres, deterministic): a terminal-run commit genuinely blocked by another transaction holding the connector-instance lock rolls back its whole transaction with nothing durable written", {
+  skip: DEDICATED_POSTGRES_URL ? false : "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener",
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: DEDICATED_POSTGRES_URL ?? "",
+      databaseName: tempDbName(),
+    },
+    async (url) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+      const connectorInstanceId = "cin_d9_terminal_lock_contend";
+      const now = new Date().toISOString();
+      await postgresQuery(
+        `INSERT INTO connectors(connector_id, manifest) VALUES('codex', '{"connector_id":"codex","streams":[]}'::jsonb) ON CONFLICT DO NOTHING`
+      );
+      await postgresQuery(
+        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at)
+         VALUES($1, 'owner_local', 'codex', 'lock-contend', 'active', 'local_device', 'lock-contend-key', '{}'::jsonb, $2, $2)`,
+        [connectorInstanceId, now]
+      );
+      // Hold the SAME connector-instance advisory lock this test's
+      // commitTerminalRun call will need, on a separate raw connection, in
+      // an open (uncommitted) transaction — exactly modeling
+      // acquireConnectorInstanceXactLocks holding the lock while
+      // coalescence's merge transaction is still open. This proves the
+      // lock-topology fix creates REAL serialization (not just a
+      // revalidation side effect that happens to catch a prior commit): a
+      // concurrent transaction that already holds the lock genuinely blocks
+      // commitTerminalRun until commitTerminalRun's bounded lock_timeout
+      // (connectorInstanceLockWaitMs, default 2000ms) expires.
+      const holderPool = new Pool({ connectionString: url });
+      const holder = await holderPool.connect();
+      try {
+        await holder.query("BEGIN");
+        await holder.query("SELECT pg_advisory_xact_lock($1::bigint)", [
+          connectorInstanceAdvisoryLockKey(connectorInstanceId),
+        ]);
+
+        await assert.rejects(
+          commitTerminalRun(
+            terminalRunCommitInput({
+              commitId: "commit-d9-lock-contend-1",
+              connectorInstanceId,
+              runId: "run-d9-lock-contend-1",
+            })
+          ),
+          (err: unknown) => err instanceof ConnectorInstanceAdmissionError
+        );
+
+        // The terminal-run commit is transactional: event + run-history +
+        // state in one commit/rollback unit. Since the state write's lock
+        // acquisition itself failed (SQLSTATE 55P03 -> lock_timeout ->
+        // ConnectorInstanceAdmissionError, translated inside
+        // acquireConnectorInstanceXactLock), the whole withPostgresTransaction
+        // callback never ran and the transaction rolled back — nothing for
+        // this run should be durable.
+        const events = await postgresQuery("SELECT event_id FROM spine_events WHERE run_id = $1", [
+          "run-d9-lock-contend-1",
+        ]);
+        assert.deepEqual(events.rows, []);
+        const runs = await postgresQuery("SELECT run_id FROM run_history WHERE run_id = $1", ["run-d9-lock-contend-1"]);
+        assert.deepEqual(runs.rows, []);
+        const state = await postgresQuery("SELECT stream FROM connector_state WHERE connector_instance_id = $1", [
+          connectorInstanceId,
+        ]);
+        assert.deepEqual(state.rows, []);
+
+        await holder.query("ROLLBACK");
+      } finally {
+        holder.release();
+        await holderPool.end();
+      }
+
+      // Once the holder releases the lock, an otherwise-identical commit
+      // succeeds normally — proving the fix serializes rather than
+      // permanently wedging the connector instance.
+      const recovered = await commitTerminalRun(
+        terminalRunCommitInput({
+          commitId: "commit-d9-lock-contend-2",
+          connectorInstanceId,
+          runId: "run-d9-lock-contend-2",
+        })
+      );
+      assert.equal(recovered.replayed, false);
+
+      await closePostgresStorage().catch(() => undefined);
+    }
+  );
+});
+
+test("D9 legacy-target late writer (Postgres): a write against a just-deleted legacy connector_instance_id after successful coalescence does not resurrect combined state", {
+  skip: DEDICATED_POSTGRES_URL ? false : "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener",
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: DEDICATED_POSTGRES_URL ?? "",
+      databaseName: tempDbName(),
+    },
+    async (url) => {
+      initDb(":memory:");
+      const server = await startServer({
+        asPort: 0,
+        autoEnrollEligibleSchedules: false,
+        databaseUrl: url,
+        dbPath: ":memory:",
+        quiet: true,
+        rsPort: 0,
+        storageBackend: "postgres",
+      });
+      await server.startupBackfillDone.catch(() => undefined);
+      const canonicalId = "cin_d9_legacy_late_canonical";
+      const legacyId = "cin_d9_legacy_late_legacy";
+      try {
+        // A class with NO colliding owned state: the legacy identity owns
+        // nothing, so this class coalesces successfully (unlike the
+        // adversarial siblings above) and the legacy identity is deleted.
+        await seedD9ExactDuplicateClass({
+          canonicalId,
+          deviceId: "dexp_d9_legacy_late",
+          legacyIds: [legacyId],
+          localBindingName: "legacy-late-writer",
+          sourceInstanceId: "dsrc_d9_legacy_late",
+        });
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+
+        const restarted = await startServer({
+          asPort: 0,
+          autoEnrollEligibleSchedules: false,
+          databaseUrl: url,
+          dbPath: ":memory:",
+          quiet: true,
+          rsPort: 0,
+          storageBackend: "postgres",
+        });
+        await restarted.startupBackfillDone.catch(() => undefined);
+        await closeServer(restarted);
+
+        const preVerificationPool = new Pool({ connectionString: url });
+        try {
+          const identities = await preVerificationPool.query(
+            "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = ANY($1::text[]) ORDER BY connector_instance_id",
+            [[canonicalId, legacyId]]
+          );
+          // Coalescence succeeded: only the canonical identity remains.
+          assert.deepEqual(identities.rows, [{ connector_instance_id: canonicalId }]);
+        } finally {
+          await preVerificationPool.end();
+        }
+
+        // connector_state has NO foreign key to connector_instances
+        // (postgres-storage.ts:2368-2387), so nothing at the SCHEMA level
+        // stops a write from still landing on the now-deleted legacy id.
+        // createPostgresConnectorStateStore().putState DOES take the
+        // connector-instance advisory lock (connector-state-store.ts:338,
+        // `{ lockConnectorInstanceId: connectorInstanceId }`), but that lock
+        // only serializes against another transaction that is CONCURRENTLY
+        // holding the same connector-instance id's lock — it is not a
+        // liveness check that the id still exists, and nothing here is
+        // still holding the legacy id's lock (coalescence already committed
+        // and released it before this write starts). Prove, rather than
+        // assume, what currently happens: this write is expected to SUCCEED
+        // and create an orphaned row, because the lock is uncontended and no
+        // constraint prevents a write targeting an id that coalescence has
+        // already finished with and released.
+        const orphanWrite = await createPostgresConnectorStateStore().putState(
+          { connectorId: "codex", connectorInstanceId: legacyId },
+          { messages: { cursor: "late-writer-after-delete" } }
+        );
+        assert.deepEqual(orphanWrite.state, { messages: { cursor: "late-writer-after-delete" } });
+
+        const verificationPool = new Pool({ connectionString: url });
+        try {
+          const orphan = await verificationPool.query(
+            "SELECT connector_instance_id, stream, state_json FROM connector_state WHERE connector_instance_id = $1",
+            [legacyId]
+          );
+          // KNOWN, ACCEPTED behavior: the write succeeds and creates an
+          // orphaned row referencing a connector_instance_id that no longer
+          // exists in connector_instances. This is possible only because
+          // coalescence had ALREADY fully committed (legacy deleted, no
+          // in-flight merge) before this write ran — there is no race with
+          // an in-progress merge here, so the D9 fail-closed invariant is
+          // not violated: no OTHER identity's state was combined with this
+          // orphan. It is a known operator-visible side effect of the
+          // schema's missing FK, not a coalescence-correctness defect.
+          assert.deepEqual(orphan.rows, [
+            {
+              connector_instance_id: legacyId,
+              state_json: { cursor: "late-writer-after-delete" },
+              stream: "messages",
+            },
+          ]);
+          const canonicalState = await verificationPool.query(
+            "SELECT connector_instance_id, stream, state_json FROM connector_state WHERE connector_instance_id = $1",
+            [canonicalId]
+          );
+          // The canonical identity's own state (empty here) is untouched by
+          // the orphan write — the two histories are NOT combined.
+          assert.deepEqual(canonicalState.rows, []);
+        } finally {
+          await verificationPool.end();
+        }
+      } finally {
         await closeServer(server);
         await closePostgresStorage().catch(() => undefined);
         closeDb();
