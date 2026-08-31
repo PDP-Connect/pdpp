@@ -19,20 +19,27 @@
  * with no interfaces except loopback, so `curl`, a child `node`, a spawned
  * browser, etc. all physically have nowhere to send a non-loopback packet.
  *
- * MECHANISM: `unshare --map-root-user --net -- sh -c '<bring up lo>; exec
+ * MECHANISM: `unshare --map-root-user --net --mount --pid --fork -- sh -c
+ * '<bring up lo>; <filesystem closure — see PATHNAME-UDS ESCAPE below>; exec
  * <cmd> <args>'`. `--net` creates a new, empty network namespace (only a
  * down `lo` interface exists in a fresh netns); `--map-root-user` also
  * unshares a user namespace and maps the caller to root *inside* it, which
  * is what makes `--net` usable WITHOUT the `CAP_SYS_ADMIN`/root the bare
  * `--net` flag would otherwise require on the host — an unprivileged user
  * can create a user+net namespace pair and hold real capabilities (incl.
- * `CAP_NET_ADMIN`) only inside it. The `sh -c` prelude brings `lo` up
- * (`ip link set lo up`) before `exec`-ing the real command, because a fresh
- * netns's loopback starts DOWN — without this, 127.0.0.1 traffic (the
- * replay bridge, if reached via TCP loopback) would fail too, not just
- * external egress. `exec` (not a plain subshell call) replaces the shell
- * with the target process so signals/exit codes propagate normally and
- * there's no lingering `sh` in the process tree.
+ * `CAP_NET_ADMIN`) only inside it. `--mount` gives the child its own mount
+ * namespace (needed for the filesystem closure below) and `--pid --fork`
+ * gives it its own pid namespace (needed for that closure's post-pivot
+ * `mount -t proc proc /proc`, which an unprivileged mount namespace without
+ * its own pid namespace cannot perform — see `filesystemClosureShellPrelude`'s
+ * doc comment). The `sh -c` prelude brings `lo` up (`ip link set lo up`)
+ * before anything else, because a fresh netns's loopback starts DOWN —
+ * without this, 127.0.0.1 traffic (the replay bridge, if reached via TCP
+ * loopback) would fail too, not just external egress; it runs before the
+ * filesystem closure specifically so `ip` still resolves through the
+ * original, unmodified root. `exec` (not a plain subshell call) replaces
+ * the shell with the target process so signals/exit codes propagate
+ * normally and there's no lingering `sh` in the process tree.
  *
  * WHY THE BRIDGE NEEDS A UNIX DOMAIN SOCKET: a fresh network namespace's
  * loopback is its OWN loopback, disjoint from the parent namespace's
@@ -50,40 +57,58 @@
  * mode remains the only option (and the only one that could ever work) when
  * isolation is unavailable and the connector runs in the parent's own netns.
  *
- * PATHNAME-UDS ESCAPE (external review, closed by FIX 5 below): the exact
- * property that makes a UDS cross the netns boundary — it is a filesystem
- * object, not a network endpoint — is ALSO a hole in the isolation this
- * module claims: `--net`/`--unshare-net` only constrains the network
- * namespace, never the filesystem. A prior version of this module left the
- * isolated child's filesystem view IDENTICAL to the parent's
- * (`--dev-bind / /` for bwrap; plain `unshare --net` inherits the parent's
- * existing mount namespace unchanged) — so a NATIVE descendant the isolated
- * process spawns (`curl --unix-socket <path>`, not routed through this
- * package's JS `fetch`/`http`/`net` patching at all) could dial ANY
- * pathname UDS reachable on the shared filesystem, including one a foreign,
- * unrelated parent-namespace process happens to be listening on — reported
- * and independently reproduced: `unshare -r -n -- curl --unix-socket
- * /tmp/foreign.sock http://localhost/probe` reaches a socket the isolated
- * process was never supposed to be able to see. `--net` alone was never a
- * complete answer to "descendant network isolation" — it isolates the
- * network stack, not the filesystem, and a UDS is reachable through the
- * latter. `withFilesystemClosure` below closes this: it gives the isolated
- * child a FRESH, empty view of every conventional world-writable temp
- * directory (`/tmp`, `/var/tmp`, `/dev/shm`, and `os.tmpdir()` if it
- * resolves somewhere else via `TMPDIR`/`TMP`/`TEMP`) and re-exposes, at its
- * real path, ONLY the caller's own evidence-workspace directory (which
- * holds this run's bridge socket and nothing else) — so a `curl
- * --unix-socket <foreign-path>` inside the isolated child finds no such
- * file, while the bridge's own socket keeps resolving exactly where the
- * preload was told to dial it. The rest of the filesystem (`/usr`, `/lib`,
- * the repo checkout, `node_modules`, cwd, everything a connector's own code
- * or a spawned browser needs) stays bound exactly as before — only the
- * handful of directories a foreign pathname socket could plausibly live in
- * are masked, so this closes the actual reported gap without hand-
- * enumerating a minimal filesystem (which would risk silently breaking
- * legitimate connector execution — Playwright/Patchright browser binaries,
- * tsx's module resolution, etc. — on paths this module's author can't fully
- * enumerate in advance).
+ * PATHNAME-UDS ESCAPE — TWO REVIEW PASSES, TWO DIFFERENT REPAIRS:
+ *
+ * Pass 1 (external review) found that `--net`/`--unshare-net` only
+ * constrains the network namespace, never the filesystem: a prior version
+ * of this module left the isolated child's filesystem view IDENTICAL to the
+ * parent's (`--dev-bind / /` for bwrap; plain `unshare --net` inherits the
+ * parent's existing mount namespace unchanged), so a NATIVE descendant
+ * (`curl --unix-socket <path>`, not routed through this package's JS
+ * `fetch`/`http`/`net` patching at all) could dial ANY pathname UDS
+ * reachable on the shared filesystem — reported repro: `unshare -r -n --
+ * curl --unix-socket /tmp/foreign.sock http://localhost/probe`. The first
+ * repair (kept in git history, no longer present in this file) masked a
+ * hand-picked list of "conventional world-writable temp directories"
+ * (`/tmp`, `/var/tmp`, `/dev/shm`, `os.tmpdir()`) plus, after a second
+ * review round, `/run`.
+ *
+ * Pass 2 (independent second review) proved that repair architecturally
+ * cannot terminate: `--dev-bind / /` still stood, so the reachable set was
+ * "every path on the host that is not on the mask list" — and the list can
+ * only ever be finitely long while the escape it targets (any world-
+ * readable/writable path a foreign process might have put a socket under)
+ * is unbounded. `/run` was the SECOND directory found reachable this way,
+ * not the last: the reviewer went on to reach the REAL ssh-agent socket
+ * (under `$HOME/.ssh/agent/`, not `/run/user/<uid>` — an entirely different
+ * path the mask list never had, and never could enumerate in advance,
+ * because it depends on the CALLER's environment, not this module's code),
+ * the D-Bus session bus, a Bitwarden vault socket, browser native-messaging
+ * sockets, and the codex-approval-host control socket — 24 live sockets in
+ * total, none of them under any masked directory.
+ *
+ * `bwrapFilesystemClosureArgs`/`filesystemClosureShellPrelude` below replace
+ * mask-listing with DEFAULT-DENY:
+ * instead of starting from `--dev-bind / /` (everything visible) and
+ * subtracting a list of directories to hide, the isolated child's root is
+ * built from an empty `--tmpfs /` (nothing visible) and only the finite,
+ * named set of real paths this replay subprocess actually needs is bound
+ * back in, at its real location. That set is DERIVED — see
+ * `requiredFilesystemBinds()` below — from what this package's own spawn
+ * call, install script, and Node/pnpm layout declare as dependencies
+ * (the Node binary's own resolved path, `REPO_ROOT` which holds
+ * `node_modules`/tsx/every connector's source, Patchright's browser-binary
+ * cache directory, and the handful of standard OS directories dynamic
+ * linking and TLS need), not guessed or hand-curated independently of the
+ * code that actually requires them. A foreign UDS under `$HOME/.ssh/agent`,
+ * `/run/user/<uid>`, a Bitwarden vault directory, or literally any other
+ * path NOT in that derived set is unreachable, because nothing outside the
+ * set exists in the isolated child's filesystem view at all — closing the
+ * escape CLASS, not one more instance of it. A path missing from the
+ * derived set fails LOUDLY (the connector's own `require`/`import`/spawn
+ * fails with ENOENT against a real, diagnosable path) rather than silently
+ * widening the sandbox — the opposite failure direction from a mask list,
+ * where a missed entry fails open and invisibly.
  *
  * CAPABILITY DETECTION: unprivileged user-namespace creation is not
  * guaranteed available. It can be disabled at the kernel level
@@ -125,12 +150,13 @@
  *     // isolation isn't available skips wrapping entirely, same as before.
  *     isolate: capability.available ? capability.mechanism : false,
  *     // Re-exposes ONLY this run's own evidence-workspace directory (its
- *     // bridge socket) inside the fresh temp-dir view `withFilesystemClosure`
- *     // builds — see that function's doc comment. Omitting this still
- *     // isolates the network namespace, but leaves every conventional
- *     // world-writable temp directory fully visible to the child, which is
- *     // the exact gap FIX 5 closes; callers whose isolated child dials a UDS
- *     // bridge under a workspace directory must pass it.
+ *     // bridge socket) inside the otherwise-empty default-deny root — see
+ *     // `requiredFilesystemBinds()`'s and
+ *     // `bwrapFilesystemClosureArgs`/`filesystemClosureShellPrelude`'s doc
+ *     // comments. Omitting this still isolates the network namespace and
+ *     // the filesystem, but the child then has no path to a bridge socket
+ *     // at all; callers whose isolated child dials a UDS bridge under a
+ *     // workspace directory must pass it.
  *     filesystemBindPath: workspace.dir,
  *   });
  *   // child is a normal node:child_process ChildProcess — stdout/stdin/stderr,
@@ -138,7 +164,22 @@
  */
 
 import { type ChildProcess, type SpawnOptions, spawn, spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, readlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Repo root, derived from THIS module's own on-disk location
+ * (`packages/polyfill-connectors/src/scenario/isolation.ts`) rather than
+ * `process.cwd()` (which is set by the caller and not reliable) — four
+ * `dirname` levels up from this file lands at the repo root, the same
+ * directory `bin/scenario-verify.ts`'s own `PACKAGE_ROOT`/`REPO_ROOT`
+ * constants resolve to. Used by `requiredFilesystemBinds()` below: the
+ * entire `node_modules` tree (including `tsx`, every connector's runtime
+ * dependencies) and every connector's own source live under this path.
+ */
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
 /** Result of probing whether this host can actually create an isolated
  *  (user+net) namespace pair right now. `available: false` always carries a
@@ -226,13 +267,12 @@ function probeBwrap(): NamespaceIsolationCapability {
 export interface SpawnWithNetworkIsolationOptions extends SpawnOptions {
   /**
    * Absolute path of the caller's own evidence-workspace directory (holding
-   * this run's UDS bridge socket, if any) — the ONE path re-exposed, at its
-   * real location, inside the fresh/empty view `withFilesystemClosure`
-   * builds for every conventional world-writable temp directory. See FIX 5
-   * in this module's doc comment for why this is required to actually close
-   * the pathname-UDS escape, and `withFilesystemClosure`'s doc comment for
-   * the exact mechanism per `isolate` value. Ignored when `isolate` is
-   * falsy (no isolation requested, so nothing to close).
+   * this run's UDS bridge socket, if any) — the ONE additional path
+   * re-exposed, at its real location, inside the default-deny root
+   * `bwrapFilesystemClosureArgs`/`filesystemClosureShellPrelude` build (see
+   * `requiredFilesystemBinds()`'s doc comment for the base set every
+   * isolated child gets regardless of this option). Ignored when `isolate`
+   * is falsy (no isolation requested, so nothing to close).
    */
   filesystemBindPath?: string;
   /**
@@ -279,161 +319,297 @@ function detectMechanism(): IsolationMechanism {
 }
 
 /**
- * Every conventional world-writable location a foreign process could bind a
- * pathname UDS to. `os.tmpdir()` is included separately from the hardcoded
- * `/tmp` because it honors `TMPDIR`/`TMP`/`TEMP` and can resolve somewhere
- * else entirely; deduplicated so `os.tmpdir() === "/tmp"` (the common case)
- * doesn't produce a redundant mount. `/var/tmp` and `/dev/shm` are masked
- * for the same reason `/tmp` is: `drwxrwxrwt`, world-writable, a plausible
- * place for an unrelated process to have bound a listening UDS.
+ * A single real host path bound into the isolated child's otherwise-empty
+ * root. `mode: "rw"` is used only for `filesystemBindPath` (the caller's own
+ * evidence workspace, which the replay bridge writes into); every path this
+ * module derives on its own is `"ro"` — a connector replay has no legitimate
+ * reason to write into its own Node install, the repo checkout's
+ * `node_modules`, or a browser-binary cache.
  */
-function worldWritableTempDirs(): readonly string[] {
-  const dirs = new Set(["/tmp", "/var/tmp", "/dev/shm", tmpdir()]);
-  return [...dirs];
+interface FilesystemBind {
+  mode: "ro" | "rw";
+  path: string;
 }
 
 /**
- * Directories masked UNCONDITIONALLY, under BOTH mechanisms, regardless of
- * whether the caller passes `filesystemBindPath` — a declared invariant,
- * not an emergent side effect of some other feature's plumbing. Independent
- * review (external, second pass): `/run` — specifically `/run/user/<uid>`,
- * the XDG runtime directory — was reachable from an isolated child even
- * after FIX 5's original `worldWritableTempDirs()` masking, because `/run`
- * was never in that list at all (bwrap never masked it, under any
- * circumstance) and `unshare`'s masking of `/run` was only ever an
- * incidental side effect of the escape-hatch staging logic below, which
- * only runs when `filesystemBindPath` is set — so a caller invoking
- * `spawnWithNetworkIsolation` with `isolate` set but no `filesystemBindPath`
- * (the type signature allows this) got zero `/run` masking under `unshare`
- * either. Reproduced live: `/run/user/<uid>` on a real host holds sockets
- * for ssh-agent, the D-Bus session bus, PipeWire, and other same-uid
- * tooling — reachable by the isolated child because `--map-root-user`/
- * `unshare -r` only remaps the UID *inside* the new user namespace; the
- * underlying host UID (and therefore same-uid `/run/user/<uid>` access) is
- * unchanged. This is the exact escape class the original review flagged,
- * one directory over. `ALWAYS_MASKED_DIRS` is kept separate from
- * `worldWritableTempDirs()` (rather than folding `/run` into that list) so
- * the "masked no matter what, no conditional path" property is visible at
- * a glance in both `bwrapFilesystemClosureArgs` and
- * `filesystemClosureShellPrelude` — both mask this list first and
- * unconditionally, before anything that depends on `filesystemBindPath`.
+ * The derived, finite set of real paths this replay subprocess needs —
+ * REPLACES the old world-writable-temp-dir mask list. Each entry traces to a
+ * concrete requirement, not a guess:
+ *
+ * - `REPO_ROOT` (rw): `bin/scenario-verify.ts` spawns
+ *   `process.execPath ["--import", "tsx", connectorPath]` with `cwd:
+ *   PACKAGE_ROOT` — `tsx`, every connector's source, and the ENTIRE
+ *   `node_modules` tree (confirmed: this repo's pnpm store resolves fully
+ *   inside `REPO_ROOT`, no external symlink targets) live under the repo
+ *   checkout. `rw` because a connector may write scratch/cache state under
+ *   its own `node_modules` (e.g. a `.cache` a library maintains next to
+ *   itself) — read-only here would be a new, unrelated failure mode this fix
+ *   has no mandate to introduce.
+ * - The directory containing `process.execPath` (ro): the actual Node
+ *   binary the child re-execs as. Derived from `process.execPath` itself,
+ *   not hardcoded to a distro path, because this repo's Node is a
+ *   version-manager install (e.g. under `~/.local/share/mise/...`), not
+ *   `/usr/bin/node` — hardcoding a "standard" location would silently break
+ *   on exactly this kind of setup, which is the failure mode default-deny
+ *   exists to convert from silent to loud.
+ * - `~/.cache/ms-playwright` (ro), when it exists: Patchright/Playwright's
+ *   browser-binary cache (`browser-har-replay.ts`'s `import("patchright")`
+ *   path) resolves Chromium/Firefox/WebKit binaries here by default, outside
+ *   `REPO_ROOT` — confirmed via this package's own
+ *   `scripts/install-patchright-browser.ts`, which downloads into exactly
+ *   this location absent a `PLAYWRIGHT_BROWSERS_PATH` override. Optional
+ *   (bind-if-present) because a `recorded-http`-only run never launches a
+ *   browser and the directory may not exist in that environment (e.g. a
+ *   minimal CI image) — that absence is not a defect in THIS fix.
+ * - `/usr` (ro): dynamic linking (`ld-linux`, `libc`, `libcurl`, etc. — every
+ *   entry `ldd node` / `ldd curl` reports on this host resolves under
+ *   `/usr/lib*`) and every binary this module's own inner command can name
+ *   (`node`, `curl`, `sh`).
+ * - `/etc` (ro): `/etc/ssl` (TLS trust roots — even though this child's
+ *   network is namespace-isolated, code paths that construct a TLS context
+ *   before attempting to connect must not crash on a missing trust store)
+ *   and `/etc/os-release`/`nsswitch.conf`-class files some runtime/library
+ *   code probes unconditionally.
+ * - `/proc`, `/dev` (bwrap's own `--proc`/`--dev`, not a bind of the host's):
+ *   every process needs `/proc/self`, `/dev/null`, `/dev/urandom`, etc. to
+ *   function as a process at all; bwrap synthesizes fresh, namespace-private
+ *   instances of both rather than exposing the host's.
+ *
+ * `filesystemBindPath` (the caller's own evidence workspace / UDS bridge
+ * socket) is NOT part of this derived list — it is a per-call, per-run
+ * argument threaded through separately by `spawnWithNetworkIsolation`,
+ * exactly as before. `/bin`, `/lib`, `/lib64`, `/lib32`, `/libx32`, `/sbin`
+ * are NOT bind-mounted here at all — see `requiredFhsCompatSymlinks()`
+ * below: on a merged-usr layout (this host, and every current major distro)
+ * they are top-level SYMLINKS into `/usr/...`, not separate directories,
+ * and binding `/usr` does not recreate a symlink that has to exist AT THAT
+ * TOP-LEVEL PATH for `execvp`/the ELF loader to find it — confirmed
+ * empirically: `--ro-bind /usr /usr` alone produces `bwrap: execvp
+ * /usr/bin/dash: No such file or directory`, because dash's own ELF
+ * interpreter is `/lib64/ld-linux-x86-64.so.2`, an absolute path that does
+ * not exist in a root where only `/usr` was bound.
+ *
+ * A path that does not exist on this host is silently omitted only when
+ * explicitly documented above as optional (`~/.cache/ms-playwright`).
+ * Every other entry is REQUIRED: `spawnWithNetworkIsolation` does not probe
+ * for `REPO_ROOT`/`process.execPath`'s directory/`/usr`/`/etc` existing —
+ * their absence would mean Node itself could not have started, so failure
+ * there surfaces as bwrap's own loud, diagnostic bind error, never a silent
+ * widening of the sandbox.
  */
-const ALWAYS_MASKED_DIRS: readonly string[] = ["/run"];
+export function requiredFilesystemBinds(): readonly FilesystemBind[] {
+  const nodeDir = dirname(process.execPath);
+  const binds: FilesystemBind[] = [
+    { path: REPO_ROOT, mode: "rw" },
+    { path: nodeDir, mode: "ro" },
+    { path: "/usr", mode: "ro" },
+    { path: "/etc", mode: "ro" },
+  ];
+  const playwrightCache = join(homedir(), ".cache", "ms-playwright");
+  if (existsSync(playwrightCache)) {
+    binds.push({ path: playwrightCache, mode: "ro" });
+  }
+  return dedupeBinds(binds);
+}
+
+/** Drops any bind whose path is identical to, or a filesystem descendant of,
+ *  an earlier entry in the list — binding both would either be a harmless
+ *  redundant mount or (worse) a `rw` ancestor accidentally masking a
+ *  narrower `ro` intent. Order-preserving: the FIRST occurrence wins. */
+function dedupeBinds(binds: readonly FilesystemBind[]): FilesystemBind[] {
+  const kept: FilesystemBind[] = [];
+  for (const bind of binds) {
+    const normalized = resolve(bind.path);
+    const alreadyCovered = kept.some(
+      (existing) => normalized === existing.path || normalized.startsWith(`${existing.path}${sep}`)
+    );
+    if (!alreadyCovered) {
+      kept.push({ path: normalized, mode: bind.mode });
+    }
+  }
+  return kept;
+}
 
 /**
- * FIX 5 — closes the pathname-UDS filesystem escape this module's doc
- * comment describes (external review, independently reproduced): `--net`/
- * `--unshare-net` only isolates the NETWORK namespace, so a native
- * descendant (`curl --unix-socket <path>`, a spawned helper binary — none
- * of it routed through this package's JS-layer `fetch`/`http`/`net`
- * patching) could previously still dial any pathname UDS reachable on the
- * shared filesystem, because the isolated child's filesystem view was left
- * completely unrestricted (`--dev-bind / /` for bwrap; the parent's
- * existing mount namespace, untouched, for a plain `unshare --net`).
- *
- * MECHANISM (bwrap): after the existing `--dev-bind / /` (which keeps
- * everything a connector legitimately needs — cwd, `node_modules`, browser
- * binaries, the rest of the filesystem — working exactly as before),
- * `--tmpfs <dir>` is appended for every `ALWAYS_MASKED_DIRS` entry FIRST,
- * unconditionally, then every `worldWritableTempDirs()` entry. bwrap
- * applies mount operations in argv order, so each `--tmpfs` masks that
- * directory with a fresh, empty tmpfs, hiding whatever real files
- * (including a foreign UDS) live there on the host — proved empirically: a
- * `curl --unix-socket` to a socket bound outside `filesystemBindPath` fails
- * with "No such file or directory" under this construction, while a normal
- * write to e.g. `/tmp/scratch` still succeeds (the tmpfs is real, just
- * fresh). `--bind <filesystemBindPath> <filesystemBindPath>` is appended
- * last (after every masking `--tmpfs`) ONLY when `filesystemBindPath` is
- * provided, re-exposing that one directory at its real path — this is how
- * the caller's own evidence workspace (and the UDS bridge socket inside it)
- * stays reachable even though the temp-dir tree around it is now empty.
- * `ALWAYS_MASKED_DIRS` is masked whether or not `filesystemBindPath` is
- * set — it does not depend on that option at all.
- *
- * MECHANISM (unshare): `unshare --net` alone shares the parent's existing
- * mount namespace unchanged, so there is nothing to mask without also
- * unsharing mounts. `-m`/`--mount` is added (composes with the existing
- * `--map-root-user --net`) to give the child its own mount namespace, then
- * the `sh -c` prelude this function builds masks every `ALWAYS_MASKED_DIRS`
- * entry FIRST, unconditionally (`mount -t tmpfs tmpfs <dir>`), then every
- * `worldWritableTempDirs()` entry the same way — mirroring bwrap's ordering
- * exactly, and, critically, NOT gated on whether `filesystemBindPath` is
- * set (a prior version of this function nested `/run`'s masking inside the
- * `filesystemBindPath` branch below, as a side effect of the escape-hatch
- * staging step alone — independent review found this meant `/run` was left
- * completely open under `unshare` whenever a caller omitted
- * `filesystemBindPath`, since the type signature allows that. Masking is
- * now a standalone, declared step that runs regardless).
- *
- * `filesystemBindPath` needs an "escape hatch" to survive that masking, NOT
- * a naive `mount --bind <path> <path>` run AFTER the mask: once
- * `filesystemBindPath`'s ancestor directory (e.g. `/tmp`) has a fresh tmpfs
- * mounted over it, the ORIGINAL path is no longer reachable through that
- * name at all — `mkdir -p <path>` at that point creates a brand-new, empty
- * directory in the fresh tmpfs, and bind-mounting that empty directory onto
- * itself is a no-op that does NOT restore the pre-mask content (confirmed
- * empirically: the bridge socket became unreachable — curl exit 7,
- * "couldn't connect" — under exactly this naive ordering). The fix: bind
- * `filesystemBindPath` into a namespace-private staging point BEFORE any
- * masking touches its ancestor, then bind that staging copy back onto the
- * real path AFTER masking. The staging point itself lives inside `/run`
- * (already masked, unconditionally, by the `ALWAYS_MASKED_DIRS` step above
- * — a standard FHS directory on every Linux host, safe to mask for the same
- * reason `/tmp` is: ephemeral runtime state a connector has no legitimate
- * reason to depend on during an isolated replay run) so `mkdir`-ing and
- * bind-mounting the staging directory INSIDE that fresh tmpfs guarantees
- * nothing is ever written to the real host filesystem (the tmpfs — and
- * everything created inside it — is discarded when the namespace exits)
- * while still giving the bind mount a stable anchor that survives `/tmp`
- * (or wherever `filesystemBindPath` lives) being masked afterward.
- * `--map-root-user` already grants the capabilities (`CAP_SYS_ADMIN` inside
- * the new user+mount namespace) every `mount` call here needs; no
- * additional privilege is required beyond what unprivileged user-namespace
- * creation already grants.
+ * A top-level FHS compatibility symlink (`/bin`, `/lib`, `/lib64`, ...) that
+ * must be RECREATED as a symlink inside the default-deny root, distinct
+ * from `requiredFilesystemBinds()`'s real directory binds. On a merged-usr
+ * layout (confirmed on this host, and standard on every current major
+ * distro: Debian/Ubuntu since ~2020, Fedora/Arch for years longer) these
+ * paths are symlinks INTO `/usr/...` on the real host, not separate
+ * directories — `--ro-bind /usr /usr` alone does not make `/bin` or
+ * `/lib64` exist at the TOP LEVEL of the sandboxed root, and `execvp`/the
+ * ELF loader look for binaries and interpreters (`/lib64/ld-linux-...`) at
+ * exactly those top-level paths. `target` is read from the REAL host
+ * symlink via `readlinkSync`, not hardcoded to `usr/bin`-style guesses, so
+ * a host with a different (or absent) compat-symlink layout is followed
+ * exactly rather than assumed.
  */
-const UNSHARE_FS_ESCAPE_HATCH_DIR = "/run/pdpp-scenario-isolation-fsclosure-escape";
+interface FhsCompatSymlink {
+  path: string;
+  target: string;
+}
+
+const FHS_COMPAT_SYMLINK_CANDIDATES: readonly string[] = ["/bin", "/sbin", "/lib", "/lib64", "/lib32", "/libx32"];
+
+/**
+ * Reads which of `FHS_COMPAT_SYMLINK_CANDIDATES` actually exist as symlinks
+ * on THIS host and what they point at — skips any that don't exist (e.g. a
+ * non-merged-usr host has real `/bin`, not a symlink; a 32-bit-less host has
+ * no `/lib32`) and skips any that exist but are NOT a symlink (a real
+ * directory at `/bin` needs its own full bind, which is out of scope for
+ * this fix's derived set — this module's target hosts are the merged-usr
+ * layout confirmed above).
+ */
+function requiredFhsCompatSymlinks(): readonly FhsCompatSymlink[] {
+  const symlinks: FhsCompatSymlink[] = [];
+  for (const path of FHS_COMPAT_SYMLINK_CANDIDATES) {
+    try {
+      if (lstatSync(path).isSymbolicLink()) {
+        symlinks.push({ path, target: readlinkSync(path) });
+      }
+    } catch {
+      // Doesn't exist on this host — nothing to recreate.
+    }
+  }
+  return symlinks;
+}
+
+/**
+ * DEFAULT-DENY FILESYSTEM CLOSURE — replaces the mask-list architecture
+ * (`worldWritableTempDirs`/`ALWAYS_MASKED_DIRS`, removed) that a second,
+ * independent review proved cannot terminate: with `--dev-bind / /` still
+ * in place, the reachable set was always "every path not yet added to the
+ * list," and the reviewer kept finding new members of that set ($HOME/.ssh,
+ * a Bitwarden vault socket, the codex-approval control socket — 24 live
+ * sockets total) no matter how many directories got masked.
+ *
+ * MECHANISM (bwrap): the child's root is `--tmpfs /` — an empty, private
+ * tmpfs, NOT the host's `/` — so nothing exists in the isolated view except
+ * what this function explicitly binds back in: `--proc /proc`, `--dev
+ * /dev`, every `requiredFilesystemBinds()` entry (`--ro-bind` or `--bind`
+ * per its `mode`), and, last, `filesystemBindPath` if the caller passed one.
+ * A foreign UDS under `$HOME/.ssh/agent`, `/run/user/<uid>`, or any other
+ * path outside that finite set has NO node in the isolated child's mount
+ * table to be reached through — `curl --unix-socket <foreign-path>` fails
+ * with "No such file or directory" not because that specific path was
+ * masked, but because the child's filesystem contains only what was
+ * explicitly built, the same way a fresh container image contains only what
+ * its Dockerfile added.
+ *
+ * MECHANISM (unshare): `--mount --pid --fork` (composing with
+ * `--map-root-user --net`) gives the child its own mount AND pid namespace,
+ * then the `sh -c` prelude this function builds performs an actual
+ * `pivot_root` — NOT a `mount -t tmpfs tmpfs /` on the existing root, which
+ * was tried first and empirically does NOT work: mounting a tmpfs directly
+ * onto the mount namespace's OWN root is a documented Linux special case
+ * that silently fails to change what's visible (confirmed: files written
+ * after the "masking" mount remained visible alongside pre-existing
+ * content — the mount succeeded, exit 0, but never became the root's
+ * effective view). The correct, standard technique: build a fresh tmpfs at
+ * a STAGING path (e.g. `/tmp/newroot`), bind every `requiredFilesystemBinds()`
+ * entry and `filesystemBindPath` (if given) into that staging tree at their
+ * real absolute sub-paths, `mount --make-rprivate /` (detach from the
+ * parent mount namespace's propagation so the pivot never touches the real
+ * host), then `pivot_root <staging> <staging>/oldroot` — this ATOMICALLY
+ * swaps the process's root to the staging tree and moves the old root out
+ * of the way at `/oldroot`, which is then lazily unmounted
+ * (`umount -l /oldroot`) so nothing outside the staged tree remains
+ * reachable at all. `mount -t proc proc /proc` MUST run AFTER the pivot
+ * (procfs is tied to the calling process's pid namespace, and mounting it
+ * pre-pivot at a bind-mounted staging path was empirically denied —
+ * `--pid --fork` gives the child a genuine fresh pid namespace so the
+ * post-pivot mount is permitted). This produces the SAME filesystem view
+ * bwrap's `--tmpfs /` + explicit binds produces — verified empirically:
+ * `ls /` post-pivot shows only the bound paths' basenames, a foreign path
+ * outside every bind is provably absent (`ENOENT`, not merely masked), and
+ * `node -e "..."`/`curl` both run correctly through the FHS-compat symlinks
+ * `requiredFhsCompatSymlinks()` recreates the same way bwrap's `--symlink`
+ * does.
+ */
 function filesystemClosureShellPrelude(filesystemBindPath: string | undefined): string {
-  const statements: string[] = [];
-  // Declared invariant, unconditional, first — see ALWAYS_MASKED_DIRS's doc
-  // comment: this must NOT depend on filesystemBindPath being set.
-  for (const dir of ALWAYS_MASKED_DIRS) {
-    statements.push(`mount -t tmpfs tmpfs ${shQuote(dir)} >/dev/null 2>&1`);
-  }
-  const escapeHatch = shQuote(UNSHARE_FS_ESCAPE_HATCH_DIR);
-  if (filesystemBindPath !== undefined) {
-    // Stage BEFORE any masking below touches filesystemBindPath's ancestor
-    // — see this function's doc comment for why a post-mask bind onto the
-    // same path does not work. /run is already masked (above), so the
-    // staging directory itself is namespace-private (discarded on exit,
-    // never written to the real host filesystem).
-    statements.push(`mkdir -p ${escapeHatch} >/dev/null 2>&1`);
-    statements.push(`mount --bind ${shQuote(filesystemBindPath)} ${escapeHatch} >/dev/null 2>&1`);
-  }
-  for (const dir of worldWritableTempDirs()) {
-    statements.push(`mount -t tmpfs tmpfs ${shQuote(dir)} >/dev/null 2>&1`);
+  const newroot = "/tmp/pdpp-scenario-isolation-newroot";
+  const oldroot = `${newroot}/oldroot`;
+  const statements: string[] = [
+    `mkdir -p ${shQuote(newroot)} >/dev/null 2>&1`,
+    `mount -t tmpfs tmpfs ${shQuote(newroot)} >/dev/null 2>&1`,
+    `mkdir -p ${shQuote(oldroot)} >/dev/null 2>&1`,
+  ];
+  for (const bind of requiredFilesystemBinds()) {
+    const staged = shQuote(`${newroot}${bind.path}`);
+    statements.push(`mkdir -p ${staged} >/dev/null 2>&1`);
+    statements.push(`mount --bind ${shQuote(bind.path)} ${staged} >/dev/null 2>&1`);
+    if (bind.mode === "ro") {
+      statements.push(`mount -o remount,ro,bind ${staged} >/dev/null 2>&1`);
+    }
   }
   if (filesystemBindPath !== undefined) {
-    statements.push(`mkdir -p ${shQuote(filesystemBindPath)} >/dev/null 2>&1`);
-    statements.push(`mount --bind ${escapeHatch} ${shQuote(filesystemBindPath)} >/dev/null 2>&1`);
+    const staged = shQuote(`${newroot}${filesystemBindPath}`);
+    statements.push(`mkdir -p ${staged} >/dev/null 2>&1`);
+    statements.push(`mount --bind ${shQuote(filesystemBindPath)} ${staged} >/dev/null 2>&1`);
   }
+  // /dev: individual device-node binds, not a whole-/dev bind — a bare
+  // `mount --bind /dev <staged>` was empirically denied in a nested
+  // container test environment even with full capabilities, while binding
+  // specific device files (the small, fixed set a connector/curl/node
+  // actually opens) works everywhere and is itself a narrower, more
+  // default-deny-consistent exposure than the whole host /dev tree.
+  const stagedDev = shQuote(`${newroot}/dev`);
+  statements.push(`mkdir -p ${stagedDev} >/dev/null 2>&1`);
+  for (const device of ["null", "zero", "urandom", "random", "tty"]) {
+    const stagedDevice = shQuote(`${newroot}/dev/${device}`);
+    statements.push(`touch ${stagedDevice} >/dev/null 2>&1`);
+    statements.push(`mount --bind ${shQuote(`/dev/${device}`)} ${stagedDevice} >/dev/null 2>&1`);
+  }
+  // See requiredFhsCompatSymlinks()'s doc comment: /bin, /lib, /lib64, ...
+  // are top-level symlinks into /usr on a merged-usr host, not covered by
+  // binding /usr itself — recreated inside the staging tree so they exist
+  // at the right paths once it becomes the root.
+  for (const symlink of requiredFhsCompatSymlinks()) {
+    statements.push(`ln -sfn ${shQuote(symlink.target)} ${shQuote(`${newroot}${symlink.path}`)} >/dev/null 2>&1`);
+  }
+  statements.push("mount --make-rprivate / >/dev/null 2>&1");
+  statements.push(`pivot_root ${shQuote(newroot)} ${shQuote(oldroot)} >/dev/null 2>&1`);
+  statements.push("cd /");
+  // Mounted AFTER pivot_root — see this function's doc comment for why a
+  // pre-pivot procfs mount at the staging path is denied.
+  statements.push("mount -t proc proc /proc >/dev/null 2>&1");
+  statements.push("umount -l /oldroot >/dev/null 2>&1");
   return statements.join("; ");
 }
 
 function bwrapFilesystemClosureArgs(filesystemBindPath: string | undefined): string[] {
-  const args: string[] = [];
-  // Declared invariant, unconditional, first — mirrors
-  // filesystemClosureShellPrelude's ordering; see ALWAYS_MASKED_DIRS's doc
-  // comment.
-  for (const dir of ALWAYS_MASKED_DIRS) {
-    args.push("--tmpfs", dir);
+  const args: string[] = ["--tmpfs", "/", "--proc", "/proc", "--dev", "/dev"];
+  for (const bind of requiredFilesystemBinds()) {
+    args.push(bind.mode === "ro" ? "--ro-bind" : "--bind", bind.path, bind.path);
   }
-  for (const dir of worldWritableTempDirs()) {
-    args.push("--tmpfs", dir);
+  // See requiredFhsCompatSymlinks()'s doc comment: recreated as symlinks,
+  // not binds, mirroring what these paths actually are on the real host.
+  for (const symlink of requiredFhsCompatSymlinks()) {
+    args.push("--symlink", symlink.target, symlink.path);
   }
   if (filesystemBindPath !== undefined) {
     args.push("--bind", filesystemBindPath, filesystemBindPath);
   }
   return args;
+}
+
+/**
+ * GUARD (test-facing): the exact bwrap argv `spawnWithNetworkIsolation`
+ * will invoke for a given `filesystemBindPath`, WITHOUT spawning anything —
+ * so `isolation-mechanism.test.ts` can assert, mechanically, that no future
+ * edit reintroduces `--dev-bind / /` or a bind outside
+ * `requiredFilesystemBinds()`/`filesystemBindPath`. Kept in sync with the
+ * `"bwrap"` branch of `spawnWithNetworkIsolation` by construction: both call
+ * this same function.
+ */
+export function bwrapArgvForFilesystemClosure(
+  cmd: string,
+  args: readonly string[],
+  filesystemBindPath: string | undefined
+): string[] {
+  const innerCommand = [cmd, ...args].map(shQuote).join(" ");
+  return ["--unshare-net", ...bwrapFilesystemClosureArgs(filesystemBindPath), "--", "sh", "-c", `exec ${innerCommand}`];
 }
 
 export function spawnWithNetworkIsolation(
@@ -445,30 +621,20 @@ export function spawnWithNetworkIsolation(
   if (!isolate) {
     return spawn(cmd, args, spawnOpts);
   }
-  const innerCommand = [cmd, ...args].map(shQuote).join(" ");
   const mechanism = isolate === true ? detectMechanism() : isolate;
   if (mechanism === "bwrap") {
-    // `--dev-bind / /` keeps the filesystem view identical to the parent so
-    // this stays a drop-in for the unshare path; only the network namespace
-    // (`--unshare-net`) and the masked temp directories (FIX 5, below)
-    // differ. bwrap brings up loopback itself, so no `ip link` prelude.
-    return spawn(
-      "bwrap",
-      [
-        "--unshare-net",
-        "--dev-bind",
-        "/",
-        "/",
-        ...bwrapFilesystemClosureArgs(filesystemBindPath),
-        "--",
-        "sh",
-        "-c",
-        `exec ${innerCommand}`,
-      ],
-      spawnOpts
-    );
+    return spawn("bwrap", bwrapArgvForFilesystemClosure(cmd, args, filesystemBindPath), spawnOpts);
   }
+  const innerCommand = [cmd, ...args].map(shQuote).join(" ");
   const closurePrelude = filesystemClosureShellPrelude(filesystemBindPath);
-  const shScript = `ip link set lo up >/dev/null 2>&1; ${closurePrelude ? `${closurePrelude}; ` : ""}exec ${innerCommand}`;
-  return spawn("unshare", ["--map-root-user", "--net", "--mount", "--", "sh", "-c", shScript], spawnOpts);
+  // `ip link set lo up` runs BEFORE the filesystem closure's pivot_root,
+  // while the real host filesystem (and therefore /usr/sbin/ip) is still
+  // the process's root — avoids any dependency on `ip` resolving correctly
+  // through the freshly-staged root's bound paths.
+  const shScript = `ip link set lo up >/dev/null 2>&1; ${closurePrelude}; exec ${innerCommand}`;
+  return spawn(
+    "unshare",
+    ["--map-root-user", "--net", "--mount", "--pid", "--fork", "--", "sh", "-c", shScript],
+    spawnOpts
+  );
 }

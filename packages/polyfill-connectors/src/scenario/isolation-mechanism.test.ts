@@ -9,13 +9,18 @@
 // exists, and — the property that actually matters — that a process spawned
 // under it has no outbound network.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { isNamespaceIsolationAvailable, spawnWithNetworkIsolation } from "./isolation.ts";
+import {
+  bwrapArgvForFilesystemClosure,
+  isNamespaceIsolationAvailable,
+  requiredFilesystemBinds,
+  spawnWithNetworkIsolation,
+} from "./isolation.ts";
 
 const bwrapUsable =
   process.platform === "linux" &&
@@ -45,8 +50,13 @@ test("an isolated child has NO outbound network — the property, not the mechan
   const cap = isNamespaceIsolationAvailable();
   assert.equal(cap.available, true);
   const exitCode = await new Promise<number | null>((resolve) => {
+    // process.execPath, not a bare "node" — the real caller
+    // (bin/scenario-verify.ts) always spawns via the absolute path; a bare
+    // command name depends on PATH resolving inside the default-deny root,
+    // which is a property of the CALLER's PATH layout, not of isolation
+    // itself, and out of scope for what this test exists to prove.
     const child = spawnWithNetworkIsolation(
-      "node",
+      process.execPath,
       [
         "-e",
         'require("http").get("http://1.1.1.1",()=>process.exit(9)).on("error",()=>process.exit(0));setTimeout(()=>process.exit(0),4000)',
@@ -173,38 +183,65 @@ test("spawnWithNetworkIsolation given a bare `true` DOES re-probe (documents the
   }
 });
 
-// ─── Pathname-UDS filesystem escape (FIX 5) — negative controls ───────────
+// ─── Pathname-UDS filesystem escape — default-deny negative controls ──────
 //
-// External review (independently reproduced): `--net`/`--unshare-net` only
-// constrains the NETWORK namespace. A native descendant the isolated child
-// spawns — `curl --unix-socket <path>`, never routed through this package's
-// JS-layer fetch/http/net patching at all — could previously still dial ANY
-// pathname UDS reachable on the shared filesystem, because the isolated
-// child's filesystem view was left completely unrestricted. Reported repro:
-// `unshare -r -n -- curl --unix-socket /tmp/foreign.sock
-// http://localhost/probe` reached a socket the isolated process was never
-// supposed to see.
+// Two independent review passes on the earlier mask-list repair:
 //
-// These tests are the reviewer's exact design, run against BOTH mechanisms:
-// a plain Node http server (NOT this module's own code) listens on a
-// pathname UDS the isolated child was never given — its own workspace
-// directory, passed as `filesystemBindPath`, is a SIBLING, DIFFERENT
-// directory. The isolated child then spawns native `curl --unix-socket
-// <foreign path>` — a real OS-level descendant, exactly the escape class
-// the JS-layer preload in subprocess-fetch-preloads.ts cannot see or deny.
+// Pass 1 (external review): `--net`/`--unshare-net` only constrains the
+// NETWORK namespace. A native descendant the isolated child spawns — `curl
+// --unix-socket <path>`, never routed through this package's JS-layer
+// fetch/http/net patching at all — could dial ANY pathname UDS reachable on
+// the shared filesystem, because the isolated child's filesystem view was
+// left completely unrestricted. Reported repro: `unshare -r -n -- curl
+// --unix-socket /tmp/foreign.sock http://localhost/probe`.
+//
+// Pass 2 (independent second review, against the mask-list repair for pass
+// 1): proved mask-listing cannot terminate. With `--dev-bind / /` still in
+// place, the reachable set was always "every path not yet added to the
+// list" — the reviewer reached a real ssh-agent socket under
+// `$HOME/.ssh/agent/`, a real `/run/user/<uid>` socket, and an arbitrary
+// `$HOME`-rooted path, none of them ever addressable by growing a mask
+// list. The reviewer ALSO proved the negative controls that existed at the
+// time were a false-pass mechanism: `startForeignUdsServer` called
+// `server.listen()` without awaiting the `'listening'` event, so on a
+// slower filesystem/loaded CI runner the isolated child's curl could lose
+// the race against the socket actually being bound — and an UNBOUND socket
+// produces curl_exit=7 (connection refused, "no such file") + hits()==0,
+// EXACTLY the signature the assertions accept as "escape closed." Green in
+// that world proved nothing.
+//
+// This section fixes both: `startForeignUdsServer` now resolves only after
+// `'listening'` fires (and rejects on `'error'`), so every test below
+// awaits a REAL bound socket before the isolated child ever attempts to
+// connect — no race window to lose. And the isolation under test is now
+// `isolation.ts`'s default-deny root (see that module's doc comment),
+// tested against the exact three real-world locations the reviewer
+// reproduced: an arbitrary `$HOME`-rooted path (P1.1), an ssh-agent-shaped
+// path under `$HOME/.ssh/agent/` (P1.2 — the socket that actually matters,
+// since the earlier `/run/user/<uid>` fix closed a DIFFERENT, unused
+// agent socket), and `/run/user/<uid>` itself (regression coverage for the
+// fix that preceded this one). A POSITIVE control (below) proves a
+// non-isolated child CAN reach each of these sockets, so a passing negative
+// control is meaningful rather than vacuous (e.g. curl not being on PATH).
+//
 // Passing (closing the escape) requires BOTH: the curl connect attempt
 // fails, AND the foreign server's own hit counter — the authoritative
 // signal, since a compromised/malicious child could lie about its own exit
 // code — stays at zero.
 
 /** Starts a plain (non-preloaded, not this module's code) HTTP server on a
- *  pathname UDS and returns a live request counter plus a close() to tear
- *  it down. This stands in for "an unrelated parent-namespace process
- *  listening on a UDS the isolated child should never be able to reach" —
- *  deliberately NOT `startFetchBridgeServer` from subprocess-fetch-preloads.ts,
- *  so this test proves the OS-layer closure, not anything about the bridge
- *  being well-behaved. */
-function startForeignUdsServer(socketPath: string): { close: () => Promise<void>; hits: () => number } {
+ *  pathname UDS and resolves ONLY after the `'listening'` event fires (or
+ *  rejects on `'error'`) — never synchronously. This is the race fix:
+ *  the prior version returned immediately after calling `server.listen()`,
+ *  which is asynchronous, so a caller could launch a client against the
+ *  socket path before the OS had actually bound it. An unbound socket path
+ *  produces the SAME success signature (`curl` fails to connect, hit count
+ *  stays 0) that a genuinely-isolated child produces, so an unawaited
+ *  `listen()` makes every negative control below able to pass for the
+ *  wrong reason. Deliberately NOT `startFetchBridgeServer` from
+ *  subprocess-fetch-preloads.ts, so these tests prove the OS-layer
+ *  closure, not anything about the bridge being well-behaved. */
+function startForeignUdsServer(socketPath: string): Promise<{ close: () => Promise<void>; hits: () => number }> {
   let hitCount = 0;
   const server = createServer((_req, res) => {
     hitCount += 1;
@@ -212,24 +249,29 @@ function startForeignUdsServer(socketPath: string): { close: () => Promise<void>
     res.end("should never be reached by an isolated child");
   });
   rmSync(socketPath, { force: true });
-  server.listen(socketPath);
-  return {
-    hits: () => hitCount,
-    close: () =>
-      new Promise((resolve) => {
-        server.close(() => {
-          rmSync(socketPath, { force: true });
-          resolve();
-        });
-      }),
-  };
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      server.removeListener("error", reject);
+      resolve({
+        hits: () => hitCount,
+        close: () =>
+          new Promise((resolveClose) => {
+            server.close(() => {
+              rmSync(socketPath, { force: true });
+              resolveClose();
+            });
+          }),
+      });
+    });
+  });
 }
 
 /** Runs `curl --unix-socket <foreignSocketPath> http://localhost/probe`
  *  inside a `spawnWithNetworkIsolation`-wrapped child, with `workspaceDir`
  *  (a directory that does NOT contain `foreignSocketPath`) passed as
  *  `filesystemBindPath` — the exact shape a real scenario-verify.ts run
- *  uses (its own evidence workspace re-exposed, everything else masked).
+ *  uses (its own evidence workspace re-exposed, everything else absent).
  *  Resolves curl's exit code (0 only on a successful connect+response). */
 function runIsolatedCurlAgainstForeignSocket(
   mechanism: "bwrap" | "unshare",
@@ -247,6 +289,25 @@ function runIsolatedCurlAgainstForeignSocket(
   });
 }
 
+/** Runs the SAME curl probe with NO isolation at all — a plain
+ *  `child_process.spawn`. This is the positive control: it must succeed
+ *  (exit 0, hits()===1) against every socket location the negative
+ *  controls below claim is unreachable FROM AN ISOLATED CHILD, proving the
+ *  foreign server is real and dialable in principle — so a negative
+ *  control's "curl failed" is evidence of isolation, not evidence the
+ *  socket was never listening or curl was never on PATH. */
+function runUnisolatedCurlAgainstForeignSocket(foreignSocketPath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      "curl",
+      ["-s", "-o", "/dev/null", "--max-time", "3", "--unix-socket", foreignSocketPath, "http://localhost/probe"],
+      { stdio: "ignore" }
+    );
+    child.on("close", resolve);
+    child.on("error", () => resolve(-1));
+  });
+}
+
 for (const mechanism of ["bwrap", "unshare"] as const) {
   const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
   test(`[${mechanism}] a native descendant (curl --unix-socket) cannot dial a foreign pathname UDS outside filesystemBindPath`, {
@@ -255,7 +316,7 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
     const foreignDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-foreign-"));
     const workspaceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-workspace-"));
     const foreignSocketPath = join(foreignDir, "foreign.sock");
-    const foreign = startForeignUdsServer(foreignSocketPath);
+    const foreign = await startForeignUdsServer(foreignSocketPath);
     try {
       const exitCode = await runIsolatedCurlAgainstForeignSocket(mechanism, foreignSocketPath, workspaceDir);
       assert.notEqual(
@@ -280,13 +341,13 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
   }, async () => {
     const workspaceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-workspace-"));
     const bridgeSocketPath = join(workspaceDir, "bridge.sock");
-    const bridge = startForeignUdsServer(bridgeSocketPath);
+    const bridge = await startForeignUdsServer(bridgeSocketPath);
     try {
       const exitCode = await runIsolatedCurlAgainstForeignSocket(mechanism, bridgeSocketPath, workspaceDir);
       assert.equal(
         exitCode,
         0,
-        `curl must succeed dialing the bridge's own socket inside filesystemBindPath under ${mechanism} isolation — FIX 5 must not break the legitimate bridge path`
+        `curl must succeed dialing the bridge's own socket inside filesystemBindPath under ${mechanism} isolation — the default-deny closure must not break the legitimate bridge path`
       );
       assert.equal(bridge.hits(), 1, "the bridge server must have received exactly the one legitimate request");
     } finally {
@@ -296,105 +357,182 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
   });
 }
 
-// ─── /run closure (independent second-pass review) — negative controls ────
+// ─── Real-socket-location negative controls (independent review, R2/R3) ───
 //
-// The FIX 5 controls above prove `/tmp` is masked. Independent review found
-// a second, unclaimed instance of the SAME escape class: `/run` was never
-// masked under bwrap at all, and was masked under `unshare` only as a side
-// effect of the escape-hatch staging logic (which only runs when
-// `filesystemBindPath` is set) — so `/run/user/<uid>`, the XDG runtime
-// directory that on a real host holds live sockets for ssh-agent, the
-// D-Bus session bus, PipeWire, etc., stayed fully reachable from an
-// isolated child. Reproduced live on the review host. These tests are the
-// same reviewer-specified shape as the FIX 5 controls above, run against a
-// socket placed directly under `/run/user/<uid>` instead of under
-// `os.tmpdir()`, proving `ALWAYS_MASKED_DIRS` closes this independently of
-// `worldWritableTempDirs()`/`filesystemBindPath`.
+// The generic-tmpdir controls above prove the escape is closed for a socket
+// under `os.tmpdir()`. The independent reviewer's exact repro targeted
+// three specific real-world locations on a real host, in order of
+// escalating severity:
+//
+//   P1.1 — an arbitrary `$HOME`-rooted path (the general case: literally
+//          anywhere outside the derived allowlist)
+//   P1.2 — an ssh-agent-SHAPED path under `$HOME/.ssh/agent/` (the sharpest
+//          finding: the earlier `/run`-masking fix closed a real but UNUSED
+//          `/run/user/<uid>` agent socket while the actual in-use agent,
+//          `$SSH_AUTH_SOCK -> $HOME/.ssh/agent/s.*`, stayed open — an agent
+//          socket is a signing oracle, letting a compromised connector
+//          authenticate as the owner without ever reading a key file)
+//   /run/user/<uid> — regression coverage: the fix that preceded this one
+//          closed this specific directory via a mask-list entry; the
+//          default-deny rewrite must not reopen it as a side effect of
+//          restructuring the mechanism.
+//
+// Each location gets: a POSITIVE control (non-isolated child reaches it,
+// proving the socket is real and the probe methodology is sound) and a
+// NEGATIVE control per mechanism (isolated child must not).
 
+const homeDir = homedir();
 const runtimeDir = process.getuid ? `/run/user/${String(process.getuid())}` : undefined;
-const runtimeDirWritable = (() => {
-  if (runtimeDir === undefined) {
-    return false;
-  }
+
+function writableProbe(dir: string): boolean {
   try {
-    const probePath = join(runtimeDir, `pdpp-isolation-writable-probe-${String(process.pid)}`);
+    const probePath = join(dir, `pdpp-isolation-writable-probe-${String(process.pid)}`);
     writeFileSync(probePath, "");
     rmSync(probePath, { force: true });
     return true;
   } catch {
     return false;
   }
-})();
-
-for (const mechanism of ["bwrap", "unshare"] as const) {
-  const usable = (mechanism === "bwrap" ? bwrapUsable : unshareUsable) && runtimeDirWritable;
-  test(`[${mechanism}] a native descendant (curl --unix-socket) cannot dial a foreign pathname UDS under /run/user/<uid>`, {
-    skip: !usable,
-  }, async () => {
-    if (runtimeDir === undefined) {
-      return;
-    }
-    const workspaceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-workspace-"));
-    const foreignSocketPath = join(runtimeDir, `pdpp-isolation-run-foreign-${String(process.pid)}.sock`);
-    const foreign = startForeignUdsServer(foreignSocketPath);
-    try {
-      const exitCode = await runIsolatedCurlAgainstForeignSocket(mechanism, foreignSocketPath, workspaceDir);
-      assert.notEqual(
-        exitCode,
-        0,
-        `curl must NOT succeed dialing a foreign UDS under /run/user/<uid> from inside ${mechanism} isolation — exit 0 means /run is still reachable`
-      );
-      assert.equal(
-        foreign.hits(),
-        0,
-        "the foreign server's own hit counter is authoritative — any nonzero count means the isolated child reached a live /run/user/<uid> socket (ssh-agent, dbus, etc. on a real host)"
-      );
-    } finally {
-      await foreign.close();
-      rmSync(workspaceDir, { recursive: true, force: true });
-    }
-  });
-
-  // Finding 2 (independent review): under `unshare`, `/run` masking used to
-  // be an ACCIDENTAL side effect of the escape-hatch staging logic, which
-  // only ran when `filesystemBindPath` was set — so a call to
-  // `spawnWithNetworkIsolation` with `isolate` set but NO
-  // `filesystemBindPath` (the type signature allows this) got zero `/run`
-  // masking under `unshare`, even though bwrap's masking was unconditional
-  // by construction. This test calls `spawnWithNetworkIsolation` with
-  // `filesystemBindPath` OMITTED ENTIRELY, proving `/run` closure is now a
-  // standalone, declared invariant under both mechanisms rather than an
-  // emergent property of some other feature's plumbing.
-  test(`[${mechanism}] /run/user/<uid> is masked even when filesystemBindPath is NOT passed at all`, {
-    skip: !usable,
-  }, async () => {
-    if (runtimeDir === undefined) {
-      return;
-    }
-    const foreignSocketPath = join(runtimeDir, `pdpp-isolation-run-nobindpath-${String(process.pid)}.sock`);
-    const foreign = startForeignUdsServer(foreignSocketPath);
-    try {
-      const exitCode = await new Promise<number | null>((resolve) => {
-        const child = spawnWithNetworkIsolation(
-          "curl",
-          ["-s", "-o", "/dev/null", "--max-time", "3", "--unix-socket", foreignSocketPath, "http://localhost/probe"],
-          { isolate: mechanism, stdio: "ignore" }
-        );
-        child.on("close", resolve);
-        child.on("error", () => resolve(-1));
-      });
-      assert.notEqual(
-        exitCode,
-        0,
-        `curl must NOT succeed dialing a /run/user/<uid> UDS under ${mechanism} isolation even with no filesystemBindPath passed`
-      );
-      assert.equal(
-        foreign.hits(),
-        0,
-        "the foreign server's hit counter must stay 0 — /run masking must not depend on filesystemBindPath being set"
-      );
-    } finally {
-      await foreign.close();
-    }
-  });
 }
+
+const REAL_SOCKET_LOCATIONS: Array<{ name: string; dir: string; usable: boolean }> = [
+  {
+    name: "an arbitrary $HOME-rooted path",
+    dir: homeDir,
+    usable: writableProbe(homeDir),
+  },
+  {
+    name: "an ssh-agent-shaped path under $HOME/.ssh/agent",
+    dir: join(homeDir, ".ssh", "agent"),
+    usable: (() => {
+      const dir = join(homeDir, ".ssh", "agent");
+      try {
+        return writableProbe(dir);
+      } catch {
+        return false;
+      }
+    })(),
+  },
+  ...(runtimeDir === undefined
+    ? []
+    : [{ name: "/run/user/<uid>", dir: runtimeDir, usable: writableProbe(runtimeDir) }]),
+];
+
+for (const location of REAL_SOCKET_LOCATIONS) {
+  test(`[positive control] a non-isolated child CAN dial a foreign pathname UDS under ${location.name}`, {
+    skip: !location.usable,
+  }, async () => {
+    const foreignSocketPath = join(location.dir, `pdpp-isolation-realloc-positive-${String(process.pid)}.sock`);
+    const foreign = await startForeignUdsServer(foreignSocketPath);
+    try {
+      const exitCode = await runUnisolatedCurlAgainstForeignSocket(foreignSocketPath);
+      assert.equal(
+        exitCode,
+        0,
+        `sanity check: an UN-isolated child must reach a real socket under ${location.name} — if this fails, the probe methodology itself is broken, independent of isolation`
+      );
+      assert.equal(foreign.hits(), 1, "the foreign server must have received exactly the one un-isolated request");
+    } finally {
+      await foreign.close();
+    }
+  });
+
+  for (const mechanism of ["bwrap", "unshare"] as const) {
+    const usable = (mechanism === "bwrap" ? bwrapUsable : unshareUsable) && location.usable;
+    test(`[${mechanism}] a native descendant (curl --unix-socket) cannot dial a foreign pathname UDS under ${location.name}`, {
+      skip: !usable,
+    }, async () => {
+      const workspaceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-workspace-"));
+      const foreignSocketPath = join(location.dir, `pdpp-isolation-realloc-${String(process.pid)}.sock`);
+      const foreign = await startForeignUdsServer(foreignSocketPath);
+      try {
+        const exitCode = await runIsolatedCurlAgainstForeignSocket(mechanism, foreignSocketPath, workspaceDir);
+        assert.notEqual(
+          exitCode,
+          0,
+          `curl must NOT succeed dialing a foreign UDS under ${location.name} from inside ${mechanism} isolation — exit 0 means the escape is still open`
+        );
+        assert.equal(
+          foreign.hits(),
+          0,
+          `the foreign server's own hit counter is authoritative — any nonzero count means the isolated child reached a live socket under ${location.name}`
+        );
+      } finally {
+        await foreign.close();
+        rmSync(workspaceDir, { recursive: true, force: true });
+      }
+    });
+
+    test(`[${mechanism}] a foreign pathname UDS under ${location.name} is masked even when filesystemBindPath is NOT passed at all`, {
+      skip: !usable,
+    }, async () => {
+      const foreignSocketPath = join(location.dir, `pdpp-isolation-realloc-nobindpath-${String(process.pid)}.sock`);
+      const foreign = await startForeignUdsServer(foreignSocketPath);
+      try {
+        const exitCode = await new Promise<number | null>((resolveExit) => {
+          const child = spawnWithNetworkIsolation(
+            "curl",
+            ["-s", "-o", "/dev/null", "--max-time", "3", "--unix-socket", foreignSocketPath, "http://localhost/probe"],
+            { isolate: mechanism, stdio: "ignore" }
+          );
+          child.on("close", resolveExit);
+          child.on("error", () => resolveExit(-1));
+        });
+        assert.notEqual(
+          exitCode,
+          0,
+          `curl must NOT succeed dialing a UDS under ${location.name} under ${mechanism} isolation even with no filesystemBindPath passed`
+        );
+        assert.equal(
+          foreign.hits(),
+          0,
+          `the foreign server's hit counter must stay 0 — closure under ${location.name} must not depend on filesystemBindPath being set`
+        );
+      } finally {
+        await foreign.close();
+      }
+    });
+  }
+}
+
+// ─── Guard: no future edit may reintroduce --dev-bind / / ─────────────────
+//
+// The whole point of the default-deny rewrite is that the bwrap argv never
+// contains a bind of the real host root, and never binds anything outside
+// `requiredFilesystemBinds()` plus the one caller-supplied
+// `filesystemBindPath`. This test asserts that MECHANICALLY, independent of
+// whether any specific foreign-socket probe above happens to catch a
+// regression — so a future edit that widens the bind set (e.g. reverting to
+// `--dev-bind / /`, or adding a new bind without updating this test) fails
+// here even if no test author remembers to add a new location above.
+test("[bwrap] the generated argv never binds the real host root, and binds only the derived allowlist plus filesystemBindPath", () => {
+  const workspaceDir = "/tmp/pdpp-isolation-guard-workspace-probe";
+  const argv = bwrapArgvForFilesystemClosure("true", [], workspaceDir);
+  assert.ok(!argv.includes("--dev-bind"), `argv must not contain --dev-bind at all; got ${JSON.stringify(argv)}`);
+  const rootBindIndex = argv.findIndex(
+    (entry, i) => (entry === "--bind" || entry === "--ro-bind") && argv[i + 1] === "/"
+  );
+  assert.equal(rootBindIndex, -1, `argv must never bind "/" itself as a source; got ${JSON.stringify(argv)}`);
+  assert.ok(
+    argv.includes("--tmpfs") && argv[argv.indexOf("--tmpfs") + 1] === "/",
+    "root must be a fresh --tmpfs /, not the host filesystem"
+  );
+
+  // Every --bind/--ro-bind source must be either filesystemBindPath or a
+  // path requiredFilesystemBinds() actually derived — never an ad hoc
+  // addition that bypassed the documented derivation.
+  const derivedPaths = new Set(requiredFilesystemBinds().map((bind) => bind.path));
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] !== "--bind" && argv[i] !== "--ro-bind") {
+      continue;
+    }
+    const source = argv[i + 1];
+    if (source === "/proc" || source === "/dev") {
+      continue;
+    }
+    assert.ok(
+      source === workspaceDir || derivedPaths.has(source ?? ""),
+      `bind source "${String(source)}" is neither filesystemBindPath nor a requiredFilesystemBinds() entry — an undeclared bind was added; got ${JSON.stringify(argv)}`
+    );
+  }
+});
