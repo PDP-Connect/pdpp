@@ -137,6 +137,8 @@ const MANIFEST_ROOTS = ["reference-implementation/fixtures/seed-manifests", "pac
  */
 const SANCTIONED_POLICY_RESOURCES: ReadonlyMap<string, ReadonlySet<string>> = new Map([]);
 
+const POLYFILL_MANIFEST_READ_SITE = "reference-implementation/server/polyfill-manifest-reconcile.ts:98";
+
 /**
  * Closed, human-reviewed allowlist of call sites (file + 1-indexed line of
  * the read call) that consume JSON but were individually inspected and
@@ -206,7 +208,7 @@ const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
   // unchanged. This entry is
   // line-pinned by design (see this array's own doc comment above); it must
   // be re-derived whenever an edit anywhere above the call site shifts it.
-  "reference-implementation/server/polyfill-manifest-reconcile.ts:98",
+  POLYFILL_MANIFEST_READ_SITE,
   // readReviewedCompactionResidueMap() in version-disposition.ts:
   // readFileSync(path, "utf8") where `path` is compactionResidueReviewPath()
   // — process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH, an OPERATOR-supplied
@@ -1054,7 +1056,22 @@ export function scanFileDataLoads(
       return true;
     }
     const siteKey = `${relPath}:${lineOf(node)}`;
+    const second = nodeArrayField(node, "arguments")[1];
+    // This one reviewed site is exempt only for the exact production shape:
+    // awaited `readFile(path, "utf8")` whose result reaches JSON.parse.
+    // A line match with a different read shape fails closed below.
+    const matchesPolyfillManifestReadShape =
+      isIdentifier(callee, "readFile") &&
+      parent?.type === "AwaitExpression" &&
+      isIdentifier(first, "path") &&
+      nodeArrayField(node, "arguments").length === 2 &&
+      second?.type === "StringLiteral" &&
+      second.value === "utf8" &&
+      flowsIntoJsonParse(node, parent);
     if (SANCTIONED_GENERIC_DATA_READ_CALL_SITES.has(siteKey)) {
+      if (siteKey === POLYFILL_MANIFEST_READ_SITE && !matchesPolyfillManifestReadShape) {
+        report(node, "unresolvable-data-resource-load");
+      }
       return true;
     }
     const consumesJson = flowsIntoJsonParse(node, parent);
