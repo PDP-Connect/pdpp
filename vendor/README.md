@@ -28,37 +28,57 @@ resolve `connector-protocol` from whatever version was last committed, not the
 version actually released alongside it — broken whenever connector-protocol's
 release adds exports collector-runtime imports, which PR #36 does.
 
-Both tarballs below were produced by running that same real, unmodified
-`.releaserc.yaml` pipeline (`semantic-release`, `@semantic-release/exec`'s
-`prepareCmd`/`publishCmd` steps, both `@semantic-release/npm` prepare/publish
-steps — GitHub-release and provenance-signing steps skipped, since those need
-real CI credentials/OIDC and aren't part of what's being verified here)
-against a local scratch npm registry (Verdaccio), seeded with the actual
-currently-published `@pdpp/connector-protocol@0.0.1` and
-`@pdpp/collector-runtime@0.0.1` tarballs (pulled via `npm pack` from the real
-registry, matching production exactly) and PR #36's real commit history at
-`10f25a3cd6ab1e11aabab08a88dbf8fa301a919b`. `@semantic-release/commit-analyzer`
-computed `nextRelease.version = 1.0.0` (a `fix(protocol)!:` breaking-change
-commit in the batch, on an unpublished-above-`0.0.1` baseline), matching the
-version data-connect PR #36 commit `90a8f0c` independently proved by the same
-method. The pin script then rewrote collector-runtime's committed
-`connector-protocol` dependency to `1.0.0` before either package's
-`npm pack`/`npm publish` step ran. Verified directly by extracting each packed
-tarball's `package/package.json`:
+Both tarballs below were produced from a clean clone of data-connect at
+`10f25a3cd6ab1e11aabab08a88dbf8fa301a919b`, applying only the two mutations
+the real `.releaserc.yaml` `prepare` lifecycle applies before packing — no
+registry, no `publishConfig` edits, no other source changes:
+
+1. `node --import tsx scripts/pin-collector-runtime-protocol-dependency.ts 1.0.0`
+   (the `prepareCmd` step, run first, matching plugin-array order) — rewrites
+   `packages/collector-runtime/package.json`'s `connector-protocol` dependency
+   to `1.0.0`.
+2. `npm version 1.0.0 --no-git-tag-version --allow-same-version` in each
+   `pkgRoot` (exactly what `@semantic-release/npm`'s prepare step runs; see
+   its `lib/prepare.js`) — writes the package version.
+
+Then `npm pack <pkgRoot>` in each package's own workspace (so the sibling
+workspace dependency resolves during the `prepack`/build step), with each
+package's `publishConfig` — `registry: "https://registry.npmjs.org/"`,
+`provenance: true` — untouched. An earlier version of this pin briefly routed
+through a local scratch npm registry (Verdaccio) to reproduce the release
+pipeline's registry-auth steps as well; that run patched `publishConfig` to
+point at the scratch registry so `npm publish` would succeed, and that edit
+leaked into the packed tarball's `package.json`. Superseded here: the pin
+script + `npm version` + plain `npm pack` reproduces the exact `prepare`-phase
+output the real pipeline produces without needing a registry round-trip at
+all, so there is nothing scratch-specific to leak. Verified directly by
+extracting each packed tarball's `package/package.json`:
 
 ```
-@pdpp/collector-runtime@1.0.0 dependencies: {"@pdpp/connector-protocol": "1.0.0"}
+@pdpp/collector-runtime@1.0.0
+  dependencies: {"@pdpp/connector-protocol": "1.0.0"}
+  publishConfig.registry: "https://registry.npmjs.org/"
+  publishConfig.provenance: true
+@pdpp/connector-protocol@1.0.0
+  publishConfig.registry: "https://registry.npmjs.org/"
+  publishConfig.provenance: true
 ```
+
+For the root-cause writeup and the release-pipeline proof that this repin
+mechanism itself is correct (registry round-trip included), see data-connect
+PR #36 comment 5479509596, commit `fe91a83`, and commit `90a8f0c`
+(`nextRelease.version = 1.0.0`, matching what this pin's own `npm version`
+step computed).
 
 `pdpp-collector-runtime-1.0.0.tgz` SHA-256 is
-`326cb45acdcb0b7ff31883cc7c9e6f17f0aee9f11cb238c3520291cdc76d594b`; SHA-512
+`2d75fc9fae056ba5302ff53d9933daf4fc386221935bd0ed32ca0826d8865301`; SHA-512
 integrity is pinned in `pnpm-lock.yaml`
-(`sha512-f7qp3BSTZ0oKOq1zgDXRPUabsPSsf0peG6z86Kj5YgnHLV9gGf577zeeSaJlmO/LI+8KQ826VJyh0XGRdk4kCg==`).
+(`sha512-hURTh2GAUj0GVLgEEglcpQhOgdSdYoLU4JAik8BNywZDQhiW9yxxh1UIm9Yi1JAw1DetwN9qPYRD185PBDWDHg==`).
 
 `pdpp-connector-protocol-1.0.0.tgz` SHA-256 is
-`6b5bccc7508427f73332bf6b2c03697754bd55b6bdec5e367e3b25f42d8781a4`; SHA-512
+`4a1e9c1fe2cf4b25148d1a8b576f9e894c54005d46ef9f9733ddc843b5422020`; SHA-512
 integrity is pinned in `pnpm-lock.yaml`
-(`sha512-+H24ROEYbbkLgkM02gv9v/3z4S5xzFQ9EY5E7+GeJjyZp1hHOT9kjUzLHS25J5H/G77B4Y0UkocjodOYK4LfBQ==`).
+(`sha512-5ZPoVEgKt1cyuYe9tLiivhsQFntlzGf/t6lKCre2ylmRrkhaCrBDrckA+cwR6KPBT66DNS3txscB6Jw4y+NlWw==`).
 
 Both package archives are verified by
 `scripts/check-pdpp-vendored-package-pins.ts` before the PDPP train can be

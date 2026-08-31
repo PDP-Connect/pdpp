@@ -2488,12 +2488,12 @@ packages:
     os: [win32]
 
   '@pdpp/collector-runtime@file:vendor/pdpp-collector-runtime-1.0.0.tgz':
-    resolution: {integrity: sha512-f7qp3BSTZ0oKOq1zgDXRPUabsPSsf0peG6z86Kj5YgnHLV9gGf577zeeSaJlmO/LI+8KQ826VJyh0XGRdk4kCg==, tarball: file:vendor/pdpp-collector-runtime-1.0.0.tgz}
+    resolution: {integrity: sha512-hURTh2GAUj0GVLgEEglcpQhOgdSdYoLU4JAik8BNywZDQhiW9yxxh1UIm9Yi1JAw1DetwN9qPYRD185PBDWDHg==, tarball: file:vendor/pdpp-collector-runtime-1.0.0.tgz}
     version: 1.0.0
     engines: {node: '>=22.14.0'}
 
   '@pdpp/connector-protocol@file:vendor/pdpp-connector-protocol-1.0.0.tgz':
-    resolution: {integrity: sha512-+H24ROEYbbkLgkM02gv9v/3z4S5xzFQ9EY5E7+GeJjyZp1hHOT9kjUzLHS25J5H/G77B4Y0UkocjodOYK4LfBQ==, tarball: file:vendor/pdpp-connector-protocol-1.0.0.tgz}
+    resolution: {integrity: sha512-5ZPoVEgKt1cyuYe9tLiivhsQFntlzGf/t6lKCre2ylmRrkhaCrBDrckA+cwR6KPBT66DNS3txscB6Jw4y+NlWw==, tarball: file:vendor/pdpp-connector-protocol-1.0.0.tgz}
     version: 1.0.0
     engines: {node: '>=22.14.0'}
 

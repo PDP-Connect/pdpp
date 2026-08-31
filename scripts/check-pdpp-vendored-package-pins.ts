@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const EXPECTED_PACKAGE_VERSION = "1.0.0";
-const PRIOR_PACKAGE_VERSION = "0.0.2";
+const STALE_PACKAGE_VERSIONS = ["0.0.1", "0.0.2"] as const;
 
 export const EXPECTED_PACKAGES = [
   {
@@ -129,8 +129,11 @@ export function verifyPdppVendoredPackagePins(repoRoot: string): void {
     for (const consumerPath of consumerPaths) {
       assertConsumerPin(repoRoot, consumerPath, expected.name, expected.archive);
     }
-    if (lockfile.includes(expected.archive.replace(EXPECTED_PACKAGE_VERSION, PRIOR_PACKAGE_VERSION))) {
-      fail(`pnpm-lock.yaml retains a stale ${PRIOR_PACKAGE_VERSION} pin for ${expected.name}`);
+    for (const staleVersion of STALE_PACKAGE_VERSIONS) {
+      const staleSpecifier = `${expected.name}@file:${expected.archive.replace(EXPECTED_PACKAGE_VERSION, staleVersion)}`;
+      if (lockfile.includes(staleSpecifier)) {
+        fail(`pnpm-lock.yaml retains a stale ${staleVersion} pin for ${expected.name}`);
+      }
     }
   }
 
