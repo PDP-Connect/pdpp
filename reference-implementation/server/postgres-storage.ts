@@ -548,6 +548,25 @@ const POSTGRES_LEASE_PRIORITY_MIGRATION_LOCK = [482_571, 151];
 const POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK = [482_571, 150];
 const POSTGRES_BOOTSTRAP_LOCK_INITIAL_DELAY_MS = 25;
 const POSTGRES_BOOTSTRAP_LOCK_MAX_DELAY_MS = 250;
+// The bootstrap DDL batch takes an AccessExclusiveLock on tables (connectors,
+// connector_instances, ...) that an ordinary connector-registration write
+// (persistManifestAndAdvanceGenerations) also touches at row level. Postgres
+// can build a genuine wait-for cycle between the two -- the DDL waiting on
+// the row lock, the row writer waiting on the table lock the DDL has already
+// begun to escalate toward -- and resolves it by aborting one side with
+// SQLSTATE 40P01. This is a real rolling/blue-green-restart shape (a fresh
+// instance bootstraps schema while an already-running instance still serves
+// writes against the same database), not a test-only artifact. The
+// serialization advisory lock above only serializes concurrent BOOTSTRAP
+// callers against each other; it does nothing against an ordinary write
+// transaction that predates the lock acquisition. Retrying the whole
+// bootstrap attempt after Postgres aborts one side of the cycle is the
+// standard resolution for a detected deadlock -- see
+// bootstrapPostgresSchema's retry wrapper below.
+const POSTGRES_BOOTSTRAP_DEADLOCK_SQLSTATE = "40P01";
+const POSTGRES_BOOTSTRAP_DEADLOCK_MAX_ATTEMPTS = 4;
+const POSTGRES_BOOTSTRAP_DEADLOCK_INITIAL_DELAY_MS = 50;
+const POSTGRES_BOOTSTRAP_DEADLOCK_MAX_DELAY_MS = 400;
 const POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_ENV = "PDPP_POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_MS";
 const POSTGRES_BOOTSTRAP_LOCK_EMPTY_DATABASE_TIMEOUT_MS = 2 * 60 * 1000;
 const POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1461,7 +1480,14 @@ export async function closePostgresStorage() {
   }
 }
 
-export async function bootstrapPostgresSchema({
+/**
+ * Runs the full bootstrap DDL/migration batch exactly once, against a fresh
+ * checked-out client. Split out of `bootstrapPostgresSchema` so the retry
+ * wrapper below can re-run the WHOLE attempt -- including the advisory-lock
+ * acquisition and client checkout -- after a detected deadlock, rather than
+ * resuming mid-batch against a client Postgres may have already aborted.
+ */
+async function bootstrapPostgresSchemaOnce({
   log = (() => {
     /* no-op */
   }) as StorageLog,
@@ -3536,6 +3562,78 @@ export async function bootstrapPostgresSchema({
       }
     } finally {
       client.release();
+    }
+  }
+}
+
+function bootstrapDeadlockRetryDelay(attempt: number): number {
+  return Math.min(
+    POSTGRES_BOOTSTRAP_DEADLOCK_MAX_DELAY_MS,
+    POSTGRES_BOOTSTRAP_DEADLOCK_INITIAL_DELAY_MS * 2 ** Math.min(attempt, 4)
+  );
+}
+
+interface BootstrapDeadlockRetryOptions {
+  bootstrapLockTimeoutMs?: number;
+  log?: StorageLog;
+  runOnce?: (opts: { log: StorageLog; bootstrapLockTimeoutMs?: number }) => Promise<void>;
+  sleep?: (delayMs: number) => Promise<void>;
+}
+
+/**
+ * Bounded retry of the WHOLE bootstrap attempt, scoped to exactly one
+ * failure mode: SQLSTATE 40P01 (Postgres-detected deadlock) surfacing from
+ * `bootstrapPostgresSchemaOnce`'s DDL batch. This happens when the batch's
+ * AccessExclusiveLock on connectors/connector_instances forms a wait-for
+ * cycle with an ordinary, unrelated connector-registration write already in
+ * flight against the same database -- a real shape under rolling/blue-green
+ * restarts, where a starting instance's bootstrap can overlap an
+ * already-running instance's writes. Postgres resolves the cycle itself by
+ * aborting one side; retrying the aborted side is the standard recovery, not
+ * a workaround.
+ *
+ * Every retry re-runs the FULL attempt (fresh client checkout, fresh
+ * advisory-lock acquisition, the entire DDL/migration batch) after
+ * `bootstrapPostgresSchemaOnce`'s own `finally` has already released the
+ * advisory lock and the client back to the pool -- so a retry never resumes
+ * mid-batch against a connection Postgres may have already aborted, and
+ * never holds the serialization lock across the retry boundary.
+ *
+ * Any other error -- including every other SQLSTATE -- rethrows immediately
+ * on the first attempt. This is not a general-purpose retry: retrying an
+ * arbitrary bootstrap failure could mask a real migration defect instead of
+ * a transient lock-ordering race.
+ */
+export async function bootstrapPostgresSchema({
+  log = NOOP_STORAGE_LOG,
+  bootstrapLockTimeoutMs,
+  sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  runOnce = bootstrapPostgresSchemaOnce,
+}: BootstrapDeadlockRetryOptions = {}): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: bounded retry loop -- each attempt must finish before deciding whether to retry.
+      await runOnce({ log, ...(bootstrapLockTimeoutMs === undefined ? {} : { bootstrapLockTimeoutMs }) });
+      if (attempt > 0) {
+        log(`postgres bootstrap succeeded after ${attempt} deadlock retr${attempt === 1 ? "y" : "ies"}`);
+      }
+      return;
+    } catch (err) {
+      const sqlstate = (err as { code?: string } | null)?.code;
+      if (sqlstate !== POSTGRES_BOOTSTRAP_DEADLOCK_SQLSTATE) {
+        throw err;
+      }
+      if (attempt + 1 >= POSTGRES_BOOTSTRAP_DEADLOCK_MAX_ATTEMPTS) {
+        log(
+          `postgres bootstrap deadlock (40P01) on attempt ${attempt + 1}/${POSTGRES_BOOTSTRAP_DEADLOCK_MAX_ATTEMPTS}: retry budget exhausted, rethrowing`
+        );
+        throw err;
+      }
+      const delayMs = bootstrapDeadlockRetryDelay(attempt);
+      log(
+        `postgres bootstrap deadlock (40P01) on attempt ${attempt + 1}/${POSTGRES_BOOTSTRAP_DEADLOCK_MAX_ATTEMPTS}: retrying whole bootstrap attempt in ${delayMs}ms`
+      );
+      await sleep(delayMs);
     }
   }
 }
