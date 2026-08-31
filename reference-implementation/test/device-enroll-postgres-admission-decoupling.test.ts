@@ -28,8 +28,14 @@ import { COLLECTOR_PROTOCOL_VERSION } from "../server/collector-protocol.ts";
 import { withConnectorInstanceWrite } from "../server/connector-instance-write-coordinator.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { startServer as startServerBase } from "../server/index.ts";
-import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import {
+  __setPostgresLocalDeviceDuplicateDiscoveryHookForTest,
+  closePostgresStorage,
+  postgresQuery,
+} from "../server/postgres-storage.ts";
 import { __setEnrollPhaseFaultHookForTest } from "../server/routes/ref-device-exporters.ts";
+import { createPostgresConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { createPostgresConnectorStateStore } from "../server/stores/connector-state-store.ts";
 import { createPostgresDeviceExporterStore } from "../server/stores/device-exporter-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
@@ -91,6 +97,63 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+async function seedD9ExactDuplicateClass({
+  canonicalId,
+  deviceId,
+  legacyIds,
+  localBindingName,
+  ownerSubjectId = "owner_local",
+  sourceInstanceId,
+}: {
+  canonicalId: string;
+  deviceId: string;
+  legacyIds: readonly string[];
+  localBindingName: string;
+  ownerSubjectId?: string;
+  sourceInstanceId: string;
+}): Promise<{ now: string }> {
+  const now = new Date().toISOString();
+  const binding = {
+    device_id: deviceId,
+    kind: "local_device",
+    local_binding_name: localBindingName,
+    source_instance_id: sourceInstanceId,
+  };
+  await postgresQuery(
+    `INSERT INTO connectors(connector_id, manifest) VALUES('codex', '{"connector_id":"codex","streams":[]}'::jsonb) ON CONFLICT DO NOTHING`
+  );
+  await postgresQuery(
+    `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+     VALUES($1, $2, $3, 'active', $4, $4)`,
+    [deviceId, ownerSubjectId, localBindingName, now]
+  );
+  const ids = [canonicalId, ...legacyIds];
+  await Promise.all(
+    ids.map((id, index) =>
+      postgresQuery(
+        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at)
+         VALUES($1, $2, 'codex', $3, 'active', 'local_device', $4, $5::jsonb, $6, $6)`,
+        [
+          id,
+          ownerSubjectId,
+          localBindingName,
+          createHash("sha256")
+            .update(`${index}:${JSON.stringify(binding)}`)
+            .digest("hex"),
+          JSON.stringify(binding),
+          now,
+        ]
+      )
+    )
+  );
+  await postgresQuery(
+    `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, created_at, updated_at)
+     VALUES($1, $2, 'codex', $3, $4, 'local_device', $4, 'active', $5, $5)`,
+    [sourceInstanceId, deviceId, canonicalId, localBindingName, now]
+  );
+  return { now };
 }
 
 async function mintCode(asUrl: string, localBindingName: string, connectorId = "codex"): Promise<string> {
@@ -1929,6 +1992,278 @@ test("D9 (Postgres): restart rejects colliding duplicate-owned state without cha
             [{ connector_instance_id: canonicalId }, { connector_instance_id: legacyId }],
             "failed coalescence must preserve both owned-state rows"
           );
+        } finally {
+          await verificationPool.end();
+        }
+      } finally {
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    }
+  );
+});
+
+test("D9 adversarial (Postgres): binding mutation after discovery is revalidated before any merge", {
+  skip: DEDICATED_POSTGRES_URL ? false : "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener",
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: DEDICATED_POSTGRES_URL ?? "",
+      databaseName: tempDbName(),
+    },
+    async (url) => {
+      initDb(":memory:");
+      let server = await startServer({
+        asPort: 0,
+        autoEnrollEligibleSchedules: false,
+        databaseUrl: url,
+        dbPath: ":memory:",
+        quiet: true,
+        rsPort: 0,
+        storageBackend: "postgres",
+      });
+      await server.startupBackfillDone.catch(() => undefined);
+      const canonicalId = "cin_d9_binding_canonical";
+      const legacyId = "cin_d9_binding_legacy";
+      try {
+        await seedD9ExactDuplicateClass({
+          canonicalId,
+          deviceId: "dexp_d9_binding",
+          legacyIds: [legacyId],
+          localBindingName: "binding-race",
+          sourceInstanceId: "dsrc_d9_binding",
+        });
+        await postgresQuery(
+          `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+           VALUES('codex', $1, 'messages', '{"cursor":"preserved"}'::jsonb, $2)`,
+          [legacyId, new Date().toISOString()]
+        );
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+
+        const discovered = deferred();
+        const continueCoalescence = deferred();
+        __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(async () => {
+          discovered.resolve();
+          await continueCoalescence.promise;
+        });
+        const startup = startServer({
+          asPort: 0,
+          autoEnrollEligibleSchedules: false,
+          databaseUrl: url,
+          dbPath: ":memory:",
+          quiet: true,
+          rsPort: 0,
+          storageBackend: "postgres",
+        });
+        await discovered.promise;
+        await createPostgresConnectorInstanceStore().updateSourceBindingPatch(legacyId, {
+          sourceBindingPatch: { source_instance_id: "dsrc_d9_binding_changed" },
+          updatedAt: new Date().toISOString(),
+        });
+        continueCoalescence.resolve();
+        server = await startup;
+        await server.startupBackfillDone.catch(() => undefined);
+
+        const identities = await postgresQuery(
+          "SELECT connector_instance_id, source_binding_json FROM connector_instances WHERE connector_instance_id = ANY($1::text[]) ORDER BY connector_instance_id",
+          [[canonicalId, legacyId]]
+        );
+        assert.equal(identities.rows.length, 2, "the changed class must retain both identities");
+        const [canonical, legacy] = identities.rows;
+        assert.equal(canonical?.connector_instance_id, canonicalId);
+        assert.ok(legacy);
+        assert.equal(legacy.connector_instance_id, legacyId);
+        assert.equal(
+          (legacy.source_binding_json as Record<string, unknown>).source_instance_id,
+          "dsrc_d9_binding_changed",
+          "a binding changed after discovery is a near duplicate, never a deletion candidate"
+        );
+        const state = await postgresQuery("SELECT connector_instance_id FROM connector_state");
+        assert.deepEqual(state.rows, [{ connector_instance_id: legacyId }]);
+      } finally {
+        __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(null);
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    }
+  );
+});
+
+test("D9 adversarial (Postgres): state mutation after discovery rejects the locked class with zero changes", {
+  skip: DEDICATED_POSTGRES_URL ? false : "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener",
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: DEDICATED_POSTGRES_URL ?? "",
+      databaseName: tempDbName(),
+    },
+    async (url) => {
+      initDb(":memory:");
+      const server = await startServer({
+        asPort: 0,
+        autoEnrollEligibleSchedules: false,
+        databaseUrl: url,
+        dbPath: ":memory:",
+        quiet: true,
+        rsPort: 0,
+        storageBackend: "postgres",
+      });
+      await server.startupBackfillDone.catch(() => undefined);
+      const canonicalId = "cin_d9_state_canonical";
+      const legacyId = "cin_d9_state_legacy";
+      try {
+        await seedD9ExactDuplicateClass({
+          canonicalId,
+          deviceId: "dexp_d9_state",
+          legacyIds: [legacyId],
+          localBindingName: "state-race",
+          sourceInstanceId: "dsrc_d9_state",
+        });
+        await createPostgresConnectorStateStore().putState(
+          { connectorId: "codex", connectorInstanceId: legacyId },
+          { messages: { cursor: "legacy" } }
+        );
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+
+        const discovered = deferred();
+        const continueCoalescence = deferred();
+        __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(async () => {
+          discovered.resolve();
+          await continueCoalescence.promise;
+        });
+        const startup = startServer({
+          asPort: 0,
+          autoEnrollEligibleSchedules: false,
+          databaseUrl: url,
+          dbPath: ":memory:",
+          quiet: true,
+          rsPort: 0,
+          storageBackend: "postgres",
+        });
+        await discovered.promise;
+        await createPostgresConnectorStateStore().putState(
+          { connectorId: "codex", connectorInstanceId: canonicalId },
+          { messages: { cursor: "canonical" } }
+        );
+        continueCoalescence.resolve();
+        await assert.rejects(startup, RE_CANNOT_COALESCE);
+        await closePostgresStorage().catch(() => undefined);
+
+        const verificationPool = new Pool({ connectionString: url });
+        try {
+          const identities = await verificationPool.query(
+            "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = ANY($1::text[]) ORDER BY connector_instance_id",
+            [[canonicalId, legacyId]]
+          );
+          assert.deepEqual(identities.rows, [
+            { connector_instance_id: canonicalId },
+            { connector_instance_id: legacyId },
+          ]);
+          const state = await verificationPool.query(
+            "SELECT connector_instance_id, state_json FROM connector_state ORDER BY connector_instance_id"
+          );
+          assert.deepEqual(state.rows, [
+            { connector_instance_id: canonicalId, state_json: { cursor: "canonical" } },
+            { connector_instance_id: legacyId, state_json: { cursor: "legacy" } },
+          ]);
+        } finally {
+          await verificationPool.end();
+        }
+      } finally {
+        __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(null);
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    }
+  );
+});
+
+test("D9 adversarial (Postgres): a three-row two-credential class rolls back as one unit", {
+  skip: DEDICATED_POSTGRES_URL ? false : "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener",
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: DEDICATED_POSTGRES_URL ?? "",
+      databaseName: tempDbName(),
+    },
+    async (url) => {
+      initDb(":memory:");
+      const server = await startServer({
+        asPort: 0,
+        autoEnrollEligibleSchedules: false,
+        databaseUrl: url,
+        dbPath: ":memory:",
+        quiet: true,
+        rsPort: 0,
+        storageBackend: "postgres",
+      });
+      await server.startupBackfillDone.catch(() => undefined);
+      const canonicalId = "cin_d9_credential_canonical";
+      const legacyIds = ["cin_d9_credential_legacy_1", "cin_d9_credential_legacy_2"];
+      try {
+        const { now } = await seedD9ExactDuplicateClass({
+          canonicalId,
+          deviceId: "dexp_d9_credential",
+          legacyIds,
+          localBindingName: "credential-class",
+          sourceInstanceId: "dsrc_d9_credential",
+        });
+        await Promise.all(
+          legacyIds.map((connectorInstanceId, index) =>
+            postgresQuery(
+              `INSERT INTO connector_instance_credentials(
+                 connector_instance_id, owner_subject_id, credential_kind, sealed_secret, fingerprint,
+                 status, captured_at, rotated_at, revoked_at, rejected_at, rejection_reason
+               ) VALUES($1, 'owner_local', 'api_key', $2, $3, 'active', $4, NULL, NULL, NULL, NULL)`,
+              [connectorInstanceId, `sealed-${index}`, `fp-${index}`, now]
+            )
+          )
+        );
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+        await assert.rejects(
+          startServer({
+            asPort: 0,
+            autoEnrollEligibleSchedules: false,
+            databaseUrl: url,
+            dbPath: ":memory:",
+            quiet: true,
+            rsPort: 0,
+            storageBackend: "postgres",
+          }),
+          RE_CANNOT_COALESCE
+        );
+        await closePostgresStorage().catch(() => undefined);
+
+        const verificationPool = new Pool({ connectionString: url });
+        try {
+          const identities = await verificationPool.query(
+            "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = ANY($1::text[]) ORDER BY connector_instance_id",
+            [[canonicalId, ...legacyIds]]
+          );
+          assert.deepEqual(identities.rows, [
+            { connector_instance_id: canonicalId },
+            { connector_instance_id: legacyIds[0] },
+            { connector_instance_id: legacyIds[1] },
+          ]);
+          const credentials = await verificationPool.query(
+            "SELECT connector_instance_id, fingerprint FROM connector_instance_credentials ORDER BY connector_instance_id"
+          );
+          assert.deepEqual(credentials.rows, [
+            { connector_instance_id: legacyIds[0], fingerprint: "fp-0" },
+            { connector_instance_id: legacyIds[1], fingerprint: "fp-1" },
+          ]);
         } finally {
           await verificationPool.end();
         }

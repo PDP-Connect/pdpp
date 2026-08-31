@@ -3,7 +3,7 @@
 
 import { exec, getOne, type MutationQuery, type RegisteredQuery, referenceQueries } from "../../lib/db.ts";
 import { getDb } from "../db.ts";
-import { type PostgresTransactionClient, postgresQuery } from "../postgres-storage.ts";
+import { type PostgresTransactionClient, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 import {
   CredentialEncryptionError as CredentialEncryptionErrorClass,
   createCredentialCipherFromEnv,
@@ -729,6 +729,11 @@ export function createPostgresConnectorInstanceCredentialStore({
 }: {
   env?: NodeJS.ProcessEnv;
 } = {}): ConnectorInstanceCredentialStore {
+  const withCredentialInstanceLock = <T>(
+    connectorInstanceId: string,
+    write: (client: PostgresTransactionClient) => Promise<T>
+  ): Promise<T> => withPostgresTransaction(write, { lockConnectorInstanceId: connectorInstanceId });
+
   return buildStore({
     cipherFactory: () => createCredentialCipherFromEnv(env),
     read: {
@@ -755,9 +760,13 @@ export function createPostgresConnectorInstanceCredentialStore({
     },
     run: {
       async delete(connectorInstanceId: string): Promise<void> {
-        await postgresQuery("DELETE FROM connector_instance_credentials WHERE connector_instance_id = $1", [
+        await withCredentialInstanceLock(
           connectorInstanceId,
-        ]);
+          async (client) =>
+            await client.query("DELETE FROM connector_instance_credentials WHERE connector_instance_id = $1", [
+              connectorInstanceId,
+            ])
+        );
       },
       async markRejected({
         connectorInstanceId,
@@ -770,8 +779,11 @@ export function createPostgresConnectorInstanceCredentialStore({
         reason: string | null;
         stateChange: CredentialStateChange;
       }): Promise<void> {
-        await postgresQuery(
-          `UPDATE connector_instance_credentials
+        await withCredentialInstanceLock(
+          connectorInstanceId,
+          async (client) =>
+            await client.query(
+              `UPDATE connector_instance_credentials
            SET status = 'rejected',
                rejected_at = $1,
                rejection_reason = $2,
@@ -779,7 +791,8 @@ export function createPostgresConnectorInstanceCredentialStore({
                state_change_json = $3::jsonb
            WHERE connector_instance_id = $4
              AND status <> 'revoked'`,
-          [rejectedAt, reason, serializeCredentialStateChange(stateChange), connectorInstanceId]
+              [rejectedAt, reason, serializeCredentialStateChange(stateChange), connectorInstanceId]
+            )
         );
       },
       async revoke({
@@ -791,17 +804,24 @@ export function createPostgresConnectorInstanceCredentialStore({
         revokedAt: string;
         stateChange: CredentialStateChange;
       }): Promise<void> {
-        await postgresQuery(
-          `UPDATE connector_instance_credentials
+        await withCredentialInstanceLock(
+          connectorInstanceId,
+          async (client) =>
+            await client.query(
+              `UPDATE connector_instance_credentials
            SET status = 'revoked', revoked_at = $1, rejected_at = NULL, rejection_reason = NULL,
                state_change_json = $2::jsonb
            WHERE connector_instance_id = $3 AND status <> 'revoked'`,
-          [revokedAt, serializeCredentialStateChange(stateChange), connectorInstanceId]
+              [revokedAt, serializeCredentialStateChange(stateChange), connectorInstanceId]
+            )
         );
       },
       async upsert(record: CredentialWriteRecord): Promise<void> {
-        await postgresQuery(
-          `INSERT INTO connector_instance_credentials(
+        await withCredentialInstanceLock(
+          record.connectorInstanceId,
+          async (client) =>
+            await client.query(
+              `INSERT INTO connector_instance_credentials(
              connector_instance_id, owner_subject_id, credential_kind, sealed_secret, fingerprint,
              status, captured_at, rotated_at, revoked_at, rejected_at, rejection_reason, state_change_json
            )
@@ -817,20 +837,21 @@ export function createPostgresConnectorInstanceCredentialStore({
              rejected_at = excluded.rejected_at,
              rejection_reason = excluded.rejection_reason,
              state_change_json = excluded.state_change_json`,
-          [
-            record.connectorInstanceId,
-            record.ownerSubjectId,
-            record.credentialKind,
-            record.sealedSecret,
-            record.fingerprint,
-            record.status,
-            record.capturedAt,
-            record.rotatedAt,
-            record.revokedAt,
-            record.rejectedAt,
-            record.rejectionReason,
-            serializeCredentialStateChange(record.stateChange),
-          ]
+              [
+                record.connectorInstanceId,
+                record.ownerSubjectId,
+                record.credentialKind,
+                record.sealedSecret,
+                record.fingerprint,
+                record.status,
+                record.capturedAt,
+                record.rotatedAt,
+                record.revokedAt,
+                record.rejectedAt,
+                record.rejectionReason,
+                serializeCredentialStateChange(record.stateChange),
+              ]
+            )
         );
       },
     },
