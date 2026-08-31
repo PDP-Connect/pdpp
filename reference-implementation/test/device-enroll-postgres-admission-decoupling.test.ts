@@ -1507,6 +1507,7 @@ test("D9 (Postgres): restart coalesces an exact post-enrollment legacy/stable du
       initDb(":memory:");
       let server = await startServer({
         asPort: 0,
+        autoEnrollEligibleSchedules: false,
         databaseUrl: url,
         dbPath: ":memory:",
         quiet: true,
@@ -1565,6 +1566,13 @@ test("D9 (Postgres): restart coalesces an exact post-enrollment legacy/stable du
            VALUES('codex', $1, 'messages', '{"cursor":"preserved"}'::jsonb, $2)`,
           [legacyId, now]
         );
+        await postgresQuery(
+          `INSERT INTO connector_instance_credentials(
+             connector_instance_id, owner_subject_id, credential_kind, sealed_secret, fingerprint,
+             status, captured_at, rotated_at, revoked_at, rejected_at, rejection_reason
+           ) VALUES($1, $2, 'api_key', 'sealed-preserved', 'fp-preserved', 'active', $3, NULL, NULL, NULL, NULL)`,
+          [legacyId, ownerSubjectId, now]
+        );
         // Exact live projection topology: both identities have derived
         // summary evidence, and their lexical metadata overlaps. These are
         // rebuildable caches, not competing authoritative state.
@@ -1599,6 +1607,7 @@ test("D9 (Postgres): restart coalesces an exact post-enrollment legacy/stable du
         closeDb();
         server = await startServer({
           asPort: 0,
+          autoEnrollEligibleSchedules: false,
           databaseUrl: url,
           dbPath: ":memory:",
           quiet: true,
@@ -1634,6 +1643,21 @@ test("D9 (Postgres): restart coalesces an exact post-enrollment legacy/stable du
           canonicalId,
           "legacy-owned state must be repointed, never dropped"
         );
+        const credential = await postgresQuery(
+          "SELECT connector_instance_id, credential_kind, fingerprint, status FROM connector_instance_credentials"
+        );
+        assert.deepEqual(
+          credential.rows,
+          [
+            {
+              connector_instance_id: canonicalId,
+              credential_kind: "api_key",
+              fingerprint: "fp-preserved",
+              status: "active",
+            },
+          ],
+          "legacy-owned credentials must be repointed, never dropped"
+        );
         const summary = await postgresQuery("SELECT connector_instance_id FROM connector_summary_evidence");
         assert.deepEqual(
           summary.rows,
@@ -1660,6 +1684,7 @@ test("D9 (Postgres): restart coalesces an exact post-enrollment legacy/stable du
         closeDb();
         server = await startServer({
           asPort: 0,
+          autoEnrollEligibleSchedules: false,
           databaseUrl: url,
           dbPath: ":memory:",
           quiet: true,
@@ -1675,6 +1700,120 @@ test("D9 (Postgres): restart coalesces an exact post-enrollment legacy/stable du
           afterReentry.rows,
           [{ connector_instance_id: canonicalId, source_binding_json: fullBinding }],
           "re-entry must retain full enrolled binding metadata"
+        );
+      } finally {
+        await closeServer(server);
+        await closePostgresStorage().catch(() => undefined);
+        closeDb();
+      }
+    }
+  );
+});
+
+test("D9 adversarial (Postgres): restart does not coalesce a near duplicate with a different enrolled source", {
+  skip: DEDICATED_POSTGRES_URL ? false : "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener",
+}, async () => {
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: DEDICATED_POSTGRES_URL ?? "",
+      databaseName: tempDbName(),
+    },
+    async (url) => {
+      initDb(":memory:");
+      let server = await startServer({
+        asPort: 0,
+        autoEnrollEligibleSchedules: false,
+        databaseUrl: url,
+        dbPath: ":memory:",
+        quiet: true,
+        rsPort: 0,
+        storageBackend: "postgres",
+      });
+      await server.startupBackfillDone.catch(() => undefined);
+      const now = new Date().toISOString();
+      const ownerSubjectId = "owner_local";
+      const deviceId = "dexp_d9_near_duplicate";
+      const sourceInstanceId = "dsrc_d9_enrolled";
+      const canonicalId = "cin_d9_near_canonical";
+      const legacyId = "cin_d9_near_legacy";
+      const canonicalBinding = {
+        device_id: deviceId,
+        kind: "local_device",
+        local_binding_name: "near-duplicate",
+        source_instance_id: sourceInstanceId,
+      };
+      const nearLegacyBinding = {
+        ...canonicalBinding,
+        source_instance_id: "dsrc_d9_other_source",
+      };
+      const stableBindingKey = createHash("sha256")
+        .update('{"kind":"local_device","local_binding_name":"near-duplicate"}')
+        .digest("hex");
+      try {
+        await postgresQuery(
+          `INSERT INTO connectors(connector_id, manifest) VALUES('codex', '{"connector_id":"codex","streams":[]}'::jsonb) ON CONFLICT DO NOTHING`
+        );
+        await postgresQuery(
+          `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+           VALUES($1, $2, 'near-duplicate', 'active', $3, $3)`,
+          [deviceId, ownerSubjectId, now]
+        );
+        await postgresQuery(
+          `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at)
+           VALUES($1, $2, 'codex', 'near-duplicate', 'active', 'local_device', $3, $4::jsonb, $5, $5)`,
+          [canonicalId, ownerSubjectId, stableBindingKey, JSON.stringify(canonicalBinding), now]
+        );
+        await postgresQuery(
+          `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at)
+           VALUES($1, $2, 'codex', 'near-duplicate', 'active', 'local_device', $3, $4::jsonb, $5, $5)`,
+          [
+            legacyId,
+            ownerSubjectId,
+            createHash("sha256").update(JSON.stringify(nearLegacyBinding)).digest("hex"),
+            JSON.stringify(nearLegacyBinding),
+            now,
+          ]
+        );
+        await postgresQuery(
+          `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, source_kind, display_name, status, created_at, updated_at)
+           VALUES($1, $2, 'codex', $3, 'near-duplicate', 'local_device', 'near-duplicate', 'active', $4, $4)`,
+          [sourceInstanceId, deviceId, canonicalId, now]
+        );
+        await postgresQuery(
+          `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+           VALUES('codex', $1, 'messages', '{"cursor":"must-not-move"}'::jsonb, $2)`,
+          [legacyId, now]
+        );
+
+        await closeServer(server);
+        await closePostgresStorage();
+        closeDb();
+        server = await startServer({
+          asPort: 0,
+          autoEnrollEligibleSchedules: false,
+          databaseUrl: url,
+          dbPath: ":memory:",
+          quiet: true,
+          rsPort: 0,
+          storageBackend: "postgres",
+        });
+        await server.startupBackfillDone.catch(() => undefined);
+
+        const identities = await postgresQuery(
+          "SELECT connector_instance_id FROM connector_instances WHERE connector_id = $1 ORDER BY connector_instance_id",
+          ["codex"]
+        );
+        assert.deepEqual(
+          identities.rows,
+          [{ connector_instance_id: canonicalId }, { connector_instance_id: legacyId }],
+          "a different source_instance_id is a near duplicate, never an exact identity to coalesce"
+        );
+        const state = await postgresQuery("SELECT connector_instance_id, state_json FROM connector_state");
+        assert.deepEqual(
+          state.rows,
+          [{ connector_instance_id: legacyId, state_json: { cursor: "must-not-move" } }],
+          "near-duplicate state must remain on its own identity"
         );
       } finally {
         await closeServer(server);

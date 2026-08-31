@@ -6283,7 +6283,7 @@ async function assertNoUnresolvedPostgresLocalDeviceBindingCollision(client: Poo
     `SELECT canonical.connector_instance_id AS canonical_id,
             legacy.connector_instance_id    AS legacy_id
        FROM connector_instances canonical
-       JOIN connector_instances legacy
+        JOIN connector_instances legacy
          ON legacy.owner_subject_id = canonical.owner_subject_id
         AND legacy.connector_id     = canonical.connector_id
         AND legacy.source_kind      = 'local_device'
@@ -6305,6 +6305,62 @@ async function assertNoUnresolvedPostgresLocalDeviceBindingCollision(client: Poo
   }
 }
 
+/**
+ * Coalesce an exact post-enrollment legacy/stable duplicate after the
+ * canonicalization receipt is complete.
+ *
+ * The receipt deliberately retires the historical row scan. It cannot,
+ * however, make an exact duplicate inserted after that receipt permanent:
+ * `device_source_instances.connector_instance_id` identifies the enrolled
+ * canonical row, while an older row with the same complete binding JSON is
+ * the obsolete identity. This reads only identity rows and delegates every
+ * authoritative-reference decision to the existing fail-closed coalescer.
+ */
+async function coalesceExactPostgresLocalDeviceBindingDuplicates(client: PoolClient): Promise<void> {
+  for (;;) {
+    // biome-ignore lint/performance/noAwaitInLoops: Each merge changes the next exact-pair query; parallel merges could adopt the same legacy identity or reorder a fail-closed conflict.
+    const duplicates = await client.query<{ canonical_id: string; legacy_id: string }>(
+      `SELECT canonical.connector_instance_id AS canonical_id,
+              legacy.connector_instance_id    AS legacy_id
+         FROM device_source_instances dsi
+         JOIN device_exporters de ON de.device_id = dsi.device_id
+         JOIN connector_instances canonical
+           ON canonical.connector_instance_id = dsi.connector_instance_id
+          AND canonical.owner_subject_id = de.owner_subject_id
+          AND canonical.connector_id = dsi.connector_id
+          AND canonical.source_kind = 'local_device'
+         JOIN connector_instances legacy
+           ON legacy.owner_subject_id = canonical.owner_subject_id
+          AND legacy.connector_id = canonical.connector_id
+          AND legacy.source_kind = 'local_device'
+          AND legacy.source_binding_json = canonical.source_binding_json
+          AND legacy.source_binding_key <> canonical.source_binding_key
+          AND legacy.connector_instance_id <> canonical.connector_instance_id
+        WHERE dsi.source_kind = 'local_device'
+          AND canonical.source_binding_json <> '{}'::jsonb
+        ORDER BY canonical.connector_instance_id, legacy.connector_instance_id
+        LIMIT 1`
+    );
+    const [duplicate] = duplicates.rows;
+    if (!duplicate) {
+      return;
+    }
+
+    await client.query("BEGIN");
+    try {
+      await mergeEquivalentPostgresConnectorInstances(client, duplicate.legacy_id, duplicate.canonical_id);
+      await client.query("COMMIT");
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Rollback failure must not hide the coalescence failure.
+      }
+      throw err;
+    }
+  }
+}
+
 async function migratePostgresLocalDeviceConnectorInstances(
   client: PoolClient,
   { log = NOOP_STORAGE_LOG }: { log?: StorageLog } = {}
@@ -6322,10 +6378,11 @@ async function migratePostgresLocalDeviceConnectorInstances(
     nowIso: new Date().toISOString(),
   });
   if (!claim) {
-    // The receipt retires the ROW-REWRITING work, not the safety check. See
-    // `assertNoUnresolvedPostgresLocalDeviceBindingCollision` for why the
-    // collision sentinel still runs on every boot.
+    // The receipt retires the historical row scan, not exact identities
+    // created after it completed. Reject conflicting state first, then merge
+    // only exact one-sided duplicates through the existing fail-closed path.
     await assertNoUnresolvedPostgresLocalDeviceBindingCollision(client);
+    await coalesceExactPostgresLocalDeviceBindingDuplicates(client);
     return skipped;
   }
 
@@ -6460,6 +6517,7 @@ export async function readPostgresLocalDeviceCanonicalizationReceipt(): Promise<
 }
 
 const PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES = [
+  "connector_instance_credentials",
   "connector_state",
   "grant_connector_state",
   "records",
@@ -6501,6 +6559,8 @@ const PG_REBUILDABLE_INSTANCE_REFERENCE_TABLES = new Set([
 
 function pgUniqueColumnsForLegacyRewrite(table: string): readonly string[] | null {
   switch (table) {
+    case "connector_instance_credentials":
+      return [];
     case "connector_state":
       return ["stream"];
     case "grant_connector_state":
