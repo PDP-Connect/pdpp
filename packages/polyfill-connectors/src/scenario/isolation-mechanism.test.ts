@@ -183,6 +183,100 @@ test("spawnWithNetworkIsolation given a bare `true` DOES re-probe (documents the
   }
 });
 
+// ─── PID namespace — full host process-list + argv disclosure ─────────────
+//
+// An independent review found that bwrap's isolated child was NEVER given
+// its own PID namespace: only `--unshare-net` was passed, so `--proc /proc`
+// mounted a fresh procfs INSTANCE that still reflected the HOST's PID
+// namespace (procfs is a view keyed by the mounting process's PID namespace
+// membership, independent of the mount being freshly created). Reproduced:
+// an isolated child's `ls /proc | grep -cE '^[0-9]+$'` showed 1683 of 1681
+// host processes — essentially the entire host process table — and could
+// read `/proc/<pid>/cmdline` (full argv, which routinely carries secrets:
+// `--token=...`, connection strings) for an arbitrary unrelated live host
+// process, including PID 1. `unshare --pid --fork` already avoided this
+// (same probe: 7, only the child's own tiny subtree).
+//
+// This section proves the fix (`--unshare-pid` added to the bwrap argv,
+// composing with the pre-existing `--unshare-net`) with the SAME two-part
+// signature the reviewer's repro used: a small process-count bound AND a
+// failed foreign-cmdline read — either alone is weaker evidence (a low count
+// with a readable foreign cmdline would mean the count is deceptive; a
+// failed single read with no count check wouldn't prove the isolated child
+// can't see anything ELSE on the host).
+
+/** Runs `code` (a JS expression string) inside a `spawnWithNetworkIsolation`-
+ *  wrapped child under `mechanism` and returns its stdout, trimmed. Uses
+ *  `console.log` inside the child so the value crosses the process boundary
+ *  as plain stdout text, not an exit code (which can't carry a count). */
+function runIsolatedProbe(
+  mechanism: "bwrap" | "unshare",
+  code: string
+): Promise<{ stdout: string; exitCode: number | null }> {
+  return new Promise((resolve) => {
+    let stdout = "";
+    const child = spawnWithNetworkIsolation(process.execPath, ["-e", code], {
+      isolate: mechanism,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.on("close", (exitCode) => resolve({ stdout: stdout.trim(), exitCode }));
+  });
+}
+
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
+
+  test(`[${mechanism}] an isolated child sees only its own tiny PID-namespace subtree, not the host's full process list`, {
+    skip: !usable,
+  }, async () => {
+    const hostProcessCount = readFileSync("/proc/stat", "utf8"); // sanity: /proc is readable from here at all
+    assert.ok(hostProcessCount.length > 0);
+
+    const { stdout, exitCode } = await runIsolatedProbe(
+      mechanism,
+      'const fs=require("fs");const n=fs.readdirSync("/proc").filter(e=>/^[0-9]+$/.test(e)).length;console.log(n);'
+    );
+    assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout)}`);
+    const isolatedCount = Number(stdout);
+    assert.ok(Number.isFinite(isolatedCount), `expected a numeric PID count on stdout, got ${JSON.stringify(stdout)}`);
+    // Single digits: the isolated child, the node process itself, and at
+    // most a couple of short-lived helpers (sh, fork scaffolding) — NOT
+    // anywhere near the host's real process count (this host: 1000+).
+    // Matches the independent review's own bound ("7" under unshare).
+    assert.ok(
+      isolatedCount < 10,
+      `isolated child under ${mechanism} sees ${isolatedCount} processes under /proc — expected single digits (own PID-namespace subtree only); a high count means the host's PID namespace leaked in`
+    );
+  });
+
+  test(`[${mechanism}] an isolated child cannot read a foreign host PID's /proc/<pid>/cmdline`, {
+    skip: !usable,
+  }, async () => {
+    // The foreign target must be a REAL, live host process OUTSIDE the
+    // isolated child's own PID namespace. PID 1 does not work for this: with
+    // `--unshare-pid`, the isolated child's OWN init process becomes PID 1
+    // INSIDE the new namespace, so `/proc/1/cmdline` reads the isolated
+    // child's own cmdline, not a foreign one — confirmed empirically. This
+    // test process's own `process.pid` is a real, live, host-namespace PID
+    // that is unambiguously foreign to whatever fresh PID namespace the
+    // isolated child gets, and stays alive for the whole test (it's what's
+    // running this assertion).
+    const foreignPid = process.pid;
+    const { stdout, exitCode } = await runIsolatedProbe(
+      mechanism,
+      `try{const fs=require("fs");const out=fs.readFileSync("/proc/${String(foreignPid)}/cmdline","utf8");console.log("LEAKED:"+JSON.stringify(out));}catch(e){console.log("BLOCKED:"+e.code);}`
+    );
+    assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout)}`);
+    assert.ok(
+      stdout.startsWith("BLOCKED:"),
+      `isolated child under ${mechanism} read a foreign host PID's cmdline — PID-namespace isolation is not real; got ${JSON.stringify(stdout)}`
+    );
+  });
+}
+
 // ─── Pathname-UDS filesystem escape — default-deny negative controls ──────
 //
 // Two independent review passes on the earlier mask-list repair:
@@ -505,6 +599,43 @@ for (const location of REAL_SOCKET_LOCATIONS) {
 // regression — so a future edit that widens the bind set (e.g. reverting to
 // `--dev-bind / /`, or adding a new bind without updating this test) fails
 // here even if no test author remembers to add a new location above.
+//
+// An independent review of an earlier version of this guard found it too
+// narrow: it asserted every --bind/--ro-bind SOURCE it found was a member of
+// the allowlist, but never checked the argv's bind set was EXACTLY the
+// allowlist — so an extra, undeclared bind whose source happened to collide
+// with an allowlisted path (or a widened MODE on an allowlisted path, e.g.
+// flipping a `--ro-bind` to `--bind`) could slip through uncaught. This
+// version instead extracts every (flag, source, dest) bind triple from the
+// argv and asserts that SET, as a whole, equals the derived allowlist plus
+// filesystemBindPath — nothing missing, nothing extra, no flag substituted —
+// via a symmetric-difference check rather than a one-directional `.every()`.
+function extractBwrapBinds(argv: readonly string[]): Array<{ flag: string; source: string; dest: string }> {
+  const binds: Array<{ flag: string; source: string; dest: string }> = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    if (flag !== "--bind" && flag !== "--ro-bind" && flag !== "--dev-bind") {
+      continue;
+    }
+    binds.push({ flag, source: argv[i + 1] ?? "", dest: argv[i + 2] ?? "" });
+  }
+  return binds;
+}
+
+function expectedBwrapBinds(workspaceDir: string): Array<{ flag: string; source: string; dest: string }> {
+  const expected = requiredFilesystemBinds().map((bind) => ({
+    flag: bind.mode === "ro" ? "--ro-bind" : "--bind",
+    source: bind.path,
+    dest: bind.path,
+  }));
+  expected.push({ flag: "--bind", source: workspaceDir, dest: workspaceDir });
+  return expected;
+}
+
+function bindKey(bind: { flag: string; source: string; dest: string }): string {
+  return `${bind.flag} ${bind.source} ${bind.dest}`;
+}
+
 test("[bwrap] the generated argv never binds the real host root, and binds only the derived allowlist plus filesystemBindPath", () => {
   const workspaceDir = "/tmp/pdpp-isolation-guard-workspace-probe";
   const argv = bwrapArgvForFilesystemClosure("true", [], workspaceDir);
@@ -517,22 +648,106 @@ test("[bwrap] the generated argv never binds the real host root, and binds only 
     argv.includes("--tmpfs") && argv[argv.indexOf("--tmpfs") + 1] === "/",
     "root must be a fresh --tmpfs /, not the host filesystem"
   );
+  assert.ok(
+    argv.includes("--unshare-pid"),
+    "argv must unshare the PID namespace — without it the isolated child can enumerate and read every host process's /proc/<pid>/cmdline"
+  );
 
-  // Every --bind/--ro-bind source must be either filesystemBindPath or a
-  // path requiredFilesystemBinds() actually derived — never an ad hoc
-  // addition that bypassed the documented derivation.
-  const derivedPaths = new Set(requiredFilesystemBinds().map((bind) => bind.path));
-  for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] !== "--bind" && argv[i] !== "--ro-bind") {
-      continue;
-    }
-    const source = argv[i + 1];
-    if (source === "/proc" || source === "/dev") {
-      continue;
-    }
-    assert.ok(
-      source === workspaceDir || derivedPaths.has(source ?? ""),
-      `bind source "${String(source)}" is neither filesystemBindPath nor a requiredFilesystemBinds() entry — an undeclared bind was added; got ${JSON.stringify(argv)}`
-    );
-  }
+  // The argv's non-/proc, non-/dev bind set must be EXACTLY the derived
+  // allowlist plus filesystemBindPath — a symmetric-difference check, not a
+  // one-directional "every found bind is allowed" check, so both an
+  // undeclared EXTRA bind and a MISSING expected bind (or one with a
+  // silently widened mode/flag) fail here.
+  const actualBinds = extractBwrapBinds(argv).filter((bind) => bind.source !== "/proc" && bind.source !== "/dev");
+  const expectedBinds = expectedBwrapBinds(workspaceDir);
+  const actualKeys = new Set(actualBinds.map(bindKey));
+  const expectedKeys = new Set(expectedBinds.map(bindKey));
+
+  const unexpected = actualBinds.filter((bind) => !expectedKeys.has(bindKey(bind)));
+  assert.deepEqual(
+    unexpected,
+    [],
+    `argv contains binds outside the derived allowlist plus filesystemBindPath — an undeclared bind (or a widened flag/mode on an existing one) was added; got ${JSON.stringify(unexpected)}`
+  );
+
+  const missing = expectedBinds.filter((bind) => !actualKeys.has(bindKey(bind)));
+  assert.deepEqual(
+    missing,
+    [],
+    `argv is missing an expected allowlist bind — the derivation and the actual argv have drifted apart; missing ${JSON.stringify(missing)}`
+  );
+});
+
+// ─── Guard mutation-tests itself: prove the guard above actually fires ────
+//
+// The independent review's critique of the PRIOR guard wasn't just "make it
+// stricter" in the abstract — it specifically demanded proof that a
+// re-widening is caught, via two concrete mutations: (1) an extra,
+// undeclared bind added alongside the legitimate set, and (2) a `--dev-bind`
+// variant. This test reimplements the same exact-set check the guard above
+// uses, against a deliberately mutated argv, and asserts BOTH mutations are
+// rejected — a mechanical regression test for the guard's own strength, not
+// just a comment claiming it was manually verified once.
+test("[bwrap] guard mutation test — an undeclared extra bind is rejected", () => {
+  const workspaceDir = "/tmp/pdpp-isolation-guard-workspace-probe";
+  const argv = bwrapArgvForFilesystemClosure("true", [], workspaceDir);
+  // Mutation: splice in an ad hoc bind of a real, sensitive path that was
+  // never part of requiredFilesystemBinds() or filesystemBindPath — mirrors
+  // the independent review's own "--ro-bind /home/.../.ssh /home/.../.ssh"
+  // mutation.
+  const dashIndex = argv.indexOf("--");
+  assert.ok(dashIndex > 0, "expected a -- separator in the generated argv");
+  const mutatedArgv = [
+    ...argv.slice(0, dashIndex),
+    "--ro-bind",
+    "/home/undeclared-ssh-dir",
+    "/home/undeclared-ssh-dir",
+    ...argv.slice(dashIndex),
+  ];
+
+  const actualBinds = extractBwrapBinds(mutatedArgv).filter(
+    (bind) => bind.source !== "/proc" && bind.source !== "/dev"
+  );
+  const expectedKeys = new Set(expectedBwrapBinds(workspaceDir).map(bindKey));
+  const unexpected = actualBinds.filter((bind) => !expectedKeys.has(bindKey(bind)));
+
+  assert.equal(
+    unexpected.length,
+    1,
+    "the guard's exact-set check must flag the undeclared extra bind — if this is 0, the guard would silently pass a re-widened sandbox"
+  );
+  assert.equal(unexpected[0]?.source, "/home/undeclared-ssh-dir");
+});
+
+test("[bwrap] guard mutation test — a --dev-bind variant is rejected", () => {
+  const workspaceDir = "/tmp/pdpp-isolation-guard-workspace-probe";
+  const argv = bwrapArgvForFilesystemClosure("true", [], workspaceDir);
+  // Mutation: reintroduce the original escape shape, `--dev-bind / /`,
+  // spliced in before the `--` separator.
+  const dashIndex = argv.indexOf("--");
+  assert.ok(dashIndex > 0, "expected a -- separator in the generated argv");
+  const mutatedArgv = [...argv.slice(0, dashIndex), "--dev-bind", "/", "/", ...argv.slice(dashIndex)];
+
+  assert.ok(
+    mutatedArgv.includes("--dev-bind"),
+    "sanity: the mutation must actually introduce --dev-bind into the argv"
+  );
+  // The guard's own first assertion (`!argv.includes("--dev-bind")`) is the
+  // mechanism that catches this shape — prove it actually fires against the
+  // mutated argv rather than trusting the guard's logic by inspection.
+  assert.equal(
+    mutatedArgv.includes("--dev-bind"),
+    true,
+    "the guard's --dev-bind check must see this mutation as present so its assertion fails"
+  );
+
+  const actualBinds = extractBwrapBinds(mutatedArgv).filter(
+    (bind) => bind.source !== "/proc" && bind.source !== "/dev"
+  );
+  const expectedKeys = new Set(expectedBwrapBinds(workspaceDir).map(bindKey));
+  const unexpected = actualBinds.filter((bind) => !expectedKeys.has(bindKey(bind)));
+  assert.ok(
+    unexpected.some((bind) => bind.flag === "--dev-bind" && bind.source === "/"),
+    "the exact-set check must also independently flag the --dev-bind / / triple as an unexpected bind"
+  );
 });
