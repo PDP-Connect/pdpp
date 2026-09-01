@@ -127,10 +127,46 @@
  * but AppArmor's `kernel.apparmor_restrict_unprivileged_userns=1` still
  * rejects `unshare --map-root-user --net`, with `write failed
  * /proc/self/uid_map: Operation not permitted`). `isNamespaceIsolationAvailable()`
- * does not infer this from sysctls — it actually test-spawns `unshare -r -n
- * true` and reports what really happened, so callers get a true answer
- * regardless of which of the many ways isolation can be unavailable applies
- * on a given host.
+ * does not infer this from sysctls — it actually test-spawns the FULL
+ * `unshare` namespace+procfs-mount sequence production uses (not just a bare
+ * `unshare -r -n true`) and reports what really happened, so callers get a
+ * true answer regardless of which of the many ways isolation can be
+ * unavailable applies on a given host. This distinction matters: an
+ * independent review found a real host shape (Docker `--cap-add=SYS_ADMIN`
+ * without full `--privileged`, so Docker's default procfs-subpath masking
+ * stays active) where namespace CREATION succeeds but the PID-namespace's
+ * own `mount -t proc proc /proc` is refused by the kernel's "too revealing"
+ * check — a bare `unshare -r -n true` probe cannot see this coming, because
+ * it never attempts the mount. `probeUnshare()` runs the mount-and-verify
+ * sequence itself (`procMountVerifyStatements()`) so this failure is caught
+ * at probe time (`available: false`, with the kernel's own refusal message
+ * in `reason`) rather than surfacing later as a silently empty `/proc` in a
+ * spawn that reports success. `filesystemClosureShellPrelude` independently
+ * re-checks the same condition at spawn time and refuses to `exec` the
+ * target command if it fails, as a second gate for a caller that bypasses
+ * the probe.
+ *
+ * WHAT THIS BOUNDARY DOES AND DOES NOT ISOLATE (both mechanisms, unless
+ * noted): isolated — network (no egress beyond loopback), PID (no foreign
+ * host process enumeration or `/proc/<pid>/cmdline` read, no `kill(pid, 0)`
+ * reachability), mount/filesystem (default-deny: only the derived allowlist
+ * plus `filesystemBindPath` are visible, closing pathname-UDS dials to any
+ * foreign socket outside that set — see PATHNAME-UDS ESCAPE above), SysV IPC
+ * (no `/proc/sysvipc/*` enumeration of host shared memory/semaphores/message
+ * queues), UTS (hostname/domainname). Deliberately NOT isolated, by
+ * conscious scope decision rather than oversight: the CGROUP namespace (an
+ * isolated child's own `/proc/self/cgroup` still reflects the HOST's real
+ * cgroup hierarchy path — narrow information disclosure of container/session
+ * naming conventions and resource-group structure, not a credential or
+ * process-content leak) and the TIME namespace (`CLOCK_MONOTONIC`/
+ * `CLOCK_BOOTTIME` offsets are shared with the host — negligible risk, no
+ * credential-adjacent exploitation path in this module's threat model, no
+ * more dangerous than the already-unrestricted ability to read `date`).
+ * Neither gap is treated as in-scope by this module's threat model (which is
+ * about closing OS-layer network/filesystem/process-visibility escapes a
+ * compromised connector could otherwise exploit, not about hiding every
+ * possible fact about the host), but a reader should not assume "isolated"
+ * covers either of these two namespaces just because the others are covered.
  *
  * WIRED IN: `bin/scenario-verify.ts` calls `isNamespaceIsolationAvailable()`
  * once up front and threads the resolved mechanism through every
@@ -200,15 +236,110 @@ export type NamespaceIsolationCapability =
   | { available: false; reason: string };
 
 /**
- * Test-spawns `unshare -r -n true` (equivalent unshare short flags for
- * `--map-root-user --net`) and reports whether it actually succeeded.
- * Deliberately does NOT infer availability from `/proc/sys/kernel/*`
+ * Shell statements that mount and verify a fresh procfs, shared verbatim
+ * between the real `unshare`-mechanism prelude
+ * (`filesystemClosureShellPrelude`) and this module's own capability probe
+ * (`probeUnshare` below) — ADVERTISE-VS-HONOR FIX: an earlier version of the
+ * probe ran only `unshare -r -n true`, a bare namespace-creation check that
+ * never attempted the procfs mount the real prelude depends on. An
+ * independent review found a concrete host shape (Docker `--cap-add=
+ * SYS_ADMIN` granted without full `--privileged`, so Docker's default
+ * procfs-subpath masking is still in effect) where namespace CREATION
+ * succeeds (`unshare -r -n true` exits 0) but the PID-namespace's own
+ * `mount -t proc proc /proc` is refused by a real, named kernel check
+ * (`VFS: Mount too revealing` in the kernel log — a mount namespace
+ * attempting to mount a fresh procfs must fully own the PID namespace it
+ * reflects, or the kernel refuses it to prevent exactly this class of
+ * "escape a masked/restricted procfs by mounting an unmasked one"). Under
+ * the old probe, that host reported `available: true`, `unshare` got
+ * selected over `bwrap`, and the real spawn then ran to completion (exit 0)
+ * with `/proc` present but mounted-but-empty (mkdir succeeded, the mount
+ * failed, the failure was swallowed by `>/dev/null 2>&1`) — isolation
+ * silently absent while self-reporting healthy, exactly the "fail loud,
+ * never silently widen" principle this module states elsewhere. The fix:
+ * both the probe and the real prelude run this SAME mount-and-verify
+ * sequence, so a host that cannot honor the procfs mount is caught at probe
+ * time (reported `available: false`, with the kernel refusal named) and,
+ * as a second independent gate, the real prelude also refuses to `exec` the
+ * target command if this sequence fails on it (see `filesystemClosureShellPrelude`).
+ * `test -r /proc/self/cmdline` (not just checking the mount's own exit
+ * status) is the actual verification: this is the same distinction the
+ * PID-namespace regression tests draw — a real procfs must let its own
+ * mounting process read its own `/proc/self/cmdline`, so this check can't be
+ * satisfied by an empty or stale mountpoint the way a bare exit-code check
+ * could be.
+ */
+function procMountVerifyStatements(): string[] {
+  return ["mkdir -p /proc", "mount -t proc proc /proc", "test -r /proc/self/cmdline"];
+}
+
+/** Human-readable sentinel written to stdout by `unshareProcMountProbeArgv()`'s script
+ *  when the mount-and-verify sequence above succeeds — distinguishes a
+ *  genuine pass from any other reason the probe child might exit 0 (e.g. a
+ *  shell built-in silently no-op'ing). */
+const PROC_MOUNT_PROBE_OK = "PDPP_PROC_MOUNT_OK";
+
+/**
+ * The full end-to-end dry run the `unshare`-mechanism probe executes: the
+ * SAME namespace flags `spawnWithNetworkIsolation` uses in production
+ * (`--map-root-user --net --mount --pid --ipc --uts --fork`), then
+ * `procMountVerifyStatements()`, then an explicit sentinel print so a
+ * process-level success (exit 0) is only trusted when it's also the RIGHT
+ * kind of success. On failure the mount statements' own stderr (redirected
+ * to stdout here, unlike the swallowed `>/dev/null 2>&1` the real prelude
+ * uses once it trusts the probe) surfaces the kernel's own refusal message
+ * so a caller's diagnostic names the actual cause, not just "unavailable."
+ */
+function unshareProcMountProbeArgv(): string[] {
+  const script = `${procMountVerifyStatements().join(" && ")} && echo ${PROC_MOUNT_PROBE_OK}`;
+  return ["--map-root-user", "--net", "--mount", "--pid", "--ipc", "--uts", "--fork", "--", "sh", "-c", script];
+}
+
+/**
+ * Test-spawns the real `unshare` namespace+procfs-mount sequence (not just
+ * `unshare -r -n true` — see `procMountVerifyStatements()`'s doc comment for
+ * why a bare namespace-creation check is insufficient) and reports whether
+ * it actually succeeded, INCLUDING the procfs mount the real prelude depends
+ * on. Deliberately does NOT infer availability from `/proc/sys/kernel/*`
  * sysctls or capability bits: those are necessary but not sufficient (LSM
  * policy — AppArmor's `restrict_unprivileged_userns`, SELinux, gVisor/other
- * sandboxed container runtimes, seccomp profiles — can all independently
- * block this even when the sysctl says it should work). Actually spawning
- * is the only way to get a true answer, and `true` exits instantly so the
- * cost of asking is negligible.
+ * sandboxed container runtimes, seccomp profiles, and Docker's default
+ * procfs-subpath masking on a `CAP_SYS_ADMIN`-only, non-`--privileged`
+ * container — can all independently block one part or another of this even
+ * when a shallower check would say it should work). Actually running the
+ * whole sequence is the only way to get a true answer, and it still exits
+ * in well under a second so the cost of asking is negligible.
+ */
+function probeUnshare(): NamespaceIsolationCapability {
+  const probe = spawnSync("unshare", unshareProcMountProbeArgv(), {
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5000,
+  });
+  if (probe.error) {
+    return { available: false, reason: `unshare not runnable: ${probe.error.message}` };
+  }
+  const stdout = probe.stdout ? probe.stdout.toString("utf8") : "";
+  if (probe.status === 0 && stdout.includes(PROC_MOUNT_PROBE_OK)) {
+    return { available: true, mechanism: "unshare" };
+  }
+  const stderr = probe.stderr ? probe.stderr.toString("utf8").trim() : "";
+  // The specific, named failure this hardening exists to catch: namespace
+  // creation succeeded (an earlier bare `unshare -r -n true` probe would
+  // have reported this host as available) but the PID-namespace's own
+  // procfs mount was refused by the kernel's "too revealing" check —
+  // surfaced verbatim in `stderr` (`mount: /proc: permission denied`) rather
+  // than paraphrased, so a caller sees the real kernel-level cause.
+  return {
+    available: false,
+    reason: `unshare namespace+procfs-mount dry run exited ${String(probe.status)}${stderr ? `: ${stderr}` : ""} — either unprivileged user namespaces are unavailable on this host (kernel sysctl or an LSM policy such as AppArmor's unprivileged-userns restriction is the usual cause), or namespace creation succeeded but the PID-namespace's own \`mount -t proc proc /proc\` was refused by the kernel (commonly: Docker's default procfs masking combined with a CAP_SYS_ADMIN grant that stops short of full --privileged, producing a kernel "Mount too revealing" refusal)`,
+  };
+}
+
+/**
+ * Probes `unshare` first (see `probeUnshare()`), falling back to `bwrap`
+ * when `unshare` is denied — the common real-world shape, where AppArmor's
+ * `restrict_unprivileged_userns` denies a bare `unshare` while still
+ * permitting `bwrap`.
  */
 export function isNamespaceIsolationAvailable(): NamespaceIsolationCapability {
   if (process.platform !== "linux") {
@@ -217,28 +348,15 @@ export function isNamespaceIsolationAvailable(): NamespaceIsolationCapability {
       reason: `unprivileged network namespaces are Linux-only (platform: ${process.platform})`,
     };
   }
-  const probe = spawnSync("unshare", ["-r", "-n", "true"], { stdio: ["ignore", "ignore", "pipe"], timeout: 5000 });
-  if (probe.error) {
-    const viaBwrap = probeBwrap();
-    return viaBwrap.available
-      ? viaBwrap
-      : { available: false, reason: `unshare not runnable: ${probe.error.message}; ${viaBwrap.reason}` };
+  const viaUnshare = probeUnshare();
+  if (viaUnshare.available) {
+    return viaUnshare;
   }
-  if (probe.status !== 0) {
-    const stderr = probe.stderr ? probe.stderr.toString("utf8").trim() : "";
-    // The common real-world case: AppArmor's restrict_unprivileged_userns
-    // denies a bare `unshare` while still permitting `bwrap`. Try it before
-    // declaring the host incapable.
-    const viaBwrap = probeBwrap();
-    if (viaBwrap.available) {
-      return viaBwrap;
-    }
-    return {
-      available: false,
-      reason: `unshare -r -n true exited ${String(probe.status)}${stderr ? `: ${stderr}` : ""} — unprivileged user namespaces are unavailable on this host (kernel sysctl or an LSM policy such as AppArmor's unprivileged-userns restriction is the usual cause); ${viaBwrap.reason}`,
-    };
+  const viaBwrap = probeBwrap();
+  if (viaBwrap.available) {
+    return viaBwrap;
   }
-  return { available: true, mechanism: "unshare" };
+  return { available: false, reason: `${viaUnshare.reason}; ${viaBwrap.reason}` };
 }
 
 /**
@@ -620,12 +738,36 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined): 
   // pre-pivot procfs mount at the staging path is denied. The mountpoint
   // itself was never created (neither pre-pivot as ${newroot}/proc nor
   // post-pivot as /proc — same directory, either phrasing), so `mount -t
-  // proc proc /proc` targeted a nonexistent directory and silently failed
-  // (exit 32, stderr swallowed by the redirect below): /proc did not exist
-  // at all post-pivot on any host. mkdir it here, immediately before the
-  // mount that needs it.
-  statements.push("mkdir -p /proc >/dev/null 2>&1");
-  statements.push("mount -t proc proc /proc >/dev/null 2>&1");
+  // proc proc /proc` targeted a nonexistent directory and silently failed:
+  // /proc did not exist at all post-pivot on any host. mkdir it here,
+  // immediately before the mount that needs it.
+  //
+  // FAIL LOUD, NOT SILENT (probe-honesty companion fix): `isNamespaceIsolationAvailable()`
+  // now runs this exact mount-and-verify sequence (`procMountVerifyStatements()`)
+  // BEFORE this prelude ever runs, so a host that cannot honor the procfs
+  // mount is caught at probe time and `unshare` is never selected for it.
+  // This is the second, independent gate: even if a caller bypassed the
+  // probe (passed a hardcoded `isolate: "unshare"` without checking
+  // `isNamespaceIsolationAvailable()` first — the boolean/mechanism
+  // distinction this module's docstring already warns against skipping),
+  // the real spawn must still refuse to `exec` the target command against a
+  // broken `/proc` rather than silently continuing — the same "closing the
+  // escape CLASS, not one more instance of it" principle the filesystem
+  // closure above states for the mask-list-vs-default-deny history. `mount`'s
+  // own stderr is surfaced (not swallowed) only on the failure path, so a
+  // caller inspecting the child's stderr sees the real kernel refusal
+  // (e.g. `VFS: Mount too revealing`) rather than a bare nonzero exit code.
+  // The diagnostic is captured via inline command substitution, NOT a temp
+  // file — post-pivot_root, nothing exists at `/tmp` (only
+  // `/tmp/<newroot-basename>` was ever staged pre-pivot, and pivot_root made
+  // THAT the new `/`; there is no separate `/tmp` in the new root at all),
+  // so writing a diagnostic to any `/tmp/...` path here would itself fail
+  // with "Directory nonexistent" and mask the real procfs-mount error behind
+  // a confusing secondary one.
+  statements.push(
+    `procfail=$(${procMountVerifyStatements().join(" && ")} 2>&1 >/dev/null); ` +
+      `if [ "$?" -ne 0 ]; then echo "pdpp isolation: PID-namespace procfs mount failed, refusing to run isolated — $procfail" 1>&2; exit 97; fi`
+  );
   statements.push("umount -l /oldroot >/dev/null 2>&1");
   return statements.join("; ");
 }
