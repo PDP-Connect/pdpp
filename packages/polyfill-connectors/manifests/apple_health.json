@@ -13,6 +13,44 @@
     },
     "environment_variables": ["APPLE_HEALTH_EXPORT_DIR"]
   },
+  "setup": {
+    "modality": "manual_or_upload",
+    "manual_or_upload": {
+      "label": "Apple Health export",
+      "description": "Export your Apple Health data from your iPhone, then upload the .zip (or the export.xml inside it) here.",
+      "acquisition_methods": [
+        {
+          "label": "Export from the Health app",
+          "platform": "mobile",
+          "posture": "primary",
+          "detail": "On your iPhone, open the Health app, tap your profile picture (top right), scroll down, and tap Export All Health Data. Confirm Export, then AirDrop, save, or share the resulting export.zip to a device where you can upload it here.",
+          "help_url": "https://support.apple.com/guide/iphone/share-your-health-data-iph5ede58c3d/ios"
+        },
+        {
+          "label": "Extract export.xml yourself for a large export",
+          "platform": "device",
+          "posture": "advanced",
+          "detail": "If export.zip exceeds the upload limit, unzip it yourself (it contains apple_health_export/export.xml) and upload export.xml directly instead of the whole archive."
+        }
+      ],
+      "accepted_file_extensions": [".zip", ".xml"],
+      "import_dir_env_var": "APPLE_HEALTH_EXPORT_DIR",
+      "help_url": "https://support.apple.com/guide/iphone/share-your-health-data-iph5ede58c3d/ios",
+      "help_text": "Apple Health does not expose an account API or OAuth grant. This source imports an owner-exported export.zip or export.xml produced by the iPhone Health app.",
+      "large_file_fallback": "A full Health export can run into the hundreds of MB to multiple GB for a long-lived account. If export.zip is too large to upload, extract it yourself and upload just export.xml — this connector streams the XML, so file size alone does not limit what it can process once uploaded.",
+      "validation": {
+        "kind": "apple_health_export",
+        "file_backed": true,
+        "max_file_bytes": 8589934592
+      },
+      "validation_expectations": [
+        "Detected an Apple Health export (export.xml, standalone or inside export.zip)",
+        "Estimated health record and workout counts",
+        "Detected record date range",
+        "Duplicate, empty, unsupported, or too-large file status"
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
@@ -161,6 +199,7 @@
     }
   ],
   "reason_display_messages": {
-    "export_not_found": "We couldn't find an export to import"
+    "export_not_found": "We couldn't find an export to import",
+    "export_extraction_failed": "We couldn't read the uploaded export"
   }
 }

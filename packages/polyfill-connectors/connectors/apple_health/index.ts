@@ -6,10 +6,13 @@
  * PDPP Apple Health Connector (v0.1.0)
  *
  * Auth: none (file-based). User goes to iPhone → Health app → profile →
- * "Export All Health Data", AirDrop/email the .zip to this machine, and
- * extracts export.xml into APPLE_HEALTH_EXPORT_DIR (defaults
- * ~/.pdpp/imports/apple_health/). This connector streams the XML, so even
- * 500MB exports parse incrementally with low memory.
+ * "Export All Health Data", then either uploads the resulting .zip (or its
+ * extracted export.xml) through the console's manual-upload flow, or
+ * places it directly under APPLE_HEALTH_EXPORT_DIR (defaults
+ * ~/.pdpp/imports/apple_health/) for local/developer use. This connector
+ * streams the XML, so even multi-GB exports parse incrementally with low
+ * memory — extraction of an uploaded .zip is likewise streamed straight to
+ * disk (see parsers.ts's resolveUploadedExportPath), never buffered whole.
  */
 
 import { createReadStream, existsSync } from "node:fs";
@@ -21,8 +24,10 @@ import {
   advanceCursor,
   buildHealthRecord,
   buildWorkoutRecord,
+  findUploadedExportCandidate,
   isBeforeCursor,
   parseAttrs,
+  resolveUploadedExportPath,
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type { AppleHealthAttrs, AppleHealthState, StreamParseArgs } from "./types.ts";
@@ -32,16 +37,42 @@ const READ_BUFFER_SIZE = 65_536;
 // Emit a PROGRESS every N events so operators see progress on multi-GB exports.
 const PROGRESS_INTERVAL_EVENTS = 10_000;
 
-function resolveExportPath(dir: string): string | null {
+export type ResolveExportPathResult =
+  | { readonly kind: "found"; readonly path: string }
+  | { readonly kind: "not_found" }
+  | { readonly kind: "extraction_failed"; readonly message: string };
+
+/**
+ * Resolve the export.xml to stream-parse this run, trying (in order):
+ *   1. The legacy pre-extracted developer layout (`<dir>/export.xml` or
+ *      `<dir>/apple_health_export/export.xml`) — unchanged from v0.1.0, so
+ *      an existing developer setup keeps working exactly as before.
+ *   2. An owner-uploaded artifact via the manual-upload console flow: a
+ *      bare `.xml` used directly, or a `.zip` extracted once (streamed,
+ *      cached — see resolveUploadedExportPath) to a sibling file.
+ */
+async function resolveExportPath(dir: string): Promise<ResolveExportPathResult> {
   const direct = join(dir, "export.xml");
   if (existsSync(direct)) {
-    return direct;
+    return { kind: "found", path: direct };
   }
   const nested = join(dir, "apple_health_export", "export.xml");
   if (existsSync(nested)) {
-    return nested;
+    return { kind: "found", path: nested };
   }
-  return null;
+
+  const candidate = findUploadedExportCandidate(dir);
+  if (!candidate) {
+    return { kind: "not_found" };
+  }
+  const outcome = await resolveUploadedExportPath(candidate);
+  if (outcome.kind === "resolved") {
+    return { kind: "found", path: outcome.resolved.path };
+  }
+  if (outcome.kind === "extraction_failed") {
+    return { kind: "extraction_failed", message: outcome.message };
+  }
+  return { kind: "not_found" };
 }
 
 async function streamParse({ path, onRecord, onWorkout, onProgress }: StreamParseArgs): Promise<void> {
@@ -133,8 +164,17 @@ runConnector({
   validateRecord,
   async collect({ state, requested, emit, emitRecord, progress }) {
     const dir = process.env.APPLE_HEALTH_EXPORT_DIR || join(homedir(), ".pdpp/imports/apple_health");
-    const path = resolveExportPath(dir);
-    if (!path) {
+    const resolved = await resolveExportPath(dir);
+    if (resolved.kind === "extraction_failed") {
+      await emit({
+        type: "SKIP_RESULT",
+        stream: "records",
+        reason: "export_extraction_failed",
+        message: resolved.message,
+      });
+      return;
+    }
+    if (resolved.kind === "not_found") {
       await emit({
         type: "SKIP_RESULT",
         stream: "records",
@@ -143,6 +183,7 @@ runConnector({
       });
       return;
     }
+    const { path } = resolved;
 
     const recordsState = (state.records ?? {}) as AppleHealthState;
     const workoutsState = (state.workouts ?? {}) as AppleHealthState;
