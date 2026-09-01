@@ -172,7 +172,7 @@ export async function validateAppleHealthExportArtifact(
     const fd = openSync(scratchPath, "r");
     try {
       return await validateAppleHealthExportArtifactFromFile(fd, scratchPath, bytes.length, {
-        existingFileHashes: options.existingFileHashes,
+        ...(options.existingFileHashes === undefined ? {} : { existingFileHashes: options.existingFileHashes }),
         fileName,
         fileSha256,
         maxFileBytes: options.maxFileBytes ?? null,
