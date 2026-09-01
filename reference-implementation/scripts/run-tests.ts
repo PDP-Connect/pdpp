@@ -27,6 +27,7 @@ import { collectChildProcessOutput } from "./child-process-output.ts";
 import { deriveDedicatedPostgresDbNameForFile } from "./dedicated-postgres-db-name.ts";
 import { startFileProcessWatchdog } from "./file-process-watchdog.ts";
 import { assertPostgresProfilePreflight } from "./postgres-profile-preflight.ts";
+import { dropPostgresTestTemplate, ensurePostgresTestTemplate } from "./postgres-test-template.ts";
 import { discoverSelectedTestFiles } from "./run-tests-discovery.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
 import { buildScrubbedTestEnv } from "./test-env.ts";
@@ -189,6 +190,13 @@ await assertPostgresProfilePreflight({
 let fileCounter = 0;
 const runnerId = randomBytes(4).toString("hex");
 
+// Set once, before the worker pool starts, when a Postgres profile is
+// active (see the ensurePostgresTestTemplate() call below). Per-file/per-test
+// database creation clones from this template instead of bootstrapping schema
+// from scratch -- see scripts/postgres-test-template.ts for the fail-closed
+// contract (a missing/unusable template throws, it is never silently skipped).
+let postgresTestTemplateName: string | null = null;
+
 /**
  * Derive the admin connection URL from a per-test URL by replacing the
  * database path segment with 'postgres' (always present on any standard PG
@@ -264,7 +272,14 @@ async function allocateTestDb(filePath: string, baseUrl: string): Promise<TestDb
     await client.connect();
     // Identifier is safe: deriveDbName produces only [a-z0-9_] chars.
     await client.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
-    await client.query(`CREATE DATABASE "${dbName}"`);
+    // Identifier is safe: postgresTestTemplateName is either null or the
+    // output of deriveDedicatedPostgresTemplateName, which is
+    // "pdpp_test_template_" + an 8-hex-char runnerId (no user input).
+    await client.query(
+      postgresTestTemplateName
+        ? `CREATE DATABASE "${dbName}" TEMPLATE "${postgresTestTemplateName}"`
+        : `CREATE DATABASE "${dbName}"`
+    );
     await client.end();
   } catch (err) {
     try {
@@ -366,7 +381,19 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
     }
   }
 
-  const childEnvBase: ProcessEnvLike = allocation ? { ...baseEnv, PDPP_TEST_POSTGRES_URL: allocation.url } : baseEnv;
+  const childEnvBase: ProcessEnvLike = allocation
+    ? {
+        ...baseEnv,
+        PDPP_TEST_POSTGRES_URL: allocation.url,
+        // Lets withTemporaryPostgresDatabase (test/helpers/postgres-temp-database.ts)
+        // clone its own per-test() scratch database from the same template
+        // this file's own database was cloned from, instead of bootstrapping
+        // schema from scratch a second (or third...) time inside the child.
+        // Unset entirely (not set to "") when no template was built, so a
+        // Postgres run without templating is byte-identical to today.
+        ...(postgresTestTemplateName ? { PDPP_TEST_POSTGRES_TEMPLATE: postgresTestTemplateName } : {}),
+      }
+    : baseEnv;
   // Turn the preload (appended to effectiveArgs above) live in the child. Left
   // unset when the guard is disabled so the child is byte-identical to a
   // pre-guard run (guard-absent parity).
@@ -446,6 +473,19 @@ const fileConcurrency =
 const queue = [...testFiles];
 const results: NodeTestResult[] = [];
 
+// Build the per-run Postgres schema template once, before any child spawns,
+// when Postgres is in play and there is at least one file to run it for. This
+// pays the full ~2000-line DDL bootstrap exactly once per gate run instead of
+// once per file (or once per test() block for files using
+// withTemporaryPostgresDatabase) -- see scripts/postgres-test-template.ts.
+// A failure here is fatal (not caught): a gate that silently fell back to
+// per-file bootstrap on template-build failure would hide a broken template
+// behind a normal-looking (slow) green run, which is the one thing the task
+// this exists for explicitly rules out.
+if (dedicatedBasePostgresTestUrl && testFiles.length > 0) {
+  postgresTestTemplateName = await ensurePostgresTestTemplate(dedicatedBasePostgresTestUrl, runnerId);
+}
+
 async function worker(): Promise<void> {
   while (queue.length > 0) {
     const file = queue.shift();
@@ -459,7 +499,17 @@ async function worker(): Promise<void> {
   }
 }
 
-await Promise.all(Array.from({ length: fileConcurrency }, () => worker()));
+try {
+  await Promise.all(Array.from({ length: fileConcurrency }, () => worker()));
+} finally {
+  if (dedicatedBasePostgresTestUrl && postgresTestTemplateName) {
+    await dropPostgresTestTemplate(dedicatedBasePostgresTestUrl, postgresTestTemplateName).catch((error) => {
+      process.stderr.write(
+        `[run-tests] WARN: could not drop Postgres test template ${postgresTestTemplateName}: ${error instanceof Error ? error.message : String(error)}\n`
+      );
+    });
+  }
+}
 
 const selectedFiles = repositoryPaths("reference-implementation", testFiles);
 if (accountingAuthority && JSON.stringify(selectedFiles) !== JSON.stringify(accountingAuthority.files)) {

@@ -3,6 +3,7 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: localized test assertion preserves its explicit contract.
 import pg from "pg";
+import { assertPostgresTestTemplateUsable } from "../../scripts/postgres-test-template.ts";
 import { provisionTestDatabase } from "../../server/postgres-test-database-guard.ts";
 
 const { Pool } = pg;
@@ -54,10 +55,20 @@ export async function withTemporaryPostgresDatabase(
     connectionString,
     databaseName,
     closeConnections,
+    templateName = process.env.PDPP_TEST_POSTGRES_TEMPLATE,
   }: {
     connectionString: string;
     databaseName: string;
     closeConnections?: () => Promise<void>;
+    /**
+     * Clone from this Postgres TEMPLATE database instead of bootstrapping
+     * schema from scratch inside the callback. Defaults to
+     * PDPP_TEST_POSTGRES_TEMPLATE, set by scripts/run-tests.ts when it built
+     * a per-run template -- so callers need no changes to opt in. Pass `null`
+     * explicitly to force a from-scratch database regardless of the env var
+     * (e.g. a test that specifically wants to exercise cold bootstrap).
+     */
+    templateName?: string | null;
   },
   callback: (databaseUrl: string) => Promise<unknown>
 ): Promise<unknown> {
@@ -72,18 +83,38 @@ export async function withTemporaryPostgresDatabase(
   let operationError;
 
   try {
+    if (templateName) {
+      // Fail loudly if the template is missing/stale rather than silently
+      // falling back to a from-scratch CREATE DATABASE -- a quiet fallback
+      // would hide a broken template behind a normal-looking (slow) pass.
+      await assertPostgresTestTemplateUsable(connectionString, templateName);
+    }
     await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-    await admin.query(`CREATE DATABASE ${database}`);
+    // Identifier is safe: quotedIdentifier() already escaped databaseName;
+    // templateName here is always either undefined/null or a value this
+    // same process received from run-tests.ts's own runnerId-derived name
+    // (scripts/postgres-test-template.ts), never external input.
+    await admin.query(
+      templateName
+        ? `CREATE DATABASE ${database} TEMPLATE ${quotedIdentifier(templateName)}`
+        : `CREATE DATABASE ${database}`
+    );
     created = true;
     const createdUrl = databaseUrl(connectionString, databaseName);
-    // This helper is the OTHER place (besides the test runner) that brings a
-    // scratch Postgres database into existence, so it is the other place that
-    // must stamp the test sentinel. Without the stamp, `initPostgresStorage`
-    // fail-closed refuses the database the callback was just handed --
-    // correctly, since an unmarked database is indistinguishable from
-    // production to the guard. The database was created empty one statement
-    // ago, so stamping it is honest.
-    await provisionTestDatabase(createdUrl);
+    if (!templateName) {
+      // This helper is the OTHER place (besides the test runner) that brings
+      // a scratch Postgres database into existence, so it is the other place
+      // that must stamp the test sentinel. Without the stamp,
+      // `initPostgresStorage` fail-closed refuses the database the callback
+      // was just handed -- correctly, since an unmarked database is
+      // indistinguishable from production to the guard. The database was
+      // created empty one statement ago, so stamping it is honest. When
+      // cloning from a template, the clone already carries the template's own
+      // sentinel row byte-for-byte, so stamping again would be redundant (not
+      // wrong -- provisionTestDatabase is idempotent -- but the whole point of
+      // templating is skipping exactly this kind of extra round-trip).
+      await provisionTestDatabase(createdUrl);
+    }
     result = await callback(createdUrl);
   } catch (error) {
     operationError = error;
