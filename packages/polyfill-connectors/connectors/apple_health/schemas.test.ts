@@ -21,11 +21,14 @@ const RECORD_NUMERIC = {
   type: "HeartRate",
   source_name: "Apple Watch",
   source_version: "10.1",
+  device: null,
   unit: "count/min",
   value: 72.5,
   value_raw: null,
   start_date: "2024-06-05T13:00:00.000Z",
   end_date: "2024-06-05T13:00:01.000Z",
+  creation_date: null,
+  metadata: null,
 };
 
 // A category record (sleep analysis): value is null, value_raw carries the
@@ -35,11 +38,14 @@ const RECORD_CATEGORY = {
   type: "SleepAnalysis",
   source_name: "iPhone",
   source_version: null,
+  device: null,
   unit: null,
   value: null,
   value_raw: "HKCategoryValueSleepAnalysisAsleepCore",
   start_date: "2024-06-05T03:00:00.000Z",
   end_date: null,
+  creation_date: null,
+  metadata: { HKWasUserEntered: "1" },
 };
 
 // Shaped exactly as buildWorkoutRecord(...) returns.
@@ -50,6 +56,11 @@ const WORKOUT_RECORD = {
   total_energy_burned_kcal: 410.2,
   total_distance_km: 5.04,
   source_name: "Apple Watch",
+  source_version: "10.5",
+  device: null,
+  metadata: { HKIndoorWorkout: "0" },
+  events: [{ type: "Pause", date: "2024-06-05T06:10:00.000Z", duration_minutes: null }],
+  statistics: [{ type: "HKQuantityTypeIdentifierHeartRate", average: "142", unit: "count/min" }],
   start_date: "2024-06-05T06:00:00.000Z",
   end_date: "2024-06-05T06:32:30.000Z",
 };
@@ -94,6 +105,10 @@ test("workouts schema accepts an all-null-metrics workout (only id + start)", ()
     total_energy_burned_kcal: null,
     total_distance_km: null,
     source_name: null,
+    source_version: null,
+    metadata: null,
+    events: null,
+    statistics: null,
     end_date: null,
   });
   assert.ok(result.success, JSON.stringify(result.error?.issues));

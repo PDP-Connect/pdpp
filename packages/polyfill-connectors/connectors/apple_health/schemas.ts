@@ -57,6 +57,8 @@ export const recordsSchema = z.object({
   type: z.string().min(1).max(200),
   source_name: z.string().min(1).max(500).nullable(),
   source_version: z.string().min(1).max(200).nullable(),
+  // Raw HKDevice descriptor string (name/manufacturer/model/hardware/software).
+  device: z.string().min(1).max(1000).nullable(),
   unit: z.string().min(1).max(100).nullable(),
   // float-capable (heart rate, body mass, etc.) — not .int(). zod's z.number()
   // already rejects NaN/Infinity, matching the builder's `Number.isFinite` gate.
@@ -64,12 +66,29 @@ export const recordsSchema = z.object({
   value_raw: z.string().min(1).max(500).nullable(),
   start_date: isoDateTimeSchema,
   end_date: isoDateTimeSchema.nullable(),
+  creation_date: isoDateTimeSchema.nullable(),
+  // Nested MetadataEntry key/value pairs, e.g. HKWasUserEntered.
+  metadata: z.record(z.string(), z.string()).nullable(),
 });
 
 /**
  * workouts stream: one record per HKWorkout element with a parseable startDate.
  * Cursor: start_date (last_start_date).
  */
+// A WorkoutEvent child: HK event-type token (Pause/Resume/Segment/...), ISO
+// date, and optional duration. Structural, not free text.
+const workoutEventSchema = z.object({
+  type: z.string().min(1).max(200).nullable(),
+  date: isoDateTimeSchema.nullable(),
+  duration_minutes: z.number().nullable(),
+});
+
+// A WorkoutStatistics child. Apple's own DTD for this element has changed
+// across iOS versions (see ai/research/apple-health-export-format/), so its
+// attribute set is treated as an open bag of HK device/app strings rather
+// than a fixed shape.
+const workoutStatisticsSchema = z.record(z.string(), z.string().optional());
+
 export const workoutsSchema = z.object({
   id: appleHealthIdSchema,
   workout_activity_type: z.string().min(1).max(200).nullable(),
@@ -77,6 +96,11 @@ export const workoutsSchema = z.object({
   total_energy_burned_kcal: z.number().min(0).nullable(),
   total_distance_km: z.number().min(0).nullable(),
   source_name: z.string().min(1).max(500).nullable(),
+  source_version: z.string().min(1).max(200).nullable(),
+  device: z.string().min(1).max(1000).nullable(),
+  metadata: z.record(z.string(), z.string()).nullable(),
+  events: z.array(workoutEventSchema).nullable(),
+  statistics: z.array(workoutStatisticsSchema).nullable(),
   start_date: isoDateTimeSchema,
   end_date: isoDateTimeSchema.nullable(),
 });
