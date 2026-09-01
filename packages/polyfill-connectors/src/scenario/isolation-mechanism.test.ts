@@ -68,6 +68,199 @@ test("an isolated child has NO outbound network — the property, not the mechan
   assert.equal(exitCode, 0, "exit 9 would mean the child reached the network — isolation is not real");
 });
 
+// ─── Probe-honesty: advertise-vs-honor (forced PID-ns procfs-mount refusal) ─
+//
+// An independent review found a concrete host shape — Docker `--cap-add=
+// SYS_ADMIN` granted without full `--privileged`, so Docker's default
+// procfs-subpath masking is still active — where `unshare -r -n true`
+// (the OLD probe's entire check) succeeds, but the PID-namespace's own
+// `mount -t proc proc /proc` is refused by the kernel's "too revealing"
+// check. Under the old probe, that host reported `available: true`,
+// `unshare` got selected over `bwrap`, and the real spawn then ran to
+// completion with `/proc` silently mounted-but-empty. Reproducing that
+// exact container shape here (a real Docker container with real kernel
+// behavior) isn't practical inside this fast test suite, so these tests
+// simulate the SAME two-part failure signature (namespace creation exits 0,
+// procfs mount then fails) with a fake `unshare` shim on PATH — proving the
+// PROBE's own logic correctly turns that signature into `available: false`
+// with a diagnostic naming the refusal, and that the runtime then falls back
+// to bwrap (or fails closed) rather than silently proceeding. This is a
+// logic-level proof of the fix, complementary to (not a replacement for) the
+// live container reproduction recorded in the review notes.
+
+/** Writes a fake `unshare` that mimics the exact advertise-vs-honor failure
+ *  shape: any invocation whose argv contains `mount -t proc proc /proc` (the
+ *  probe's own mount-and-verify dry run, or the real prelude's) exits 32 with
+ *  a stderr line matching the real kernel refusal, `mount: /proc: permission
+ *  denied.` — every other invocation shape (a bare capability probe like
+ *  `-r -n true`) exits 0, so namespace CREATION still looks available; only
+ *  the procfs mount specifically is refused, mirroring the CAP_SYS_ADMIN
+ *  -only container shape exactly. */
+function fakeUnshareRefusingProcMount(dir: string): void {
+  const scriptPath = join(dir, "unshare");
+  writeFileSync(
+    scriptPath,
+    [
+      "#!/bin/sh",
+      'case "$*" in',
+      '  *"mount -t proc proc /proc"*)',
+      '    echo "mount: /proc: permission denied." 1>&2',
+      "    exit 32",
+      "    ;;",
+      "  *)",
+      "    exit 0",
+      "    ;;",
+      "esac",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+}
+
+/** Writes a fake `bwrap` that always succeeds — used to prove the fallback
+ *  path is taken (not just that `unshare` was correctly rejected). */
+function fakeBwrapAlwaysAvailable(dir: string): void {
+  const scriptPath = join(dir, "bwrap");
+  writeFileSync(scriptPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+}
+
+/** Writes a fake `bwrap` that always fails — used so the "no fallback
+ *  available" test is not accidentally rescued by a REAL, working bwrap
+ *  elsewhere on this host's PATH; PATH-shadowing alone isn't enough because
+ *  omitting a bwrap entry from the fake dir doesn't hide a real one located
+ *  later in the (still-inherited) PATH string. */
+function fakeBwrapAlwaysUnavailable(dir: string): void {
+  const scriptPath = join(dir, "bwrap");
+  writeFileSync(
+    scriptPath,
+    '#!/bin/sh\necho "bwrap: Creating new namespace failed: Operation not permitted" 1>&2\nexit 1\n',
+    {
+      mode: 0o755,
+    }
+  );
+}
+
+test("probe reports UNAVAILABLE (not available-then-crash) when unshare's PID-ns procfs mount is refused, with no working bwrap fallback", () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-refusal-"));
+  fakeUnshareRefusingProcMount(fakeBinDir);
+  // A fake bwrap that ALSO fails — not just an absent one — because the fake
+  // dir is only PREPENDED to PATH; a real, working bwrap later in the
+  // inherited PATH would otherwise rescue this "no fallback" scenario and
+  // make the test assert something false about this host.
+  fakeBwrapAlwaysUnavailable(fakeBinDir);
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const cap = isNamespaceIsolationAvailable();
+    assert.equal(
+      cap.available,
+      false,
+      "a host where namespace creation succeeds but the PID-namespace procfs mount is refused must report UNAVAILABLE, not available-then-crash-later"
+    );
+    if (!cap.available) {
+      assert.ok(
+        /permission denied|mount/i.test(cap.reason),
+        `the diagnostic must name the kernel-level mount refusal, not just 'unavailable'; got ${JSON.stringify(cap.reason)}`
+      );
+    }
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+test("probe falls back to bwrap when unshare's procfs mount is refused but bwrap genuinely works", () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-refusal-fallback-"));
+  fakeUnshareRefusingProcMount(fakeBinDir);
+  fakeBwrapAlwaysAvailable(fakeBinDir);
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const cap = isNamespaceIsolationAvailable();
+    assert.equal(
+      cap.available,
+      true,
+      "a host where unshare's procfs mount is refused but bwrap genuinely works must still report AVAILABLE — the fallback exists precisely for this shape"
+    );
+    if (cap.available) {
+      assert.equal(
+        cap.mechanism,
+        "bwrap",
+        "must select bwrap, not unshare — unshare demonstrably cannot honor the isolation it would advertise on this (simulated) host"
+      );
+    }
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+test("a forced PID-ns procfs-mount refusal inside the real unshare-mechanism prelude fails the spawn closed, never silently proceeds", {
+  skip: !unshareUsable,
+}, async () => {
+  // Complementary to the probe-level tests above: this proves the SECOND,
+  // independent gate — filesystemClosureShellPrelude's own fail-loud check —
+  // actually fires, for a caller that bypasses isNamespaceIsolationAvailable()
+  // and passes a hardcoded isolate: "unshare" directly. Forces the failure by
+  // shadowing `mount` on PATH with a shim that fails only the procfs mount
+  // (everything else the prelude needs — mkdir, mount --bind, pivot_root —
+  // must keep working via the real binary, so this shim delegates to it for
+  // every other invocation shape). The shim's directory is ALSO passed as
+  // `filesystemBindPath` — the fresh root's default-deny closure otherwise
+  // makes anything under the host's `/tmp` (where `mkdtempSync` puts the
+  // shim) disappear post-`pivot_root`, same as every other path outside
+  // `requiredFilesystemBinds()`; without this the shim would silently never
+  // be reached and this test would prove nothing about the fail-closed path.
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-mount-fail-"));
+  const realMountPath = spawnSync("which", ["mount"], { encoding: "utf8" }).stdout.trim() || "/usr/bin/mount";
+  writeFileSync(
+    join(fakeBinDir, "mount"),
+    [
+      "#!/bin/sh",
+      'case "$*" in',
+      '  *"-t proc proc /proc"*)',
+      '    echo "mount: /proc: permission denied." 1>&2',
+      "    exit 32",
+      "    ;;",
+      "  *)",
+      `    exec ${realMountPath} "$@"`,
+      "    ;;",
+      "esac",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  const realPath = process.env.PATH;
+  const fakePath = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const { exitCode, stderrText } = await new Promise<{ exitCode: number | null; stderrText: string }>(
+      (resolveResult) => {
+        let capturedStderr = "";
+        const child = spawnWithNetworkIsolation(process.execPath, ["-e", "process.exit(0)"], {
+          isolate: "unshare",
+          stdio: ["ignore", "ignore", "pipe"],
+          env: { ...process.env, PATH: fakePath },
+          filesystemBindPath: fakeBinDir,
+        });
+        child.stderr?.on("data", (chunk: Buffer) => {
+          capturedStderr += chunk.toString("utf8");
+        });
+        child.on("close", (code) => resolveResult({ exitCode: code, stderrText: capturedStderr }));
+      }
+    );
+    assert.notEqual(
+      exitCode,
+      0,
+      "the spawn must NOT exit 0 when the PID-namespace procfs mount fails — exit 0 here would mean the target command ran despite a broken /proc, the exact silent-proceed failure this hardening closes"
+    );
+    assert.ok(
+      /procfs mount failed/i.test(stderrText) || /permission denied/i.test(stderrText),
+      `expected a diagnostic naming the procfs mount failure on stderr; got ${JSON.stringify(stderrText)}`
+    );
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
 // ─── Double-probe / non-atomic mechanism selection regression ─────────────
 //
 // A caller that already ran `isNamespaceIsolationAvailable()` once and
@@ -368,6 +561,42 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
     assert.ok(
       /^ipc:\[\d+\]$/.test(isolatedIpcNs),
       `expected a real ipc:[<inode>] namespace identifier, got ${JSON.stringify(isolatedIpcNs)}`
+    );
+  });
+}
+
+// ─── UTS namespace — hostname/domainname isolation ─────────────────────────
+//
+// Same test-parity gap the IPC section above closed for SysV IPC: the R5
+// commit unshared `--unshare-uts`/`--uts` on both mechanisms but added no
+// dedicated regression test for it, unlike PID and IPC, which both got a
+// `/proc/self/ns/<x>` inode-comparison test in that same commit. A future
+// regression that dropped the UTS flag would pass the entire suite silently.
+// Hostname disclosure isn't treated as sensitive by this module's threat
+// model (see the doc comment at the top of isolation.ts), so this is Low
+// severity — but the asymmetry with PID/IPC is cheap to close and this test
+// directly mirrors the IPC test's shape, swapping `ns/ipc` for `ns/uts`.
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
+
+  test(`[${mechanism}] an isolated child gets its own UTS namespace, not the host's`, {
+    skip: !usable,
+  }, async () => {
+    const { stdout, exitCode } = await runIsolatedProbe(
+      mechanism,
+      'const fs=require("fs");console.log(fs.readlinkSync("/proc/self/ns/uts"));'
+    );
+    assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout)}`);
+    const isolatedUtsNs = stdout;
+    const parentUtsNs = readlinkSync("/proc/self/ns/uts");
+    assert.notEqual(
+      isolatedUtsNs,
+      parentUtsNs,
+      `isolated child under ${mechanism} reports the SAME UTS namespace as the parent (${parentUtsNs}) — hostname/domainname are not isolated; a future regression dropping --unshare-uts/--uts would pass the rest of this suite silently`
+    );
+    assert.ok(
+      /^uts:\[\d+\]$/.test(isolatedUtsNs),
+      `expected a real uts:[<inode>] namespace identifier, got ${JSON.stringify(isolatedUtsNs)}`
     );
   });
 }
