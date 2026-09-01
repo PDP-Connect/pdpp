@@ -95,6 +95,7 @@ import {
   type IsolationMechanism,
   isNamespaceIsolationAvailable,
   type NamespaceIsolationCapability,
+  sandboxScratchEnv,
   spawnWithNetworkIsolation,
 } from "../src/scenario/isolation.ts";
 import {
@@ -357,6 +358,19 @@ interface CaptureSourceDigestObservation {
    *  computed this run (a bound connector directory existed to hash).
    *  Always false in `--entrypoint` mode. */
   currentSourceDigestComputed: boolean;
+  /** The PRE-FLIGHT declaration digest value itself (not just whether one
+   *  was computed) — P1-2 (ninth review): `main()`'s post-run integrity
+   *  check (`assertNoPostRunSourceMutation`) re-hashes AFTER the subprocess
+   *  exits and compares against THIS value, closing the digest TOCTOU where
+   *  a connector could mutate its own source after the pre-flight hash and
+   *  before/during replay, run different effective code, and still receive
+   *  `recorded_replay: PASS` off the stale pre-flight observation alone.
+   *  `undefined` when `currentDeclarationDigestComputed` is false (nothing to
+   *  compare post-run either). */
+  preflightDeclarationDigest: string | undefined;
+  /** The PRE-FLIGHT source digest value — see `preflightDeclarationDigest`'s
+   *  doc comment; same purpose, for `computeSourceDigest`. */
+  preflightSourceDigest: string | undefined;
 }
 
 /**
@@ -386,6 +400,8 @@ function reportCaptureSourceDigests(args: CliArgs, scenario: ConnectorScenario):
       capturedSourceDigestPresent: false,
       currentDeclarationDigestComputed: false,
       currentSourceDigestComputed: false,
+      preflightDeclarationDigest: undefined,
+      preflightSourceDigest: undefined,
     };
   }
 
@@ -423,6 +439,8 @@ function reportCaptureSourceDigests(args: CliArgs, scenario: ConnectorScenario):
     capturedSourceDigestPresent: capturedSource !== undefined,
     currentDeclarationDigestComputed: currentDeclaration !== undefined,
     currentSourceDigestComputed: currentSource !== undefined,
+    preflightDeclarationDigest: currentDeclaration,
+    preflightSourceDigest: currentSource,
   };
 
   if (!args.requireCaptureSource) {
@@ -439,6 +457,101 @@ function reportCaptureSourceDigests(args: CliArgs, scenario: ConnectorScenario):
     );
   }
   return observation;
+}
+
+/**
+ * POST-RUN INTEGRITY CHECK (P1-2, ninth review, requirement (e)) — closes the
+ * digest TOCTOU: `reportCaptureSourceDigests` above computes source/
+ * declaration digests BEFORE any subprocess is spawned, and (before this fix)
+ * that SAME pre-flight observation was the only thing `printCoverageReport`
+ * ever fed into `evaluateClaimEligibility` — so a connector (or anything
+ * running inside the isolated child, or a filesystem-closure defect) could
+ * mutate its own source or the bound manifest AFTER the pre-flight hash,
+ * during or between replay runs, run different effective code than what was
+ * hashed, optionally restore the original bytes before exit, and this CLI
+ * would still print `recorded_replay: PASS` off the stale, now-provably-false
+ * pre-flight observation alone.
+ *
+ * Called ONCE, after every run's subprocess has fully exited
+ * (`verifyScenario` returned) and BEFORE `printCoverageReport` ever consults
+ * `digestObservation` — re-hashes the SAME manifest/connector directory with
+ * the SAME `computeDeclarationDigest`/`computeSourceDigest` functions used
+ * pre-flight, and compares byte-for-byte against `preflightDeclarationDigest`/
+ * `preflightSourceDigest`. A change either means:
+ *   - the source/manifest no longer exists at all (a connector deleted its
+ *     own directory, or REPO_ROOT-relative paths were disturbed) — `undefined`
+ *     now vs. a real digest before, itself a mismatch;
+ *   - or the bytes genuinely changed underneath this run.
+ * Either way, `recorded_replay: PASS` would be an outright false claim about
+ * a source subject that no longer matches what was verified — this function
+ * WITHHOLDS the strong claim by returning `true` (mutation detected), which
+ * `main()` folds into `digestObservation` (forcing
+ * `currentDeclarationDigestComputed`/`currentSourceDigestComputed` to `false`
+ * — the SAME `evaluateClaimEligibility` conditions the pre-flight side of
+ * this same check already gates on, so a post-run mutation and a pre-flight
+ * "nothing to hash" both correctly withhold the exact same way) and prints an
+ * explicit diagnostic naming which digest changed and its before/after
+ * values, rather than silently downgrading with no visible cause.
+ *
+ * Entrypoint-mode replays (`args.entrypoint` set) have no bound manifest/
+ * connector directory to re-hash — same as `reportCaptureSourceDigests`'s own
+ * early return — so this is a no-op (`false`, nothing mutated) in that mode.
+ */
+export function assertNoPostRunSourceMutation(
+  args: CliArgs,
+  digestObservation: CaptureSourceDigestObservation
+): boolean {
+  if (args.entrypoint) {
+    return false;
+  }
+  const { manifestPath } = getConnectorPaths(args.connector);
+  const connectorDir = dirname(getConnectorPaths(args.connector).connectorPath);
+
+  const postRunDeclaration = fileExists(manifestPath) ? computeDeclarationDigest(manifestPath) : undefined;
+  const postRunSource = directoryExists(connectorDir) ? computeSourceDigest(connectorDir) : undefined;
+
+  const declarationMutated = postRunDeclaration !== digestObservation.preflightDeclarationDigest;
+  const sourceMutated = postRunSource !== digestObservation.preflightSourceDigest;
+
+  if (!(declarationMutated || sourceMutated)) {
+    return false;
+  }
+  if (declarationMutated) {
+    process.stdout.write(
+      `POST-RUN INTEGRITY: manifest declaration changed DURING this run — pre-flight ${formatDigestForReport(digestObservation.preflightDeclarationDigest)}, post-run ${formatDigestForReport(postRunDeclaration)} (manifests/${args.connector}.json was mutated after being hashed and before/during replay)\n`
+    );
+  }
+  if (sourceMutated) {
+    process.stdout.write(
+      `POST-RUN INTEGRITY: connector source changed DURING this run — pre-flight ${formatDigestForReport(digestObservation.preflightSourceDigest)}, post-run ${formatDigestForReport(postRunSource)} (connectors/${args.connector}/ was mutated after being hashed and before/during replay — recorded_replay is withheld, the claim would no longer describe the code that actually ran)\n`
+    );
+  }
+  return true;
+}
+
+/**
+ * Calls `assertNoPostRunSourceMutation` and, when it detects a mutation,
+ * returns a COPY of `digestObservation` with `currentDeclarationDigestComputed`/
+ * `currentSourceDigestComputed` forced to `false` — the SAME
+ * `evaluateClaimEligibility` conditions the pre-flight "nothing to hash" case
+ * already gates `recorded_replay` on, so a post-run mutation cannot win the
+ * strong claim without `claims.ts` needing a separate, parallel eligibility
+ * path for it. Split out of `main` purely to stay under this package's
+ * cognitive-complexity lint ceiling — behavior is unchanged from an inline
+ * version.
+ */
+function withdrawDigestObservationIfMutated(
+  args: CliArgs,
+  digestObservation: CaptureSourceDigestObservation
+): CaptureSourceDigestObservation {
+  if (!assertNoPostRunSourceMutation(args, digestObservation)) {
+    return digestObservation;
+  }
+  return {
+    ...digestObservation,
+    currentDeclarationDigestComputed: false,
+    currentSourceDigestComputed: false,
+  };
 }
 
 function isPlainStateRecord(value: unknown): value is Record<string, unknown> {
@@ -903,6 +1016,15 @@ function runReplaySubprocess(args: {
       cwd: PACKAGE_ROOT,
       env: {
         ...subprocessEnv(),
+        // Sandbox-local HOME/TMPDIR/XDG_CACHE_HOME (P1-2, ninth review) —
+        // only when isolation is actually active (`args.isolate` truthy);
+        // `sandboxScratchEnv` itself already no-ops to `{}` when
+        // `args.workspace.dir` weren't meaningful, but gating on `args.isolate`
+        // here too avoids redirecting HOME/TMPDIR for the un-isolated
+        // process-local-only fallback, where the workspace dir was never
+        // bind-mounted anywhere and redirecting HOME there would just be an
+        // unrelated behavior change with no isolation benefit.
+        ...(args.isolate ? sandboxScratchEnv(args.workspace.dir) : {}),
         ...(args.fixedNow === undefined ? {} : { [PDPP_SCENARIO_CLOCK_FIXED_NOW_ENV]: args.fixedNow }),
         ...(args.udsPath === undefined ? {} : { [PDPP_SCENARIO_BRIDGE_UDS_PATH_ENV]: args.udsPath }),
         NODE_OPTIONS: `--import ${preloadPath}`,
@@ -1575,6 +1697,12 @@ async function main(): Promise<void> {
   );
 
   cleanupScenarioEvidenceWorkspace(isolationWorkspace);
+
+  // POST-RUN INTEGRITY CHECK (P1-2, ninth review) — runs AFTER every
+  // subprocess has fully exited, before the strong `recorded_replay` claim
+  // is ever evaluated. See `withdrawDigestObservationIfMutated`'s doc
+  // comment for the full TOCTOU this closes.
+  digestObservation = withdrawDigestObservationIfMutated(args, digestObservation);
 
   if (!result.pass) {
     process.stdout.write(`\nFAIL — ${result.failures.length} failure(s) across ${scenario.runs.length} run(s)\n`);

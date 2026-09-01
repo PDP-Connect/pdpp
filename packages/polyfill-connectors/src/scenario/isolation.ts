@@ -209,8 +209,8 @@
  */
 
 import { type ChildProcess, type SpawnOptions, spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -373,22 +373,58 @@ export function isNamespaceIsolationAvailable(): NamespaceIsolationCapability {
  * spawning it. A profile can be absent, modified, or unloaded, so the
  * only honest answer comes from running the thing.
  */
+/**
+ * PRODUCTION-EQUIVALENT PROBE (P2-1, ninth review): the OLD probe ran a
+ * trivial `bwrap --unshare-net --dev-bind / / true` — a bare capability
+ * check that shares almost nothing with what production actually invokes
+ * (`bwrapArgvForFilesystemClosure`'s empty `--tmpfs /` root, `--unshare-pid`/
+ * `--unshare-ipc`/`--unshare-uts`, fresh `--proc`/`--dev`, every derived
+ * `requiredFilesystemBinds()` entry, `requiredFhsCompatSymlinks()`, and the
+ * workspace bind). The review's exact concern: `--dev-bind / /` is by far
+ * the MOST PERMISSIVE root bwrap can be given — a host that can satisfy that
+ * bare check might still be UNABLE to satisfy the far narrower default-deny
+ * root production actually builds (e.g. a host where `--tmpfs /` itself is
+ * refused, or one of the individual FHS-symlink/device-node steps fails
+ * under a stricter LSM policy) — so a host could report `available: true`
+ * from the old probe while the real production invocation is unsupportable.
+ * Marked P2 (not P1) because bwrap, unlike the unshare-mechanism's shell
+ * prelude, is a single declarative argv — it exits NONZERO on its own if any
+ * declared bind/namespace/mount fails (no equivalent of the unshare
+ * prelude's `>/dev/null 2>&1`-swallowed silent-continue failure mode is
+ * possible here), so this gap could produce a false "unavailable" verdict
+ * turning into a crash-on-first-real-spawn, not a false "available" that
+ * silently runs unisolated.
+ *
+ * Fix: probe via the SAME argument builder production uses
+ * (`bwrapArgvForFilesystemClosure`) against a real temporary workspace
+ * directory (standing in for `filesystemBindPath`) and a trivial executable
+ * (`true`) — the exact shape `isolation-mechanism.test.ts`'s own argv-guard
+ * tests already use to inspect the generated argv, now also actually
+ * SPAWNED here so the probe exercises real bwrap behavior against
+ * production's real derived bind set, not just a shape production never
+ * invokes.
+ */
 function probeBwrap(): NamespaceIsolationCapability {
-  const probe = spawnSync("bwrap", ["--unshare-net", "--dev-bind", "/", "/", "true"], {
-    stdio: ["ignore", "ignore", "pipe"],
-    timeout: 5000,
-  });
-  if (probe.error) {
-    return { available: false, reason: `bwrap not runnable: ${probe.error.message}` };
+  const probeWorkspace = mkdtempSync(join(tmpdir(), "pdpp-isolation-bwrap-probe-"));
+  try {
+    const probe = spawnSync("bwrap", bwrapArgvForFilesystemClosure("true", [], probeWorkspace), {
+      stdio: ["ignore", "ignore", "pipe"],
+      timeout: 5000,
+    });
+    if (probe.error) {
+      return { available: false, reason: `bwrap not runnable: ${probe.error.message}` };
+    }
+    if (probe.status !== 0) {
+      const stderr = probe.stderr ? probe.stderr.toString("utf8").trim() : "";
+      return {
+        available: false,
+        reason: `bwrap production-equivalent dry run exited ${String(probe.status)}${stderr ? `: ${stderr}` : ""}`,
+      };
+    }
+    return { available: true, mechanism: "bwrap" };
+  } finally {
+    rmSync(probeWorkspace, { recursive: true, force: true });
   }
-  if (probe.status !== 0) {
-    const stderr = probe.stderr ? probe.stderr.toString("utf8").trim() : "";
-    return {
-      available: false,
-      reason: `bwrap --unshare-net exited ${String(probe.status)}${stderr ? `: ${stderr}` : ""}`,
-    };
-  }
-  return { available: true, mechanism: "bwrap" };
 }
 
 export interface SpawnWithNetworkIsolationOptions extends SpawnOptions {
@@ -447,11 +483,25 @@ function detectMechanism(): IsolationMechanism {
 
 /**
  * A single real host path bound into the isolated child's otherwise-empty
- * root. `mode: "rw"` is used only for `filesystemBindPath` (the caller's own
- * evidence workspace, which the replay bridge writes into); every path this
- * module derives on its own is `"ro"` — a connector replay has no legitimate
- * reason to write into its own Node install, the repo checkout's
- * `node_modules`, or a browser-binary cache.
+ * root. `mode: "rw"` is used ONLY for `filesystemBindPath` (the caller's own
+ * evidence workspace, which the replay bridge writes into, and which now also
+ * hosts the sandbox-local scratch subdirectories — see
+ * `SANDBOX_SCRATCH_SUBDIRS` below) — every path this module derives on its
+ * own is `"ro"`.
+ *
+ * REPO READ-ONLY (P1-2, ninth review): an earlier version bound `REPO_ROOT`
+ * `rw` on the theory that a dependency might maintain a `.cache` next to
+ * itself under `node_modules`. An external review proved that reasoning
+ * unfalsifiable in practice and dangerous in effect: `rw` on `REPO_ROOT`
+ * meant a compromised or buggy connector could mutate its OWN source, another
+ * connector's source, `node_modules`, `package.json`, test fixtures, or
+ * `.git` — and because `dedupeBinds` treats a `REPO_ROOT` entry as covering
+ * every path under it, that one `rw` bind silently widened every
+ * connector-source path this module's own doc comment describes as
+ * "no legitimate reason to write". `REPO_ROOT` is now always `"ro"`; any
+ * dependency that genuinely needs a writable cache must be added as its own
+ * narrow, individually-justified bind (none has been demonstrated to need
+ * one — see `requiredFilesystemBinds()`'s doc comment).
  */
 interface FilesystemBind {
   mode: "ro" | "rw";
@@ -463,15 +513,18 @@ interface FilesystemBind {
  * REPLACES the old world-writable-temp-dir mask list. Each entry traces to a
  * concrete requirement, not a guess:
  *
- * - `REPO_ROOT` (rw): `bin/scenario-verify.ts` spawns
- *   `process.execPath ["--import", "tsx", connectorPath]` with `cwd:
+ * - `REPO_ROOT` (ro, P1-2 ninth review — was `rw`): `bin/scenario-verify.ts`
+ *   spawns `process.execPath ["--import", "tsx", connectorPath]` with `cwd:
  *   PACKAGE_ROOT` — `tsx`, every connector's source, and the ENTIRE
  *   `node_modules` tree (confirmed: this repo's pnpm store resolves fully
  *   inside `REPO_ROOT`, no external symlink targets) live under the repo
- *   checkout. `rw` because a connector may write scratch/cache state under
- *   its own `node_modules` (e.g. a `.cache` a library maintains next to
- *   itself) — read-only here would be a new, unrelated failure mode this fix
- *   has no mandate to introduce.
+ *   checkout. Read-only: a connector replay has no legitimate reason to
+ *   mutate its own source, another connector's source, `node_modules`, or
+ *   `.git` — see `FilesystemBind`'s doc comment for the review finding this
+ *   closes. Any scratch/cache state a dependency needs at runtime goes under
+ *   the sandbox-local writable scratch space instead — see
+ *   `SANDBOX_SCRATCH_SUBDIRS` and `sandboxScratchEnv()` below — never under
+ *   `REPO_ROOT`.
  * - The directory containing `process.execPath` (ro): the actual Node
  *   binary the child re-execs as. Derived from `process.execPath` itself,
  *   not hardcoded to a distro path, because this repo's Node is a
@@ -544,7 +597,7 @@ interface FilesystemBind {
 export function requiredFilesystemBinds(): readonly FilesystemBind[] {
   const nodeDir = dirname(process.execPath);
   const binds: FilesystemBind[] = [
-    { path: REPO_ROOT, mode: "rw" },
+    { path: REPO_ROOT, mode: "ro" },
     { path: nodeDir, mode: "ro" },
     { path: "/usr", mode: "ro" },
     { path: "/etc", mode: "ro" },
@@ -572,6 +625,61 @@ function dedupeBinds(binds: readonly FilesystemBind[]): FilesystemBind[] {
     }
   }
   return kept;
+}
+
+/**
+ * Sandbox-local writable subdirectories created UNDER `filesystemBindPath`
+ * (P1-2, ninth review) — `filesystemBindPath` is already the one `rw` path
+ * every isolated child gets (the caller's evidence workspace), so these ride
+ * inside it rather than requiring a second bind. Replaces `REPO_ROOT`'s old
+ * `rw` grant (see `FilesystemBind`'s doc comment): a connector that writes a
+ * `.cache`, a browser profile, or any other transient state now writes here,
+ * never into the repo checkout.
+ *
+ * `home` / `xdgCache` / `tmp` map onto `HOME` / `XDG_CACHE_HOME` / `TMPDIR` —
+ * see `sandboxScratchEnv()` below, which callers (bin/scenario-verify.ts,
+ * bin/scenario-record.ts) fold into the isolated child's environment so
+ * anything resolving a home/cache/tmp directory (glibc, npm-style tools,
+ * `os.tmpdir()`, `homedir()`) lands here instead of the real host paths —
+ * `connector-artifact-root.ts`'s `homedir()` fallback and
+ * `browser-launch.ts`'s `PDPP_BROWSER_PROFILE_ROOT`-or-`homedir()` default
+ * both benefit from this redirection for free, without either module needing
+ * isolation-awareness of its own.
+ */
+const SANDBOX_SCRATCH_SUBDIRS = { home: "home", tmp: "tmp", xdgCache: "xdg-cache" } as const;
+
+/** Absolute sandbox-local scratch paths for a given `filesystemBindPath`
+ *  (the caller's evidence-workspace directory) — pure path arithmetic, no
+ *  filesystem access. `filesystemClosureShellPrelude`/
+ *  `bwrapFilesystemClosureArgs` use these to know where to `mkdir` the
+ *  scratch subdirectories; `sandboxScratchEnv()` uses them to build the env
+ *  vars pointing a spawned child at them. */
+function sandboxScratchPaths(filesystemBindPath: string): { home: string; tmp: string; xdgCache: string } {
+  return {
+    home: join(filesystemBindPath, SANDBOX_SCRATCH_SUBDIRS.home),
+    tmp: join(filesystemBindPath, SANDBOX_SCRATCH_SUBDIRS.tmp),
+    xdgCache: join(filesystemBindPath, SANDBOX_SCRATCH_SUBDIRS.xdgCache),
+  };
+}
+
+/**
+ * Env vars pointing an isolated child at its sandbox-local writable scratch
+ * space instead of the real host's `$HOME`/`$TMPDIR`/`$XDG_CACHE_HOME` — the
+ * caller merges this into the child's environment alongside
+ * `subprocessEnv()`. Exported so `bin/scenario-verify.ts`/
+ * `bin/scenario-record.ts` (which own building the full child env) can call
+ * it directly rather than re-deriving the scratch layout independently of
+ * `sandboxScratchPaths()`. Returns `{}` (no override) when `filesystemBindPath`
+ * is `undefined` — matches `spawnWithNetworkIsolation`'s own existing
+ * behavior of leaving the environment untouched when no workspace was
+ * supplied (e.g. `isolate` is falsy).
+ */
+export function sandboxScratchEnv(filesystemBindPath: string | undefined): NodeJS.ProcessEnv {
+  if (filesystemBindPath === undefined) {
+    return {};
+  }
+  const scratch = sandboxScratchPaths(filesystemBindPath);
+  return { HOME: scratch.home, TMPDIR: scratch.tmp, XDG_CACHE_HOME: scratch.xdgCache };
 }
 
 /**
@@ -690,27 +798,195 @@ function requiredFhsCompatSymlinks(): readonly FhsCompatSymlink[] {
  * `requiredFhsCompatSymlinks()` recreates the same way bwrap's `--symlink`
  * does.
  */
+/**
+ * A fixed, absolute directory list — NOT the caller's inherited `$PATH` —
+ * that every setup command below (`mkdir`, `mount`, `pivot_root`, `umount`,
+ * `ln`, `touch`, `ip`) is resolved against (P1-1, ninth review). Without
+ * this, the closure's own setup commands are looked up through whatever
+ * `$PATH` the calling Node process happened to have — which callers
+ * (`bin/scenario-verify.ts`, `bin/scenario-record.ts`, this file's own test
+ * suite) do not control end-to-end, and which a repo-local `node_modules/
+ * .bin` entry or a malicious connector's own manipulated environment could
+ * shadow with a same-named binary, running attacker code with the elevated
+ * capabilities (`--map-root-user`) this prelude has. The prelude sets `PATH`
+ * to exactly this list as its FIRST statement, before any other command
+ * (including `ip link set lo up`) runs.
+ */
+const TRUSTED_SETUP_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
+
+/**
+ * The single fixed exit code every mandatory setup step in
+ * `filesystemClosureShellPrelude` uses on failure (distinct from `97`, the
+ * existing post-pivot procfs-verification gate's own code, kept unchanged so
+ * a caller string-matching on that specific diagnostic is not broken by this
+ * fix). Any of these steps failing means the closure did not complete as
+ * declared — the exact command's own stderr is included in the message so a
+ * caller sees the real kernel/tool-level cause, not just a bare exit code.
+ */
+const SETUP_STEP_FAILURE_EXIT_CODE = 90;
+
+/**
+ * The `req` shell function definition itself — see `reqStatement`'s doc
+ * comment for its role. Written and tested as a standalone POSIX/dash
+ * snippet (verified directly under `sh` against both a successful and a
+ * failing wrapped command before being embedded here) rather than assembled
+ * from concatenated fragments, to avoid the nested-quoting mistakes that
+ * shape of string-building invites. `$1` (the label) is captured into
+ * `__label` before `shift` removes it from `"$@"`, so the wrapped command
+ * receives exactly its own argv with no label prefix; `__out=$("$@" 2>&1)`
+ * folds the wrapped command's stdout and stderr into one string (verified:
+ * `$?` immediately after a command substitution still reflects the
+ * substituted command's own exit status, not the assignment's).
+ */
+const REQ_FUNCTION_DEFINITION =
+  'req() { __label="$1"; shift; __out=$("$@" 2>&1); __rc=$?; ' +
+  'if [ "$__rc" -ne 0 ]; then ' +
+  'echo "pdpp isolation: setup step [$__label] failed (exit $__rc) - $__out" 1>&2; ' +
+  `exit ${SETUP_STEP_FAILURE_EXIT_CODE}; fi; }`;
+
+/**
+ * The single fixed exit code the post-pivot filesystem-closure verification
+ * (new root active, `/oldroot` unreachable, every `ro` bind genuinely
+ * read-only) uses on failure — distinct from both `90` (a setup STEP itself
+ * failing) and `97` (the pre-existing procfs-specific gate) so a caller can
+ * tell which of the three failure classes fired from the exit code alone.
+ */
+const POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE = 91;
+
+/**
+ * Builds one `req "<label>" <command...>` shell statement — the run-or-die
+ * primitive every mandatory setup step below is wrapped in (P1-1, ninth
+ * review, requirement (a)). `req` itself (defined once, inline, as the
+ * prelude's first real statement after the `PATH` assignment) captures the
+ * wrapped command's own stdout+stderr via command substitution and, on a
+ * nonzero exit, echoes a diagnostic NAMING THE STEP plus the command's own
+ * captured output to stderr, then exits `SETUP_STEP_FAILURE_EXIT_CODE` —
+ * replacing the old architecture where every one of these statements ended
+ * in `>/dev/null 2>&1` (discarding the exit status AND the diagnostic) and
+ * the whole prelude was joined with `;` (so a failure never stopped the next
+ * statement from running). A failed `pivot_root` under the OLD prelude meant
+ * every statement after it — including `cd /` (which then succeeded against
+ * the ORIGINAL host root) and the procfs sentinel (which could then also
+ * pass, since the original root's real `/proc` was still mounted) — kept
+ * running, and the target command was `exec`'d against the unmodified host
+ * filesystem while network/PID/IPC namespaces still existed, so the isolated
+ * child looked isolated (namespaces genuinely were) while its filesystem view
+ * was NOT (the mount/pivot never took effect). `req` makes that impossible:
+ * the very first mandatory step that fails halts the whole script before
+ * `exec <target>` is ever reached.
+ */
+function reqStatement(label: string, command: string): string {
+  return `req ${shQuote(label)} ${command}`;
+}
+
+/**
+ * DEFAULT-DENY FILESYSTEM CLOSURE (unshare mechanism) — STRICT, FAIL-CLOSED
+ * VERSION (P1-1, ninth review). Replaces the mask-list architecture
+ * (`worldWritableTempDirs`/`ALWAYS_MASKED_DIRS`, removed) that a second,
+ * independent review proved cannot terminate: with `--dev-bind / /` still
+ * in place, the reachable set was always "every path not yet added to the
+ * list," and the reviewer kept finding new members of that set ($HOME/.ssh,
+ * a Bitwarden vault socket, the codex-approval control socket — 24 live
+ * sockets total) no matter how many directories got masked.
+ *
+ * A LATER, INDEPENDENT REVIEW (ninth pass) then found that this rewrite's
+ * OWN setup sequence was itself fail-OPEN: every statement in the list above
+ * (staging tmpfs create+mount, oldroot dir creation, every required bind,
+ * every ro remount, the caller's workspace bind, device-node creation and
+ * binds, FHS compat symlinks, `mount --make-rprivate /`, `pivot_root`,
+ * `umount -l /oldroot`) discarded its own exit status via `>/dev/null 2>&1`
+ * and the statements were joined with `;` (unconditional continuation), so a
+ * failure ANYWHERE in that sequence — most severely, a failed `pivot_root`
+ * itself — left the isolated child executing against the ORIGINAL,
+ * UNMODIFIED host filesystem while `recorded_replay: PASS` could still print
+ * (the network/PID/IPC namespaces genuinely were isolated; only the
+ * filesystem closure silently never took effect). This function closes that:
+ * every mandatory step now runs through `req` (see `reqStatement`'s doc
+ * comment) — the first failure halts the whole prelude before `exec <target>`
+ * is ever reached, PATH is fixed to `TRUSTED_SETUP_PATH` so a repo-local or
+ * environment-manipulated binary cannot shadow `mount`/`pivot_root`/`umount`/
+ * `mkdir`/`ln`/`touch`, and a POST-PIVOT VERIFICATION block (see
+ * `postPivotVerificationStatements`) proves — not merely assumes — that the
+ * new root is active, `/oldroot` is genuinely unreachable, and every
+ * declared `ro` bind is genuinely read-only, before `exec` runs.
+ *
+ * MECHANISM otherwise unchanged from the prior version: `--mount --pid
+ * --fork` (composing with `--map-root-user --net`) gives the child its own
+ * mount AND pid namespace; the `sh -c` prelude performs an actual
+ * `pivot_root` (NOT a `mount -t tmpfs tmpfs /` on the existing root, which
+ * was tried first and empirically does not change what's visible — see the
+ * git history for that repro) — build a fresh tmpfs at a STAGING path,
+ * `--rbind` (RECURSIVE bind — see below for why plain `--bind` is
+ * insufficient) every `requiredFilesystemBinds()` entry and
+ * `filesystemBindPath` (if given) into that staging tree at their real
+ * absolute sub-paths, `mount --make-rprivate /`, then `pivot_root <staging>
+ * <staging>/oldroot` — ATOMICALLY swaps the process's root and moves the old
+ * root out of the way at `/oldroot`, lazily unmounted afterward so nothing
+ * outside the staged tree remains reachable at all.
+ *
+ * `--rbind`, NOT plain `--bind` (P1-1, ninth review — found while building
+ * this fix's own forced-failure negative controls, verified against a real
+ * privileged container): a plain `mount --bind /etc <staged>` FAILS outright
+ * ("wrong fs type, bad option, bad superblock") whenever the source
+ * directory itself contains further mount points underneath it — the
+ * ordinary case for `/etc` on any container runtime that injects
+ * `/etc/resolv.conf`/`/etc/hostname`/`/etc/hosts` as individual bind mounts
+ * (confirmed: Docker does this by default; every container this fix was
+ * tested against has three such sub-mounts under `/etc`). Under the OLD
+ * fail-open prelude this failure was invisible (swallowed by
+ * `>/dev/null 2>&1`, and the isolated child then ran with `/etc` either
+ * empty or absent inside its new root — a different, also-silent failure
+ * mode). `--rbind` recursively carries every sub-mount along with the parent
+ * directory, matching what a plain, non-recursive host directory would look
+ * like from inside the isolated child, and is a strict superset of what a
+ * non-nested source (e.g. `REPO_ROOT`, which has no sub-mounts on any tested
+ * host) needs — so it is used uniformly for every entry, not conditionally.
+ */
 function filesystemClosureShellPrelude(filesystemBindPath: string | undefined): string {
   const newroot = "/tmp/pdpp-scenario-isolation-newroot";
   const oldroot = `${newroot}/oldroot`;
+  const binds = requiredFilesystemBinds();
+
   const statements: string[] = [
-    `mkdir -p ${shQuote(newroot)} >/dev/null 2>&1`,
-    `mount -t tmpfs tmpfs ${shQuote(newroot)} >/dev/null 2>&1`,
-    `mkdir -p ${shQuote(oldroot)} >/dev/null 2>&1`,
+    `PATH=${TRUSTED_SETUP_PATH}`,
+    // `req` — see `reqStatement`'s doc comment. Defined once, inline, as a
+    // dash/POSIX shell function (this prelude always runs under `sh -c`,
+    // which is `/bin/sh` -> `dash` on every host this module targets).
+    // `"$@" 2>&1` captures BOTH the wrapped command's stdout and stderr into
+    // one string via command substitution (none of these setup commands emit
+    // meaningful stdout on success, so folding them together loses nothing);
+    // `$?` after the substitution still reflects the wrapped command's own
+    // exit status (command substitution does not reset it).
+    REQ_FUNCTION_DEFINITION,
+    reqStatement("create staging tmpfs directory", `mkdir -p ${shQuote(newroot)}`),
+    reqStatement("mount staging tmpfs", `mount -t tmpfs tmpfs ${shQuote(newroot)}`),
+    reqStatement("create oldroot directory", `mkdir -p ${shQuote(oldroot)}`),
   ];
-  for (const bind of requiredFilesystemBinds()) {
+  for (const bind of binds) {
     const staged = shQuote(`${newroot}${bind.path}`);
-    statements.push(`mkdir -p ${staged} >/dev/null 2>&1`);
-    statements.push(`mount --bind ${shQuote(bind.path)} ${staged} >/dev/null 2>&1`);
+    statements.push(reqStatement(`create bind mountpoint ${bind.path}`, `mkdir -p ${staged}`));
+    statements.push(reqStatement(`bind ${bind.path}`, `mount --rbind ${shQuote(bind.path)} ${staged}`));
     if (bind.mode === "ro") {
-      statements.push(`mount -o remount,ro,bind ${staged} >/dev/null 2>&1`);
+      statements.push(reqStatement(`remount ${bind.path} read-only`, `mount -o remount,ro,bind ${staged}`));
     }
   }
   if (filesystemBindPath !== undefined) {
     const staged = shQuote(`${newroot}${filesystemBindPath}`);
-    statements.push(`mkdir -p ${staged} >/dev/null 2>&1`);
-    statements.push(`mount --bind ${shQuote(filesystemBindPath)} ${staged} >/dev/null 2>&1`);
+    statements.push(reqStatement("create workspace bind mountpoint", `mkdir -p ${staged}`));
+    statements.push(reqStatement("bind workspace", `mount --rbind ${shQuote(filesystemBindPath)} ${staged}`));
   }
+  // Sandbox-local writable scratch subdirectories (HOME/TMPDIR/XDG_CACHE_HOME
+  // — see `sandboxScratchEnv()`) are created on the REAL host filesystem by
+  // `ensureSandboxScratchDirs()` before this process is even spawned (see
+  // `spawnWithNetworkIsolation`), not staged here — `filesystemBindPath` is
+  // bind-mounted as a LIVE view of the real directory (confirmed empirically:
+  // a directory created inside a bind-mounted copy appears at the real host
+  // path too, since a bind mount is a second reference to the same inode, not
+  // a snapshot), so whatever already exists there before the bind runs is
+  // exactly what the isolated child sees — no separate staging step needed,
+  // and this keeps the unshare and bwrap mechanisms' scratch-dir handling
+  // identical (bwrap has no shell prelude to run an extra `mkdir` in).
+  //
   // /dev: individual device-node binds, not a whole-/dev bind — a bare
   // `mount --bind /dev <staged>` was empirically denied in a nested
   // container test environment even with full capabilities, while binding
@@ -718,58 +994,125 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined): 
   // actually opens) works everywhere and is itself a narrower, more
   // default-deny-consistent exposure than the whole host /dev tree.
   const stagedDev = shQuote(`${newroot}/dev`);
-  statements.push(`mkdir -p ${stagedDev} >/dev/null 2>&1`);
+  statements.push(reqStatement("create staging /dev directory", `mkdir -p ${stagedDev}`));
   for (const device of ["null", "zero", "urandom", "random", "tty"]) {
     const stagedDevice = shQuote(`${newroot}/dev/${device}`);
-    statements.push(`touch ${stagedDevice} >/dev/null 2>&1`);
-    statements.push(`mount --bind ${shQuote(`/dev/${device}`)} ${stagedDevice} >/dev/null 2>&1`);
+    statements.push(reqStatement(`create device node placeholder /dev/${device}`, `touch ${stagedDevice}`));
+    statements.push(
+      reqStatement(`bind device /dev/${device}`, `mount --bind ${shQuote(`/dev/${device}`)} ${stagedDevice}`)
+    );
   }
   // See requiredFhsCompatSymlinks()'s doc comment: /bin, /lib, /lib64, ...
   // are top-level symlinks into /usr on a merged-usr host, not covered by
   // binding /usr itself — recreated inside the staging tree so they exist
-  // at the right paths once it becomes the root.
+  // at the right paths once it becomes the root. `ln -sfn` itself cannot
+  // meaningfully fail here (the target directory was just created by the
+  // staging steps above) but is still run through `req` for the same
+  // "no undiagnosed silent failure" discipline as everything else.
   for (const symlink of requiredFhsCompatSymlinks()) {
-    statements.push(`ln -sfn ${shQuote(symlink.target)} ${shQuote(`${newroot}${symlink.path}`)} >/dev/null 2>&1`);
+    statements.push(
+      reqStatement(
+        `create FHS compat symlink ${symlink.path}`,
+        `ln -sfn ${shQuote(symlink.target)} ${shQuote(`${newroot}${symlink.path}`)}`
+      )
+    );
   }
-  statements.push("mount --make-rprivate / >/dev/null 2>&1");
-  statements.push(`pivot_root ${shQuote(newroot)} ${shQuote(oldroot)} >/dev/null 2>&1`);
+  // Written into the STAGING tree, immediately before pivot_root — see
+  // `postPivotVerificationStatements`'s doc comment, property 1: this file's
+  // presence at `/pdpp-isolation-canary` AFTER the pivot is what proves the
+  // effective root actually changed, rather than assuming a zero pivot_root
+  // exit code means the change took effect.
+  statements.push(
+    reqStatement("create post-pivot root canary", `touch ${shQuote(`${newroot}/pdpp-isolation-canary`)}`)
+  );
+  statements.push(reqStatement("make root mount propagation private", "mount --make-rprivate /"));
+  statements.push(reqStatement("pivot_root into staging tree", `pivot_root ${shQuote(newroot)} ${shQuote(oldroot)}`));
   statements.push("cd /");
   // Mounted AFTER pivot_root — see this function's doc comment for why a
-  // pre-pivot procfs mount at the staging path is denied. The mountpoint
-  // itself was never created (neither pre-pivot as ${newroot}/proc nor
-  // post-pivot as /proc — same directory, either phrasing), so `mount -t
-  // proc proc /proc` targeted a nonexistent directory and silently failed:
-  // /proc did not exist at all post-pivot on any host. mkdir it here,
+  // pre-pivot procfs mount at the staging path is denied. mkdir it here,
   // immediately before the mount that needs it.
   //
-  // FAIL LOUD, NOT SILENT (probe-honesty companion fix): `isNamespaceIsolationAvailable()`
-  // now runs this exact mount-and-verify sequence (`procMountVerifyStatements()`)
-  // BEFORE this prelude ever runs, so a host that cannot honor the procfs
-  // mount is caught at probe time and `unshare` is never selected for it.
-  // This is the second, independent gate: even if a caller bypassed the
-  // probe (passed a hardcoded `isolate: "unshare"` without checking
-  // `isNamespaceIsolationAvailable()` first — the boolean/mechanism
-  // distinction this module's docstring already warns against skipping),
-  // the real spawn must still refuse to `exec` the target command against a
-  // broken `/proc` rather than silently continuing — the same "closing the
-  // escape CLASS, not one more instance of it" principle the filesystem
-  // closure above states for the mask-list-vs-default-deny history. `mount`'s
-  // own stderr is surfaced (not swallowed) only on the failure path, so a
-  // caller inspecting the child's stderr sees the real kernel refusal
-  // (e.g. `VFS: Mount too revealing`) rather than a bare nonzero exit code.
-  // The diagnostic is captured via inline command substitution, NOT a temp
-  // file — post-pivot_root, nothing exists at `/tmp` (only
-  // `/tmp/<newroot-basename>` was ever staged pre-pivot, and pivot_root made
-  // THAT the new `/`; there is no separate `/tmp` in the new root at all),
-  // so writing a diagnostic to any `/tmp/...` path here would itself fail
-  // with "Directory nonexistent" and mask the real procfs-mount error behind
-  // a confusing secondary one.
+  // This step keeps its OWN pre-existing verification shape (exit 97, not
+  // the generic `req` helper) — see `procMountVerifyStatements()`'s doc
+  // comment for the full "advertise-vs-honor" history this specific check
+  // closes, and why its diagnostic is captured via inline command
+  // substitution rather than a temp file (post-pivot_root, no `/tmp` exists
+  // in the new root at all). `mkdir -p /proc` itself is now ALSO run through
+  // `req` first (P1-1, ninth review) — the old version folded it into the
+  // same swallowed statement as the mount+verify, so a failure creating the
+  // mountpoint itself (as opposed to the mount or the read-back) produced no
+  // distinguishable diagnostic.
+  statements.push(reqStatement("create /proc mountpoint", "mkdir -p /proc"));
   statements.push(
-    `procfail=$(${procMountVerifyStatements().join(" && ")} 2>&1 >/dev/null); ` +
+    `procfail=$(${procMountVerifyStatements().slice(1).join(" && ")} 2>&1 >/dev/null); ` +
       `if [ "$?" -ne 0 ]; then echo "pdpp isolation: PID-namespace procfs mount failed, refusing to run isolated — $procfail" 1>&2; exit 97; fi`
   );
-  statements.push("umount -l /oldroot >/dev/null 2>&1");
+  statements.push(reqStatement("detach old root", "umount -l /oldroot"));
+  statements.push(...postPivotVerificationStatements(binds));
   return statements.join("; ");
+}
+
+/**
+ * POST-PIVOT VERIFICATION (P1-1, ninth review, requirement (c)) — proves,
+ * rather than assumes, that the filesystem closure actually took effect,
+ * run as the LAST gate before `exec <target>` (see `spawnWithNetworkIsolation`'s
+ * unshare branch). Every check here uses only shell builtins (`[`, `set --`
+ * globbing) — no external binary — so it cannot itself be defeated by a
+ * shadowed/missing tool the way the setup steps above could be before
+ * `TRUSTED_SETUP_PATH` was introduced.
+ *
+ * Three independent properties, matching the review's requirement exactly:
+ *   1. NEW ROOT ACTIVE — `/` is the staged tmpfs, not the original host
+ *      root. Checked via `/pdpp-isolation-canary`, a file this function
+ *      writes into the STAGING tree (i.e. it will exist at `/` once the
+ *      pivot succeeds) immediately before `pivot_root` runs — if `pivot_root`
+ *      silently failed to change the effective root (the exact false-success
+ *      shape the review's `(a)` scenario describes), this file would be
+ *      absent from the now-still-original `/`.
+ *   2. `/oldroot` UNREACHABBLE — after `umount -l /oldroot`, the directory
+ *      itself remains (as an empty mountpoint stub — `umount` removes the
+ *      MOUNT, not the directory entry) but must contain NOTHING: `set --
+ *      /oldroot/*` glob-expands to the literal string `/oldroot/*` (unmatched)
+ *      when the directory is empty, and dash leaves `$1` as that literal
+ *      unexpanded pattern in that case — `[ -e "$1" ]` against the literal
+ *      pattern string then correctly reports "does not exist" only when the
+ *      directory is genuinely empty (proven empirically: matches Linux's
+ *      documented behavior for `umount -l` — the lazy detach leaves an empty,
+ *      unmounted directory, not a leftover reachable filesystem view).
+ *   3. EVERY DECLARED `ro` BIND IS ACTUALLY READ-ONLY — attempts to `touch`
+ *      a real probe file under each `ro`-mode bind's real path; success (the
+ *      touch did NOT fail) means the remount-ro step from setup did not
+ *      actually take effect for that specific path, which is exactly
+ *      scenario (b) in the review's false-success list (a preceding bind
+ *      remains writable and nothing verifies it). The probe file itself is
+ *      removed immediately after a successful write (defense in depth — the
+ *      isolated child is about to be torn down/killed anyway, but leaving a
+ *      stray file in `/usr` or `/etc` if this check ever legitimately fires
+ *      would be an unrelated mess on top of a real security finding).
+ *
+ * Any failure here uses `POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE` (91),
+ * distinguishing it from a setup STEP failing (90) or the procfs-specific
+ * gate (97) — the diagnostic names exactly which of the three properties
+ * failed.
+ */
+export function postPivotVerificationStatements(binds: readonly FilesystemBind[]): string[] {
+  const statements: string[] = [];
+  const roBindPaths = binds.filter((b) => b.mode === "ro").map((b) => b.path);
+  const roCheck = roBindPaths
+    .map((path) => {
+      const probe = shQuote(`${path}/.pdpp-isolation-ro-probe-$$`);
+      return `if touch ${probe} 2>/dev/null; then rm -f ${probe} 2>/dev/null; echo ${shQuote(path)}; fi`;
+    })
+    .join("; ");
+  statements.push(
+    "__canary_ok=1; [ -e /pdpp-isolation-canary ] || __canary_ok=0; " +
+      `__oldroot_leftover=$(set -- /oldroot/*; if [ -e "$1" ]; then echo "$1"; fi); ` +
+      `__writable_ro=$(${roCheck || "true"}); ` +
+      `if [ "$__canary_ok" -ne 1 ] || [ -n "$__oldroot_leftover" ] || [ -n "$__writable_ro" ]; then ` +
+      `echo "pdpp isolation: post-pivot verification failed — new-root-active=$__canary_ok oldroot-leftover=[$__oldroot_leftover] writable-ro-binds=[$__writable_ro]" 1>&2; ` +
+      `exit ${POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE}; fi`
+  );
+  return statements;
 }
 
 function bwrapFilesystemClosureArgs(filesystemBindPath: string | undefined): string[] {
@@ -799,6 +1142,31 @@ function bwrapFilesystemClosureArgs(filesystemBindPath: string | undefined): str
 }
 
 /**
+ * Creates the sandbox-local writable scratch subdirectories (see
+ * `SANDBOX_SCRATCH_SUBDIRS`/`sandboxScratchEnv()`) on the REAL host
+ * filesystem, under `filesystemBindPath`, before the isolated child is
+ * spawned. Both mechanisms bind `filesystemBindPath` as a live view of the
+ * real directory (bwrap's `--bind`, unshare's `mount --rbind` in
+ * `filesystemClosureShellPrelude`), so whatever exists here before that bind
+ * runs is exactly what the isolated child sees — creating them host-side,
+ * once, covers both mechanisms identically without bwrap needing a shell
+ * prelude of its own. `recursive: true` makes this a no-op on a second call
+ * for the same workspace (idempotent, matching every other setup step in
+ * this module). A no-op (nothing created) when `filesystemBindPath` is
+ * `undefined` — same as `sandboxScratchEnv()`'s own no-op behavior in that
+ * case.
+ */
+function ensureSandboxScratchDirs(filesystemBindPath: string | undefined): void {
+  if (filesystemBindPath === undefined) {
+    return;
+  }
+  const scratch = sandboxScratchPaths(filesystemBindPath);
+  for (const dir of [scratch.home, scratch.tmp, scratch.xdgCache]) {
+    mkdirSync(dir, { recursive: true });
+  }
+}
+
+/**
  * GUARD (test-facing): the exact bwrap argv `spawnWithNetworkIsolation`
  * will invoke for a given `filesystemBindPath`, WITHOUT spawning anything —
  * so `isolation-mechanism.test.ts` can assert, mechanically, that no future
@@ -825,6 +1193,7 @@ export function spawnWithNetworkIsolation(
   if (!isolate) {
     return spawn(cmd, args, spawnOpts);
   }
+  ensureSandboxScratchDirs(filesystemBindPath);
   const mechanism = isolate === true ? detectMechanism() : isolate;
   if (mechanism === "bwrap") {
     return spawn("bwrap", bwrapArgvForFilesystemClosure(cmd, args, filesystemBindPath), spawnOpts);
@@ -834,8 +1203,15 @@ export function spawnWithNetworkIsolation(
   // `ip link set lo up` runs BEFORE the filesystem closure's pivot_root,
   // while the real host filesystem (and therefore /usr/sbin/ip) is still
   // the process's root — avoids any dependency on `ip` resolving correctly
-  // through the freshly-staged root's bound paths.
-  const shScript = `ip link set lo up >/dev/null 2>&1; ${closurePrelude}; exec ${innerCommand}`;
+  // through the freshly-staged root's bound paths. Resolved through
+  // `TRUSTED_SETUP_PATH` (P1-1, ninth review), same as every filesystem-
+  // closure setup command, rather than the caller's inherited `$PATH` — `ip`
+  // failing here is not fatal (no route to bring up loopback would simply
+  // mean the UDS bridge, which doesn't need it, still works, while a TCP
+  // loopback bridge would not — an existing, unchanged tradeoff this fix
+  // does not alter), so it intentionally stays a best-effort step, not
+  // wrapped in `req`.
+  const shScript = `PATH=${TRUSTED_SETUP_PATH}; ip link set lo up >/dev/null 2>&1; ${closurePrelude}; exec ${innerCommand}`;
   return spawn(
     "unshare",
     ["--map-root-user", "--net", "--mount", "--pid", "--ipc", "--uts", "--fork", "--", "sh", "-c", shScript],

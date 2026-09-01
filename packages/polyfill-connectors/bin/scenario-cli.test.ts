@@ -56,8 +56,12 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ConnectorScenario } from "../src/scenario/format.ts";
+import { computeDeclarationDigest, computeSourceDigest } from "../src/scenario/validate.ts";
 import { createInactivityWatchdog as createRecordInactivityWatchdog } from "./scenario-record.ts";
-import { createInactivityWatchdog as createVerifyInactivityWatchdog } from "./scenario-verify.ts";
+import {
+  assertNoPostRunSourceMutation,
+  createInactivityWatchdog as createVerifyInactivityWatchdog,
+} from "./scenario-verify.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(__dirname, "..");
@@ -1814,6 +1818,73 @@ test("scenario-verify: reports (never fails) a differing captured_with source by
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+// ─── P1-2 (ninth review): post-run source-mutation integrity check ────────
+//
+// `assertNoPostRunSourceMutation` (scenario-verify.ts) closes the digest
+// TOCTOU: `reportCaptureSourceDigests` hashes the connector's manifest/source
+// BEFORE any subprocess spawns; before this fix, that same pre-flight
+// observation was fed straight into `evaluateClaimEligibility` with no
+// re-check, so a connector (or anything with write access to REPO_ROOT
+// before P1-2's read-only fix) could mutate its own source between the hash
+// and the claim being printed and still receive `recorded_replay: PASS`.
+// This test proves the function's own comparison logic directly — not a full
+// CLI round trip, since building a real, passing scenario fixture for a live
+// connector (oura) with actual matching request/response shapes is a large
+// undertaking unrelated to what's under test here; `main()`'s wiring of this
+// function (forcing `current*DigestComputed` false and calling it before
+// `printCoverageReport`) is simple, typechecked glue, not novel logic.
+//
+// Uses the REAL "oura" connector's directory as the subject (a registered
+// connector `getConnectorPaths`/`assertNoPostRunSourceMutation` can actually
+// resolve) — adds ONE throwaway, uniquely-named scratch file inside it
+// (never an EXISTING file) to simulate a post-hash mutation, always removed
+// in `finally` regardless of assertion outcome, so this test never leaves
+// the real oura connector directory altered.
+test("assertNoPostRunSourceMutation: detects a source mutation between the pre-flight hash and the post-run check, and reports no mutation when nothing changed", () => {
+  const connectorDir = join(PACKAGE_ROOT, "connectors", "oura");
+  const manifestPath = join(PACKAGE_ROOT, "manifests", "oura.json");
+  const preflightSourceDigest = computeSourceDigest(connectorDir);
+  const preflightDeclarationDigest = computeDeclarationDigest(manifestPath);
+  const baseArgs = { connector: "oura", requireCaptureSource: false, scenarioPath: "unused", timeoutSeconds: 300 };
+  const baseObservation = {
+    capturedDeclarationDigestPresent: true,
+    capturedSourceDigestPresent: true,
+    currentDeclarationDigestComputed: true,
+    currentSourceDigestComputed: true,
+    preflightDeclarationDigest,
+    preflightSourceDigest,
+  };
+
+  // No mutation: the connector directory is untouched between "pre-flight"
+  // and "post-run" — must report false (no withhold).
+  const noMutation = assertNoPostRunSourceMutation(baseArgs, baseObservation);
+  assert.equal(noMutation, false, "an unmutated connector directory must not be reported as mutated");
+
+  // Mutation: add a throwaway file — computeSourceDigest hashes every file
+  // in the directory (excluding .test.ts and fixtures/), so a NEW file
+  // changes the digest exactly like a real edit would.
+  const scratchFileName = `.pdpp-post-run-mutation-probe-${String(process.pid)}-${String(Date.now())}.ts`;
+  const scratchFilePath = join(connectorDir, scratchFileName);
+  assert.ok(!existsSync(scratchFilePath), "sanity: the scratch probe file must not already exist");
+  try {
+    writeFileSync(scratchFilePath, "// P1-2 post-run-mutation test probe — removed in test finally\n");
+    const mutated = assertNoPostRunSourceMutation(baseArgs, baseObservation);
+    assert.equal(
+      mutated,
+      true,
+      "a source directory that changed between the pre-flight hash and the post-run check must be reported as mutated"
+    );
+  } finally {
+    rmSync(scratchFilePath, { force: true });
+  }
+
+  // Restore proof: with the scratch file removed, the digest matches the
+  // pre-flight value again — confirms the mutation detection isn't a false
+  // positive baked into this test's own setup.
+  const afterCleanup = assertNoPostRunSourceMutation(baseArgs, baseObservation);
+  assert.equal(afterCleanup, false, "after removing the scratch probe, the directory must report as unmutated again");
 });
 
 test("scenario-verify: --entrypoint mode prints 'unbound diagnostic replay (no digests)' instead of a digest report", () => {

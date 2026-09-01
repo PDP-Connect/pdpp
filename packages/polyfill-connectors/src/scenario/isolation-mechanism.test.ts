@@ -10,14 +10,16 @@
 // under it has no outbound network.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   bwrapArgvForFilesystemClosure,
   isNamespaceIsolationAvailable,
+  postPivotVerificationStatements,
   requiredFilesystemBinds,
   spawnWithNetworkIsolation,
 } from "./isolation.ts";
@@ -66,6 +68,73 @@ test("an isolated child has NO outbound network — the property, not the mechan
     child.on("close", resolve);
   });
   assert.equal(exitCode, 0, "exit 9 would mean the child reached the network — isolation is not real");
+});
+
+// ─── Bubblewrap probe production-equivalence (P2-1, ninth review) ─────────
+//
+// The OLD probeBwrap() ran a bare `bwrap --unshare-net --dev-bind / / true`
+// — the MOST PERMISSIVE root shape bwrap can be given, sharing almost
+// nothing with the derived, default-deny argv `bwrapArgvForFilesystemClosure`
+// actually builds for production (empty --tmpfs / root, --unshare-pid/-ipc/
+// -uts, fresh --proc/--dev, every requiredFilesystemBinds() entry, FHS
+// symlinks, workspace bind). A host could satisfy the bare check while being
+// unable to satisfy the far narrower real one. This test proves the FIXED
+// probe actually invokes bwrap with THAT SAME real argv shape — captured via
+// a logging shim (same technique the double-probe regression tests below
+// use) rather than trusted by reading the source, so a future edit that
+// reverts to a bare/simplified probe argv is caught mechanically.
+
+test("[bwrap] the fixed probeBwrap() invokes bwrap with the SAME production argv shape bwrapArgvForFilesystemClosure builds — not a bare --dev-bind / / check", {
+  skip: !bwrapUsable,
+}, () => {
+  const logDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-argv-log-"));
+  const logPath = join(logDir, "invocations.log");
+  writeFileSync(logPath, "");
+  // A real, delegating shim (not a bare "exit 0") — the probe's own
+  // production-equivalence is only meaningful if the shim still actually
+  // RUNS bwrap for real (so a genuinely broken derived-bind shape would
+  // still be caught), it just additionally logs the argv it was given.
+  const realBwrapPath = spawnSync("which", ["bwrap"], { encoding: "utf8" }).stdout.trim();
+  const shimDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-argv-shim-"));
+  writeFileSync(
+    join(shimDir, "bwrap"),
+    ["#!/bin/sh", `echo "$*" >> ${JSON.stringify(logPath)}`, `exec ${realBwrapPath} "$@"`].join("\n"),
+    { mode: 0o755 }
+  );
+  const realPath = process.env.PATH;
+  process.env.PATH = `${shimDir}:${realPath ?? ""}`;
+  try {
+    const cap = isNamespaceIsolationAvailable();
+    // Only meaningful when bwrap is genuinely what got selected (on a host
+    // where unshare is denied but bwrap works — this suite's own
+    // AppArmor-restricted dev sandbox is exactly that shape); skip the argv
+    // assertion (but still ran the probe) otherwise.
+    const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+    if (cap.available && cap.mechanism === "bwrap") {
+      assert.equal(
+        invocations.length,
+        1,
+        `expected exactly one bwrap probe invocation; got ${JSON.stringify(invocations)}`
+      );
+      const probeArgv = invocations[0] ?? "";
+      assert.ok(
+        probeArgv.includes("--tmpfs") && !probeArgv.includes("--dev-bind"),
+        `probe argv must use the empty --tmpfs / root, never --dev-bind / /; got ${JSON.stringify(probeArgv)}`
+      );
+      assert.ok(
+        probeArgv.includes("--unshare-pid"),
+        `probe argv must include --unshare-pid, matching production's derived closure; got ${JSON.stringify(probeArgv)}`
+      );
+      assert.ok(
+        probeArgv.includes("--ro-bind") || probeArgv.includes("--bind"),
+        `probe argv must include the derived requiredFilesystemBinds() entries, not just namespace flags; got ${JSON.stringify(probeArgv)}`
+      );
+    }
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(logDir, { recursive: true, force: true });
+    rmSync(shimDir, { recursive: true, force: true });
+  }
 });
 
 // ─── Probe-honesty: advertise-vs-honor (forced PID-ns procfs-mount refusal) ─
@@ -194,26 +263,68 @@ test("probe falls back to bwrap when unshare's procfs mount is refused but bwrap
   }
 });
 
+/** True when this test process can actually shadow a real trusted-path
+ *  binary via a host-level bind mount (root or an equivalent capability) —
+ *  the injection mechanism the test below needs now that the prelude
+ *  resolves its setup commands through a fixed `TRUSTED_SETUP_PATH`
+ *  (P1-1, ninth review) rather than the caller's inherited `$PATH`. Probed
+ *  by attempting the exact bind-then-unbind sequence the real test performs,
+ *  against a scratch file, so the skip condition matches the test's actual
+ *  requirement rather than a proxy for it (e.g. `process.getuid() === 0`
+ *  would be wrong inside a rootless-but-capable container). */
+function canBindMountOverAFile(): boolean {
+  if (process.platform !== "linux") {
+    return false;
+  }
+  const probeSource = mkdtempSync(join(tmpdir(), "pdpp-bindmount-probe-src-"));
+  const probeTarget = mkdtempSync(join(tmpdir(), "pdpp-bindmount-probe-dst-"));
+  const srcFile = join(probeSource, "a");
+  const dstFile = join(probeTarget, "b");
+  writeFileSync(srcFile, "");
+  writeFileSync(dstFile, "");
+  const bound = spawnSync("mount", ["--bind", srcFile, dstFile], { stdio: "ignore" }).status === 0;
+  if (bound) {
+    spawnSync("umount", [dstFile], { stdio: "ignore" });
+  }
+  rmSync(probeSource, { recursive: true, force: true });
+  rmSync(probeTarget, { recursive: true, force: true });
+  return bound;
+}
+
+const bindMountCapable = unshareUsable && canBindMountOverAFile();
+
 test("a forced PID-ns procfs-mount refusal inside the real unshare-mechanism prelude fails the spawn closed, never silently proceeds", {
-  skip: !unshareUsable,
+  skip: !bindMountCapable,
 }, async () => {
   // Complementary to the probe-level tests above: this proves the SECOND,
   // independent gate — filesystemClosureShellPrelude's own fail-loud check —
   // actually fires, for a caller that bypasses isNamespaceIsolationAvailable()
-  // and passes a hardcoded isolate: "unshare" directly. Forces the failure by
-  // shadowing `mount` on PATH with a shim that fails only the procfs mount
-  // (everything else the prelude needs — mkdir, mount --bind, pivot_root —
-  // must keep working via the real binary, so this shim delegates to it for
-  // every other invocation shape). The shim's directory is ALSO passed as
-  // `filesystemBindPath` — the fresh root's default-deny closure otherwise
-  // makes anything under the host's `/tmp` (where `mkdtempSync` puts the
-  // shim) disappear post-`pivot_root`, same as every other path outside
-  // `requiredFilesystemBinds()`; without this the shim would silently never
-  // be reached and this test would prove nothing about the fail-closed path.
-  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-mount-fail-"));
+  // and passes a hardcoded isolate: "unshare" directly.
+  //
+  // INJECTION MECHANISM (P1-1, ninth review): the prelude now resolves every
+  // setup command — including `mount` — through a fixed `TRUSTED_SETUP_PATH`
+  // rather than the caller's inherited `$PATH`, specifically so a PATH-based
+  // shim (this test's OLD mechanism) can no longer shadow it — that sanitized
+  // PATH is itself part of what this hardening closes, so a test that still
+  // relied on PATH-shadowing to force this failure would be proving the
+  // opposite of what it claims once the fix landed correctly (it would
+  // silently stop exercising the fail-closed path at all, always seeing the
+  // REAL mount succeed). The forced failure is now injected the only way
+  // that still reaches a trusted-path binary: bind-mounting a fake `mount`
+  // shim DIRECTLY OVER the real trusted-path `mount` binary on the host
+  // (`/usr/bin/mount` or wherever it resolves), for the duration of this
+  // test only, unbound in `finally`. The shim delegates to the REAL binary
+  // (copied aside first) for every invocation shape except the PID-namespace
+  // procfs mount, which it fails with the real kernel's own error text —
+  // everything else the prelude needs (mkdir, mount --bind, pivot_root)
+  // keeps working via the real binary.
   const realMountPath = spawnSync("which", ["mount"], { encoding: "utf8" }).stdout.trim() || "/usr/bin/mount";
+  const scratchDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-mount-fail-"));
+  const mountBackupPath = join(scratchDir, "mount.real");
+  const shimPath = join(scratchDir, "mount.shim");
+  cpSync(realMountPath, mountBackupPath);
   writeFileSync(
-    join(fakeBinDir, "mount"),
+    shimPath,
     [
       "#!/bin/sh",
       'case "$*" in',
@@ -222,14 +333,18 @@ test("a forced PID-ns procfs-mount refusal inside the real unshare-mechanism pre
       "    exit 32",
       "    ;;",
       "  *)",
-      `    exec ${realMountPath} "$@"`,
+      `    exec ${mountBackupPath} "$@"`,
       "    ;;",
       "esac",
     ].join("\n"),
     { mode: 0o755 }
   );
-  const realPath = process.env.PATH;
-  const fakePath = `${fakeBinDir}:${realPath ?? ""}`;
+  const bindResult = spawnSync("mount", ["--bind", shimPath, realMountPath], { stdio: "inherit" });
+  assert.equal(
+    bindResult.status,
+    0,
+    `sanity check: bind-mounting the shim over the real ${realMountPath} must itself succeed for this test's injection to mean anything`
+  );
   try {
     const { exitCode, stderrText } = await new Promise<{ exitCode: number | null; stderrText: string }>(
       (resolveResult) => {
@@ -237,8 +352,6 @@ test("a forced PID-ns procfs-mount refusal inside the real unshare-mechanism pre
         const child = spawnWithNetworkIsolation(process.execPath, ["-e", "process.exit(0)"], {
           isolate: "unshare",
           stdio: ["ignore", "ignore", "pipe"],
-          env: { ...process.env, PATH: fakePath },
-          filesystemBindPath: fakeBinDir,
         });
         child.stderr?.on("data", (chunk: Buffer) => {
           capturedStderr += chunk.toString("utf8");
@@ -256,8 +369,465 @@ test("a forced PID-ns procfs-mount refusal inside the real unshare-mechanism pre
       `expected a diagnostic naming the procfs mount failure on stderr; got ${JSON.stringify(stderrText)}`
     );
   } finally {
-    process.env.PATH = realPath;
-    rmSync(fakeBinDir, { recursive: true, force: true });
+    spawnSync("umount", [realMountPath], { stdio: "ignore" });
+    rmSync(scratchDir, { recursive: true, force: true });
+  }
+});
+
+// ─── Fail-closed setup — forced-failure controls for every mandatory step ──
+//
+// P1-1 (ninth review): the OLD `filesystemClosureShellPrelude` discarded the
+// exit status of EVERY mandatory setup step (staging tmpfs create+mount,
+// oldroot dir creation, every required bind, every ro remount,
+// `mount --make-rprivate /`, `pivot_root`, `umount -l /oldroot`) via
+// `>/dev/null 2>&1` and joined them with `;` — so ANY of these failing left
+// the isolated child executing the target command anyway, against a
+// filesystem closure that silently never took effect. The fix wraps every
+// one of these in `req` (isolation.ts's `reqStatement`/`REQ_FUNCTION_DEFINITION`),
+// which halts the whole prelude — never reaching `exec <target>` — the
+// instant any ONE of them fails.
+//
+// Each test below forces exactly one of these steps to fail (via the same
+// bind-mount-over-the-real-trusted-binary injection `canBindMountOverAFile`
+// proved works, now that PATH-shadowing no longer reaches these commands —
+// see the previous test's doc comment) and proves the TARGET COMMAND NEVER
+// RAN: the target writes a marker file to a location OUTSIDE the isolated
+// child's own view (the real host's `os.tmpdir()`, reachable from this test
+// process directly) the instant it starts — if that marker exists after the
+// spawn closes, the target ran despite the forced failure, which is exactly
+// the silent-proceed defect this hardening closes. A nonzero exit code alone
+// is not accepted as proof (a real target crash for an unrelated reason
+// would also exit nonzero); only the marker's absence is.
+
+/** Runs `spawnWithNetworkIsolation` under the `unshare` mechanism with a
+ *  target command that writes `markerPath` (a real host path, created OUTSIDE
+ *  any isolated child's view) the moment it starts, then reports whether that
+ *  marker exists after the child closes — the authoritative "did the target
+ *  command actually run" signal every forced-failure test below checks. */
+/**
+ * `markerPath` for the FORCED-FAILURE tests below is deliberately left
+ * unreachable inside the isolated child's own view (a plain `os.tmpdir()`
+ * path, not inside any `filesystemBindPath`) — for those tests this is
+ * immaterial: a forced setup-step failure means the write is never even
+ * ATTEMPTED (the whole prelude halts before `exec <target>`), so
+ * `markerWritten` staying `false` proves the same thing regardless of
+ * whether `/tmp` itself would have been reachable. The ONE happy-path test
+ * (`"a genuinely successful filesystem closure ... DOES run"`) needs the
+ * opposite proof — that a successful run's marker WRITE actually lands — so
+ * it must pass a `filesystemBindPath` the marker lives inside (see that
+ * test's own call site): without one, the marker write would fail with
+ * ENOENT for the CORRECT reason (the default-deny root has no `/tmp` at
+ * all — proving the closure works, not that it's broken) and this helper
+ * would misreport that as `markerWritten: false` either way, indistinguishable
+ * from a real forced-failure result.
+ */
+async function spawnAndCheckMarkerWritten(
+  markerPath: string,
+  filesystemBindPath?: string
+): Promise<{ exitCode: number | null; markerWritten: boolean }> {
+  const exitCode = await new Promise<number | null>((resolveExit) => {
+    const child = spawnWithNetworkIsolation(
+      process.execPath,
+      ["-e", `require("fs").writeFileSync(${JSON.stringify(markerPath)}, "ran"); process.exit(0);`],
+      { isolate: "unshare", stdio: "ignore", ...(filesystemBindPath === undefined ? {} : { filesystemBindPath }) }
+    );
+    child.on("close", resolveExit);
+    child.on("error", () => resolveExit(-1));
+  });
+  return { exitCode, markerWritten: existsSync(markerPath) };
+}
+
+/** Bind-mounts a shell-script shim OVER the real trusted-path binary named
+ *  `binaryName` (resolved via `which`, matching `TRUSTED_SETUP_PATH`'s own
+ *  entries — `/usr/sbin`, `/usr/bin`, `/sbin`, `/bin`) for the duration of
+ *  `fn`, then unmounts it — same technique the procfs-mount forced-failure
+ *  test above uses, generalized to any trusted binary and any shim body so
+ *  each test below only needs to supply its own argv-matching failure
+ *  condition. The shim ALWAYS falls through to the real binary (copied aside
+ *  first) for any invocation it doesn't specifically intend to fail, so every
+ *  OTHER step in the prelude keeps working via the genuine tool. */
+// A PRIVATE, PERMANENT copy of the real `umount` binary's BYTES, made once at
+// module load — before any test has had a chance to shim anything. Every
+// `withShimmedTrustedBinary` cleanup execs THIS copy, never a freshly
+// `which`-resolved `umount` path. Load-bearing, and subtly different from
+// just capturing the PATH string once: a test that shims `umount` ITSELF
+// (the oldroot-unmount forced-failure test below) bind-mounts a shim
+// directly OVER `/usr/bin/umount` — so even a `umount` path resolved before
+// that shim went up would, by the time cleanup runs, resolve to the SAME
+// now-shimmed inode at that path; only a separate, independently-backed-up
+// COPY of the binary (not just a remembered path to it) survives that.
+// Confirmed empirically: with only a captured path (no separate copy), the
+// oldroot test's own cleanup tried to run the shim to undo the shim (always
+// exits 1), leaving the bind-mount permanently in place and corrupting every
+// later test in the same process (the "genuinely successful filesystem
+// closure" test, and several unrelated PID/IPC/UTS/UDS tests after it, all
+// failed with exit 90 — the real prelude's own legitimate `umount -l
+// /oldroot` step kept hitting the leftover shim).
+const REAL_UMOUNT_BACKUP_DIR = mkdtempSync(join(tmpdir(), "pdpp-isolation-umount-backup-"));
+const REAL_UMOUNT_BACKUP_PATH = join(REAL_UMOUNT_BACKUP_DIR, "umount.real");
+cpSync(spawnSync("which", ["umount"], { encoding: "utf8" }).stdout.trim(), REAL_UMOUNT_BACKUP_PATH);
+
+async function withShimmedTrustedBinary<T>(
+  binaryName: string,
+  shimBody: (realBinaryPath: string) => string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const realBinaryPath = spawnSync("which", [binaryName], { encoding: "utf8" }).stdout.trim();
+  assert.ok(realBinaryPath, `expected to resolve a real ${binaryName} via which`);
+  const scratchDir = mkdtempSync(join(tmpdir(), `pdpp-isolation-shim-${binaryName}-`));
+  const backupPath = join(scratchDir, `${binaryName}.real`);
+  const shimPath = join(scratchDir, `${binaryName}.shim`);
+  cpSync(realBinaryPath, backupPath);
+  writeFileSync(shimPath, shimBody(backupPath), { mode: 0o755 });
+  const bindResult = spawnSync("mount", ["--bind", shimPath, realBinaryPath], { stdio: "inherit" });
+  assert.equal(
+    bindResult.status,
+    0,
+    `sanity check: bind-mounting the shim over the real ${realBinaryPath} must itself succeed`
+  );
+  try {
+    return await fn();
+  } finally {
+    const unmountResult = spawnSync(REAL_UMOUNT_BACKUP_PATH, [realBinaryPath], { stdio: "inherit" });
+    assert.equal(
+      unmountResult.status,
+      0,
+      `cleanup: unmounting the ${binaryName} shim must itself succeed, or a leftover bind-mount corrupts every later test in this process`
+    );
+    rmSync(scratchDir, { recursive: true, force: true });
+  }
+}
+
+/** Builds a `mount` shim body that fails ONLY when the invocation's argv
+ *  contains `argvSubstring`, with `stderrLine` as the forced failure's
+ *  message — every other invocation shape delegates to the real `mount`
+ *  binary at `realMountPath`, so the rest of the closure keeps working. */
+function mountShimFailingOn(argvSubstring: string, stderrLine: string): (realMountPath: string) => string {
+  return (realMountPath: string) =>
+    [
+      "#!/bin/sh",
+      'case "$*" in',
+      `  *${JSON.stringify(argvSubstring)}*)`,
+      `    echo ${JSON.stringify(stderrLine)} 1>&2`,
+      "    exit 1",
+      "    ;;",
+      "  *)",
+      `    exec ${realMountPath} "$@"`,
+      "    ;;",
+      "esac",
+    ].join("\n");
+}
+
+test("[unshare] forced staging-tmpfs-mount failure — the target command never runs", {
+  skip: !bindMountCapable,
+}, async () => {
+  const markerPath = join(tmpdir(), `pdpp-isolation-marker-tmpfs-${String(process.pid)}`);
+  rmSync(markerPath, { force: true });
+  try {
+    await withShimmedTrustedBinary(
+      "mount",
+      mountShimFailingOn("-t tmpfs tmpfs", "mount: staging tmpfs mount forced failure (test)"),
+      async () => {
+        const { exitCode, markerWritten } = await spawnAndCheckMarkerWritten(markerPath);
+        assert.notEqual(exitCode, 0, "spawn must not exit 0 when the staging tmpfs mount fails");
+        assert.equal(
+          markerWritten,
+          false,
+          "the target command must NEVER run when the staging tmpfs mount fails — this is the exact false-success shape P1-1 closes"
+        );
+      }
+    );
+  } finally {
+    rmSync(markerPath, { force: true });
+  }
+});
+
+test("[unshare] forced required-bind failure (binding /usr into the staging tree) — the target command never runs", {
+  skip: !bindMountCapable,
+}, async () => {
+  const markerPath = join(tmpdir(), `pdpp-isolation-marker-bind-${String(process.pid)}`);
+  rmSync(markerPath, { force: true });
+  try {
+    // Matches the FIRST required bind's mountpoint pattern specifically
+    // (`--rbind /usr <staged>/usr`) rather than every `--rbind` invocation,
+    // so the workspace bind and every OTHER required bind still succeed —
+    // proving this ONE bind's failure alone halts the whole prelude, not
+    // that binds fail categorically.
+    await withShimmedTrustedBinary(
+      "mount",
+      mountShimFailingOn("--rbind /usr", "mount: /usr bind forced failure (test)"),
+      async () => {
+        const { exitCode, markerWritten } = await spawnAndCheckMarkerWritten(markerPath);
+        assert.notEqual(exitCode, 0, "spawn must not exit 0 when a required bind fails");
+        assert.equal(markerWritten, false, "the target command must NEVER run when a required filesystem bind fails");
+      }
+    );
+  } finally {
+    rmSync(markerPath, { force: true });
+  }
+});
+
+test("[unshare] forced read-only-remount failure — the target command never runs (P1-1 scenario (b): a preceding bind stays writable and nothing verifies)", {
+  skip: !bindMountCapable,
+}, async () => {
+  const markerPath = join(tmpdir(), `pdpp-isolation-marker-roremount-${String(process.pid)}`);
+  rmSync(markerPath, { force: true });
+  try {
+    await withShimmedTrustedBinary(
+      "mount",
+      mountShimFailingOn("remount,ro,bind", "mount: ro remount forced failure (test)"),
+      async () => {
+        const { exitCode, markerWritten } = await spawnAndCheckMarkerWritten(markerPath);
+        assert.notEqual(exitCode, 0, "spawn must not exit 0 when a ro remount fails");
+        assert.equal(
+          markerWritten,
+          false,
+          "the target command must NEVER run when a declared ro bind's remount fails — under the OLD prelude this left the bind silently writable with no verification"
+        );
+      }
+    );
+  } finally {
+    rmSync(markerPath, { force: true });
+  }
+});
+
+test("[unshare] forced make-rprivate failure — the target command never runs", {
+  skip: !bindMountCapable,
+}, async () => {
+  const markerPath = join(tmpdir(), `pdpp-isolation-marker-rprivate-${String(process.pid)}`);
+  rmSync(markerPath, { force: true });
+  try {
+    await withShimmedTrustedBinary(
+      "mount",
+      mountShimFailingOn("--make-rprivate", "mount: make-rprivate forced failure (test)"),
+      async () => {
+        const { exitCode, markerWritten } = await spawnAndCheckMarkerWritten(markerPath);
+        assert.notEqual(exitCode, 0, "spawn must not exit 0 when make-rprivate fails");
+        assert.equal(
+          markerWritten,
+          false,
+          "the target command must NEVER run when detaching root mount propagation fails — a failure here means pivot_root could propagate back to the real host mount namespace"
+        );
+      }
+    );
+  } finally {
+    rmSync(markerPath, { force: true });
+  }
+});
+
+test("[unshare] forced pivot_root failure — the target command never runs (P1-1 scenario (a): the ORIGINAL false-success shape)", {
+  skip: !bindMountCapable,
+}, async () => {
+  const markerPath = join(tmpdir(), `pdpp-isolation-marker-pivotroot-${String(process.pid)}`);
+  rmSync(markerPath, { force: true });
+  try {
+    await withShimmedTrustedBinary(
+      "pivot_root",
+      // pivot_root has no argv shape worth distinguishing (this prelude only
+      // ever calls it once, with the staging/oldroot paths) — the shim fails
+      // unconditionally.
+      () => ["#!/bin/sh", 'echo "pivot_root: forced failure (test)" 1>&2', "exit 1"].join("\n"),
+      async () => {
+        const { exitCode, markerWritten } = await spawnAndCheckMarkerWritten(markerPath);
+        assert.notEqual(
+          exitCode,
+          0,
+          "spawn must not exit 0 when pivot_root fails — under the OLD prelude this is scenario (a): cd / then succeeded against the ORIGINAL host root, the procfs sentinel could still pass, and the target ran against the unmodified host filesystem"
+        );
+        assert.equal(
+          markerWritten,
+          false,
+          "the target command must NEVER run when pivot_root fails — this is the single most severe false-success shape P1-1 closes: the child would otherwise execute against the REAL HOST ROOT while network/PID/IPC namespaces still isolated it, so the isolation looked entirely healthy"
+        );
+      }
+    );
+  } finally {
+    rmSync(markerPath, { force: true });
+  }
+});
+
+test("[unshare] forced oldroot-unmount failure — the target command never runs (P1-1 scenario (c): the entire host root stays reachable under /oldroot)", {
+  skip: !bindMountCapable,
+}, async () => {
+  const markerPath = join(tmpdir(), `pdpp-isolation-marker-umount-${String(process.pid)}`);
+  rmSync(markerPath, { force: true });
+  try {
+    await withShimmedTrustedBinary(
+      "umount",
+      () => ["#!/bin/sh", 'echo "umount: forced failure (test)" 1>&2', "exit 1"].join("\n"),
+      async () => {
+        const { exitCode, markerWritten } = await spawnAndCheckMarkerWritten(markerPath);
+        assert.notEqual(exitCode, 0, "spawn must not exit 0 when the oldroot lazy-unmount fails");
+        assert.equal(
+          markerWritten,
+          false,
+          "the target command must NEVER run when detaching /oldroot fails — under the OLD prelude this failure was silently ignored and the entire host root stayed reachable under /oldroot for the isolated child's whole lifetime"
+        );
+      }
+    );
+  } finally {
+    rmSync(markerPath, { force: true });
+  }
+});
+
+// ─── Post-pivot verification — proves the properties, not just the gate ───
+//
+// Complementary to the forced-STEP-failure tests above: those prove a failed
+// SETUP step halts the prelude. This section proves the separate, LAST gate
+// (`postPivotVerificationStatements` — P1-1 requirement (c)) actually
+// verifies what it claims: new root active, /oldroot unreachable, every
+// declared ro bind genuinely read-only. Since every scenario that would make
+// this gate's own checks fail is ALSO caught by one of the forced-step
+// failures above (a broken pivot_root, a broken ro remount, a broken oldroot
+// unmount all halt at the `req`-wrapped step itself before this gate is even
+// reached), this section instead proves the gate's OWN LOGIC is correct by
+// running it standalone against both a genuinely-successful closure (must
+// pass) and a hand-constructed failing shape (must fail) — a mutation-style
+// proof of the verification code itself, the same discipline the bwrap argv
+// guard's own mutation tests already apply.
+
+/**
+ * Runs `postPivotVerificationStatements(binds)` (the REAL source, not a
+ * hand-copied string — so this test tracks the actual generated shell logic)
+ * inside a lightweight `bwrap` sandbox standing in for a post-pivot root —
+ * bwrap needs no elevated privilege beyond what this suite's `bwrapUsable`
+ * check already requires, so this runs on every host the bwrap-mechanism
+ * tests already run on, not just inside the `unshareUsable`-gated privileged
+ * container. `writableBindTarget`, if given, is bind-mounted `rw` at
+ * `/writable-fake-bind` (simulating a `ro`-declared bind whose remount
+ * silently never took effect — this test's caller passes it as one of
+ * `binds` too, with `mode: "ro"`, so the verification snippet's OWN ro-write
+ * probe is what's under test, not this harness's bwrap setup). Creates
+ * `/pdpp-isolation-canary` and `/oldroot` (both real, matching what the real
+ * unshare-mechanism prelude leaves in place before running this same
+ * verification) so the "happy path" shape is the default; a test wanting the
+ * canary-missing or oldroot-nonempty failure shape passes `skipCanary`/
+ * `leaveOldrootNonempty`.
+ */
+function runPostPivotVerificationInSandbox(options: {
+  binds: readonly { path: string; mode: "ro" | "rw" }[];
+  leaveOldrootNonempty?: boolean;
+  skipCanary?: boolean;
+  writableBindTarget?: string;
+}): { exitCode: number | null; stderrText: string } {
+  const setup = [
+    options.skipCanary ? "true" : "touch /pdpp-isolation-canary",
+    "mkdir -p /oldroot",
+    options.leaveOldrootNonempty ? "touch /oldroot/leftover-file" : "true",
+  ].join("; ");
+  const script = `${setup}; ${postPivotVerificationStatements(options.binds).join("; ")}; echo PDPP_VERIFY_PASSED`;
+  const args = [
+    "--unshare-net",
+    "--tmpfs",
+    "/",
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+    "--ro-bind",
+    "/usr",
+    "/usr",
+    "--ro-bind",
+    "/etc",
+    "/etc",
+    "--symlink",
+    "usr/bin",
+    "/bin",
+    "--symlink",
+    "usr/sbin",
+    "/sbin",
+    "--symlink",
+    "usr/lib",
+    "/lib",
+    "--symlink",
+    "usr/lib64",
+    "/lib64",
+  ];
+  if (options.writableBindTarget !== undefined) {
+    args.push("--bind", options.writableBindTarget, "/writable-fake-bind");
+  }
+  args.push("--", "sh", "-c", script);
+  const result = spawnSync("bwrap", args, { encoding: "utf8" });
+  return { exitCode: result.status, stderrText: result.stderr };
+}
+
+test("[bwrap sandbox] postPivotVerificationStatements PASSES a genuinely-closed filesystem (canary present, oldroot empty, ro binds actually read-only)", {
+  skip: !bwrapUsable,
+}, () => {
+  const { exitCode, stderrText } = runPostPivotVerificationInSandbox({ binds: [{ path: "/etc", mode: "ro" }] });
+  assert.equal(exitCode, 0, `expected the happy-path shape to pass verification; stderr: ${stderrText}`);
+  assert.equal(stderrText, "", "a passing verification must not print a diagnostic");
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements FAILS when a declared ro bind is actually writable (P1-1 scenario (b))", {
+  skip: !bwrapUsable,
+}, () => {
+  const writableDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-writable-ro-probe-"));
+  try {
+    const { exitCode, stderrText } = runPostPivotVerificationInSandbox({
+      binds: [{ path: "/writable-fake-bind", mode: "ro" }],
+      writableBindTarget: writableDir,
+    });
+    assert.equal(
+      exitCode,
+      91,
+      `expected POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE (91) when a declared ro bind is genuinely writable; stderr: ${stderrText}`
+    );
+    assert.ok(
+      /writable-ro-binds=\[\/writable-fake-bind\]/.test(stderrText),
+      `expected the diagnostic to name the specific writable path; got ${JSON.stringify(stderrText)}`
+    );
+  } finally {
+    rmSync(writableDir, { recursive: true, force: true });
+  }
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements FAILS when the root-active canary is missing (P1-1 scenario (a))", {
+  skip: !bwrapUsable,
+}, () => {
+  const { exitCode, stderrText } = runPostPivotVerificationInSandbox({
+    binds: [{ path: "/etc", mode: "ro" }],
+    skipCanary: true,
+  });
+  assert.equal(exitCode, 91, `expected failure when the canary is absent; stderr: ${stderrText}`);
+  assert.ok(
+    /new-root-active=0/.test(stderrText),
+    `expected the diagnostic to report new-root-active=0; got ${JSON.stringify(stderrText)}`
+  );
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements FAILS when /oldroot is non-empty (P1-1 scenario (c))", {
+  skip: !bwrapUsable,
+}, () => {
+  const { exitCode, stderrText } = runPostPivotVerificationInSandbox({
+    binds: [{ path: "/etc", mode: "ro" }],
+    leaveOldrootNonempty: true,
+  });
+  assert.equal(exitCode, 91, `expected failure when /oldroot still has a leftover entry; stderr: ${stderrText}`);
+  assert.ok(
+    /oldroot-leftover=\[\/oldroot\/leftover-file\]/.test(stderrText),
+    `expected the diagnostic to name the leftover oldroot entry; got ${JSON.stringify(stderrText)}`
+  );
+});
+
+test("[unshare] a genuinely successful filesystem closure passes post-pivot verification and the target command DOES run", {
+  skip: !unshareUsable,
+}, async () => {
+  // Unlike the forced-failure tests above, this positive control needs the
+  // marker write to actually succeed inside the isolated child — so the
+  // marker must live under a `filesystemBindPath`, the one path the
+  // default-deny root re-exposes as writable (see `spawnAndCheckMarkerWritten`'s
+  // doc comment: a plain `os.tmpdir()` path is NOT reachable inside the
+  // isolated child at all, and using one here would make this test fail for
+  // the wrong reason — proving the closure works, not that it's broken).
+  const workspaceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-happy-workspace-"));
+  const markerPath = join(workspaceDir, "marker");
+  try {
+    const { exitCode, markerWritten } = await spawnAndCheckMarkerWritten(markerPath, workspaceDir);
+    assert.equal(exitCode, 0, "an un-shimmed, genuine filesystem closure must let the target command run and exit 0");
+    assert.equal(markerWritten, true, "the target command must actually have run and written its marker");
+  } finally {
+    rmSync(workspaceDir, { recursive: true, force: true });
   }
 });
 
@@ -957,8 +1527,157 @@ function expectedBwrapBinds(workspaceDir: string): Array<{ flag: string; source:
 }
 
 function bindKey(bind: { flag: string; source: string; dest: string }): string {
-  return `${bind.flag} ${bind.source} ${bind.dest}`;
+  return `${bind.flag} ${bind.source} ${bind.dest}`;
 }
+
+// ─── Runtime negative controls: repo read-only, workspace still writable ──
+//
+// P1-2 (ninth review), requirement (f): "negative controls: connector source
+// not writable, node_modules not writable, evidence workspace still
+// writable, a source-mutation attempt cannot win the strong claim". The
+// zero-rw-binds tests below prove this at the ARGV level (the generated bwrap
+// argv structurally cannot produce a writable REPO_ROOT bind); these tests
+// prove the same property at RUNTIME — a real spawned isolated child
+// actually attempting a write against these real paths — since an argv-shape
+// check alone doesn't prove the KERNEL actually enforces what the argv
+// declares (the same "advertise vs. honor" distinction this module's own
+// probe-honesty history is built around).
+//
+// REPO_ROOT is derived the same way isolation.ts derives it (four `dirname`
+// levels up from a file in this same directory) — not exported from
+// isolation.ts itself, so recomputed here identically rather than adding a
+// test-only export for a single path derivation.
+const TEST_REPO_ROOT = resolvePath(join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "..", ".."));
+
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
+
+  test(`[${mechanism}] an isolated child CANNOT write into REPO_ROOT (connector source is not writable)`, {
+    skip: !usable,
+  }, async () => {
+    const probeFileName = `.pdpp-repo-root-write-probe-${String(process.pid)}-${String(Date.now())}`;
+    const probePath = join(TEST_REPO_ROOT, probeFileName);
+    assert.ok(!existsSync(probePath), "sanity: the probe path must not already exist");
+    const { stdout, exitCode } = await runIsolatedProbe(
+      mechanism,
+      `const fs=require("fs");try{fs.writeFileSync(${JSON.stringify(probePath)},"x");console.log("WRITE_SUCCEEDED");}catch(e){console.log("WRITE_BLOCKED:"+e.code);}`
+    );
+    // Belt-and-suspenders cleanup: if the write somehow DID succeed (the
+    // exact regression this test exists to catch), remove the evidence
+    // immediately so a real regression doesn't leave a stray file sitting in
+    // the repo checkout on top of failing the assertion below.
+    if (existsSync(probePath)) {
+      rmSync(probePath, { force: true });
+    }
+    assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout)}`);
+    assert.ok(
+      stdout.startsWith("WRITE_BLOCKED:"),
+      `an isolated child under ${mechanism} must NOT be able to write into REPO_ROOT — got ${JSON.stringify(stdout)}`
+    );
+    assert.ok(
+      ["EROFS", "EACCES", "EPERM"].includes(stdout.slice("WRITE_BLOCKED:".length)),
+      `expected a genuine read-only-filesystem error, got ${JSON.stringify(stdout)}`
+    );
+  });
+
+  test(`[${mechanism}] an isolated child CANNOT write into node_modules`, {
+    skip: !usable,
+  }, async () => {
+    const nodeModulesDir = join(TEST_REPO_ROOT, "node_modules");
+    assert.ok(
+      existsSync(nodeModulesDir),
+      "sanity: node_modules must exist at REPO_ROOT for this probe to mean anything"
+    );
+    const probeFileName = `.pdpp-node-modules-write-probe-${String(process.pid)}-${String(Date.now())}`;
+    const probePath = join(nodeModulesDir, probeFileName);
+    const { stdout, exitCode } = await runIsolatedProbe(
+      mechanism,
+      `const fs=require("fs");try{fs.writeFileSync(${JSON.stringify(probePath)},"x");console.log("WRITE_SUCCEEDED");}catch(e){console.log("WRITE_BLOCKED:"+e.code);}`
+    );
+    if (existsSync(probePath)) {
+      rmSync(probePath, { force: true });
+    }
+    assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout)}`);
+    assert.ok(
+      stdout.startsWith("WRITE_BLOCKED:"),
+      `an isolated child under ${mechanism} must NOT be able to write into node_modules — got ${JSON.stringify(stdout)}`
+    );
+  });
+
+  test(`[${mechanism}] an isolated child CAN still write into filesystemBindPath (the evidence workspace stays writable)`, {
+    skip: !usable,
+  }, async () => {
+    const workspaceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-workspace-still-writable-"));
+    try {
+      const probePath = join(workspaceDir, "probe-file");
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation(
+          process.execPath,
+          ["-e", `require("fs").writeFileSync(${JSON.stringify(probePath)}, "x"); process.exit(0);`],
+          { isolate: mechanism, filesystemBindPath: workspaceDir, stdio: "ignore" }
+        );
+        child.on("close", resolveExit);
+      });
+      assert.equal(exitCode, 0, `writing into filesystemBindPath under ${mechanism} must succeed`);
+      assert.ok(
+        existsSync(probePath),
+        `the write into filesystemBindPath under ${mechanism} must actually have landed on the real host filesystem`
+      );
+    } finally {
+      rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+}
+
+// ─── Zero-rw-binds proof (P1-2, ninth review, requirement (f)) ────────────
+//
+// REPO READ-ONLY: `requiredFilesystemBinds()` used to return `{ path:
+// REPO_ROOT, mode: "rw" }` — a connector could mutate its own source, other
+// connectors' source, node_modules, or .git, and `dedupeBinds`'s
+// first-ancestor-wins rule meant that one `rw` entry silently masked any
+// narrower `ro` intent under it. This test proves the derived bind list
+// itself now contains ZERO `rw` entries — the module-derived set is
+// exhaustively read-only; the ONLY writable path anywhere in the isolated
+// child's view is `filesystemBindPath` (the caller's own evidence
+// workspace), which is NOT part of `requiredFilesystemBinds()`'s own return
+// value at all (it's threaded through separately by
+// `spawnWithNetworkIsolation`/`bwrapFilesystemClosureArgs`/
+// `filesystemClosureShellPrelude`).
+test("requiredFilesystemBinds() contains ZERO rw entries — REPO_ROOT and every other derived bind are read-only", () => {
+  const binds = requiredFilesystemBinds();
+  assert.ok(binds.length > 0, "sanity: the derived bind list must be non-empty");
+  const rwBinds = binds.filter((b) => b.mode === "rw");
+  assert.deepEqual(
+    rwBinds,
+    [],
+    `every module-derived filesystem bind must be read-only; found rw entries: ${JSON.stringify(rwBinds)}`
+  );
+  const roBinds = binds.filter((b) => b.mode === "ro");
+  assert.equal(roBinds.length, binds.length, 'every derived bind must be mode: "ro"');
+});
+
+test("[bwrap] the generated argv's ONLY rw bind is filesystemBindPath — every module-derived bind is --ro-bind", () => {
+  const workspaceDir = "/tmp/pdpp-isolation-zero-rw-probe-workspace";
+  const argv = bwrapArgvForFilesystemClosure("true", [], workspaceDir);
+  const binds = extractBwrapBinds(argv).filter((bind) => bind.source !== "/proc" && bind.source !== "/dev");
+  const rwBindSources = binds.filter((b) => b.flag === "--bind").map((b) => b.source);
+  assert.deepEqual(
+    rwBindSources,
+    [workspaceDir],
+    `the only --bind (rw) entry in the generated bwrap argv must be filesystemBindPath itself; got ${JSON.stringify(rwBindSources)}`
+  );
+});
+
+test("[bwrap] the generated argv's ONLY rw bind is filesystemBindPath even when filesystemBindPath is omitted (zero rw entries at all)", () => {
+  const argv = bwrapArgvForFilesystemClosure("true", [], undefined);
+  const binds = extractBwrapBinds(argv).filter((bind) => bind.source !== "/proc" && bind.source !== "/dev");
+  const rwBinds = binds.filter((b) => b.flag === "--bind");
+  assert.deepEqual(
+    rwBinds,
+    [],
+    `with no filesystemBindPath supplied, the argv must contain ZERO --bind (rw) entries; got ${JSON.stringify(rwBinds)}`
+  );
+});
 
 test("[bwrap] the generated argv never binds the real host root, and binds only the derived allowlist plus filesystemBindPath", () => {
   const workspaceDir = "/tmp/pdpp-isolation-guard-workspace-probe";

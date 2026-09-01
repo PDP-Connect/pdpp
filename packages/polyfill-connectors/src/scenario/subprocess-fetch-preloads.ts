@@ -114,11 +114,61 @@ function retainedHeaderPairs(headers: Headers): ScenarioResponseHeaders | undefi
 }
 
 /**
+ * Env var NAMES stripped from a spawned connector subprocess's environment
+ * (P1-2, ninth review, requirement (d)) — every one of these either names a
+ * socket path or otherwise routes to a live credential/agent process on the
+ * PARENT's host, none of which the isolated child's filesystem closure
+ * (isolation.ts's `requiredFilesystemBinds()`) re-exposes at its real path
+ * once P1-1/P1-2 land, but which stay a real risk whenever isolation itself
+ * is unavailable (the process-local-only fallback this module's own
+ * `claims.ts` already downgrades the claim for) or if a future filesystem
+ * change ever re-widens the bind set. Exact names, not prefix matches
+ * (unlike `NODE_TEST_*` below) — each one is a specific, named credential/
+ * socket-routing surface, confirmed present on a real developer host running
+ * this suite: `SSH_AUTH_SOCK` (the ssh-agent signing-oracle socket —
+ * isolation.ts's module docstring documents this exact escape being closed
+ * at the filesystem layer; stripping the env var too means even an
+ * un-isolated fallback run, or a connector spawning something that reads
+ * this var directly rather than dialing the path isolation.ts derived,
+ * cannot find it), `GPG_AGENT_INFO`/`GNUPGHOME` (GPG agent socket/keyring
+ * location), `DBUS_SESSION_BUS_ADDRESS` (the D-Bus session bus — an
+ * independent review's own escape repro reached this exact socket via a
+ * pathname UDS dial before the filesystem closure existed), `XDG_RUNTIME_DIR`
+ * (the directory holding runtime sockets by XDG convention — the earlier
+ * `/run`-masking fix in isolation.ts's own history exists because this
+ * directory routinely holds exactly this class of socket), and the common
+ * cloud-credential env vars a compromised connector could otherwise read
+ * directly without ever touching a filesystem path at all
+ * (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+ * `GOOGLE_APPLICATION_CREDENTIALS`, `AZURE_CLIENT_SECRET`, `GITHUB_TOKEN`,
+ * `NPM_TOKEN`, `DOCKER_HOST` — the last because a reachable non-default
+ * Docker socket endpoint is itself a privilege-escalation surface, not a
+ * credential, but belongs in the same "don't hand a connector a host control
+ * plane" category).
+ */
+const SUBPROCESS_ENV_DENYLIST: ReadonlySet<string> = new Set([
+  "SSH_AUTH_SOCK",
+  "GPG_AGENT_INFO",
+  "GNUPGHOME",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "XDG_RUNTIME_DIR",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "AZURE_CLIENT_SECRET",
+  "GITHUB_TOKEN",
+  "NPM_TOKEN",
+  "DOCKER_HOST",
+]);
+
+/**
  * Strips `NODE_TEST_*` env vars (e.g. `NODE_TEST_CONTEXT=child-v8`,
- * `NODE_TEST_WORKER_ID`) before they reach a spawned connector subprocess.
+ * `NODE_TEST_WORKER_ID`) plus every name in `SUBPROCESS_ENV_DENYLIST` (P1-2,
+ * ninth review) before they reach a spawned connector subprocess.
  *
- * FINDING: when bin/scenario-record.ts or bin/scenario-verify.ts runs
- * inside a `node --test` process (as bin/scenario-cli.test.ts's own
+ * NODE_TEST_* FINDING: when bin/scenario-record.ts or bin/scenario-verify.ts
+ * runs inside a `node --test` process (as bin/scenario-cli.test.ts's own
  * `spawnSync` calls do) and spreads `...process.env` into its own child
  * `spawn()` call, `NODE_TEST_CONTEXT` propagates two levels down into the
  * connector subprocess. Node's `--import tsx <connector-entrypoint>` child
@@ -130,11 +180,22 @@ function retainedHeaderPairs(headers: Headers): ScenarioResponseHeaders | undefi
  * grandchild it never spawned, not a bug in this package's code — the fix
  * is to never let a `node --test`-inherited env leak into the connector
  * subprocess this CLI spawns for its own separate purpose.
+ *
+ * DENYLIST, NOT ALLOWLIST: an allowlist would also have to enumerate every
+ * legitimate var a connector's OWN dependencies read (locale, `TERM`, proxy
+ * config, `NODE_OPTIONS`-adjacent vars this CLI itself sets afterward, the
+ * `PATH` the isolated child's own `exec` needs to resolve `node`/`tsx`
+ * against) — none of which this fix has a mandate to audit exhaustively, and
+ * getting that enumeration wrong fails CLOSED in the wrong direction (breaks
+ * a legitimate connector) rather than the credential-leak direction this fix
+ * targets. The denylist above names the SPECIFIC, concrete credential/
+ * socket-routing surfaces the review identified; everything else passes
+ * through unchanged, same as before this fix.
  */
 export function subprocessEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const clean: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
-    if (key.startsWith("NODE_TEST_")) {
+    if (key.startsWith("NODE_TEST_") || SUBPROCESS_ENV_DENYLIST.has(key)) {
       continue;
     }
     clean[key] = value;

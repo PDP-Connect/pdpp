@@ -999,6 +999,60 @@ test("scenario-fidelity: evidence workspace is created 0700 with 0600 files, and
   assert.equal(existsSync(workspace.dir), false, "cleanup must remove the workspace directory");
 });
 
+// ─── subprocessEnv() denylist (P1-2, ninth review, requirement (d)) ───────
+//
+// subprocessEnv() used to strip only NODE_TEST_* prefixed vars. This proves
+// the credential/socket-routing denylist added alongside the isolation
+// hardening actually removes every named var while leaving everything else
+// (including NODE_TEST_* — regression coverage for the pre-existing
+// behavior) untouched.
+test("subprocessEnv: strips every credential/socket-routing denylist var, keeps everything else including NODE_TEST_* stripping", () => {
+  const fakeBase: NodeJS.ProcessEnv = {
+    PATH: "/usr/bin:/bin",
+    HOME: "/home/someone",
+    SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
+    GPG_AGENT_INFO: "/run/user/1000/gnupg/S.gpg-agent:0:1",
+    GNUPGHOME: "/home/someone/.gnupg",
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+    XDG_RUNTIME_DIR: "/run/user/1000",
+    AWS_ACCESS_KEY_ID: "AKIAFAKEFAKEFAKEFAKE",
+    AWS_SECRET_ACCESS_KEY: "fake-secret-value",
+    AWS_SESSION_TOKEN: "fake-session-token",
+    GOOGLE_APPLICATION_CREDENTIALS: "/home/someone/gcp-key.json",
+    AZURE_CLIENT_SECRET: "fake-azure-secret",
+    GITHUB_TOKEN: "ghp_fakefakefakefakefake",
+    NPM_TOKEN: "npm_fakefakefakefakefake",
+    DOCKER_HOST: "tcp://127.0.0.1:2375",
+    NODE_TEST_CONTEXT: "child-v8",
+    NODE_TEST_WORKER_ID: "3",
+    CUSTOM_APP_VAR: "should-survive",
+  };
+  const clean = subprocessEnv(fakeBase);
+  const strippedNames = [
+    "SSH_AUTH_SOCK",
+    "GPG_AGENT_INFO",
+    "GNUPGHOME",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "AZURE_CLIENT_SECRET",
+    "GITHUB_TOKEN",
+    "NPM_TOKEN",
+    "DOCKER_HOST",
+    "NODE_TEST_CONTEXT",
+    "NODE_TEST_WORKER_ID",
+  ];
+  for (const name of strippedNames) {
+    assert.equal(name in clean, false, `expected ${name} to be stripped from the subprocess env, but it survived`);
+  }
+  assert.equal(clean.PATH, "/usr/bin:/bin", "PATH must pass through unchanged");
+  assert.equal(clean.HOME, "/home/someone", "HOME must pass through unchanged (not itself denylisted)");
+  assert.equal(clean.CUSTOM_APP_VAR, "should-survive", "an unrelated app var must pass through unchanged");
+});
+
 test("scenario-fidelity: writeRecordPreload/writeReplayBridgePreload keep their pre-existing single/positional-argument call shapes", async () => {
   // bin/scenario-record.ts calls writeRecordPreload(capturePath) with one
   // argument; bin/scenario-verify.ts calls
