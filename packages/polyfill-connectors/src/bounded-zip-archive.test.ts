@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { closeSync, mkdtempSync, openSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { deflateRawSync } from "node:zlib";
-import { existsSync, readFileSync } from "node:fs";
 import {
   hasZipLocalFileSignature,
   readZipEntries,
@@ -1050,7 +1049,9 @@ async function withTempDestPath<T>(fn: (destPath: string) => Promise<T>): Promis
 }
 
 test("streamZipEntryToFile extracts a DEFLATE entry to disk byte-for-byte", async () => {
-  const content = Buffer.from("<HealthData><Record type=\"HKQuantityTypeIdentifierStepCount\"/></HealthData>".repeat(5000));
+  const content = Buffer.from(
+    '<HealthData><Record type="HKQuantityTypeIdentifierStepCount"/></HealthData>'.repeat(5000)
+  );
   const zip = buildZip([{ content, name: "apple_health_export/export.xml" }]);
   await withTempZipFileAsync(zip, async (fd, fileSize) => {
     await withTempDestPath(async (destPath) => {
@@ -1171,7 +1172,11 @@ test("streamZipEntryToFile rejects on ACTUAL inflated bytes exceeding the cap ev
       await assert.rejects(() => streamZipEntryToFile(fd, fileSize, "export.xml", destPath, policy), {
         code: "entry_too_large",
       });
-      assert.equal(existsSync(destPath), false, "no partial file left behind once the actual cap is exceeded mid-stream");
+      assert.equal(
+        existsSync(destPath),
+        false,
+        "no partial file left behind once the actual cap is exceeded mid-stream"
+      );
     });
   });
 });
@@ -1181,9 +1186,10 @@ test("streamZipEntryToFile handles content spanning many read-chunk boundaries w
   // so the multi-chunk read loop, not just a single-chunk fast path, is
   // exercised end-to-end.
   const content = Buffer.from(
-    Array.from({ length: 300_000 }, (_, i) => `<Record id="${i}" type="HKQuantityTypeIdentifierStepCount" value="${i}"/>`).join(
-      "\n"
-    )
+    Array.from(
+      { length: 300_000 },
+      (_, i) => `<Record id="${i}" type="HKQuantityTypeIdentifierStepCount" value="${i}"/>`
+    ).join("\n")
   );
   assert.ok(content.length > 3 * 1024 * 1024, "fixture must span multiple 1 MiB read-chunk windows");
   const zip = buildZip([{ content, name: "export.xml" }]);

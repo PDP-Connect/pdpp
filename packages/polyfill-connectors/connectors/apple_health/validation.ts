@@ -57,7 +57,13 @@ function baseValidation(fileSha256: string): Omit<AppleHealthExportValidation, "
 }
 
 function buildValidationFromSummary(
-  summary: { earliestStartDate: string | null; latestStartDate: string | null; looksLikeHealthExport: boolean; recordCount: number; workoutCount: number },
+  summary: {
+    earliestStartDate: string | null;
+    latestStartDate: string | null;
+    looksLikeHealthExport: boolean;
+    recordCount: number;
+    workoutCount: number;
+  },
   detectedFormat: "apple_health_export_xml" | "apple_health_export_zip",
   fileSha256: string,
   existingFileHashes: readonly string[] | undefined
@@ -111,7 +117,12 @@ export async function validateAppleHealthExportArtifactFromFile(
 
   if (XML_EXT_RE.test(options.fileName)) {
     const summary = await scanExportXmlSummary(filePath);
-    return buildValidationFromSummary(summary, "apple_health_export_xml", options.fileSha256, options.existingFileHashes);
+    return buildValidationFromSummary(
+      summary,
+      "apple_health_export_xml",
+      options.fileSha256,
+      options.existingFileHashes
+    );
   }
 
   if (!ZIP_EXT_RE.test(options.fileName)) {
@@ -130,14 +141,20 @@ export async function validateAppleHealthExportArtifactFromFile(
       return { ...base, remediation: remediationFor("unsupported"), status: "unsupported" };
     }
     const summary = await scanExportXmlSummary(scratchPath);
-    return buildValidationFromSummary(summary, "apple_health_export_zip", options.fileSha256, options.existingFileHashes);
+    return buildValidationFromSummary(
+      summary,
+      "apple_health_export_zip",
+      options.fileSha256,
+      options.existingFileHashes
+    );
   } catch (err) {
     // A ZipPolicyViolationError (declared or actual bytes exceeding policy)
     // means this IS a real (or plausibly real) export that tripped the
     // decompression-bomb ceiling -- report too_large, not unsupported, so
     // the owner gets actionable guidance instead of "not a health export".
     const code = (err as { code?: unknown })?.code;
-    const isSizePolicyRejection = code === "entry_too_large" || code === "total_too_large" || code === "too_many_entries";
+    const isSizePolicyRejection =
+      code === "entry_too_large" || code === "total_too_large" || code === "too_many_entries";
     return {
       ...base,
       remediation: remediationFor(isSizePolicyRejection ? "too_large" : "unsupported"),
