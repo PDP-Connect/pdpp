@@ -1049,9 +1049,9 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
   // closed (exit `SETUP_STEP_FAILURE_EXIT_CODE`), matching every other
   // mandatory step's severity.
   statements.push(
-    cwd !== undefined
-      ? `cd ${shQuote(cwd)} || { echo "pdpp isolation: setup step [cd into requested cwd] failed" 1>&2; exit ${SETUP_STEP_FAILURE_EXIT_CODE}; }`
-      : "cd /"
+    cwd === undefined
+      ? "cd /"
+      : `cd ${shQuote(cwd)} || { echo "pdpp isolation: setup step [cd into requested cwd] failed" 1>&2; exit ${SETUP_STEP_FAILURE_EXIT_CODE}; }`
   );
   // Mounted AFTER pivot_root — see this function's doc comment for why a
   // pre-pivot procfs mount at the staging path is denied. mkdir it here,
