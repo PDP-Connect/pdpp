@@ -29,6 +29,7 @@
 export const PRODUCTION_READY_CONNECTORS: Record<string, { testFile: string }> = {
   amazon: { testFile: "connectors/amazon/integration.test.ts" },
   apple_contacts: { testFile: "connectors/apple_contacts/integration.test.ts" },
+  apple_health: { testFile: "connectors/apple_health/parsers.test.ts" },
   chase: { testFile: "connectors/chase/integration.test.ts" },
   chatgpt: { testFile: "connectors/chatgpt/integration.test.ts" },
   claude_code: { testFile: "connectors/claude_code/integration.test.ts" },
@@ -72,7 +73,6 @@ export const KNOWN_SCAFFOLD_CONNECTORS = [
  * or Supported; the conformance test keeps the rosters disjoint.
  */
 export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {
-  apple_health: { testFile: "connectors/apple_health/parsers.test.ts" },
   apple_photos: { testFile: "connectors/apple_photos/integration.test.ts" },
   google_calendar: { testFile: "connectors/google_calendar/index.test.ts" },
   google_contacts: { testFile: "connectors/google_contacts/index.test.ts" },
