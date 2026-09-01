@@ -68,10 +68,11 @@
   "streams": [
     {
       "name": "records",
+      "required": true,
       "description": "Apple Health records from an export.xml.",
       "display": {
         "label": "Your Apple Health records",
-        "detail": "Every Health record: type (steps, heart rate, sleep, weight, etc.), source (app/device), value, unit, start/end dates. Expected from a Health.app export."
+        "detail": "Every Health record: type (steps, heart rate, sleep, weight, etc.), source (app/device), value, unit, start/end dates, and any per-record metadata (e.g. manually entered). Expected from a Health.app export."
       },
       "semantics": "append_only",
       "schema": {
@@ -88,6 +89,9 @@
             "x_pdpp_role": "actor"
           },
           "source_version": {
+            "type": ["string", "null"]
+          },
+          "device": {
             "type": ["string", "null"]
           },
           "unit": {
@@ -107,6 +111,13 @@
           "end_date": {
             "type": ["string", "null"],
             "format": "date-time"
+          },
+          "creation_date": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "metadata": {
+            "type": ["object", "null"]
           }
         },
         "required": ["id", "type", "start_date"]
@@ -122,7 +133,8 @@
       "query": {
         "range_filters": {
           "start_date": ["gte", "gt", "lte", "lt"],
-          "end_date": ["gte", "gt", "lte", "lt"]
+          "end_date": ["gte", "gt", "lte", "lt"],
+          "creation_date": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
@@ -135,10 +147,11 @@
     },
     {
       "name": "workouts",
+      "required": true,
       "description": "Apple Health workouts.",
       "display": {
         "label": "Your workouts",
-        "detail": "Workout type, duration, energy burned, distance, start/end dates."
+        "detail": "Workout type, duration, energy burned, distance, start/end dates, plus any workout events (pause/resume/segment), per-metric statistics, and metadata (weather, indoor/outdoor, etc.) Apple Health recorded alongside it."
       },
       "semantics": "append_only",
       "schema": {
@@ -162,6 +175,21 @@
           "source_name": {
             "type": ["string", "null"],
             "x_pdpp_role": "actor"
+          },
+          "source_version": {
+            "type": ["string", "null"]
+          },
+          "device": {
+            "type": ["string", "null"]
+          },
+          "metadata": {
+            "type": ["object", "null"]
+          },
+          "events": {
+            "type": ["array", "null"]
+          },
+          "statistics": {
+            "type": ["array", "null"]
           },
           "start_date": {
             "type": "string",

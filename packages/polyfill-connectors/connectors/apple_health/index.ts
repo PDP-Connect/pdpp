@@ -23,14 +23,22 @@ import {
   APPLE_HEALTH_TAG_RE,
   advanceCursor,
   buildHealthRecord,
+  buildWorkoutEvent,
   buildWorkoutRecord,
   findUploadedExportCandidate,
   isBeforeCursor,
+  newGapCounts,
   parseAttrs,
   resolveUploadedExportPath,
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
-import type { AppleHealthAttrs, AppleHealthState, StreamParseArgs } from "./types.ts";
+import type {
+  AppleHealthAttrs,
+  AppleHealthElement,
+  AppleHealthGapCounts,
+  AppleHealthState,
+  StreamParseArgs,
+} from "./types.ts";
 
 // Streaming buffer size — 64 KB balances memory and syscalls on large exports.
 const READ_BUFFER_SIZE = 65_536;
@@ -75,6 +83,104 @@ async function resolveExportPath(dir: string): Promise<ResolveExportPathResult> 
   return { kind: "not_found" };
 }
 
+function newElement(tag: "Record" | "Workout", attrs: AppleHealthAttrs): AppleHealthElement {
+  return { tag, attrs, metadata: [], workoutEvents: [], workoutStatistics: [] };
+}
+
+/** Attach a nested MetadataEntry/WorkoutEvent/WorkoutStatistics child to whichever Record/Workout is currently open. */
+function attachChild(current: AppleHealthElement, openTag: string, attrString: string): void {
+  const attrs = parseAttrs(attrString);
+  if (openTag === "MetadataEntry" && attrs.key !== undefined) {
+    current.metadata.push({ key: attrs.key, value: attrs.value ?? "" });
+  } else if (openTag === "WorkoutEvent") {
+    current.workoutEvents.push(buildWorkoutEvent(attrs));
+  } else if (openTag === "WorkoutStatistics") {
+    current.workoutStatistics.push(attrs);
+  }
+}
+
+/** Mutable scan state threaded through one streamParse pass. */
+interface ScanState {
+  current: AppleHealthElement | null;
+  recordCount: number;
+  workoutCount: number;
+}
+
+/** Close out `state.current` on its matching `</Record>`/`</Workout>`, emitting the assembled element. */
+async function handleCloseTag(
+  closeTag: "Record" | "Workout",
+  state: ScanState,
+  onRecord: StreamParseArgs["onRecord"],
+  onWorkout: StreamParseArgs["onWorkout"]
+): Promise<void> {
+  if (!(state.current && state.current.tag === closeTag)) {
+    return;
+  }
+  if (closeTag === "Record") {
+    await onRecord(state.current);
+    state.recordCount += 1;
+  } else {
+    await onWorkout(state.current);
+    state.workoutCount += 1;
+  }
+  state.current = null;
+}
+
+/** Handle a Record/Workout open tag: emit immediately if self-closing, otherwise open a span for nested children. */
+async function handleTopLevelOpenTag(
+  openTag: "Record" | "Workout",
+  attrs: AppleHealthAttrs,
+  selfClose: string,
+  state: ScanState,
+  onRecord: StreamParseArgs["onRecord"],
+  onWorkout: StreamParseArgs["onWorkout"]
+): Promise<void> {
+  if (selfClose !== "/") {
+    // Non-self-closing: children (MetadataEntry/WorkoutEvent/
+    // WorkoutStatistics) arrive before the matching close tag.
+    state.current = newElement(openTag, attrs);
+    return;
+  }
+  if (openTag === "Record") {
+    await onRecord(newElement("Record", attrs));
+    state.recordCount += 1;
+  } else {
+    await onWorkout(newElement("Workout", attrs));
+    state.workoutCount += 1;
+  }
+}
+
+/** Handle one regex match against the running scan state, emitting a completed Record/Workout when its span closes. */
+async function handleTagMatch(
+  m: RegExpExecArray,
+  state: ScanState,
+  onRecord: StreamParseArgs["onRecord"],
+  onWorkout: StreamParseArgs["onWorkout"]
+): Promise<void> {
+  const [, openTag, attrString, selfClose, closeTag] = m;
+  if (closeTag === "Record" || closeTag === "Workout") {
+    await handleCloseTag(closeTag, state, onRecord, onWorkout);
+    return;
+  }
+  if (openTag === "Record" || openTag === "Workout") {
+    await handleTopLevelOpenTag(openTag, parseAttrs(attrString ?? ""), selfClose ?? "", state, onRecord, onWorkout);
+    return;
+  }
+  if (state.current && openTag) {
+    attachChild(state.current, openTag, attrString ?? "");
+  }
+}
+
+/**
+ * Streaming scanner: walks Record/Workout open tags, their nested
+ * MetadataEntry/WorkoutEvent/WorkoutStatistics children, and the matching
+ * close tags, in document order across chunk boundaries. Because the export
+ * is scanned strictly in order, "currently open Record/Workout" is enough
+ * context to attribute a nested child to its parent without building a DOM —
+ * this keeps the parser streaming-safe on a 500MB export. Apple Health does
+ * not nest Record inside Workout or vice versa, so a single current-element
+ * slot (not a stack) is sufficient.
+ */
 async function streamParse({ path, onRecord, onWorkout, onProgress }: StreamParseArgs): Promise<void> {
   // Async iteration on a Readable pauses the stream between awaits, so we can
   // await async handlers without losing chunks. Older sync-callback form got
@@ -84,33 +190,24 @@ async function streamParse({ path, onRecord, onWorkout, onProgress }: StreamPars
     highWaterMark: READ_BUFFER_SIZE,
   });
   let buf = "";
-  let recordCount = 0;
-  let workoutCount = 0;
+  const state: ScanState = { current: null, recordCount: 0, workoutCount: 0 };
   for await (const chunk of stream as AsyncIterable<string | Buffer>) {
     buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    // Process self-closing Record and Workout tags.
     const re = new RegExp(APPLE_HEALTH_TAG_RE.source, "g");
     let m: RegExpExecArray | null = re.exec(buf);
     let lastEnd = 0;
     while (m !== null) {
-      const [, tag] = m;
-      const attrs = parseAttrs(m[2] ?? "");
-      if (tag === "Record") {
-        await onRecord(attrs);
-        recordCount += 1;
-      } else if (tag === "Workout") {
-        await onWorkout(attrs);
-        workoutCount += 1;
-      }
+      await handleTagMatch(m, state, onRecord, onWorkout);
       lastEnd = re.lastIndex;
       m = re.exec(buf);
     }
     buf = buf.slice(lastEnd);
-    if (recordCount + workoutCount > 0 && (recordCount + workoutCount) % PROGRESS_INTERVAL_EVENTS === 0) {
-      await onProgress(recordCount, workoutCount);
+    const total = state.recordCount + state.workoutCount;
+    if (total > 0 && total % PROGRESS_INTERVAL_EVENTS === 0) {
+      await onProgress(state.recordCount, state.workoutCount);
     }
   }
-  await onProgress(recordCount, workoutCount);
+  await onProgress(state.recordCount, state.workoutCount);
 }
 
 /** Per-stream cursor state mutated across callbacks. */
@@ -120,15 +217,16 @@ interface CursorRef {
 }
 
 function handleRecord(
-  attrs: AppleHealthAttrs,
+  el: AppleHealthElement,
   ref: CursorRef,
+  gaps: AppleHealthGapCounts,
   requested: ReadonlyMap<string, StreamScope>,
   emitRecord: (stream: string, rec: Record<string, unknown>) => Promise<void>
 ): Promise<void> {
   if (!requested.has("records")) {
     return Promise.resolve();
   }
-  const rec = buildHealthRecord(attrs);
+  const rec = buildHealthRecord(el, gaps);
   if (!rec) {
     return Promise.resolve();
   }
@@ -140,15 +238,16 @@ function handleRecord(
 }
 
 function handleWorkout(
-  attrs: AppleHealthAttrs,
+  el: AppleHealthElement,
   ref: CursorRef,
+  gaps: AppleHealthGapCounts,
   requested: ReadonlyMap<string, StreamScope>,
   emitRecord: (stream: string, rec: Record<string, unknown>) => Promise<void>
 ): Promise<void> {
   if (!requested.has("workouts")) {
     return Promise.resolve();
   }
-  const rec = buildWorkoutRecord(attrs);
+  const rec = buildWorkoutRecord(el, gaps);
   if (!rec) {
     return Promise.resolve();
   }
@@ -157,6 +256,25 @@ function handleWorkout(
   }
   ref.latest = advanceCursor(ref.latest, rec.start_date);
   return emitRecord("workouts", { ...rec });
+}
+
+/** Render the gap tally as a single human-readable progress line. Never silent — an empty tally still reports "no gaps". */
+function formatGapSummary(gaps: AppleHealthGapCounts): string {
+  const parts: string[] = [];
+  if (gaps.recordsMissingStartDate > 0) {
+    parts.push(`records_dropped_missing_start_date=${gaps.recordsMissingStartDate}`);
+  }
+  if (gaps.workoutsMissingStartDate > 0) {
+    parts.push(`workouts_dropped_missing_start_date=${gaps.workoutsMissingStartDate}`);
+  }
+  if (gaps.unrecognizedRecordTypes.size > 0) {
+    const byType = [...gaps.unrecognizedRecordTypes.entries()].map(([type, count]) => `${type}:${count}`).join(",");
+    parts.push(`unrecognized_record_types=${byType}`);
+  }
+  if (parts.length === 0) {
+    return "Apple Health phase=emit pass=emit gaps=none";
+  }
+  return `Apple Health phase=emit pass=emit gaps: ${parts.join(" ")}`;
 }
 
 runConnector({
@@ -195,6 +313,7 @@ runConnector({
       since: workoutsState.last_start_date,
       latest: workoutsState.last_start_date,
     };
+    const gaps = newGapCounts();
 
     await progress("Apple Health phase=emit pass=emit starting stream parse");
 
@@ -202,9 +321,11 @@ runConnector({
       path,
       onProgress: (rc, wc): Promise<void> =>
         progress(`Apple Health phase=emit pass=emit records_parsed=${rc} workouts_parsed=${wc}`),
-      onRecord: (attrs): Promise<void> => handleRecord(attrs, recordRef, requested, emitRecord),
-      onWorkout: (attrs): Promise<void> => handleWorkout(attrs, workoutRef, requested, emitRecord),
+      onRecord: (el): Promise<void> => handleRecord(el, recordRef, gaps, requested, emitRecord),
+      onWorkout: (el): Promise<void> => handleWorkout(el, workoutRef, gaps, requested, emitRecord),
     });
+
+    await progress(formatGapSummary(gaps));
 
     if (requested.has("records")) {
       await emit({
