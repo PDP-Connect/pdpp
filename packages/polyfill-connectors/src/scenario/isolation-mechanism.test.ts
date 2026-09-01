@@ -1629,6 +1629,56 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
   });
 }
 
+// ─── cwd survives the filesystem closure (R9) ──────────────────────────────
+//
+// Node's `spawn(cmd, args, { cwd })` only sets the working directory of the
+// process `spawn` itself starts. Under the `bwrap` mechanism that process
+// IS the target (bwrap execs it directly), so `cwd` is honored automatically.
+// Under `unshare`, the process `spawn` starts is `unshare` itself, which then
+// runs an embedded `sh -c` script that stages a fresh root, `pivot_root`s
+// into it, and only THEN `exec`s the real target — `cwd` never reaches that
+// later `exec`. Before this fix, `filesystemClosureShellPrelude` always ran
+// a bare `cd /` immediately after `pivot_root`, silently discarding whatever
+// `cwd` the caller asked for. The real production call site
+// (`bin/scenario-verify.ts`'s `runReplaySubprocess`) always passes
+// `cwd: PACKAGE_ROOT` and depends on cwd-relative module resolution (`tsx`)
+// working from there — under the old prelude, selecting the `unshare`
+// mechanism (the documented fallback when `bwrap` is unavailable) made every
+// real replay crash with `ERR_MODULE_NOT_FOUND`, not a security hole but a
+// silent "fallback doesn't actually work" gap. `cwd` here is a real
+// subdirectory under `TEST_REPO_ROOT` (mirroring `PACKAGE_ROOT`, itself
+// always a subdirectory of `REPO_ROOT`) — already staged read-only by
+// `requiredFilesystemBinds()`'s `REPO_ROOT` entry, so no extra bind is
+// needed for this path to exist post-pivot, exactly like the real call site.
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
+
+  test(`[${mechanism}] the isolated child's cwd is the caller-requested path, not "/"`, {
+    skip: !usable,
+  }, async () => {
+    const requestedCwd = join(TEST_REPO_ROOT, "packages", "polyfill-connectors");
+    assert.ok(existsSync(requestedCwd), "sanity: the requested cwd must exist on the real host filesystem");
+    const child = spawnWithNetworkIsolation(process.execPath, ["-e", "console.log(process.cwd())"], {
+      isolate: mechanism,
+      cwd: requestedCwd,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let stdout = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    const exitCode = await new Promise<number | null>((resolvePromise) => {
+      child.on("close", resolvePromise);
+    });
+    assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout.trim())}`);
+    assert.equal(
+      stdout.trim(),
+      requestedCwd,
+      `isolated child under ${mechanism} did not honor the caller-requested cwd — got ${JSON.stringify(stdout.trim())}, expected ${JSON.stringify(requestedCwd)}`
+    );
+  });
+}
+
 // ─── Zero-rw-binds proof (P1-2, ninth review, requirement (f)) ────────────
 //
 // REPO READ-ONLY: `requiredFilesystemBinds()` used to return `{ path:

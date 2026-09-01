@@ -942,7 +942,7 @@ function reqStatement(label: string, command: string): string {
  * non-nested source (e.g. `REPO_ROOT`, which has no sub-mounts on any tested
  * host) needs — so it is used uniformly for every entry, not conditionally.
  */
-function filesystemClosureShellPrelude(filesystemBindPath: string | undefined): string {
+function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, cwd: string | undefined): string {
   const newroot = "/tmp/pdpp-scenario-isolation-newroot";
   const oldroot = `${newroot}/oldroot`;
   const binds = requiredFilesystemBinds();
@@ -1027,7 +1027,32 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined): 
   );
   statements.push(reqStatement("make root mount propagation private", "mount --make-rprivate /"));
   statements.push(reqStatement("pivot_root into staging tree", `pivot_root ${shQuote(newroot)} ${shQuote(oldroot)}`));
-  statements.push("cd /");
+  // CWD (R9): the caller's requested `spawnOpts.cwd` only sets the working
+  // directory of the `unshare` PROCESS ITSELF — Node's `spawn(cmd, args,
+  // { cwd })` has no reach into the shell script this process later
+  // execs into (see `spawnWithNetworkIsolation`'s `unshare` branch), so a
+  // bare `cd /` here unconditionally discarded whatever cwd the caller
+  // asked for. The real production call site (`bin/scenario-verify.ts`'s
+  // `runReplaySubprocess`) always sets `cwd: PACKAGE_ROOT`, a path under
+  // `REPO_ROOT` — already staged read-only by the bind loop above — so no
+  // extra staging is needed here, only a `cd` into it AFTER the pivot.
+  // NOT routed through `req`/`reqStatement`: `req` captures its wrapped
+  // command's output via `$(...)` command substitution, which POSIX runs in
+  // a SUBSHELL — a `cd` inside that subshell only changes ITS OWN cwd and
+  // evaporates when the subshell exits, leaving the outer script (and the
+  // `exec <target>` that follows it) at whatever cwd it had before, not the
+  // requested one (confirmed empirically: this exact mistake was the first
+  // version of this fix, and it left the exec'd child with a cwd made
+  // invalid by pivot_root, crashing with ENOENT on the first
+  // `process.cwd()` call rather than silently landing at `/`). `cd` must run
+  // directly in the current shell; failure is still checked and still fails
+  // closed (exit `SETUP_STEP_FAILURE_EXIT_CODE`), matching every other
+  // mandatory step's severity.
+  statements.push(
+    cwd !== undefined
+      ? `cd ${shQuote(cwd)} || { echo "pdpp isolation: setup step [cd into requested cwd] failed" 1>&2; exit ${SETUP_STEP_FAILURE_EXIT_CODE}; }`
+      : "cd /"
+  );
   // Mounted AFTER pivot_root — see this function's doc comment for why a
   // pre-pivot procfs mount at the staging path is denied. mkdir it here,
   // immediately before the mount that needs it.
@@ -1199,7 +1224,12 @@ export function spawnWithNetworkIsolation(
     return spawn("bwrap", bwrapArgvForFilesystemClosure(cmd, args, filesystemBindPath), spawnOpts);
   }
   const innerCommand = [cmd, ...args].map(shQuote).join(" ");
-  const closurePrelude = filesystemClosureShellPrelude(filesystemBindPath);
+  // `spawnOpts.cwd` (a `string | URL | undefined` per `SpawnOptions`) is
+  // normalized to a plain string here — see `filesystemClosureShellPrelude`'s
+  // cwd handling for why the shell script needs it explicitly rather than
+  // relying on Node's own `cwd` spawn option.
+  const requestedCwd = spawnOpts.cwd === undefined ? undefined : String(spawnOpts.cwd);
+  const closurePrelude = filesystemClosureShellPrelude(filesystemBindPath, requestedCwd);
   // `ip link set lo up` runs BEFORE the filesystem closure's pivot_root,
   // while the real host filesystem (and therefore /usr/sbin/ip) is still
   // the process's root — avoids any dependency on `ip` resolving correctly
