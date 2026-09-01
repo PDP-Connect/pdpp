@@ -62,7 +62,7 @@
       "rationale": "Apple Health imports require the user to produce a new export.xml from iOS; cannot be refreshed in the background."
     },
     "public_listing": {
-      "tier": "development"
+      "tier": "preview"
     }
   },
   "streams": [
