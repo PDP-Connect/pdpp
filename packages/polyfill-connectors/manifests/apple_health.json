@@ -13,6 +13,27 @@
     },
     "environment_variables": ["APPLE_HEALTH_EXPORT_DIR"]
   },
+  "setup": {
+    "modality": "manual_or_upload",
+    "manual_or_upload": {
+      "label": "Apple Health export",
+      "description": "Export your data from the iPhone Health app, extract export.xml from the resulting .zip, then upload export.xml here.",
+      "acquisition_methods": [
+        {
+          "label": "Export from the Health app",
+          "platform": "ios",
+          "posture": "primary",
+          "detail": "Open the Health app, tap your profile photo in the top right, scroll down, and tap Export All Health Data. This produces a .zip file. Unzip it (it contains apple_health_export/export.xml), then upload export.xml here.",
+          "help_url": "https://support.apple.com/guide/iphone/share-your-health-data-iph5ede58c3d/ios"
+        }
+      ],
+      "accepted_file_extensions": [".xml"],
+      "import_dir_env_var": "APPLE_HEALTH_EXPORT_DIR",
+      "help_url": "https://support.apple.com/guide/iphone/share-your-health-data-iph5ede58c3d/ios",
+      "help_text": "Apple Health does not expose records through an account API or OAuth grant. This source imports an owner-exported export.xml from the iPhone Health app. The .zip Health produces must be extracted first; this connector does not yet accept the .zip directly.",
+      "large_file_fallback": "This connector accepts uploads up to the deployment limit shown above. There is currently no alternate upload path for larger files — ask your PDPP operator to raise the deployment limit if your export exceeds it."
+    }
+  },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
