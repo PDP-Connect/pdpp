@@ -18,7 +18,8 @@
  */
 
 import assert from "node:assert/strict";
-import { rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
@@ -121,6 +122,41 @@ test("FORMAT-CONFORMANCE: synthetic multi-year, multi-source export.xml (~5k rec
     const dstExpected = new Date(`${syntheticExportStartYear() + 1}-03-09T01:59:00-08:00`).toISOString();
     const dstRow = recordRows.find((r) => r.start_date === dstExpected);
     assert.ok(dstRow, `DST-boundary record must parse without throwing or vanishing (expected ${dstExpected})`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Found via live proof against a real dogsheep/Simon-Willison-hosted Apple
+// Health export sample: a WorkoutRoute (GPS geometry) nested under a
+// Workout matched no branch of the tag scanner and vanished with no trace
+// in the gap tally — unlike an unrecognized Record `type`, which was
+// always counted. This is real, common Apple Health content (any outdoor
+// workout with location tracking), so it must show up as an honest gap,
+// not silently disappear.
+test("FORMAT-CONFORMANCE: WorkoutRoute (GPS geometry) is tallied as an honest gap, not silently dropped", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "apple-health-workout-route-"));
+  const xml =
+    '<?xml version="1.0" encoding="UTF-8"?>\n<HealthData locale="en_US">' +
+    '<Workout workoutActivityType="HKWorkoutActivityTypeRunning" sourceName="Apple Watch" ' +
+    'startDate="2024-06-05 06:30:00 -0700" endDate="2024-06-05 07:02:30 -0700">' +
+    '<WorkoutRoute sourceName="iPhone" startDate="2024-06-05 06:30:00 -0700" endDate="2024-06-05 07:02:30 -0700">' +
+    '<Location date="2024-06-05 06:30:01 -0700" latitude="37.7" longitude="-122.4" altitude="10" ' +
+    'horizontalAccuracy="5" verticalAccuracy="3" course="-1" speed="2.5"/>' +
+    "</WorkoutRoute>" +
+    "</Workout>" +
+    "</HealthData>";
+  await writeFile(join(dir, "export.xml"), xml, "utf8");
+  try {
+    const result = await run(dir);
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE" && done.status === "succeeded");
+
+    const workoutRows = records(result.messages, "workouts");
+    assert.equal(workoutRows.length, 1, "the Workout itself must still be emitted");
+
+    const gapsLine = progressLines(result.messages).find((l) => l.includes("gaps"));
+    assert.match(gapsLine ?? "", /workout_routes_uncaptured=1/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

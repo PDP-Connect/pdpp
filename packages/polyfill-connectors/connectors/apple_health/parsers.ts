@@ -44,9 +44,15 @@ import type {
 // silently dropped, every Record carrying such a unit. Matching only real
 // attribute syntax makes the tag boundary depend on quote structure, not on
 // which characters happen to appear inside a quoted value.
+// WorkoutRoute is matched only as an open tag (never captured as a full
+// element with children — see workoutRoutesUncaptured) so the scanner can
+// count it once per occurrence instead of it vanishing into the "any
+// other tag" fallthrough alongside its nested Location/MetadataEntry
+// children, which would double- or triple-count one GPS route.
 export const APPLE_HEALTH_TAG_RE =
-  /<(WorkoutStatistics|WorkoutEvent|MetadataEntry|Workout|Record)((?:\s+[\w:-]+="[^"]*")*)\s*(\/?)>|<\/(Record|Workout)>/g;
+  /<(WorkoutStatistics|WorkoutEvent|MetadataEntry|WorkoutRoute|Workout|Record)((?:\s+[\w:-]+="[^"]*")*)\s*(\/?)>|<\/(Record|Workout)>/g;
 const APPLE_HEALTH_ATTR_RE = /([\w:-]+)="([^"]*)"/g;
+const XML_ENTITY_RE = /&(lt|gt|amp|quot|apos|#x[0-9a-fA-F]+|#\d+);/g;
 const APPLE_HEALTH_TYPE_PREFIX_RE = /^HKQuantityTypeIdentifier|^HKCategoryTypeIdentifier|^HKDataType/;
 const APPLE_HEALTH_KNOWN_TYPE_RE =
   /^HKQuantityTypeIdentifier|^HKCategoryTypeIdentifier|^HKDataType|^HKCorrelationTypeIdentifier/;
@@ -68,14 +74,42 @@ export function hashId(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, RECORD_ID_HASH_LENGTH);
 }
 
+// Attribute values are XML text: real exports carry entity-escaped `<`,
+// `>`, `&`, `"`, `'` (e.g. a device string embedding a Swift description
+// like "<<HKDevice: ...>>", or a Withings deep-link URL with `&` between
+// query params). Decoding here — the one place every attribute value
+// passes through — means every downstream consumer sees the real
+// character, not its escaped form.
+function decodeXmlEntities(s: string): string {
+  return s.replace(XML_ENTITY_RE, (_entity, name: string) => {
+    switch (name) {
+      case "lt":
+        return "<";
+      case "gt":
+        return ">";
+      case "amp":
+        return "&";
+      case "quot":
+        return '"';
+      case "apos":
+        return "'";
+      default:
+        if (name.startsWith("#x")) {
+          return String.fromCodePoint(Number.parseInt(name.slice(2), 16));
+        }
+        return String.fromCodePoint(Number.parseInt(name.slice(1), 10));
+    }
+  });
+}
+
 export function parseAttrs(tag: string): AppleHealthAttrs {
   const attrs: AppleHealthAttrs = {};
   const re = new RegExp(APPLE_HEALTH_ATTR_RE.source, "g");
   let m: RegExpExecArray | null = re.exec(tag);
   while (m !== null) {
-    const [, key] = m;
+    const [, key, value] = m;
     if (key) {
-      attrs[key] = m[2];
+      attrs[key] = decodeXmlEntities(value ?? "");
     }
     m = re.exec(tag);
   }
@@ -144,6 +178,7 @@ export function newGapCounts(): AppleHealthGapCounts {
     unrecognizedRecordTypes: new Map(),
     recordsMissingStartDate: 0,
     workoutsMissingStartDate: 0,
+    workoutRoutesUncaptured: 0,
   };
 }
 

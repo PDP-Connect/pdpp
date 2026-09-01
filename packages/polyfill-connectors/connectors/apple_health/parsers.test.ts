@@ -60,6 +60,24 @@ test("parseAttrs: handles attributes with spaces in value", () => {
   assert.equal(attrs.unit, "count/min");
 });
 
+// A real Apple Watch export XML-escapes `<`/`>`/`&` in attribute values
+// (e.g. a device string embedding a Swift description, or a URL with `&`
+// between query params). A prior version returned the escaped text
+// unchanged — this dropped no characters and threw no error, so it was
+// invisible to every test that only fed pre-escaped literal strings like
+// "Apple Watch" straight through. Live-proof against real Withings/Apple
+// export files caught it.
+test("parseAttrs: decodes XML entities in attribute values (real device-string / URL shape)", () => {
+  const attrs = parseAttrs(
+    'device="&lt;&lt;HKDevice: 0x1&gt;, name:Apple Watch&gt;" link="a?x=1&amp;y=2" quote="&quot;hi&quot;" apos="&apos;lo&apos;" code="&#65;&#x42;"'
+  );
+  assert.equal(attrs.device, "<<HKDevice: 0x1>, name:Apple Watch>");
+  assert.equal(attrs.link, "a?x=1&y=2");
+  assert.equal(attrs.quote, '"hi"');
+  assert.equal(attrs.apos, "'lo'");
+  assert.equal(attrs.code, "AB");
+});
+
 // ─── APPLE_HEALTH_TAG_RE (against real serialized XML, not just parsed attrs) ──
 //
 // The fixtures above feed already-parsed AppleHealthAttrs objects straight to
