@@ -286,6 +286,15 @@ const APPLE_HEALTH_ZIP_POLICY: ZipReadPolicy = {
 const ZIP_EXT_RE = /\.zip$/i;
 const XML_EXT_RE = /\.xml$/i;
 const EXPORT_XML_ENTRY_RE = /(^|\/)export\.xml$/i;
+const HEALTH_DATA_ROOT_RE = /<HealthData[\s>]/;
+// Cap how much of a candidate file we read hunting for the <HealthData root
+// element before giving up -- a real export.xml declares it within its
+// first few hundred bytes (XML decl + one root open tag), so a file that
+// still hasn't shown it after 1 MiB is not a health export at all, not a
+// slow-starting valid one. Bounds worst-case sniff cost on an oversized
+// wrong-file upload to a few chunk reads, not a whole-file scan.
+const ROOT_SNIFF_WINDOW_BYTES = 1024 * 1024;
+const ROOT_SNIFF_READ_CHUNK_BYTES = 65_536;
 // Bounded recursive scan for an owner-uploaded artifact, matching the same
 // depth WhatsApp's discoverExportFiles uses for the same reason: a
 // manual-upload artifact can land flat (join(importDir, fileName)) OR
@@ -310,37 +319,46 @@ export function appleHealthZipPolicy(): ZipReadPolicy {
  * old one). Returns null when the directory has no candidate file at all —
  * callers then fall back to the legacy pre-extracted directory layout.
  */
-export function findUploadedExportCandidate(importDir: string): string | null {
-  let best: { mtimeMs: number; path: string } | null = null;
-  let visited = 0;
-  function walk(dir: string, depth: number): void {
-    if (depth > MAX_DISCOVERY_DEPTH || visited >= MAX_DISCOVERY_ENTRIES) {
+interface DiscoveryState {
+  best: { mtimeMs: number; path: string } | null;
+  visited: number;
+}
+
+function considerDiscoveredFile(state: DiscoveryState, path: string): void {
+  const { mtimeMs } = statSync(path);
+  if (!state.best || mtimeMs > state.best.mtimeMs) {
+    state.best = { mtimeMs, path };
+  }
+}
+
+function walkForUploadedExportCandidate(state: DiscoveryState, dir: string, depth: number): void {
+  if (depth > MAX_DISCOVERY_DEPTH || state.visited >= MAX_DISCOVERY_ENTRIES) {
+    return;
+  }
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    state.visited += 1;
+    if (state.visited > MAX_DISCOVERY_ENTRIES) {
       return;
     }
-    let entries: Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      visited += 1;
-      if (visited > MAX_DISCOVERY_ENTRIES) {
-        return;
-      }
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(path, depth + 1);
-      } else if (entry.isFile() && (XML_EXT_RE.test(entry.name) || ZIP_EXT_RE.test(entry.name))) {
-        const mtimeMs = statSync(path).mtimeMs;
-        if (!best || mtimeMs > best.mtimeMs) {
-          best = { mtimeMs, path };
-        }
-      }
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkForUploadedExportCandidate(state, path, depth + 1);
+    } else if (entry.isFile() && (XML_EXT_RE.test(entry.name) || ZIP_EXT_RE.test(entry.name))) {
+      considerDiscoveredFile(state, path);
     }
   }
-  walk(importDir, 0);
-  return best ? (best as { mtimeMs: number; path: string }).path : null;
+}
+
+export function findUploadedExportCandidate(importDir: string): string | null {
+  const state: DiscoveryState = { best: null, visited: 0 };
+  walkForUploadedExportCandidate(state, importDir, 0);
+  return state.best?.path ?? null;
 }
 
 export interface ResolvedExportExtraction {
@@ -352,6 +370,62 @@ export type ResolvedExportOutcome =
   | { readonly kind: "resolved"; readonly resolved: ResolvedExportExtraction }
   | { readonly kind: "not_found" }
   | { readonly kind: "extraction_failed"; readonly message: string };
+
+/**
+ * Bounded, streaming sniff for the `<HealthData` root element -- reads at
+ * most ROOT_SNIFF_WINDOW_BYTES regardless of file size, so a large
+ * not-actually-a-health-export upload fails fast instead of being scanned
+ * to its end just to discover it never had the root element at all.
+ */
+async function looksLikeHealthExportFile(path: string): Promise<boolean> {
+  const stream = createReadStream(path, {
+    encoding: "utf8",
+    highWaterMark: ROOT_SNIFF_READ_CHUNK_BYTES,
+  });
+  let buf = "";
+  let sniffedBytes = 0;
+  try {
+    for await (const chunk of stream as AsyncIterable<string | Buffer>) {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      buf += text;
+      sniffedBytes += Buffer.byteLength(text, "utf8");
+      if (HEALTH_DATA_ROOT_RE.test(buf)) {
+        return true;
+      }
+      if (sniffedBytes > ROOT_SNIFF_WINDOW_BYTES) {
+        return false;
+      }
+    }
+  } finally {
+    stream.destroy();
+  }
+  return false;
+}
+
+/**
+ * Validate that `path` (an already-resolved bare .xml, or a freshly
+ * extracted export.xml) genuinely looks like an Apple Health export before
+ * handing it to the streaming parser -- WITHOUT this check, a wrong file
+ * that happens to end in .xml (or a .zip whose export.xml entry is garbage)
+ * would silently parse to zero Record/Workout tags and report a
+ * misleadingly successful "0 records" run instead of a clear, actionable
+ * failure. This is the collect-time backstop: the manual-upload route's own
+ * validation preview (validation.ts) already rejects this case before a run
+ * is even created, but a developer placing a file directly under
+ * APPLE_HEALTH_EXPORT_DIR (the legacy layout) never goes through that
+ * preview, so collect() must fail closed on its own too.
+ */
+async function resolveIfLooksLikeHealthExport(path: string, extractedFromZip: boolean): Promise<ResolvedExportOutcome> {
+  if (await looksLikeHealthExportFile(path)) {
+    return { kind: "resolved", resolved: { extractedFromZip, path } };
+  }
+  return {
+    kind: "extraction_failed",
+    message: extractedFromZip
+      ? "The export.xml extracted from the uploaded .zip does not look like an Apple Health export (no <HealthData root element found). Choose the .zip from Health app > profile > Export All Health Data."
+      : "The uploaded file does not look like an Apple Health export.xml (no <HealthData root element found). Choose the export.xml extracted from Health app > profile > Export All Health Data, or upload the .zip directly.",
+  };
+}
 
 /**
  * Resolve the real, ready-to-stream `export.xml` path for one collect run,
@@ -367,18 +441,18 @@ export type ResolvedExportOutcome =
  */
 export async function resolveUploadedExportPath(candidatePath: string): Promise<ResolvedExportOutcome> {
   if (XML_EXT_RE.test(candidatePath)) {
-    return { kind: "resolved", resolved: { extractedFromZip: false, path: candidatePath } };
+    return await resolveIfLooksLikeHealthExport(candidatePath, false);
   }
   if (!ZIP_EXT_RE.test(candidatePath)) {
     return { kind: "not_found" };
   }
 
-  const destPath = join(candidatePath.slice(0, -".zip".length) + ".export.xml");
+  const destPath = join(`${candidatePath.slice(0, -".zip".length)}.export.xml`);
   if (existsSync(destPath)) {
     const zipStat = statSync(candidatePath);
     const destStat = statSync(destPath);
     if (destStat.mtimeMs >= zipStat.mtimeMs) {
-      return { kind: "resolved", resolved: { extractedFromZip: true, path: destPath } };
+      return await resolveIfLooksLikeHealthExport(destPath, true);
     }
   }
 
@@ -393,7 +467,7 @@ export async function resolveUploadedExportPath(candidatePath: string): Promise<
           "The uploaded .zip does not contain an export.xml. Apple Health exports look like 'export.zip' containing 'apple_health_export/export.xml' — choose the .zip from Health app > profile > Export All Health Data, or extract it yourself and upload export.xml directly.",
       };
     }
-    return { kind: "resolved", resolved: { extractedFromZip: true, path: destPath } };
+    return await resolveIfLooksLikeHealthExport(destPath, true);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {
@@ -413,14 +487,6 @@ export function isExportXmlEntryName(name: string): boolean {
 
 // ─── Manual-upload validation summary scan ─────────────────────────────
 
-const HEALTH_DATA_ROOT_RE = /<HealthData[\s>]/;
-// Cap how much of a non-export.xml file we read hunting for a root-element
-// sniff before giving up -- a real export.xml declares <HealthData within
-// its first few hundred bytes (XML decl + one root open tag), so a file
-// that still hasn't shown it after 1 MiB is not a health export at all, not
-// a slow-starting valid one. Bounds worst-case sniff cost on an oversized
-// unsupported upload to one chunk read, not a whole-file scan.
-const ROOT_SNIFF_WINDOW_BYTES = 1024 * 1024;
 const SCAN_READ_BUFFER_SIZE = 65_536;
 
 export interface ExportXmlSummary {
@@ -429,6 +495,81 @@ export interface ExportXmlSummary {
   readonly looksLikeHealthExport: boolean;
   readonly recordCount: number;
   readonly workoutCount: number;
+}
+
+/** Mutable accumulator threaded through one scanExportXmlSummary pass. */
+interface SummaryScanState {
+  earliestStartDate: string | null;
+  latestStartDate: string | null;
+  looksLikeHealthExport: boolean;
+  recordCount: number;
+  sniffedBytes: number;
+  workoutCount: number;
+}
+
+/**
+ * Update `state.looksLikeHealthExport` from the current buffer, honoring
+ * the bounded sniff window. Returns `true` when the caller should stop
+ * reading entirely (window exhausted with no root element found yet).
+ */
+function updateHealthDataRootSniff(state: SummaryScanState, buf: string, chunkText: string): boolean {
+  if (state.looksLikeHealthExport) {
+    return false;
+  }
+  state.sniffedBytes += Buffer.byteLength(chunkText, "utf8");
+  if (HEALTH_DATA_ROOT_RE.test(buf)) {
+    state.looksLikeHealthExport = true;
+    return false;
+  }
+  return state.sniffedBytes > ROOT_SNIFF_WINDOW_BYTES;
+}
+
+function recordStartDateBounds(state: SummaryScanState, startDate: string): void {
+  if (!state.earliestStartDate || startDate < state.earliestStartDate) {
+    state.earliestStartDate = startDate;
+  }
+  if (!state.latestStartDate || startDate > state.latestStartDate) {
+    state.latestStartDate = startDate;
+  }
+}
+
+/**
+ * APPLE_HEALTH_TAG_RE also matches nested MetadataEntry/WorkoutEvent/
+ * WorkoutStatistics open tags and </Record>/</Workout> close tags (see its
+ * own doc comment) -- only count a Record/Workout on its OPEN tag (group
+ * 1), exactly once per element regardless of whether it is self-closing or
+ * has nested children, mirroring index.ts's handleTopLevelOpenTag. Counting
+ * on close tags too, or counting every match unconditionally, would
+ * double-count non-self-closing elements.
+ */
+function applyTagMatch(state: SummaryScanState, openTag: string | undefined, attrString: string | undefined): void {
+  if (!(openTag === "Record" || openTag === "Workout")) {
+    return;
+  }
+  const attrs = parseAttrs(attrString ?? "");
+  const startDate = isoDate(attrs.startDate);
+  if (openTag === "Record") {
+    state.recordCount += 1;
+  } else {
+    state.workoutCount += 1;
+  }
+  if (startDate) {
+    recordStartDateBounds(state, startDate);
+  }
+}
+
+/** Scan every Record/Workout open tag in `buf`, returning the unconsumed tail past the last full match. */
+function scanTagMatches(state: SummaryScanState, buf: string): string {
+  const re = new RegExp(APPLE_HEALTH_TAG_RE.source, "g");
+  let m: RegExpExecArray | null = re.exec(buf);
+  let lastEnd = 0;
+  while (m !== null) {
+    const [, openTag, attrString] = m;
+    applyTagMatch(state, openTag, attrString);
+    lastEnd = re.lastIndex;
+    m = re.exec(buf);
+  }
+  return buf.slice(lastEnd);
 }
 
 /**
@@ -442,63 +583,28 @@ export interface ExportXmlSummary {
  */
 export async function scanExportXmlSummary(path: string): Promise<ExportXmlSummary> {
   const stream = createReadStream(path, { encoding: "utf8", highWaterMark: SCAN_READ_BUFFER_SIZE });
+  const state: SummaryScanState = {
+    earliestStartDate: null,
+    latestStartDate: null,
+    looksLikeHealthExport: false,
+    recordCount: 0,
+    sniffedBytes: 0,
+    workoutCount: 0,
+  };
   let buf = "";
-  let sniffedBytes = 0;
-  let looksLikeHealthExport = false;
-  let recordCount = 0;
-  let workoutCount = 0;
-  let earliestStartDate: string | null = null;
-  let latestStartDate: string | null = null;
 
   for await (const chunk of stream as AsyncIterable<string | Buffer>) {
     const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
     buf += text;
-    if (!looksLikeHealthExport) {
-      sniffedBytes += Buffer.byteLength(text, "utf8");
-      if (HEALTH_DATA_ROOT_RE.test(buf)) {
-        looksLikeHealthExport = true;
-      } else if (sniffedBytes > ROOT_SNIFF_WINDOW_BYTES) {
-        // Never found <HealthData within the sniff window -- stop reading
-        // early rather than scanning a large unsupported file to its end.
-        stream.destroy();
-        break;
-      }
+    if (updateHealthDataRootSniff(state, buf, text)) {
+      // Never found <HealthData within the sniff window -- stop reading
+      // early rather than scanning a large unsupported file to its end.
+      stream.destroy();
+      break;
     }
-
-    // APPLE_HEALTH_TAG_RE also matches nested MetadataEntry/WorkoutEvent/
-    // WorkoutStatistics open tags and </Record>/</Workout> close tags (see
-    // its own doc comment) -- only count a Record/Workout on its OPEN tag
-    // (group 1), exactly once per element regardless of whether it is
-    // self-closing or has nested children, mirroring index.ts's
-    // handleTopLevelOpenTag. Counting on close tags too, or counting every
-    // match unconditionally, would double-count non-self-closing elements.
-    const re = new RegExp(APPLE_HEALTH_TAG_RE.source, "g");
-    let m: RegExpExecArray | null = re.exec(buf);
-    let lastEnd = 0;
-    while (m !== null) {
-      const [, openTag, attrString] = m;
-      if (openTag === "Record" || openTag === "Workout") {
-        const attrs = parseAttrs(attrString ?? "");
-        const startDate = isoDate(attrs.startDate);
-        if (openTag === "Record") {
-          recordCount += 1;
-        } else {
-          workoutCount += 1;
-        }
-        if (startDate) {
-          if (!earliestStartDate || startDate < earliestStartDate) {
-            earliestStartDate = startDate;
-          }
-          if (!latestStartDate || startDate > latestStartDate) {
-            latestStartDate = startDate;
-          }
-        }
-      }
-      lastEnd = re.lastIndex;
-      m = re.exec(buf);
-    }
-    buf = buf.slice(lastEnd);
+    buf = scanTagMatches(state, buf);
   }
 
+  const { earliestStartDate, latestStartDate, looksLikeHealthExport, recordCount, workoutCount } = state;
   return { earliestStartDate, latestStartDate, looksLikeHealthExport, recordCount, workoutCount };
 }
