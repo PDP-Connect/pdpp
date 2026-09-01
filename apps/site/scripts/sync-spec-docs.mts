@@ -186,7 +186,7 @@ for (const spec of SPECS) {
 // path keeps the spec header contract strict rather than loosening it to
 // accommodate a file that was never meant to satisfy it.
 //
-// The body is taken from below the `# Title` line, with the five-line
+// The body is taken from below the `# Title` line, with the seven-line
 // `**Label:** value` status block also stripped (see stripGovernanceStatusBlock)
 // for the SITE copy only: the rail card now renders those same facts (see
 // GOVERNANCE_FRONT_MATTER below and rail.tsx), and a document has one status
@@ -194,11 +194,14 @@ for (const spec of SPECS) {
 // it. The root GOVERNANCE.md keeps the list; only the generated .mdx elides it.
 const PROGRAMME_DOCS = [{ header: "governance", root: "GOVERNANCE", slug: "governance" }];
 
-// Matches exactly the label set the rail card sources from this same block
-// (see requireGovernanceMatch below): Status, Circulated, Formal review,
-// Programme live, Applies to. Anchored to `**Label:**` at the start of a line
-// so it cannot match a similarly-worded sentence deeper in the document.
-const GOVERNANCE_STATUS_LABEL_PATTERN = /^\*\*(?:Status|Circulated|Formal review|Programme live|Applies to):\*\*.*$/;
+// Matches every label in the block, which is a superset of the labels the rail
+// card sources from it (see requireGovernanceMatch below): Supporter signing
+// opens and Reports are stripped from the site copy but have no rail row, so a
+// label missing here would leak into the generated page body rather than throw.
+// Anchored to `**Label:**` at the start of a line so it cannot match a
+// similarly-worded sentence deeper in the document.
+const GOVERNANCE_STATUS_LABEL_PATTERN =
+  /^\*\*(?:Status|Circulated|Formal review|Supporter signing opens|Programme live|Applies to|Reports):\*\*.*$/;
 
 function stripGovernanceStatusBlock(body: string[]): string[] {
   const rest = [...body];
@@ -303,11 +306,12 @@ if (editors.length === 0) {
 // Editors row: the document is amended by a vote of Partners, not maintained
 // the way the specification is (see MAINTAINERS.md).
 //
-// GOVERNANCE.md's header block (lines 3-6, `**Label:** value<br />`) is prose
-// meant for a reader, not a machine-parseable field list — unlike spec-core.md's
-// uniform `Status:`/`Date:` lines, so this parses the exact known sentences
-// rather than a generic label:value grammar. A future rewording that doesn't
-// match throws loudly rather than silently emitting a stale or empty rail row.
+// GOVERNANCE.md's header block (lines 3-9, one `**Label:** value` per line) is
+// prose meant for a reader, not a machine-parseable field list — unlike
+// spec-core.md's uniform `Status:`/`Date:` lines, so this reads each label by
+// name and takes the rest of its line verbatim. A future rewording that drops
+// or renames a label throws loudly rather than silently emitting a stale or
+// empty rail row.
 const governanceText = readFileSync(path.join(repoRoot, "GOVERNANCE.md"), "utf8");
 
 function requireGovernanceMatch(pattern: RegExp, fieldName: string): string {
@@ -322,33 +326,18 @@ function requireGovernanceMatch(pattern: RegExp, fieldName: string): string {
   return value;
 }
 
-const governanceStatus = requireGovernanceMatch(/^\*\*Status:\*\*\s*([^.]+)\./m, "Status");
-const governanceCirculated = requireGovernanceMatch(/^\*\*Circulated:\*\*\s*(.+?)<br \/>\s*$/m, "Circulated");
-const formalReviewOpens = requireGovernanceMatch(
-  /^\*\*Formal review:\*\*\s*Opens\s+(.+?)\s+at GDC\./m,
-  "Formal review (opens)"
-);
-const formalReviewCloses = requireGovernanceMatch(
-  /^\*\*Formal review:\*\*.*?Closes\s+(.+?)\.<br \/>\s*$/m,
-  "Formal review (closes)"
-);
-const governanceProgrammeLive = requireGovernanceMatch(
-  /^\*\*Programme live:\*\*\s*(.+?)<br \/>\s*$/m,
-  "Programme live"
-);
-const governanceAppliesTo = requireGovernanceMatch(/^\*\*Applies to:\*\*\s*([^.]+)\./m, "Applies to");
+function governanceHeaderPattern(label: string): RegExp {
+  return new RegExp(`^\\*\\*${label}:\\*\\*\\s*(.+?)\\s*$`, "m");
+}
 
-// "3 September 2026" / "1 October 2026" -> "3 September – 1 October 2026":
-// drop the opens-date's year when both ends share one, rather than repeating
-// it. Falls back to showing both years in full if a future edit ever makes
-// the review window span a year boundary.
-const TRAILING_YEAR_PATTERN = /\s+(\d{4})$/;
-const opensYear = formalReviewOpens.match(TRAILING_YEAR_PATTERN)?.[1];
-const closesYear = formalReviewCloses.match(TRAILING_YEAR_PATTERN)?.[1];
-const formalReview =
-  opensYear && opensYear === closesYear
-    ? `${formalReviewOpens.replace(TRAILING_YEAR_PATTERN, "")} – ${formalReviewCloses}`
-    : `${formalReviewOpens} – ${formalReviewCloses}`;
+const governanceStatus = requireGovernanceMatch(governanceHeaderPattern("Status"), "Status");
+const governanceCirculated = requireGovernanceMatch(governanceHeaderPattern("Circulated"), "Circulated");
+// The header states the review window as one range ("3 September to 1 October
+// 2026"), so the rail row is that line verbatim. It was previously composed
+// from separate Opens/Closes sentences.
+const formalReview = requireGovernanceMatch(governanceHeaderPattern("Formal review"), "Formal review");
+const governanceProgrammeLive = requireGovernanceMatch(governanceHeaderPattern("Programme live"), "Programme live");
+const governanceAppliesTo = requireGovernanceMatch(governanceHeaderPattern("Applies to"), "Applies to");
 
 const governanceFrontMatter = {
   status: governanceStatus,
