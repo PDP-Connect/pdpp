@@ -12,11 +12,20 @@ export const STEP_COUNT_RECORD: AppleHealthAttrs = {
   type: "HKQuantityTypeIdentifierStepCount",
   sourceName: "iPhone",
   sourceVersion: "17.5",
+  device: "<<HKDevice: 0x1>, name:iPhone, manufacturer:Apple, model:iPhone, hardware:iPhone16,2, software:17.5>",
   unit: "count",
   creationDate: "2024-06-05 13:45:22 -0700",
   startDate: "2024-06-05 13:45:22 -0700",
   endDate: "2024-06-05 13:50:10 -0700",
   value: "42",
+};
+
+/** Unrecognized record `type` (does not match any known HK*TypeIdentifier prefix) — should tally in gaps, not throw. */
+export const UNKNOWN_TYPE_RECORD: AppleHealthAttrs = {
+  type: "HKFutureTypeIdentifierSomethingNew",
+  sourceName: "iPhone",
+  startDate: "2024-06-05 13:45:22 -0700",
+  value: "1",
 };
 
 export const HEART_RATE_RECORD: AppleHealthAttrs = {

@@ -226,8 +226,6 @@ const KNOWN_MISSING_REQUIRED = new Map([
   ["anthropic.conversations", "30ae75cafa437b1a"],
   ["anthropic.messages", "20d62f1a0c2f2052"],
   ["anthropic.projects", "415dccf66dc5c874"],
-  ["apple_health.records", "5e0be530965e99b7"],
-  ["apple_health.workouts", "5041f6c6a2dd23a1"],
   ["chase.accounts", "71bcf4e2f00dc245"],
   ["chase.transactions", "dea21991c632f625"],
   ["chase.current_activity", "8b8b57d39d026288"],
