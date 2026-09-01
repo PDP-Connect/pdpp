@@ -56,8 +56,17 @@ function newElement(tag: "Record" | "Workout", attrs: AppleHealthAttrs): AppleHe
   return { tag, attrs, metadata: [], workoutEvents: [], workoutStatistics: [] };
 }
 
-/** Attach a nested MetadataEntry/WorkoutEvent/WorkoutStatistics child to whichever Record/Workout is currently open. */
-function attachChild(current: AppleHealthElement, openTag: string, attrString: string): void {
+/** Attach a nested MetadataEntry/WorkoutEvent/WorkoutStatistics child to whichever Record/Workout is currently open. WorkoutRoute (GPS geometry) is counted in `gaps`, not captured — no emitted field represents route data today. */
+function attachChild(
+  current: AppleHealthElement,
+  openTag: string,
+  attrString: string,
+  gaps: AppleHealthGapCounts
+): void {
+  if (openTag === "WorkoutRoute") {
+    gaps.workoutRoutesUncaptured += 1;
+    return;
+  }
   const attrs = parseAttrs(attrString);
   if (openTag === "MetadataEntry" && attrs.key !== undefined) {
     current.metadata.push({ key: attrs.key, value: attrs.value ?? "" });
@@ -123,6 +132,7 @@ async function handleTopLevelOpenTag(
 async function handleTagMatch(
   m: RegExpExecArray,
   state: ScanState,
+  gaps: AppleHealthGapCounts,
   onRecord: StreamParseArgs["onRecord"],
   onWorkout: StreamParseArgs["onWorkout"]
 ): Promise<void> {
@@ -136,7 +146,7 @@ async function handleTagMatch(
     return;
   }
   if (state.current && openTag) {
-    attachChild(state.current, openTag, attrString ?? "");
+    attachChild(state.current, openTag, attrString ?? "", gaps);
   }
 }
 
@@ -150,7 +160,7 @@ async function handleTagMatch(
  * not nest Record inside Workout or vice versa, so a single current-element
  * slot (not a stack) is sufficient.
  */
-async function streamParse({ path, onRecord, onWorkout, onProgress }: StreamParseArgs): Promise<void> {
+async function streamParse({ path, onRecord, onWorkout, onProgress, gaps }: StreamParseArgs): Promise<void> {
   // Async iteration on a Readable pauses the stream between awaits, so we can
   // await async handlers without losing chunks. Older sync-callback form got
   // away with unawaited promises; we cannot.
@@ -166,7 +176,7 @@ async function streamParse({ path, onRecord, onWorkout, onProgress }: StreamPars
     let m: RegExpExecArray | null = re.exec(buf);
     let lastEnd = 0;
     while (m !== null) {
-      await handleTagMatch(m, state, onRecord, onWorkout);
+      await handleTagMatch(m, state, gaps, onRecord, onWorkout);
       lastEnd = re.lastIndex;
       m = re.exec(buf);
     }
@@ -240,6 +250,9 @@ function formatGapSummary(gaps: AppleHealthGapCounts): string {
     const byType = [...gaps.unrecognizedRecordTypes.entries()].map(([type, count]) => `${type}:${count}`).join(",");
     parts.push(`unrecognized_record_types=${byType}`);
   }
+  if (gaps.workoutRoutesUncaptured > 0) {
+    parts.push(`workout_routes_uncaptured=${gaps.workoutRoutesUncaptured}`);
+  }
   if (parts.length === 0) {
     return "Apple Health phase=emit pass=emit gaps=none";
   }
@@ -277,6 +290,7 @@ runConnector({
     await progress("Apple Health phase=emit pass=emit starting stream parse");
 
     await streamParse({
+      gaps,
       path,
       onProgress: (rc, wc): Promise<void> =>
         progress(`Apple Health phase=emit pass=emit records_parsed=${rc} workouts_parsed=${wc}`),

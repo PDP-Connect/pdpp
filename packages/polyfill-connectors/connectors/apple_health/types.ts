@@ -42,11 +42,14 @@ export interface AppleHealthGapCounts {
   recordsMissingStartDate: number;
   /** Record elements whose `type` did not match a known HK*TypeIdentifier prefix. */
   unrecognizedRecordTypes: Map<string, number>;
+  /** WorkoutRoute elements (GPS route data nested under a Workout) seen but not captured — no `records`/`workouts` field represents route geometry today. */
+  workoutRoutesUncaptured: number;
   /** Workout elements dropped for missing/unparseable startDate. */
   workoutsMissingStartDate: number;
 }
 
 export interface StreamParseArgs {
+  gaps: AppleHealthGapCounts;
   onProgress: (recordCount: number, workoutCount: number) => Promise<void>;
   onRecord: (el: AppleHealthElement) => Promise<void>;
   onWorkout: (el: AppleHealthElement) => Promise<void>;
