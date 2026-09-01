@@ -19,20 +19,29 @@
  * with no interfaces except loopback, so `curl`, a child `node`, a spawned
  * browser, etc. all physically have nowhere to send a non-loopback packet.
  *
- * MECHANISM: `unshare --map-root-user --net --mount --pid --fork -- sh -c
- * '<bring up lo>; <filesystem closure — see PATHNAME-UDS ESCAPE below>; exec
- * <cmd> <args>'`. `--net` creates a new, empty network namespace (only a
- * down `lo` interface exists in a fresh netns); `--map-root-user` also
- * unshares a user namespace and maps the caller to root *inside* it, which
- * is what makes `--net` usable WITHOUT the `CAP_SYS_ADMIN`/root the bare
- * `--net` flag would otherwise require on the host — an unprivileged user
- * can create a user+net namespace pair and hold real capabilities (incl.
+ * MECHANISM: `unshare --map-root-user --net --mount --pid --ipc --uts --fork
+ * -- sh -c '<bring up lo>; <filesystem closure — see PATHNAME-UDS ESCAPE
+ * below>; exec <cmd> <args>'`. `--net` creates a new, empty network namespace
+ * (only a down `lo` interface exists in a fresh netns); `--map-root-user`
+ * also unshares a user namespace and maps the caller to root *inside* it,
+ * which is what makes `--net` usable WITHOUT the `CAP_SYS_ADMIN`/root the
+ * bare `--net` flag would otherwise require on the host — an unprivileged
+ * user can create a user+net namespace pair and hold real capabilities (incl.
  * `CAP_NET_ADMIN`) only inside it. `--mount` gives the child its own mount
  * namespace (needed for the filesystem closure below) and `--pid --fork`
  * gives it its own pid namespace (needed for that closure's post-pivot
  * `mount -t proc proc /proc`, which an unprivileged mount namespace without
  * its own pid namespace cannot perform — see `filesystemClosureShellPrelude`'s
- * doc comment). The `sh -c` prelude brings `lo` up (`ip link set lo up`)
+ * doc comment). `--ipc` unshares the SysV IPC namespace (shared memory,
+ * semaphores, message queues) — without it, `/proc/sysvipc/shm` and friends
+ * enumerate every live host IPC object's key/owner/perms from inside the
+ * isolated child, the same class of host reconnaissance `--unshare-pid`
+ * closes for `/proc/<pid>/cmdline`; composes cleanly with the other unshared
+ * namespaces, no observed cost. `--uts` unshares the hostname/domainname
+ * namespace — hostname disclosure isn't treated as sensitive by this
+ * module's threat model, but the flag is free (no functional cost observed),
+ * so it's unshared anyway rather than left as a documented exception. The
+ * `sh -c` prelude brings `lo` up (`ip link set lo up`)
  * before anything else, because a fresh netns's loopback starts DOWN —
  * without this, 127.0.0.1 traffic (the replay bridge, if reached via TCP
  * loopback) would fail too, not just external egress; it runs before the
@@ -508,9 +517,15 @@ function requiredFhsCompatSymlinks(): readonly FhsCompatSymlink[] {
  * mounting process belongs to, independent of the mount being "fresh"), so
  * an isolated child could enumerate and read `/proc/<pid>/cmdline` — full
  * argv, which routinely carries secrets (`--token=...`, connection strings)
- * — for every process on the host, not just its own subtree. Confirmed via
- * an independent review's repro: without `--unshare-pid`, an isolated
- * child's `ls /proc | grep -cE '^[0-9]+$'` showed 1683 of 1681 host
+ * — for every process on the host, not just its own subtree. `--unshare-ipc`
+ * closes the symmetric gap for SysV IPC: without it, `/proc/sysvipc/shm`
+ * (and semaphores/message queues) enumerate every live host IPC object's
+ * key/owner/perms from inside the isolated child, the same reconnaissance
+ * shape as the unpatched `/proc/<pid>/cmdline` leak. `--unshare-uts` closes
+ * hostname/domainname visibility — not treated as sensitive by this module's
+ * threat model, but added because it composes with no observed cost.
+ * Confirmed via an independent review's repro: without `--unshare-pid`, an
+ * isolated child's `ls /proc | grep -cE '^[0-9]+$'` showed 1683 of 1681 host
  * processes (essentially the entire host process table); with it, the same
  * probe shows only the child's own tiny subtree, matching what `unshare
  * --pid --fork` (below) already did correctly. The child's root is
@@ -602,14 +617,31 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined): 
   statements.push(`pivot_root ${shQuote(newroot)} ${shQuote(oldroot)} >/dev/null 2>&1`);
   statements.push("cd /");
   // Mounted AFTER pivot_root — see this function's doc comment for why a
-  // pre-pivot procfs mount at the staging path is denied.
+  // pre-pivot procfs mount at the staging path is denied. The mountpoint
+  // itself was never created (neither pre-pivot as ${newroot}/proc nor
+  // post-pivot as /proc — same directory, either phrasing), so `mount -t
+  // proc proc /proc` targeted a nonexistent directory and silently failed
+  // (exit 32, stderr swallowed by the redirect below): /proc did not exist
+  // at all post-pivot on any host. mkdir it here, immediately before the
+  // mount that needs it.
+  statements.push("mkdir -p /proc >/dev/null 2>&1");
   statements.push("mount -t proc proc /proc >/dev/null 2>&1");
   statements.push("umount -l /oldroot >/dev/null 2>&1");
   return statements.join("; ");
 }
 
 function bwrapFilesystemClosureArgs(filesystemBindPath: string | undefined): string[] {
-  const args: string[] = ["--unshare-pid", "--tmpfs", "/", "--proc", "/proc", "--dev", "/dev"];
+  const args: string[] = [
+    "--unshare-pid",
+    "--unshare-ipc",
+    "--unshare-uts",
+    "--tmpfs",
+    "/",
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+  ];
   for (const bind of requiredFilesystemBinds()) {
     args.push(bind.mode === "ro" ? "--ro-bind" : "--bind", bind.path, bind.path);
   }
@@ -664,7 +696,7 @@ export function spawnWithNetworkIsolation(
   const shScript = `ip link set lo up >/dev/null 2>&1; ${closurePrelude}; exec ${innerCommand}`;
   return spawn(
     "unshare",
-    ["--map-root-user", "--net", "--mount", "--pid", "--fork", "--", "sh", "-c", shScript],
+    ["--map-root-user", "--net", "--mount", "--pid", "--ipc", "--uts", "--fork", "--", "sh", "-c", shScript],
     spawnOpts
   );
 }

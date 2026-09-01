@@ -10,7 +10,7 @@
 // under it has no outbound network.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -240,8 +240,20 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
       'const fs=require("fs");const n=fs.readdirSync("/proc").filter(e=>/^[0-9]+$/.test(e)).length;console.log(n);'
     );
     assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout)}`);
+    // A non-empty /proc listing at all is the load-bearing sanity check this
+    // test's count-bound implicitly depends on: readdirSync("/proc") throwing
+    // ENOENT (a bug that once existed under the `unshare` mechanism — see
+    // isolation.ts's filesystemClosureShellPrelude doc comment) would make
+    // the probe child exit non-zero, which the assertion above already
+    // catches — but a REAL, mounted-but-somehow-empty /proc is a distinct
+    // failure this test must also reject rather than silently accept as "0
+    // processes, must be isolated."
     const isolatedCount = Number(stdout);
     assert.ok(Number.isFinite(isolatedCount), `expected a numeric PID count on stdout, got ${JSON.stringify(stdout)}`);
+    assert.ok(
+      isolatedCount > 0,
+      `isolated child under ${mechanism} reported ${isolatedCount} processes under /proc — a real procfs must show at least the probe's own process; zero means /proc is not a genuine mounted proc filesystem`
+    );
     // Single digits: the isolated child, the node process itself, and at
     // most a couple of short-lived helpers (sh, fork scaffolding) — NOT
     // anywhere near the host's real process count (this host: 1000+).
@@ -264,15 +276,98 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
     // that is unambiguously foreign to whatever fresh PID namespace the
     // isolated child gets, and stays alive for the whole test (it's what's
     // running this assertion).
+    //
+    // FAILURE-MODE DISTINCTION (the point of this hardening): a foreign
+    // cmdline read can fail two ways that look identical if you only check
+    // "did it fail" — a genuine PID-namespace block (the foreign PID simply
+    // doesn't resolve to anything inside the child's own namespace: ESRCH/
+    // ENOENT against a /proc/<pid> directory that itself does not exist
+    // because there is no such PID in THIS namespace) versus /proc being
+    // completely absent as a filesystem (ENOENT because /proc itself was
+    // never mounted — the pre-existing bug isolation.ts's
+    // filesystemClosureShellPrelude doc comment describes, where the `unshare`
+    // mechanism's post-pivot `mount -t proc proc /proc` silently no-op'd
+    // because the mountpoint was never created). Both produced the exact
+    // same "BLOCKED:ENOENT" string, which is why the review that found this
+    // called it a test passing for the wrong reason: it would keep passing
+    // even if isolation were completely broken, as long as /proc also
+    // happened to be absent. The probe below reads its OWN /proc/self/cmdline
+    // FIRST — that must succeed (proving /proc exists, is a real procfs, and
+    // is mounted and readable in general) before the foreign-PID read is even
+    // attempted; if the foreign-PID read then also fails with ENOENT, that
+    // ENOENT is now known to mean "this specific PID doesn't exist in my
+    // namespace," not "there is no /proc at all."
     const foreignPid = process.pid;
     const { stdout, exitCode } = await runIsolatedProbe(
       mechanism,
-      `try{const fs=require("fs");const out=fs.readFileSync("/proc/${String(foreignPid)}/cmdline","utf8");console.log("LEAKED:"+JSON.stringify(out));}catch(e){console.log("BLOCKED:"+e.code);}`
+      `const fs=require("fs");` +
+        `let ownCmdline;try{ownCmdline=fs.readFileSync("/proc/self/cmdline","utf8");}catch(e){console.log("PROC_ABSENT:"+e.code);process.exit(0);}` +
+        `if(!ownCmdline||ownCmdline.length===0){console.log("PROC_EMPTY");process.exit(0);}` +
+        `try{const out=fs.readFileSync("/proc/${String(foreignPid)}/cmdline","utf8");console.log("LEAKED:"+JSON.stringify(out));}catch(e){console.log("BLOCKED:"+e.code);}`
     );
     assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout)}`);
+    assert.notEqual(
+      stdout.startsWith("PROC_ABSENT:") || stdout === "PROC_EMPTY",
+      true,
+      `/proc is not a genuine, readable procfs under ${mechanism} (own /proc/self/cmdline was unreadable) — a foreign-cmdline "BLOCKED" result under this condition would not be evidence of PID-namespace isolation; got ${JSON.stringify(stdout)}`
+    );
     assert.ok(
       stdout.startsWith("BLOCKED:"),
       `isolated child under ${mechanism} read a foreign host PID's cmdline — PID-namespace isolation is not real; got ${JSON.stringify(stdout)}`
+    );
+    // The BLOCKED error code itself must name a real access-denial reason
+    // (the foreign PID's /proc/<pid> subtree not existing/not being visible
+    // in this namespace — ENOENT here is now known-good because own-cmdline
+    // already proved /proc is real), not merely "some error happened."
+    // Explicitly reject codes that would indicate /proc itself is broken.
+    const blockedCode = stdout.slice("BLOCKED:".length);
+    assert.ok(
+      ["ENOENT", "EACCES", "EPERM", "ESRCH"].includes(blockedCode),
+      `expected a genuine permission/nonexistence error blocking the foreign PID read under ${mechanism}, got code ${JSON.stringify(blockedCode)}`
+    );
+  });
+}
+
+// ─── SysV IPC namespace — shared memory/semaphore/message-queue isolation ─
+//
+// Symmetric gap to the PID-namespace finding above, found by the same
+// independent review while sweeping for new escapes the PID-namespace change
+// might introduce: neither mechanism unshared the SysV IPC namespace, so
+// `/proc/sysvipc/shm` (and the semaphore/message-queue equivalents) enumerate
+// every live host IPC object's key/owner/perms from inside an isolated
+// child — the same reconnaissance shape `/proc/<pid>/cmdline` had before
+// `--unshare-pid`. Reproduced by the review on this class of host: real,
+// live SysV shared-memory segments exist, including one with `606`
+// (world-readable/writable) permissions, and `/proc/self/ns/ipc` reported
+// the IDENTICAL namespace inode inside and outside an isolated child before
+// the fix.
+//
+// This proves the fix the same way: the isolated child's IPC namespace
+// inode (from its own `/proc/self/ns/ipc`) must differ from this test
+// process's — a real host process live for the whole test, exactly the
+// same "must be a real, live, external identity" shape the PID-namespace
+// foreign-cmdline test above uses.
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
+
+  test(`[${mechanism}] an isolated child gets its own SysV IPC namespace, not the host's`, {
+    skip: !usable,
+  }, async () => {
+    const { stdout, exitCode } = await runIsolatedProbe(
+      mechanism,
+      'const fs=require("fs");console.log(fs.readlinkSync("/proc/self/ns/ipc"));'
+    );
+    assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout)}`);
+    const isolatedIpcNs = stdout;
+    const parentIpcNs = readlinkSync("/proc/self/ns/ipc");
+    assert.notEqual(
+      isolatedIpcNs,
+      parentIpcNs,
+      `isolated child under ${mechanism} reports the SAME IPC namespace as the parent (${parentIpcNs}) — SysV IPC objects (shared memory, semaphores, message queues) are not isolated; a compromised connector could enumerate every live host IPC object via /proc/sysvipc/shm`
+    );
+    assert.ok(
+      /^ipc:\[\d+\]$/.test(isolatedIpcNs),
+      `expected a real ipc:[<inode>] namespace identifier, got ${JSON.stringify(isolatedIpcNs)}`
     );
   });
 }
