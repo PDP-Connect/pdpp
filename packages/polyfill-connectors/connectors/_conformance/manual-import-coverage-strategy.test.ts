@@ -63,7 +63,7 @@ test("every manual-upload connector is discoverable by setup modality", () => {
     .sort((a, b) => a.localeCompare(b));
   // Guards the filter itself: if `setup.modality` were renamed, the roster
   // would silently empty and every assertion below would vacuously pass.
-  assert.deepEqual(found, ["google-maps", "netflix-export", "whatsapp"]);
+  assert.deepEqual(found, ["apple-health", "google-maps", "netflix-export", "whatsapp"]);
 });
 
 test("manual-upload data streams declare snapshot_import_receipt coverage", () => {

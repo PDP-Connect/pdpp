@@ -7,10 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { deflateRawSync } from "node:zlib";
+import { existsSync, readFileSync } from "node:fs";
 import {
   hasZipLocalFileSignature,
   readZipEntries,
   readZipEntriesFromFile,
+  streamZipEntryToFile,
   ZipPolicyViolationError,
   type ZipReadPolicy,
   zipBasename,
@@ -374,6 +376,27 @@ function withTempZipFile<T>(zip: Buffer, fn: (fd: number, fileSize: number) => T
   try {
     writeSync(fd, zip, 0, zip.length, 0);
     return fn(fd, zip.length);
+  } finally {
+    closeSync(fd);
+    rmSync(dir, { force: true, recursive: true });
+  }
+}
+
+/**
+ * Async counterpart of {@link withTempZipFile}: awaits `fn`'s promise BEFORE
+ * the `finally` block closes `fd`/removes the temp dir. Needed for any
+ * `fn` that itself awaits (e.g. streamZipEntryToFile) -- the sync version
+ * would close the fd out from under an in-flight async read, since its
+ * `finally` runs the instant `fn` RETURNS a promise, not once that promise
+ * settles.
+ */
+async function withTempZipFileAsync<T>(zip: Buffer, fn: (fd: number, fileSize: number) => Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-zip-fd-async-"));
+  const path = join(dir, "archive.zip");
+  const fd = openSync(path, "w+");
+  try {
+    writeSync(fd, zip, 0, zip.length, 0);
+    return await fn(fd, zip.length);
   } finally {
     closeSync(fd);
     rmSync(dir, { force: true, recursive: true });
@@ -1003,5 +1026,177 @@ test("readZipEntriesFromFile enforces the same dangerous-name and symlink reject
   const traversalZip = buildZip([{ content: Buffer.from("x"), name: "../escape.txt" }]);
   withTempZipFile(traversalZip, (fd, fileSize) => {
     assert.throws(() => readZipEntriesFromFile(fd, fileSize, GENEROUS_POLICY), { code: "unsafe_entry_name" });
+  });
+});
+
+// ─── streamZipEntryToFile: single-entry streamed extraction to disk ────────
+//
+// Unlike ZipEntry.data() above (one fully-materialized in-memory Buffer),
+// this path writes the inflated entry straight to disk in bounded chunks —
+// this is what makes a multi-GB Apple Health export.xml safe to extract from
+// its zip without a multi-GB memory spike. These tests prove: content
+// fidelity for both DEFLATE and STORE methods, not-found is distinguished
+// from a policy violation, the declared-size fast-reject still applies, and
+// the ACTUAL-bytes cap (not just the declared one) is enforced against a
+// lying archive — with no partial file left behind on any rejection.
+
+async function withTempDestPath<T>(fn: (destPath: string) => Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-zip-stream-out-"));
+  try {
+    return await fn(join(dir, "extracted.xml"));
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+}
+
+test("streamZipEntryToFile extracts a DEFLATE entry to disk byte-for-byte", async () => {
+  const content = Buffer.from("<HealthData><Record type=\"HKQuantityTypeIdentifierStepCount\"/></HealthData>".repeat(5000));
+  const zip = buildZip([{ content, name: "apple_health_export/export.xml" }]);
+  await withTempZipFileAsync(zip, async (fd, fileSize) => {
+    await withTempDestPath(async (destPath) => {
+      const result = await streamZipEntryToFile(fd, fileSize, "export.xml", destPath, GENEROUS_POLICY);
+      assert.equal(result.found, true);
+      assert.equal(result.bytesWritten, content.length);
+      assert.deepEqual(readFileSync(destPath), content);
+    });
+  });
+});
+
+test("streamZipEntryToFile extracts a STORE (uncompressed) entry to disk byte-for-byte", async () => {
+  // buildZip always DEFLATEs; build a minimal STORE-method zip by hand so the
+  // STORE branch of streamZipEntryToFile (no inflate stage) is exercised too.
+  const content = Buffer.from("plain uncompressed export.xml content");
+  const nameBuf = Buffer.from("export.xml", "utf8");
+  const localHeader = Buffer.alloc(30);
+  localHeader.writeUInt32LE(0x04_03_4b_50, 0);
+  localHeader.writeUInt16LE(20, 4);
+  localHeader.writeUInt16LE(0x08_00, 6);
+  localHeader.writeUInt16LE(0, 8); // STORE method
+  localHeader.writeUInt16LE(0, 10);
+  localHeader.writeUInt16LE(0, 12);
+  localHeader.writeUInt32LE(0, 14);
+  localHeader.writeUInt32LE(content.length, 18);
+  localHeader.writeUInt32LE(content.length, 22);
+  localHeader.writeUInt16LE(nameBuf.length, 26);
+  localHeader.writeUInt16LE(0, 28);
+  const localEntry = Buffer.concat([localHeader, nameBuf, content]);
+
+  const centralHeader = Buffer.alloc(46);
+  centralHeader.writeUInt32LE(0x02_01_4b_50, 0);
+  centralHeader.writeUInt16LE(20, 4);
+  centralHeader.writeUInt16LE(20, 6);
+  centralHeader.writeUInt16LE(0x08_00, 8);
+  centralHeader.writeUInt16LE(0, 10); // STORE method
+  centralHeader.writeUInt16LE(0, 12);
+  centralHeader.writeUInt16LE(0, 14);
+  centralHeader.writeUInt32LE(0, 16);
+  centralHeader.writeUInt32LE(content.length, 20);
+  centralHeader.writeUInt32LE(content.length, 24);
+  centralHeader.writeUInt16LE(nameBuf.length, 28);
+  centralHeader.writeUInt16LE(0, 30);
+  centralHeader.writeUInt16LE(0, 32);
+  centralHeader.writeUInt16LE(0, 34);
+  centralHeader.writeUInt16LE(0, 36);
+  centralHeader.writeUInt32LE(0, 38);
+  centralHeader.writeUInt32LE(0, 42);
+  const centralDir = Buffer.concat([centralHeader, nameBuf]);
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06_05_4b_50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(1, 8);
+  eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(centralDir.length, 12);
+  eocd.writeUInt32LE(localEntry.length, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  const zip = Buffer.concat([localEntry, centralDir, eocd]);
+  await withTempZipFileAsync(zip, async (fd, fileSize) => {
+    await withTempDestPath(async (destPath) => {
+      const result = await streamZipEntryToFile(fd, fileSize, "export.xml", destPath, GENEROUS_POLICY);
+      assert.equal(result.found, true);
+      assert.deepEqual(readFileSync(destPath), content);
+    });
+  });
+});
+
+test("streamZipEntryToFile matches by basename when the entry is nested in a subdirectory", async () => {
+  const content = Buffer.from("nested export content");
+  const zip = buildZip([{ content, name: "apple_health_export/export.xml" }]);
+  await withTempZipFileAsync(zip, async (fd, fileSize) => {
+    await withTempDestPath(async (destPath) => {
+      const result = await streamZipEntryToFile(fd, fileSize, "export.xml", destPath, GENEROUS_POLICY);
+      assert.equal(result.found, true);
+      assert.deepEqual(readFileSync(destPath), content);
+    });
+  });
+});
+
+test("streamZipEntryToFile returns found:false and creates no file when the entry does not exist", async () => {
+  const zip = buildZip([{ content: Buffer.from("x"), name: "other.txt" }]);
+  await withTempZipFileAsync(zip, async (fd, fileSize) => {
+    await withTempDestPath(async (destPath) => {
+      const result = await streamZipEntryToFile(fd, fileSize, "export.xml", destPath, GENEROUS_POLICY);
+      assert.equal(result.found, false);
+      assert.equal(result.bytesWritten, 0);
+      assert.equal(existsSync(destPath), false);
+    });
+  });
+});
+
+test("streamZipEntryToFile rejects a DECLARED-oversized entry before inflating, and leaves no partial file", async () => {
+  const content = Buffer.from("x".repeat(10_000));
+  const zip = buildZip([{ content, name: "export.xml" }]);
+  const tinyPolicy: ZipReadPolicy = { maxEntries: 10, maxEntryUncompressedBytes: 100, maxTotalUncompressedBytes: 100 };
+  await withTempZipFileAsync(zip, async (fd, fileSize) => {
+    await withTempDestPath(async (destPath) => {
+      await assert.rejects(() => streamZipEntryToFile(fd, fileSize, "export.xml", destPath, tinyPolicy), {
+        code: "entry_too_large",
+      });
+      assert.equal(existsSync(destPath), false, "no partial file left behind on a declared-size rejection");
+    });
+  });
+});
+
+test("streamZipEntryToFile rejects on ACTUAL inflated bytes exceeding the cap even when declared_size lies", async () => {
+  // A large real content whose declared_size claims a tiny value -- the fast
+  // declared-size reject must not fire (it would report the wrong reason),
+  // so the ACTUAL streamed-byte counter is what must catch this.
+  const content = Buffer.from("y".repeat(50_000));
+  const zip = buildZip([{ content, declaredUncompressedSize: 10, name: "export.xml" }]);
+  const policy: ZipReadPolicy = { maxEntries: 10, maxEntryUncompressedBytes: 1000, maxTotalUncompressedBytes: 1000 };
+  await withTempZipFileAsync(zip, async (fd, fileSize) => {
+    await withTempDestPath(async (destPath) => {
+      await assert.rejects(() => streamZipEntryToFile(fd, fileSize, "export.xml", destPath, policy), {
+        code: "entry_too_large",
+      });
+      assert.equal(existsSync(destPath), false, "no partial file left behind once the actual cap is exceeded mid-stream");
+    });
+  });
+});
+
+test("streamZipEntryToFile handles content spanning many read-chunk boundaries without corruption", async () => {
+  // Content sized to straddle several STREAM_READ_CHUNK_BYTES (1 MiB) windows
+  // so the multi-chunk read loop, not just a single-chunk fast path, is
+  // exercised end-to-end.
+  const content = Buffer.from(
+    Array.from({ length: 300_000 }, (_, i) => `<Record id="${i}" type="HKQuantityTypeIdentifierStepCount" value="${i}"/>`).join(
+      "\n"
+    )
+  );
+  assert.ok(content.length > 3 * 1024 * 1024, "fixture must span multiple 1 MiB read-chunk windows");
+  const zip = buildZip([{ content, name: "export.xml" }]);
+  const policy: ZipReadPolicy = {
+    maxEntries: 10,
+    maxEntryUncompressedBytes: 50 * 1024 * 1024,
+    maxTotalUncompressedBytes: 50 * 1024 * 1024,
+  };
+  await withTempZipFileAsync(zip, async (fd, fileSize) => {
+    await withTempDestPath(async (destPath) => {
+      const result = await streamZipEntryToFile(fd, fileSize, "export.xml", destPath, policy);
+      assert.equal(result.bytesWritten, content.length);
+      assert.deepEqual(readFileSync(destPath), content);
+    });
   });
 });

@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { validateAppleHealthExportArtifactFromFile } from "../connectors/apple_health/validation.ts";
 import {
   validateGoogleMapsTimelineArtifact,
   validateGoogleMapsTimelineArtifactFromFile,
@@ -15,6 +16,7 @@ import {
 } from "../connectors/whatsapp/validation.ts";
 
 export type ManualUploadValidationResult =
+  | Awaited<ReturnType<typeof validateAppleHealthExportArtifactFromFile>>
   | ReturnType<typeof validateGoogleMapsTimelineArtifact>
   | ReturnType<typeof validateNetflixExportArtifact>
   | ReturnType<typeof validateWhatsAppChatExportArtifact>;
@@ -90,6 +92,13 @@ export async function validateManualUploadArtifactFromFileByKind(
   fileSize: number,
   options: ManualUploadFileValidationOptions
 ): Promise<ManualUploadValidationResult | null> {
+  if (kind === "apple_health_export") {
+    return await validateAppleHealthExportArtifactFromFile(fd, options.filePath, fileSize, {
+      fileName: options.fileName,
+      fileSha256: options.fileSha256,
+      maxFileBytes: options.maxFileBytes ?? null,
+    });
+  }
   if (kind === "whatsapp_chat_export") {
     return await validateWhatsAppChatExportArtifactFromFile(fd, options.filePath, fileSize, {
       fileName: options.fileName,
