@@ -135,9 +135,11 @@ test("Core image carries the Docker quickstart defaults and first-boot bootstrap
   const supervisor = read("deploy/railway/core-supervisor.ts");
 
   // Standalone `docker run -p 3000:3000 -v pdpp_data:/var/lib/pdpp` must work
-  // with no -e flags: localhost origin default + SQLite on the mountable data
-  // dir (deploy/docker/README.md). Managed platforms override both per deploy.
-  assert.match(dockerfile, REFERENCE_ORIGIN_LOCALHOST_PATTERN);
+  // with no -e flags: SQLite on the mountable data dir (deploy/docker/README.md).
+  // PDPP_REFERENCE_ORIGIN is intentionally left unset so the RS/AS derive
+  // their own base from the live request's Host header, which always matches
+  // the port a client actually used to connect (see Dockerfile comment).
+  assert.doesNotMatch(dockerfile, REFERENCE_ORIGIN_LOCALHOST_PATTERN);
   assert.match(dockerfile, DB_PATH_SQLITE_PATTERN);
 
   // The supervisor wires the first-boot owner-credential bootstrap into BOTH

@@ -72,6 +72,28 @@ test("reference topology resolves composed public urls from the browser origin",
   assert.equal(topology.rsPublicUrl, "http://localhost:3200");
 });
 
+// Regression for a real GDC-demo discrepancy: composed mode with no
+// operator-configured origin (the deploy artifacts used to bake
+// PDPP_REFERENCE_ORIGIN=http://localhost:3000 here, which republishing the
+// container on a different host port silently invalidated) must NOT let
+// the browser-origin placeholder (DEFAULT_REFERENCE_BROWSER_ORIGIN) leak
+// into rsPublicUrl/asPublicUrl — those feed the AS/RS's own protocol-
+// critical resource_metadata/issuer URLs, unlike browserOrigin, which is
+// only ever an advisory display hint. An unset origin must leave
+// rsPublicUrl/asPublicUrl empty so callers fall through to per-request
+// Host-header derivation instead of a boot-time-fixed wrong port.
+test("reference topology in composed mode with no configured origin does not leak the browser-origin placeholder into public urls", () => {
+  const topology = resolveReferenceTopology({
+    env: {},
+    explicitMode: "composed",
+  });
+
+  assert.equal(topology.mode, REFERENCE_MODE_COMPOSED);
+  assert.equal(topology.browserOrigin, DEFAULT_REFERENCE_BROWSER_ORIGIN, "advisory browserOrigin keeps its default");
+  assert.equal(topology.asPublicUrl, "", "asPublicUrl must not inherit the browser-origin placeholder");
+  assert.equal(topology.rsPublicUrl, "", "rsPublicUrl must not inherit the browser-origin placeholder");
+});
+
 test("reference browser origin falls back to the default local web origin", () => {
   assert.equal(resolveReferenceBrowserOrigin({ env: {} }), DEFAULT_REFERENCE_BROWSER_ORIGIN);
 });

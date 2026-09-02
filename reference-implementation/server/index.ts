@@ -8010,6 +8010,43 @@ export async function startServer(opts: ServerOpts = {}) {
   const explicitRsInternalUrl =
     opts.rsInternalUrl ?? (ignoreAmbientPublicUrls ? null : process.env.PDPP_RS_URL?.trim() || null);
   const trustedMetadataHosts = opts.trustedMetadataHosts ?? process.env.PDPP_TRUSTED_HOSTS ?? null;
+  // A loopback explicit public URL whose port disagrees with the port this
+  // listener actually bound to is exactly how the RS/AS's own
+  // resource_metadata/issuer can advertise a wrong address to a direct,
+  // unproxied client — the one that hit us on port X gets told to re-auth
+  // against port Y. This is not always a mistake (an operator fronting the
+  // node with a reverse proxy/TLS terminator on a different port than the
+  // container's own listener is a legitimate, common shape), so this only
+  // warns — it never fails boot.
+  const warnIfLoopbackOriginPortDisagreesWithBoundPort = (
+    label: string,
+    explicitUrl: string | null,
+    boundPort: number
+  ) => {
+    if (!explicitUrl) {
+      return;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(explicitUrl);
+    } catch {
+      return;
+    }
+    const normalizedHost = parsed.hostname.toLowerCase();
+    const isLoopback = normalizedHost === "localhost" || normalizedHost === "127.0.0.1" || normalizedHost === "::1";
+    if (!isLoopback) {
+      return;
+    }
+    const defaultPortForScheme = parsed.protocol === "https:" ? 443 : 80;
+    const explicitPort = parsed.port ? Number.parseInt(parsed.port, 10) : defaultPortForScheme;
+    if (explicitPort === boundPort) {
+      return;
+    }
+    logger.warn(
+      { boundPort, configuredOrigin: explicitUrl, configuredPort: explicitPort },
+      `${label} names port ${explicitPort}, but this listener is bound to port ${boundPort} — a direct client with no reverse proxy in front (no x-forwarded-host) will be told to re-authenticate against the wrong port. If this node is fronted by a proxy/TLS terminator on purpose, this warning is expected; otherwise update the origin to match the published port.`
+    );
+  };
   const runtimeContext = {
     // Populated below after asServer.listen resolves the actual port,
     // so the controller's lazy currentReferenceBaseUrl() lookup picks up
@@ -8429,6 +8466,7 @@ export async function startServer(opts: ServerOpts = {}) {
   // reachable and is the right hop.
   runtimeContext.referenceBaseUrl = `http://127.0.0.1:${asPort}`;
   logger.info({ port: asPort, url: `http://localhost:${asPort}` }, "authorization server listening");
+  warnIfLoopbackOriginPortDisagreesWithBoundPort("configured AS public origin", configuredAsPublicUrl, asPort);
 
   const rsApp = buildRsApp({
     agentDiscoveryOrigin: referenceTopology.browserOrigin,
@@ -8486,6 +8524,7 @@ export async function startServer(opts: ServerOpts = {}) {
   runtimeContext.rsUrl = `http://localhost:${rsPort}`;
   await controller.promoteBrowserSurfaceLeasesAfterBoot();
   logger.info({ port: rsPort, url: `http://localhost:${rsPort}` }, "resource server listening");
+  warnIfLoopbackOriginPortDisagreesWithBoundPort("configured RS public origin", configuredRsPublicUrl, rsPort);
 
   // HNSW is a derived acceleration structure. Its durable builder is bounded,
   // advisory-locked, and retryable, but it must never join the readiness await

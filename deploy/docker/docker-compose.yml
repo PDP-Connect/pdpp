@@ -22,9 +22,18 @@ services:
     restart: unless-stopped
     environment:
       # The single public origin this node advertises in its OAuth metadata.
-      # For anything beyond a local trial, set this to your HTTPS domain.
+      # Unset by default: the RS/AS derive it from the live request's Host
+      # header, which always matches whatever host:port a client actually
+      # dialed — including a remapped PDPP_WEB_PORT below. A fixed default
+      # here (previously http://localhost:3000) went stale the moment an
+      # operator published on a different host port, silently overriding the
+      # correct per-request answer for any direct, unproxied client. Set this
+      # explicitly only when fronting the node with a reverse proxy or TLS
+      # terminator (anything beyond a local trial) — e.g. your HTTPS domain,
+      # or when PDPP_WEB_PORT is remapped and the container is reached through
+      # something that doesn't forward the real Host (no x-forwarded-host).
       PDPP_REFERENCE_MODE: composed
-      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3000}
+      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-}
       PDPP_CONNECTOR_ENVIRONMENT_POLICY: ${PDPP_CONNECTOR_ENVIRONMENT_POLICY:-}
       # Postgres is the storage backend; the runtime selects it because this
       # database URL is present. Credentials live on the compose-private
