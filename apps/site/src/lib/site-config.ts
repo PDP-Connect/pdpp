@@ -68,6 +68,7 @@ export const siteConfig = {
 // address fixed by GOVERNANCE.md's own header, and a deployment that could
 // point it elsewhere could silently redirect a conduct or security report.
 export const REPORTS_EMAIL = "pdpp-dev-reports@lfdecentralizedtrust.org";
+export const REPORTS_EMAIL_HREF = `mailto:${REPORTS_EMAIL}`;
 
 // Rendered verbatim under the signing form. Sentence supplied by the
 // programme, with the controller interpolated from config so there is one
