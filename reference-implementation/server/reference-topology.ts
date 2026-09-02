@@ -152,12 +152,34 @@ export function resolveReferenceTopology({
         })
       : null;
 
+  // `browserOrigin` falls back to the placeholder `DEFAULT_REFERENCE_BROWSER_ORIGIN`
+  // when nothing configures it — fine for its own advisory purpose (the
+  // owner-agent-onboarding landing hint), but `asPublicUrl`/`rsPublicUrl` feed
+  // the AS/RS's own protocol-critical `resource_metadata`/issuer URLs. Letting
+  // the placeholder leak into those meant an operator who never set
+  // PDPP_REFERENCE_ORIGIN (or whose deploy artifact stopped baking a stale
+  // one) still got a boot-time-fixed wrong port baked into `explicitResource`,
+  // silently overriding the correct per-request Host-header derivation that
+  // `resolvePublicUrl` already falls back to when no explicit value exists.
+  // Only an EXPLICITLY configured origin (requestOrigin/referenceOrigin/env)
+  // is trustworthy enough to become the AS/RS's own advertised base; the bare
+  // placeholder is not.
+  const explicitBrowserOrigin =
+    mode === REFERENCE_MODE_COMPOSED
+      ? stripTrailingSlash(
+          readTrimmedValue(requestOrigin) ||
+            readTrimmedValue(referenceOrigin) ||
+            readTrimmedValue(env.PDPP_REFERENCE_ORIGIN) ||
+            ""
+        ) || null
+      : null;
+
   return {
     asInternalUrl: stripTrailingSlash(readTrimmedValue(env.PDPP_AS_URL) || DEFAULT_AS_INTERNAL_URL),
-    asPublicUrl: stripTrailingSlash(readTrimmedValue(asPublicUrl) || browserOrigin || ""),
+    asPublicUrl: stripTrailingSlash(readTrimmedValue(asPublicUrl) || explicitBrowserOrigin || ""),
     browserOrigin,
     mode,
     rsInternalUrl: stripTrailingSlash(readTrimmedValue(env.PDPP_RS_URL) || DEFAULT_RS_INTERNAL_URL),
-    rsPublicUrl: stripTrailingSlash(readTrimmedValue(rsPublicUrl) || browserOrigin || ""),
+    rsPublicUrl: stripTrailingSlash(readTrimmedValue(rsPublicUrl) || explicitBrowserOrigin || ""),
   };
 }

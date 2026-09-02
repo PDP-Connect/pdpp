@@ -280,7 +280,16 @@ CMD ["node", "apps/console/server.js"]
 #
 # The same image is the Docker quickstart target (deploy/docker/README.md), so
 # it carries laptop-friendly defaults that managed platforms override per
-# deploy: PDPP_REFERENCE_ORIGIN defaults to the published localhost port, and
+# deploy. PDPP_REFERENCE_ORIGIN is intentionally NOT baked here (previously a
+# fixed http://localhost:3000, which is only correct when the container's
+# internal PORT=3000 is republished on the SAME host port — an operator who
+# reassigns PDPP_WEB_PORT to anything else silently got the wrong port back
+# in resource_metadata for any direct, unproxied client on its first 401).
+# Leaving it unset lets the RS/AS derive their own base from the live
+# request's Host header instead, which always matches the port a client
+# actually used to connect. Set PDPP_REFERENCE_ORIGIN explicitly only when
+# fronting this container with a reverse proxy or TLS terminator, where the
+# request Host the container sees differs from the origin clients dial.
 # PDPP_DB_PATH defaults onto /var/lib/pdpp so `-v pdpp_data:/var/lib/pdpp`
 # makes the SQLite database (and first-boot credentials, see
 # deploy/railway/core-first-boot.ts) durable. With a database URL present the
@@ -393,7 +402,6 @@ ENV NODE_ENV=production \
     RS_PORT=7663 \
     PDPP_AS_URL=http://127.0.0.1:7662 \
     PDPP_RS_URL=http://127.0.0.1:7663 \
-    PDPP_REFERENCE_ORIGIN=http://localhost:3000 \
     PDPP_DB_PATH=/var/lib/pdpp/pdpp.sqlite \
     PDPP_BROWSER_PROFILE_ROOT=/var/lib/pdpp/browser-profiles \
     PDPP_CONNECTOR_ARTIFACT_ROOT=/var/lib/pdpp/connector-artifacts \
