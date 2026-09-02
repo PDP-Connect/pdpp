@@ -21,6 +21,7 @@ import {
   isNamespaceIsolationAvailable,
   postPivotVerificationStatements,
   requiredFilesystemBinds,
+  resolveTrustedLauncherPath,
   spawnWithNetworkIsolation,
 } from "./isolation.ts";
 
@@ -32,6 +33,37 @@ const bwrapUsable =
 const unshareUsable =
   process.platform === "linux" &&
   spawnSync("unshare", ["-r", "-n", "-m", "true"], { stdio: "ignore", timeout: 5000 }).status === 0;
+
+/** True when this test process can actually shadow a real trusted-path
+ *  binary via a host-level bind mount (root or an equivalent capability) —
+ *  the injection mechanism the test below needs now that the prelude
+ *  resolves its setup commands through a fixed `TRUSTED_SETUP_PATH`
+ *  (P1-1, ninth review) rather than the caller's inherited `$PATH`. Probed
+ *  by attempting the exact bind-then-unbind sequence the real test performs,
+ *  against a scratch file, so the skip condition matches the test's actual
+ *  requirement rather than a proxy for it (e.g. `process.getuid() === 0`
+ *  would be wrong inside a rootless-but-capable container). */
+function canBindMountOverAFile(): boolean {
+  if (process.platform !== "linux") {
+    return false;
+  }
+  const probeSource = mkdtempSync(join(tmpdir(), "pdpp-bindmount-probe-src-"));
+  const probeTarget = mkdtempSync(join(tmpdir(), "pdpp-bindmount-probe-dst-"));
+  const srcFile = join(probeSource, "a");
+  const dstFile = join(probeTarget, "b");
+  writeFileSync(srcFile, "");
+  writeFileSync(dstFile, "");
+  const bound = spawnSync("mount", ["--bind", srcFile, dstFile], { stdio: "ignore" }).status === 0;
+  if (bound) {
+    spawnSync("umount", [dstFile], { stdio: "ignore" });
+  }
+  rmSync(probeSource, { recursive: true, force: true });
+  rmSync(probeTarget, { recursive: true, force: true });
+  return bound;
+}
+
+const bindMountCapable = unshareUsable && canBindMountOverAFile();
+
 
 test("a host that denies `unshare` but ships a working bwrap still reports isolation AVAILABLE", {
   skip: !bwrapUsable,
@@ -84,56 +116,60 @@ test("an isolated child has NO outbound network — the property, not the mechan
 // use) rather than trusted by reading the source, so a future edit that
 // reverts to a bare/simplified probe argv is caught mechanically.
 
+// INJECTION MECHANISM (P1, external review of ab415be6c — trusted launcher
+// resolution): this test used to shadow `bwrap` via a PATH-prepended shim
+// directory. Now that the probe resolves the launcher through
+// `resolveTrustedLauncherPath` (a fixed allowlist of trusted directories,
+// never the caller's inherited `$PATH`), a PATH-prepended shim is no longer
+// selected — proving the fix works, but also meaning a test that still
+// relied on PATH-shadowing to intercept the launcher would silently stop
+// exercising anything. The injection is done the only way that still
+// reaches a trusted-path binary: bind-mounting the logging shim DIRECTLY
+// OVER the real trusted-path `bwrap` binary for the duration of the test,
+// via `withShimmedTrustedBinary` (defined below — a hoisted function
+// declaration, callable here despite the later textual position).
 test("[bwrap] the fixed probeBwrap() invokes bwrap with the SAME production argv shape bwrapArgvForFilesystemClosure builds — not a bare --dev-bind / / check", {
-  skip: !bwrapUsable,
-}, () => {
+  skip: !bwrapUsable || !bindMountCapable,
+}, async () => {
   const logDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-argv-log-"));
   const logPath = join(logDir, "invocations.log");
   writeFileSync(logPath, "");
-  // A real, delegating shim (not a bare "exit 0") — the probe's own
-  // production-equivalence is only meaningful if the shim still actually
-  // RUNS bwrap for real (so a genuinely broken derived-bind shape would
-  // still be caught), it just additionally logs the argv it was given.
-  const realBwrapPath = spawnSync("which", ["bwrap"], { encoding: "utf8" }).stdout.trim();
-  const shimDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-argv-shim-"));
-  writeFileSync(
-    join(shimDir, "bwrap"),
-    ["#!/bin/sh", `echo "$*" >> ${JSON.stringify(logPath)}`, `exec ${realBwrapPath} "$@"`].join("\n"),
-    { mode: 0o755 }
-  );
-  const realPath = process.env.PATH;
-  process.env.PATH = `${shimDir}:${realPath ?? ""}`;
   try {
-    const cap = isNamespaceIsolationAvailable();
-    // Only meaningful when bwrap is genuinely what got selected (on a host
-    // where unshare is denied but bwrap works — this suite's own
-    // AppArmor-restricted dev sandbox is exactly that shape); skip the argv
-    // assertion (but still ran the probe) otherwise.
-    const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
-    if (cap.available && cap.mechanism === "bwrap") {
-      assert.equal(
-        invocations.length,
-        1,
-        `expected exactly one bwrap probe invocation; got ${JSON.stringify(invocations)}`
-      );
-      const probeArgv = invocations[0] ?? "";
-      assert.ok(
-        probeArgv.includes("--tmpfs") && !probeArgv.includes("--dev-bind"),
-        `probe argv must use the empty --tmpfs / root, never --dev-bind / /; got ${JSON.stringify(probeArgv)}`
-      );
-      assert.ok(
-        probeArgv.includes("--unshare-pid"),
-        `probe argv must include --unshare-pid, matching production's derived closure; got ${JSON.stringify(probeArgv)}`
-      );
-      assert.ok(
-        probeArgv.includes("--ro-bind") || probeArgv.includes("--bind"),
-        `probe argv must include the derived requiredFilesystemBinds() entries, not just namespace flags; got ${JSON.stringify(probeArgv)}`
-      );
-    }
+    await withShimmedTrustedBinary(
+      "bwrap",
+      (realBwrapPath) =>
+        ["#!/bin/sh", `echo "$*" >> ${JSON.stringify(logPath)}`, `exec ${realBwrapPath} "$@"`].join("\n"),
+      async () => {
+        const cap = isNamespaceIsolationAvailable();
+        // Only meaningful when bwrap is genuinely what got selected (on a
+        // host where unshare is denied but bwrap works — this suite's own
+        // AppArmor-restricted dev sandbox is exactly that shape); skip the
+        // argv assertion (but still ran the probe) otherwise.
+        const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+        if (cap.available && cap.mechanism === "bwrap") {
+          assert.equal(
+            invocations.length,
+            1,
+            `expected exactly one bwrap probe invocation; got ${JSON.stringify(invocations)}`
+          );
+          const probeArgv = invocations[0] ?? "";
+          assert.ok(
+            probeArgv.includes("--tmpfs") && !probeArgv.includes("--dev-bind"),
+            `probe argv must use the empty --tmpfs / root, never --dev-bind / /; got ${JSON.stringify(probeArgv)}`
+          );
+          assert.ok(
+            probeArgv.includes("--unshare-pid"),
+            `probe argv must include --unshare-pid, matching production's derived closure; got ${JSON.stringify(probeArgv)}`
+          );
+          assert.ok(
+            probeArgv.includes("--ro-bind") || probeArgv.includes("--bind"),
+            `probe argv must include the derived requiredFilesystemBinds() entries, not just namespace flags; got ${JSON.stringify(probeArgv)}`
+          );
+        }
+      }
+    );
   } finally {
-    process.env.PATH = realPath;
     rmSync(logDir, { recursive: true, force: true });
-    rmSync(shimDir, { recursive: true, force: true });
   }
 });
 
@@ -157,141 +193,101 @@ test("[bwrap] the fixed probeBwrap() invokes bwrap with the SAME production argv
 // logic-level proof of the fix, complementary to (not a replacement for) the
 // live container reproduction recorded in the review notes.
 
-/** Writes a fake `unshare` that mimics the exact advertise-vs-honor failure
- *  shape: any invocation whose argv contains `mount -t proc proc /proc` (the
- *  probe's own mount-and-verify dry run, or the real prelude's) exits 32 with
- *  a stderr line matching the real kernel refusal, `mount: /proc: permission
+// INJECTION MECHANISM (P1, external review of ab415be6c — trusted launcher
+// resolution): these two tests used to shadow `unshare`/`bwrap` via a
+// PATH-prepended fake-bin directory. Now that both the probe and the real
+// execution resolve the launcher through `resolveTrustedLauncherPath` (a
+// fixed allowlist, never the caller's `$PATH`), that injection no longer
+// reaches anything — proving the fix, but also meaning a test still relying
+// on it would silently stop exercising the fallback logic. Both fakes are
+// now installed via bind-mounting DIRECTLY OVER the real trusted-path
+// `unshare`/`bwrap` binaries (`withShimmedTrustedBinary`, same technique the
+// setup-command forced-failure tests below already use), nested so both
+// binaries are shimmed for the duration of each test.
+
+/** Shim body mimicking the exact advertise-vs-honor failure shape: any
+ *  invocation whose argv contains `mount -t proc proc /proc` (the probe's
+ *  own mount-and-verify dry run, or the real prelude's) exits 32 with a
+ *  stderr line matching the real kernel refusal, `mount: /proc: permission
  *  denied.` — every other invocation shape (a bare capability probe like
  *  `-r -n true`) exits 0, so namespace CREATION still looks available; only
  *  the procfs mount specifically is refused, mirroring the CAP_SYS_ADMIN
- *  -only container shape exactly. */
-function fakeUnshareRefusingProcMount(dir: string): void {
-  const scriptPath = join(dir, "unshare");
-  writeFileSync(
-    scriptPath,
-    [
-      "#!/bin/sh",
-      'case "$*" in',
-      '  *"mount -t proc proc /proc"*)',
-      '    echo "mount: /proc: permission denied." 1>&2',
-      "    exit 32",
-      "    ;;",
-      "  *)",
-      "    exit 0",
-      "    ;;",
-      "esac",
-    ].join("\n"),
-    { mode: 0o755 }
-  );
+ *  -only container shape exactly. Ignores `realUnsharePath` (unlike the
+ *  setup-command shims elsewhere in this file, this fake never delegates —
+ *  the whole point is to mimic the OLD probe's blind spot, not to actually
+ *  run real `unshare`). */
+function unshareShimRefusingProcMount(_realUnsharePath: string): string {
+  return [
+    "#!/bin/sh",
+    'case "$*" in',
+    '  *"mount -t proc proc /proc"*)',
+    '    echo "mount: /proc: permission denied." 1>&2',
+    "    exit 32",
+    "    ;;",
+    "  *)",
+    "    exit 0",
+    "    ;;",
+    "esac",
+  ].join("\n");
 }
 
-/** Writes a fake `bwrap` that always succeeds — used to prove the fallback
- *  path is taken (not just that `unshare` was correctly rejected). */
-function fakeBwrapAlwaysAvailable(dir: string): void {
-  const scriptPath = join(dir, "bwrap");
-  writeFileSync(scriptPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+/** Shim body that always succeeds — used to prove the fallback path is
+ *  taken (not just that `unshare` was correctly rejected). */
+function bwrapShimAlwaysAvailable(_realBwrapPath: string): string {
+  return "#!/bin/sh\nexit 0\n";
 }
 
-/** Writes a fake `bwrap` that always fails — used so the "no fallback
- *  available" test is not accidentally rescued by a REAL, working bwrap
- *  elsewhere on this host's PATH; PATH-shadowing alone isn't enough because
- *  omitting a bwrap entry from the fake dir doesn't hide a real one located
- *  later in the (still-inherited) PATH string. */
-function fakeBwrapAlwaysUnavailable(dir: string): void {
-  const scriptPath = join(dir, "bwrap");
-  writeFileSync(
-    scriptPath,
-    '#!/bin/sh\necho "bwrap: Creating new namespace failed: Operation not permitted" 1>&2\nexit 1\n',
-    {
-      mode: 0o755,
-    }
-  );
+/** Shim body that always fails — used so the "no fallback available" test
+ *  is not accidentally rescued by a real, working bwrap. */
+function bwrapShimAlwaysUnavailable(_realBwrapPath: string): string {
+  return '#!/bin/sh\necho "bwrap: Creating new namespace failed: Operation not permitted" 1>&2\nexit 1\n';
 }
 
-test("probe reports UNAVAILABLE (not available-then-crash) when unshare's PID-ns procfs mount is refused, with no working bwrap fallback", () => {
-  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-refusal-"));
-  fakeUnshareRefusingProcMount(fakeBinDir);
-  // A fake bwrap that ALSO fails — not just an absent one — because the fake
-  // dir is only PREPENDED to PATH; a real, working bwrap later in the
-  // inherited PATH would otherwise rescue this "no fallback" scenario and
-  // make the test assert something false about this host.
-  fakeBwrapAlwaysUnavailable(fakeBinDir);
-  const realPath = process.env.PATH;
-  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
-  try {
-    const cap = isNamespaceIsolationAvailable();
-    assert.equal(
-      cap.available,
-      false,
-      "a host where namespace creation succeeds but the PID-namespace procfs mount is refused must report UNAVAILABLE, not available-then-crash-later"
-    );
-    if (!cap.available) {
-      assert.ok(
-        /permission denied|mount/i.test(cap.reason),
-        `the diagnostic must name the kernel-level mount refusal, not just 'unavailable'; got ${JSON.stringify(cap.reason)}`
-      );
-    }
-  } finally {
-    process.env.PATH = realPath;
-    rmSync(fakeBinDir, { recursive: true, force: true });
-  }
-});
-
-test("probe falls back to bwrap when unshare's procfs mount is refused but bwrap genuinely works", () => {
-  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-refusal-fallback-"));
-  fakeUnshareRefusingProcMount(fakeBinDir);
-  fakeBwrapAlwaysAvailable(fakeBinDir);
-  const realPath = process.env.PATH;
-  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
-  try {
-    const cap = isNamespaceIsolationAvailable();
-    assert.equal(
-      cap.available,
-      true,
-      "a host where unshare's procfs mount is refused but bwrap genuinely works must still report AVAILABLE — the fallback exists precisely for this shape"
-    );
-    if (cap.available) {
+test("probe reports UNAVAILABLE (not available-then-crash) when unshare's PID-ns procfs mount is refused, with no working bwrap fallback", {
+  skip: !bindMountCapable,
+}, async () => {
+  await withShimmedTrustedBinary("unshare", unshareShimRefusingProcMount, () =>
+    withShimmedTrustedBinary("bwrap", bwrapShimAlwaysUnavailable, () => {
+      const cap = isNamespaceIsolationAvailable();
       assert.equal(
-        cap.mechanism,
-        "bwrap",
-        "must select bwrap, not unshare — unshare demonstrably cannot honor the isolation it would advertise on this (simulated) host"
+        cap.available,
+        false,
+        "a host where namespace creation succeeds but the PID-namespace procfs mount is refused must report UNAVAILABLE, not available-then-crash-later"
       );
-    }
-  } finally {
-    process.env.PATH = realPath;
-    rmSync(fakeBinDir, { recursive: true, force: true });
-  }
+      if (!cap.available) {
+        assert.ok(
+          /permission denied|mount/i.test(cap.reason),
+          `the diagnostic must name the kernel-level mount refusal, not just 'unavailable'; got ${JSON.stringify(cap.reason)}`
+        );
+      }
+      return Promise.resolve();
+    })
+  );
 });
 
-/** True when this test process can actually shadow a real trusted-path
- *  binary via a host-level bind mount (root or an equivalent capability) —
- *  the injection mechanism the test below needs now that the prelude
- *  resolves its setup commands through a fixed `TRUSTED_SETUP_PATH`
- *  (P1-1, ninth review) rather than the caller's inherited `$PATH`. Probed
- *  by attempting the exact bind-then-unbind sequence the real test performs,
- *  against a scratch file, so the skip condition matches the test's actual
- *  requirement rather than a proxy for it (e.g. `process.getuid() === 0`
- *  would be wrong inside a rootless-but-capable container). */
-function canBindMountOverAFile(): boolean {
-  if (process.platform !== "linux") {
-    return false;
-  }
-  const probeSource = mkdtempSync(join(tmpdir(), "pdpp-bindmount-probe-src-"));
-  const probeTarget = mkdtempSync(join(tmpdir(), "pdpp-bindmount-probe-dst-"));
-  const srcFile = join(probeSource, "a");
-  const dstFile = join(probeTarget, "b");
-  writeFileSync(srcFile, "");
-  writeFileSync(dstFile, "");
-  const bound = spawnSync("mount", ["--bind", srcFile, dstFile], { stdio: "ignore" }).status === 0;
-  if (bound) {
-    spawnSync("umount", [dstFile], { stdio: "ignore" });
-  }
-  rmSync(probeSource, { recursive: true, force: true });
-  rmSync(probeTarget, { recursive: true, force: true });
-  return bound;
-}
+test("probe falls back to bwrap when unshare's procfs mount is refused but bwrap genuinely works", {
+  skip: !bindMountCapable,
+}, async () => {
+  await withShimmedTrustedBinary("unshare", unshareShimRefusingProcMount, () =>
+    withShimmedTrustedBinary("bwrap", bwrapShimAlwaysAvailable, () => {
+      const cap = isNamespaceIsolationAvailable();
+      assert.equal(
+        cap.available,
+        true,
+        "a host where unshare's procfs mount is refused but bwrap genuinely works must still report AVAILABLE — the fallback exists precisely for this shape"
+      );
+      if (cap.available) {
+        assert.equal(
+          cap.mechanism,
+          "bwrap",
+          "must select bwrap, not unshare — unshare demonstrably cannot honor the isolation it would advertise on this (simulated) host"
+        );
+      }
+      return Promise.resolve();
+    })
+  );
+});
 
-const bindMountCapable = unshareUsable && canBindMountOverAFile();
 
 test("a forced PID-ns procfs-mount refusal inside the real unshare-mechanism prelude fails the spawn closed, never silently proceeds", {
   skip: !bindMountCapable,
@@ -371,6 +367,111 @@ test("a forced PID-ns procfs-mount refusal inside the real unshare-mechanism pre
   } finally {
     spawnSync("umount", [realMountPath], { stdio: "ignore" });
     rmSync(scratchDir, { recursive: true, force: true });
+  }
+});
+
+// ─── Trusted launcher resolution (P1, external review of ab415be6c) ───────
+//
+// The review's exact finding: `probeUnshare()`/`probeBwrap()` and
+// `spawnWithNetworkIsolation`'s real execution both spawned the launcher via
+// a BARE command name (`spawnSync("unshare", ...)`, `spawn("bwrap", ...)`),
+// which `node:child_process` resolves through the CALLING process's own
+// inherited `$PATH` — so a PATH-prepended fake `unshare`/`bwrap` earlier in
+// `$PATH` than the real, trusted one gets selected instead. These tests
+// prove the fix: (1) at the unit level, `resolveTrustedLauncherPath` finds
+// the REAL binary regardless of what `$PATH` says, even with a fake
+// prepended; (2) at the end-to-end level, a PATH-prepended fake `unshare`
+// is never invoked by either the probe or a real isolated spawn.
+
+test("resolveTrustedLauncherPath: resolves the real trusted-location binary, ignoring a fake earlier in $PATH", {
+  skip: process.platform !== "linux",
+}, () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-launcher-path-"));
+  const fakeMarkerPath = join(fakeBinDir, "fake-unshare-ran");
+  writeFileSync(
+    join(fakeBinDir, "unshare"),
+    ["#!/bin/sh", `touch ${JSON.stringify(fakeMarkerPath)}`, "exit 0"].join("\n"),
+    { mode: 0o755 }
+  );
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const resolved = resolveTrustedLauncherPath("unshare");
+    assert.ok(
+      !resolved.startsWith(fakeBinDir),
+      `resolveTrustedLauncherPath must never return the PATH-prepended fake; got ${JSON.stringify(resolved)}`
+    );
+    assert.ok(
+      ["/usr/sbin/unshare", "/usr/bin/unshare", "/sbin/unshare", "/bin/unshare"].includes(resolved),
+      `expected a real trusted-directory path; got ${JSON.stringify(resolved)}`
+    );
+    // Actually running the resolved binary must not be the fake — the fake
+    // would touch its own marker file the instant it started.
+    spawnSync(resolved, ["-r", "-n", "true"], { stdio: "ignore" });
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake unshare's marker file must NOT exist — resolveTrustedLauncherPath's return value must never invoke the fake"
+    );
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+test("a PATH-prepended fake `unshare` is never selected by the probe or by a real isolated spawn", {
+  skip: !unshareUsable,
+}, async () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-launcher-e2e-"));
+  const fakeMarkerPath = join(fakeBinDir, "fake-unshare-ran");
+  // The fake always "succeeds" instantly (exit 0, no real namespace, no real
+  // isolation) — if it were ever selected, both the probe and a real spawn
+  // would misreport success while providing NO isolation at all. Also
+  // touches its own marker so this test can prove, directly, that the fake
+  // was never invoked (not just that isolation happened to still work).
+  writeFileSync(
+    join(fakeBinDir, "unshare"),
+    ["#!/bin/sh", `touch ${JSON.stringify(fakeMarkerPath)}`, "exit 0"].join("\n"),
+    { mode: 0o755 }
+  );
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const cap = isNamespaceIsolationAvailable();
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake unshare's marker must NOT exist after the capability probe — the probe must resolve the real trusted-path binary, never the PATH-prepended fake"
+    );
+    if (cap.available && cap.mechanism === "unshare") {
+      // Only meaningful when the probe genuinely selected unshare (true on
+      // this suite's own host, where unshare works natively) — prove a real
+      // spawn under `isolate: true` (which re-derives the mechanism itself,
+      // exercising the SAME resolution path as production) also never
+      // touches the fake, and that the child is genuinely isolated (no
+      // outbound network) rather than the fake's instant, unisolated exit 0.
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation(
+          process.execPath,
+          [
+            "-e",
+            'require("http").get("http://1.1.1.1",()=>process.exit(9)).on("error",()=>process.exit(0));setTimeout(()=>process.exit(0),4000)',
+          ],
+          { isolate: true, stdio: "ignore" }
+        );
+        child.on("close", resolveExit);
+      });
+      assert.ok(
+        !existsSync(fakeMarkerPath),
+        "the fake unshare's marker must NOT exist after a real isolated spawn — spawnWithNetworkIsolation must resolve the real trusted-path binary, never the PATH-prepended fake"
+      );
+      assert.equal(
+        exitCode,
+        0,
+        "the spawn must still be genuinely network-isolated (exit 9 would mean the fake ran instead and no real isolation happened)"
+      );
+    }
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
   }
 });
 
@@ -839,110 +940,109 @@ test("[unshare] a genuinely successful filesystem closure passes post-pivot veri
 // `detectMechanism()`, which re-runs the ENTIRE probe (spawning `unshare`,
 // and — if that's denied — `bwrap`) from scratch on every single spawn,
 // contradicting the "probe once, reuse everywhere" contract callers rely
-// on. This test proves that contract mechanically: with fake `unshare`/
-// `bwrap` binaries on PATH that log every invocation, passing the
-// already-known mechanism directly must invoke the probe binaries ZERO
-// times, while passing a bare `true` must invoke them (the regression this
-// test exists to catch if a caller — or this function itself — regresses
-// back to re-probing).
+// on. This test proves that contract mechanically: with logging shims
+// covering both trusted-path binaries, passing the already-known mechanism
+// directly must invoke the probe binaries ZERO times, while passing a bare
+// `true` must invoke them (the regression this test exists to catch if a
+// caller — or this function itself — regresses back to re-probing).
+//
+// INJECTION MECHANISM (P1, external review of ab415be6c — trusted launcher
+// resolution): these two tests used to PATH-prepend fake `unshare`/`bwrap`
+// binaries. Now that both the probe and the real execution resolve the
+// launcher through `resolveTrustedLauncherPath` (never the caller's `$PATH`),
+// that no longer reaches anything — both binaries are shimmed via
+// bind-mount-over-the-real-trusted-path binary instead
+// (`withShimmedTrustedBinary`, nested so both are covered at once).
 
-/** Writes a fake `unshare`/`bwrap` shell shim to `dir/name` that appends its
- *  full argv (one line, space-joined) to `logPath` and exits 0, then
- *  returns `dir` prepended onto `PATH` so a child process resolves the fake
- *  binary instead of the real one. */
-function fakeIsolationBinDir(logPath: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-bin-"));
-  for (const name of ["unshare", "bwrap"]) {
-    const scriptPath = join(dir, name);
-    writeFileSync(scriptPath, `#!/bin/sh\necho "${name} $*" >> ${JSON.stringify(logPath)}\nexit 0\n`, { mode: 0o755 });
-  }
-  return dir;
+/** Shim body that appends its full argv (one line, space-joined) to
+ *  `logPath` and exits 0 WITHOUT delegating to the real binary — unlike
+ *  the setup-command shims elsewhere in this file, these two tests need to
+ *  observe exactly which binary/argv shape `spawnWithNetworkIsolation`
+ *  invokes, not exercise a real isolated spawn. */
+function loggingShim(name: string, logPath: string): (realBinaryPath: string) => string {
+  return (_realBinaryPath: string) => `#!/bin/sh\necho "${name} $*" >> ${JSON.stringify(logPath)}\nexit 0\n`;
 }
 
-test("spawnWithNetworkIsolation given an already-resolved mechanism does NOT re-probe (no unshare/bwrap probe invocation)", async () => {
+async function withBothLaunchersLoggingShimmed<T>(logPath: string, fn: () => Promise<T>): Promise<T> {
+  return withShimmedTrustedBinary("unshare", loggingShim("unshare", logPath), () =>
+    withShimmedTrustedBinary("bwrap", loggingShim("bwrap", logPath), fn)
+  );
+}
+
+test("spawnWithNetworkIsolation given an already-resolved mechanism does NOT re-probe (no unshare/bwrap probe invocation)", {
+  skip: !bindMountCapable,
+}, async () => {
   const logDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-log-"));
   const logPath = join(logDir, "invocations.log");
   writeFileSync(logPath, "");
-  const fakeBinDir = fakeIsolationBinDir(logPath);
-  const fakePath = `${fakeBinDir}:${process.env.PATH ?? ""}`;
-  // detectMechanism()'s isNamespaceIsolationAvailable() probe (when it runs
-  // at all — the whole point of this test is that it must NOT) runs
-  // spawnSync in THIS process using THIS process's env/PATH, not the
-  // spawned child's — so the fake binaries must be resolvable from here too.
-  const realPath = process.env.PATH;
-  process.env.PATH = fakePath;
 
   try {
-    const exitCode = await new Promise<number | null>((resolve) => {
-      const child = spawnWithNetworkIsolation("node", ["-e", "process.exit(0)"], {
-        isolate: "bwrap",
-        stdio: "ignore",
-        env: { ...process.env, PATH: fakePath },
+    await withBothLaunchersLoggingShimmed(logPath, async () => {
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation("node", ["-e", "process.exit(0)"], {
+          isolate: "bwrap",
+          stdio: "ignore",
+        });
+        child.on("close", resolveExit);
       });
-      child.on("close", resolve);
-    });
-    assert.equal(exitCode, 0);
+      assert.equal(exitCode, 0);
 
-    const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
-    // Exactly one bwrap call: the ACTUAL wrapped spawn (`bwrap --unshare-net
-    // ... -- sh -c ...`), never a probe call (`bwrap --unshare-net
-    // --dev-bind / / true`, no trailing `-- sh -c`) and never an `unshare`
-    // call at all — proving detectMechanism()'s `isNamespaceIsolationAvailable()`
-    // re-probe path was never taken when the mechanism was already known.
-    assert.equal(
-      invocations.length,
-      1,
-      `expected exactly one fake-binary invocation (the real spawn, no probe); got ${JSON.stringify(invocations)}`
-    );
-    assert.ok(
-      invocations[0]?.startsWith("bwrap "),
-      `expected the one invocation to be bwrap; got ${JSON.stringify(invocations)}`
-    );
-    assert.ok(
-      invocations[0]?.includes("-- sh -c"),
-      `expected the real wrapped-spawn argv shape, not a probe; got ${JSON.stringify(invocations)}`
-    );
+      const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+      // Exactly one bwrap call: the ACTUAL wrapped spawn (`bwrap --unshare-net
+      // ... -- sh -c ...`), never a probe call (`bwrap --unshare-net
+      // --dev-bind / / true`, no trailing `-- sh -c`) and never an `unshare`
+      // call at all — proving detectMechanism()'s `isNamespaceIsolationAvailable()`
+      // re-probe path was never taken when the mechanism was already known.
+      assert.equal(
+        invocations.length,
+        1,
+        `expected exactly one fake-binary invocation (the real spawn, no probe); got ${JSON.stringify(invocations)}`
+      );
+      assert.ok(
+        invocations[0]?.startsWith("bwrap "),
+        `expected the one invocation to be bwrap; got ${JSON.stringify(invocations)}`
+      );
+      assert.ok(
+        invocations[0]?.includes("-- sh -c"),
+        `expected the real wrapped-spawn argv shape, not a probe; got ${JSON.stringify(invocations)}`
+      );
+    });
   } finally {
-    process.env.PATH = realPath;
     rmSync(logDir, { recursive: true, force: true });
-    rmSync(fakeBinDir, { recursive: true, force: true });
   }
 });
 
-test("spawnWithNetworkIsolation given a bare `true` DOES re-probe (documents the boolean fallback path's cost, for contrast)", async () => {
+test("spawnWithNetworkIsolation given a bare `true` DOES re-probe (documents the boolean fallback path's cost, for contrast)", {
+  skip: !bindMountCapable,
+}, async () => {
   const logDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-log-"));
   const logPath = join(logDir, "invocations.log");
   writeFileSync(logPath, "");
-  const fakeBinDir = fakeIsolationBinDir(logPath);
-  const fakePath = `${fakeBinDir}:${process.env.PATH ?? ""}`;
-  const realPath = process.env.PATH;
-  process.env.PATH = fakePath;
 
   try {
-    const exitCode = await new Promise<number | null>((resolve) => {
-      const child = spawnWithNetworkIsolation("node", ["-e", "process.exit(0)"], {
-        isolate: true,
-        stdio: "ignore",
-        env: { ...process.env, PATH: fakePath },
+    await withBothLaunchersLoggingShimmed(logPath, async () => {
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation("node", ["-e", "process.exit(0)"], {
+          isolate: true,
+          stdio: "ignore",
+        });
+        child.on("close", resolveExit);
       });
-      child.on("close", resolve);
-    });
-    assert.equal(exitCode, 0);
+      assert.equal(exitCode, 0);
 
-    const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
-    // A bare `true` forces detectMechanism() to call isNamespaceIsolationAvailable(),
-    // which probes `unshare` first (the fake shim reports success, so the
-    // probe reports mechanism "unshare" without ever trying bwrap — but the
-    // point is a probe call happens AT ALL, unlike the resolved-mechanism
-    // case above) before the real wrapped spawn.
-    assert.ok(
-      invocations.length >= 2,
-      `expected at least a probe call plus the real spawn call; got ${JSON.stringify(invocations)}`
-    );
+      const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+      // A bare `true` forces detectMechanism() to call isNamespaceIsolationAvailable(),
+      // which probes `unshare` first (the fake shim reports success, so the
+      // probe reports mechanism "unshare" without ever trying bwrap — but the
+      // point is a probe call happens AT ALL, unlike the resolved-mechanism
+      // case above) before the real wrapped spawn.
+      assert.ok(
+        invocations.length >= 2,
+        `expected at least a probe call plus the real spawn call; got ${JSON.stringify(invocations)}`
+      );
+    });
   } finally {
-    process.env.PATH = realPath;
     rmSync(logDir, { recursive: true, force: true });
-    rmSync(fakeBinDir, { recursive: true, force: true });
   }
 });
 

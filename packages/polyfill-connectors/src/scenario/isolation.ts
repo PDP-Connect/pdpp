@@ -209,7 +209,17 @@
  */
 
 import { type ChildProcess, type SpawnOptions, spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -234,6 +244,97 @@ export type IsolationMechanism = "unshare" | "bwrap";
 export type NamespaceIsolationCapability =
   | { available: true; mechanism: IsolationMechanism }
   | { available: false; reason: string };
+
+/**
+ * The same fixed, absolute directory list as `TRUSTED_SETUP_PATH`, as an
+ * array — used by `resolveTrustedLauncherPath` below to find the LAUNCHER
+ * binaries themselves (`unshare`, `bwrap`), not the setup commands the
+ * launched shell script runs. Kept as a literal array (not derived by
+ * splitting `TRUSTED_SETUP_PATH`) so the two stay independently readable at
+ * their own call sites, but the values are the same list for the same
+ * reason: this is the operating system's own set of locations for trusted,
+ * privileged system binaries, nothing caller- or environment-specific.
+ */
+const TRUSTED_LAUNCHER_DIRECTORIES: readonly string[] = ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
+
+/**
+ * TRUSTED LAUNCHER RESOLUTION (P1, external review of ab415be6c) — resolves
+ * the `unshare`/`bwrap` binary this module actually spawns to ONE fixed,
+ * absolute path, found by walking `TRUSTED_LAUNCHER_DIRECTORIES` in order,
+ * rather than letting `node:child_process`'s `spawn`/`spawnSync` resolve a
+ * bare command NAME through the calling process's own inherited `$PATH`.
+ *
+ * WHAT THIS CLOSES: before this fix, `probeUnshare()`/`probeBwrap()` (the
+ * CAPABILITY CHECK) and `spawnWithNetworkIsolation` (the REAL EXECUTION)
+ * both called `spawnSync("unshare", ...)`/`spawn("bwrap", ...)` — a bare
+ * command name. Node resolves a bare command name by searching the
+ * CALLING PROCESS's own `PATH` environment variable, entry by entry, and
+ * uses the FIRST match — exactly the same "attacker prepends a directory
+ * ahead of the real one" shape `TRUSTED_SETUP_PATH` already closes for the
+ * commands INSIDE the isolated child's own setup script (`mount`,
+ * `pivot_root`, ...), but that fix never touched the launcher itself: a
+ * caller (or a compromised connector's own environment mutation, since this
+ * package's own subprocess env construction is caller-controlled) could
+ * still prepend a directory containing a same-named `unshare` or `bwrap` to
+ * `process.env.PATH` before this module ran, and that fake binary — not the
+ * real, trusted one — is what actually got spawned with this process's own
+ * privileges. Both the capability PROBE and the real EXECUTION resolved the
+ * bare name independently, so a caller could even see a probe report
+ * `available: true` against the REAL binary, then have the real spawn moments
+ * later silently run the FAKE one instead (or vice versa) if `PATH` changed
+ * in between — this fix removes that gap entirely by resolving once, from a
+ * `PATH`-independent source of truth, and threading the SAME resolved
+ * absolute path through both call sites.
+ *
+ * RESOLUTION: walks `TRUSTED_LAUNCHER_DIRECTORIES` in the FIXED order given
+ * — never the caller's `$PATH`, never any other environment-derived list —
+ * and returns the first `${dir}/${name}` that exists and is executable
+ * (`X_OK`). A symlink at that path (e.g. a merged-usr host's `/bin/unshare`
+ * pointing into `/usr/bin/unshare`, or vice versa) is followed to its real
+ * target via `realpathSync` before being returned, so the value callers spawn
+ * is always a concrete file, not a path whose target could be swapped out
+ * from under a cached lookup by re-pointing a symlink. Throws (fails closed,
+ * never silently falls back to a bare, PATH-resolved name) when NO trusted
+ * directory has the binary — a host missing `unshare`/`bwrap` entirely from
+ * every trusted location cannot isolate, and this module must say so loudly
+ * rather than let `spawn` fall through to an unaudited `$PATH` lookup as an
+ * implicit fallback.
+ *
+ * CACHED per (name), computed once per process — the trusted directories are
+ * fixed, real filesystem locations, not expected to change during a single
+ * run, and this resolution runs on every probe and every isolated spawn, so
+ * memoizing avoids repeating four `existsSync`+`accessSync` checks (up to
+ * eight, across both binaries) on every single replay run in a scenario with
+ * many runs.
+ */
+const trustedLauncherPathCache = new Map<string, string>();
+
+/** Exported for `isolation-mechanism.test.ts`'s direct unit-level proof that
+ *  resolution is `$PATH`-independent — production code never needs to call
+ *  this from outside the module, every internal call site already does. */
+export function resolveTrustedLauncherPath(name: "unshare" | "bwrap"): string {
+  const cached = trustedLauncherPathCache.get(name);
+  if (cached !== undefined) {
+    return cached;
+  }
+  for (const dir of TRUSTED_LAUNCHER_DIRECTORIES) {
+    const candidate = join(dir, name);
+    if (!existsSync(candidate)) {
+      continue;
+    }
+    try {
+      accessSync(candidate, constants.X_OK);
+    } catch {
+      continue;
+    }
+    const resolved = realpathSync(candidate);
+    trustedLauncherPathCache.set(name, resolved);
+    return resolved;
+  }
+  throw new Error(
+    `pdpp isolation: trusted launcher '${name}' not found in any trusted location (${TRUSTED_LAUNCHER_DIRECTORIES.join(", ")}) — refusing to fall back to a PATH-resolved lookup`
+  );
+}
 
 /**
  * Shell statements that mount and verify a fresh procfs, shared verbatim
@@ -311,7 +412,13 @@ function unshareProcMountProbeArgv(): string[] {
  * in well under a second so the cost of asking is negligible.
  */
 function probeUnshare(): NamespaceIsolationCapability {
-  const probe = spawnSync("unshare", unshareProcMountProbeArgv(), {
+  let unsharePath: string;
+  try {
+    unsharePath = resolveTrustedLauncherPath("unshare");
+  } catch (err) {
+    return { available: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+  const probe = spawnSync(unsharePath, unshareProcMountProbeArgv(), {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 5000,
   });
@@ -405,9 +512,15 @@ export function isNamespaceIsolationAvailable(): NamespaceIsolationCapability {
  * invokes.
  */
 function probeBwrap(): NamespaceIsolationCapability {
+  let bwrapPath: string;
+  try {
+    bwrapPath = resolveTrustedLauncherPath("bwrap");
+  } catch (err) {
+    return { available: false, reason: err instanceof Error ? err.message : String(err) };
+  }
   const probeWorkspace = mkdtempSync(join(tmpdir(), "pdpp-isolation-bwrap-probe-"));
   try {
-    const probe = spawnSync("bwrap", bwrapArgvForFilesystemClosure("true", [], probeWorkspace), {
+    const probe = spawnSync(bwrapPath, bwrapArgvForFilesystemClosure("true", [], probeWorkspace), {
       stdio: ["ignore", "ignore", "pipe"],
       timeout: 5000,
     });
@@ -813,6 +926,7 @@ function requiredFhsCompatSymlinks(): readonly FhsCompatSymlink[] {
  * (including `ip link set lo up`) runs.
  */
 const TRUSTED_SETUP_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
+
 
 /**
  * The single fixed exit code every mandatory setup step in
@@ -1221,7 +1335,11 @@ export function spawnWithNetworkIsolation(
   ensureSandboxScratchDirs(filesystemBindPath);
   const mechanism = isolate === true ? detectMechanism() : isolate;
   if (mechanism === "bwrap") {
-    return spawn("bwrap", bwrapArgvForFilesystemClosure(cmd, args, filesystemBindPath), spawnOpts);
+    // TRUSTED LAUNCHER (P1, external review of ab415be6c): resolved via
+    // resolveTrustedLauncherPath, never a bare "bwrap" name that node:
+    // child_process would otherwise resolve through this process's own
+    // inherited $PATH — see that function's doc comment.
+    return spawn(resolveTrustedLauncherPath("bwrap"), bwrapArgvForFilesystemClosure(cmd, args, filesystemBindPath), spawnOpts);
   }
   const innerCommand = [cmd, ...args].map(shQuote).join(" ");
   // `spawnOpts.cwd` (a `string | URL | undefined` per `SpawnOptions`) is
@@ -1242,8 +1360,13 @@ export function spawnWithNetworkIsolation(
   // does not alter), so it intentionally stays a best-effort step, not
   // wrapped in `req`.
   const shScript = `PATH=${TRUSTED_SETUP_PATH}; ip link set lo up >/dev/null 2>&1; ${closurePrelude}; exec ${innerCommand}`;
+  // TRUSTED LAUNCHER (P1, external review of ab415be6c): resolved via
+  // resolveTrustedLauncherPath, never a bare "unshare" name — see that
+  // function's doc comment. Note this is the LAUNCHER binary itself; the
+  // commands INSIDE the shell script it runs (mount, pivot_root, ...) are
+  // separately trusted via TRUSTED_SETUP_PATH above.
   return spawn(
-    "unshare",
+    resolveTrustedLauncherPath("unshare"),
     ["--map-root-user", "--net", "--mount", "--pid", "--ipc", "--uts", "--fork", "--", "sh", "-c", shScript],
     spawnOpts
   );
