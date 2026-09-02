@@ -476,6 +476,178 @@ test("recordRecoveryReceipt does NOT flip an incomplete attempt's disposition to
   });
 });
 
+// ── P1-3: strict RecoveryReceipt validation — the scanner must block every one of these ──
+//
+// Each test writes exactly the bytes the reviewer names directly to
+// `<attemptId>.recovery.json` (bypassing `recordRecoveryReceipt`, which
+// itself can never produce these malformed shapes), then proves
+// `scanForIncompleteOrCorrupt` blocks on it rather than silently retiring
+// the attempt — the reviewer's exact fail-open scenario
+// (`if (recoveryExists) continue` with no parsing at all).
+
+async function issuedAttempt(root: string): Promise<string> {
+  const attemptId = randomUUID();
+  await issueAttemptMarker(root, attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+  return attemptId;
+}
+
+test("recovery scanner: blocks on a zero-byte recovery file", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), "");
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
+  });
+});
+
+test("recovery scanner: blocks on a truncated-JSON recovery file", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), '{"schema":"mutation-falsification.marker.recov');
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
+  });
+});
+
+test("recovery scanner: blocks on a wrong-schema recovery file", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    const bad = { schema: "wrong/v0", attemptId, operatorClaim: "x", observations: "y", disposition: "retired_incomplete", retainedEvidence: [], recordedAt: new Date().toISOString() };
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
+  });
+});
+
+test("recovery scanner: blocks on a recovery file whose own attemptId does not match its filename", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    const bad = {
+      schema: "mutation-falsification.marker.recovery/v1",
+      attemptId: randomUUID(), // wrong attemptId — does not match the filename
+      operatorClaim: "x",
+      observations: "y",
+      disposition: "retired_incomplete",
+      retainedEvidence: [],
+      recordedAt: new Date().toISOString(),
+    };
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
+  });
+});
+
+test("recovery scanner: blocks on an orphan recovery — no corresponding issued marker", async () => {
+  await withTempRoot(async (root) => {
+    await mkdir(resolve(root, "markers"), { recursive: true });
+    const attemptId = randomUUID(); // never issued
+    const receipt = {
+      schema: "mutation-falsification.marker.recovery/v1",
+      attemptId,
+      operatorClaim: "x",
+      observations: "y",
+      disposition: "retired_incomplete",
+      retainedEvidence: [],
+      recordedAt: new Date().toISOString(),
+    };
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(receipt));
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /orphan/);
+  });
+});
+
+test("recovery scanner: blocks on recovery-after-completion — a completed receipt also exists for the same attempt", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await publishCompleteReceipt(root, receipt);
+    // A recovery receipt filed AFTER the attempt was already completed —
+    // never a valid claim ("retire an incomplete attempt" when it wasn't
+    // incomplete at all).
+    const recovery = {
+      schema: "mutation-falsification.marker.recovery/v1",
+      attemptId: receipt.attemptId,
+      operatorClaim: "x",
+      observations: "y",
+      disposition: "retired_incomplete",
+      retainedEvidence: [],
+      recordedAt: new Date().toISOString(),
+    };
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.recovery.json`), JSON.stringify(recovery));
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /recovery-after-completion|also exists/);
+  });
+});
+
+test("recovery scanner: blocks on a duplicate recovery — recordRecoveryReceipt itself refuses a second write for the same attempt", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    await recordRecoveryReceipt(root, attemptId, "tim", "observed once");
+    await assert.rejects(() => recordRecoveryReceipt(root, attemptId, "tim", "observed twice"), /already exists/);
+    // The first, valid recovery is unaffected — scan still passes clean.
+    const found = await scanForIncompleteOrCorrupt(root);
+    assert.deepEqual(found, []);
+  });
+});
+
+test("recovery scanner: blocks on a leftover recovery temp file from an interrupted publish", async () => {
+  await withTempRoot(async (root) => {
+    await mkdir(resolve(root, "markers"), { recursive: true });
+    await writeFile(resolve(root, "markers", `.${randomUUID()}.recovery.json.tmp-${randomUUID()}`), "{}");
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /leftover_temp_file/);
+  });
+});
+
+test("recovery scanner: blocks on missing observations field", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", disposition: "retired_incomplete", retainedEvidence: [], recordedAt: new Date().toISOString() };
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
+  });
+});
+
+test("recovery scanner: blocks on an empty-string observations field (present but invalid)", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", observations: "", disposition: "retired_incomplete", retainedEvidence: [], recordedAt: new Date().toISOString() };
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
+  });
+});
+
+test("recovery scanner: blocks on a non-array retainedEvidence field", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", observations: "y", disposition: "retired_incomplete", retainedEvidence: "not-an-array", recordedAt: new Date().toISOString() };
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
+  });
+});
+
+test("recovery scanner: blocks on an invalid disposition value", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", observations: "y", disposition: "something_else", retainedEvidence: [], recordedAt: new Date().toISOString() };
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
+  });
+});
+
+test("recovery scanner: blocks on a missing/invalid timestamp", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", observations: "y", disposition: "retired_incomplete", retainedEvidence: [], recordedAt: "not-a-timestamp" };
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
+  });
+});
+
+test("recordRecoveryReceipt: publishes via a staged, fsynced, no-replace commit (temp file never left behind, final file present)", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    await recordRecoveryReceipt(root, attemptId, "tim", "verified clean");
+    const { readdir } = await import("node:fs/promises");
+    const entries = await readdir(resolve(root, "markers"));
+    assert.ok(entries.includes(`${attemptId}.recovery.json`));
+    assert.ok(!entries.some((e) => e.includes(".recovery.json.tmp-")));
+  });
+});
+
 test("checkBudget throws before accepting an attempt that would exceed maxRetainedBytes", async () => {
   await withTempRoot(async (root) => {
     const policy: EvidenceStorePolicy = {

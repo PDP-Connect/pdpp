@@ -66,6 +66,7 @@ interface IssuedMarker {
   issuedAt: string;
   schema: typeof ISSUED_MARKER_SCHEMA;
 }
+const RECOVERY_RECEIPT_SCHEMA = "mutation-falsification.marker.recovery/v1" as const;
 interface RecoveryReceipt {
   attemptId: string;
   disposition: "retired_incomplete";
@@ -73,7 +74,64 @@ interface RecoveryReceipt {
   operatorClaim: string;
   recordedAt: string;
   retainedEvidence: string[];
-  schema: "mutation-falsification.marker.recovery/v1";
+  schema: typeof RECOVERY_RECEIPT_SCHEMA;
+}
+
+/**
+ * Strict, fail-closed validation of a parsed recovery receipt — the exact
+ * gap the reviewer found: `scanForIncompleteOrCorrupt` previously only
+ * checked `fileExists(recoveryPath(...))`, never parsing or validating the
+ * file at all, so ANY bytes at `<attemptId>.recovery.json` — zero-length,
+ * truncated JSON, wrong schema, wrong attemptId, an orphan recovery with no
+ * issued marker, or a recovery filed for an attempt that was ALREADY
+ * completed — silently retired the attempt. Every field the spec requires
+ * (operator claim, observations, disposition, timestamp, retained evidence)
+ * is checked here; `expectedAttemptId` is the filename-derived id, which
+ * must equal the receipt's own claimed `attemptId` byte-for-byte.
+ */
+function validateRecoveryReceipt(value: unknown, expectedAttemptId: string): RecoveryReceipt {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("recovery receipt must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.schema !== RECOVERY_RECEIPT_SCHEMA) {
+    throw new Error(`recovery receipt has unsupported schema: ${String(record.schema)}`);
+  }
+  if (typeof record.attemptId !== "string" || !UUID_PATTERN.test(record.attemptId)) {
+    throw new Error("recovery receipt attemptId must be a UUID");
+  }
+  if (record.attemptId !== expectedAttemptId) {
+    throw new Error(
+      `recovery receipt attemptId ${record.attemptId} does not match its own filename-derived attemptId ${expectedAttemptId}`
+    );
+  }
+  if (record.disposition !== "retired_incomplete") {
+    throw new Error(`recovery receipt disposition must be exactly "retired_incomplete", got ${JSON.stringify(record.disposition)}`);
+  }
+  if (typeof record.operatorClaim !== "string" || record.operatorClaim.length === 0) {
+    throw new Error("recovery receipt operatorClaim must be a non-empty string");
+  }
+  if (typeof record.observations !== "string" || record.observations.length === 0) {
+    throw new Error("recovery receipt observations must be a non-empty string");
+  }
+  if (typeof record.recordedAt !== "string" || Number.isNaN(new Date(record.recordedAt).valueOf())) {
+    throw new Error("recovery receipt recordedAt must be an ISO-8601 instant");
+  }
+  if (
+    !Array.isArray(record.retainedEvidence) ||
+    !record.retainedEvidence.every((entry) => typeof entry === "string" && entry.length > 0)
+  ) {
+    throw new Error("recovery receipt retainedEvidence must be an array of non-empty strings");
+  }
+  return {
+    schema: RECOVERY_RECEIPT_SCHEMA,
+    attemptId: record.attemptId,
+    operatorClaim: record.operatorClaim,
+    observations: record.observations,
+    disposition: "retired_incomplete",
+    retainedEvidence: record.retainedEvidence,
+    recordedAt: record.recordedAt,
+  };
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -701,6 +759,82 @@ async function findChainInconsistencies(root: string, completedAttemptIds: strin
     }));
 }
 
+/** True only if `attemptId` has a recovery receipt that both parses AND passes full `validateRecoveryReceipt` validation — never merely "a file exists at that path". */
+async function hasValidRecoveryReceipt(root: string, attemptId: string): Promise<boolean> {
+  try {
+    const raw = await readFile(recoveryPath(root, attemptId), "utf8");
+    validateRecoveryReceipt(JSON.parse(raw), attemptId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates every `*.recovery.json` and `*.recovery.json.tmp-*` file found
+ * in the markers directory — the reviewer's exact fail-open scenario:
+ * `if (recoveryExists) continue` never parsed the file at all, so zero-byte,
+ * truncated, wrong-schema, or wrong-attemptId bytes at that path silently
+ * retired an incomplete attempt. Blocks on:
+ *
+ *   - a corrupt/malformed recovery file (zero-byte, truncated JSON, wrong
+ *     schema, wrong attemptId, missing/invalid fields — all funneled
+ *     through `validateRecoveryReceipt`);
+ *   - an "orphan" recovery — no corresponding issued marker for its
+ *     attemptId, so there is nothing to retire in the first place;
+ *   - "recovery after completion" — a completed receipt ALSO exists for
+ *     the same attemptId, so the attempt was never actually incomplete;
+ *   - a duplicate recovery — more than one recovery file resolves to the
+ *     same attemptId (only possible via direct filesystem tampering, since
+ *     `writeNewFsynced`'s `"wx"` already refuses a second write through
+ *     `recordRecoveryReceipt` itself);
+ *   - a leftover `*.recovery.json.tmp-*` file from an interrupted publish.
+ */
+async function findRecoveryProblems(root: string, dir: string, entries: string[], issuedAttemptIds: Set<string>): Promise<IncompleteOrCorruptMarker[]> {
+  const found: IncompleteOrCorruptMarker[] = [];
+  for (const entry of entries.filter((name) => name.includes(".recovery.json.tmp-"))) {
+    found.push({
+      attemptId: entry.split(".recovery.json.tmp-")[0] ?? entry,
+      reason: "leftover_temp_file",
+      detail: `${entry} is a leftover temp file from an interrupted recovery-receipt publish`,
+    });
+  }
+  const recoveryEntries = entries.filter((name) => name.endsWith(".recovery.json"));
+  const seenAttemptIds = new Set<string>();
+  for (const entry of recoveryEntries) {
+    const attemptId = basename(entry, ".recovery.json");
+    if (seenAttemptIds.has(attemptId)) {
+      found.push({ attemptId, reason: "corrupt", detail: `duplicate recovery receipt for attempt ${attemptId}` });
+      continue;
+    }
+    seenAttemptIds.add(attemptId);
+    let receipt: RecoveryReceipt;
+    try {
+      const raw = await readFile(resolve(dir, entry), "utf8");
+      receipt = validateRecoveryReceipt(JSON.parse(raw), attemptId);
+    } catch (error) {
+      found.push({ attemptId, reason: "corrupt", detail: `${entry} failed validation: ${(error as Error).message}` });
+      continue;
+    }
+    if (!issuedAttemptIds.has(receipt.attemptId)) {
+      found.push({
+        attemptId,
+        reason: "orphan_completion",
+        detail: `${entry} has no corresponding issued marker — an orphan recovery receipt`,
+      });
+      continue;
+    }
+    if (await fileExists(completedPath(root, attemptId))) {
+      found.push({
+        attemptId,
+        reason: "intent_mismatch",
+        detail: `${entry} claims to retire attempt ${attemptId}, but a completed receipt also exists for it — recovery-after-completion is never valid`,
+      });
+    }
+  }
+  return found;
+}
+
 /** Validates every issued marker: corrupt marker, retired-by-recovery (skipped, not incomplete), issued-without-completion, corrupt completion, or an intent mismatch against its own completed receipt. */
 async function findIssuedMarkerProblems(root: string, dir: string, issuedEntries: string[]): Promise<IncompleteOrCorruptMarker[]> {
   const found: IncompleteOrCorruptMarker[] = [];
@@ -717,8 +851,10 @@ async function findIssuedMarkerProblems(root: string, dir: string, issuedEntries
     // Retired-by-recovery markers are not "incomplete" — they are an
     // explicit, separately recorded operator disposition, not a silently
     // completed attempt (recordRecoveryReceipt never writes a `.completed`
-    // file; a recovery receipt is checked for on its own, distinct path).
-    if (await fileExists(recoveryPath(root, attemptId))) {
+    // file; a recovery receipt's own VALIDITY is checked separately by
+    // `findRecoveryProblems` — this only needs to know whether a genuinely
+    // valid one exists, never merely whether a file of that name exists).
+    if (await hasValidRecoveryReceipt(root, attemptId)) {
       continue;
     }
     if (!(await fileExists(completedPath(root, attemptId)))) {
@@ -771,6 +907,7 @@ export async function scanForIncompleteOrCorrupt(root: string): Promise<Incomple
   found.push(...findLeftoverTempFiles(entries));
   found.push(...findOrphanCompletions(completedAttemptIds, issuedAttemptIds));
   found.push(...(await findChainInconsistencies(root, completedAttemptIds)));
+  found.push(...(await findRecoveryProblems(root, dir, entries, issuedAttemptIds)));
   found.push(...(await findIssuedMarkerProblems(root, dir, entries.filter((name) => name.endsWith(".issued.json")))));
 
   if (found.length > 0) {
@@ -798,6 +935,14 @@ async function fileExists(path: string): Promise<boolean> {
  * completed. A reader that only ever consults `completedPath` (e.g. any
  * caller reading published attempt receipts) will never see this attempt
  * become completed via this path.
+ *
+ * STAGED, fsynced, NO-REPLACE publication — same discipline as
+ * `publishCompleteReceipt`'s own commit: write+fsync a temp file first,
+ * then NO-REPLACE `link` it to the final path (fails loudly with EEXIST on
+ * a second recovery for the same attemptId, rather than a bare `"wx"`
+ * create on the final path directly, which — unlike `link` from an
+ * already-fsynced temp file — would let a concurrent reader observe a
+ * partially-written file mid-write), then fsync the markers directory.
  */
 export async function recordRecoveryReceipt(
   root: string,
@@ -808,7 +953,7 @@ export async function recordRecoveryReceipt(
 ): Promise<void> {
   await mkdir(markersDir(root), { recursive: true });
   const receipt: RecoveryReceipt = {
-    schema: "mutation-falsification.marker.recovery/v1",
+    schema: RECOVERY_RECEIPT_SCHEMA,
     attemptId,
     operatorClaim,
     observations,
@@ -816,7 +961,34 @@ export async function recordRecoveryReceipt(
     retainedEvidence: [],
     recordedAt: new Date().toISOString(),
   };
-  await writeNewFsynced(recoveryPath(root, attemptId), receipt);
+  const finalPath = recoveryPath(root, attemptId);
+  const tempPath = resolve(markersDir(root), `.${attemptId}.recovery.json.tmp-${randomUUID()}`);
+  const fd = await open(tempPath, "wx");
+  try {
+    await fd.writeFile(`${JSON.stringify(receipt, null, 2)}\n`);
+    await fd.sync();
+  } finally {
+    await fd.close();
+  }
+  try {
+    await link(tempPath, finalPath);
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "EEXIST") {
+      throw new Error(
+        `mutation-falsification evidence store: refusing to record a recovery receipt for attempt ${attemptId} — one already exists for it`
+      );
+    }
+    throw error;
+  } finally {
+    await unlink(tempPath).catch(() => undefined);
+  }
+  const dirFd = await open(markersDir(root), "r");
+  try {
+    await dirFd.sync();
+  } finally {
+    await dirFd.close();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
