@@ -9,12 +9,52 @@
  * commands; only these five symbols cross into shared components, so only these
  * live in the package.
  *
- * Source of truth for the package identity/specifier is `@pdpp/cli`'s
- * `package-info.ts`, imported the same relative way the apps do (the apps do
- * not declare `@pdpp/cli` as a named dependency; it resolves through the
- * workspace via this relative path).
+ * `@pdpp/cli`'s package identity/specifier constants used to live in
+ * `packages/cli/src/package-info.ts` and were imported from here via a
+ * relative path. That package moved to PDP-Connect/data-connect (Move B);
+ * this repo no longer has a local copy to import. `@pdpp/cli` is still a
+ * real, separately-published npm package (only its source moved), so the
+ * small, pure identity constants below are vendored directly here instead
+ * of reached for across a repo boundary — the same pattern
+ * `packages/reference-operations-sandbox` uses for the reference
+ * operations `apps/site` depends on.
  */
-import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../cli/src/package-info.ts";
+
+const PDPP_CLI_PACKAGE_NAME = "@pdpp/cli";
+const PDPP_CLI_BIN_NAME = "pdpp";
+// Single release channel: the published package rides npm's default
+// `latest` dist-tag, so the advertised specifier is the plain package name.
+const PDPP_CLI_PACKAGE_SPECIFIER = PDPP_CLI_PACKAGE_NAME;
+const PDPP_CLI_DEFAULT_CLIENT_ID = "pdpp_cli";
+const PDPP_CLI_NO_OWNER_TOKEN_POLICY = "owner_browser_approval_required";
+
+interface PdppCliPackageInfo {
+  binName: string;
+  defaultClientId: "pdpp_cli";
+  noOwnerToken: true;
+  noOwnerTokenPolicy: "owner_browser_approval_required";
+  packageName: string;
+  packageSpecifier: string;
+  runCommand: string;
+  versionPolicy: "latest";
+}
+
+function createPdppCliCommand(providerUrl = "<provider-url>"): string {
+  return `npx -y ${PDPP_CLI_PACKAGE_SPECIFIER} connect ${providerUrl}`;
+}
+
+function getPdppCliPackageInfo(providerUrl?: string): PdppCliPackageInfo {
+  return {
+    packageName: PDPP_CLI_PACKAGE_NAME,
+    packageSpecifier: PDPP_CLI_PACKAGE_SPECIFIER,
+    binName: PDPP_CLI_BIN_NAME,
+    defaultClientId: PDPP_CLI_DEFAULT_CLIENT_ID,
+    versionPolicy: "latest",
+    runCommand: createPdppCliCommand(providerUrl),
+    noOwnerToken: true,
+    noOwnerTokenPolicy: PDPP_CLI_NO_OWNER_TOKEN_POLICY,
+  };
+}
 
 export const PDPP_CLI_PROVIDER_PLACEHOLDER = "<provider-url>";
 export const pdppCliPackageInfo = getPdppCliPackageInfo(PDPP_CLI_PROVIDER_PLACEHOLDER);

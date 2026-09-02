@@ -629,34 +629,20 @@ test("mutation-kill: a compound (non-code-shaped) ensureSession throw does NOT g
   );
 });
 
-test("the recovered code round-trips through the actual redaction the connector_error_message column applies (proves the fix, not just the plumbing)", async () => {
-  const { boundConnectorErrorCode, boundConnectorErrorMessage } = await import(
-    "../../../reference-implementation/runtime/connector-gap-bounding.ts"
-  );
-  await assert.rejects(
-    establishSession(
-      {
-        ensureSession: () => {
-          throw new Error("heb_verification_code_not_provided");
-        },
-        probeSession: undefined,
-      },
-      makeEstablishArgs("heb")
-    ),
-    (err: unknown) => {
-      assert.ok(err instanceof Error);
-      const typedErr = err as { code?: string; message: string };
-      // This reproduces the exact defect: the redacted message alone is
-      // useless.
-      assert.equal(boundConnectorErrorMessage(typedErr.message), "heb_session_failed: [REDACTED]");
-      // But the code channel — now populated by the fix — survives
-      // boundConnectorErrorCode's validation untouched and unredacted, giving
-      // the operator an actionable reason even though `message` was nuked.
-      assert.equal(boundConnectorErrorCode(typedErr.code), "heb_verification_code_not_provided");
-      return true;
-    }
-  );
-});
+// A third test used to live here: "the recovered code round-trips through
+// the actual redaction the connector_error_message column applies (proves
+// the fix, not just the plumbing)". It dynamically imported
+// boundConnectorErrorCode/boundConnectorErrorMessage from
+// reference-implementation/runtime/connector-gap-bounding.ts specifically
+// to exercise the REAL server-side redaction logic, not a local
+// reimplementation — that was the whole point of the test (see its own
+// name). reference-implementation/ moved to PDP-Connect/data-connect (Move
+// B); this repo can no longer import that module, and vendoring a copy
+// would defeat the test's actual purpose (proving behavior against the
+// real implementation, not a maybe-drifted stand-in). Removed rather than
+// weakened. The two tests above it still cover this file's own
+// establishSession code-vs-message behavior without needing the redaction
+// module.
 
 // ─── bounded capture during teardown ────────────────────────────────────────
 

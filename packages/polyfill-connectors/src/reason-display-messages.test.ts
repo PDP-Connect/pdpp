@@ -43,7 +43,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { RUNTIME_GENERIC_REASON_CODES } from "../../../reference-implementation/runtime/recovery-reason-codes.ts";
+import { RUNTIME_GENERIC_REASON_CODES } from "./recovery-reason-codes.ts";
 import { connectorReasonDisplayMessages } from "./reason-display-messages.ts";
 import { DETAIL_GAP_MESSAGE_REASON_LITERALS, scanConnectorForReasonEmissions } from "./reason-emission-scan.ts";
 

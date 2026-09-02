@@ -7,7 +7,6 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { storageProfileEnvironment } from "../../reference-implementation/scripts/test-profile-env.ts";
 import { runAuthority, suiteEnvironment } from "./authority.ts";
 import {
   checkInventory,
@@ -23,7 +22,6 @@ import {
   RUN_COMPLETION_SCHEMA,
   readManifest,
   receiptBinding,
-  selectedRuns,
   TEST_SCRATCH_CAPABILITY_ENVIRONMENT,
   trackedFiles,
   treeDigest,
@@ -805,17 +803,6 @@ test("named skip mapping stays profile-aware AND fail-closed in both directions"
   // An unrecognized profile string fails closed rather than silently
   // returning an empty/permissive configured set.
   assert.throws(() => riConfiguredNamedSkipMappingIdentities("staging"), UNRECOGNIZED_RI_DEFAULT_PROFILE_PATTERN);
-});
-test("does not leak a caller PostgreSQL URL into the RI memory profile", () => {
-  assert.equal(
-    storageProfileEnvironment("memory-default", { PDPP_TEST_POSTGRES_URL: "postgres://caller", KEEP: "yes" })
-      .PDPP_TEST_POSTGRES_URL,
-    undefined
-  );
-  assert.equal(
-    storageProfileEnvironment("postgres", { PDPP_TEST_POSTGRES_URL: "postgres://selected" }).PDPP_TEST_POSTGRES_URL,
-    "postgres://selected"
-  );
 });
 test("parses accounting options exactly and does not accept authority-directory aliases", () => {
   assert.deepEqual(parseInventoryArgs(["--plan", "--suite", "node", "--profile", "default"]).suites, ["node"]);
