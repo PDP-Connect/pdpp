@@ -224,6 +224,34 @@ records arrived under. Until that is settled, an implementation SHOULD NOT issue
 an onward grant broader in scope or longer in duration than the grant under
 which it obtained the records.
 
+**Onward transfer by a third party is forbidden by default.** The two-grant
+chain above is not a licence for a client to pass its access along. A client
+holding a grant MUST NOT transfer, re-delegate, or otherwise make that access
+available to another party; a second party obtains access only through a grant
+the owner issues to it. This is the ordinary posture of the mechanisms PDPP
+profiles — an OAuth access token is not transferable to a third party, open
+banking authorizations are issued per recipient, and GNAP routes a new party
+back through the authorization server rather than allowing hand-off — and it
+follows directly from purpose limitation: a grant records the purpose the owner
+approved for one named requester, and a transfer would carry the access without
+the approval that scoped it.
+
+The two arrangements are distinct, and the distinction is where the owner's own
+personal server sits. A personal server that holds the owner's data is not a
+third party receiving transferred access: the copy it holds is the owner's own
+data, and the grant it issues to an app is issued fresh by the owner at that
+server. No delegation construct is involved, because no access is being passed
+along — the owner is authorizing, twice, in two places.
+
+In the passthrough posture, where the personal server does not retain a copy
+but reads from the platform to fulfill a request as it arrives, the owner's
+grant to their own server at the platform covers fulfillment for the clients
+that owner authorizes at that server. This is the account-aggregation
+precedent: the user's consent at the bank covers the services that user chose,
+and the bank never sees the downstream app. It is not onward transfer, because
+the same owner authorized both relationships, and the platform-side grant is
+held by the owner's own server rather than handed to anyone.
+
 A different topology — the owner running their own authorization server in front
 of a platform's data, so that the platform holds the data but the owner's server
 decides who may read it — is not introduced by this specification. It is the

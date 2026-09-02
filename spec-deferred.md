@@ -185,7 +185,9 @@ _Newly deferred (2026-09-02; raised in the 2026-08-19 working session)._
 
 **Why it is open:** A grant is immutable and bound to one `client_id`. A subgrant needs a rule for what the owner sees and approves, whether the subgrantee is visible to the owner at all, how revocation of the parent reaches the child, and whether a subgrant can outlive its parent. Answering it badly produces exactly the re-delegation surface the grant model exists to prevent.
 
-**v0.1 posture:** Out of scope. Access under a grant is not transferable, and a second party needs its own grant.
+**v0.1 posture: forbidden by default, not merely unspecified.** Core Section 3 states the rule: a client MUST NOT transfer or re-delegate its access, and a second party obtains access only through a grant the owner issues to it. What remains open is whether a future version should define a supervised mechanism that relaxes this — with owner visibility, bounded scope, and revocation that reaches the subgrantee — not whether transfer is permitted today.
+
+**Not this:** the owner's own personal server is not a subgrant case, and neither is the passthrough posture. Both are covered in Core Section 3, and both involve the same owner authorizing two relationships rather than one party passing access to another. A future subgrant design should be careful not to re-describe those as delegation.
 
 ### Change of client ownership and undisclosed sub-processing
 
