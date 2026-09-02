@@ -190,6 +190,14 @@ export interface AttemptReceipt {
   evidenceArtifacts: EvidenceArtifact[];
   /** List of environment variable NAMES only — never values. */
   environmentProfile: string[];
+  /**
+   * The exact `intentDigest` of the IntentPacket this attempt was ISSUED
+   * against (see `issueAttemptMarker`). `publishCompleteReceipt` requires
+   * this to match the issued marker's own `intentDigest` byte-for-byte
+   * before accepting the receipt — a completion can never be bound to any
+   * intent other than the one it was actually issued under.
+   */
+  intentDigest: string;
   judgeIdentity: string;
   mutantIdentity: string | null;
   policyVersion: string;
@@ -242,6 +250,7 @@ export function validateAttemptReceipt(value: unknown): AttemptReceipt {
   }
   const attemptId = requirePattern(record.attemptId, UUID_PATTERN, "attempt receipt attemptId");
   const trialKey = requirePattern(record.trialKey, HEX64_PATTERN, "attempt receipt trialKey");
+  const intentDigest = requirePattern(record.intentDigest, HEX64_PATTERN, "attempt receipt intentDigest");
   const policyVersion = requireString(record.policyVersion, "attempt receipt policyVersion");
   const baseCommitSha = requirePattern(record.baseCommitSha, HEX40_PATTERN, "attempt receipt baseCommitSha");
   const mutantIdentity =
@@ -281,6 +290,7 @@ export function validateAttemptReceipt(value: unknown): AttemptReceipt {
     schema: ATTEMPT_SCHEMA,
     attemptId,
     trialKey,
+    intentDigest,
     policyVersion,
     baseCommitSha,
     mutantIdentity,

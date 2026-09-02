@@ -30,10 +30,10 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, rename, stat } from "node:fs/promises";
+import { appendFile, link, mkdir, open, readdir, readFile, stat, unlink } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { contentDigest } from "../test-accounting/inventory.ts";
-import { digestOf, sha256Hex } from "./canonicalize.ts";
+import { digestOf, isHexDigest, sha256Hex } from "./canonicalize.ts";
 import { type AttemptReceipt, validateAttemptReceipt } from "./schemas.ts";
 
 export interface EvidenceStorePolicy {
@@ -59,11 +59,12 @@ export function evidenceRoot(policy: Pick<EvidenceStorePolicy, "evidenceRoot">):
   return policy.evidenceRoot;
 }
 
+const ISSUED_MARKER_SCHEMA = "mutation-falsification.marker.issued/v1" as const;
 interface IssuedMarker {
   attemptId: string;
   intentDigest: string;
   issuedAt: string;
-  schema: "mutation-falsification.marker.issued/v1";
+  schema: typeof ISSUED_MARKER_SCHEMA;
 }
 interface RecoveryReceipt {
   attemptId: string;
@@ -73,6 +74,46 @@ interface RecoveryReceipt {
   recordedAt: string;
   retainedEvidence: string[];
   schema: "mutation-falsification.marker.recovery/v1";
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Strict, fail-closed validation of a parsed issued marker — mirrors
+ * schemas.ts's hand-rolled validator pattern (never coerce/default a
+ * malformed field). `scanForIncompleteOrCorrupt` and `publishCompleteReceipt`
+ * both call this rather than a bare `JSON.parse`, so a marker with the right
+ * shape of JSON but a wrong schema string, non-UUID attemptId, or malformed
+ * intentDigest is treated as corrupt, not silently trusted.
+ */
+function validateIssuedMarker(value: unknown, expectedAttemptId?: string): IssuedMarker {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("issued marker must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.schema !== ISSUED_MARKER_SCHEMA) {
+    throw new Error(`issued marker has unsupported schema: ${String(record.schema)}`);
+  }
+  if (typeof record.attemptId !== "string" || !UUID_PATTERN.test(record.attemptId)) {
+    throw new Error("issued marker attemptId must be a UUID");
+  }
+  if (expectedAttemptId !== undefined && record.attemptId !== expectedAttemptId) {
+    throw new Error(
+      `issued marker attemptId ${record.attemptId} does not match its own filename-derived attemptId ${expectedAttemptId}`
+    );
+  }
+  if (typeof record.intentDigest !== "string" || !isHexDigest(record.intentDigest)) {
+    throw new Error("issued marker intentDigest must be a 64-character lowercase hex digest");
+  }
+  if (typeof record.issuedAt !== "string" || Number.isNaN(new Date(record.issuedAt).valueOf())) {
+    throw new Error("issued marker issuedAt must be an ISO-8601 instant");
+  }
+  return {
+    schema: ISSUED_MARKER_SCHEMA,
+    attemptId: record.attemptId,
+    intentDigest: record.intentDigest,
+    issuedAt: record.issuedAt,
+  };
 }
 
 function markersDir(root: string): string {
@@ -86,6 +127,10 @@ function completedPath(root: string, attemptId: string): string {
 }
 function recoveryPath(root: string, attemptId: string): string {
   return resolve(markersDir(root), `${attemptId}.recovery.json`);
+}
+/** The append-only, hash-chained log of every completion ever committed — see `appendCompletionChainEntry`. */
+function completionChainPath(root: string): string {
+  return resolve(root, "completions.chain.jsonl");
 }
 
 /** Same fsync-file-then-fsync-parent-directory pattern as authority.ts's writeNew — "wx" so a colliding name fails loudly. */
@@ -113,12 +158,100 @@ export async function issueAttemptMarker(
 ): Promise<void> {
   await mkdir(markersDir(root), { recursive: true });
   const marker: IssuedMarker = {
-    schema: "mutation-falsification.marker.issued/v1",
+    schema: ISSUED_MARKER_SCHEMA,
     attemptId,
     intentDigest: intentPacket.intentDigest,
     issuedAt: new Date().toISOString(),
   };
   await writeNewFsynced(issuedPath(root, attemptId), marker);
+}
+
+/**
+ * Appends one entry to the append-only, hash-chained completion log
+ * (`completions.chain.jsonl`). Each entry's `chainDigest` binds
+ * `attemptId` + `intentDigest` + `receiptDigest` + the PREVIOUS entry's
+ * `chainDigest` (or a fixed genesis string for the first entry), so
+ * altering, reordering, or deleting any earlier entry breaks every later
+ * entry's chain digest — this is what makes the log tamper-evident, not
+ * merely append-only by convention. `appendFile` with `"a"`-style semantics
+ * is used rather than a read-modify-write rewrite of the whole file, so two
+ * concurrent appends can never silently clobber each other's line (each
+ * `write(2)` of a line under 4KB is atomic on a POSIX-compliant filesystem
+ * for a file opened in append mode).
+ */
+const COMPLETION_CHAIN_GENESIS = "mutation-falsification.completion-chain.genesis/v1";
+interface CompletionChainEntry {
+  attemptId: string;
+  chainDigest: string;
+  intentDigest: string;
+  prevChainDigest: string;
+  receiptDigest: string;
+  recordedAt: string;
+  schema: "mutation-falsification.completion-chain-entry/v1";
+}
+
+async function readCompletionChain(root: string): Promise<CompletionChainEntry[]> {
+  let raw: string;
+  try {
+    raw = await readFile(completionChainPath(root), "utf8");
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  return raw
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as CompletionChainEntry);
+}
+
+/** Recomputes and verifies every link of the chain; throws with the first broken/tampered entry's attemptId. Exported so a caller (or test) can independently audit the ledger, not just trust that it was written correctly. */
+export async function verifyCompletionChain(root: string): Promise<CompletionChainEntry[]> {
+  const entries = await readCompletionChain(root);
+  let prevChainDigest = COMPLETION_CHAIN_GENESIS;
+  for (const entry of entries) {
+    if (entry.prevChainDigest !== prevChainDigest) {
+      throw new Error(
+        `mutation-falsification evidence store: completion chain broken at attempt ${entry.attemptId} — prevChainDigest does not match the preceding entry (tampered, reordered, or deleted entry)`
+      );
+    }
+    const expectedChainDigest = digestOf({
+      attemptId: entry.attemptId,
+      intentDigest: entry.intentDigest,
+      receiptDigest: entry.receiptDigest,
+      prevChainDigest: entry.prevChainDigest,
+    });
+    if (entry.chainDigest !== expectedChainDigest) {
+      throw new Error(
+        `mutation-falsification evidence store: completion chain entry for attempt ${entry.attemptId} has a chainDigest that does not match its own recomputed digest — tampered entry`
+      );
+    }
+    prevChainDigest = entry.chainDigest;
+  }
+  return entries;
+}
+
+async function appendCompletionChainEntry(
+  root: string,
+  attemptId: string,
+  intentDigest: string,
+  receiptDigest: string
+): Promise<void> {
+  const existing = await verifyCompletionChain(root);
+  const prevChainDigest = existing.length > 0 ? existing[existing.length - 1]!.chainDigest : COMPLETION_CHAIN_GENESIS;
+  const chainDigest = digestOf({ attemptId, intentDigest, receiptDigest, prevChainDigest });
+  const entry: CompletionChainEntry = {
+    schema: "mutation-falsification.completion-chain-entry/v1",
+    attemptId,
+    intentDigest,
+    receiptDigest,
+    prevChainDigest,
+    chainDigest,
+    recordedAt: new Date().toISOString(),
+  };
+  await appendFile(completionChainPath(root), `${JSON.stringify(entry)}\n`, { flag: "a" });
 }
 
 /**
@@ -128,15 +261,62 @@ export async function issueAttemptMarker(
  * those checks, it only requires the receipt to already validate against
  * `validateAttemptReceipt` before publishing.
  *
- * Atomic: write to a temp name in the SAME directory (so `rename` is an
- * atomic same-filesystem operation), fsync the temp file, rename it into
- * place, then fsync the parent directory — so a reader (including
- * `scanForIncompleteOrCorrupt`) never observes a partially-written file.
+ * Bound to the issued intent: the receipt's `intentDigest` must exactly
+ * match the `intentDigest` recorded on this `attemptId`'s own issued marker
+ * — an attempt with no issued marker (unknown attemptId), or a receipt
+ * whose `intentDigest` diverges from what was actually issued, is rejected
+ * before anything is written. This closes the gap where a completion could
+ * previously be published without ever having been bound to the intent it
+ * claims to satisfy.
+ *
+ * NO-REPLACE commit: the final path is created via `link` (hard link) from
+ * a temp file rather than `rename`-over — `link` fails with `EEXIST` if the
+ * final path already exists, so a second publish attempt for the same
+ * `attemptId` (a replay, whether accidental re-run or an adversarial
+ * resubmission) can never silently overwrite an already-completed receipt.
+ * The temp file is fsynced before `link`, then unlinked (its job — holding
+ * the fully-written bytes for the atomic `link` — is done); the parent
+ * directory is fsynced last, matching the discipline the previous
+ * rename-based implementation already had, just without the "replace an
+ * existing entry" capability `rename` silently permits.
+ *
+ * Every accepted publish appends one entry to the hash-chained completion
+ * log (`completions.chain.jsonl`) binding this attemptId + intentDigest +
+ * a digest of the receipt itself to the chain — see
+ * `appendCompletionChainEntry`/`verifyCompletionChain`.
  */
 export async function publishCompleteReceipt(root: string, receipt: AttemptReceipt): Promise<void> {
   validateAttemptReceipt(receipt);
   await mkdir(markersDir(root), { recursive: true });
+
+  let issuedMarker: IssuedMarker;
+  try {
+    const issuedRaw = await readFile(issuedPath(root, receipt.attemptId), "utf8");
+    issuedMarker = validateIssuedMarker(JSON.parse(issuedRaw), receipt.attemptId);
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") {
+      throw new Error(
+        `mutation-falsification evidence store: refusing to publish a completion for attempt ${receipt.attemptId} — no issued marker exists for it (unknown intent, or issueAttemptMarker was never called)`
+      );
+    }
+    throw new Error(
+      `mutation-falsification evidence store: refusing to publish a completion for attempt ${receipt.attemptId} — its issued marker is corrupt/invalid: ${(error as Error).message}`
+    );
+  }
+  if (issuedMarker.intentDigest !== receipt.intentDigest) {
+    throw new Error(
+      `mutation-falsification evidence store: refusing to publish attempt ${receipt.attemptId} — receipt intentDigest ${receipt.intentDigest} does not match the issued marker's intentDigest ${issuedMarker.intentDigest}`
+    );
+  }
+
   const finalPath = completedPath(root, receipt.attemptId);
+  if (await fileExists(finalPath)) {
+    throw new Error(
+      `mutation-falsification evidence store: refusing to publish attempt ${receipt.attemptId} — a completed receipt already exists for it (replay: this attempt was already completed)`
+    );
+  }
+
   const tempPath = resolve(markersDir(root), `.${receipt.attemptId}.completed.json.tmp-${randomUUID()}`);
   const fd = await open(tempPath, "wx");
   try {
@@ -145,28 +325,53 @@ export async function publishCompleteReceipt(root: string, receipt: AttemptRecei
   } finally {
     await fd.close();
   }
-  await rename(tempPath, finalPath);
+  try {
+    // NO-REPLACE: link(2) fails with EEXIST if finalPath already exists —
+    // unlike rename(2), it can never silently replace an existing
+    // completed receipt, closing a TOCTOU window between the fileExists
+    // check above and the actual commit.
+    await link(tempPath, finalPath);
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "EEXIST") {
+      throw new Error(
+        `mutation-falsification evidence store: refusing to publish attempt ${receipt.attemptId} — a completed receipt was concurrently published for it (replay detected at commit time)`
+      );
+    }
+    throw error;
+  } finally {
+    await unlink(tempPath).catch(() => undefined);
+  }
   const dirFd = await open(markersDir(root), "r");
   try {
     await dirFd.sync();
   } finally {
     await dirFd.close();
   }
+
+  await appendCompletionChainEntry(root, receipt.attemptId, receipt.intentDigest, digestOf(receipt));
 }
 
 export interface IncompleteOrCorruptMarker {
   attemptId: string;
   detail: string;
-  reason: "issued_without_completion" | "corrupt";
+  reason: "issued_without_completion" | "corrupt" | "orphan_completion" | "intent_mismatch" | "leftover_temp_file";
 }
 
 /**
- * Scans every issued marker; BLOCKS (throws) if any is issued-but-not-
- * completed, or fails to parse/validate. No age check, no PID-liveness
- * check — an incomplete marker only ever leaves this state via an explicit
- * `recordRecoveryReceipt` call, never automatically. Returns the list only
- * when there is nothing to block on (an empty array), so a caller cannot
- * accidentally ignore a non-empty result and proceed anyway.
+ * Scans every issued marker AND every completed/temp file in the markers
+ * directory; BLOCKS (throws) if any issued marker is incomplete, corrupt,
+ * or bound to a completion with a mismatched intentDigest, OR if any
+ * completed receipt has no corresponding issued marker (an "orphan
+ * completion" — evidence that `publishCompleteReceipt`'s intent-binding
+ * check was somehow bypassed, e.g. by a receipt file written directly
+ * rather than through this module), OR if a leftover
+ * `.completed.json.tmp-*` file from an interrupted publish is found. No age
+ * check, no PID-liveness check — an incomplete marker only ever leaves this
+ * state via an explicit `recordRecoveryReceipt` call, never automatically.
+ * Returns the list only when there is nothing to block on (an empty
+ * array), so a caller cannot accidentally ignore a non-empty result and
+ * proceed anyway.
  */
 export async function scanForIncompleteOrCorrupt(root: string): Promise<IncompleteOrCorruptMarker[]> {
   const dir = markersDir(root);
@@ -181,14 +386,39 @@ export async function scanForIncompleteOrCorrupt(root: string): Promise<Incomple
     throw error;
   }
   const found: IncompleteOrCorruptMarker[] = [];
+  const issuedAttemptIds = new Set(
+    entries.filter((name) => name.endsWith(".issued.json")).map((name) => basename(name, ".issued.json"))
+  );
+
+  for (const entry of entries) {
+    if (entry.includes(".completed.json.tmp-")) {
+      found.push({
+        attemptId: entry.split(".completed.json.tmp-")[0] ?? entry,
+        reason: "leftover_temp_file",
+        detail: `${entry} is a leftover temp file from an interrupted publish — a completed receipt was never atomically committed for it`,
+      });
+    }
+  }
+
+  for (const entry of entries.filter((name) => name.endsWith(".completed.json"))) {
+    const attemptId = basename(entry, ".completed.json");
+    if (!issuedAttemptIds.has(attemptId)) {
+      found.push({
+        attemptId,
+        reason: "orphan_completion",
+        detail: `${entry} has no corresponding issued marker — a completion must always be bound to an issued intent`,
+      });
+    }
+  }
+
   for (const entry of entries.filter((name) => name.endsWith(".issued.json"))) {
     const attemptId = basename(entry, ".issued.json");
-    let issuedRaw: string;
+    let issuedMarker: IssuedMarker;
     try {
-      issuedRaw = await readFile(resolve(dir, entry), "utf8");
-      JSON.parse(issuedRaw);
-    } catch {
-      found.push({ attemptId, reason: "corrupt", detail: `${entry} could not be parsed as JSON` });
+      const issuedRaw = await readFile(resolve(dir, entry), "utf8");
+      issuedMarker = validateIssuedMarker(JSON.parse(issuedRaw), attemptId);
+    } catch (error) {
+      found.push({ attemptId, reason: "corrupt", detail: `${entry} is malformed: ${(error as Error).message}` });
       continue;
     }
     // Retired-by-recovery markers are not "incomplete" — they are an
@@ -204,14 +434,23 @@ export async function scanForIncompleteOrCorrupt(root: string): Promise<Incomple
       found.push({ attemptId, reason: "issued_without_completion", detail: `${entry} has no completed receipt` });
       continue;
     }
+    let completedReceipt: AttemptReceipt;
     try {
       const completedRaw = await readFile(completedPath(root, attemptId), "utf8");
-      validateAttemptReceipt(JSON.parse(completedRaw));
+      completedReceipt = validateAttemptReceipt(JSON.parse(completedRaw));
     } catch (error) {
       found.push({
         attemptId,
         reason: "corrupt",
         detail: `completed receipt for ${attemptId} failed to validate: ${(error as Error).message}`,
+      });
+      continue;
+    }
+    if (completedReceipt.intentDigest !== issuedMarker.intentDigest) {
+      found.push({
+        attemptId,
+        reason: "intent_mismatch",
+        detail: `completed receipt intentDigest ${completedReceipt.intentDigest} does not match issued marker intentDigest ${issuedMarker.intentDigest}`,
       });
     }
   }

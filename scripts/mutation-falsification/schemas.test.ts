@@ -72,6 +72,7 @@ function sampleAttemptReceipt() {
     schema: ATTEMPT_SCHEMA,
     attemptId: randomUUID(),
     trialKey: SAMPLE_SHA256,
+    intentDigest: SAMPLE_SHA256,
     policyVersion: "v1",
     baseCommitSha: SAMPLE_BASE_SHA,
     mutantIdentity: "b".repeat(40),
@@ -112,6 +113,16 @@ test("validateAttemptReceipt: rejects a missing axes object", () => {
 
 test("validateAttemptReceipt: rejects a malformed attemptId (not a UUID)", () => {
   assert.throws(() => validateAttemptReceipt({ ...sampleAttemptReceipt(), attemptId: "not-a-uuid" }));
+});
+
+test("validateAttemptReceipt: rejects a missing intentDigest", () => {
+  const receipt = sampleAttemptReceipt() as Record<string, unknown>;
+  const { intentDigest: _drop, ...rest } = receipt;
+  assert.throws(() => validateAttemptReceipt(rest), /intentDigest/);
+});
+
+test("validateAttemptReceipt: rejects a malformed intentDigest (not a 64-char hex digest)", () => {
+  assert.throws(() => validateAttemptReceipt({ ...sampleAttemptReceipt(), intentDigest: "not-a-digest" }), /intentDigest/);
 });
 
 test("validateAttemptReceipt: rejects an evidence artifact missing sha256", () => {
