@@ -14,7 +14,7 @@ reference implementation, and supporting documentation.
 
 The protocol is defined by the `spec-*.md` files at the repository root. Not
 every root spec carries the same authority: each file states its own status in
-a header near the top, and that header governs. Three of them are the normative
+a header near the top, and that header governs. One of them is the normative
 protocol; the rest are informative rationale, illustrative examples, or
 historical material superseded by the normative text. Where any downstream
 document, example, or superseded spec disagrees with the normative specs, the
@@ -22,13 +22,13 @@ normative specs prevail.
 
 **Normative** — the protocol itself. Read these to implement PDPP:
 
-- [`spec-core.md`](spec-core.md) — core protocol: grants, sources, records, and the query surface (*Normative draft*). Core Section 8 is the authoritative definition of the resource-server query interface.
-- [`spec-discovery-and-trust.md`](spec-discovery-and-trust.md): source onboarding, provider-native discovery, authority, and accepted declaration revisions (*Companion specification draft*)
-- [`spec-collection-profile.md`](spec-collection-profile.md) — how a source is declared and collected; a companion profile to Core (*Companion profile draft*)
+- [`spec-core.md`](spec-core.md) — core protocol: grants, sources, records, and the query surface (*Normative draft*). Core Section 8 is the authoritative definition of the resource-server query interface, and Core Section 5 of declaration acceptance.
 
 **Informative** — rationale and context. These explain and situate the
 protocol but define no conformance requirements of their own:
 
+- [`spec-discovery-and-trust.md`](spec-discovery-and-trust.md) — implementation guidance for discovering and retrieving a declaration; the normative requirements live in Core Section 5 (*Informative*)
+- [`spec-collection-profile.md`](spec-collection-profile.md) — builder guidance for connector collection; not a conformance requirement (*Informative*)
 - [`spec-architecture.md`](spec-architecture.md) — the layered architecture and its boundaries (*Informative*)
 - [`spec-auth-design.md`](spec-auth-design.md) — authorization and consent design (*Informative*)
 - [`spec-connector-ecosystem.md`](spec-connector-ecosystem.md) — the connector model and runtime landscape (*Informative*)
@@ -80,11 +80,10 @@ are not the protocol boundary. The durable boundary between them lives in the
 
 This repository uses a strict authority order:
 
-1. **Root PDPP specs** (`spec-*.md`) define the protocol. The three normative
-   specs (`spec-core.md`, `spec-discovery-and-trust.md`, and
-   `spec-collection-profile.md`) define protocol
-   semantics; the other root specs are informative, illustrative, or
-   superseded, as each file's status header states.
+1. **Root PDPP specs** (`spec-*.md`) define the protocol. The normative spec
+   (`spec-core.md`) defines protocol semantics; the other root specs are
+   informative, illustrative, or superseded, as each file's status header
+   states.
 2. **Code and tests** define what the reference implementation actually does.
 3. **OpenSpec** (`openspec/`) defines project-level architecture and change
    planning.
