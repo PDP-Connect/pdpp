@@ -4,7 +4,7 @@
 import {
   executeRecordsList,
   RecordsListVisibilityError,
-} from "pdpp-reference-implementation/operations/rs-records-list";
+} from "@pdpp/reference-operations-sandbox/rs-records-list";
 import { createSandboxRecordsListDependencies } from "../../../../_demo/operations-fixtures.ts";
 import { jsonResponse, notFound, readListParams } from "../../../_helpers.ts";
 

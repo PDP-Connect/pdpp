@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
+import { executeRefDatasetSummary } from "@pdpp/reference-operations-sandbox/ref-dataset-summary";
 import { createSandboxRefDatasetSummaryDependencies } from "../../../_demo/operations-fixtures.ts";
 import { jsonResponse } from "../../../v1/_helpers.ts";
 

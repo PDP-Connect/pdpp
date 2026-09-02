@@ -22,7 +22,7 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SANDBOX_DIR = join(HERE, "..");
 
 const ROUTE_FILE = "route.ts";
-const OPERATIONS_IMPORT_RE = /from\s+["']pdpp-reference-implementation\/operations\/([^"']+)["']/g;
+const OPERATIONS_IMPORT_RE = /from\s+["']@pdpp\/reference-operations-sandbox\/([^"']+)["']/g;
 const BUILDERS_IMPORT_RE = /from\s+["'][^"']*_demo\/builders\.ts["']/;
 
 const LIVE_ROUTE_IMPORT_PATTERNS = [

@@ -177,6 +177,9 @@ importers:
       '@pdpp/operator-ui':
         specifier: workspace:*
         version: link:../../packages/operator-ui
+      '@pdpp/reference-operations-sandbox':
+        specifier: workspace:*
+        version: link:../../packages/reference-operations-sandbox
       '@tailwindcss/postcss':
         specifier: ^4.3.3
         version: 4.3.3
@@ -213,9 +216,6 @@ importers:
       next:
         specifier: 16.3.3
         version: 16.3.3(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.4.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      pdpp-reference-implementation:
-        specifier: workspace:*
-        version: link:../../reference-implementation
       postcss:
         specifier: ^8.5.26
         version: 8.5.26
@@ -536,6 +536,8 @@ importers:
       ultracite:
         specifier: 7.10.7
         version: 7.10.7
+
+  packages/reference-operations-sandbox: {}
 
   reference-implementation:
     dependencies:

@@ -21,45 +21,45 @@ import {
   type AsAuthorizationServerMetadataBuilderInput,
   type AsAuthorizationServerMetadataDependencies,
   executeAsAuthorizationServerMetadata,
-} from "pdpp-reference-implementation/operations/as-authorization-server-metadata";
-import type { RefDatasetSummaryDependencies } from "pdpp-reference-implementation/operations/ref-dataset-summary";
+} from "@pdpp/reference-operations-sandbox/as-authorization-server-metadata";
+import type { RefDatasetSummaryDependencies } from "@pdpp/reference-operations-sandbox/ref-dataset-summary";
 import type {
   RefSpineCorrelationFilters,
   RefSpineCorrelationKind,
   RefSpineCorrelationPage,
   RefSpineCorrelationSummary,
   RefSpineCorrelationsListDependencies,
-} from "pdpp-reference-implementation/operations/ref-spine-correlations-list";
+} from "@pdpp/reference-operations-sandbox/ref-spine-correlations-list";
 import type {
   RefSpineEventInput,
   RefSpineEventsKind,
   RefSpineEventsPageInput,
-} from "pdpp-reference-implementation/operations/ref-spine-events-page";
+} from "@pdpp/reference-operations-sandbox/ref-spine-events-page";
 import {
   executeRsProtectedResourceMetadata,
   type RsProtectedResourceMetadataComposition,
   type RsProtectedResourceMetadataDependencies,
   type RsProtectedResourceMetadataHybridCapability,
   type RsProtectedResourceMetadataLexicalCapability,
-} from "pdpp-reference-implementation/operations/rs-protected-resource-metadata";
+} from "@pdpp/reference-operations-sandbox/rs-protected-resource-metadata";
 import type {
   RecordDetailDependencies,
   RecordDetailGrant,
   RecordDetailManifest,
   RecordDetailSourceDescriptor,
-} from "pdpp-reference-implementation/operations/rs-records-detail";
+} from "@pdpp/reference-operations-sandbox/rs-records-detail";
 import type {
   RecordsListDependencies,
   RecordsListGrant,
   RecordsListManifest,
   RecordsListQueryResult,
   RecordsListSourceDescriptor,
-} from "pdpp-reference-implementation/operations/rs-records-list";
+} from "@pdpp/reference-operations-sandbox/rs-records-list";
 import type {
   ConnectorSchemaItem,
   SchemaGetDependencies,
   SchemaGetSourceDescriptor,
-} from "pdpp-reference-implementation/operations/rs-schema-get";
+} from "@pdpp/reference-operations-sandbox/rs-schema-get";
 import type {
   SearchLexicalAdvertisement,
   SearchLexicalDependencies,
@@ -68,19 +68,19 @@ import type {
   SearchLexicalPlanEntry,
   SearchLexicalSnapshot,
   SearchLexicalSnapshotResult,
-} from "pdpp-reference-implementation/operations/rs-search-lexical";
-import { SearchLexicalRequestError } from "pdpp-reference-implementation/operations/rs-search-lexical";
+} from "@pdpp/reference-operations-sandbox/rs-search-lexical";
+import { SearchLexicalRequestError } from "@pdpp/reference-operations-sandbox/rs-search-lexical";
 import type {
   StreamDetailDependencies,
   StreamDetailSourceDescriptor,
   StreamMetadataEnvelope,
-} from "pdpp-reference-implementation/operations/rs-streams-detail";
+} from "@pdpp/reference-operations-sandbox/rs-streams-detail";
 import type {
   StreamSummary,
   StreamsListDependencies,
   StreamsListSourceDescriptor,
-} from "pdpp-reference-implementation/operations/rs-streams-list";
-import { createPdppCliCommand, getPdppCliPackageInfo } from "../../../../../../packages/cli/src/package-info.ts";
+} from "@pdpp/reference-operations-sandbox/rs-streams-list";
+import { createPdppCliCommand, getPdppCliPackageInfo } from "@pdpp/reference-operations-sandbox/package-info";
 import { buildLiveStreamMetadata } from "./builders.ts";
 import { DEMO_CONNECTORS, DEMO_GRANTS, DEMO_RECORDS, DEMO_RUNS, DEMO_STREAMS, DEMO_TRACES } from "./dataset.ts";
 import type { DemoGrantDef, DemoRecord, DemoRunDef, DemoTimelineEvent, DemoTraceDef } from "./types.ts";

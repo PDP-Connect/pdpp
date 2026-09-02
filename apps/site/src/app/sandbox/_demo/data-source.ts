@@ -59,7 +59,7 @@ import type {
   TimeBucketAggregate,
   TimeBucketGranularity,
 } from "@pdpp/operator-ui/lib/rs-client";
-import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
+import { executeRefDatasetSummary } from "@pdpp/reference-operations-sandbox/ref-dataset-summary";
 import {
   buildGrantTimeline,
   buildRecordsList,

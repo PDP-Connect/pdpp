@@ -4,7 +4,7 @@
 import {
   executeRecordDetail,
   RecordDetailVisibilityError,
-} from "pdpp-reference-implementation/operations/rs-records-detail";
+} from "@pdpp/reference-operations-sandbox/rs-records-detail";
 import { createSandboxRecordDetailDependencies } from "../../../../../_demo/operations-fixtures.ts";
 import { jsonResponse, notFound } from "../../../../_helpers.ts";
 

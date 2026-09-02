@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { executeRsProtectedResourceMetadata } from "pdpp-reference-implementation/operations/rs-protected-resource-metadata";
+import { executeRsProtectedResourceMetadata } from "@pdpp/reference-operations-sandbox/rs-protected-resource-metadata";
 import {
   buildSandboxProtectedResourceMetadataDocument,
   createSandboxRsProtectedResourceMetadataDependencies,

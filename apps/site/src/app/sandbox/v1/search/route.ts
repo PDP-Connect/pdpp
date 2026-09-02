@@ -4,7 +4,7 @@
 import {
   executeSearchLexical,
   SearchLexicalRequestError,
-} from "pdpp-reference-implementation/operations/rs-search-lexical";
+} from "@pdpp/reference-operations-sandbox/rs-search-lexical";
 import { createSandboxSearchLexicalDependencies } from "../../_demo/operations-fixtures.ts";
 import { jsonResponse } from "../_helpers.ts";
 
