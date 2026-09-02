@@ -237,3 +237,15 @@ directory: pnpm/npm git+path dependencies prepare the subpackage in isolation wh
 workspace sibling does not exist, so packed tarballs are the only mechanism that installs
 deterministically today. Deleted when the packages publish from data-connect. Digests:
 SHA256SUMS.
+
+`pdpp-collector-runtime-0.0.1.tgz` was resynced again on 2026-09-02 via `npm pack` from
+data-connect main's tip, `63a3792762e6568315c8d210852ea8f5c4f3b3d2` ("chore(deps): bump the
+cargo group in /src-tauri with 5 updates", #39). data-connectors' own pin-freshness — data-connect
+check had gone red: main had moved past the prior `0bc3f8c5b4` pin in
+`packages/collector-runtime` and `packages/connector-protocol` themselves, via data-connect PR
+#36 ("Add local collection and release checks", merged as `b70dda89aef1c3e3cee97cf21005dfdef9f1a38f`,
+the same PR that data-connect-1-0-0's pin already tracks). Packed the same way as the prior
+resync (workspace build from inside `packages/collector-runtime`, sibling `connector-protocol`
+resolved from the same checkout). Verified locally: fresh repack's content differs from the
+prior committed tarball in every `dist/*.{js,d.ts}` file, `package.json`, and `README.md` — a
+genuine re-vendor, not a no-op SHA move.
