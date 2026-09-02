@@ -250,6 +250,207 @@ test("verifyCompletionChain: throws if an earlier entry's bytes are tampered (ch
   });
 });
 
+// ── P1-2: crash-honest transaction — receipt publication and chain append are ONE commit ──
+//
+// Each test below simulates a crash at exactly one of the reviewer's five
+// named durability boundaries, by writing to disk exactly the artifacts
+// that would exist on disk if the process died at that instant (rather
+// than actually killing a child process), then proves scanForIncompleteOrCorrupt
+// fails closed on the half-commit — or, for the one case where the crash
+// happened strictly AFTER the durable commit (only the marker's own
+// deletion never ran), that scan reconciles it automatically.
+
+const TRANSACTION_SCHEMA = "mutation-falsification.completion-transaction/v1";
+
+function transactionMarkerFor(attemptId: string, intentDigest: string, receiptDigest: string, phase: "started" | "receipt_committed") {
+  return {
+    schema: TRANSACTION_SCHEMA,
+    attemptId,
+    intentDigest,
+    receiptDigest,
+    phase,
+    startedAt: new Date().toISOString(),
+  };
+}
+
+test("fault injection — boundary 1: crash before receipt commit (transaction marker written, no receipt, no chain entry) fails closed", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await mkdir(resolve(root, "markers"), { recursive: true });
+    const marker = transactionMarkerFor(receipt.attemptId, receipt.intentDigest, "irrelevant-digest", "started");
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), `${JSON.stringify(marker, null, 2)}\n`);
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /half_committed_transaction/);
+    assert.equal(await isAttemptCompleted(root, receipt.attemptId), false);
+  });
+});
+
+test("fault injection — boundary 2: crash after receipt commit, before chain append (receipt exists, marker says receipt_committed, no chain entry) fails closed", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await mkdir(resolve(root, "markers"), { recursive: true });
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+    const { digestOf } = await import("./canonicalize.ts");
+    const marker = transactionMarkerFor(receipt.attemptId, receipt.intentDigest, digestOf(receipt), "receipt_committed");
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), `${JSON.stringify(marker, null, 2)}\n`);
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /half_committed_transaction/);
+  });
+});
+
+test("fault injection — boundary 3: crash mid chain-append (receipt exists, marker present, chain entry present but does not match marker's receiptDigest) fails closed", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await mkdir(resolve(root, "markers"), { recursive: true });
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+    const { digestOf } = await import("./canonicalize.ts");
+    // Marker records the correct digest, but the chain entry that was
+    // partially written before the crash carries a DIFFERENT one (e.g. a
+    // torn/partial write) — reconciliation must not treat this as a match.
+    const marker = transactionMarkerFor(receipt.attemptId, receipt.intentDigest, digestOf(receipt), "receipt_committed");
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), `${JSON.stringify(marker, null, 2)}\n`);
+    const chainEntry = {
+      schema: "mutation-falsification.completion-chain-entry/v1",
+      attemptId: receipt.attemptId,
+      intentDigest: receipt.intentDigest,
+      receiptDigest: "0".repeat(64), // torn write: does not match marker's receiptDigest
+      prevChainDigest: "mutation-falsification.completion-chain.genesis/v1",
+      chainDigest: "1".repeat(64),
+      recordedAt: new Date().toISOString(),
+    };
+    await writeFile(resolve(root, "completions.chain.jsonl"), `${JSON.stringify(chainEntry)}\n`);
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /half_committed_transaction/);
+  });
+});
+
+test("fault injection — boundary 4: crash after chain append, before its own fsync is durable (same as boundary 3 from a reader's perspective) fails closed", async () => {
+  await withTempRoot(async (root) => {
+    // A crash between the chain-entry write() and its own fsync() is
+    // indistinguishable, from any later reader's perspective, from "the
+    // write never reached disk at all" — POSIX gives no partial-fsync
+    // visibility guarantee. The reader-observable state is therefore
+    // identical to boundary 2 (no chain entry visible yet): fails closed.
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await mkdir(resolve(root, "markers"), { recursive: true });
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+    const { digestOf } = await import("./canonicalize.ts");
+    const marker = transactionMarkerFor(receipt.attemptId, receipt.intentDigest, digestOf(receipt), "receipt_committed");
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), `${JSON.stringify(marker, null, 2)}\n`);
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /half_committed_transaction/);
+  });
+});
+
+test("fault injection — boundary 5: crash after full durable commit, before the transaction marker's own deletion — reconciled automatically, not blocked", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await publishCompleteReceipt(root, receipt);
+    // Simulate the crash by re-adding a transaction marker AFTER the real
+    // publish already fully committed (receipt + matching chain entry both
+    // durable) — this is exactly what a crash between step 5 and step 6
+    // would leave behind.
+    const { digestOf } = await import("./canonicalize.ts");
+    const marker = transactionMarkerFor(receipt.attemptId, receipt.intentDigest, digestOf(receipt), "receipt_committed");
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), `${JSON.stringify(marker, null, 2)}\n`);
+
+    // Reconciliation must resolve this automatically: scan must NOT block.
+    const found = await scanForIncompleteOrCorrupt(root);
+    assert.deepEqual(found, []);
+    // And the stale marker must actually be gone afterward.
+    const { readdir } = await import("node:fs/promises");
+    const entries = await readdir(resolve(root, "markers"));
+    assert.ok(!entries.includes(`${receipt.attemptId}.transaction.json`));
+  });
+});
+
+test("mutation control — a completed receipt mutated after chained publication is rejected by BOTH scanForIncompleteOrCorrupt and verifyCompletionChain", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await publishCompleteReceipt(root, receipt);
+
+    // Mutate a schema-valid field on the already-published receipt —
+    // preserves attemptId/intentDigest/schema so the earlier P1-3-style
+    // checks (issued-marker binding) still pass; only the receipt's own
+    // bytes (and therefore its digest) have changed since it was chained.
+    const mutated: AttemptReceipt = { ...receipt, runtimeMs: receipt.runtimeMs + 999 };
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(mutated, null, 2)}\n`);
+
+    await assert.rejects(() => verifyCompletionChain(root), /divergent receipt/);
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /divergent_chain_entry/);
+  });
+});
+
+test("scanForIncompleteOrCorrupt: detects an orphaned chain entry (chain entry with no completed receipt on disk)", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await publishCompleteReceipt(root, receipt);
+
+    // Delete the completed receipt but leave the chain entry — simulates
+    // an orphaned chain entry (e.g. external tampering with the markers dir).
+    const { unlink } = await import("node:fs/promises");
+    await unlink(resolve(root, "markers", `${receipt.attemptId}.completed.json`));
+
+    await assert.rejects(() => verifyCompletionChain(root), /orphaned chain entry/);
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /orphaned chain entry/);
+  });
+});
+
+test("scanForIncompleteOrCorrupt: detects a completed receipt with no chain entry at all (missing_chain_entry)", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await mkdir(resolve(root, "markers"), { recursive: true });
+    // Write a completed receipt directly, bypassing publishCompleteReceipt
+    // entirely — no transaction marker, no chain entry at all.
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /missing_chain_entry/);
+  });
+});
+
+test("verifyCompletionChain: rejects a duplicate/forked chain entry (same attemptId appears twice)", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await publishCompleteReceipt(root, receipt);
+
+    const chainPath = resolve(root, "completions.chain.jsonl");
+    const raw = await readFile(chainPath, "utf8");
+    const entry = JSON.parse(raw.trim());
+    // Append a second (forked) entry claiming the SAME attemptId but a
+    // different prevChainDigest — as if two concurrent publishers had
+    // selected the same predecessor and both appended.
+    const forked = { ...entry, prevChainDigest: entry.chainDigest, chainDigest: "f".repeat(64) };
+    await writeFile(chainPath, `${raw.trim()}\n${JSON.stringify(forked)}\n`);
+
+    await assert.rejects(() => verifyCompletionChain(root), /duplicate\/forked/);
+  });
+});
+
+test("publishCompleteReceipt: two concurrent publishers cannot interleave — the exclusive ledger lock serializes them", async () => {
+  await withTempRoot(async (root) => {
+    const receiptA = sampleReceipt();
+    const receiptB = sampleReceipt();
+    await issueAttemptMarker(root, receiptA.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await issueAttemptMarker(root, receiptB.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+
+    // Launch both publishes concurrently — without the lock, both could
+    // read the same (empty) chain head and each append an entry with
+    // prevChainDigest = GENESIS, producing a fork. With the lock, one
+    // strictly completes before the other starts.
+    await Promise.all([publishCompleteReceipt(root, receiptA), publishCompleteReceipt(root, receiptB)]);
+
+    const chain = await verifyCompletionChain(root);
+    assert.equal(chain.length, 2);
+    // Exactly one of the two orderings — but never a fork (which
+    // verifyCompletionChain would have already rejected above by throwing).
+    assert.equal(chain[1]?.prevChainDigest, chain[0]?.chainDigest);
+  });
+});
+
 test("readCompletedReceipt round-trips a published receipt byte-for-byte semantically", async () => {
   await withTempRoot(async (root) => {
     const receipt = sampleReceipt();
