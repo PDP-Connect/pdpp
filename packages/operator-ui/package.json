@@ -79,7 +79,7 @@
     "@pdpp/list-envelope": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.34.0",
+    "lucide-react": "^1.37.0",
     "next-themes": "^0.4.6",
     "tailwind-merge": "^3.6.0"
   },
@@ -90,14 +90,14 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@types/node": "^26.3.0",
+    "@types/node": "^26.4.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
-    "ultracite": "7.10.6"
+    "ultracite": "7.10.7"
   },
   "license": "Apache-2.0"
 }
