@@ -92,6 +92,7 @@ import {
 import { evaluateClaimEligibility } from "../src/scenario/claims.ts";
 import type { ConnectorScenario, ScenarioUserInteraction } from "../src/scenario/format.ts";
 import {
+  findPreexistingSocketsUnderReadOnlyBinds,
   type IsolationMechanism,
   isNamespaceIsolationAvailable,
   type NamespaceIsolationCapability,
@@ -1387,6 +1388,27 @@ function resolveIsolationMechanism(capability: NamespaceIsolationCapability): fa
   return capability.available ? capability.mechanism : false;
 }
 
+/**
+ * REPOSITORY-UDS EXCEPTION, RECONCILED (P1, external review of ab415be6c) —
+ * recursive read-only (isolation.ts's `recursiveReadOnlyRemountCommand`)
+ * closes the ability to CREATE a socket under a `ro` bind during a run, so
+ * scanning ONCE, here, before any run's subprocess spawns, covers the whole
+ * scenario: nothing new can appear under a `ro` bind while replay runs (a
+ * connector cannot write there at all). Only meaningful when isolation is
+ * actually active for this replay — an empty scan result under
+ * process-local-only isolation would be misleading (the escape this scan
+ * closes is specific to the OS-isolation boundary), so this returns an empty
+ * array without scanning otherwise, which is also the CORRECT input for
+ * `evaluateClaimEligibility` in that case — the coarser
+ * `isNamespaceIsolationActive: false` limitation already fires and takes
+ * priority, per that function's `else if` chain. Split out of `main` purely
+ * to keep `main`'s own cognitive complexity under this package's lint
+ * ceiling — behavior is unchanged from the inline version.
+ */
+function scanPreexistingSocketsIfIsolated(isolationCapability: NamespaceIsolationCapability): readonly string[] {
+  return isolationCapability.available ? findPreexistingSocketsUnderReadOnlyBinds() : [];
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const connectorPath = resolveConnectorPath(args);
@@ -1455,6 +1477,7 @@ async function main(): Promise<void> {
     ? "network isolation: os-namespace"
     : `network isolation: process-local only (${isolationCapability.reason})`;
   process.stdout.write(`  ${isolationLine}\n`);
+  const preexistingSocketsUnderReadOnlyBinds = scanPreexistingSocketsIfIsolated(isolationCapability);
   // Every replayed response is served from the recording, not a live
   // provider, so a connector's own pacing/backoff timers (governor pacing,
   // an inline PAGE_DELAY sleep, anything else built on setTimeout/
@@ -1716,7 +1739,8 @@ async function main(): Promise<void> {
     isolationLine,
     digestObservation,
     isolationCapability,
-    observedUnsupportedEvidenceSurface(allRunMessages)
+    observedUnsupportedEvidenceSurface(allRunMessages),
+    preexistingSocketsUnderReadOnlyBinds
   );
   process.exitCode = 0;
 }
@@ -1748,7 +1772,8 @@ function printCoverageReport(
   isolationLine: string,
   digestObservation: CaptureSourceDigestObservation,
   isolationCapability: NamespaceIsolationCapability,
-  observedUnsupportedEvidenceSurfaceFlag: boolean
+  observedUnsupportedEvidenceSurfaceFlag: boolean,
+  preexistingSocketsUnderReadOnlyBinds: readonly string[]
 ): void {
   const capturedAt = scenario.capture.captured_at;
   // state_seeded_second_run_with_changed_requests (formerly named
@@ -1844,16 +1869,24 @@ function printCoverageReport(
     currentDeclarationDigestComputed: digestObservation.currentDeclarationDigestComputed,
     currentSourceDigestComputed: digestObservation.currentSourceDigestComputed,
     isNamespaceIsolationActive: isolationCapability.available,
-    // WITHHELD PENDING BOUNDED P1 REPAIR (external review of ab415be6c):
-    // hardcoded false until the trusted-launcher resolution and the
-    // recursive-read-only post-pivot verification are both wired in and
-    // proven — see claims.ts's `isolationEvidenceBoundaryProven` doc comment.
-    // Every intermediate state of this repair must stay honest: a build that
-    // has the launcher-trust or recursive-ro fix applied only partially must
-    // still print `diagnostic_replay`, never `recorded_replay`, until this
-    // literal is flipped to the real, wired-in proof in the commit that
-    // completes both fixes.
-    isolationEvidenceBoundaryProven: false,
+    // BOUNDED P1 REPAIR COMPLETE (external review of ab415be6c): the
+    // trusted-launcher resolution (isolation.ts's `resolveTrustedLauncherPath`)
+    // and the recursive-read-only filesystem closure
+    // (`recursiveReadOnlyRemountCommand`/`postPivotVerificationStatements`'s
+    // per-submount check) are both now UNCONDITIONALLY wired into every
+    // isolated spawn `spawnWithNetworkIsolation` performs — not an optional
+    // mode a caller can bypass — so whenever OS-namespace isolation is
+    // active at all, these two proofs were necessarily also in effect for
+    // this replay. `isNamespaceIsolationActive` (immediately above) already
+    // reflects whether isolation was active; this field is therefore the
+    // same fact restated for `evaluateClaimEligibility`'s own, separately
+    // named condition — kept as a distinct field (rather than collapsed into
+    // `isNamespaceIsolationActive`) so the eligibility gate's three isolation
+    // sub-conditions (namespace-active, evidence-boundary-proven,
+    // no-preexisting-sockets) stay independently readable in
+    // `claims.ts`, matching every other split condition on this interface.
+    isolationEvidenceBoundaryProven: isolationCapability.available,
+    preexistingSocketsUnderReadOnlyBinds,
     observedUnsupportedEvidenceSurface: observedUnsupportedEvidenceSurfaceFlag,
     driverEvidenceSatisfied: driverEvidenceOk,
   });

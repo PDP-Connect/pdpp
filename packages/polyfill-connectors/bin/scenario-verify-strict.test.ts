@@ -858,6 +858,7 @@ function eligibleDigestObservations(): {
   observedUnsupportedEvidenceSurface: boolean;
   driverEvidenceSatisfied: boolean;
   isolationEvidenceBoundaryProven: boolean;
+  preexistingSocketsUnderReadOnlyBinds: readonly string[];
 } {
   return {
     capturedDeclarationDigestPresent: true,
@@ -867,6 +868,7 @@ function eligibleDigestObservations(): {
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
     isolationEvidenceBoundaryProven: true,
+    preexistingSocketsUnderReadOnlyBinds: [],
   };
 }
 
@@ -957,6 +959,7 @@ test("evaluateClaimEligibility negative control: source-only historical scenario
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
     isolationEvidenceBoundaryProven: true,
+    preexistingSocketsUnderReadOnlyBinds: [],
     isNamespaceIsolationActive: true,
   });
   assert.equal(decision.claim, "diagnostic_replay");
@@ -975,6 +978,7 @@ test("evaluateClaimEligibility negative control: declaration-only scenario (sour
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
     isolationEvidenceBoundaryProven: true,
+    preexistingSocketsUnderReadOnlyBinds: [],
     isNamespaceIsolationActive: true,
   });
   assert.equal(decision.claim, "diagnostic_replay");
@@ -993,6 +997,7 @@ test("evaluateClaimEligibility negative control: missing current manifest (decla
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
     isolationEvidenceBoundaryProven: true,
+    preexistingSocketsUnderReadOnlyBinds: [],
     isNamespaceIsolationActive: true,
   });
   assert.equal(decision.claim, "diagnostic_replay");
@@ -1011,6 +1016,7 @@ test("evaluateClaimEligibility negative control: missing current connector sourc
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
     isolationEvidenceBoundaryProven: true,
+    preexistingSocketsUnderReadOnlyBinds: [],
     isNamespaceIsolationActive: true,
   });
   assert.equal(decision.claim, "diagnostic_replay");
@@ -1036,6 +1042,7 @@ test("evaluateClaimEligibility negative control: legacy top-level digests only (
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
     isolationEvidenceBoundaryProven: true,
+    preexistingSocketsUnderReadOnlyBinds: [],
     isNamespaceIsolationActive: true,
   });
   assert.equal(decision.claim, "diagnostic_replay");
@@ -1119,6 +1126,7 @@ test("evaluateClaimEligibility: multiple failing conditions are all reported at 
     driverEvidenceSatisfied: false,
     isNamespaceIsolationActive: false,
     isolationEvidenceBoundaryProven: false,
+    preexistingSocketsUnderReadOnlyBinds: [],
   });
   assert.equal(decision.claim, "diagnostic_replay");
   assert.ok(decision.claim === "diagnostic_replay");
@@ -1197,6 +1205,7 @@ test("evaluateClaimEligibility: namespace isolation active AND isolationEvidence
     ...eligibleDigestObservations(),
     isNamespaceIsolationActive: true,
     isolationEvidenceBoundaryProven: true,
+    preexistingSocketsUnderReadOnlyBinds: [],
   });
   assert.deepEqual(decision, { claim: "recorded_replay" });
 });
@@ -1212,6 +1221,77 @@ test("evaluateClaimEligibility: namespace isolation NOT active reports only the 
     ...eligibleDigestObservations(),
     isNamespaceIsolationActive: false,
     isolationEvidenceBoundaryProven: false,
+  });
+  assert.equal(decision.claim, "diagnostic_replay");
+  assert.ok(decision.claim === "diagnostic_replay");
+  assert.deepEqual(decision.limitations, ["network isolation: process-local only - descendant escape not excluded"]);
+});
+
+// ─── Repository-UDS exception, reconciled (P1, external review of ab415be6c)
+// ────────────────────────────────────────────────────────────────────────────
+//
+// Recursive read-only closes the ability to CREATE a socket under a ro
+// bind, but not the ability to DIAL one that already existed at spawn time
+// — see claims.ts's `preexistingSocketsUnderReadOnlyBinds` doc comment.
+// These tests pin the eligibility gate's own handling of the scan result:
+// a non-empty result withholds recorded_replay and names every path found;
+// an empty result does not withhold on this condition at all.
+
+test("evaluateClaimEligibility: a non-empty preexistingSocketsUnderReadOnlyBinds withholds recorded_replay and names the socket path", () => {
+  const decision = evaluateClaimEligibility({
+    scenario: eligibleScenario(),
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    isNamespaceIsolationActive: true,
+    isolationEvidenceBoundaryProven: true,
+    preexistingSocketsUnderReadOnlyBinds: ["/repo/root/.leftover.sock"],
+  });
+  assert.equal(decision.claim, "diagnostic_replay");
+  assert.ok(decision.claim === "diagnostic_replay");
+  assert.deepEqual(decision.limitations, [
+    "pre-existing socket(s) found under a read-only bind at spawn time, dialable despite recursive read-only: /repo/root/.leftover.sock",
+  ]);
+});
+
+test("evaluateClaimEligibility: multiple preexistingSocketsUnderReadOnlyBinds are all named in one limitation, comma-joined", () => {
+  const decision = evaluateClaimEligibility({
+    scenario: eligibleScenario(),
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    isNamespaceIsolationActive: true,
+    isolationEvidenceBoundaryProven: true,
+    preexistingSocketsUnderReadOnlyBinds: ["/repo/root/a.sock", "/repo/root/nested/b.sock"],
+  });
+  assert.ok(decision.claim === "diagnostic_replay");
+  assert.deepEqual(decision.limitations, [
+    "pre-existing socket(s) found under a read-only bind at spawn time, dialable despite recursive read-only: /repo/root/a.sock, /repo/root/nested/b.sock",
+  ]);
+});
+
+test("evaluateClaimEligibility: an empty preexistingSocketsUnderReadOnlyBinds does not withhold on this condition — recorded_replay reachable", () => {
+  const decision = evaluateClaimEligibility({
+    scenario: eligibleScenario(),
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    isNamespaceIsolationActive: true,
+    isolationEvidenceBoundaryProven: true,
+    preexistingSocketsUnderReadOnlyBinds: [],
+  });
+  assert.deepEqual(decision, { claim: "recorded_replay" });
+});
+
+test("evaluateClaimEligibility: the socket-scan limitation only fires when isolation is active AND the evidence boundary is proven (not a fourth, independent gate)", () => {
+  // If isolation isn't active at all, the coarser process-local limitation
+  // must fire instead — a non-empty socket scan result is meaningless
+  // (and, in bin/scenario-verify.ts's real wiring, always empty) when
+  // isolation was never active for this run.
+  const decision = evaluateClaimEligibility({
+    scenario: eligibleScenario(),
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    isNamespaceIsolationActive: false,
+    isolationEvidenceBoundaryProven: false,
+    preexistingSocketsUnderReadOnlyBinds: ["/repo/root/.leftover.sock"],
   });
   assert.equal(decision.claim, "diagnostic_replay");
   assert.ok(decision.claim === "diagnostic_replay");

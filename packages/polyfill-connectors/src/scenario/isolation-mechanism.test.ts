@@ -10,7 +10,17 @@
 // under it has no outbound network.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
@@ -18,6 +28,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   bwrapArgvForFilesystemClosure,
+  findPreexistingSocketsUnderReadOnlyBinds,
   isNamespaceIsolationAvailable,
   postPivotVerificationStatements,
   requiredFilesystemBinds,
@@ -63,7 +74,6 @@ function canBindMountOverAFile(): boolean {
 }
 
 const bindMountCapable = unshareUsable && canBindMountOverAFile();
-
 
 test("a host that denies `unshare` but ships a working bwrap still reports isolation AVAILABLE", {
   skip: !bwrapUsable,
@@ -129,7 +139,7 @@ test("an isolated child has NO outbound network — the property, not the mechan
 // via `withShimmedTrustedBinary` (defined below — a hoisted function
 // declaration, callable here despite the later textual position).
 test("[bwrap] the fixed probeBwrap() invokes bwrap with the SAME production argv shape bwrapArgvForFilesystemClosure builds — not a bare --dev-bind / / check", {
-  skip: !bwrapUsable || !bindMountCapable,
+  skip: !(bwrapUsable && bindMountCapable),
 }, async () => {
   const logDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-argv-log-"));
   const logPath = join(logDir, "invocations.log");
@@ -139,7 +149,7 @@ test("[bwrap] the fixed probeBwrap() invokes bwrap with the SAME production argv
       "bwrap",
       (realBwrapPath) =>
         ["#!/bin/sh", `echo "$*" >> ${JSON.stringify(logPath)}`, `exec ${realBwrapPath} "$@"`].join("\n"),
-      async () => {
+      () => {
         const cap = isNamespaceIsolationAvailable();
         // Only meaningful when bwrap is genuinely what got selected (on a
         // host where unshare is denied but bwrap works — this suite's own
@@ -166,6 +176,7 @@ test("[bwrap] the fixed probeBwrap() invokes bwrap with the SAME production argv
             `probe argv must include the derived requiredFilesystemBinds() entries, not just namespace flags; got ${JSON.stringify(probeArgv)}`
           );
         }
+        return Promise.resolve();
       }
     );
   } finally {
@@ -287,7 +298,6 @@ test("probe falls back to bwrap when unshare's procfs mount is refused but bwrap
     })
   );
 });
-
 
 test("a forced PID-ns procfs-mount refusal inside the real unshare-mechanism prelude fails the spawn closed, never silently proceeds", {
   skip: !bindMountCapable,
@@ -912,7 +922,7 @@ test("[bwrap sandbox] postPivotVerificationStatements FAILS when /oldroot is non
 });
 
 test("[bwrap sandbox] postPivotVerificationStatements FAILS when a NESTED submount under a genuinely-read-only ro bind is writable (P1, external review of ab415be6c)", {
-  skip: !bwrapUsable || !bindMountCapable,
+  skip: !(bwrapUsable && bindMountCapable),
 }, () => {
   // Unlike scenario (b) above (a bind whose OWN top mount never went
   // read-only), this proves the EXTENDED property: the top-level bind IS
@@ -1045,7 +1055,7 @@ function loggingShim(name: string, logPath: string): (realBinaryPath: string) =>
   return (_realBinaryPath: string) => `#!/bin/sh\necho "${name} $*" >> ${JSON.stringify(logPath)}\nexit 0\n`;
 }
 
-async function withBothLaunchersLoggingShimmed<T>(logPath: string, fn: () => Promise<T>): Promise<T> {
+function withBothLaunchersLoggingShimmed<T>(logPath: string, fn: () => Promise<T>): Promise<T> {
   return withShimmedTrustedBinary("unshare", loggingShim("unshare", logPath), () =>
     withShimmedTrustedBinary("bwrap", loggingShim("bwrap", logPath), fn)
   );
@@ -1877,6 +1887,66 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
     }
   });
 }
+
+// ─── Repository-UDS exception, reconciled: findPreexistingSocketsUnderReadOnlyBinds
+// (P1, external review of ab415be6c) ──────────────────────────────────────
+//
+// Recursive read-only (proven above) closes the ability to CREATE a socket
+// under a ro bind, but a socket that already existed at spawn time stays
+// dialable — a ro bind blocks writes, not reads/dials. These tests prove
+// the reconciling scan itself: it finds a real, nested socket under
+// REPO_ROOT (no root/bind-mount capability needed — creating a UDS file is
+// an ordinary, unprivileged filesystem operation), and stops finding it the
+// moment it's removed — closing the loop the claim-eligibility gate depends
+// on (see the `evaluateClaimEligibility` tests in bin/scenario-verify-strict.test.ts
+// for the claim-text side of this same reconciliation).
+
+test("findPreexistingSocketsUnderReadOnlyBinds: finds a real socket nested under REPO_ROOT, and stops finding it once removed", async () => {
+  const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-scan-probe-${String(process.pid)}`);
+  mkdirSync(nestedDir, { recursive: true });
+  const socketPath = join(nestedDir, "leftover.sock");
+  const server = createServer();
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+
+    const foundWhilePresent = findPreexistingSocketsUnderReadOnlyBinds();
+    assert.ok(
+      foundWhilePresent.includes(socketPath),
+      `expected the scan to find the real socket at ${JSON.stringify(socketPath)}; got ${JSON.stringify(foundWhilePresent)}`
+    );
+
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    rmSync(socketPath, { force: true });
+
+    const foundAfterRemoval = findPreexistingSocketsUnderReadOnlyBinds();
+    assert.ok(
+      !foundAfterRemoval.includes(socketPath),
+      `expected the scan to stop finding the socket once removed; got ${JSON.stringify(foundAfterRemoval)}`
+    );
+  } finally {
+    server.close();
+    rmSync(nestedDir, { recursive: true, force: true });
+  }
+});
+
+test("findPreexistingSocketsUnderReadOnlyBinds: does NOT descend into symlinks (avoids an unbounded/cyclic walk)", () => {
+  const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-scan-symlink-probe-${String(process.pid)}`);
+  mkdirSync(nestedDir, { recursive: true });
+  const symlinkPath = join(nestedDir, "self-loop");
+  try {
+    // A symlink pointing back at its own parent directory — if the scan
+    // followed symlinks, this would recurse forever (or at least far beyond
+    // the bounded, finite walk this function's own doc comment promises).
+    symlinkSync(nestedDir, symlinkPath, "dir");
+    const result = findPreexistingSocketsUnderReadOnlyBinds();
+    assert.ok(Array.isArray(result), "the scan must complete (not hang/throw) against a self-referential symlink");
+  } finally {
+    rmSync(nestedDir, { recursive: true, force: true });
+  }
+});
 
 // ─── cwd survives the filesystem closure (R9) ──────────────────────────────
 //

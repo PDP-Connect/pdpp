@@ -119,6 +119,19 @@
  * widening the sandbox — the opposite failure direction from a mask list,
  * where a missed entry fails open and invisibly.
  *
+ * REMAINING GAP, RECONCILED (P1, external review of ab415be6c): default-deny
+ * closes reachability for a FOREIGN path outside the derived set, but a `ro`
+ * bind (the derived set's own entries, including `REPO_ROOT`) only blocks
+ * WRITES — a socket file that ALREADY EXISTS somewhere under `REPO_ROOT` (or
+ * any other `ro` bind) at spawn time stays dialable, `connect()` needing no
+ * write permission. Recursive read-only (`recursiveReadOnlyRemountCommand`)
+ * closes the ability to CREATE a new one during a run, turning this into a
+ * finite, checkable precondition rather than an open-ended exception:
+ * `findPreexistingSocketsUnderReadOnlyBinds()` scans for exactly this
+ * before every spawn, and `bin/scenario-verify.ts` withholds
+ * `recorded_replay` — naming the exact path — whenever the scan finds one.
+ * See that function's own doc comment for the full mechanism.
+ *
  * CAPABILITY DETECTION: unprivileged user-namespace creation is not
  * guaranteed available. It can be disabled at the kernel level
  * (`kernel.unprivileged_userns_clone=0`, some hardened distros/containers)
@@ -151,7 +164,12 @@
  * host process enumeration or `/proc/<pid>/cmdline` read, no `kill(pid, 0)`
  * reachability), mount/filesystem (default-deny: only the derived allowlist
  * plus `filesystemBindPath` are visible, closing pathname-UDS dials to any
- * foreign socket outside that set — see PATHNAME-UDS ESCAPE above), SysV IPC
+ * FOREIGN socket outside that set — see PATHNAME-UDS ESCAPE above — AND,
+ * recursively, every submount under a `ro` bind, not just its top mount —
+ * see `recursiveReadOnlyRemountCommand`; a pre-existing socket already
+ * inside a `ro` bind at spawn time is a separate, RECONCILED case, checked
+ * per-run by `findPreexistingSocketsUnderReadOnlyBinds()`, not something
+ * this static filesystem view alone closes), SysV IPC
  * (no `/proc/sysvipc/*` enumeration of host shared memory/semaphores/message
  * queues), UTS (hostname/domainname). Deliberately NOT isolated, by
  * conscious scope decision rather than oversight: the CGROUP namespace (an
@@ -212,10 +230,12 @@ import { type ChildProcess, type SpawnOptions, spawn, spawnSync } from "node:chi
 import {
   accessSync,
   constants,
+  type Dirent,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readlinkSync,
   realpathSync,
   rmSync,
@@ -723,6 +743,105 @@ export function requiredFilesystemBinds(): readonly FilesystemBind[] {
 }
 
 /**
+ * PRE-EXISTING-SOCKET SCAN — reconciles the repository-UDS exception (P1,
+ * external review of ab415be6c). Recursive read-only (see
+ * `recursiveReadOnlyRemountCommand`) closes writes into any `ro` bind's
+ * submounts, but a `ro` bind only blocks WRITES, not reads/dials: a Unix
+ * domain socket file that ALREADY EXISTS somewhere under a `ro` bind at
+ * spawn time (most concretely, anywhere under `REPO_ROOT`) stays perfectly
+ * DIALABLE from inside the isolated child — `connect()` to an existing UDS
+ * needs no write permission on the socket or its containing directory,
+ * confirmed empirically (a `curl --unix-socket` against a real
+ * `REPO_ROOT`-internal socket succeeds even with both the trusted-launcher
+ * and recursive-ro fixes applied). Recursive read-only genuinely closes the
+ * other half of this: a CONNECTOR CANNOT CREATE a new socket anywhere under
+ * a `ro` bind once every submount is genuinely read-only — so the only
+ * sockets an isolated child can ever dial through a `ro` bind are ones that
+ * were ALREADY THERE before the spawn. That turns an open-ended "the
+ * closure isn't universal inside the repo bind" gap into a FINITE, checkable
+ * precondition: scan every `ro` bind for a socket inode immediately before
+ * spawning, and if the scan finds ANY, that specific run cannot honestly
+ * claim the OS-isolation boundary is airtight — the finding is fed into the
+ * `recorded_replay` eligibility decision (see
+ * `bin/scenario-verify.ts`'s `isolationEvidenceBoundaryProven` wiring),
+ * withholding the strong claim and naming the exact socket path, rather than
+ * silently accepting an unbounded, undocumented exception forever.
+ *
+ * BOUNDED, not a mask list: this is the opposite shape from the
+ * `worldWritableTempDirs` mask-list architecture this module's own module
+ * doc comment explains was proven unable to terminate — that list tried to
+ * enumerate every directory a FOREIGN socket might live under, which is
+ * unbounded in principle. This scan instead enumerates every socket that
+ * ALREADY EXISTS under the module's OWN finite, derived bind set right now,
+ * a concrete, checkable fact about THIS run, not a guess about what a
+ * foreign process might place somewhere in the future.
+ *
+ * Does not follow symlinks (`Dirent.isSymbolicLink()` entries are skipped
+ * entirely, neither descended into nor stat'd as a socket themselves) —
+ * matches every other traversal in this module's own filesystem-closure
+ * logic, which never follows a symlink outside the bind it was found under,
+ * and avoids a symlink cycle turning this bounded scan unbounded.
+ *
+ * Read-metadata only (`Dirent`'s own type flags from `readdirSync`, no
+ * `lstatSync` call per entry, no file content read) — confirmed empirically
+ * to complete in a couple hundred milliseconds against this repository's
+ * full `node_modules` tree (~130k entries), negligible next to a scenario
+ * replay's own runtime.
+ *
+ * SCOPED TO USER-WRITABLE `ro` BINDS, NOT EVERY `requiredFilesystemBinds()`
+ * ENTRY: `/usr` and `/etc` are excluded — confirmed empirically, walking
+ * `/usr` alone costs ~700ms (690k entries) on a typical dev host, more than
+ * 4x `REPO_ROOT`'s own cost, for a check that cannot find anything real. A
+ * socket under `/usr`/`/etc` requires root (or an OS package/container-build
+ * step) to plant — this module's own DAC reasoning elsewhere already treats
+ * that as outside its threat model ("no new privilege, since DAC still
+ * applies... the isolated child runs as the same real UID as the parent" —
+ * see `FilesystemBind`'s doc comment), the same way a root-capable attacker
+ * could defeat this whole isolation boundary by many other means. `REPO_ROOT`
+ * (the repo checkout, writable by the calling user's own build/checkout
+ * process — the ACTUAL exception the external review named), `nodeDir` (a
+ * per-user version-manager install, e.g. under `~/.local/share/mise/...`),
+ * and the Playwright browser cache (also under the user's `$HOME`) are all
+ * scanned — every bind ordinarily writable by the SAME user this process
+ * itself runs as, which is the set that could plausibly have a socket
+ * planted under it without root.
+ */
+const SOCKET_SCAN_EXCLUDED_SYSTEM_PATHS: readonly string[] = ["/usr", "/etc"];
+
+export function findPreexistingSocketsUnderReadOnlyBinds(): readonly string[] {
+  const found: string[] = [];
+  for (const bind of requiredFilesystemBinds()) {
+    if (SOCKET_SCAN_EXCLUDED_SYSTEM_PATHS.includes(bind.path)) {
+      continue;
+    }
+    walkForSockets(bind.path, found);
+  }
+  return found;
+}
+
+function walkForSockets(dir: string, found: string[]): void {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) {
+      continue;
+    }
+    const entryPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkForSockets(entryPath, found);
+      continue;
+    }
+    if (entry.isSocket()) {
+      found.push(entryPath);
+    }
+  }
+}
+
+/**
  * Drops any bind whose path is identical to, or a filesystem descendant of,
  * ANOTHER entry in the list, regardless of which was declared first —
  * binding both would either be a harmless redundant mount or (worse) a `rw`
@@ -769,9 +888,7 @@ function dedupeBinds(binds: readonly FilesystemBind[]): FilesystemBind[] {
       kept.push(bind);
     }
   }
-  return kept
-    .sort((a, b) => a.index - b.index)
-    .map(({ path, mode }) => ({ path, mode }));
+  return kept.sort((a, b) => a.index - b.index).map(({ path, mode }) => ({ path, mode }));
 }
 
 /**
@@ -960,7 +1077,6 @@ function requiredFhsCompatSymlinks(): readonly FhsCompatSymlink[] {
  * (including `ip link set lo up`) runs.
  */
 const TRUSTED_SETUP_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
-
 
 /**
  * The single fixed exit code every mandatory setup step in
@@ -1193,7 +1309,9 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
     statements.push(reqStatement(`bind ${bind.path}`, `mount --rbind ${shQuote(bind.path)} ${staged}`));
     if (bind.mode === "ro") {
       statements.push(reqStatement(`remount ${bind.path} read-only`, `mount -o remount,ro,bind ${staged}`));
-      statements.push(reqStatement(`remount ${bind.path} submounts read-only`, recursiveReadOnlyRemountCommand(staged)));
+      statements.push(
+        reqStatement(`remount ${bind.path} submounts read-only`, recursiveReadOnlyRemountCommand(staged))
+      );
     }
   }
   if (filesystemBindPath !== undefined) {
@@ -1485,7 +1603,11 @@ export function spawnWithNetworkIsolation(
     // resolveTrustedLauncherPath, never a bare "bwrap" name that node:
     // child_process would otherwise resolve through this process's own
     // inherited $PATH — see that function's doc comment.
-    return spawn(resolveTrustedLauncherPath("bwrap"), bwrapArgvForFilesystemClosure(cmd, args, filesystemBindPath), spawnOpts);
+    return spawn(
+      resolveTrustedLauncherPath("bwrap"),
+      bwrapArgvForFilesystemClosure(cmd, args, filesystemBindPath),
+      spawnOpts
+    );
   }
   const innerCommand = [cmd, ...args].map(shQuote).join(" ");
   // `spawnOpts.cwd` (a `string | URL | undefined` per `SpawnOptions`) is

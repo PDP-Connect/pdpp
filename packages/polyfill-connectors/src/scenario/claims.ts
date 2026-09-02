@@ -6,7 +6,9 @@
  * binding split and the ASSISTANCE-withholding condition added repair wave
  * 4, P1-1/P1-2; driver-evidence prerequisite added repair wave 6, P1-1;
  * recorded-browser driver support and its mandatory staleness limitation
- * added alongside `browser-har-replay.ts`).
+ * added alongside `browser-har-replay.ts`; isolation-evidence-boundary and
+ * repository-UDS-socket-scan conditions added by the bounded P1 repair
+ * following external review of the merged tree ab415be6c).
  *
  * `bin/scenario-verify.ts` used to print `recorded_replay: PASS` the moment
  * every per-run comparison passed — but a passing comparison only proves the
@@ -90,6 +92,23 @@ import type { ConnectorScenario } from "./format.ts";
 export type ScenarioStalenessLimitation =
   `recorded-browser: verified against capture of ${string}; asserts nothing about the live provider`;
 
+/**
+ * The repository-UDS-socket withholding limitation, PARAMETERIZED on the
+ * comma-joined list of pre-existing socket paths `findPreexistingSocketsUnderReadOnlyBinds()`
+ * found under a `ro` bind for THIS run — a TypeScript template-literal type,
+ * matching `ScenarioStalenessLimitation`'s own reasoning: the path(s) are
+ * genuinely per-run data, not a closed enum value. See
+ * `buildPreexistingSocketLimitation` below for the single place this string
+ * is constructed, and this module's doc comment ("REPOSITORY-UDS EXCEPTION,
+ * RECONCILED") for the reasoning: recursive read-only (isolation.ts's
+ * `recursiveReadOnlyRemountCommand`) closes the ability to CREATE a socket
+ * under a `ro` bind, so the only sockets an isolated child can ever dial
+ * through one are sockets that ALREADY EXISTED at spawn time — a finite,
+ * checkable fact about this specific run, not an open-ended exception.
+ */
+export type PreexistingSocketLimitation =
+  `pre-existing socket(s) found under a read-only bind at spawn time, dialable despite recursive read-only: ${string}`;
+
 export type ClaimLimitation =
   | "unbound entrypoint replay"
   | "no capture-time declaration digest"
@@ -104,7 +123,19 @@ export type ClaimLimitation =
   | "connector exercised an evidence surface the oracle cannot observe (ASSISTANCE)"
   | "no recorded provider interaction - driver evidence for recorded-http not satisfied"
   | "no recorded HAR entries - driver evidence for recorded-browser not satisfied"
+  | PreexistingSocketLimitation
   | ScenarioStalenessLimitation;
+
+/**
+ * Builds the exact repository-UDS-socket limitation string for a run whose
+ * pre-existing-socket scan found at least one match. `socketPaths` must be
+ * non-empty — callers only invoke this when
+ * `preexistingSocketsUnderReadOnlyBinds.length > 0` (see
+ * `evaluateClaimEligibility`).
+ */
+export function buildPreexistingSocketLimitation(socketPaths: readonly string[]): PreexistingSocketLimitation {
+  return `pre-existing socket(s) found under a read-only bind at spawn time, dialable despite recursive read-only: ${socketPaths.join(", ")}`;
+}
 
 /**
  * Builds the exact staleness limitation string for a scenario carrying at
@@ -194,6 +225,27 @@ export interface ClaimEligibilityInput {
    *  oracle cannot observe, so even an otherwise-fully-eligible run must not
    *  print the unqualified `recorded_replay: PASS` claim. */
   observedUnsupportedEvidenceSurface: boolean;
+  /**
+   * REPOSITORY-UDS EXCEPTION, RECONCILED (P1, external review of ab415be6c):
+   * a `ro` bind (e.g. `REPO_ROOT`) blocks WRITES, not reads/dials — a Unix
+   * domain socket file that already existed under a `ro` bind at spawn time
+   * stays dialable from inside the isolated child regardless of recursive
+   * read-only, confirmed empirically (a `curl --unix-socket` against a real
+   * `REPO_ROOT`-internal socket succeeds with both the trusted-launcher and
+   * recursive-ro fixes applied). Recursive read-only DOES close the other
+   * half: a connector cannot CREATE a new socket under a `ro` bind once
+   * every submount is genuinely read-only, so the only sockets reachable
+   * this way are ones that existed BEFORE the spawn — a finite, checkable
+   * precondition, not an open-ended gap. `bin/scenario-verify.ts` populates
+   * this from `isolation.ts`'s `findPreexistingSocketsUnderReadOnlyBinds()`,
+   * run immediately before spawning. An EMPTY array means the scan found
+   * nothing — combined with `isolationEvidenceBoundaryProven`, this is what
+   * justifies `recorded_replay`'s OS-isolation claim being airtight for this
+   * specific run; a NON-EMPTY array withholds the strong claim and names
+   * every path found (see `buildPreexistingSocketLimitation`), rather than
+   * silently accepting the old, undocumented, open-ended exception.
+   */
+  preexistingSocketsUnderReadOnlyBinds: readonly string[];
   scenario: ConnectorScenario;
 }
 
@@ -275,6 +327,8 @@ export function evaluateClaimEligibility(input: ClaimEligibilityInput): ClaimDec
     limitations.push(
       "network isolation: launcher trust or recursive read-only filesystem closure not proven for this run"
     );
+  } else if (input.preexistingSocketsUnderReadOnlyBinds.length > 0) {
+    limitations.push(buildPreexistingSocketLimitation(input.preexistingSocketsUnderReadOnlyBinds));
   }
   if (input.observedUnsupportedEvidenceSurface) {
     limitations.push("connector exercised an evidence surface the oracle cannot observe (ASSISTANCE)");
