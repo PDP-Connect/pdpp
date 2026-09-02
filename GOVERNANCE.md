@@ -36,7 +36,7 @@ Where review produces material change, or where a material question remains in d
 
 **What conformance status is.** It says a party has been checked against published criteria and the result is published where anyone can read it. It is not a licence, and it is not required. Anyone may build on PDPP without holding a status, joining anything, or dealing with PDP-Connect at all. That is stated in §1 and it cannot be amended.
 
-**What membership is.** Separate from conformance. Membership records what a company or an individual has publicly committed to, from a statement of support up to operating without ever holding user data. It costs nothing, and it confers no conformance status.
+**What membership is.** Separate from conformance. Membership records what a company or an individual has publicly committed to: signing the Principles as a Supporter, or holding a conformance status as a Partner. It costs nothing, and it confers no conformance status.
 
 **Where this sits.** PDP-Connect is a Lab of LF Decentralized Trust, part of the Linux Foundation. It was started by the Vana Foundation. PDPP is a community specification, owned, governed and managed by the community. The specification and reference implementation are open source. This document governs the programme around them, not the protocol itself.
 
@@ -154,12 +154,6 @@ A Partner is an organisation that holds at least one status under §5. The regis
 Partner is not granted. It follows from holding a status, and lapses when the last status lapses.
 
 Partner opens in phase 2.
-
-### 4.3 Steward
-
-A Steward holds no custody of user data and operates where the data lives.
-
-Steward opens in phase 2 as a declared commitment: the organisation states publicly that it takes no custody, and the register records the claim as declared. It converts to a confirmed Steward on Verified Operator status, once the test suite is published. Declared and confirmed are shown distinctly on the register.
 
 Membership carries no fee at any level.
 
@@ -289,7 +283,7 @@ Decisions under this section are published with reasons.
 | Interim technical committee named | By 14 November 2026 |
 | Source and Accessor submissions open | On the committee being named |
 | Conformance test suite published | By 1 January 2027 |
-| Verified Operator and confirmed Steward open | On publication of the test suite |
+| Verified Operator opens | On publication of the test suite |
 | Steering committee election called | Sooner of 100 Partners or 15 October 2027, not before 15 April 2027 |
 
 ## 9. Amendment of Part A
