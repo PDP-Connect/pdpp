@@ -452,12 +452,32 @@ test("scenario-record: a capture whose ENTIRE provider contact is loopback is al
  * narrowing. To still get run 1's request to differ from run 0's (for a
  * reason that has NOTHING to do with incremental narrowing — e.g. it might
  * just be retry jitter or an unrelated code path), this fixture reads a
- * counter file at `counterPath`, one integer per invocation, and bakes the
- * count into the query string. Each recorded/replayed run's request is
- * still fully deterministic (fixed per that run's own single invocation
- * during recording), so replay matching is unaffected.
+ * counter file, one integer per invocation, and bakes the count into the
+ * query string. Each recorded/replayed run's request is still fully
+ * deterministic (fixed per that run's own single invocation during
+ * recording), so replay matching is unaffected.
+ *
+ * The counter file's path is resolved from `os.tmpdir()` INSIDE the
+ * connector subprocess at runtime, not baked in as an absolute path by this
+ * test process — `scenario-record` runs unisolated (real host `tmpdir()`),
+ * but `scenario-verify` runs the connector under default-deny filesystem
+ * isolation with `TMPDIR` redirected to a sandbox-local scratch dir inside
+ * that run's `filesystemBindPath` (isolation.ts's `sandboxScratchEnv`) — the
+ * one path guaranteed writable there. A path captured by baking in this
+ * test's own `os.tmpdir()` (the host's, e.g. `/tmp/...`) is invisible under
+ * that isolation (confirmed by direct reproduction: `ENOENT` opening it from
+ * inside the sandboxed child), because it lies outside the one directory the
+ * isolation closure binds read-write. Calling `tmpdir()` fresh inside the
+ * connector process instead resolves correctly in both contexts: the real
+ * host tmp during record, the sandbox-local tmp during verify. Verify
+ * creates ONE evidence workspace shared across every run in that single CLI
+ * invocation (bin/scenario-verify.ts's `main`), so the counter still
+ * persists across run 0 → run 1 within one verify call, same as it does
+ * across record's two runs. `COUNTER_FILENAME` only needs to be unique
+ * enough not to collide with a concurrent test process — it is not a full
+ * path.
  */
-function writeVacuousSeedConnector(counterPath: string): string {
+function writeVacuousSeedConnector(counterFilename: string): string {
   const connectorRuntimePath = join(PACKAGE_ROOT, "src", "connector-runtime.ts");
   const scriptPath = join(
     packageScratchDir(),
@@ -465,11 +485,13 @@ function writeVacuousSeedConnector(counterPath: string): string {
   );
   const src = `
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RecordData, ValidateRecord } from ${JSON.stringify(connectorRuntimePath)};
 import { runConnector } from ${JSON.stringify(connectorRuntimePath)};
 
 const validateRecord: ValidateRecord = (_stream: string, data: RecordData) => ({ ok: true, data });
-const COUNTER_PATH = ${JSON.stringify(counterPath)};
+const COUNTER_FILENAME = ${JSON.stringify(counterFilename)};
 
 runConnector({
   name: "vacuous-seed-connector",
@@ -480,8 +502,9 @@ runConnector({
       throw new Error("vacuous-seed-connector: PDPP_SCENARIO_STUB_BASE_URL is not set");
     }
     await emit({ type: "PROGRESS", stream: "items", message: "collecting" });
-    const invocation = existsSync(COUNTER_PATH) ? Number(readFileSync(COUNTER_PATH, "utf8")) + 1 : 1;
-    writeFileSync(COUNTER_PATH, String(invocation));
+    const counterPath = join(tmpdir(), COUNTER_FILENAME);
+    const invocation = existsSync(counterPath) ? Number(readFileSync(counterPath, "utf8")) + 1 : 1;
+    writeFileSync(counterPath, String(invocation));
     const url = new URL("/items", baseUrl);
     url.searchParams.set("invocation", String(invocation));
     const res = await fetch(url);
@@ -546,8 +569,13 @@ server.listen(0, "127.0.0.1", () => {
 test("scenario-verify: state_seeded_second_run_with_changed_requests is not claimed when the seeding run's expected.final_state is vacuous ({})", async (t) => {
   const provider = await startVacuousSeedProvider();
   const tmpDir = mkdtempSync(join(tmpdir(), "scenario-cli-vacuous-seed-test-"));
-  const counterPath = join(tmpDir, "invocation-counter.txt");
-  const connectorPath = writeVacuousSeedConnector(counterPath);
+  const counterFilename = `pdpp-vacuous-seed-counter-${String(process.pid)}-${String(Date.now())}.txt`;
+  // Record runs unisolated, so the connector's own `tmpdir()` resolves to
+  // the real host tmp — this is the SAME file the connector will read/write
+  // during record, computed the identical way, purely so the test can reset
+  // it before verify (see below).
+  const recordCounterPath = join(tmpdir(), counterFilename);
+  const connectorPath = writeVacuousSeedConnector(counterFilename);
   const scenarioPath = join(tmpDir, "vacuous-seed.scenario.json");
 
   try {
@@ -576,11 +604,18 @@ test("scenario-verify: state_seeded_second_run_with_changed_requests is not clai
 
     await provider.close();
 
-    // Reset the invocation counter before verify: verify spawns the SAME
-    // connector script two more times (once per run) and it must reproduce
-    // invocation=1 / invocation=2 again to match the recorded interactions
-    // — the counter file must not carry over record's two invocations.
-    rmSync(counterPath, { force: true });
+    // Reset the invocation counter before verify. This only needs to clean
+    // up RECORD's counter file (real host tmp, since record is unisolated):
+    // verify's own connector invocations run isolated with a fresh
+    // evidence workspace/sandbox-local tmp created by that scenario-verify
+    // process (bin/scenario-verify.ts's `main` calls
+    // `createScenarioEvidenceWorkspace()` once per CLI invocation), so
+    // there is no stale counter file for verify to inherit there in the
+    // first place — but this SAME filename would otherwise still resolve
+    // to the leftover host-tmp file if isolation weren't available (the
+    // process-local-only fallback shares the real `tmpdir()` with record),
+    // so the reset must still happen unconditionally here.
+    rmSync(recordCounterPath, { force: true });
 
     const verifyResult = runVerifyCli(["vacuous-seed-connector", "--entrypoint", connectorPath, scenarioPath], {
       PDPP_SCENARIO_STUB_BASE_URL: provider.url,
@@ -622,6 +657,7 @@ test("scenario-verify: state_seeded_second_run_with_changed_requests is not clai
     await provider.close().catch(() => undefined);
     rmSync(tmpDir, { recursive: true, force: true });
     rmSync(connectorPath, { force: true });
+    rmSync(recordCounterPath, { force: true });
   }
 });
 
