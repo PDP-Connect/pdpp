@@ -1755,21 +1755,48 @@ function inNamespaceSocketScanStatement(roBindPaths: readonly string[]): string 
     return "true";
   }
   const quotedPaths = scannedPaths.map((path) => shQuote(path)).join(" ");
-  // `$(... 2>&1)` folds find's stdout (any socket paths it found) and
-  // stderr (any "Permission denied" enumeration failure) into ONE string —
-  // matches `req`'s own established pattern (`REQ_FUNCTION_DEFINITION`'s
-  // `__out=$("$@" 2>&1)`), no temp files needed. `$?` immediately after the
-  // substitution still reflects `find`'s own exit status (command
-  // substitution does not reset it, confirmed empirically and already
-  // documented at this module's own `req` definition) — nonzero means
-  // find hit an unreadable/unsearchable subtree it could not fully
-  // enumerate, which this function treats as a failure identically to
-  // actually finding a socket (see this function's own doc comment for why
-  // both must fail closed the same way).
+  // ONE `find` invocation, combined `2>&1` capture (matches `req`'s own
+  // established pattern) — then split the captured lines by whether they
+  // start with `find: ` (every diagnostic `find` itself emits uses this
+  // exact prefix; a matched socket PATH, printed by `-type s`'s default
+  // action, never does, since a scanned bind path is never itself prefixed
+  // with the literal string `find: `). Two separate `find` calls were
+  // considered and rejected: querying stdout and stderr via independent
+  // invocations doubles the traversal cost AND opens its own TOCTOU window
+  // between the two calls, defeating the point of this scan.
+  //
+  // ENOENT-DURING-TRAVERSAL IS NOT A SECURITY SIGNAL: `REPO_ROOT` (and
+  // every other scanned bind) is a LIVE bind-mounted view of the real host
+  // directory — a HOST-side process can create AND remove a path under it
+  // at any time, entirely independent of anything this scan is checking
+  // for. `find` walking into a directory whose entry vanishes between
+  // being listed and being stat'd exits nonzero and prints "No such file or
+  // directory" for that one path — confirmed empirically (concurrent
+  // mkdir/rmdir churn under a shared directory reliably reproduces this;
+  // this exact race was hit live by this repair's own test suite, two
+  // isolated replay subprocesses from unrelated tests both scanning
+  // REPO_ROOT while a third test's scratch directory was mid-teardown) — a
+  // NORMAL filesystem race, not evidence of anything reachable or hidden.
+  // Confirmed the wording is reliably distinct from a genuine permission
+  // failure: `find` against an unreadable/unsearchable directory instead
+  // prints "Permission denied" for that path. This function filters OUT
+  // diagnostic lines matching "No such file or directory" before deciding
+  // whether to fail — any OTHER diagnostic content (Permission denied, or
+  // anything this reasoning did not anticipate) still fails closed exactly
+  // as before; only the specific, verified-benign "the path is simply gone"
+  // case is treated as informational, never silently dropped from the
+  // reasoning (still visible in the raw combined capture if this ever needs
+  // to be re-diagnosed, just not treated as fatal). The failure decision is
+  // driven by the FILTERED diagnostic lines and found-socket lines, not
+  // `find`'s raw exit code alone, precisely because that raw code cannot
+  // distinguish "found a real hazard" from "a sibling process's scratch
+  // directory disappeared mid-walk."
   return (
-    `__socket_scan_combined=$(find ${quotedPaths} -type s 2>&1); __socket_scan_rc=$?; ` +
-    'if [ "$__socket_scan_rc" -ne 0 ] || [ -n "$__socket_scan_combined" ]; then ' +
-    'echo "pdpp isolation: in-namespace socket scan failed (exit $__socket_scan_rc) - $__socket_scan_combined" 1>&2; ' +
+    `__socket_scan_combined=$(find ${quotedPaths} -type s 2>&1); ` +
+    '__socket_scan_errors=$(echo "$__socket_scan_combined" | grep "^find: " | grep -v "No such file or directory"); ' +
+    '__socket_scan_sockets=$(echo "$__socket_scan_combined" | grep -v "^find: "); ' +
+    'if [ -n "$__socket_scan_errors" ] || [ -n "$__socket_scan_sockets" ]; then ' +
+    'echo "pdpp isolation: in-namespace socket scan failed - sockets=[$__socket_scan_sockets] errors=[$__socket_scan_errors]" 1>&2; ' +
     `exit ${IN_NAMESPACE_SOCKET_SCAN_FAILURE_EXIT_CODE}; fi`
   );
 }
