@@ -109,6 +109,23 @@ export type ScenarioStalenessLimitation =
 export type PreexistingSocketLimitation =
   `pre-existing socket(s) found under a read-only bind at spawn time, dialable despite recursive read-only: ${string}`;
 
+/**
+ * The socket-scan-incomplete limitation, PARAMETERIZED on the comma-joined
+ * list of subtree paths `findPreexistingSocketsUnderReadOnlyBinds()` could
+ * NOT fully enumerate (P1-2, external review of ced8300be) — distinct from
+ * `PreexistingSocketLimitation` (a socket was actually FOUND) because "I
+ * could not prove this subtree clean" and "I found a socket" are two
+ * independently true facts a caller must be able to tell apart, matching
+ * `SocketScanResult`'s own `sockets`/`errors` split. An unreadable subtree
+ * (whether `chmod 000` or `chmod 311` — search-without-read, a genuinely
+ * separate DAC permission, confirmed to hide a live, connectable socket
+ * from enumeration exactly as effectively as `000` does) means the scan's
+ * `sockets` list cannot be trusted as exhaustive, so this withholds the
+ * strong claim identically to actually finding one.
+ */
+export type SocketScanIncompleteLimitation =
+  `pre-existing-socket scan could not fully enumerate one or more read-only bind subtrees (unreadable path(s), possibly hiding a dialable socket): ${string}`;
+
 export type ClaimLimitation =
   | "unbound entrypoint replay"
   | "no capture-time declaration digest"
@@ -124,6 +141,7 @@ export type ClaimLimitation =
   | "no recorded provider interaction - driver evidence for recorded-http not satisfied"
   | "no recorded HAR entries - driver evidence for recorded-browser not satisfied"
   | PreexistingSocketLimitation
+  | SocketScanIncompleteLimitation
   | ScenarioStalenessLimitation;
 
 /**
@@ -135,6 +153,18 @@ export type ClaimLimitation =
  */
 export function buildPreexistingSocketLimitation(socketPaths: readonly string[]): PreexistingSocketLimitation {
   return `pre-existing socket(s) found under a read-only bind at spawn time, dialable despite recursive read-only: ${socketPaths.join(", ")}`;
+}
+
+/**
+ * Builds the exact socket-scan-incomplete limitation string for a run whose
+ * scan hit at least one unreadable subtree. `unreadablePaths` must be
+ * non-empty — callers only invoke this when
+ * `preexistingSocketScanIncomplete` is true (see `evaluateClaimEligibility`).
+ */
+export function buildSocketScanIncompleteLimitation(
+  unreadablePaths: readonly string[]
+): SocketScanIncompleteLimitation {
+  return `pre-existing-socket scan could not fully enumerate one or more read-only bind subtrees (unreadable path(s), possibly hiding a dialable socket): ${unreadablePaths.join(", ")}`;
 }
 
 /**
@@ -246,6 +276,27 @@ export interface ClaimEligibilityInput {
    * silently accepting the old, undocumented, open-ended exception.
    */
   preexistingSocketsUnderReadOnlyBinds: readonly string[];
+  /**
+   * SCAN COMPLETENESS (P1-2, external review of ced8300be): `false` whenever
+   * `findPreexistingSocketsUnderReadOnlyBinds()`'s scan could not fully
+   * enumerate one or more subtrees (an unreadable directory — `readdirSync`
+   * throws `EACCES` identically whether the directory is `chmod 000` or
+   * `chmod 311` — search permitted, read denied, a genuinely separate DAC
+   * bit that still leaves a KNOWN-name socket inside it fully connectable,
+   * confirmed empirically). Gated on the SAME `else if` rung as
+   * `preexistingSocketsUnderReadOnlyBinds` (see `evaluateClaimEligibility`)
+   * — an incomplete scan withholds `recorded_replay` exactly like a
+   * non-empty socket list does, never merely a softer warning, because an
+   * incomplete scan means the empty-array case above cannot be trusted as
+   * "scanned clean."
+   */
+  preexistingSocketScanIncomplete: boolean;
+  /** Absolute paths of every subtree the scan could not enumerate — named
+   *  explicitly so `buildSocketScanIncompleteLimitation`'s limitation string
+   *  points at the exact path, matching this module's "name the path"
+   *  discipline for every other socket-scan-derived limitation. Non-empty
+   *  only when `preexistingSocketScanIncomplete` is true. */
+  preexistingSocketScanUnreadablePaths: readonly string[];
   scenario: ConnectorScenario;
 }
 
@@ -329,6 +380,16 @@ export function evaluateClaimEligibility(input: ClaimEligibilityInput): ClaimDec
     );
   } else if (input.preexistingSocketsUnderReadOnlyBinds.length > 0) {
     limitations.push(buildPreexistingSocketLimitation(input.preexistingSocketsUnderReadOnlyBinds));
+  } else if (input.preexistingSocketScanIncomplete) {
+    // P1-2 (external review of ced8300be): a scan that could not fully
+    // enumerate a subtree is NOT the same fact as "scanned, found nothing"
+    // — it must withhold the strong claim on its own rung, checked AFTER
+    // the non-empty-sockets case above (a run that both found a socket AND
+    // hit an unreadable subtree reports the found-socket limitation, the
+    // more specific and more actionable of the two) but still strictly
+    // gating `recorded_replay`, same severity as every other condition on
+    // this chain.
+    limitations.push(buildSocketScanIncompleteLimitation(input.preexistingSocketScanUnreadablePaths));
   }
   if (input.observedUnsupportedEvidenceSurface) {
     limitations.push("connector exercised an evidence surface the oracle cannot observe (ASSISTANCE)");

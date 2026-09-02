@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -22,6 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
+import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import test from "node:test";
@@ -2145,8 +2147,12 @@ test("findPreexistingSocketsUnderReadOnlyBinds: finds a real socket nested under
 
     const foundWhilePresent = findPreexistingSocketsUnderReadOnlyBinds();
     assert.ok(
-      foundWhilePresent.includes(socketPath),
-      `expected the scan to find the real socket at ${JSON.stringify(socketPath)}; got ${JSON.stringify(foundWhilePresent)}`
+      foundWhilePresent.complete,
+      `expected a complete scan (no unreadable subtrees) while the socket is present; got errors ${JSON.stringify(foundWhilePresent.errors)}`
+    );
+    assert.ok(
+      foundWhilePresent.sockets.includes(socketPath),
+      `expected the scan to find the real socket at ${JSON.stringify(socketPath)}; got ${JSON.stringify(foundWhilePresent.sockets)}`
     );
 
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
@@ -2154,8 +2160,8 @@ test("findPreexistingSocketsUnderReadOnlyBinds: finds a real socket nested under
 
     const foundAfterRemoval = findPreexistingSocketsUnderReadOnlyBinds();
     assert.ok(
-      !foundAfterRemoval.includes(socketPath),
-      `expected the scan to stop finding the socket once removed; got ${JSON.stringify(foundAfterRemoval)}`
+      !foundAfterRemoval.sockets.includes(socketPath),
+      `expected the scan to stop finding the socket once removed; got ${JSON.stringify(foundAfterRemoval.sockets)}`
     );
   } finally {
     server.close();
@@ -2173,11 +2179,246 @@ test("findPreexistingSocketsUnderReadOnlyBinds: does NOT descend into symlinks (
     // the bounded, finite walk this function's own doc comment promises).
     symlinkSync(nestedDir, symlinkPath, "dir");
     const result = findPreexistingSocketsUnderReadOnlyBinds();
-    assert.ok(Array.isArray(result), "the scan must complete (not hang/throw) against a self-referential symlink");
+    assert.ok(Array.isArray(result.sockets), "the scan must complete (not hang/throw) against a self-referential symlink");
+    assert.ok(result.complete, "a symlink loop must not itself be reported as an enumeration failure");
   } finally {
     rmSync(nestedDir, { recursive: true, force: true });
   }
 });
+
+// ─── Fail-closed on an unreadable subtree (P1-2, external review of
+// ced8300be) ────────────────────────────────────────────────────────────
+//
+// An earlier version caught readdirSync's EACCES and silently returned from
+// that subtree, treating "I could not see in here" as "nothing here" — a
+// fail-OPEN default given this scan's whole purpose is to justify a strong
+// claim. These tests plant a real socket, then lock its containing
+// directory down so the scan cannot enumerate it, and assert the scan
+// reports `complete: false` naming the exact unreadable path — never a
+// silently-empty result. Linux enforces directory mode bits against the
+// OWNING user too (not just other users), confirmed empirically, so these
+// tests do not need a separate UID — chmod against a self-owned directory
+// reproduces the real EACCES this function must handle.
+
+test("findPreexistingSocketsUnderReadOnlyBinds: fails CLOSED (complete: false) on a chmod 000 subtree, never silently reports it clean", () => {
+  const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-scan-000-probe-${String(process.pid)}`);
+  const blockedDir = join(nestedDir, "blocked");
+  mkdirSync(blockedDir, { recursive: true });
+  try {
+    chmodSync(blockedDir, 0o000);
+    const result = findPreexistingSocketsUnderReadOnlyBinds();
+    assert.equal(
+      result.complete,
+      false,
+      "a chmod 000 subtree the scan cannot readdirSync into must mark the scan incomplete, not silently clean"
+    );
+    assert.ok(
+      result.errors.includes(blockedDir),
+      `expected the unreadable path to be named in errors; got ${JSON.stringify(result.errors)}`
+    );
+  } finally {
+    chmodSync(blockedDir, 0o755);
+    rmSync(nestedDir, { recursive: true, force: true });
+  }
+});
+
+test("findPreexistingSocketsUnderReadOnlyBinds: fails CLOSED on a chmod 311 (searchable, not listable) subtree hiding a real socket", async () => {
+  // Directory read vs search are SEPARATE permissions: 311 grants
+  // search/execute (traverse into a KNOWN child path) but not read (LIST
+  // the directory's contents). readdirSync needs the read bit and throws
+  // EACCES identically to a chmod 000 directory — but a socket with a
+  // KNOWN name inside a 311 directory stays fully connectable (proven live
+  // in this same test, not just asserted): this is the specific gap a
+  // naive "just check if I can list it" mental model misses, and why this
+  // scan must fail closed on EITHER permission shape identically.
+  const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-scan-311-probe-${String(process.pid)}`);
+  const searchOnlyDir = join(nestedDir, "search-only");
+  mkdirSync(searchOnlyDir, { recursive: true });
+  const socketPath = join(searchOnlyDir, "hidden.sock");
+  const server = createServer();
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+    chmodSync(searchOnlyDir, 0o311);
+
+    // Prove the socket is genuinely still reachable despite being
+    // unlistable — the property that makes fail-open dangerous here, not
+    // just theoretically.
+    const stillConnectable = await new Promise<boolean>((resolveConnect) => {
+      const client = createConnection(socketPath);
+      client.on("connect", () => {
+        client.destroy();
+        resolveConnect(true);
+      });
+      client.on("error", () => resolveConnect(false));
+    });
+    assert.ok(
+      stillConnectable,
+      "sanity: a socket with a known name inside a chmod 311 directory must remain connectable — otherwise this test isn't proving the real gap"
+    );
+
+    const result = findPreexistingSocketsUnderReadOnlyBinds();
+    assert.equal(
+      result.complete,
+      false,
+      "a chmod 311 subtree (unlistable but searchable, hiding a live connectable socket) must mark the scan incomplete"
+    );
+    assert.ok(
+      result.errors.includes(searchOnlyDir),
+      `expected the unreadable path to be named in errors; got ${JSON.stringify(result.errors)}`
+    );
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    chmodSync(searchOnlyDir, 0o755);
+    rmSync(nestedDir, { recursive: true, force: true });
+  }
+});
+
+// ─── TOCTOU narrowing: in-namespace re-scan catches what the one host-side
+// pre-flight scan misses (P1-2, external review of ced8300be) ─────────────
+//
+// The host-side scan (`findPreexistingSocketsUnderReadOnlyBinds`, tested
+// above) runs ONCE, before spawn, from the calling process — it cannot see
+// a socket a HOST process plants AFTER that scan but BEFORE the isolated
+// child's own `exec`. `inNamespaceSocketScanStatement` closes that gap by
+// re-running the same kind of check twice more, IN NAMESPACE, wired into
+// both `filesystemClosureShellPrelude` (unshare) and
+// `bwrapArgvForFilesystemClosure` (bwrap). These tests plant the socket
+// AFTER the host-side scan would have already run clean, proving the
+// isolated child's OWN in-namespace scan — not the host-side one — is what
+// actually catches it and refuses to run the target.
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
+
+  test(`[${mechanism}] a socket planted under REPO_ROOT AFTER the host-side pre-flight scan is still caught by the in-namespace scan — the target never runs`, {
+    skip: !usable,
+  }, async () => {
+    const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-toctou-probe-${mechanism}-${String(process.pid)}`);
+    mkdirSync(nestedDir, { recursive: true });
+    const socketPath = join(nestedDir, "toctou.sock");
+    const markerPath = join(tmpdir(), `pdpp-isolation-toctou-marker-${mechanism}-${String(process.pid)}`);
+    rmSync(markerPath, { force: true });
+    const server = createServer();
+    try {
+      // Simulates the host-side pre-flight scan already having run CLEAN —
+      // the real production call site (bin/scenario-verify.ts) runs its own
+      // scan before this point in an actual replay; this test skips
+      // re-implementing that call site and instead proves the STRONGER
+      // property that the in-namespace scan alone (with no help from a
+      // host-side scan at all) still catches a socket planted right before
+      // spawn.
+      await new Promise<void>((resolveListen, rejectListen) => {
+        server.once("error", rejectListen);
+        server.listen(socketPath, resolveListen);
+      });
+
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation(
+          process.execPath,
+          ["-e", `require("fs").writeFileSync(${JSON.stringify(markerPath)}, "ran"); process.exit(0);`],
+          { isolate: mechanism, stdio: "ignore" }
+        );
+        child.on("close", resolveExit);
+      });
+
+      assert.notEqual(
+        exitCode,
+        0,
+        `[${mechanism}] the spawn must NOT exit 0 when a pre-existing socket is present under a ro bind — the in-namespace scan must refuse to run`
+      );
+      assert.ok(
+        !existsSync(markerPath),
+        `[${mechanism}] the target command must NEVER run when the in-namespace socket scan finds a pre-existing socket`
+      );
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+      rmSync(nestedDir, { recursive: true, force: true });
+      rmSync(markerPath, { force: true });
+    }
+  });
+}
+
+// ─── Orphaned / replaced socket between scan and dial (P1-2, external
+// review of ced8300be) ──────────────────────────────────────────────────
+//
+// A socket that is DELETED and RECREATED at the same path between a scan
+// and the eventual dial is a distinct control from "a socket simply
+// appears": it proves the scan isn't fooled by transient absence (e.g. a
+// scan racing a socket's close-then-immediately-relisten cycle) into a
+// false "clean" verdict for a path that is, at exec time, genuinely
+// occupied by a live socket again. This plants a socket, removes it,
+// recreates a DIFFERENT socket at the exact same path, then spawns — the
+// in-namespace scan runs fresh at spawn time and must see whatever is
+// AT THE PATH right then, not a stale first-seen-clean memory of it.
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
+
+  test(`[${mechanism}] a socket deleted and RECREATED at the same path is still caught (not a stale "seen clean once" verdict)`, {
+    skip: !usable,
+  }, async () => {
+    const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-orphan-probe-${mechanism}-${String(process.pid)}`);
+    mkdirSync(nestedDir, { recursive: true });
+    const socketPath = join(nestedDir, "orphan.sock");
+    const markerPath = join(tmpdir(), `pdpp-isolation-orphan-marker-${mechanism}-${String(process.pid)}`);
+    rmSync(markerPath, { force: true });
+    let firstServer = createServer();
+    let secondServer: ReturnType<typeof createServer> | undefined;
+    try {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        firstServer.once("error", rejectListen);
+        firstServer.listen(socketPath, resolveListen);
+      });
+      // Confirm the scan sees it once, establishing there is genuinely
+      // something at this path before the delete/recreate cycle — not
+      // asserted as the load-bearing check, just a sanity baseline.
+      const seenFirst = findPreexistingSocketsUnderReadOnlyBinds();
+      assert.ok(
+        seenFirst.sockets.includes(socketPath),
+        `sanity: expected the first socket to be visible before the orphan/replace cycle; got ${JSON.stringify(seenFirst.sockets)}`
+      );
+      await new Promise<void>((resolveClose) => firstServer.close(() => resolveClose()));
+      rmSync(socketPath, { force: true });
+
+      // Recreate a DIFFERENT socket at the SAME path — this is the orphan/
+      // replace shape: the path existed, went away, and now exists again
+      // with a new underlying socket, all before the isolated spawn below.
+      secondServer = createServer();
+      await new Promise<void>((resolveListen, rejectListen) => {
+        secondServer?.once("error", rejectListen);
+        secondServer?.listen(socketPath, resolveListen);
+      });
+
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation(
+          process.execPath,
+          ["-e", `require("fs").writeFileSync(${JSON.stringify(markerPath)}, "ran"); process.exit(0);`],
+          { isolate: mechanism, stdio: "ignore" }
+        );
+        child.on("close", resolveExit);
+      });
+
+      assert.notEqual(
+        exitCode,
+        0,
+        `[${mechanism}] the spawn must NOT exit 0 against the RECREATED socket — a fresh scan at spawn time must see it, not a stale first-look verdict`
+      );
+      assert.ok(
+        !existsSync(markerPath),
+        `[${mechanism}] the target command must NEVER run against the recreated (orphan/replaced) socket`
+      );
+    } finally {
+      await new Promise<void>((resolveClose) => firstServer.close(() => resolveClose()));
+      if (secondServer !== undefined) {
+        const closeSecond = secondServer;
+        await new Promise<void>((resolveClose) => closeSecond.close(() => resolveClose()));
+      }
+      rmSync(nestedDir, { recursive: true, force: true });
+      rmSync(markerPath, { force: true });
+    }
+  });
+}
 
 // ─── cwd survives the filesystem closure (R9) ──────────────────────────────
 //

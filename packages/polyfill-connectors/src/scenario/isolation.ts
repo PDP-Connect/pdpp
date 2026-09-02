@@ -809,18 +809,44 @@ export function requiredFilesystemBinds(): readonly FilesystemBind[] {
  * confirmed empirically (a `curl --unix-socket` against a real
  * `REPO_ROOT`-internal socket succeeds even with both the trusted-launcher
  * and recursive-ro fixes applied). Recursive read-only genuinely closes the
- * other half of this: a CONNECTOR CANNOT CREATE a new socket anywhere under
- * a `ro` bind once every submount is genuinely read-only — so the only
- * sockets an isolated child can ever dial through a `ro` bind are ones that
- * were ALREADY THERE before the spawn. That turns an open-ended "the
- * closure isn't universal inside the repo bind" gap into a FINITE, checkable
- * precondition: scan every `ro` bind for a socket inode immediately before
- * spawning, and if the scan finds ANY, that specific run cannot honestly
+ * other half of this FROM INSIDE THE SANDBOX: an isolated CONNECTOR cannot
+ * CREATE a new socket anywhere under a `ro` bind once every submount is
+ * genuinely read-only.
+ *
+ * WHAT THIS SCAN DOES NOT CLOSE — CORRECTED CLAIM (P1-2, external review of
+ * ced8300be): an earlier version of this doc comment claimed "nothing new
+ * can appear under a ro bind while replay runs." That OVERSTATES what
+ * recursive read-only actually proves: a `ro` bind stops the SANDBOX (the
+ * isolated child itself) from creating a new socket there — it says nothing
+ * about the HOST. A ro BIND is a property of the isolated child's OWN mount
+ * namespace; the SOURCE directory it was bound from (e.g. the real
+ * `REPO_ROOT` on disk) remains an ordinary, writable directory to every
+ * OTHER process on the same machine that is NOT inside this sandbox — a
+ * separate host process (the calling user's own shell, a build script, a
+ * completely unrelated program run by the same user) can create a socket
+ * under that source directory at any time, and the isolated child would see
+ * it appear the moment the host process creates it (a bind mount is a live
+ * view of the same inode, not a snapshot — see `filesystemClosureShellPrelude`'s
+ * own doc comment on this same property, used there to explain why the
+ * SCRATCH directories don't need separate staging). So "the sandbox cannot
+ * create a socket here" is proven; "no socket can appear here during this
+ * run" is not — the true claim is narrower, and this scan's own TOCTOU
+ * narrowing (running it AGAIN, in-namespace, at two later points — see
+ * `inNamespaceSocketScanStatement`) exists specifically because this
+ * function alone, run once from the host before any run starts, cannot make
+ * the broader claim honest.
+ *
+ * That turns what was an open-ended "the closure isn't universal inside the
+ * repo bind" gap into a FINITE, checkable precondition per scan: enumerate
+ * every socket under a `ro` bind at the moment this function runs, and if
+ * the scan finds ANY (or cannot fully enumerate a subtree — see
+ * `SocketScanResult.complete` below), that specific run cannot honestly
  * claim the OS-isolation boundary is airtight — the finding is fed into the
  * `recorded_replay` eligibility decision (see
  * `bin/scenario-verify.ts`'s `isolationEvidenceBoundaryProven` wiring),
- * withholding the strong claim and naming the exact socket path, rather than
- * silently accepting an unbounded, undocumented exception forever.
+ * withholding the strong claim and naming the exact socket path (or the
+ * exact unreadable path), rather than silently accepting an unbounded,
+ * undocumented exception forever.
  *
  * BOUNDED, not a mask list: this is the opposite shape from the
  * `worldWritableTempDirs` mask-list architecture this module's own module
@@ -828,7 +854,7 @@ export function requiredFilesystemBinds(): readonly FilesystemBind[] {
  * enumerate every directory a FOREIGN socket might live under, which is
  * unbounded in principle. This scan instead enumerates every socket that
  * ALREADY EXISTS under the module's OWN finite, derived bind set right now,
- * a concrete, checkable fact about THIS run, not a guess about what a
+ * a concrete, checkable fact about THIS moment, not a guess about what a
  * foreign process might place somewhere in the future.
  *
  * Does not follow symlinks (`Dirent.isSymbolicLink()` entries are skipped
@@ -837,11 +863,23 @@ export function requiredFilesystemBinds(): readonly FilesystemBind[] {
  * logic, which never follows a symlink outside the bind it was found under,
  * and avoids a symlink cycle turning this bounded scan unbounded.
  *
- * Read-metadata only (`Dirent`'s own type flags from `readdirSync`, no
- * `lstatSync` call per entry, no file content read) — confirmed empirically
- * to complete in a couple hundred milliseconds against this repository's
- * full `node_modules` tree (~130k entries), negligible next to a scenario
- * replay's own runtime.
+ * FAILS CLOSED ON AN UNREADABLE SUBTREE (P1-2, external review of
+ * ced8300be) — an earlier version caught `readdirSync`'s `EACCES` and simply
+ * `return`ed from that subtree, silently treating "I could not see in here"
+ * as "nothing here": a fail-OPEN default given this scan's entire purpose is
+ * to justify a strong claim. Confirmed empirically, as an unprivileged user:
+ * a directory the scanning process cannot LIST — whether `chmod 000`
+ * (neither read nor search) or `chmod 311` (search/execute permitted, read
+ * permission absent — a directory can be SEARCHED without being LISTABLE,
+ * genuinely separate DAC bits) — makes `readdirSync` throw `EACCES`
+ * identically in both cases, while a socket with a KNOWN name inside a
+ * `311` directory stays fully connectable (confirmed live: a client
+ * successfully dialed a socket under a `chmod 311` directory this scan
+ * could not enumerate). `SocketScanResult.complete` is `false` whenever ANY
+ * subtree could not be fully enumerated, distinct from `sockets` (what was
+ * actually found) — a caller must treat `complete: false` as withholding
+ * the strong claim exactly like a non-empty `sockets` array, never as
+ * "scanned clean."
  *
  * SCOPED TO USER-WRITABLE `ro` BINDS, NOT EVERY `requiredFilesystemBinds()`
  * ENTRY: `/usr` and `/etc` are excluded — confirmed empirically, walking
@@ -863,22 +901,55 @@ export function requiredFilesystemBinds(): readonly FilesystemBind[] {
  */
 const SOCKET_SCAN_EXCLUDED_SYSTEM_PATHS: readonly string[] = ["/usr", "/etc"];
 
-export function findPreexistingSocketsUnderReadOnlyBinds(): readonly string[] {
-  const found: string[] = [];
+/**
+ * Result contract for `findPreexistingSocketsUnderReadOnlyBinds()` (P1-2,
+ * external review of ced8300be) — replaces a bare `readonly string[]`
+ * specifically so "found nothing" and "could not fully enumerate" are
+ * structurally distinct, never collapsible into the same falsy-array shape.
+ */
+export interface SocketScanResult {
+  /** Absolute paths of every socket the scan actually found. */
+  sockets: readonly string[];
+  /** `false` whenever ANY scanned subtree could not be fully enumerated
+   *  (an `EACCES` on `readdirSync`, from either a `000` or a `311`
+   *  directory — see this module's own doc comment above for why both fail
+   *  identically here). A caller MUST treat `complete: false` as
+   *  withholding the strong `recorded_replay` claim, exactly like a
+   *  non-empty `sockets` array — it does NOT mean "scanned clean." */
+  complete: boolean;
+  /** Absolute paths of every directory the scan could not enumerate, one
+   *  entry per unreadable subtree encountered — named explicitly so a
+   *  withheld claim's limitation string can point at the exact path,
+   *  matching this module's "fail loud, name the path" discipline
+   *  elsewhere (e.g. `buildPreexistingSocketLimitation`). Empty whenever
+   *  `complete` is `true`. */
+  errors: readonly string[];
+}
+
+export function findPreexistingSocketsUnderReadOnlyBinds(): SocketScanResult {
+  const sockets: string[] = [];
+  const errors: string[] = [];
   for (const bind of requiredFilesystemBinds()) {
     if (SOCKET_SCAN_EXCLUDED_SYSTEM_PATHS.includes(bind.path)) {
       continue;
     }
-    walkForSockets(bind.path, found);
+    walkForSockets(bind.path, sockets, errors);
   }
-  return found;
+  return { sockets, complete: errors.length === 0, errors };
 }
 
-function walkForSockets(dir: string, found: string[]): void {
+function walkForSockets(dir: string, found: string[], errors: string[]): void {
   let entries: Dirent[];
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch {
+    // FAIL CLOSED (P1-2, external review of ced8300be): an unreadable
+    // subtree — whether `EACCES` from a `000` (unsearchable) or a `311`
+    // (searchable but unlistable) directory — is recorded as an
+    // enumeration failure, NOT silently treated as "nothing here." See
+    // this module's own doc comment above for the empirical proof that a
+    // `311` directory's unlistable contents remain fully connectable.
+    errors.push(dir);
     return;
   }
   for (const entry of entries) {
@@ -887,7 +958,7 @@ function walkForSockets(dir: string, found: string[]): void {
     }
     const entryPath = join(dir, entry.name);
     if (entry.isDirectory()) {
-      walkForSockets(entryPath, found);
+      walkForSockets(entryPath, found, errors);
       continue;
     }
     if (entry.isSocket()) {
@@ -1171,6 +1242,18 @@ const REQ_FUNCTION_DEFINITION =
  * tell which of the three failure classes fired from the exit code alone.
  */
 const POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE = 91;
+
+/**
+ * The single fixed exit code the IN-NAMESPACE socket scan
+ * (`inNamespaceSocketScanStatement`) uses on failure — distinct from `90`
+ * (a setup step), `91` (post-pivot verification), and `97` (the procfs
+ * gate), so a caller can tell this specific failure class apart from the
+ * others by exit code alone. Covers BOTH failure shapes the scan reports:
+ * a genuine pre-existing socket found, or a subtree the scan could not
+ * fully enumerate (P1-2, external review of ced8300be — see
+ * `inNamespaceSocketScanStatement`'s doc comment).
+ */
+const IN_NAMESPACE_SOCKET_SCAN_FAILURE_EXIT_CODE = 92;
 
 /**
  * Builds one `req "<label>" <command...>` shell statement — the run-or-die
@@ -1477,6 +1560,117 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
 }
 
 /**
+ * IN-NAMESPACE SOCKET SCAN (P1-2, external review of ced8300be) — the
+ * host-side pre-flight scan (`findPreexistingSocketsUnderReadOnlyBinds()`)
+ * runs from the CALLING Node process, before any isolated child's mount
+ * namespace even exists — it sees the real host filesystem, not the
+ * isolated child's own pivoted view, and it runs only ONCE, before ANY
+ * run's subprocess spawns. The external review's TOCTOU objection: a HOST
+ * process (a separate, non-sandboxed process on the same machine, with
+ * ordinary write access to a `ro` bind's SOURCE directory on the real
+ * filesystem — recursive read-only only stops the SANDBOX from creating a
+ * new socket there, not the host) can create a socket under a scanned path
+ * at any point between that one early scan and the target command's actual
+ * `exec` — a gap of however long every earlier run in the scenario took.
+ * This closes that gap by running the SAME kind of check TWICE more,
+ * IN-NAMESPACE: once as part of `postPivotVerificationStatements` (right
+ * after every `ro` bind's top-level AND submount remounts have completed —
+ * the earliest point at which the isolated child's own view of those paths
+ * is both final and read-only), and once again immediately before `exec
+ * <target>` in `spawnWithNetworkIsolation`'s unshare branch (the LAST
+ * possible point before the target command could dial anything). Narrows
+ * the race window on every run to "however long this run's own setup takes
+ * between the two scan points," not "however long the whole scenario's
+ * prior runs took" — genuinely smaller, but NOT zero: a host process could
+ * still plant a socket in the interval between this function's second call
+ * and the target's first `connect()`, however short. See this function's
+ * own TERMINAL-ARCHITECTURE note below for the fix that actually closes the
+ * remaining gap.
+ *
+ * `find <path> -type s` (GNU findutils, present in every trusted directory
+ * this module's `TRUSTED_SETUP_PATH`/`TRUSTED_LAUNCHER_DIRECTORIES` already
+ * trust) rather than a hand-rolled shell walk — confirmed empirically it
+ * does NOT follow symlinks by default (no `-L` flag given), matching the
+ * host-side scanner's own symlink-avoidance, and does not hang against a
+ * self-referential symlink loop.
+ *
+ * FAILS CLOSED ON AN UNREADABLE SUBTREE (P1-2, the review's OTHER half of
+ * this finding) — `find`'s own exit status distinguishes "fully enumerated,
+ * found nothing" from "could not fully enumerate": confirmed empirically,
+ * as an unprivileged user, `find <root>` against a subtree it cannot LIST
+ * (`chmod 000`, or `chmod 311` — SEARCHABLE but not LISTABLE, a genuinely
+ * separate permission bit from readability, see next paragraph) exits `1`
+ * and prints `find: '<path>': Permission denied` to stderr, while still
+ * printing every path it COULD enumerate before hitting the blocked
+ * subtree. This function captures that exit status and treats ANY nonzero
+ * exit from `find` as "could not prove this subtree clean," not "found
+ * nothing" — the same fail-closed posture `req`/`SETUP_STEP_FAILURE_EXIT_CODE`
+ * already applies to every OTHER mandatory setup step, extended here to an
+ * enumeration failure rather than a command failure.
+ *
+ * DIRECTORY READ VS SEARCH ARE SEPARATE PERMISSIONS (confirmed empirically,
+ * unprivileged user, both this module's own scan AND a real socket dial):
+ * a directory with mode `311` (search/execute bit set, read bit NOT set)
+ * cannot be LISTED — `find`/`readdir` against it fails `EACCES`, so a
+ * socket with an UNKNOWN name inside it is invisible to enumeration — but a
+ * socket with a KNOWN name inside it stays fully STAT-able and CONNECTABLE
+ * (confirmed live: a client successfully connected to a socket under a
+ * `chmod 311` directory whose contents `find`/`readdirSync` could not list).
+ * This means a `311` subtree is not merely "harder to see into" than a
+ * `000` one — both fail identically at the enumeration step (`find` exits
+ * nonzero for either), so both correctly fall into the SAME fail-closed
+ * branch here; the distinction matters for WHY the scan must fail closed on
+ * an unreadable subtree at all (an attacker does not need read+write on a
+ * directory to make a socket inside it reachable — only the ability to
+ * create the socket once, before locking the directory down to `311` or
+ * `000`), not for how this function's own logic branches.
+ *
+ * TERMINAL ARCHITECTURE (documented follow-up, not built this round, same
+ * pattern this module already uses for the CGROUP/TIME namespace residuals
+ * — see this module's own doc comment, "WHAT THIS BOUNDARY DOES AND DOES
+ * NOT ISOLATE"): re-scanning immediately before spawn (what this function
+ * does) REDUCES the TOCTOU race window but does not ELIMINATE it — a
+ * verifier-owned IMMUTABLE snapshot of every required input (taken once,
+ * before the scenario's first run, and never re-read from the live host
+ * filesystem again) would close the window entirely rather than narrowing
+ * it. Not built this round: it is a substantially larger architectural
+ * change (the isolated child's binds would need to come from the snapshot
+ * itself, not `requiredFilesystemBinds()`'s live paths) than this bounded
+ * repair's scope covers.
+ *
+ * Returns a shell statement, NOT wrapped in `req` — `req`'s own diagnostic
+ * wording ("setup step [...] failed") doesn't fit a scan finding a REAL
+ * socket (not a setup command failing), so this builds its own message and
+ * exit using `IN_NAMESPACE_SOCKET_SCAN_FAILURE_EXIT_CODE` directly, matching
+ * `postPivotVerificationStatements`'s own pattern of a bespoke diagnostic
+ * rather than `req`'s generic one.
+ */
+function inNamespaceSocketScanStatement(roBindPaths: readonly string[]): string {
+  const scannedPaths = roBindPaths.filter((path) => !SOCKET_SCAN_EXCLUDED_SYSTEM_PATHS.includes(path));
+  if (scannedPaths.length === 0) {
+    return "true";
+  }
+  const quotedPaths = scannedPaths.map((path) => shQuote(path)).join(" ");
+  // `$(... 2>&1)` folds find's stdout (any socket paths it found) and
+  // stderr (any "Permission denied" enumeration failure) into ONE string —
+  // matches `req`'s own established pattern (`REQ_FUNCTION_DEFINITION`'s
+  // `__out=$("$@" 2>&1)`), no temp files needed. `$?` immediately after the
+  // substitution still reflects `find`'s own exit status (command
+  // substitution does not reset it, confirmed empirically and already
+  // documented at this module's own `req` definition) — nonzero means
+  // find hit an unreadable/unsearchable subtree it could not fully
+  // enumerate, which this function treats as a failure identically to
+  // actually finding a socket (see this function's own doc comment for why
+  // both must fail closed the same way).
+  return (
+    `__socket_scan_combined=$(find ${quotedPaths} -type s 2>&1); __socket_scan_rc=$?; ` +
+    'if [ "$__socket_scan_rc" -ne 0 ] || [ -n "$__socket_scan_combined" ]; then ' +
+    'echo "pdpp isolation: in-namespace socket scan failed (exit $__socket_scan_rc) - $__socket_scan_combined" 1>&2; ' +
+    `exit ${IN_NAMESPACE_SOCKET_SCAN_FAILURE_EXIT_CODE}; fi`
+  );
+}
+
+/**
  * POST-PIVOT VERIFICATION (P1-1, ninth review, requirement (c)) — proves,
  * rather than assumes, that the filesystem closure actually took effect,
  * run as the LAST gate before `exec <target>` (see `spawnWithNetworkIsolation`'s
@@ -1570,6 +1764,17 @@ export function postPivotVerificationStatements(binds: readonly FilesystemBind[]
       `echo "pdpp isolation: post-pivot verification failed — new-root-active=$__canary_ok oldroot-leftover=[$__oldroot_leftover] writable-ro-binds=[$__writable_ro]" 1>&2; ` +
       `exit ${POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE}; fi`
   );
+  // IN-NAMESPACE SOCKET SCAN, POINT A (P1-2, external review of ced8300be):
+  // run immediately after the ro-bind checks above (which prove every
+  // submount is genuinely read-only) — this is the earliest point at which
+  // the isolated child's own view of every scanned path is both final
+  // (every bind/remount step has completed) and read-only, so a scan here
+  // reflects the real, live post-pivot mount table, not the pre-pivot
+  // staging tree the setup steps built. See `inNamespaceSocketScanStatement`'s
+  // doc comment for the full TOCTOU-narrowing rationale and why a second
+  // scan (POINT B, immediately before `exec` — see
+  // `spawnWithNetworkIsolation`'s unshare branch) is also needed.
+  statements.push(inNamespaceSocketScanStatement(roBindPaths));
   return statements;
 }
 
@@ -1639,6 +1844,19 @@ export function bwrapArgvForFilesystemClosure(
   filesystemBindPath: string | undefined
 ): string[] {
   const innerCommand = [cmd, ...args].map(shQuote).join(" ");
+  // IN-NAMESPACE SOCKET SCAN (P1-2, external review of ced8300be): bwrap has
+  // no separate pre-pivot/post-pivot phases the way unshare's shell prelude
+  // does — every `--ro-bind`/remount bwrap declares is already final and
+  // read-only the INSTANT this inner `sh -c` begins running (bwrap builds
+  // the whole mount table itself, before exec'ing anything into it), so
+  // POINT A and POINT B (see `inNamespaceSocketScanStatement`'s doc comment)
+  // collapse to the same single moment here — one scan, run as the first
+  // statement in this inner shell, immediately before `exec`.
+  const socketScan = inNamespaceSocketScanStatement(
+    requiredFilesystemBinds()
+      .filter((b) => b.mode === "ro")
+      .map((b) => b.path)
+  );
   // TRUSTED SHELL (P1-1, external review of ced8300be): resolved via
   // resolveTrustedLauncherPath("sh"), never the bare string "sh" — bwrap
   // execs this argv entry the same way unshare does (execvp against the
@@ -1651,7 +1869,7 @@ export function bwrapArgvForFilesystemClosure(
     "--",
     resolveTrustedLauncherPath("sh"),
     "-c",
-    `exec ${innerCommand}`,
+    `${socketScan}; exec ${innerCommand}`,
   ];
 }
 
@@ -1695,7 +1913,22 @@ export function spawnWithNetworkIsolation(
   // loopback bridge would not — an existing, unchanged tradeoff this fix
   // does not alter), so it intentionally stays a best-effort step, not
   // wrapped in `req`.
-  const shScript = `PATH=${TRUSTED_SETUP_PATH}; ip link set lo up >/dev/null 2>&1; ${closurePrelude}; exec ${innerCommand}`;
+  // IN-NAMESPACE SOCKET SCAN, POINT B (P1-2, external review of ced8300be):
+  // a second scan, run as the LAST statement before `exec <target>` — the
+  // latest possible point at which a host process could have planted a
+  // socket under a scanned path since POINT A ran (inside
+  // `filesystemClosureShellPrelude`'s own `postPivotVerificationStatements`
+  // call) narrows the TOCTOU window this module's own doc comment
+  // describes to the smallest gap this repair can practically close. See
+  // `inNamespaceSocketScanStatement`'s doc comment for the full rationale
+  // and the documented terminal-architecture follow-up this does not
+  // attempt to build.
+  const socketScanPointB = inNamespaceSocketScanStatement(
+    requiredFilesystemBinds()
+      .filter((b) => b.mode === "ro")
+      .map((b) => b.path)
+  );
+  const shScript = `PATH=${TRUSTED_SETUP_PATH}; ip link set lo up >/dev/null 2>&1; ${closurePrelude}; ${socketScanPointB}; exec ${innerCommand}`;
   // TRUSTED LAUNCHER (P1, external review of ab415be6c): resolved via
   // resolveTrustedLauncherPath, never a bare "unshare" name — see that
   // function's doc comment. Note this is the LAUNCHER binary itself; the
