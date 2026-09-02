@@ -78,8 +78,11 @@
  * share a basename across directories are unaffected.
  */
 
-import { readSync } from "node:fs";
-import { inflateRawSync } from "node:zlib";
+import { createWriteStream, readSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createInflateRaw, inflateRawSync } from "node:zlib";
 
 const ZIP_EOCD_SIGNATURE = 0x06_05_4b_50;
 const ZIP_CENTRAL_DIRECTORY_SIGNATURE = 0x02_01_4b_50;
@@ -556,4 +559,228 @@ export function readZipEntries(bytes: Buffer, policy: ZipReadPolicy): ZipEntry[]
  */
 export function readZipEntriesFromFile(fd: number, fileSize: number, policy: ZipReadPolicy): ZipEntry[] {
   return readZipEntriesFromSource(fileBytesSource(fd, fileSize), policy);
+}
+
+// Chunk size for streamZipEntryToFile's compressed-bytes read loop. Bounds
+// how much of ANY single entry's compressed data is ever resident at once,
+// regardless of the entry's total (compressed or inflated) size -- this is
+// what makes multi-GB entries (e.g. a large Apple Health export.xml) safe to
+// extract without a multi-GB memory spike, unlike ZipEntry.data() above,
+// which returns one fully-materialized inflated Buffer per entry and is only
+// appropriate for entries policy already bounds to a modest size.
+const STREAM_READ_CHUNK_BYTES = 1024 * 1024;
+
+export class ZipEntryNotFoundError extends Error {
+  constructor(name: string) {
+    super(`zip does not contain an entry named '${name}'`);
+    this.name = "ZipEntryNotFoundError";
+  }
+}
+
+/**
+ * Find one named entry's central-directory record without building `data()`
+ * closures for every entry in the archive -- callers that only need ONE
+ * entry (streamZipEntryToFile below) skip the per-entry closure allocation
+ * `readZipEntriesFromSource` does for entries they'll never touch. Applies
+ * the same fail-closed name-safety and declared-size gates as
+ * `readZipEntriesFromSource` to every record it walks past, not just the
+ * match, so a policy-violating archive is rejected even when the requested
+ * entry would itself have been fine.
+ */
+function findCentralDirectoryRecordByName(
+  source: BytesSource,
+  policy: ZipReadPolicy,
+  entryName: string
+): CentralDirectoryRecord | null {
+  const eocd = findEndOfCentralDirectory(source);
+  if (!eocd) {
+    return null;
+  }
+  const entryCount = eocd.tail.readUInt16LE(eocd.offset + 10);
+  if (entryCount > policy.maxEntries) {
+    throw new ZipPolicyViolationError(
+      "too_many_entries",
+      `zip declares ${entryCount} entries, exceeding maxEntries (${policy.maxEntries})`
+    );
+  }
+  const centralDirSize = eocd.tail.readUInt32LE(eocd.offset + 12);
+  const centralDirStart = eocd.tail.readUInt32LE(eocd.offset + 16);
+  const maxPlausibleCentralDirSize = entryCount * ZIP_CENTRAL_DIRECTORY_MAX_RECORD_LENGTH;
+  if (centralDirSize > maxPlausibleCentralDirSize) {
+    throw new ZipPolicyViolationError(
+      "too_many_entries",
+      `zip declares a central directory of ${centralDirSize} bytes for ${entryCount} entries, exceeding the ` +
+        `plausible maximum (${maxPlausibleCentralDirSize} bytes) for that many records`
+    );
+  }
+  const centralDirBytes = source.readWindow(centralDirStart, centralDirSize);
+
+  let offset = 0;
+  let declaredTotalUncompressed = 0;
+  const seenNames = new Set<string>();
+  let match: CentralDirectoryRecord | null = null;
+  for (let i = 0; i < entryCount; i += 1) {
+    const record = readCentralDirectoryRecord(centralDirBytes, offset);
+    if (!record) {
+      break;
+    }
+    if (UNSAFE_ZIP_ENTRY_NAME_RE.test(record.name) || WHITESPACE_PADDED_DOT_DOT_SEGMENT_RE.test(record.name)) {
+      throw new ZipPolicyViolationError(
+        "unsafe_entry_name",
+        `zip entry '${record.name}' has an unsafe name (path traversal, absolute path, drive/UNC root, or embedded NUL)`
+      );
+    }
+    if (record.isUnixSymlink) {
+      throw new ZipPolicyViolationError(
+        "unsafe_entry_name",
+        `zip entry '${record.name}' is a symlink, which this reader does not support extracting`
+      );
+    }
+    if (seenNames.has(record.name)) {
+      throw new ZipPolicyViolationError("unsafe_entry_name", `zip declares more than one entry named '${record.name}'`);
+    }
+    seenNames.add(record.name);
+    if (record.uncompressedSize > policy.maxEntryUncompressedBytes) {
+      throw new ZipPolicyViolationError(
+        "entry_too_large",
+        `zip entry '${record.name}' declares uncompressed_size ${record.uncompressedSize}, exceeding maxEntryUncompressedBytes (${policy.maxEntryUncompressedBytes})`
+      );
+    }
+    declaredTotalUncompressed += record.uncompressedSize;
+    if (declaredTotalUncompressed > policy.maxTotalUncompressedBytes) {
+      throw new ZipPolicyViolationError(
+        "total_too_large",
+        `zip entries declare a combined uncompressed_size exceeding maxTotalUncompressedBytes (${policy.maxTotalUncompressedBytes})`
+      );
+    }
+    if (record.name === entryName || zipBasename(record.name) === entryName) {
+      match = record;
+    }
+    offset = record.nextOffset;
+  }
+  return match;
+}
+
+export interface StreamZipEntryResult {
+  readonly bytesWritten: number;
+  readonly found: boolean;
+}
+
+/**
+ * Extract exactly one named entry's payload to `destPath`, inflating (or
+ * copying, for STORE-method entries) in bounded chunks so neither the
+ * compressed nor the inflated bytes are ever fully resident in memory —
+ * unlike {@link ZipEntry.data}, which returns one complete in-memory Buffer
+ * and is appropriate only for entries policy already caps to a modest size.
+ * This is the path for archive members that can legitimately be hundreds of
+ * MB to multiple GB (e.g. an Apple Health `export.xml` inside the iOS Health
+ * app's zip export): compressed bytes are read from `fd` in
+ * {@link STREAM_READ_CHUNK_BYTES} windows and fed incrementally into a
+ * `zlib.createInflateRaw()` transform stream piped straight to a
+ * `fs.WriteStream` at `destPath`.
+ *
+ * Enforces the same declared-size gates as `readZipEntriesFromFile`
+ * (per-entry and aggregate ceilings across every record walked, not just the
+ * match) PLUS an actual-bytes cap on the entry being extracted, tracked by
+ * counting real bytes written to `destPath` — an adversarial archive cannot
+ * bypass the cap by lying about `uncompressedSize`, because the write count
+ * is real, not declared.
+ *
+ * Returns `{ found: false, bytesWritten: 0 }` (no file created) when no
+ * entry matches `entryName` (exact name or basename) — the archive itself
+ * may still be a valid zip that simply doesn't contain the requested member,
+ * which callers must distinguish from a policy violation (thrown, not
+ * returned) or a genuinely corrupt archive.
+ *
+ * `fd` is caller-owned: this function never opens or closes it. On any
+ * thrown error, a partially-written `destPath` is removed by the caller, not
+ * here — this function has no opinion on cleanup ownership.
+ */
+export async function streamZipEntryToFile(
+  fd: number,
+  fileSize: number,
+  entryName: string,
+  destPath: string,
+  policy: ZipReadPolicy
+): Promise<StreamZipEntryResult> {
+  const source = fileBytesSource(fd, fileSize);
+  const record = findCentralDirectoryRecordByName(source, policy, entryName);
+  if (!record) {
+    return { bytesWritten: 0, found: false };
+  }
+  if (record.localHeaderOffset < 0 || record.localHeaderOffset + ZIP_LOCAL_FILE_HEADER_LENGTH > source.length) {
+    throw new Error("zip_entry_local_header_invalid");
+  }
+  const localHeader = source.readWindow(record.localHeaderOffset, ZIP_LOCAL_FILE_HEADER_LENGTH);
+  if (localHeader.length < ZIP_LOCAL_FILE_HEADER_LENGTH || localHeader.readUInt32LE(0) !== ZIP_LOCAL_FILE_SIGNATURE) {
+    throw new Error("zip_entry_local_header_invalid");
+  }
+  const localNameLength = localHeader.readUInt16LE(26);
+  const localExtraLength = localHeader.readUInt16LE(28);
+  const dataStart = record.localHeaderOffset + ZIP_LOCAL_FILE_HEADER_LENGTH + localNameLength + localExtraLength;
+  const dataEnd = dataStart + record.compressedSize;
+  if (dataStart < 0 || dataEnd < dataStart || dataEnd > source.length) {
+    throw new Error("zip_entry_data_out_of_bounds");
+  }
+  if (record.method !== ZIP_STORE_METHOD && record.method !== ZIP_DEFLATE_METHOD) {
+    throw new Error(`unsupported_zip_compression_method:${record.method}`);
+  }
+
+  // Feeds the entry's compressed bytes downstream in STREAM_READ_CHUNK_BYTES
+  // windows via positional reads -- never the whole compressed slice at once
+  // (unlike resolveCompressedSlice above, which is only safe because its
+  // callers already cap entries to a modest size).
+  let position = dataStart;
+  const compressedSource = new Readable({
+    read() {
+      if (position >= dataEnd) {
+        this.push(null);
+        return;
+      }
+      const wantLength = Math.min(STREAM_READ_CHUNK_BYTES, dataEnd - position);
+      const chunk = source.readWindow(position, wantLength);
+      if (chunk.length === 0) {
+        this.push(null);
+        return;
+      }
+      position += chunk.length;
+      this.push(chunk);
+    },
+  });
+
+  // Enforces the ACTUAL (not declared) uncompressed-bytes cap on this one
+  // entry, counting real bytes flowing through the pipeline -- an
+  // adversarial archive cannot bypass this by lying about uncompressedSize
+  // in its central-directory record, since only bytes genuinely produced by
+  // inflate (or genuinely read, for STORE) ever reach this transform.
+  const cap = policy.maxEntryUncompressedBytes;
+  let bytesWritten = 0;
+  const capEnforcer = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      bytesWritten += chunk.length;
+      if (bytesWritten > cap) {
+        callback(
+          new ZipPolicyViolationError(
+            "entry_too_large",
+            `zip entry '${entryName}' exceeds the per-entry uncompressed-bytes cap (${cap})`
+          )
+        );
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+
+  const out = createWriteStream(destPath, { flags: "wx" });
+  try {
+    if (record.method === ZIP_STORE_METHOD) {
+      await pipeline(compressedSource, capEnforcer, out);
+    } else {
+      await pipeline(compressedSource, createInflateRaw(), capEnforcer, out);
+    }
+    return { bytesWritten, found: true };
+  } catch (err) {
+    await rm(destPath, { force: true }).catch(() => undefined);
+    throw err;
+  }
 }

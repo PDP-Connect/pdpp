@@ -13,6 +13,44 @@
     },
     "environment_variables": ["APPLE_HEALTH_EXPORT_DIR"]
   },
+  "setup": {
+    "modality": "manual_or_upload",
+    "manual_or_upload": {
+      "label": "Apple Health export",
+      "description": "Export your Apple Health data from your iPhone, then upload the .zip (or the export.xml inside it) here.",
+      "acquisition_methods": [
+        {
+          "label": "Export from the Health app",
+          "platform": "mobile",
+          "posture": "primary",
+          "detail": "On your iPhone, open the Health app, tap your profile picture (top right), scroll down, and tap Export All Health Data. Confirm Export, then AirDrop, save, or share the resulting export.zip to a device where you can upload it here.",
+          "help_url": "https://support.apple.com/guide/iphone/share-your-health-data-iph5ede58c3d/ios"
+        },
+        {
+          "label": "Extract export.xml yourself for a large export",
+          "platform": "device",
+          "posture": "advanced",
+          "detail": "If export.zip exceeds the upload limit, unzip it yourself (it contains apple_health_export/export.xml) and upload export.xml directly instead of the whole archive."
+        }
+      ],
+      "accepted_file_extensions": [".zip", ".xml"],
+      "import_dir_env_var": "APPLE_HEALTH_EXPORT_DIR",
+      "help_url": "https://support.apple.com/guide/iphone/share-your-health-data-iph5ede58c3d/ios",
+      "help_text": "Apple Health does not expose an account API or OAuth grant. This source imports an owner-exported export.zip or export.xml produced by the iPhone Health app.",
+      "large_file_fallback": "A full Health export can run into the hundreds of MB to multiple GB for a long-lived account. If export.zip is too large to upload, extract it yourself and upload just export.xml — this connector streams the XML, so file size alone does not limit what it can process once uploaded.",
+      "validation": {
+        "kind": "apple_health_export",
+        "file_backed": true,
+        "max_file_bytes": 8589934592
+      },
+      "validation_expectations": [
+        "Detected an Apple Health export (export.xml, standalone or inside export.zip)",
+        "Estimated health record and workout counts",
+        "Detected record date range",
+        "Duplicate, empty, unsupported, or too-large file status"
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
@@ -24,16 +62,17 @@
       "rationale": "Apple Health imports require the user to produce a new export.xml from iOS; cannot be refreshed in the background."
     },
     "public_listing": {
-      "tier": "development"
+      "tier": "preview"
     }
   },
   "streams": [
     {
       "name": "records",
+      "required": true,
       "description": "Apple Health records from an export.xml.",
       "display": {
         "label": "Your Apple Health records",
-        "detail": "Every Health record: type (steps, heart rate, sleep, weight, etc.), source (app/device), value, unit, start/end dates. Expected from a Health.app export."
+        "detail": "Every Health record: type (steps, heart rate, sleep, weight, etc.), source (app/device), value, unit, start/end dates, and any per-record metadata (e.g. manually entered). Expected from a Health.app export."
       },
       "semantics": "append_only",
       "schema": {
@@ -50,6 +89,9 @@
             "x_pdpp_role": "actor"
           },
           "source_version": {
+            "type": ["string", "null"]
+          },
+          "device": {
             "type": ["string", "null"]
           },
           "unit": {
@@ -69,6 +111,13 @@
           "end_date": {
             "type": ["string", "null"],
             "format": "date-time"
+          },
+          "creation_date": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "metadata": {
+            "type": ["object", "null"]
           }
         },
         "required": ["id", "type", "start_date"]
@@ -84,7 +133,8 @@
       "query": {
         "range_filters": {
           "start_date": ["gte", "gt", "lte", "lt"],
-          "end_date": ["gte", "gt", "lte", "lt"]
+          "end_date": ["gte", "gt", "lte", "lt"],
+          "creation_date": ["gte", "gt", "lte", "lt"]
         },
         "aggregations": {
           "count": true,
@@ -97,10 +147,11 @@
     },
     {
       "name": "workouts",
+      "required": true,
       "description": "Apple Health workouts.",
       "display": {
         "label": "Your workouts",
-        "detail": "Workout type, duration, energy burned, distance, start/end dates."
+        "detail": "Workout type, duration, energy burned, distance, start/end dates, plus any workout events (pause/resume/segment), per-metric statistics, and metadata (weather, indoor/outdoor, etc.) Apple Health recorded alongside it."
       },
       "semantics": "append_only",
       "schema": {
@@ -124,6 +175,21 @@
           "source_name": {
             "type": ["string", "null"],
             "x_pdpp_role": "actor"
+          },
+          "source_version": {
+            "type": ["string", "null"]
+          },
+          "device": {
+            "type": ["string", "null"]
+          },
+          "metadata": {
+            "type": ["object", "null"]
+          },
+          "events": {
+            "type": ["array", "null"]
+          },
+          "statistics": {
+            "type": ["array", "null"]
           },
           "start_date": {
             "type": "string",
@@ -161,6 +227,7 @@
     }
   ],
   "reason_display_messages": {
-    "export_not_found": "We couldn't find an export to import"
+    "export_not_found": "We couldn't find an export to import",
+    "export_extraction_failed": "We couldn't read the uploaded export"
   }
 }
