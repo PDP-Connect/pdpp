@@ -134,18 +134,44 @@ export function projectOutcome(observations: {
 }
 
 /**
+ * Normalizes a `ProjectionResult` to a value that can be compared for exact
+ * equality across attempts — every field that affects promotion decisions
+ * downstream, not just the broad `projection` bucket. Two attempts that
+ * both project `"killed"` are NOT the same outcome if one carries
+ * `selectorMiss: true` (backstop caught what the selector/focused check
+ * missed — promotion must stop) and the other doesn't; likewise two
+ * `"inconclusive"` attempts with different `failingAxis` values (e.g. one
+ * `"focused"`, one `"cleanup"`) are different evidence, not agreement.
+ */
+function normalizedOutcomeKey(result: ProjectionResult): string {
+  return JSON.stringify({
+    projection: result.projection,
+    failingAxis: result.failingAxis ?? null,
+    selectorMiss: result.selectorMiss ?? false,
+  });
+}
+
+/**
  * Combines multiple valid attempts sharing one trial_key. No retries: if
- * any two valid attempts disagree on projection, the aggregate trial is
- * inconclusive and every raw attempt remains visible to the caller. A
- * single attempt's projection is returned unchanged.
+ * any two valid attempts disagree on the COMPLETE normalized outcome —
+ * projection, failingAxis, AND selectorMiss — the aggregate trial is
+ * inconclusive and every raw attempt remains visible to the caller. This
+ * compares the full outcome, not just the broad `projection` bucket: a
+ * `killed` attempt with `selectorMiss: true` and a `killed` attempt without
+ * it are NOT in agreement (one says "stop selector promotion", the other
+ * doesn't — that disagreement must surface, not be silently collapsed by
+ * whichever attempt happens to be `first`). Order-independent: the result
+ * never depends on which attempt in the input array happens to be first.
+ * A single attempt's projection is returned unchanged.
  */
 export function aggregateTrial(attempts: ProjectionResult[]): ProjectionResult {
   if (attempts.length === 0) {
     throw new Error("aggregateTrial: at least one attempt is required");
   }
   const [first, ...rest] = attempts as [ProjectionResult, ...ProjectionResult[]];
-  const allSameProjection = rest.every((attempt) => attempt.projection === first.projection);
-  if (!allSameProjection) {
+  const firstKey = normalizedOutcomeKey(first);
+  const allAgree = rest.every((attempt) => normalizedOutcomeKey(attempt) === firstKey);
+  if (!allAgree) {
     return { projection: "inconclusive", failingAxis: "contradictory_trial_key" };
   }
   return first;

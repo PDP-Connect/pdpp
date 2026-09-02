@@ -174,3 +174,64 @@ test("aggregateTrial: contradictory attempts (killed vs survived) for one trial_
 test("aggregateTrial: throws on an empty attempt list rather than silently producing a verdict", () => {
   assert.throws(() => aggregateTrial([]));
 });
+
+// ── P1-5: selector/failing-axis disagreement must surface, not be picked ──
+//
+// Two attempts can share the same broad `projection` bucket while
+// disagreeing on the qualifications that actually drive downstream
+// promotion decisions. A comparator that only checked `projection` would
+// silently treat these as agreement (and — since it kept whichever
+// attempt happened to be first — its answer would depend on attempt
+// order, never surfacing the disagreement at all).
+
+test("aggregateTrial: killed WITH selectorMiss vs killed WITHOUT selectorMiss is a disagreement, not a match", () => {
+  const withMiss: ProjectionResult = { projection: "killed", selectorMiss: true };
+  const withoutMiss: ProjectionResult = { projection: "killed" };
+  const result = aggregateTrial([withMiss, withoutMiss]);
+  assert.equal(result.projection, "inconclusive");
+  assert.equal(result.failingAxis, "contradictory_trial_key");
+});
+
+test("aggregateTrial: killed-with-selectorMiss disagreement result does not depend on attempt order (permutation)", () => {
+  const withMiss: ProjectionResult = { projection: "killed", selectorMiss: true };
+  const withoutMiss: ProjectionResult = { projection: "killed" };
+  const forward = aggregateTrial([withMiss, withoutMiss]);
+  const reversed = aggregateTrial([withoutMiss, withMiss]);
+  assert.deepEqual(forward, reversed);
+  assert.equal(forward.projection, "inconclusive");
+});
+
+test("aggregateTrial: inconclusive/focused vs inconclusive/cleanup is a disagreement, not a match", () => {
+  const focusedFailure: ProjectionResult = { projection: "inconclusive", failingAxis: "focused" };
+  const cleanupFailure: ProjectionResult = { projection: "inconclusive", failingAxis: "cleanup" };
+  const result = aggregateTrial([focusedFailure, cleanupFailure]);
+  assert.equal(result.projection, "inconclusive");
+  assert.equal(result.failingAxis, "contradictory_trial_key");
+});
+
+test("aggregateTrial: inconclusive/focused vs inconclusive/cleanup disagreement does not depend on attempt order (permutation)", () => {
+  const focusedFailure: ProjectionResult = { projection: "inconclusive", failingAxis: "focused" };
+  const cleanupFailure: ProjectionResult = { projection: "inconclusive", failingAxis: "cleanup" };
+  const forward = aggregateTrial([focusedFailure, cleanupFailure]);
+  const reversed = aggregateTrial([cleanupFailure, focusedFailure]);
+  assert.deepEqual(forward, reversed);
+});
+
+test("aggregateTrial: three attempts that all genuinely agree (including selectorMiss) return the shared verdict, order-independent", () => {
+  const a: ProjectionResult = { projection: "killed", selectorMiss: true };
+  const b: ProjectionResult = { projection: "killed", selectorMiss: true };
+  const c: ProjectionResult = { projection: "killed", selectorMiss: true };
+  for (const perm of [
+    [a, b, c],
+    [b, c, a],
+    [c, a, b],
+    [c, b, a],
+  ]) {
+    assert.deepEqual(aggregateTrial(perm), { projection: "killed", selectorMiss: true });
+  }
+});
+
+test("aggregateTrial: two attempts that fully agree (same projection, no failingAxis, no selectorMiss) still return the shared verdict", () => {
+  const attempts: ProjectionResult[] = [{ projection: "killed" }, { projection: "killed" }];
+  assert.deepEqual(aggregateTrial(attempts), { projection: "killed" });
+});
