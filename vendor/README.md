@@ -249,3 +249,15 @@ resync (workspace build from inside `packages/collector-runtime`, sibling `conne
 resolved from the same checkout). Verified locally: fresh repack's content differs from the
 prior committed tarball in every `dist/*.{js,d.ts}` file, `package.json`, and `README.md` — a
 genuine re-vendor, not a no-op SHA move.
+
+`pdpp-collector-runtime-0.0.1.tgz` was resynced a third time on 2026-09-02 (same day) via
+`npm pack` from data-connect main's tip, `82a45176ebe654eee595f06d5fa97de0648e86ba` (merge of
+data-connect#41, "fix(polyfill-connectors): sync claude_code/codex/google_messages from
+canonical"). The prior `63a3792` pin was itself already one commit behind an unrelated
+dependabot npm bump (data-connect #37) that data-connect#41 was based on top of, touching
+`packages/collector-runtime/package.json`'s devDependencies — confirmed the fresh repack's
+`package.json` bytes differ from the prior committed tarball (only `package.json`, no `dist/`
+change this time, since #37 is a devDependency-only bump). Data-connectors' own equivalent
+tarball (`packages/polyfill-connectors/vendor/pdpp-collector-runtime-0.0.1.tgz`) was re-vendored
+identically in the same cutover, and both share the same digest — packed from the same
+data-connect commit.
