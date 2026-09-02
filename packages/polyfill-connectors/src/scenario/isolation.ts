@@ -722,22 +722,56 @@ export function requiredFilesystemBinds(): readonly FilesystemBind[] {
   return dedupeBinds(binds);
 }
 
-/** Drops any bind whose path is identical to, or a filesystem descendant of,
- *  an earlier entry in the list — binding both would either be a harmless
- *  redundant mount or (worse) a `rw` ancestor accidentally masking a
- *  narrower `ro` intent. Order-preserving: the FIRST occurrence wins. */
+/**
+ * Drops any bind whose path is identical to, or a filesystem descendant of,
+ * ANOTHER entry in the list, regardless of which was declared first —
+ * binding both would either be a harmless redundant mount or (worse) a `rw`
+ * ancestor accidentally masking a narrower `ro` intent.
+ *
+ * SORTED BY DEPTH FIRST (P1, external review of ab415be6c's recursive-ro
+ * fix): the old version was order-preserving ("first occurrence wins" —
+ * whichever entry appeared EARLIER in `requiredFilesystemBinds()`'s literal
+ * array kept its bind, even if a LATER, broader ancestor entry would have
+ * covered it). That was harmless under the old top-level-only `remount,ro,
+ * bind`, where a redundant nested bind was merely wasteful. It stopped being
+ * harmless once `recursiveReadOnlyRemountCommand` started walking
+ * `/proc/self/mountinfo` for submounts of each `ro` bind: a real, concrete
+ * case (confirmed empirically in a privileged test container) is `nodeDir`
+ * (`dirname(process.execPath)`, e.g. `/usr/local/bin` under a container's
+ * default Node install) being declared BEFORE `/usr` in
+ * `requiredFilesystemBinds()`'s literal array — the old dedup kept BOTH as
+ * separate top-level binds, so `/usr`'s own `--rbind` then ALSO recursively
+ * picked up the already-separately-staged `/usr/local/bin` mount as one of
+ * its own submounts, and the new recursive-remount walk tried to remount
+ * that same mount point a second time, which failed outright ("mount point
+ * not mounted or bad option" — the first remount had already changed its
+ * mount ID out from under the second). Sorting shortest-path-first before
+ * deduping means the BROADEST ancestor (`/usr`) is always considered first
+ * regardless of declaration order, so a narrower descendant (`nodeDir`) is
+ * correctly absorbed into it rather than staying a separate, redundant bind
+ * that the parent's own recursive walk then double-processes.
+ */
 function dedupeBinds(binds: readonly FilesystemBind[]): FilesystemBind[] {
-  const kept: FilesystemBind[] = [];
-  for (const bind of binds) {
-    const normalized = resolve(bind.path);
+  const normalized = binds.map((bind, index) => ({ ...bind, index, path: resolve(bind.path) }));
+  // Depth-sorted only to DECIDE which entries survive — the broadest
+  // ancestor must be considered first regardless of declaration order (see
+  // this function's doc comment). The final return value is re-sorted back
+  // to original declaration order below, which is what every caller
+  // (the bind loop in filesystemClosureShellPrelude, bwrap's argv builder)
+  // expects for stable, readable generated output.
+  const sortedByDepth = [...normalized].sort((a, b) => a.path.length - b.path.length);
+  const kept: typeof normalized = [];
+  for (const bind of sortedByDepth) {
     const alreadyCovered = kept.some(
-      (existing) => normalized === existing.path || normalized.startsWith(`${existing.path}${sep}`)
+      (existing) => bind.path === existing.path || bind.path.startsWith(`${existing.path}${sep}`)
     );
     if (!alreadyCovered) {
-      kept.push({ path: normalized, mode: bind.mode });
+      kept.push(bind);
     }
   }
-  return kept;
+  return kept
+    .sort((a, b) => a.index - b.index)
+    .map(({ path, mode }) => ({ path, mode }));
 }
 
 /**
@@ -1055,7 +1089,84 @@ function reqStatement(label: string, command: string): string {
  * like from inside the isolated child, and is a strict superset of what a
  * non-nested source (e.g. `REPO_ROOT`, which has no sub-mounts on any tested
  * host) needs — so it is used uniformly for every entry, not conditionally.
+ *
+ * RECURSIVE READ-ONLY (P1, external review of ab415be6c): `--rbind` pulls in
+ * every submount under a `ro` bind's source directory, but the classic
+ * `mount -o remount,ro,bind <staged>` step that follows it ONLY remounts the
+ * TOP mount at `<staged>` — Linux does not apply `remount,ro,bind`
+ * recursively to the submounts `--rbind` carried along, confirmed
+ * empirically: a nested bind mount created under a source directory (e.g.
+ * Docker's own `/etc/resolv.conf`-style injected submounts, or any other
+ * mount point that happens to exist under a `ro` bind's real path) stays
+ * WRITABLE after the parent's remount succeeds and reports `available: true`
+ * — the exact false-success shape this hardening closes. See
+ * `recursiveReadOnlyRemountCommand` below for the fix: after each `ro`
+ * bind's top-level remount, walk `/proc/self/mountinfo` (still readable at
+ * this point — it's pre-pivot, so this reads the CURRENT namespace's own
+ * view) for every mount point that is a descendant of that bind's staged
+ * path, and remount each ONE individually. Wrapped in `req` like every
+ * other mandatory step, so a submount that refuses to go read-only halts
+ * the whole prelude rather than silently leaving it writable.
  */
+
+/**
+ * Builds a shell command that finds every mount point strictly UNDER
+ * `stagedPathShQuoted` (the already-quoted staged path of a `ro` bind whose
+ * OWN top mount was just remounted read-only) by walking
+ * `/proc/self/mountinfo`, and remounts EACH ONE, individually,
+ * `ro,bind` — closing the gap `--rbind` (recursive bind) plus a single
+ * top-level `remount,ro,bind` leaves open: Linux does not propagate a
+ * `remount` operation to submounts the way `--rbind`/`--rprivate` propagate
+ * at BIND/PROPAGATION time, so any mount point that existed under a `ro`
+ * bind's source directory at bind time (e.g. Docker's own
+ * `/etc/resolv.conf`-style injected submounts under `/etc`, or any other
+ * nested mount a future derived bind might carry) stays writable unless
+ * remounted on its own.
+ *
+ * `/proc/self/mountinfo` FIELD FORMAT: whitespace-separated, field 5 (1
+ * -indexed) is the mount point — `awk` splits on runs of whitespace by
+ * default, matching the format's own separator, so no custom field
+ * separator is needed. The kernel encodes literal space/tab/backslash/
+ * newline bytes IN a mount point path as octal escapes (`\040` for space,
+ * etc.) specifically so single-whitespace-separated parsing like this stays
+ * unambiguous — every path this module's own derived bind set can ever
+ * contain (`REPO_ROOT`, `/usr`, `/etc`, the Node binary's directory, the
+ * Playwright cache, `filesystemBindPath`, which is always a `mkdtemp`
+ * result) is a plain filesystem path with no such bytes, so this function
+ * does not attempt to decode those escapes — a submount path that DID
+ * contain one would fail the subsequent `mount -o remount,ro,bind` step
+ * with a diagnosable "not mounted" error (caught by `req`, fail-closed) as
+ * an unescaped octal sequence, rather than silently matching or missing.
+ *
+ * ORDER: newest mounts appear later in `/proc/self/mountinfo`, so a mount
+ * nested two levels deep (a submount of a submount) is naturally remounted
+ * AFTER its own parent submount, in the same top-to-bottom order the file
+ * already lists them — `mount -o remount,ro,bind` on a path does not
+ * require any particular order relative to a SEPARATE mount point beneath
+ * it (each remount only affects its own mount, never cascades to a child
+ * the way the original bind/rbind did), so no explicit sort is needed
+ * beyond the file's own natural order.
+ *
+ * FAILS CLOSED: the caller wraps this in `reqStatement`, so if EVEN ONE
+ * submount refuses `remount,ro,bind` (a filesystem type that genuinely
+ * cannot be remounted read-only, a kernel refusal, or the path awk parsed
+ * simply not existing as a real mountpoint) the whole prelude halts before
+ * `exec <target>` is ever reached — never silently leaves that one submount
+ * writable and proceeds.
+ */
+function recursiveReadOnlyRemountCommand(stagedPathShQuoted: string): string {
+  const findSubmounts =
+    `awk -v staged=${stagedPathShQuoted} -v stagedslash=${stagedPathShQuoted}"/" ` +
+    `'{ mp = $5; if (mp == staged) next; if (index(mp, stagedslash) == 1) print mp }' /proc/self/mountinfo`;
+  const loop = `for __submount in $(${findSubmounts}); do mount -o remount,ro,bind "$__submount" || exit 1; done`;
+  // `req` (see REQ_FUNCTION_DEFINITION's doc comment) executes its wrapped
+  // command as `"$@"` — a single command name plus argv entries, not a
+  // shell snippet — so a compound statement like this `for` loop must be
+  // handed to `req` as ONE argv entry, itself run via `sh -c`, rather than
+  // being split on whitespace the way a plain `mount ...` command is.
+  return `sh -c ${shQuote(loop)}`;
+}
+
 function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, cwd: string | undefined): string {
   const newroot = "/tmp/pdpp-scenario-isolation-newroot";
   const oldroot = `${newroot}/oldroot`;
@@ -1082,6 +1193,7 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
     statements.push(reqStatement(`bind ${bind.path}`, `mount --rbind ${shQuote(bind.path)} ${staged}`));
     if (bind.mode === "ro") {
       statements.push(reqStatement(`remount ${bind.path} read-only`, `mount -o remount,ro,bind ${staged}`));
+      statements.push(reqStatement(`remount ${bind.path} submounts read-only`, recursiveReadOnlyRemountCommand(staged)));
     }
   }
   if (filesystemBindPath !== undefined) {
@@ -1237,12 +1349,46 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
 export function postPivotVerificationStatements(binds: readonly FilesystemBind[]): string[] {
   const statements: string[] = [];
   const roBindPaths = binds.filter((b) => b.mode === "ro").map((b) => b.path);
-  const roCheck = roBindPaths
+  // Property 3 checks the TOP of each ro bind, at its real, post-pivot path
+  // (`/usr`, `/etc`, ... — the new root's OWN view, not the pre-pivot
+  // staging prefix `postPivotVerificationStatements`'s caller uses).
+  const topLevelRoCheck = roBindPaths
     .map((path) => {
       const probe = shQuote(`${path}/.pdpp-isolation-ro-probe-$$`);
       return `if touch ${probe} 2>/dev/null; then rm -f ${probe} 2>/dev/null; echo ${shQuote(path)}; fi`;
     })
     .join("; ");
+  // RECURSIVE READ-ONLY, property 3 EXTENDED (P1, external review of
+  // ab415be6c): the top-level check above only proves the PARENT mount of
+  // each ro bind is read-only — it says nothing about a nested submount
+  // `--rbind` carried along underneath it (see `recursiveReadOnlyRemountCommand`'s
+  // doc comment for the full defect this closes). This verification must
+  // catch the same class of false-success the setup-time fix targets: if a
+  // FUTURE edit reintroduces the old single-level remount (or the
+  // recursive-remount loop silently skips a submount added after this
+  // function was written), the top-level-only check above would still
+  // report every ro bind's PARENT correctly read-only while a submount
+  // stayed writable — exactly invisible to that check alone. This walks
+  // `/proc/self/mountinfo` (POST-pivot, so it reflects the NEW root's own
+  // mount table — the real, live view the isolated child actually has, not
+  // the pre-pivot staging tree) for every mount point strictly under each ro
+  // bind's real path, and probes each one with the SAME touch-then-remove
+  // technique as the top-level check.
+  const submountRoCheck = roBindPaths
+    .map((path) => {
+      const quotedPath = shQuote(path);
+      const findSubmounts =
+        `awk -v staged=${quotedPath} -v stagedslash=${quotedPath}"/" ` +
+        `'{ mp = $5; if (mp == staged) next; if (index(mp, stagedslash) == 1) print mp }' /proc/self/mountinfo`;
+      return (
+        `for __sm in $(${findSubmounts}); do ` +
+        `__smprobe="$__sm/.pdpp-isolation-ro-probe-$$"; ` +
+        `if touch "$__smprobe" 2>/dev/null; then rm -f "$__smprobe" 2>/dev/null; echo "$__sm"; fi; ` +
+        "done"
+      );
+    })
+    .join("; ");
+  const roCheck = [topLevelRoCheck, submountRoCheck].filter(Boolean).join("; ");
   statements.push(
     "__canary_ok=1; [ -e /pdpp-isolation-canary ] || __canary_ok=0; " +
       `__oldroot_leftover=$(set -- /oldroot/*; if [ -e "$1" ]; then echo "$1"; fi); ` +

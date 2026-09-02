@@ -10,7 +10,7 @@
 // under it has no outbound network.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
@@ -911,6 +911,88 @@ test("[bwrap sandbox] postPivotVerificationStatements FAILS when /oldroot is non
   );
 });
 
+test("[bwrap sandbox] postPivotVerificationStatements FAILS when a NESTED submount under a genuinely-read-only ro bind is writable (P1, external review of ab415be6c)", {
+  skip: !bwrapUsable || !bindMountCapable,
+}, () => {
+  // Unlike scenario (b) above (a bind whose OWN top mount never went
+  // read-only), this proves the EXTENDED property: the top-level bind IS
+  // genuinely read-only, but a real, separate mount point nested underneath
+  // it is not — the exact gap --rbind + a single top-level remount,ro,bind
+  // leaves open (see recursiveReadOnlyRemountCommand's doc comment).
+  const roDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-ro-parent-"));
+  const nestedSource = mkdtempSync(join(tmpdir(), "pdpp-isolation-nested-source-"));
+  const nestedMountPoint = join(roDir, "nested");
+  try {
+    mkdirSync(nestedMountPoint, { recursive: true });
+    const mountResult = spawnSync("mount", ["--bind", nestedSource, nestedMountPoint], { stdio: "inherit" });
+    assert.equal(mountResult.status, 0, "sanity check: creating the real nested mount point must itself succeed");
+    try {
+      // The sandbox's OWN --ro-bind of roDir is genuinely read-only (bwrap's
+      // own mechanism, proven elsewhere in this file to close this
+      // specific case) — so this test targets the VERIFICATION FUNCTION's
+      // own submount-probing logic directly, independent of which
+      // mechanism's setup produced the nested mount.
+      const setup = ["touch /pdpp-isolation-canary", "mkdir -p /oldroot"].join("; ");
+      const script = `${setup}; ${postPivotVerificationStatements([{ path: "/ro-parent", mode: "ro" }]).join("; ")}; echo PDPP_VERIFY_PASSED`;
+      const result = spawnSync(
+        "bwrap",
+        [
+          "--unshare-net",
+          "--tmpfs",
+          "/",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--ro-bind",
+          "/usr",
+          "/usr",
+          "--ro-bind",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          roDir,
+          "/ro-parent",
+          "--bind",
+          nestedMountPoint,
+          "/ro-parent/nested",
+          "--symlink",
+          "usr/bin",
+          "/bin",
+          "--symlink",
+          "usr/sbin",
+          "/sbin",
+          "--symlink",
+          "usr/lib",
+          "/lib",
+          "--symlink",
+          "usr/lib64",
+          "/lib64",
+          "--",
+          "sh",
+          "-c",
+          script,
+        ],
+        { encoding: "utf8" }
+      );
+      assert.equal(
+        result.status,
+        91,
+        `expected POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE (91) when a nested submount under a ro bind is genuinely writable; stderr: ${result.stderr}`
+      );
+      assert.ok(
+        /writable-ro-binds=\[[\s\S]*\/ro-parent\/nested[\s\S]*\]/.test(result.stderr),
+        `expected the diagnostic to name the specific writable NESTED path; got ${JSON.stringify(result.stderr)}`
+      );
+    } finally {
+      spawnSync("umount", ["-l", nestedMountPoint], { stdio: "ignore" });
+    }
+  } finally {
+    rmSync(roDir, { recursive: true, force: true });
+    rmSync(nestedSource, { recursive: true, force: true });
+  }
+});
+
 test("[unshare] a genuinely successful filesystem closure passes post-pivot verification and the target command DOES run", {
   skip: !unshareUsable,
 }, async () => {
@@ -1725,6 +1807,73 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
       );
     } finally {
       rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+}
+
+// ─── Recursive read-only — nested submount under a ro bind (P1, external
+// review of ab415be6c) ──────────────────────────────────────────────────────
+//
+// `--rbind` (recursive bind) pulls in every submount that exists under a
+// `ro` bind's source directory at bind time — but the classic
+// `mount -o remount,ro,bind <staged>` step that follows only remounts the
+// TOP mount; Linux does not apply that operation recursively to the
+// submounts `--rbind` carried along. Before this fix, a nested mount point
+// that existed under REPO_ROOT (or any other declared `ro` bind) at spawn
+// time stayed WRITABLE inside the isolated child even though the parent
+// directory correctly reported read-only. This test proves the fix by
+// creating a REAL nested bind mount under REPO_ROOT on the host (requiring
+// genuine bind-mount capability — the same `canBindMountOverAFile`/
+// `bindMountCapable` gate the setup-command forced-failure tests above use),
+// spawning an isolated child, and attempting a write specifically INSIDE
+// that nested mount — asserting EACCES/EROFS, not just checking the parent
+// directory.
+
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = (mechanism === "bwrap" ? bwrapUsable : unshareUsable) && bindMountCapable;
+
+  test(`[${mechanism}] a nested bind mount under REPO_ROOT (a ro bind) stays read-only inside isolation — not just the parent directory`, {
+    skip: !usable,
+  }, async () => {
+    // A real, separate mount point INSIDE REPO_ROOT — a scratch directory
+    // bind-mounted onto ANOTHER scratch directory that itself lives under
+    // REPO_ROOT, mirroring the real-world shape this fix targets (Docker's
+    // own /etc/resolv.conf-style injected submounts, or any nested mount
+    // that happens to exist under a ro bind's real path at spawn time).
+    const nestedSource = mkdtempSync(join(tmpdir(), "pdpp-nested-ro-source-"));
+    writeFileSync(join(nestedSource, "seed.txt"), "seed");
+    const nestedMountPoint = join(TEST_REPO_ROOT, `.pdpp-nested-ro-probe-${String(process.pid)}`);
+    rmSync(nestedMountPoint, { recursive: true, force: true });
+    mkdirSync(nestedMountPoint, { recursive: true });
+    const mountResult = spawnSync("mount", ["--bind", nestedSource, nestedMountPoint], { stdio: "inherit" });
+    assert.equal(
+      mountResult.status,
+      0,
+      `sanity check: bind-mounting a real nested mount point under REPO_ROOT must itself succeed for this test's injection to mean anything`
+    );
+    try {
+      const probeFileName = `.pdpp-nested-ro-write-probe-${String(process.pid)}`;
+      const probePath = join(nestedMountPoint, probeFileName);
+      const { stdout, exitCode } = await runIsolatedProbe(
+        mechanism,
+        `const fs=require("fs");try{fs.writeFileSync(${JSON.stringify(probePath)},"x");console.log("WRITE_SUCCEEDED");}catch(e){console.log("WRITE_BLOCKED:"+e.code);}`
+      );
+      if (existsSync(probePath)) {
+        rmSync(probePath, { force: true });
+      }
+      assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout)}`);
+      assert.ok(
+        stdout.startsWith("WRITE_BLOCKED:"),
+        `an isolated child under ${mechanism} must NOT be able to write into a NESTED mount under REPO_ROOT (only remounting the top-level ro bind, not its submounts, is exactly the P1 this test guards) — got ${JSON.stringify(stdout)}`
+      );
+      assert.ok(
+        ["EROFS", "EACCES", "EPERM"].includes(stdout.slice("WRITE_BLOCKED:".length)),
+        `expected a genuine read-only-filesystem error, got ${JSON.stringify(stdout)}`
+      );
+    } finally {
+      spawnSync("umount", ["-l", nestedMountPoint], { stdio: "ignore" });
+      rmSync(nestedMountPoint, { recursive: true, force: true });
+      rmSync(nestedSource, { recursive: true, force: true });
     }
   });
 }
