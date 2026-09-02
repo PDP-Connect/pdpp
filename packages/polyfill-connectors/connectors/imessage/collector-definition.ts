@@ -42,6 +42,11 @@ export const imessageCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "imessage",
   entry: "imessage",
   bindings: { filesystem: { required: true } },
+  // Declared explicitly (not omitted): this definition targets the
+  // connector-protocol 0.0.2 capability-declaration contract, which
+  // requires an explicit array even when empty. This connector emits no
+  // STREAM_EVIDENCE and needs no protocol capability today.
+  protocol_capabilities: [],
   streams: IMESSAGE_DEFAULT_STREAMS,
   time_scopable_streams: IMESSAGE_TIME_SCOPABLE_STREAMS,
 };

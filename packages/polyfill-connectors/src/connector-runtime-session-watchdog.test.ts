@@ -58,10 +58,12 @@ function makeStubPage(): Page {
 // clock and let the event loop turn so a tick can observe it.
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5));
 
-const nonblockingAssistance = (): AssistanceRequest => ({
+const nonblockingAssistance = (
+  progressPosture: AssistanceRequest["progress_posture"] = "running"
+): AssistanceRequest => ({
   message: "Approve this request in the source app.",
   owner_action: "act_elsewhere",
-  progress_posture: "running",
+  progress_posture: progressPosture,
   response_contract: "none",
   sensitivity: "non_secret",
   timeout_seconds: 1800,
@@ -237,6 +239,37 @@ test("watchdog is paused while nonblocking running assistance is open", async ()
 
   await watchdog.run(work);
   assert.equal(tripped, false, "open nonblocking assistance must pause the watchdog");
+});
+
+test("watchdog is paused while a blocked no-response browser handoff watches for late readiness", async () => {
+  const clock = makeClock();
+  let tripped = false;
+  const watchdog = makeSessionEstablishWatchdog({
+    capture: null,
+    name: "chase",
+    page: makeStubPage(),
+    deadlineMs: 100,
+    pollIntervalMs: 2,
+    now: clock.now,
+    onTrip: () => {
+      tripped = true;
+    },
+  });
+  const wrappedAssist = watchdog.wrapAssist(async (): Promise<string> => "assist_browser_login");
+  const wrappedCompleteAssistance = watchdog.wrapCompleteAssistance(async (): Promise<void> => undefined);
+
+  await watchdog.run(async (): Promise<void> => {
+    const assistanceRequestId = await wrappedAssist({
+      ...nonblockingAssistance("blocked"),
+      attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
+      owner_action: "operate_attachment",
+    });
+    clock.advance(500);
+    await tick();
+    await wrappedCompleteAssistance(assistanceRequestId, "resolved");
+  });
+
+  assert.equal(tripped, false, "a blocked no-response handoff must outlive the normal watchdog deadline");
 });
 
 test("watchdog re-arms after nonblocking assistance completes", async () => {

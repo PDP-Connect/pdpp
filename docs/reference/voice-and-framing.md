@@ -53,7 +53,6 @@ A common failure: writing dashboard tooltip text in the voice of a hosted SaaS (
 - **`/sandbox/**`** — mock-backed pedagogical dashboard with deterministic fictional data. Always label specimens as such. Never collects real credentials.
 - **clean owner routes (`/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, and clean deployment/admin nouns)** — the live owner/operator control plane. Owner-authed. Talk to the operator, not "the user of a service." Removed `/dashboard/**` paths are not compatibility routes; generated owner links use the clean routes directly.
 - **`/planning/**`** — OpenSpec viewer. Project planning, not protocol authority.
-- **`/design`, `/palette`** — local contributor workbenches. Don't cite them as user-facing surfaces.
 
 When writing, never let `/sandbox` copy sound like the owner control plane ("Your data has been collected"), and never let owner-console copy sound like `/docs` ("PDPP enforces field projection").
 

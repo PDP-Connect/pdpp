@@ -37,9 +37,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Run React Doctor (changed PR files)
         uses: millionco/react-doctor@013f7373f91a3b9e68bd1dc7d4d354f4b041b117 # v2.2.9
         with:
-          fail-on: warning
-          annotations: true
+          scope: changed
+          blocking: warning
+          comment: false
+          review-comments: false
+          commit-status: false

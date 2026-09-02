@@ -211,6 +211,17 @@ jobs:
             ${{ matrix.image == 'core' && 'pdpp:ci-core-test' || '' }}
           target: ${{ matrix.target }}
 
+      # Fails before any other core-image check if the OCI revision label and
+      # the runtime PDPP_REFERENCE_REVISION disagree, are missing, or are
+      # "unknown" — the retained production Core image shipped with an
+      # unknown label while its runtime revision was set correctly, so no
+      # live acceptance result could be attributed to a commit. This is a CI
+      # build (github.sha is always real), so --require-known is correct
+      # here; only intentional local dev builds use --allow-unknown.
+      - name: Prove the built core image carries one non-unknown revision in both the OCI label and the runtime env
+        if: matrix.image == 'core'
+        run: bash deploy/docker/check-image-identity.sh --require-known pdpp:ci-core-test
+
       - name: Test core image (slackdump bundling, license, builder isolation)
         if: matrix.image == 'core'
         env:

@@ -98,11 +98,29 @@ test("shouldRetryRunFailure is false for every non-retryable terminal_reason", (
 
 test("shouldRetryRunFailure honors an explicit connector_error.retryable === false", () => {
   assert.equal(shouldRetryRunFailure({ connector_error: { retryable: false } }), false);
+  assert.equal(shouldRetryRunFailure({ connector_error: { retryable: false }, runtime_retryable: true }), false);
+});
+
+test("shouldRetryRunFailure honors an explicit runtime retryability verdict", () => {
+  assert.equal(shouldRetryRunFailure({ runtime_retryable: true }), true);
+  assert.equal(shouldRetryRunFailure({ runtime_retryable: false }), false);
+  // Terminal classifications remain more authoritative than a transport hint.
+  assert.equal(shouldRetryRunFailure({ runtime_retryable: true, terminal_reason: "authentication_error" }), false);
 });
 
 test("shouldRetryRunFailure retries when connector_error.retryable is true or unset", () => {
   assert.equal(shouldRetryRunFailure({ connector_error: { retryable: true } }), true);
   assert.equal(shouldRetryRunFailure({ connector_error: {} }), true);
+});
+
+test("shouldRetryRunFailure keeps an owner-action gap non-retryable over connector retryability", () => {
+  assert.equal(
+    shouldRetryRunFailure({
+      connector_error: { retryable: true },
+      known_gaps: [{ kind: "run_failed", recovery_hint: { action: "manual_action_required", retryable: false } }],
+    }),
+    false
+  );
 });
 
 test("shouldRetryRunFailure lets a non-fatal reason with a retryable status through", () => {

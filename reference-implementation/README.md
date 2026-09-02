@@ -568,11 +568,18 @@ reference image cannot derive a real revision at startup and falls back to
 `pdpp-reference@<package-version>+unknown` in the
 `PDPP-Reference-Revision` response header and the `GET /` discovery index.
 Pass the running commit through the `PDPP_REFERENCE_REVISION` build arg so
-production images publish a real revision:
+production images publish a real revision. Use the full SHA, not an
+abbreviated form — the `core`/`core-browser` targets' identity gate
+(`deploy/docker/check-image-identity.sh`) requires a full 40- or
+64-character hex value and rejects abbreviated SHAs as not shaped like a
+real git object id; using the full SHA here too keeps every
+`PDPP_REFERENCE_REVISION` invocation in this repo consistent, even though
+this `reference` target itself carries no OCI revision label and is not
+gated:
 
 ```bash
 docker build \
-  --build-arg PDPP_REFERENCE_REVISION="$(git rev-parse --short=12 HEAD)" \
+  --build-arg PDPP_REFERENCE_REVISION="$(git rev-parse HEAD)" \
   --target reference \
   -t pdpp-reference:local .
 ```

@@ -88,8 +88,16 @@ FROM base AS reference
 # `.git` is excluded from the Docker build context (.dockerignore), so the
 # runtime cannot derive a real git revision at startup and falls back to
 # `+unknown`. Pass the real revision in at build time so production images
-# advertise the running commit:
-#   docker build --build-arg PDPP_REFERENCE_REVISION=$(git rev-parse --short=12 HEAD) ...
+# advertise the running commit. Use the FULL SHA, not an abbreviated form:
+# the core-browser stage's build-time identity check (and
+# deploy/docker/check-image-identity.sh, the pre-acceptance gate) both
+# require a full 40-character (SHA-1) or 64-character (SHA-256) hex value —
+# an abbreviated SHA is ambiguous and is rejected as not shaped like a real
+# git object id. This `reference` stage carries no OCI revision label and is
+# not gated the same way, but using the full SHA here keeps every
+# PDPP_REFERENCE_REVISION build invocation in this repo consistent with the
+# one that IS gated (`--target core`/`core-browser`):
+#   docker build --build-arg PDPP_REFERENCE_REVISION=$(git rev-parse HEAD) ...
 ARG PDPP_REFERENCE_REVISION=unknown
 
 ENV NODE_ENV=production \
@@ -108,6 +116,34 @@ COPY --from=source /app /app
 EXPOSE 7662 7663
 
 CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_URL=\"${PDPP_RS_URL:-http://127.0.0.1:${RS_PORT:-7663}}\"; exec node reference-implementation/server/index.ts"]
+
+# Isolated sigtop (v0.24.0, ISC) builder stage.
+# sigtop publishes only a Windows binary on its releases, so Linux is built
+# from the pinned source tag in a throwaway Go stage. Only the resulting
+# binary and its license are copied into the final image -- Go itself is not.
+# Go 1.25+: sigtop v0.24.0's go.mod requires it, and GOTOOLCHAIN=local in the
+# official image means an older base fails the build outright rather than
+# silently fetching a newer toolchain.
+FROM golang:1.25-bookworm AS sigtop-builder
+
+ARG SIGTOP_VERSION=v0.24.0
+
+WORKDIR /build
+
+# libsecret-1-dev is a build dependency, not an optional extra: sigtop builds
+# with CGO_ENABLED=1 and links against libsecret to read Signal Desktop's
+# encrypted database key from the OS keyring. Without the headers the cgo step
+# fails at pkg-config.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates libsecret-1-dev pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "${SIGTOP_VERSION}" https://github.com/tbvdm/sigtop.git src && \
+    cd src && \
+    git rev-parse HEAD > /build/SOURCE_COMMIT && \
+    CGO_ENABLED=1 go build -o /build/sigtop . && \
+    test -x /build/sigtop && \
+    cp LICENSE.md /build/LICENSE && \
+    printf 'https://github.com/tbvdm/sigtop/tree/%s\n' "$(cat /build/SOURCE_COMMIT)" > /build/SOURCE_URL
 
 # Isolated slackdump (v4.4.2, AGPL-3.0) builder stage.
 # Downloads pre-built tarball, verifies SHA256, extracts binary and license.
@@ -278,14 +314,58 @@ ARG PDPP_REFERENCE_REVISION=unknown
 # unchanged between two commits matches BOTH, so a sample that happens to miss
 # the changed files "confirms" the wrong commit. Labels remove the guesswork.
 #
+# PDPP_BUILD_REVISION defaults to PDPP_REFERENCE_REVISION rather than its own
+# independent "unknown" default. Every build caller (CI, reference-stack.sh,
+# ad-hoc `docker build`) already sets PDPP_REFERENCE_REVISION to identify the
+# runtime; before this default existed, a caller had to remember to ALSO pass
+# PDPP_BUILD_REVISION identically or the org.opencontainers.image.revision
+# label silently stayed "unknown" even on a real release build (exactly what
+# happened to the retained production Core image). One build-arg is now the
+# single source of truth for both the label and the runtime env; a caller
+# only needs to override PDPP_BUILD_REVISION explicitly to intentionally
+# diverge it from the runtime revision, which the RUN check below then
+# refuses to allow silently.
+#
 # PDPP_BUILD_DIRTY must be set from `git status --porcelain` at build time. A
 # silently-dirty build tree is how bad images shipped before, so an unclean
 # tree is recorded in the artifact rather than left to memory.
-ARG PDPP_BUILD_REVISION=unknown
+ARG PDPP_BUILD_REVISION=${PDPP_REFERENCE_REVISION}
 ARG PDPP_BUILD_SOURCE=unknown
 ARG PDPP_BUILD_CREATED=unknown
 ARG PDPP_BUILD_DIRTY=unknown
 ARG PDPP_BUILD_COMPOSITION=unknown
+
+# Fail the build itself, not just a post-hoc audit, when the two identity
+# values a caller can independently set actually diverge. Both "unknown" is
+# allowed (an ordinary local dev build with no revision supplied at all —
+# see the Dockerfile-wide default above); anything else must match exactly
+# AND be shaped like a real, full-length git object id (40 lowercase hex
+# chars for SHA-1, or 64 for a future SHA-256 repository) — not merely
+# equal. Equality alone is not sufficient: a build invoked with
+# PDPP_REFERENCE_REVISION=main would make both values equal, non-"unknown",
+# and still name a MUTABLE branch, not an immutable commit. Abbreviated
+# SHAs are also rejected: a short SHA is ambiguous and this is a build-time
+# identity contract, not a display convenience. This RUN is the earliest
+# point a duplicate/mismatched/non-SHA revision can be caught, before the
+# image is ever pushed or deployed; deploy/docker/check-image-identity.sh
+# re-proves the same two properties (match + SHA-shape) against any already
+# -built or pulled image afterward, since not every image this repo builds
+# necessarily passes through this exact Dockerfile invocation at rest (a
+# re-tagged image, a manifest copy via `docker buildx imagetools create`).
+RUN if [ "${PDPP_BUILD_REVISION}" != "${PDPP_REFERENCE_REVISION}" ]; then \
+      echo "image identity mismatch: PDPP_BUILD_REVISION='${PDPP_BUILD_REVISION}' != PDPP_REFERENCE_REVISION='${PDPP_REFERENCE_REVISION}'" >&2; \
+      echo "the OCI revision label and the runtime revision must be the exact same immutable git SHA (or both 'unknown' for a plain local dev build)" >&2; \
+      exit 1; \
+    fi; \
+    if [ "${PDPP_BUILD_REVISION}" != "unknown" ]; then \
+      hex_len=$(printf '%s' "${PDPP_BUILD_REVISION}" | tr -d '0-9a-f' | wc -c); \
+      full_len=$(printf '%s' "${PDPP_BUILD_REVISION}" | wc -c); \
+      if [ "$hex_len" -ne 0 ] || { [ "$full_len" -ne 40 ] && [ "$full_len" -ne 64 ]; }; then \
+        echo "image identity is not a real git object id: PDPP_REFERENCE_REVISION='${PDPP_REFERENCE_REVISION}' is not 40 or 64 lowercase hex characters" >&2; \
+        echo "a mutable ref name (branch/tag) or an abbreviated SHA is not an immutable commit identity" >&2; \
+        exit 1; \
+      fi; \
+    fi
 
 LABEL org.opencontainers.image.revision="${PDPP_BUILD_REVISION}" \
       org.opencontainers.image.source="${PDPP_BUILD_SOURCE}" \
@@ -339,6 +419,41 @@ COPY --from=slackdump-builder /build/SOURCE_URL /usr/local/share/slackdump/SOURC
 
 # Verify slackdump is executable and functional
 RUN chmod +x /usr/local/bin/slackdump && /usr/local/bin/slackdump version
+
+# Copy sigtop binary (ISC, v0.24.0) from builder stage.
+# Binary required by the Signal connector; upstream: https://github.com/tbvdm/sigtop
+COPY --from=sigtop-builder /build/sigtop /usr/local/bin/sigtop
+COPY --from=sigtop-builder /build/LICENSE /usr/local/share/sigtop/LICENSE.isc.txt
+COPY --from=sigtop-builder /build/SOURCE_URL /usr/local/share/sigtop/SOURCE_URL
+
+# Verify sigtop is present and executable. The Signal connector shipped
+# registered and rostered while this binary was absent from the image
+# entirely, so the row rendered health for a collector that could never run.
+# Fail the build here rather than discover it from a dead source.
+#
+# libsecret is a RUNTIME dependency too, not only a build one. sigtop links
+# against it dynamically to read Signal Desktop's encrypted database key from
+# the OS keyring, so the shared library must exist in the final image — the
+# `-dev` package in the builder stage supplies headers for the cgo compile and
+# nothing at all here.
+#
+# This was caught by running the binary in the built image, NOT by the build:
+# `test -x` passed on an executable that could not load
+# (`libsecret-1.so.0: cannot open shared object file`). A presence check is not
+# a liveness check, and the whole reason this stage exists is that Signal
+# shipped for weeks against a binary that was not there.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libsecret-1-0 \
+  && rm -rf /var/lib/apt/lists/*
+
+# `ldd` proves every shared object RESOLVES, then a bare invocation proves the
+# binary actually loads and reaches its own usage text. Presence alone is not
+# liveness — `test -x` passed on a binary that could not load at all. No real
+# subcommand is run: each needs a Signal Desktop directory absent at build time.
+RUN chmod +x /usr/local/bin/sigtop \
+  && test -x /usr/local/bin/sigtop \
+  && ! ldd /usr/local/bin/sigtop | grep -q "not found" \
+  && /usr/local/bin/sigtop 2>&1 | grep -qiE "usage|command"
 
 EXPOSE 3000
 

@@ -292,8 +292,8 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | channel_memberships | full_inventory | scheduled_window | — | true | — | — |
 | users | full_inventory | scheduled_window | — | true | — | — |
 | messages | checkpoint_window | scheduled_window | — | true | — | — |
-| message_attachments | checkpoint_window | scheduled_window | — | true | messages | — |
-| reactions | checkpoint_window | scheduled_window | — | true | messages | — |
+| message_attachments | parent_detail_accounting | scheduled_window | — | false | — | — |
+| reactions | parent_detail_accounting | scheduled_window | — | false | — | — |
 | files | checkpoint_window | scheduled_window | — | true | — | — |
 | canvases | full_inventory | scheduled_window | — | true | — | — |
 | stars | full_inventory | scheduled_window | — | false | — | — |

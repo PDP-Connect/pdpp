@@ -17,7 +17,7 @@
 // come from `server/auth.js` directly; the controller does not re-export
 // them.
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2588,23 +2588,28 @@ export function createController(opts: ControllerOptions = {}): Controller {
     await schedulerStore.deleteActiveRun(connectorInstanceId, runId);
   }
 
-  async function runAlreadyTerminal(runId: string): Promise<boolean> {
+  async function runAlreadyTerminal(runId: string, connectorInstanceId: string): Promise<boolean> {
     if (isPostgresStorageBackend()) {
       const { rows } = await postgresQuery(
         `
         SELECT 1 AS present
         FROM spine_events
         WHERE run_id = $1
+          AND connector_instance_id = $2
           AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
         LIMIT 1
         `,
-        [runId]
+        [runId, connectorInstanceId]
       );
       return Boolean(rows[0]);
     }
 
-    const row = getOne<TerminalRunRow>(referenceQueries.spineCheckRunTerminal, [runId]);
+    const row = getOne<TerminalRunRow>(referenceQueries.spineCheckRunTerminal, [runId, connectorInstanceId]);
     return Boolean(row);
+  }
+
+  async function runIdHasTerminalEvent(runId: string): Promise<boolean> {
+    return (await getRunTerminalStatus(runId)) !== null;
   }
 
   /**
@@ -3352,9 +3357,50 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
+  /**
+   * Guards the durable 409 run_already_active check against a stale
+   * `controller_active_runs` row.
+   *
+   * Unlike its in-memory sibling `assertNoConflictingActiveRun`, this check
+   * used to trust the row unconditionally: any row meant "blocked," forever,
+   * with no way to self-heal short of a process restart reaching the boot
+   * reconciler (`reconcileOrphanedRunsAtBoot`, `lib/controller-boot.ts`).
+   * That reconciler only fires once per boot and explicitly excludes rows
+   * from the CURRENT boot epoch, so a row orphaned mid-process-life — e.g.
+   * `finalizeRunCleanup`'s fire-and-forget `clearPersistedActiveRun` losing a
+   * transient DB error while a browser session failed to start — was never
+   * reconciled by anything. The owner's "Try Again" then 409s against a run
+   * the UI (which reads the spine's terminal-event projection) already shows
+   * as failed, indefinitely.
+   *
+   * The spine is the honest record of whether a run reached a terminal
+   * state (`runAlreadyTerminal`, the same identity-fenced oracle the watchdog
+   * defers to). A durable row whose (run_id, connector_instance_id) already
+   * has a terminal spine event is provably stale — the run finished, only the
+   * flight-table delete failed or raced — so it is safe to clear here and
+   * allow the new run, mirroring the in-memory reclamation above.
+   *
+   * - If stale (the row's full runtime identity has a terminal spine event): clears the orphaned
+   *   row and returns (allows new run).
+   * - If live (no terminal event yet): throws 409 run_already_active. This
+   *   is the fail-closed default — a run with no observed terminal event is
+   *   presumed live, so two genuinely concurrent runs on one connector are
+   *   still impossible.
+   * - If absent: returns (no conflict).
+   */
   async function assertNoConflictingDurableActiveRun(connectorInstanceId: string): Promise<void> {
     const existing = await getPersistedActiveRun(connectorInstanceId);
     if (!existing) {
+      return;
+    }
+    const existingConnectorInstanceId = existing.connector_instance_id ?? existing.connector_id;
+    if (await runAlreadyTerminal(existing.run_id, existingConnectorInstanceId)) {
+      log.warn?.(
+        `[controller] reclaiming stale controller_active_runs row for ${existing.connector_id} ` +
+          `(run_id=${existing.run_id}, connector_instance_id=${existingConnectorInstanceId}); ` +
+          "its run already reached a terminal state — allowing new run"
+      );
+      await clearPersistedActiveRun(existingConnectorInstanceId, existing.run_id);
       return;
     }
     throw new ControllerError(`Connector already has an active run: ${existing.run_id}`, "run_already_active", {
@@ -3720,7 +3766,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       }
       const emitAndFinalize = async () => {
         try {
-          if (!(await runAlreadyTerminal(runId))) {
+          if (!(await runAlreadyTerminal(runId, connectorInstanceId))) {
             await emitSpineEvent({
               actor_id: connectorId,
               actor_type: "runtime",
@@ -3816,7 +3862,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const traceContext =
       options.traceContext ??
       (options.scenarioId ? createTraceContext({ scenarioId: options.scenarioId }) : createTraceContext());
-    const runId = options.runId || `run_${Date.now()}`;
+    const runId = options.runId || `run_${randomUUID()}`;
     const startedAt = nowIso();
 
     // Resolve connection-scoped static-secret credentials before acquiring any
@@ -4096,7 +4142,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         // reconciler uses, because post-spawn rejections reach this catch
         // AFTER the runtime already recorded its own terminal event.
         try {
-          if (!(await runAlreadyTerminal(runId))) {
+          if (!(await runAlreadyTerminal(runId, connectorInstanceId))) {
             await emitSpineEvent({
               actor_id: connectorId,
               actor_type: "runtime",
@@ -4131,6 +4177,29 @@ export function createController(opts: ControllerOptions = {}): Controller {
           runId,
           traceContext,
         });
+        // A run that SUCCEEDED answered whatever the human was needed for.
+        // Clear the gate on proven success, whatever triggered the run.
+        //
+        // Previously this cleared only for `triggerKind === "manual"`, so a
+        // scheduled run could succeed indefinitely while the connection kept
+        // rendering `AttentionClear=false reason=needs_human_attention` and a
+        // "Missing data" pill. Observed live on ChatGPT
+        // (`cin_484604984db7c091bd08b259`): runs at 19:39 and 20:40 BOTH
+        // succeeded with every stream complete, zero open rows in
+        // `connector_attention_records`, and the row still read needs_attention.
+        //
+        // The flag is process-local (`needsHumanAttention`, a Set in this
+        // module) with no durable backing — `connector_schedules` has no
+        // `human_attention_needed` column — so nothing else could ever correct
+        // it. Only a restart or a manual run cleared it, which is why the
+        // contradiction survived two successful automatic runs.
+        //
+        // Success is the evidence, not the trigger. A failed or skipped run
+        // leaves the gate exactly as it was: if the owner is still needed, the
+        // next run re-marks it through the normal path.
+        if (runResult?.status === "succeeded") {
+          needsHumanAttention.delete(key);
+        }
         const continuationInput: {
           connectorId: string;
           connectorInstanceId: string;
@@ -4342,7 +4411,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       // No in-memory active run for this id. Distinguish a run that already
       // reached a terminal state (nothing to cancel) from one we never knew
       // about, so the owner gets an honest typed result either way.
-      if (await runAlreadyTerminal(runId)) {
+      if (await runIdHasTerminalEvent(runId)) {
         return { run_id: runId, status: "already_terminal" };
       }
       return { run_id: runId, status: "no_active_run" };

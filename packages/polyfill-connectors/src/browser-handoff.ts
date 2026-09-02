@@ -36,6 +36,10 @@
  */
 
 import { randomBytes } from "node:crypto";
+import type {
+  AssistanceCompletionStatus,
+  AssistanceRequest,
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 import type { Page } from "playwright";
 
 import type { InteractionRequest, InteractionResponse } from "./connector-runtime.ts";
@@ -601,28 +605,150 @@ export async function manualAction(
  * Hand the current browser page to the owner for sign-in, then let the
  * connector prove whether the session is live. The owner response is only a
  * signal to re-probe; site-specific session evidence stays with the connector.
+ *
+ * A streamed handoff uses a separate, temporary readiness page in the same
+ * browser context. The connector may navigate that page to prove its session,
+ * while the streamed page remains entirely under the owner's control. The
+ * readiness watcher lasts for the handoff's declared timeout; an owner who
+ * finishes after the first few seconds still resumes collection automatically.
+ * Callers that cannot supply the complete streamed contract retain the legacy
+ * click-first path.
  */
 export interface ManualBrowserLoginArgs<Result> {
+  readonly assist?: (req: AssistanceRequest) => Promise<string>;
+  /** Poll interval for the streamed readiness watcher. Defaults to 3s. */
+  readonly autoProbeIntervalMs?: number;
+  /**
+   * How long to watch for browser readiness. Defaults to the declared
+   * handoff timeout, or 30 minutes when no timeout is declared.
+   */
+  readonly autoProbeWindowMs?: number;
   readonly capture?: CaptureSession | null;
+  readonly completeAssistance?: (
+    assistanceRequestId: string,
+    status: AssistanceCompletionStatus,
+    extra?: { message?: string }
+  ) => Promise<void>;
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Required alongside `assist`: `probe`'s result shape varies by connector
+   * (a plain `boolean`, or an object like Chase's `{ loggedIn, page }`), so
+   * this module cannot infer success generically. Ignored when `assist` is
+   * omitted (the legacy click-first path never needs to interpret `probe`
+   * before the click).
+   */
+  readonly isProbeSuccessful?: (result: Result) => boolean;
   readonly message: string;
+  /** Injectable clock for deterministic readiness-window tests. */
+  readonly now?: () => number;
   readonly page: Page;
   readonly probe: () => Promise<Result>;
+  /**
+   * Navigation-safe session evidence for streamed handoffs. The helper passes
+   * a temporary sibling page, never the owner's streamed page.
+   */
+  readonly readinessProbe?: (page: Page) => Promise<Result>;
   readonly reason?: ManualActionReason;
   readonly sendInteraction: SendInteraction;
   readonly timeoutSeconds?: number;
 }
 
+const DEFAULT_AUTO_PROBE_INTERVAL_MS = 3000;
+const DEFAULT_AUTO_PROBE_WINDOW_MS = 30 * 60_000;
+
+function waitForProbeInterval(intervalMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, intervalMs));
+}
+
+function pollBrowserReadiness<Result>(
+  probe: () => Promise<Result>,
+  isProbeSuccessful: (result: Result) => boolean,
+  { intervalMs, now = Date.now, windowMs }: { intervalMs: number; now?: () => number; windowMs: number }
+): Promise<Result | undefined> {
+  const deadline = now() + windowMs;
+
+  const attempt = async (): Promise<Result | undefined> => {
+    const result = await probe();
+    if (isProbeSuccessful(result)) {
+      return result;
+    }
+    if (now() >= deadline) {
+      return undefined;
+    }
+    await waitForProbeInterval(intervalMs);
+    return attempt();
+  };
+
+  return attempt();
+}
+
+async function pollNavigationSafeBrowserReadiness<Result>(
+  handoffPage: Page,
+  readinessProbe: (page: Page) => Promise<Result>,
+  isProbeSuccessful: (result: Result) => boolean,
+  options: { intervalMs: number; now?: () => number; windowMs: number }
+): Promise<Result | undefined> {
+  const readinessPage = await handoffPage.context().newPage();
+  try {
+    return await pollBrowserReadiness(() => readinessProbe(readinessPage), isProbeSuccessful, options);
+  } finally {
+    await readinessPage.close().catch((): undefined => undefined);
+  }
+}
+
 export async function manualBrowserLogin<Result>({
+  assist,
+  autoProbeIntervalMs = DEFAULT_AUTO_PROBE_INTERVAL_MS,
+  autoProbeWindowMs,
   capture,
+  completeAssistance,
   env,
+  isProbeSuccessful,
   message,
+  now,
   page,
+  readinessProbe,
   probe,
   reason = "login",
   sendInteraction,
   timeoutSeconds,
 }: ManualBrowserLoginArgs<Result>): Promise<Result> {
+  if (assist && completeAssistance && isProbeSuccessful && readinessProbe) {
+    const assistanceRequestId = await assist({
+      attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
+      message,
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "none",
+      ...(timeoutSeconds === undefined ? {} : { timeout_seconds: timeoutSeconds }),
+    });
+    const readinessWindowMs =
+      autoProbeWindowMs ?? (timeoutSeconds === undefined ? DEFAULT_AUTO_PROBE_WINDOW_MS : timeoutSeconds * 1000);
+    let autoResolved: Result | undefined;
+    try {
+      autoResolved = await pollNavigationSafeBrowserReadiness(page, readinessProbe, isProbeSuccessful, {
+        intervalMs: autoProbeIntervalMs,
+        ...(now ? { now } : {}),
+        windowMs: readinessWindowMs,
+      });
+    } catch (error) {
+      await completeAssistance(assistanceRequestId, "escalated", {
+        message: "Browser readiness could not be verified; collection stopped safely.",
+      });
+      throw error;
+    }
+    if (autoResolved !== undefined) {
+      await completeAssistance(assistanceRequestId, "resolved", {
+        message: "The connector detected the session was ready and continued automatically.",
+      });
+      return autoResolved;
+    }
+    await completeAssistance(assistanceRequestId, "escalated", {
+      message: "Browser sign-in did not become ready before the handoff timed out.",
+    });
+    throw new Error("browser_handoff_readiness_timed_out");
+  }
+
   await manualAction(
     {
       ...(capture ? { capture } : {}),

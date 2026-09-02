@@ -142,7 +142,20 @@ async function startStubRs(script: ScriptedIngestResponse[]): Promise<StubRs> {
         if (status === 200) {
           const lines = body.split("\n").filter((l) => l.trim().length > 0);
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ errors: [], records_accepted: lines.length, records_rejected: 0 }));
+          // Mirror the real hosted RS envelope (server/routes/rs-mutation.ts
+          // always sets hostedRejectionReceipts: true), which the runtime's
+          // strict readIngestResponse (runtime/ingest-failure.ts) requires:
+          // records_attempted present and equal to the batch size, plus an
+          // index-exact rejections vector even when empty.
+          res.end(
+            JSON.stringify({
+              errors: [],
+              records_accepted: lines.length,
+              records_attempted: lines.length,
+              records_rejected: 0,
+              rejections: [],
+            })
+          );
           return;
         }
         res.writeHead(status, { "content-type": "application/json" });

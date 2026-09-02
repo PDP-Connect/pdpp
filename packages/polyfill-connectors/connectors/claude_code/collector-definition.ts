@@ -56,6 +56,11 @@ export const claudeCodeCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "claude_code",
   entry: "claude_code",
   bindings: { filesystem: { required: true } },
+  // Declared explicitly (not omitted): this definition targets the
+  // connector-protocol 0.0.2 capability-declaration contract, which
+  // requires an explicit array even when empty. This connector emits no
+  // STREAM_EVIDENCE and needs no protocol capability today.
+  protocol_capabilities: [],
   streams: CLAUDE_CODE_DEFAULT_STREAMS,
   enforces_source_roots: true,
   source_root_scopable_streams: CLAUDE_CODE_SOURCE_ROOT_SCOPABLE_STREAMS,

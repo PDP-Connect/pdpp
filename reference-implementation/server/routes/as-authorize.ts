@@ -27,6 +27,7 @@ import { randomBytes } from "node:crypto";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 import type { ConsentPickerBinding, ConsentPickerCapabilities, ConsentUiRenderer } from "./as-consent-ui-helpers.ts";
 import {
+  ActiveBindingLookupError,
   buildHostedMcpAuthorizationDetailForConnector,
   buildHostedMcpAuthorizationDetailsForConnector,
   HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE,
@@ -240,18 +241,53 @@ async function accumulateSourceEntry(
     return "rejected";
   }
 
+  const narrowedStreamNames = resolveNarrowedStreams(
+    manifest,
+    caps.hostedMcpSourceKey({ connectionId, connectorId }),
+    streamSelectionsBySource
+  );
+
+  if (narrowedStreamNames === "deselected") {
+    // Owner deliberately unchecked every declared stream — track for the
+    // picker error before looking up eligibility. This keeps a forged stream
+    // name from bypassing the manifest boundary or creating a package.
+    acc.sourcesWithEmptyStreams.push({
+      connectionId: connectionId || null,
+      connectorId,
+      connectorLabel: manifest.display_name || manifest.name || connectorId,
+    });
+    return "skipped";
+  }
+
+  // Verify the connector has at least one active connection for this owner,
+  // whether or not a specific connection was selected. The picker only ever
+  // renders rows for connectors the owner actually holds (see
+  // `buildConnectorPickerRows`), so this rejects a stale or forged selection
+  // — e.g. a source removed since the page was rendered, or a manufactured
+  // connector_id — before it can reach the grant engine and hard-fail the
+  // whole package with `source.authorization_details_invalid` for every
+  // other legitimately-selected source in the same submission. The active
+  // set also drives the pin-vs-fan-in decision below: a chosen connection is
+  // only an enforceable constraint when there is more than one to choose
+  // among.
+  let active: ConsentPickerBinding[];
+  try {
+    active = await caps.listActiveBindingsForGrant({ connectorId, ownerSubjectId });
+  } catch {
+    oauthError(res, 500, "server_error", "Unable to verify active connection state");
+    return "rejected";
+  }
+  const activeBindingCount = active.length;
+  if (activeBindingCount === 0) {
+    oauthError(res, 400, "invalid_request", `No active connection for ${connectorId}`, {
+      streams: narrowedStreamNames ?? manifest.streams?.map((stream) => stream.name).filter(Boolean) ?? [],
+    });
+    return "rejected";
+  }
   let matchedBinding: ConsentPickerBinding | null = null;
-  let activeBindingCount = 0;
   if (connectionId) {
-    // Verify the requested connection is currently active for this
-    // owner+connector. Reject silently-pinning a stale connection. The active
-    // set also drives the pin-vs-fan-in decision below: a chosen connection is
-    // only an enforceable constraint when there is more than one to choose
-    // among.
-    const active = await caps
-      .listActiveBindingsForGrant({ connectorId, ownerSubjectId })
-      .catch(() => [] as ConsentPickerBinding[]);
-    activeBindingCount = active.length;
+    // Reject silently-pinning a stale connection: the id must still be one
+    // of the connector's currently active bindings.
     matchedBinding = active.find((row) => row.connectorInstanceId === connectionId) || null;
     if (!matchedBinding) {
       oauthError(res, 400, "invalid_request", `Connection ${connectionId} is not active for ${connectorId}`);
@@ -264,22 +300,6 @@ async function accumulateSourceEntry(
     return "skipped";
   }
   acc.seenChildKeys.add(childKey);
-
-  const narrowedStreamNames = resolveNarrowedStreams(
-    manifest,
-    caps.hostedMcpSourceKey({ connectionId, connectorId }),
-    streamSelectionsBySource
-  );
-
-  if (narrowedStreamNames === "deselected") {
-    // Owner deliberately unchecked every stream — track for the error message.
-    acc.sourcesWithEmptyStreams.push({
-      connectionId: connectionId || null,
-      connectorId,
-      connectorLabel: manifest.display_name || manifest.name || connectorId,
-    });
-    return "skipped";
-  }
 
   // Pin the validated connection onto the issued child grant only when it
   // disambiguates among sibling connections; otherwise omit it to preserve
@@ -728,6 +748,9 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
         req
       );
     } catch (err) {
+      if (err instanceof ActiveBindingLookupError) {
+        return ctx.oauthError(res, 500, "server_error", "Unable to load active connection state");
+      }
       const errorCode = (err as { code?: string }).code;
       return ctx.oauthError(
         res,

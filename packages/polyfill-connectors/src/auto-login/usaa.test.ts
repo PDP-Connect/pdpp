@@ -62,7 +62,12 @@ function makePage(loginError: Error, bodyText = "Log Off"): FakePageHarness {
   const bodyLocator: Pick<Locator, "innerText"> = {
     innerText: (): Promise<string> => Promise.resolve(bodyText),
   };
-  const fake: Pick<Page, "goto" | "locator" | "waitForTimeout"> = {
+  const fake: Pick<Page, "close" | "context" | "goto" | "locator" | "waitForTimeout"> = {
+    close: (): Promise<void> => Promise.resolve(),
+    context: (): BrowserContext =>
+      ({
+        newPage: (): Promise<Page> => Promise.resolve(fake as Page),
+      }) as BrowserContext,
     goto(url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
       gotoCalls.push(url);
       if (url === LOGIN_URL) {
@@ -452,6 +457,48 @@ test("ensureUsaaSession hands off to the secure browser when optional credential
     assert.match(interactions.requests[0]?.message ?? "", /No optional USAA sign-in details/);
     assert.match(interactions.requests[0]?.message ?? "", /secure browser/);
     assert.doesNotMatch(interactions.requests[0]?.message ?? "", /password|test-user/u);
+  });
+});
+
+test("ensureUsaaSession self-resolves the no-credentials manual handoff via assist/completeAssistance when the connector's own probe proves the session is live, without ever sending a manual_action interaction", async () => {
+  await withoutUsaaCredentials(async () => {
+    // First cookies() call (ensureUsaaSession's own initial probe) reports no
+    // session; every call after that (manualBrowserLogin's self-probe) reports
+    // one — modeling the owner completing sign-in in the streaming companion
+    // before any click-gated interaction would even be requested.
+    const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
+    const { page } = makePage(new Error(`page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at ${LOGIN_URL}`), "Log Off");
+    const assistCalls: unknown[] = [];
+    const completions: { id: string; status: string }[] = [];
+
+    const ok = await ensureUsaaSession({
+      assist: (req) => {
+        assistCalls.push(req);
+        return Promise.resolve("assist_req_usaa_1");
+      },
+      completeAssistance: (id, status) => {
+        completions.push({ id, status });
+        return Promise.resolve();
+      },
+      context,
+      page,
+      sendInteraction(): Promise<InteractionResponse> {
+        throw new Error("sendInteraction must not be called when the self-probe resolves the assistance");
+      },
+    });
+
+    assert.equal(ok, true);
+    assert.equal(assistCalls.length, 1);
+    assert.deepEqual(assistCalls[0], {
+      attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
+      message:
+        "No optional USAA sign-in details were provided. Sign in to USAA in the secure browser. PDPP continues automatically when the session is ready.",
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "none",
+      timeout_seconds: 1800,
+    });
+    assert.deepEqual(completions, [{ id: "assist_req_usaa_1", status: "resolved" }]);
   });
 });
 

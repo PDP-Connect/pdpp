@@ -133,6 +133,81 @@ export function hasDegradingKnownGap(run: ConnectorRunSummary | null): boolean {
   return run.known_gaps.some(isDegradingKnownGap);
 }
 
+// A known-gap recovery-hint action, or kind, that is a MORE SPECIFIC,
+// connector-emitted classification of "what the owner must do" than a generic
+// terminal-failure placeholder: the connector itself identified this as an
+// interactive/manual step (OTP, a stalled login flow, a captcha, an
+// unrecognized page the owner must look at) rather than a proven-dead
+// credential or code defect. Live evidence (USAA `run_1783787246728`): the
+// SAME run emits BOTH an `interaction_required`/`manual_action_required` gap
+// (self-describing "this exact failure has recurred") AND a generic
+// `run_failed` gap whose message happens to contain "session_failed" and
+// whose recovery_hint is `refresh_credentials` — the two known_gaps disagree
+// about the same failure. `manual_action_required`/`interaction_required` is
+// the connector's own, more-specific read; deferring to it (rather than
+// trusting the generic sibling gap) is what stops downstream projections from
+// asserting a cause the connector did not actually prove.
+const OWNER_INTERACTION_RECOVERY_ACTIONS: ReadonlySet<string> = new Set(["manual_action_required"]);
+const OWNER_INTERACTION_GAP_KINDS: ReadonlySet<string> = new Set(["interaction_required"]);
+
+/** True when `knownGaps` contains a gap that specifically identifies itself as owner-interactive. */
+export function hasCompetingOwnerInteractionGap(knownGaps: readonly unknown[]): boolean {
+  for (const gap of knownGaps) {
+    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+      continue;
+    }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+    const kind = (gap as { kind?: unknown }).kind;
+    const recoveryAction = (gap as { recovery_hint?: { action?: unknown } }).recovery_hint?.action;
+    if (
+      (typeof kind === "string" && OWNER_INTERACTION_GAP_KINDS.has(kind)) ||
+      (typeof recoveryAction === "string" && OWNER_INTERACTION_RECOVERY_ACTIONS.has(recoveryAction))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Generic terminal reasons that carry NO specific cause of their own — a
+// connector that flattens any terminal failure into one of these hides the
+// real signal behind it. Mirrors `ref-control.ts`'s `GENERIC_TERMINAL_FAILURE_REASONS`
+// (§10-C), scoped here to the `run_failed`-kind known-gap's own `reason`.
+const GENERIC_RUN_FAILED_GAP_REASONS: ReadonlySet<string> = new Set([
+  "connector_reported_failed",
+  "connector_exited",
+  "run_failed",
+  "unknown",
+]);
+
+/**
+ * True when `gap` is the runtime's generic `run_failed` terminal wrapper —
+ * carrying no specific, owner-actionable cause of its own — for a run that
+ * ALSO reports a competing, more-specific owner-interaction gap
+ * (`interaction_required`/`manual_action_required`) for the same failure. The
+ * generic wrapper's own `recovery_hint` (typically absent or `"unknown"`)
+ * would otherwise independently force the whole run terminal even though the
+ * connector already gave a more specific, non-terminal read of the same
+ * event — the same shape `credentialReasonFromGenericFailure` in
+ * `ref-control.ts` already defers to for credential-reason derivation (§10-C).
+ * Only the generic wrapper defers: a `run_failed` gap that already carries
+ * its own `retry_by_runtime`/`manual_action_required` hint is handled by the
+ * ordinary per-gap checks above and never reaches this predicate's caller.
+ */
+function isGenericRunFailedGapShadowedByOwnerInteraction(gap: unknown, competingOwnerInteraction: boolean): boolean {
+  if (!competingOwnerInteraction) {
+    return false;
+  }
+  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+    return false;
+  }
+  const typed = gap as { kind?: unknown; reason?: unknown };
+  if (typed.kind !== "run_failed") {
+    return false;
+  }
+  return typeof typed.reason === "string" && GENERIC_RUN_FAILED_GAP_REASONS.has(typed.reason);
+}
+
 /** The set of stream names that have a pending detail gap. */
 export function pendingDetailGapStreams(gaps: readonly PendingDetailGapSummary[] = []): ReadonlySet<string> {
   const streams = new Set<string>();
@@ -195,6 +270,11 @@ export function isKnownSkipShadowedByPendingDetailGap(gap: unknown, pendingStrea
  * under `retryable_gap` instead. `informational` and `recoverable`
  * gaps don't degrade health per the connection-health coverage policy
  * and are ignored here.
+ *
+ * A generic `run_failed` wrapper gap (no specific cause of its own) that
+ * shares a run with a more specific `interaction_required`/
+ * `manual_action_required` gap is shadowed by it, not counted as its own
+ * terminal cause — see `isGenericRunFailedGapShadowedByOwnerInteraction`.
  */
 export function hasTerminalKnownGap(
   run: ConnectorRunSummary | null,
@@ -204,6 +284,7 @@ export function hasTerminalKnownGap(
     return false;
   }
   const pendingStreams = pendingDetailGapStreams(pendingDetailGaps);
+  const competingOwnerInteraction = hasCompetingOwnerInteractionGap(run.known_gaps);
   return run.known_gaps.some((gap) => {
     if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
       // Unclassified gap shape — be conservative and treat as terminal so
@@ -220,6 +301,9 @@ export function hasTerminalKnownGap(
       return false;
     }
     if (isSourceUnavailableKnownGap(gap)) {
+      return false;
+    }
+    if (isGenericRunFailedGapShadowedByOwnerInteraction(gap, competingOwnerInteraction)) {
       return false;
     }
     // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
@@ -414,3 +498,48 @@ export function classifyTooLargeProof(
 export function isStreamFullyUnfillableAccounted(terminalGaps: readonly TerminalGapProofRow[]): boolean {
   return terminalGaps.length > 0 && terminalGaps.every(isProvenUnfillableGap);
 }
+
+// ─── Provider-retention boundaries are DISCLOSURE, not coverage accounting ──
+//
+// A coverage horizon and a connector's `boundary_claim` are recorded, carried
+// onto the health snapshot, and surfaced to the owner in
+// `RenderedVerdict.detail` — but neither one, alone or together, decides
+// whether a stream's coverage is complete. There is deliberately no predicate
+// in this module that answers "is this gap accounted for by a horizon?".
+//
+// This restores the only authority that was ever explicitly designed and
+// accepted. The normative spec delta
+// (`openspec/changes/add-coverage-horizon-and-actionability-banner/specs/
+// reference-connection-health/spec.md`) requires that a coverage horizon
+// "SHALL carry no ConnectionHealthState, no health axis, and no forward
+// disposition, and SHALL participate in NO classification step", and "SHALL
+// NOT by itself mark a connection unhealthy or a stream's coverage complete".
+// That change's `design.md` rejects making the horizon a classification input
+// outright: "a horizon is disclosure, not a verdict".
+//
+// WHY THE REMOVED RULE WAS UNSAFE. It softened a `retryable_gap` when the gap
+// carried the typed `provider_history_boundary` claim AND any current,
+// affirmatively-based horizon existed for the stream. Nothing bound the GAP to
+// the horizon's EDGE — there was no temporal, cursor, or ordered-key
+// comparison at all, and a horizon with `earliestAvailable: null` (edge
+// unknown) satisfied it. So a gap lying wholly INSIDE the interval the
+// provider can still serve was accounted away on a broad typed string plus
+// "some horizon exists": data the provider WOULD return read as complete and
+// stopped being owed. Multiple such gaps softened collectively for the same
+// reason.
+//
+// Binding a specific gap to a specific horizon edge is a legitimate product
+// direction, but it is a public-protocol change, not a runtime one: it needs
+// `boundary_claim` defined in the normative Collection Profile, an explicit
+// provenance/authority model, a comparable structured edge (timestamp
+// interval, provider cursor, ordered key boundary) carried per gap, and
+// conformance tests. Until that contract exists, the disclosure-only rule
+// here is also the strictly SAFE one — it can only ever make a verdict less
+// green, so it cannot manufacture a false green.
+//
+// The claim itself is still validated and persisted at the runtime trust
+// boundary (`PERSISTED_BOUNDARY_CLAIMS` in `runtime/connector-gap-bounding.ts`)
+// and horizons are still recorded, superseded, and read
+// (`server/stores/connector-coverage-horizon-store.ts`,
+// `POST /_ref/connections/:id/coverage-horizon`). Only the completeness
+// authority is gone.

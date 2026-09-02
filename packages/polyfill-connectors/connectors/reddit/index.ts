@@ -685,8 +685,10 @@ export async function collectAllStreams(ctx: BrowserCollectContext): Promise<voi
  * forwarding unreachable by any test (the `isMainModule` guard).
  */
 export async function redditEnsureSession({
+  assist,
   capture,
   checkpoint,
+  completeAssistance,
   context,
   onCredentialSubmit,
   page,
@@ -697,7 +699,21 @@ export async function redditEnsureSession({
   // runtime's own `session-establish:begin`, so a 120s stall inside the
   // first liveness probe was indistinguishable from a stall anywhere else in
   // session establishment.
-  await ensureRedditSession({ capture, checkpoint, context, onCredentialSubmit, page, sendInteraction });
+  //
+  // Forwarding `assist`/`completeAssistance` lets the captcha/blocked-login
+  // manual handoffs self-resolve (see `ensureRedditSession`'s
+  // `manualHandoffArgs`) instead of always requiring the owner's manual
+  // "Continue collection" click.
+  await ensureRedditSession({
+    assist,
+    capture,
+    checkpoint,
+    completeAssistance,
+    context,
+    onCredentialSubmit,
+    page,
+    sendInteraction,
+  });
 }
 
 if (isMainModule(import.meta.url)) {

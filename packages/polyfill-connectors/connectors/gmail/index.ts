@@ -112,6 +112,11 @@ const DEFAULT_CRED_TIMEOUT_S = 1800;
 const DEFAULT_GMAIL_CONNECTOR_ID = "https://registry.pdpp.dev/connectors/gmail";
 const HYDRATION_ERROR_MAX_CHARS = 240;
 const DEFAULT_ATTACHMENT_MIME_TYPE = "application/octet-stream";
+// The blob endpoint's own media-type grammar (`rs-blobs-upload`'s
+// `MEDIA_TYPE_PATTERN`): a bare `type/subtype`, no wildcard, no empty half.
+// Mirrored here so a value that endpoint would reject with a 400 is replaced
+// BEFORE the request rather than after — see `normalizeAttachmentMimeType`.
+const VALID_MEDIA_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
 const BLOB_UPLOAD_ENV_ERROR =
   "blob upload unavailable: PDPP_RS_URL and PDPP_OWNER_TOKEN must be provided by the runtime";
 // Conservative default chosen to align with Gmail's per-message attachment
@@ -1949,16 +1954,64 @@ function hasPendingAttachmentBacklog(detailGaps: readonly DetailGapStartEntry[] 
 }
 
 /**
- * Historical attachment backfill should run when the operator asked for it or
- * when the runtime hands the connector pending attachment detail gaps. The
- * latter is the recovery-first seam: durable attachment backlog should not
- * look healthy just because the ordinary messages cursor is current.
+ * True when the attachments All Mail cursor made real prior progress
+ * (`backfilled_through_uid > 0`, so a run genuinely opted in and scanned at
+ * least one page) but stalled short of the mailbox's current UID range with
+ * `completed_at` still unset. Deliberately excludes a fresh/never-started
+ * cursor (`backfilled_through_uid` 0 or absent): a connector that has never
+ * been asked to backfill attachments must not have this signal alone force
+ * one on every future scheduled run — that stays opt-in via
+ * `streamsToBackfill` or a pending detail gap. This only catches the case
+ * where backfill started, then the trigger that was driving it (an explicit
+ * `streamsToBackfill` request) stopped arriving before the cursor reached
+ * `completed_at`, leaving the cursor permanently stuck with no pending gaps
+ * to signal it. Mirrors the range math in `selectAttachmentBackfillFetchRange`
+ * without requiring a full session object, so the trigger and the range
+ * selector agree on what "done" means.
+ */
+function hasIncompleteAttachmentBackfill(args: {
+  attachmentBackfill?: AttachmentAllMailCursor | undefined;
+  priorUidnext?: number | undefined;
+}): boolean {
+  const cursor = args.attachmentBackfill;
+  if (!cursor || cursor.completed_at) {
+    return false;
+  }
+  const backfilledThrough = cursor.backfilled_through_uid ?? 0;
+  if (backfilledThrough <= 0) {
+    return false;
+  }
+  if (args.priorUidnext === undefined) {
+    return false;
+  }
+  const endUid = Math.max(0, args.priorUidnext - 1);
+  return backfilledThrough < endUid;
+}
+
+/**
+ * Historical attachment backfill should run when the operator asked for it,
+ * when the runtime hands the connector pending attachment detail gaps, or
+ * when the attachments All Mail cursor already made progress and then
+ * stalled. The gap check alone is not enough: a durable per-attachment gap
+ * only exists once an attachment has been attempted and failed, so a cursor
+ * that started backfilling (e.g. via a one-time `streamsToBackfill` request)
+ * and then stopped receiving that request has zero pending gaps and would
+ * otherwise look healthy forever, even though the overwhelming majority of
+ * the mailbox was never scanned for attachments at all. The gap check is
+ * still the recovery-first seam: durable attachment backlog should not look
+ * healthy just because the ordinary messages cursor is current.
  */
 export function shouldBackfillAttachments(args: {
+  attachmentBackfill?: AttachmentAllMailCursor | undefined;
   detailGaps?: readonly DetailGapStartEntry[] | undefined;
+  priorUidnext?: number | undefined;
   streamsToBackfill?: readonly string[] | undefined;
 }): boolean {
-  return isAttachmentBackfillRequested(args.streamsToBackfill) || hasPendingAttachmentBacklog(args.detailGaps);
+  return (
+    isAttachmentBackfillRequested(args.streamsToBackfill) ||
+    hasPendingAttachmentBacklog(args.detailGaps) ||
+    hasIncompleteAttachmentBackfill({ attachmentBackfill: args.attachmentBackfill, priorUidnext: args.priorUidnext })
+  );
 }
 
 export function selectAttachmentBackfillFetchRange(session: {
@@ -2814,6 +2867,48 @@ function originalHydrationError(err: unknown): unknown {
   return err instanceof ReferenceBlobUploadFailure && err.cause !== undefined ? err.cause : err;
 }
 
+/**
+ * The MIME type to upload one attachment under, guaranteed to satisfy the blob
+ * endpoint's media-type grammar.
+ *
+ * The candidates are tried in source-preference order (IMAP `BODYSTRUCTURE`
+ * `contentType`, then the record's own `content_type`), and the FIRST VALID one
+ * wins — not the first non-empty one. That distinction is the defect this
+ * function fixes: the previous `a || b || DEFAULT` chain only fell through on
+ * an empty value, so a non-empty but malformed type was passed straight to the
+ * upload and rejected with a 400 (`mime_type must be a valid media type`).
+ *
+ * The real instance was `image/*`: IMAP servers may report a wildcard subtype
+ * for a part whose concrete type the server declines to narrow. It is
+ * non-empty, so it survived the `||` chain; `*` is outside the endpoint's
+ * grammar, so every attempt failed identically. Because a 4xx is not
+ * retry-convergent, the item burned its whole no-progress budget and was
+ * quarantined `terminal` — which, on a REQUIRED stream with no durable
+ * impossibility proof, renders the whole source as "Missing data" forever. The
+ * bytes were always fetchable; only the label on them was malformed.
+ *
+ * Falling back to `application/octet-stream` is the honest answer for a type
+ * the source would not state precisely: it claims nothing beyond "opaque
+ * bytes", which is exactly what a wildcard conveyed. A parameterized type
+ * (`text/plain; charset=utf-8`) stays valid — the endpoint strips parameters
+ * itself, so it is passed through unchanged rather than downgraded.
+ */
+export function normalizeAttachmentMimeType(...candidates: readonly (string | null | undefined)[]): string {
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+    // Match the endpoint's own normalization before testing: it compares the
+    // pre-`;` half, trimmed and lowercased. Testing the raw string instead
+    // would reject a valid parameterized type this function must preserve.
+    const mediaType = (candidate.split(";")[0] ?? "").trim().toLowerCase();
+    if (mediaType && VALID_MEDIA_TYPE_PATTERN.test(mediaType)) {
+      return candidate;
+    }
+  }
+  return DEFAULT_ATTACHMENT_MIME_TYPE;
+}
+
 function hydrationFailureForBlobUpload(err: unknown): AttachmentHydrationFailure | null {
   if (!(err instanceof ReferenceBlobUploadFailure)) {
     return null;
@@ -3245,7 +3340,7 @@ export function makeAttachmentHydrator(args: AttachmentHydratorArgs): HydrateAtt
       const blobRef = await args.uploadBlob({
         content: guarded,
         connectorId: args.connectorId,
-        mimeType: downloaded.mimeType || attachment.content_type || DEFAULT_ATTACHMENT_MIME_TYPE,
+        mimeType: normalizeAttachmentMimeType(downloaded.mimeType, attachment.content_type),
         recordKey: attachment.id,
         stream: "attachments",
       });
@@ -3342,7 +3437,7 @@ export async function fetchAttachmentPart(
   return {
     content: response.content,
     expectedSize: attachment.size_bytes,
-    mimeType: response.meta?.contentType || attachment.content_type || DEFAULT_ATTACHMENT_MIME_TYPE,
+    mimeType: normalizeAttachmentMimeType(response.meta?.contentType, attachment.content_type),
   };
 }
 
@@ -3691,7 +3786,9 @@ export async function runAllMailPasses(
   const sinceDate = timeRange?.since ? isoToImapDate(timeRange.since) : null;
   const sinceIso = timeRange?.since ?? null;
   const attachmentBackfillRequested = shouldBackfillAttachments({
+    attachmentBackfill: session.attachmentBackfill,
     detailGaps: deps.detailGaps,
+    priorUidnext: session.priorUidnext,
     streamsToBackfill: deps.streamsToBackfill,
   });
   const servedAttachmentRecoveryRequested = servedAttachmentDetailGaps(deps.detailGaps).length > 0;

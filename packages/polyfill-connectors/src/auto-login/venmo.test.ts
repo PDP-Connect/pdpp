@@ -266,8 +266,8 @@ test("ensureVenmoSession: a live session is reused with zero interactions and no
   const { gotoUrls, page } = makeProbePage(true);
   const { requests, sendInteraction } = recordingSendInteraction();
   const result = await ensureVenmoSession({ page, sendInteraction });
-  assert.equal(result.live, true);
-  assert.equal(result.ownerId, "1234567890123456789");
+  assert.equal(result?.live, true);
+  assert.equal(result?.ownerId, "1234567890123456789");
   assert.equal(requests.length, 0, "a live session must not prompt the owner at all");
   // F1: the run starts on about:blank; without navigating first the probe's
   // credentialed fetch runs from an opaque origin and cannot prove reuse.
@@ -284,7 +284,11 @@ test("ensureVenmoSession: hands off to manual_action when no credentials are sav
   await withoutVenmoCredentials(async () => {
     const { gotoUrls, page } = makeProbePage(false);
     const { requests, sendInteraction } = recordingSendInteraction();
-    await assert.rejects(ensureVenmoSession({ page, sendInteraction }), /venmo_login_manual_incomplete/);
+    // No probe follows the handoff, so this resolves with `null` rather than
+    // throwing venmo_login_manual_incomplete. The owner-facing failure for a
+    // handoff that did not really sign in now comes from the collection step
+    // (venmo_session_expired), which is where the evidence actually lives.
+    assert.equal(await ensureVenmoSession({ page, sendInteraction }), null);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "manual_action");
     assert.match(requests[0]?.message ?? "", /No optional Venmo sign-in details/);
@@ -298,12 +302,116 @@ test("ensureVenmoSession: hands off to manual_action when no credentials are sav
   });
 });
 
+test("ensureVenmoSession: forwarding assist/completeAssistance to the no-credentials manual handoff is a documented no-op — the owner's click is still required (no safe self-resolve probe exists for Venmo)", async () => {
+  // Unlike reddit/usaa/chase, Venmo's only liveness probe (probeVenmoAccount)
+  // must navigate to venmo.com for CORS, and every manual handoff here
+  // deliberately keeps the page on id.venmo.com so an in-progress
+  // captcha/OTP screen is not destroyed (see waitForManualLogin's doc and the
+  // production incidents it cites). So `assist`/`completeAssistance` are
+  // threaded through to the `manualBrowserLogin` call site, but
+  // `isProbeSuccessful` is intentionally NOT — and `manualBrowserLogin` only
+  // invokes `assist` at all when BOTH are present together. This proves that
+  // wiring is a true no-op here: neither hook fires, and the click-gated
+  // sendInteraction path still runs exactly as before this change.
+  await withoutVenmoCredentials(async () => {
+    const { page } = makeProbePage(false);
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const assistCalls: unknown[] = [];
+    const completions: { id: string; status: string }[] = [];
+
+    const result = await ensureVenmoSession({
+      assist: (req) => {
+        assistCalls.push(req);
+        return Promise.resolve("assist_req_venmo_1");
+      },
+      completeAssistance: (id, status) => {
+        completions.push({ id, status });
+        return Promise.resolve();
+      },
+      page,
+      sendInteraction,
+    });
+
+    assert.equal(result, null);
+    // manualBrowserLogin gates its self-resolve block on `assist &&
+    // isProbeSuccessful` together — Venmo's call site supplies only `assist`,
+    // so neither hook is ever invoked; the legacy click-first path is
+    // unchanged.
+    assert.equal(assistCalls.length, 0);
+    assert.deepEqual(completions, []);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.kind, "manual_action");
+  });
+});
+
 test("ensureVenmoSession: ignores provider credential environment variables and uses the setup bundle", async () => {
   await withVenmoCredentials(async () => {
     const { page } = makeProbePage(false);
     const { requests, sendInteraction } = recordingSendInteraction();
-    await assert.rejects(ensureVenmoSession({ page, sendInteraction }), /venmo_login_manual_incomplete/);
+    assert.equal(await ensureVenmoSession({ page, sendInteraction }), null);
     assert.equal(requests[0]?.kind, "manual_action");
+  });
+});
+
+// ─── The post-handoff navigation defect (production run_1787918248525) ────
+//
+// The owner completed a manual sign-in handoff successfully, and the run
+// failed anyway. The handoff helper used to run a liveness probe after they
+// responded, and that probe began with `ensureVenmoOrigin`, whose
+// cross-origin `page.goto` is a FULL NETWORK NAVIGATION — it destroyed the
+// just-authenticated page state the owner had created and could walk the
+// session back through the wall they had just cleared.
+//
+// These two tests pin the MECHANISM (nothing runs against the page after the
+// owner responds), not merely the outcome, because an earlier attempt at this
+// fix was reverted for pinning nothing: a reviewer's mutant survived 72/0.
+test("ensureVenmoSession: the owner's response triggers NO navigation — the authenticated page they just created is never destroyed (run_1787918248525)", async () => {
+  await withoutVenmoCredentials(async () => {
+    const { gotoUrls, page, setLive } = makeProbePage(false);
+    const { sendInteraction } = recordingSendInteraction();
+    let gotosAtResponse = -1;
+    await ensureVenmoSession({
+      page,
+      sendInteraction: (req) => {
+        // The owner signs in during the manual_action window. Everything the
+        // helper does AFTER this point runs against a live, authenticated page.
+        setLive(true);
+        gotosAtResponse = gotoUrls.length;
+        return sendInteraction(req);
+      },
+    });
+    assert.notEqual(gotosAtResponse, -1, "the manual_action handoff must actually have been requested");
+    assert.equal(
+      gotoUrls.length,
+      gotosAtResponse,
+      `no navigation may occur after the owner responds; got ${JSON.stringify(gotoUrls.slice(gotosAtResponse))}`
+    );
+  });
+});
+
+test("ensureVenmoSession: no page-context probe runs after the owner responds (the probe's fetch is what forced the navigation)", async () => {
+  await withoutVenmoCredentials(async () => {
+    const { page, setLive } = makeProbePage(false);
+    const { sendInteraction } = recordingSendInteraction();
+    let responded = false;
+    let evaluatesAfterResponse = 0;
+    const basePage = page as unknown as { evaluate: () => Promise<unknown> };
+    const baseEvaluate = basePage.evaluate.bind(basePage);
+    basePage.evaluate = (): Promise<unknown> => {
+      if (responded) {
+        evaluatesAfterResponse += 1;
+      }
+      return baseEvaluate();
+    };
+    await ensureVenmoSession({
+      page,
+      sendInteraction: (req) => {
+        setLive(true);
+        responded = true;
+        return sendInteraction(req);
+      },
+    });
+    assert.equal(evaluatesAfterResponse, 0, "the post-handoff liveness probe must be gone, not merely made careful");
   });
 });
 
@@ -319,7 +427,10 @@ test("ensureVenmoSession: manual browser login succeeding is accepted without as
         return manualHandoff(req);
       },
     });
-    assert.equal(result.live, true);
+    // The handoff path deliberately does not probe, so it reports `null`
+    // ("the owner responded") rather than a liveness claim it never checked.
+    // Liveness is proven by the collection step — see ensureVenmoSession's doc.
+    assert.equal(result, null);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "manual_action");
   });
@@ -347,7 +458,7 @@ test("ensureVenmoSession: captures a locator probe of the login page, recording 
       page,
       sendInteraction,
     });
-    assert.equal(result.live, true);
+    assert.equal(result?.live, true);
     assert.equal(fillCalls.username, "test-user");
     assert.ok(probeCalls.length > 0, "expected at least one locator-probe capture during login");
     assert.ok(
@@ -375,7 +486,7 @@ test("ensureVenmoSession: fills saved credentials and completes login without an
       page,
       sendInteraction,
     });
-    assert.equal(result.live, true);
+    assert.equal(result?.live, true);
     assert.equal(fillCalls.username, "test-user");
     assert.equal(fillCalls.password, "test-password");
     assert.equal(requests.length, 0, "no OTP interaction when Venmo never rendered one");
@@ -395,7 +506,7 @@ test("ensureVenmoSession: onCredentialSubmit fires exactly once when the saved p
       page,
       sendInteraction,
     });
-    assert.equal(result.live, true);
+    assert.equal(result?.live, true);
     assert.equal(markerCount, 1, "one login attempt submitted one credential — the runtime must hear about it once");
   });
 });
@@ -411,7 +522,7 @@ test("ensureVenmoSession: onCredentialSubmit does NOT fire on session reuse — 
     page,
     sendInteraction,
   });
-  assert.equal(result.live, true);
+  assert.equal(result?.live, true);
   assert.equal(markerCount, 0);
 });
 
@@ -438,7 +549,7 @@ test("ensureVenmoSession: progress emits a durable credential-submit marker exac
       },
       sendInteraction,
     });
-    assert.equal(result.live, true);
+    assert.equal(result?.live, true);
     const marker = progressMessages.filter((m) => m.startsWith("venmo_credential_submit"));
     assert.equal(marker.length, 1, "exactly one durable marker for one credential submission");
     assert.doesNotMatch(
@@ -461,7 +572,7 @@ test("ensureVenmoSession: progress does NOT emit the credential-submit marker on
     },
     sendInteraction,
   });
-  assert.equal(result.live, true);
+  assert.equal(result?.live, true);
   assert.equal(
     progressMessages.filter((m) => m.startsWith("venmo_credential_submit")).length,
     0,
@@ -480,13 +591,13 @@ test("mutation-kill twin: omitting progress from ensureVenmoSession still succee
       page,
       sendInteraction,
     });
-    assert.equal(result.live, true, "ensureVenmoSession must not require a progress callback to function");
+    assert.equal(result?.live, true, "ensureVenmoSession must not require a progress callback to function");
   });
 });
 
 // ─── OTP handoff ─────────────────────────────────────────────────────────
 
-test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, never asking for the password again", async () => {
+test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, never asking for the password again, and reports the owner-handoff sentinel rather than a fabricated probe", async () => {
   await withVenmoCredentials(async () => {
     let probeCount = 0;
     const username = makeLocator();
@@ -501,7 +612,9 @@ test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, nev
       // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
       async evaluate(): Promise<unknown> {
         probeCount += 1;
-        return probeCount > 1 ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
+        // Only the initial pre-submit probe (count 1) may ever run; a second
+        // call would mean something probed after the OTP interaction resolved.
+        return { kind: "dead" };
       },
       getByRole(): Locator {
         return submit;
@@ -538,10 +651,207 @@ test("ensureVenmoSession: an OTP input drives sendInteraction with kind=otp, nev
       page: page as Page,
       sendInteraction,
     });
-    assert.equal(result.live, true);
+    // A code-bearing OTP response must return the owner-handoff sentinel
+    // (`null`), never a fabricated `{ live: true }` the connector never
+    // actually checked — collection is the next liveness authority.
+    assert.equal(result, null);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "otp");
     assert.doesNotMatch(requests[0]?.message ?? "", /test-password/);
+    assert.equal(probeCount, 1, "only the initial pre-submit probe may run; nothing may probe after the OTP response");
+  });
+});
+
+// These two tests pin the MECHANISM (no page-context probe/navigation runs
+// after the OTP interaction resolves), not merely the outcome — same shape as
+// the manual-login mechanism tests above, and for the same reason: an
+// assertion on the outcome alone can pass while a probe still runs and simply
+// happens to agree with reality in the fake.
+test("ensureVenmoSession: a code-bearing OTP response triggers no page-context probe or navigation after it resolves", async () => {
+  await withVenmoCredentials(async () => {
+    const username = makeLocator();
+    const password = makeLocator();
+    let submitClicksAfterFill = 0;
+    let codeFilled = false;
+    const submit = makeClickRecordingLocator(() => {
+      if (codeFilled) {
+        submitClicksAfterFill += 1;
+      }
+    });
+    const filledCodes: string[] = [];
+    const otp: Pick<Locator, "count" | "fill" | "first" | "isEnabled" | "isVisible" | "nth" | "waitFor"> = {
+      count: (): Promise<number> => Promise.resolve(1),
+      fill: (value: string): Promise<void> => {
+        filledCodes.push(value);
+        codeFilled = true;
+        return Promise.resolve();
+      },
+      first(): Locator {
+        return otp as Locator;
+      },
+      isEnabled: (): Promise<boolean> => Promise.resolve(true),
+      isVisible: (): Promise<boolean> => Promise.resolve(true),
+      nth(): Locator {
+        return otp as Locator;
+      },
+      waitFor: (): Promise<void> => Promise.resolve(),
+    };
+    let currentUrl = "https://venmo.com/";
+    let responded = false;
+    let evaluatesAfterResponse = 0;
+    let gotosAfterResponse = 0;
+    const page: Pick<
+      Page,
+      "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+    > = {
+      // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+      async evaluate(): Promise<unknown> {
+        if (responded) {
+          evaluatesAfterResponse += 1;
+        }
+        return { kind: "dead" };
+      },
+      getByRole(): Locator {
+        return submit;
+      },
+      goto(url: string): ReturnType<Page["goto"]> {
+        if (responded) {
+          gotosAfterResponse += 1;
+        }
+        currentUrl = url;
+        return Promise.resolve(null);
+      },
+      locator(selector: string): Locator {
+        if (selector.includes("username")) {
+          return username;
+        }
+        if (selector.includes("password")) {
+          return password;
+        }
+        if (selector.includes("otp") || selector.includes("code")) {
+          return otp as Locator;
+        }
+        return makeLocator({ count: 0, visible: false });
+      },
+      url(): string {
+        return currentUrl;
+      },
+      waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
+        return Promise.resolve();
+      },
+      waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+        return Promise.resolve();
+      },
+    };
+    const requests: InteractionRequest[] = [];
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page: page as Page,
+      sendInteraction: (req): Promise<InteractionResponse> => {
+        requests.push(req);
+        responded = true;
+        return Promise.resolve({
+          data: { code: "123456" },
+          request_id: req.request_id ?? "test_interaction",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        });
+      },
+    });
+    assert.equal(result, null, "a submitted OTP code must report the owner-handoff sentinel");
+    assert.equal(requests[0]?.kind, "otp");
+    assert.deepEqual(filledCodes, ["123456"], "the OTP locator must be filled with the owner-supplied code");
+    assert.equal(
+      submitClicksAfterFill,
+      1,
+      "the real submit control must be clicked exactly once after the code is filled"
+    );
+    assert.equal(evaluatesAfterResponse, 0, "no page-context probe may run once the OTP response resolves");
+    assert.equal(gotosAfterResponse, 0, "no navigation may run once the OTP response resolves");
+  });
+});
+
+test("ensureVenmoSession: cancelling/dismissing the OTP prompt triggers no page-context probe or navigation, and reports the owner-handoff sentinel rather than fabricating proof", async () => {
+  await withVenmoCredentials(async () => {
+    const username = makeLocator();
+    const password = makeLocator();
+    const submit = makeLocator();
+    const otp = makeLocator();
+    let currentUrl = "https://venmo.com/";
+    let responded = false;
+    let evaluatesAfterResponse = 0;
+    let gotosAfterResponse = 0;
+    const page: Pick<
+      Page,
+      "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+    > = {
+      // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+      async evaluate(): Promise<unknown> {
+        // Answers LIVE only once the owner has responded — the state a real
+        // account would be in only AFTER the cancelled prompt, so a probe run
+        // (illegitimately) after the response would see proof and could be
+        // tempted to fabricate a result from it. The fix must never call
+        // this again once `responded` flips, not merely fail to use the
+        // answer if it did.
+        if (responded) {
+          evaluatesAfterResponse += 1;
+          return { kind: "live", ownerId: "1234567890123456789" };
+        }
+        return { kind: "dead" };
+      },
+      getByRole(): Locator {
+        return submit;
+      },
+      goto(url: string): ReturnType<Page["goto"]> {
+        if (responded) {
+          gotosAfterResponse += 1;
+        }
+        currentUrl = url;
+        return Promise.resolve(null);
+      },
+      locator(selector: string): Locator {
+        if (selector.includes("username")) {
+          return username;
+        }
+        if (selector.includes("password")) {
+          return password;
+        }
+        if (selector.includes("otp") || selector.includes("code")) {
+          return otp;
+        }
+        return makeLocator({ count: 0, visible: false });
+      },
+      url(): string {
+        return currentUrl;
+      },
+      waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
+        return Promise.resolve();
+      },
+      waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+        return Promise.resolve();
+      },
+    };
+    const requests: InteractionRequest[] = [];
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page: page as Page,
+      sendInteraction: (req): Promise<InteractionResponse> => {
+        requests.push(req);
+        responded = true;
+        // Owner cancelled/dismissed: a terminal status with no code, exactly
+        // what a real cancel/dismiss produces (interaction-handler.ts's
+        // InteractionResponseStatus).
+        return Promise.resolve({ request_id: "test_interaction", status: "cancelled", type: "INTERACTION_RESPONSE" });
+      },
+    });
+    assert.equal(
+      result,
+      null,
+      "a cancelled/dismissed OTP prompt must report the owner-handoff sentinel, never a fabricated probe result"
+    );
+    assert.equal(requests[0]?.kind, "otp");
+    assert.equal(evaluatesAfterResponse, 0, "no page-context probe may run once the cancel/dismiss response resolves");
+    assert.equal(gotosAfterResponse, 0, "no navigation may run once the cancel/dismiss response resolves");
   });
 });
 
@@ -615,6 +925,260 @@ function makeOtpDecisionPage({
   return { page: page as Page };
 }
 
+/**
+ * Models the retained 2026-08-27 Venmo SMS OFFER, not a code-entry page. The
+ * captured offer has the exact header/body copy, `.venmoRemeberMeDevice`
+ * checkbox, and data-testid/name/type Send code button below. Its code input
+ * appears only after that button is clicked.
+ */
+function makeCapturedSmsOfferPage({
+  bodyText = "To verify it’s you, we’ll text you a code Remember this device Send code Go back",
+  codeInputAppearsAfterSend = true,
+  codeInputAppearsDuringWait = true,
+  offerVisible = true,
+  rememberDeviceInitiallyChecked = false,
+}: {
+  bodyText?: string;
+  codeInputAppearsAfterSend?: boolean;
+  codeInputAppearsDuringWait?: boolean;
+  offerVisible?: boolean;
+  rememberDeviceInitiallyChecked?: boolean;
+} = {}): {
+  checkboxClicks: number;
+  filledCodes: string[];
+  isRememberDeviceChecked: () => boolean;
+  markOtpRequested: () => void;
+  page: Page;
+  sendCodeClicks: number;
+} {
+  let checkboxClicks = 0;
+  const filledCodes: string[] = [];
+  let otpRequested = false;
+  let rememberDeviceChecked = rememberDeviceInitiallyChecked;
+  let sendCodeClicks = 0;
+  let stage: "code" | "form" | "offer" | "waiting" = "form";
+  let currentUrl = "https://venmo.com/";
+
+  const loginSubmit = makeClickRecordingLocator(() => {
+    stage = "offer";
+  });
+  const rememberDevice: Pick<Locator, "click" | "count" | "first" | "isChecked" | "isEnabled" | "isVisible"> = {
+    click: (): Promise<void> => {
+      checkboxClicks += 1;
+      rememberDeviceChecked = !rememberDeviceChecked;
+      return Promise.resolve();
+    },
+    count: (): Promise<number> => Promise.resolve(stage === "offer" && offerVisible ? 1 : 0),
+    first(): Locator {
+      return rememberDevice as Locator;
+    },
+    isChecked: (): Promise<boolean> => Promise.resolve(rememberDeviceChecked),
+    isEnabled: (): Promise<boolean> => Promise.resolve(stage === "offer" && offerVisible),
+    isVisible: (): Promise<boolean> => Promise.resolve(stage === "offer" && offerVisible),
+  };
+  const sendCode: Pick<Locator, "click" | "count" | "first" | "isEnabled" | "isVisible"> = {
+    click: (): Promise<void> => {
+      sendCodeClicks += 1;
+      if (codeInputAppearsAfterSend) {
+        stage = codeInputAppearsDuringWait ? "waiting" : "code";
+      }
+      return Promise.resolve();
+    },
+    count: (): Promise<number> => Promise.resolve(stage === "offer" && offerVisible ? 1 : 0),
+    first(): Locator {
+      return sendCode as Locator;
+    },
+    isEnabled: (): Promise<boolean> => Promise.resolve(stage === "offer" && offerVisible),
+    isVisible: (): Promise<boolean> => Promise.resolve(stage === "offer" && offerVisible),
+  };
+  const otpInput: Pick<Locator, "count" | "fill" | "first" | "isEnabled" | "isVisible" | "nth" | "waitFor"> = {
+    count: (): Promise<number> => Promise.resolve(stage === "code" ? 1 : 0),
+    fill: (value: string): Promise<void> => {
+      filledCodes.push(value);
+      return Promise.resolve();
+    },
+    first(): Locator {
+      return otpInput as Locator;
+    },
+    isEnabled: (): Promise<boolean> => Promise.resolve(stage === "code"),
+    isVisible: (): Promise<boolean> => Promise.resolve(stage === "code"),
+    nth(): Locator {
+      return otpInput as Locator;
+    },
+    waitFor: (): Promise<void> => {
+      if (stage === "waiting") {
+        stage = "code";
+        return Promise.resolve();
+      }
+      return stage === "code" ? Promise.resolve() : Promise.reject(new Error("Timeout waiting for locator"));
+    },
+  };
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      return otpRequested ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
+    },
+    getByRole: (): Locator => loginSubmit,
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    locator(selector: string): Locator {
+      if (selector === "body") {
+        return makeLocator({ innerText: bodyText });
+      }
+      if (selector.includes("username")) {
+        return makeLocator();
+      }
+      if (selector.includes("password")) {
+        return makeLocator();
+      }
+      if (selector.includes("venmoRemeberMeDevice")) {
+        return rememberDevice as Locator;
+      }
+      if (selector.includes('data-testid="button-next"') && selector.includes('[name="Send code"]')) {
+        return sendCode as Locator;
+      }
+      if (selector.includes("otp") || selector.includes("code")) {
+        return otpInput as Locator;
+      }
+      return makeLocator({ count: 0, visible: false });
+    },
+    url: (): string => currentUrl,
+    waitForLoadState: (): ReturnType<Page["waitForLoadState"]> => Promise.resolve(),
+    waitForTimeout: (): ReturnType<Page["waitForTimeout"]> => Promise.resolve(),
+  };
+  return {
+    get checkboxClicks(): number {
+      return checkboxClicks;
+    },
+    filledCodes,
+    isRememberDeviceChecked: (): boolean => rememberDeviceChecked,
+    markOtpRequested: (): void => {
+      otpRequested = true;
+    },
+    page: page as Page,
+    get sendCodeClicks(): number {
+      return sendCodeClicks;
+    },
+  };
+}
+
+test("ensureVenmoSession: the captured SMS offer selects Remember this device, sends its code, then uses the existing OTP interaction", async () => {
+  await withVenmoCredentials(async () => {
+    const fake = makeCapturedSmsOfferPage();
+    const requests: InteractionRequest[] = [];
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page: fake.page,
+      sendInteraction: (request): Promise<InteractionResponse> => {
+        requests.push(request);
+        fake.markOtpRequested();
+        return Promise.resolve({
+          data: { code: "654321" },
+          request_id: "test_interaction",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        });
+      },
+    });
+
+    // A code-bearing OTP response returns the owner-handoff sentinel, not a
+    // fabricated liveness claim — collection re-probes and is the actual
+    // liveness authority.
+    assert.equal(result, null, "a submitted OTP code must report the owner-handoff sentinel, not a probed result");
+    assert.equal(fake.checkboxClicks, 1, "the unchecked captured control must be selected before code dispatch");
+    assert.equal(fake.isRememberDeviceChecked(), true, "Remember this device must stay selected");
+    assert.equal(fake.sendCodeClicks, 1, "the real captured Send code control must dispatch exactly once");
+    assert.deepEqual(
+      fake.filledCodes,
+      ["654321"],
+      "the sent code's existing OTP path must fill the input with the owner-supplied code"
+    );
+    assert.deepEqual(
+      requests.map((request) => request.kind),
+      ["otp"],
+      "only after Venmo renders the OTP input may the existing OTP interaction request a code"
+    );
+  });
+});
+
+test("ensureVenmoSession: the already-checked captured Remember this device control is never clicked off", async () => {
+  await withVenmoCredentials(async () => {
+    const fake = makeCapturedSmsOfferPage({ rememberDeviceInitiallyChecked: true });
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page: fake.page,
+      sendInteraction: (): Promise<InteractionResponse> => {
+        fake.markOtpRequested();
+        return Promise.resolve({ request_id: "test_interaction", status: "success", type: "INTERACTION_RESPONSE" });
+      },
+    });
+
+    assert.equal(
+      result,
+      null,
+      "the resolved OTP interaction must report the owner-handoff sentinel, not a probed result"
+    );
+    assert.equal(fake.checkboxClicks, 0, "a checked Remember this device control must not be clicked back off");
+    assert.equal(fake.isRememberDeviceChecked(), true);
+    assert.equal(fake.sendCodeClicks, 1);
+  });
+});
+
+test("ensureVenmoSession: a Send code button without the captured verification offer copy does not dispatch or fabricate an OTP request", async () => {
+  await withVenmoCredentials(async () => {
+    const fake = makeCapturedSmsOfferPage({ bodyText: "Account settings Send code" });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page: fake.page,
+        postSubmitSettleTimeoutMs: 50,
+        sendInteraction,
+      }),
+      // An unrecognized offer falls through to the post-submit settle poll,
+      // which never sees the session go live and reports the honest timeout.
+      // NOT `venmo_login_incomplete_after_submit`: that token names a handoff
+      // that returned a dead session, and blaming an expired wait on the
+      // credential is exactly what the settle guard exists to prevent.
+      /venmo_login_did_not_complete/
+    );
+
+    assert.equal(fake.sendCodeClicks, 0, "a lookalike button is not enough evidence to send a real SMS");
+    assert.deepEqual(
+      requests.filter((request): boolean => request.kind === "otp"),
+      [],
+      "a screen with no verification offer must not fabricate an OTP prompt"
+    );
+  });
+});
+
+test("ensureVenmoSession: a dispatched SMS offer with no rendered code input fails with its named reason and never prompts", async () => {
+  await withVenmoCredentials(async () => {
+    const fake = makeCapturedSmsOfferPage({ codeInputAppearsAfterSend: false });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page: fake.page,
+        sendInteraction,
+      }),
+      /venmo_sms_offer_code_input_timeout/
+    );
+
+    assert.equal(fake.sendCodeClicks, 1, "the failure occurs after exactly one real SMS dispatch attempt");
+    assert.deepEqual(
+      requests.filter((request): boolean => request.kind === "otp"),
+      [],
+      "without a code input, the connector must not ask for a code"
+    );
+  });
+});
+
 test("ensureVenmoSession: a page matching the OTP copy with no code input hands off instead of demanding a code", async () => {
   await withVenmoCredentials(async () => {
     // Matching copy with nothing that can accept a code. Venmo dispatched
@@ -625,13 +1189,16 @@ test("ensureVenmoSession: a page matching the OTP copy with no code input hands 
       otpVisible: false,
     });
     const { requests, sendInteraction } = recordingSendInteraction();
-    await assert.rejects(
-      ensureVenmoSession({
+    // The handoff happened. It no longer probes, so it resolves with `null`
+    // rather than throwing — a session that did not really sign in now fails
+    // at the collection step as venmo_session_expired.
+    assert.equal(
+      await ensureVenmoSession({
         credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
         page,
         sendInteraction,
       }),
-      /venmo_login_incomplete_after_submit/
+      null
     );
     assert.deepEqual(
       requests.filter((req): boolean => req.kind === "otp"),
@@ -652,13 +1219,16 @@ test("ensureVenmoSession: a rendered but disabled code box never asks the owner 
       otpVisible: true,
     });
     const { requests, sendInteraction } = recordingSendInteraction();
-    await assert.rejects(
-      ensureVenmoSession({
+    // The handoff happened. It no longer probes, so it resolves with `null`
+    // rather than throwing — a session that did not really sign in now fails
+    // at the collection step as venmo_session_expired.
+    assert.equal(
+      await ensureVenmoSession({
         credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
         page,
         sendInteraction,
       }),
-      /venmo_login_incomplete_after_submit/
+      null
     );
     assert.deepEqual(
       requests.filter((req): boolean => req.kind === "otp"),
@@ -770,13 +1340,32 @@ test("ensureVenmoSession: a code input that vanishes after classification fails 
  */
 function makeTwoStepVenmoPage({
   captchaVisible = false,
+  scoringChallengeLoaded = false,
+  deadProbesAfterSubmit = 0,
   identifierSelectorMatches = true,
   passwordAppearsAfterNext = true,
   passwordScreenDelayMs = 0,
   semanticSubmitVisible = true,
 }: {
   captchaVisible?: boolean;
+  /**
+   * How many post-submit probes answer `dead` before Venmo's session cookie
+   * lands. This is the production race the retained capture frames showed: the
+   * password was accepted and the submit button was still spinning, so the
+   * session simply did not exist yet at the instant the connector asked. A
+   * single-sample probe reads that not-yet as a rejection and hands off to a
+   * human who is not there. Non-zero is the only setting that can tell a poll
+   * from one sample — at 0 the two are indistinguishable.
+   */
+  deadProbesAfterSubmit?: number;
   identifierSelectorMatches?: boolean;
+  /**
+   * `true` loads reCAPTCHA Enterprise v3's script WITHOUT rendering anything —
+   * the invisible scoring kind. It is deliberately independent of
+   * `captchaVisible`: the whole defect is that a v3 score blocks the login
+   * while every visibility check on the page correctly reports nothing.
+   */
+  scoringChallengeLoaded?: boolean;
   passwordAppearsAfterNext?: boolean;
   /**
    * How long Venmo's second screen takes to render after the identifier is
@@ -878,8 +1467,13 @@ function makeTwoStepVenmoPage({
     async evaluate(): Promise<unknown> {
       probeCount += 1;
       // Probe 1 is the pre-submit liveness check (dead — this is why we log
-      // in at all). Everything after the password submit reports live.
-      return probeCount > 1 && onPasswordScreen ? { kind: "live", ownerId: "1234567890123456789" } : { kind: "dead" };
+      // in at all). After the password submit the session goes live, but only
+      // once `deadProbesAfterSubmit` further probes have answered `dead`,
+      // modeling the in-flight window before Venmo sets the session cookie.
+      const liveFromProbe = 1 + deadProbesAfterSubmit + 1;
+      return probeCount >= liveFromProbe && onPasswordScreen
+        ? { kind: "live", ownerId: "1234567890123456789" }
+        : { kind: "dead" };
     },
     getByRole: (): Locator => roleSubmit,
     goto(url: string): ReturnType<Page["goto"]> {
@@ -923,6 +1517,10 @@ function makeTwoStepVenmoPage({
       if (selector === 'button[type="submit"]') {
         // The generic fallback both screens carry.
         return makeClickRecordingLocator(() => advance("generic-submit"));
+      }
+      if (selector.includes("recaptchav3") || selector.includes("grcenterprise_v3")) {
+        // Present but never visible — v3 renders no widget at all.
+        return makeLocator({ count: scoringChallengeLoaded ? 1 : 0, visible: false });
       }
       if (selector.includes("recaptcha") || selector.includes("paypalobjects")) {
         return makeLocator({ count: captchaVisible ? 1 : 0, visible: captchaVisible });
@@ -976,7 +1574,7 @@ test("ensureVenmoSession: the live two-step page (login_email -> Next -> passwor
       page,
       sendInteraction,
     });
-    assert.equal(result.live, true, "a recognized two-step Venmo sign-in must complete, not hand off");
+    assert.equal(result?.live, true, "a recognized two-step Venmo sign-in must complete, not hand off");
     assert.equal(fillCalls.username, "test-user", "the login_email identifier field must actually be filled");
     assert.equal(fillCalls.password, "test-password", "the password must be filled on the SECOND screen");
     assert.deepEqual(
@@ -1004,7 +1602,7 @@ test("ensureVenmoSession: a password screen slower than the old fixed sleep is s
       passwordScreenTimeoutMs: 10_000,
       sendInteraction,
     });
-    assert.equal(result.live, true, "a slow-but-arriving password screen is a success, not a handoff");
+    assert.equal(result?.live, true, "a slow-but-arriving password screen is a success, not a handoff");
     assert.equal(fillCalls.password, "test-password", "the password must be filled once the screen actually renders");
     assert.deepEqual(requests, [], "the owner must not be interrupted for a screen that simply took a moment");
   });
@@ -1026,7 +1624,7 @@ test("ensureVenmoSession: an unnamed step-one control is advanced via #btnNext, 
       page,
       sendInteraction,
     });
-    assert.equal(result.live, true);
+    assert.equal(result?.live, true);
     assert.equal(fillCalls.password, "test-password");
     assert.equal(
       clicks[0],
@@ -1034,6 +1632,109 @@ test("ensureVenmoSession: an unnamed step-one control is advanced via #btnNext, 
       "the identifier screen must advance via Venmo's exact id, not a positional guess among submit buttons"
     );
     assert.deepEqual(requests, [], "an id-addressable step-one control needs no owner handoff");
+  });
+});
+
+// (2b) The post-submit race, taken from the retained capture frames of the
+// 2026-08-26 failure: the password WAS accepted, the submit button was still
+// spinning, and the session cookie had not landed yet. A connector that
+// samples liveness exactly once reads that not-yet as a rejection and hands
+// off to an owner who is not sitting at the browser. The session goes live on
+// its own a moment later, so the correct behavior is to keep asking until the
+// answer is definite or the bound expires.
+test("ensureVenmoSession: a session that goes live only after the submit request settles is signed in, not handed off", async () => {
+  await withVenmoCredentials(async () => {
+    const { fillCalls, page } = makeTwoStepVenmoPage({ deadProbesAfterSubmit: 3 });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    const result = await ensureVenmoSession({
+      credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+      page,
+      sendInteraction,
+    });
+    assert.equal(
+      result?.live,
+      true,
+      "a session that is merely not-yet-live is not a rejection — a single-sample probe reports false here"
+    );
+    assert.equal(fillCalls.password, "test-password", "the password was accepted; only the cookie was late");
+    assert.deepEqual(
+      requests,
+      [],
+      "no owner handoff may be raised for a login that succeeds on its own — this is the defect that stranded seven runs"
+    );
+  });
+});
+
+// (2c) The other half of the same fix: the wait must END. A login that never
+// reaches an outcome is reported as exactly that — an incomplete login — and
+// never as a rejected credential, because we have no evidence the password was
+// wrong. Getting this backwards is how a working credential gets blamed for a
+// slow provider, which is the failure mode that stranded Venmo for a week.
+test("ensureVenmoSession: a login that never settles fails as incomplete, never as a rejected credential", async () => {
+  await withVenmoCredentials(async () => {
+    // Never goes live within the bound, no matter how many times it is asked.
+    const { page } = makeTwoStepVenmoPage({ deadProbesAfterSubmit: Number.MAX_SAFE_INTEGER });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        postSubmitSettleTimeoutMs: 2000,
+        sendInteraction,
+      }),
+      (error: Error) => {
+        assert.match(
+          error.message,
+          /^venmo_login_did_not_complete:/,
+          "an expired wait must name itself; a generic failure here is indistinguishable from a bad password"
+        );
+        assert.match(error.message, /2000ms/, "the message must carry the bound the owner actually waited");
+        return true;
+      }
+    );
+    assert.deepEqual(requests, [], "an unsettled login is not a challenge — there is nothing for the owner to do");
+  });
+});
+
+// (2d) The real 2026-08-26 production failure. Venmo scored the automated
+// browser with reCAPTCHA Enterprise v3 — invisible, no widget, no checkbox, no
+// error copy — and simply never completed the login. Reported as a generic
+// timeout it is indistinguishable from a slow provider, which sends the owner
+// hunting a network fault that does not exist. It must name the mechanism, and
+// it must NOT route to the ordinary captcha handoff: there is nothing to solve.
+test("ensureVenmoSession: an invisible v3 scoring challenge is named, not reported as a generic timeout", async () => {
+  await withVenmoCredentials(async () => {
+    const { page } = makeTwoStepVenmoPage({
+      deadProbesAfterSubmit: Number.MAX_SAFE_INTEGER,
+      scoringChallengeLoaded: true,
+    });
+    const { requests, sendInteraction } = recordingSendInteraction();
+    await assert.rejects(
+      ensureVenmoSession({
+        credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
+        page,
+        postSubmitSettleTimeoutMs: 2000,
+        sendInteraction,
+      }),
+      (error: Error) => {
+        assert.match(
+          error.message,
+          /^venmo_invisible_scoring_challenge:/,
+          "a v3 score-block must name itself; a bare timeout blames the network for a bot verdict"
+        );
+        assert.match(
+          error.message,
+          /retrying unattended will not clear it/,
+          "the message must say the retry is futile — otherwise the scheduler and the owner both keep trying"
+        );
+        return true;
+      }
+    );
+    assert.deepEqual(
+      requests,
+      [],
+      "v3 renders no challenge, so an owner handoff would send them to a puzzle that does not exist"
+    );
   });
 });
 
@@ -1054,7 +1755,7 @@ test("ensureVenmoSession: onCredentialSubmit fires exactly once on a two-step fl
       page,
       sendInteraction,
     });
-    assert.equal(result.live, true);
+    assert.equal(result?.live, true);
     assert.equal(markerAtClickCount.length, 1, "two submits, but only ONE of them sent a credential");
     assert.equal(
       markerAtClickCount[0],
@@ -1129,16 +1830,18 @@ test("ensureVenmoSession: a captcha blocking the password screen hands off to th
     const { page } = makeTwoStepVenmoPage({ captchaVisible: true, passwordAppearsAfterNext: false });
     const { requests, sendInteraction } = recordingSendInteraction();
     const startedAt = Date.now();
-    await assert.rejects(
-      ensureVenmoSession({
+    // The handoff happened. It no longer probes, so it resolves with `null`
+    // rather than claiming — or denying — a liveness it never checked. If the
+    // owner did not really clear the captcha, the collection step says so
+    // (venmo_session_expired).
+    assert.equal(
+      await ensureVenmoSession({
         credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
         page,
         passwordScreenTimeoutMs: 50,
         sendInteraction,
       }),
-      // The handoff happened; the owner's simulated "success" did not produce a
-      // live session, so the run still ends honestly rather than claiming one.
-      /venmo_login_incomplete_after_submit/
+      null
     );
     assert.ok(Date.now() - startedAt < 20_000, "a captcha must not turn into an unbounded wait");
     const manual = requests.filter((req): boolean => req.kind === "manual_action");
@@ -1169,13 +1872,16 @@ test("ensureVenmoSession: a page with no username field still hands off with the
   await withVenmoCredentials(async () => {
     const { fillCalls, page } = makeTwoStepVenmoPage({ identifierSelectorMatches: false });
     const { requests, sendInteraction } = recordingSendInteraction();
-    await assert.rejects(
-      ensureVenmoSession({
+    // The handoff happened. It no longer probes, so it resolves with `null`
+    // rather than throwing — a session that did not really sign in now fails
+    // at the collection step as venmo_session_expired.
+    assert.equal(
+      await ensureVenmoSession({
         credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
         page,
         sendInteraction,
       }),
-      /venmo_login_incomplete_after_submit/
+      null
     );
     const manual = requests.filter((req): boolean => req.kind === "manual_action");
     assert.equal(manual.length, 1, "an unrecognized sign-in page must still reach the owner");
@@ -1202,7 +1908,7 @@ test("ensureVenmoSession: a one-screen sign-in still completes with a single sub
       page,
       sendInteraction,
     });
-    assert.equal(result.live, true);
+    assert.equal(result?.live, true);
     assert.equal(fillCalls.username, "test-user");
     assert.equal(fillCalls.password, "test-password");
     assert.deepEqual(requests, [], "a one-screen form needs no owner involvement");
@@ -1220,7 +1926,11 @@ test("ensureVenmoSession: an expired session (dead initial probe) with saved cre
       page,
       sendInteraction,
     });
-    assert.equal(result.live, true, "expired session must be repaired via the credential-assisted form, not just fail");
+    assert.equal(
+      result?.live,
+      true,
+      "expired session must be repaired via the credential-assisted form, not just fail"
+    );
     assert.equal(fillCalls.username, "test-user");
   });
 });
@@ -2061,7 +2771,7 @@ test("ensureVenmoSession: step one's UNNAMED password input must not be mistaken
     );
     assert.equal(fillCalls.username, "test-user", "the identifier must still be filled on screen one");
     assert.equal(fillCalls.password, "test-password", "the password must be typed on screen two, after Next");
-    assert.equal(result.live, true, "a correct two-step sign-in establishes a live session");
+    assert.equal(result?.live, true, "a correct two-step sign-in establishes a live session");
     assert.deepEqual(requests, [], "a sign-in the connector can complete must not involve the owner at all");
   });
 });
@@ -2096,28 +2806,35 @@ test("ensureVenmoSession: a captcha handoff preserves the live id.venmo.com chal
 
     const { requests, sendInteraction } = recordingSendInteraction();
 
-    await assert.rejects(
-      ensureVenmoSession({
+    // The handoff happened. It no longer probes, so it resolves with `null`
+    // rather than throwing — a session that did not really clear the captcha
+    // now fails at the collection step as venmo_session_expired.
+    assert.equal(
+      await ensureVenmoSession({
         credentials: { VENMO_PASSWORD: "test-password", VENMO_USERNAME: "test-user" },
         page,
         passwordScreenTimeoutMs: 20,
         sendInteraction,
       }),
-      /venmo_login_incomplete_after_submit/
+      null
     );
 
     const captchaRequest = requests.find((req): boolean => /CAPTCHA|verification challenge/i.test(req.message ?? ""));
     assert.ok(captchaRequest, "a rendered captcha must reach the owner");
     // The load-bearing fact: between rendering the captcha and handing the page
-    // to the owner, nothing re-navigated to the login page. `gotoUrls` before
-    // the handoff is exactly the initial probe's `venmo.com/` plus the sign-in
-    // navigation `loginWithSavedCredentials` makes to reach the form. The
-    // trailing `venmo.com/` is the post-response re-probe establishing the
-    // CORS origin, which necessarily happens AFTER the owner is done.
+    // to the owner, nothing re-navigated to the login page. `gotoUrls` is
+    // exactly the initial probe's `venmo.com/` plus the sign-in navigation
+    // `loginWithSavedCredentials` makes to reach the form.
+    //
+    // This asserts the WHOLE list, not a `slice(0, 2)` prefix. The slice existed
+    // to tolerate a trailing `venmo.com/` from the post-response re-probe — the
+    // very navigation that destroyed the owner's just-solved captcha in
+    // production run_1787918248525. With the probe gone there is nothing to
+    // tolerate, so the assertion is now exact.
     assert.deepEqual(
-      gotoUrls.slice(0, 2),
+      gotoUrls,
       ["https://venmo.com/", "https://venmo.com/login"],
-      "only the initial probe and the sign-in navigation may precede a captcha handoff"
+      "only the initial probe and the sign-in navigation may occur; nothing may navigate after the owner responds"
     );
     assert.equal(
       gotoUrls.filter((url): boolean => url === "https://venmo.com/login").length,
@@ -2227,19 +2944,16 @@ test("waitForManualLogin: a sign-in surface that has not painted yet is awaited 
   const { requests, sendInteraction } = recordingSendInteraction();
   let surfacePaintedAtHandoff: boolean | null = null;
 
-  await assert.rejects(
-    ensureVenmoSession({
-      credentials: {},
-      page,
-      sendInteraction: async (req) => {
-        // Sampled at the instant the owner is notified — the only moment that
-        // matters. Before the fix this reads 0 (the blank card he actually got).
-        surfacePaintedAtHandoff = (await page.locator("input").first().isVisible()) satisfies boolean;
-        return await sendInteraction(req);
-      },
-    }),
-    /venmo_login_manual_incomplete/
-  );
+  await ensureVenmoSession({
+    credentials: {},
+    page,
+    sendInteraction: async (req) => {
+      // Sampled at the instant the owner is notified — the only moment that
+      // matters. Before the fix this reads 0 (the blank card he actually got).
+      surfacePaintedAtHandoff = (await page.locator("input").first().isVisible()) satisfies boolean;
+      return await sendInteraction(req);
+    },
+  });
 
   assert.equal(requests.length, 1, "exactly one handoff");
   assert.equal(
@@ -2248,16 +2962,19 @@ test("waitForManualLogin: a sign-in surface that has not painted yet is awaited 
     "the owner must not be asked to complete a sign-in on a page that has rendered nothing"
   );
   // The paint-wait itself must add NO navigation. Everything here is
-  // pre-existing flow: the probe establishes the venmo.com CORS origin, which
-  // moves the page off the identity host, so the existing F2 guard navigates
-  // to /login once (landing back on the identity host); the trailing
-  // `venmo.com/` is the post-response re-probe, necessarily after the owner is
-  // done. The invariant that matters is that the paint-wait added nothing —
-  // exactly ONE /login navigation, the same count as before the fix.
+  // pre-existing flow: the INITIAL probe establishes the venmo.com CORS origin,
+  // which moves the page off the identity host, so the existing F2 guard
+  // navigates to /login once (landing back on the identity host).
+  //
+  // The list ENDS there. It used to carry a trailing `https://venmo.com/` —
+  // the post-response re-probe's `ensureVenmoOrigin` navigation, fired after
+  // the owner had already signed in. That is production run_1787918248525's
+  // defect, and its absence here is the fix: nothing navigates once the owner
+  // has authenticated the page.
   assert.deepEqual(
     gotoUrls,
-    ["https://venmo.com/", "https://venmo.com/login", "https://venmo.com/"],
-    "the paint-wait must add no navigation of its own"
+    ["https://venmo.com/", "https://venmo.com/login"],
+    "the paint-wait must add no navigation of its own, and nothing may navigate after the owner responds"
   );
   assert.equal(
     gotoUrls.filter((url): boolean => url === "https://venmo.com/login").length,
@@ -2273,12 +2990,460 @@ test("waitForManualLogin: a surface that never paints still reaches the owner, w
   const { page } = makeBlankHandoffPage({ paintAfterMs: "never" });
   const { requests, sendInteraction } = recordingSendInteraction();
 
-  await assert.rejects(ensureVenmoSession({ credentials: {}, page, sendInteraction }), /venmo_login_manual_incomplete/);
+  await ensureVenmoSession({ credentials: {}, page, sendInteraction });
 
   assert.equal(requests.length, 1, "a blank surface must still hand off rather than fail silently");
   assert.match(
     requests[0]?.message ?? "",
     /has not finished loading|empty card|reload/i,
     "the message must name the blank surface and the action that recovers it"
+  );
+});
+
+/**
+ * Production run_1787880916346, 2026-08-28 — the owner's own session.
+ *
+ * Venmo served a DataDome interstitial AT the signin URL (captures:
+ * `venmo-handoff-surface-blank.html`, byte-identical to
+ * `session-establish-venmo-signin-loaded.html`, md5 eb6a30c3...; its only
+ * inputs are hidden `adsdd*` fields — no username, no password). The username
+ * locator never appeared, so the challenge handoff fired BEFORE any credential
+ * was typed.
+ *
+ * The owner cleared the check in the viewer. Venmo then rendered the real
+ * sign-in form. The resume only PROBED — nothing filled the form — so the probe
+ * read signed-out and the run died `venmo_session_failed` with his work spent.
+ *
+ * This pins the fill, not the probe: the assertion is that the credentials
+ * reached the fields, which is the step that was missing.
+ */
+function makePageWithChallengeThenForm({
+  transportFaultAfterSubmit = false,
+  unrecognizedVerificationAfterSubmit = false,
+}: {
+  transportFaultAfterSubmit?: boolean;
+  /**
+   * After the replay submits the password, render verification COPY with no
+   * usable code input. That is `handleVenmoOtpIfPresent`'s
+   * "verification step did not match a known input" branch — a prompt site
+   * INSIDE the replay, reached only once a real password has gone out.
+   */
+  unrecognizedVerificationAfterSubmit?: boolean;
+} = {}): {
+  fillCalls: Record<string, string>;
+  page: Page;
+  reveal: () => void;
+  submitClicks: string[];
+} {
+  const fillCalls: Record<string, string> = {};
+  let formPresent = false;
+  let probeCount = 0;
+  const username = makeFillRecordingLocator((value) => {
+    fillCalls.username = value;
+  });
+  const password = makeFillRecordingLocator((value) => {
+    fillCalls.password = value;
+  });
+  const absent = makeLocator({ count: 0, visible: false });
+  const submitClicks: string[] = [];
+  const submit = makeSubmitRecordingLocator(() => {
+    submitClicks.push("click");
+  });
+  let currentUrl = "https://venmo.com/";
+  const page: Pick<
+    Page,
+    "evaluate" | "getByRole" | "goto" | "locator" | "url" | "waitForLoadState" | "waitForTimeout"
+  > = {
+    // biome-ignore lint/suspicious/useAwait: mirrors Playwright's Promise-returning signature
+    async evaluate(): Promise<unknown> {
+      probeCount += 1;
+      // Signed-out until the credentials are actually submitted. A probe that
+      // runs against the unfilled form must NOT report live.
+      // Review finding 3: a filled password is NOT a submitted one. Gate `live`
+      // on an actual submit click, so a future change that fills without
+      // submitting cannot pass these tests.
+      // Every probe after the submit faults. Deliberately unbudgeted: the
+      // replay's post-submit verify is the FIRST probe after the click, and
+      // `probeVenmoAccount` THROWS on a transport fault rather than returning
+      // one, so that verify does not "keep polling" past it — it propagates.
+      // The classification of that propagated error is what B4 governs, and a
+      // fixture that spared the first probe would be modelling a poll loop
+      // that a throwing probe can never actually run.
+      if (transportFaultAfterSubmit && submitClicks.length > 0) {
+        return { kind: "transport_error", message: "socket hang up" };
+      }
+      return submitClicks.length > 0 && probeCount > 1
+        ? { kind: "live", ownerId: "1234567890123456789" }
+        : { kind: "dead" };
+    },
+    getByRole(): Locator {
+      return submit;
+    },
+    goto(url: string): ReturnType<Page["goto"]> {
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    locator(selector: string): Locator {
+      // The body text is read for OTP classification and is independent of the
+      // sign-in form's presence. After the replay submits, render verification
+      // copy with NO usable code input, which is exactly the shape that routes
+      // to the second prompt site.
+      if (selector === "body") {
+        return makeLocator({
+          innerText:
+            unrecognizedVerificationAfterSubmit && submitClicks.length > 0
+              ? "Enter the code we texted you to finish signing in."
+              : "",
+        });
+      }
+      // Before the owner clears the interstitial there is no form at all —
+      // exactly what the captured DataDome DOM contains.
+      if (!formPresent) {
+        return absent;
+      }
+      if (selector.includes("username")) {
+        return username;
+      }
+      if (selector.includes("password")) {
+        return password;
+      }
+      return makeLocator({ count: 0, visible: false });
+    },
+    url(): string {
+      return currentUrl;
+    },
+    waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
+      return Promise.resolve();
+    },
+    waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+      return Promise.resolve();
+    },
+  };
+  return {
+    fillCalls,
+    page: page as Page,
+    reveal: () => {
+      formPresent = true;
+    },
+    submitClicks,
+  };
+}
+
+/** A visible, enabled locator that records every click — used to prove submit happened. */
+function makeSubmitRecordingLocator(onClick: () => void): Locator {
+  const fake: Pick<
+    Locator,
+    "click" | "count" | "fill" | "first" | "innerText" | "isEnabled" | "isVisible" | "nth" | "waitFor"
+  > = {
+    click: (): Promise<void> => {
+      onClick();
+      return Promise.resolve();
+    },
+    count: (): Promise<number> => Promise.resolve(1),
+    fill: (): Promise<void> => Promise.resolve(),
+    first(): Locator {
+      return fake as Locator;
+    },
+    innerText: (): Promise<string> => Promise.resolve(""),
+    isEnabled: (): Promise<boolean> => Promise.resolve(true),
+    isVisible: (): Promise<boolean> => Promise.resolve(true),
+    nth(): Locator {
+      return fake as Locator;
+    },
+    waitFor: (): Promise<void> => Promise.resolve(),
+  };
+  return fake as Locator;
+}
+
+test("a bot-check handoff resumes by SUBMITTING the revealed form, not by filling and stopping", async () => {
+  const { fillCalls, page, reveal, submitClicks } = makePageWithChallengeThenForm();
+  const messages: string[] = [];
+  const sendInteraction = (req: InteractionRequest): Promise<InteractionResponse> => {
+    messages.push(String(req.message ?? ""));
+    // The owner completes the challenge in the viewer; Venmo then paints the
+    // real sign-in form. This is the moment run_1787880916346 lost.
+    reveal();
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    sendInteraction,
+  }).catch((): undefined => undefined);
+
+  assert.equal(
+    fillCalls.username,
+    "user-stored",
+    "the stored username must be entered after the owner clears the challenge — probing alone loses the run"
+  );
+  assert.equal(fillCalls.password, "pw-stored", "the stored password must be entered too; the owner does not know it");
+  // THE DISCRIMINATOR. Filling is not signing in. The first version of this fix
+  // filled both fields and returned, leaving the form unsubmitted while the
+  // resume probed it — so the probe read signed-out and the owner's cleared
+  // CAPTCHA was wasted exactly as in run_1787880916346. This assertion fails
+  // whenever the submit click is skipped, which is the whole defect.
+  assert.ok(
+    submitClicks.length > 0,
+    "the revealed form must be SUBMITTED — filling it and probing an unsubmitted form loses the run"
+  );
+});
+
+test("the challenge prompt does not ask the owner for a password the system holds", async () => {
+  const { page, reveal } = makePageWithChallengeThenForm();
+  const messages: string[] = [];
+  const sendInteraction = (req: InteractionRequest): Promise<InteractionResponse> => {
+    messages.push(String(req.message ?? ""));
+    reveal();
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    sendInteraction,
+  }).catch((): undefined => undefined);
+
+  const prompt = messages[0] ?? "";
+  assert.match(
+    prompt,
+    /security check|CAPTCHA/i,
+    "name the step the owner can actually do — the bot check — not a sign-in he cannot complete"
+  );
+  assert.match(
+    prompt,
+    /automatically|do not need the password/i,
+    "the prompt must say the credentials are entered for him; asking a human for a secret only the system holds is the design defect"
+  );
+});
+
+/**
+ * Review finding 2 (HIGH): the resume path must reach `post_submit`.
+ *
+ * `requestManualLoginForChallenge` defaults `phase = "pre_submit"`, and that
+ * value flowed straight into the probe that runs after the resume. Once the
+ * resume actually submits the saved password, a transport fault on that probe
+ * is post-submission BY DEFINITION — but it would still have been thrown as
+ * the retryable `venmo_probe_transport_error`. A retryable terminal re-enters
+ * `ensureVenmoSession` from scratch and re-submits the SAME real password
+ * against Venmo's anti-automation gate, which is the lockout risk the B4
+ * invariant (`probeVenmoAccount`, venmo.ts:666) exists to prevent.
+ *
+ * So this pins classification, not just the click: after the owner clears the
+ * challenge and the replay submits, a transport fault must be the
+ * NON-retryable post-submit name.
+ */
+test("a transport fault after the challenge-resume submit is post_submit, not a retryable pre_submit", async () => {
+  const { page, reveal, submitClicks } = makePageWithChallengeThenForm({ transportFaultAfterSubmit: true });
+  const sendInteraction = (_req: InteractionRequest): Promise<InteractionResponse> => {
+    reveal();
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  let thrown: Error | null = null;
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    sendInteraction,
+  }).catch((err: unknown) => {
+    thrown = err as Error;
+  });
+
+  assert.ok(submitClicks.length > 0, "precondition: the replay must have submitted before the fault");
+  assert.match(
+    (thrown as Error | null)?.message ?? "",
+    /venmo_post_submit_probe_transport_error/,
+    "a fault after a real password submit must be NON-retryable — the retryable name re-submits the password on retry"
+  );
+});
+
+/**
+ * Review finding (HIGH): AT MOST ONE owner prompt per run.
+ *
+ * The replay re-enters `loginWithSavedCredentials`, which can reach five
+ * separate prompt sites. Guarding only the site the replay was LAUNCHED from
+ * left the other four able to ask the owner a second time for the same run.
+ *
+ * This is the empirical version of that property: drive a real
+ * challenge -> submit -> unrecognized-verification sequence and count
+ * `sendInteraction` calls end to end. The second prompt site here is
+ * `handleVenmoOtpIfPresent`'s "verification step did not match a known input"
+ * branch, which is reached ONLY after the replay has submitted the password —
+ * so an unsuppressed build asks the owner twice, the second time for a step he
+ * has no way to complete (there is no usable code input on the page).
+ *
+ * One prompt, not two. An owner who just cleared a bot check must not be
+ * re-interrupted by the replay his own completion started.
+ */
+test("the owner is prompted exactly once across challenge -> submit -> unrecognized verification", async () => {
+  const { page, reveal, submitClicks } = makePageWithChallengeThenForm({
+    unrecognizedVerificationAfterSubmit: true,
+  });
+  let promptCount = 0;
+  const sendInteraction = (_req: InteractionRequest): Promise<InteractionResponse> => {
+    promptCount += 1;
+    reveal();
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    sendInteraction,
+  }).catch((): undefined => undefined);
+
+  assert.ok(
+    submitClicks.length > 0,
+    "precondition: the replay must actually submit, or the second prompt site is never reached"
+  );
+  assert.equal(
+    promptCount,
+    1,
+    "the owner must be asked exactly once per run — a replay that re-prompts wastes the challenge he already cleared"
+  );
+});
+
+/**
+ * Review finding: the resume must not FLATTEN a post-submit diagnosis.
+ *
+ * `resumeSignInAfterChallenge` used `.catch(() => null)`. Classification
+ * survived that by luck — `submitted` stays `true`, so the probe after the
+ * resume is still typed `post_submit` — but the ERROR ITSELF did not. A replay
+ * whose login never settles throws
+ * `venmo_login_did_not_complete: no sign-in outcome within Nms`, which names
+ * the real cause (Venmo never answered) and carries the budget that bounded
+ * it. Swallowing it discarded that and let the run fall out to the generic
+ * `venmo_login_incomplete_after_submit` — an error that describes a rejected
+ * credential, not an unanswered provider, and sends whoever reads it looking
+ * for the wrong fault. Reporting a timeout as a rejection is how a working
+ * password gets blamed.
+ *
+ * So this pins the DIAGNOSIS, not the classification: the specific
+ * post-submit failure must reach the caller intact.
+ */
+test("a post-submit failure inside the replay keeps its own diagnosis instead of flattening", async () => {
+  const { page, reveal, submitClicks } = makePageWithChallengeThenForm();
+  const sendInteraction = (_req: InteractionRequest): Promise<InteractionResponse> => {
+    reveal();
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  let thrown: Error | null = null;
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    // The fixture's probe reports live only from the SECOND probe onward, so a
+    // settle budget this tight expires first: the replay submits, then never
+    // observes an outcome. That is the unsettled-login path.
+    postSubmitSettleTimeoutMs: 0,
+    sendInteraction,
+  }).catch((err: unknown) => {
+    thrown = err as Error;
+  });
+
+  assert.ok(submitClicks.length > 0, "precondition: the replay must have submitted before the failure");
+  assert.match(
+    (thrown as Error | null)?.message ?? "",
+    /venmo_login_did_not_complete/,
+    "the replay's own post-submit failure must survive — flattening it reports an unanswered provider as a rejected password"
+  );
+});
+
+/**
+ * `credentialSubmittedThisRun` is module state, and these connectors run
+ * several sessions in ONE process. Left set by an earlier run, it would make a
+ * later run's genuinely pre-submit transport fault throw the NON-retryable
+ * post-submit name — terminalling a run that had cost nothing to retry, which
+ * is the B4 invariant applied in the wrong direction.
+ *
+ * Run one drives a full challenge -> replay -> submit (setting the flag). Run
+ * two, same process, faults with no password ever submitted and must still get
+ * the RETRYABLE name.
+ *
+ * HONEST SCOPE: today this passes with or without the run-boundary reset,
+ * because the flag is only ever READ inside a suppressed replay guard, and run
+ * two has no replay. It is a REGRESSION FENCE, not proof the reset is load-
+ * bearing right now — it fails the moment a future prompt site reads the flag
+ * outside a replay, which is exactly the drift that would turn stale module
+ * state into a wrongly-terminalled run.
+ */
+test("a submitted password in one run does not misclassify the next run's pre-submit fault", async () => {
+  const first = makePageWithChallengeThenForm();
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page: first.page,
+    sendInteraction: (_req: InteractionRequest): Promise<InteractionResponse> => {
+      first.reveal();
+      return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+    },
+  }).catch((): undefined => undefined);
+  assert.ok(first.submitClicks.length > 0, "precondition: run one must actually submit a password");
+
+  // Run two: a transport fault before anything is typed. Nothing is submitted.
+  const absent = makeLocator({ count: 0, visible: false });
+  const secondPage = {
+    evaluate: (): Promise<unknown> => Promise.resolve({ kind: "transport_error", message: "socket hang up" }),
+    getByRole: (): Locator => absent,
+    goto: (): ReturnType<Page["goto"]> => Promise.resolve(null),
+    locator: (): Locator => absent,
+    url: (): string => "https://venmo.com/",
+    waitForLoadState: (): ReturnType<Page["waitForLoadState"]> => Promise.resolve(),
+    waitForTimeout: (): ReturnType<Page["waitForTimeout"]> => Promise.resolve(),
+  } as unknown as Page;
+
+  let thrown: Error | null = null;
+  await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page: secondPage,
+    sendInteraction: (_req: InteractionRequest): Promise<InteractionResponse> =>
+      Promise.resolve({ ok: true } as unknown as InteractionResponse),
+  }).catch((err: unknown) => {
+    thrown = err as Error;
+  });
+
+  const message = (thrown as Error | null)?.message ?? "";
+  assert.match(message, /venmo_probe_transport_error/, "a fault before any password is typed stays RETRYABLE");
+  assert.doesNotMatch(
+    message,
+    /venmo_post_submit_probe_transport_error/,
+    "the previous run's submitted password must not leak in and terminal this one"
+  );
+});
+
+/**
+ * COUNTERWEIGHT to the suppression above: suppression must not break the owner
+ * who signs in BY HAND.
+ *
+ * If the replay finds no form (a genuinely unrecognized page rather than a
+ * cleared bot check), `resumeSignInAfterChallenge` finds nothing to submit and
+ * the handoff resolves as `null` — a completed, unverified handoff — rather
+ * than probing whatever session the owner may have established himself. A
+ * suppression that turned that fallback into a throw would break the manual
+ * path this handoff exists to serve. Here the form never appears, the owner
+ * signs in manually, and the run must still end honestly (`null`) rather than
+ * asserting a liveness nothing checked.
+ */
+test("suppression preserves the manual fallback: an owner who signs in by hand still completes, unverified", async () => {
+  const { page, submitClicks } = makePageWithChallengeThenForm();
+  let promptCount = 0;
+  // Never call `reveal()`: the sign-in form stays absent, so the replay finds
+  // nothing to fill and the handoff resolves without probing.
+  const sendInteraction = (_req: InteractionRequest): Promise<InteractionResponse> => {
+    promptCount += 1;
+    return Promise.resolve({ ok: true } as unknown as InteractionResponse);
+  };
+
+  const result = await ensureVenmoSession({
+    credentials: { VENMO_PASSWORD: "pw-stored", VENMO_USERNAME: "user-stored" },
+    page,
+    sendInteraction,
+  }).catch((): null => null);
+
+  assert.equal(submitClicks.length, 0, "precondition: with no form revealed, nothing may be submitted");
+  assert.equal(promptCount, 1, "the manual path still asks the owner exactly once");
+  assert.equal(
+    result,
+    null,
+    "an unreached form must resolve as a completed, unverified handoff — never a fabricated live session"
   );
 });

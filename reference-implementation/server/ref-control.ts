@@ -12,6 +12,7 @@
 // reference implementation exposes for its own dashboard. Clients must
 // not depend on the response shape.
 
+import { isIP } from "node:net";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
 import type { RuntimeContinuationFact } from "@pdpp/connector-protocol/connector-runtime-protocol";
@@ -64,6 +65,7 @@ import {
   type OutboxDiagnosticCounts,
   type OutboxStalledCause,
 } from "../runtime/connection-health.ts";
+import { boundConnectorErrorCode, boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
 import {
   buildProgressEvidence,
   progressMode,
@@ -71,6 +73,7 @@ import {
   type ManifestStreamLike as VerdictManifestStreamLike,
 } from "../runtime/connector-verdict-input.ts";
 import type { BrowserSurfaceRuntimeInventorySnapshot, BrowserSurfaceRuntimeManagement } from "../runtime/controller.ts";
+import type { ConnectionCoverageHorizon } from "../runtime/coverage-horizon.ts";
 import {
   type ClassifiedRunForOwnerState,
   deriveOwnerState,
@@ -112,6 +115,7 @@ import {
   pickMostRecentSurface,
   pickMostUrgentLease,
 } from "./browser-surface-selection.ts";
+import { deriveCadenceLateness } from "./cadence-lateness.ts";
 import { mapWithConcurrency as runWithConcurrency } from "./concurrency.ts";
 import { manualUploadSetupFromManifest, staticSecretCredentialCaptureFromManifest } from "./connection-setup-plan.ts";
 import {
@@ -130,6 +134,7 @@ import {
   filterRunCoverageEvidence,
   firstDegradingKnownGapReason,
   firstPendingDetailGapReason,
+  hasCompetingOwnerInteractionGap,
   hasDegradingKnownGap,
   hasTerminalKnownGap,
   isRetryableKnownGap,
@@ -191,8 +196,10 @@ import {
 } from "./stores/acquisition-batch-store.ts";
 import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
+import { getDefaultConnectorCoverageHorizonStore } from "./stores/connector-coverage-horizon-store.ts";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.ts";
 import {
+  type CredentialStateChange,
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
 } from "./stores/connector-instance-credential-store.ts";
@@ -467,7 +474,35 @@ interface StreamSummary {
  * reason and the recovery action the runtime already redacts onto the known-gap
  * — never free-text diagnostics.
  */
+/**
+ * A connector's STRUCTURED claim about why a stream stopped short, in a closed
+ * vocabulary the RI can act on without reading prose.
+ *
+ * `provider_history_boundary` means: "the provider will not serve anything
+ * older than this point, ever." It is DISCLOSURE the owner can read beside the
+ * gap, never a completeness authority: it does not narrow the coverage
+ * denominator, change the coverage axis, or move connection health, alone or
+ * combined with a recorded `ConnectionCoverageHorizon`. See the disclosure-only
+ * rationale in `server/connector-gap-classification.ts` and the normative
+ * requirement in `openspec/changes/add-coverage-horizon-and-actionability-
+ * banner/specs/reference-connection-health/spec.md`.
+ *
+ * This field exists because the alternative is the RI pattern-matching
+ * connector `reason` strings, which is provider knowledge in the RI wearing a
+ * regex as a disguise: it false-positives on arbitrary prose that happens to
+ * contain a keyword, and false-negatives every new connector that words its
+ * reason differently. A connector maps its own provider result onto this
+ * generic field in connector code; the RI only validates the closed shape.
+ */
+export type RuntimeSkipBoundaryClaim = "provider_history_boundary";
+
 export interface RuntimeCollectionFactSkip {
+  /**
+   * Optional structured boundary claim. Absent on every existing skip, which
+   * is the correct default: no claim means no horizon accounting, exactly as
+   * before this field existed.
+   */
+  readonly boundary_claim?: RuntimeSkipBoundaryClaim;
   readonly continuation?: RuntimeContinuationFact;
   readonly reason: string;
   readonly recovery_action?: string;
@@ -522,6 +557,22 @@ export interface RuntimeCollectionFacts {
   readonly streams: readonly RuntimeCollectionFact[];
 }
 
+interface ConnectorRuntimeFailureCauseSummary {
+  readonly address?: string;
+  readonly code?: string;
+  readonly port?: number;
+  readonly syscall?: string;
+}
+
+/** A bounded owner-facing projection of `run_history.connector_error_json`. */
+export interface ConnectorRunErrorSummary {
+  readonly cause_chain?: readonly ConnectorRuntimeFailureCauseSummary[];
+  readonly code: string | null;
+  readonly message: string | null;
+  readonly origin: "runtime" | null;
+  readonly retryable: boolean | null;
+}
+
 export interface ConnectorRunSummary {
   /**
    * The runtime `collection_facts` block read off this run's terminal event, or
@@ -530,6 +581,7 @@ export interface ConnectorRunSummary {
    * `collection_report`; never final coverage truth.
    */
   readonly collection_facts: RuntimeCollectionFacts | null;
+  readonly connector_error?: ConnectorRunErrorSummary | null;
   readonly event_count: number;
   readonly failure_reason: string | null;
   readonly finished_at: string | null;
@@ -553,6 +605,20 @@ export interface ConnectorRunSummary {
   readonly recovery_only: boolean;
   readonly reported_records_emitted?: number | null;
   readonly run_id: string | undefined;
+  /**
+   * `run_history.scheduler_managed` for this row. `true` only for a run this
+   * connection's own scheduler produced (or the legacy/back-filled default —
+   * see `db.ts`'s `scheduler_managed` migration). A local-device connection's
+   * `lastRun`/`lastSuccessfulRun`/`latestSettledRun` is normally quarantined
+   * (never authoritative for health) because a local collector's server-side
+   * `run_history` rows are typically foreign/historical artifacts, not this
+   * connection's own evidence. This field is the proof that lets a genuinely
+   * own, current, scheduler-managed run escape that quarantine instead of
+   * being discarded regardless of how proven its evidence is. Optional and
+   * defaults to falsy (still quarantined) so fixtures/readers that predate
+   * this field keep their exact prior behavior.
+   */
+  readonly scheduler_managed?: boolean;
   readonly started_at: string;
   readonly status: string;
   readonly terminal_reason: string | null;
@@ -786,6 +852,8 @@ export interface ConnectorSummary {
    * coverage provenance without changing grant-scoped read surfaces.
    */
   readonly acquisition_coverage: AcquisitionCoverageSummary | null;
+  /** Reason recorded by the boot auto-enrollment pass when no schedule exists. */
+  readonly auto_enroll_skip_reason?: string | null;
   /**
    * Per-stream Collection Report derived on read from the latest run's runtime
    * `collection_facts` block plus this connection's freshness / refresh-policy /
@@ -801,6 +869,17 @@ export interface ConnectorSummary {
   readonly connector_display_name: string;
   readonly connector_id: string;
   readonly connector_instance_id: string;
+  /**
+   * Provider coverage-horizon/provenance disclosures for this connection —
+   * see `runtime/coverage-horizon.ts`. PURE PASS-THROUGH: this field is
+   * NEVER read by `connection_health`, `rendered_verdict.pill/channel`, or
+   * any classification step. It is owner-facing detail disclosure only.
+   * Empty when the caller did not read horizon evidence (the default for
+   * every call site not explicitly wired to
+   * `ConnectorCoverageHorizonStore.getCurrentCoverageHorizons`) — absence
+   * here means "not read," never "confirmed absent."
+   */
+  readonly coverage_horizons: readonly ConnectionCoverageHorizon[];
   readonly display_name: string;
   readonly freshness: Freshness;
   readonly last_run: ConnectorRunSummary | null;
@@ -888,8 +967,6 @@ export interface ConnectorSummary {
   /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
   readonly revoked_at: string | null;
   readonly schedule: unknown;
-  /** Reason recorded by the boot auto-enrollment pass when no schedule exists. */
-  readonly auto_enroll_skip_reason?: string | null;
   readonly source_binding_kind: string | null;
   /**
    * The connection's source kind and non-secret source-binding kind. Owner
@@ -1331,6 +1408,110 @@ function productRunYieldCounts(history: ProductRunHistoryRecord): {
   };
 }
 
+// Runtime diagnostics are written from an arbitrary Error.cause object. Keep
+// this read projection closed as well: historical or manually-written rows
+// must not turn the owner Sources page into a transport for arbitrary strings.
+const OWNER_RUNTIME_ERROR_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "EADDRNOTAVAIL",
+  "EAFNOSUPPORT",
+  "EAI_AGAIN",
+  "EAI_FAIL",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ENOTCONN",
+  "ENOTFOUND",
+  "EPIPE",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "ETIMEDOUT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UND_ERR_ABORTED",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+const OWNER_RUNTIME_SYSCALLS = new Set([
+  "accept",
+  "bind",
+  "connect",
+  "getaddrinfo",
+  "getpeername",
+  "getsockname",
+  "getsockopt",
+  "listen",
+  "read",
+  "setsockopt",
+  "shutdown",
+  "write",
+]);
+function projectRuntimeFailureCode(value: unknown): string | null {
+  return typeof value === "string" && OWNER_RUNTIME_ERROR_CODES.has(value) ? value : null;
+}
+
+function projectConnectorErrorCode(value: unknown): string | null {
+  const connectorCode = boundConnectorErrorCode(value);
+  if (connectorCode) {
+    return connectorCode;
+  }
+  return typeof value === "string" && OWNER_RUNTIME_ERROR_CODES.has(value) ? value : null;
+}
+
+function projectRuntimeFailureCause(value: unknown): ConnectorRuntimeFailureCauseSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const cause = value as Record<string, unknown>;
+  const code = projectRuntimeFailureCode(cause.code);
+  const syscall = typeof cause.syscall === "string" && OWNER_RUNTIME_SYSCALLS.has(cause.syscall) ? cause.syscall : null;
+  const address = typeof cause.address === "string" && isIP(cause.address) !== 0 ? cause.address : null;
+  const port =
+    typeof cause.port === "number" && Number.isInteger(cause.port) && cause.port > 0 && cause.port <= 65_535
+      ? cause.port
+      : null;
+  const projected: ConnectorRuntimeFailureCauseSummary = {
+    ...(address ? { address } : {}),
+    ...(code ? { code } : {}),
+    ...(port ? { port } : {}),
+    ...(syscall ? { syscall } : {}),
+  };
+  return Object.keys(projected).length ? projected : null;
+}
+
+function projectConnectorRunError(value: Record<string, unknown> | null | undefined): ConnectorRunErrorSummary | null {
+  if (!value) {
+    return null;
+  }
+  const causeChain = Array.isArray(value.cause_chain)
+    ? value.cause_chain
+        .slice(0, 4)
+        .map(projectRuntimeFailureCause)
+        .filter((cause): cause is ConnectorRuntimeFailureCauseSummary => cause !== null)
+    : [];
+  const code = projectConnectorErrorCode(value.code);
+  const message = boundConnectorErrorMessage(value.message);
+  const retryable = typeof value.retryable === "boolean" ? value.retryable : null;
+  const origin = value.origin === "runtime" ? "runtime" : null;
+  if (!(causeChain.length || code || message || retryable !== null || origin)) {
+    return null;
+  }
+  return {
+    ...(causeChain.length ? { cause_chain: causeChain } : {}),
+    code,
+    message,
+    origin,
+    retryable,
+  };
+}
+
 /**
  * Product LIST/detail composition (terminal-read-architecture-fable-0730.md
  * §9/R9.2): a `run_history` row for ANY run kind, composed with the
@@ -1371,6 +1552,7 @@ function productRunHistoryToConnectorRunSummary(
       : null;
   return {
     collection_facts: readCollectionFactsFromTerminalData(facts),
+    connector_error: projectConnectorRunError(history.connectorError),
     event_count: 0,
     failure_reason: history.failureReason ?? history.error ?? browserSurfaceFailureReason,
     finished_at: isActiveRunSummaryStatus(status) ? null : history.completedAt,
@@ -1381,6 +1563,7 @@ function productRunHistoryToConnectorRunSummary(
     recovery_only: facts?.recovery_only === true,
     reported_records_emitted: yieldCounts.reportedRecordsEmitted,
     run_id: history.runId || undefined,
+    scheduler_managed: history.schedulerManaged === true,
     started_at: history.startedAt,
     status,
     terminal_reason: history.terminalReason ?? null,
@@ -2224,11 +2407,35 @@ export function retireExpiredBrowserEnrollmentShellsForMaintenance(
         updatedAt: string;
         revokedAt?: string | null;
         sourceBindingPatch?: Record<string, unknown> | null;
+        credentialStateChange?: CredentialStateChange;
       }
     ) => Promise<unknown> | unknown;
   };
   return retireExpiredBrowserEnrollmentShells(
     {
+      // The shells that hold a captured credential. A credential is finished
+      // owner work sitting in the row — he typed his password — so wall-clock
+      // alone must not throw it away (production 2026-08-26: seven venmo
+      // shells retired at their 2h TTL, stranding his real password on revoked
+      // rows). Failure to read this must never CAUSE a revocation, so an error
+      // degrades to "no shell is credentialed", matching the surrounding
+      // `.catch(() => null)` discipline on this path.
+      async listCredentialedInstanceIds() {
+        const shells = await store.listDraftBrowserEnrollmentShells(ownerSubjectId);
+        const ids = shells
+          .map((shell: { connectorInstanceId?: string }) => shell.connectorInstanceId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+        if (ids.length === 0) {
+          return [];
+        }
+        const metadata = await getConnectorCredentialStore()
+          .getMetadataByInstanceIds(ids)
+          .catch(() => null);
+        if (!metadata) {
+          return [];
+        }
+        return [...metadata.keys()];
+      },
       // biome-ignore lint/suspicious/noShadow: The local name follows the external payload vocabulary at this boundary.
       async listDraftBrowserEnrollmentShells(ownerSubjectId) {
         return [...(await store.listDraftBrowserEnrollmentShells(ownerSubjectId))];
@@ -2494,18 +2701,37 @@ function fallbackLatestSettledRun(
  * no client-side reconstruction.
  *
  * Owner cancellation controls work; it is not provider or coverage evidence,
- * so a cancelled `latestSettledRun` still defers to `lastSuccessfulRun`.
- * Scheduler skips never contacted the provider, so they classify as no
- * evidence (`null`), never a fabricated failure.
+ * so a cancelled `latestSettledRun` still defers to `lastSuccessfulRun` — and
+ * a scheduler skip is the same shape of non-evidence (it never dispatched,
+ * never contacted the provider; see `isSchedulerSkippedRun`'s doc comment),
+ * so it gets the identical fallback rather than a harder `null`. Before this
+ * fix the skip case alone returned bare `null` (no fallback), which left
+ * `mapCoverageAxis(null, ...)` stuck reporting `"unknown"` coverage forever
+ * once a connection's owner-interaction requirement started rejecting every
+ * scheduled tick pre-dispatch — even though the connection's last real run
+ * had fully proven every required stream, and the durably-stored
+ * `collection_report` (built independently of this function, from
+ * `stream_latest_facts_json`) already reflected that proof. This function's
+ * return value is only ever read for the fields a proven run legitimately
+ * carries (status, timestamps, known_gaps) — see its callers — never for the
+ * skip's OWN `failure_reason`, which a caller wanting that text reads
+ * directly off the skip row it already has, not through this function; so
+ * this fallback cannot resurrect the self-perpetuating-skip bug
+ * `isSchedulerSkippedRun`'s doc comment describes (that bug was the skip's
+ * stale text leaking through as `reasonCode`, not this function's identity).
  */
 function healthClassifyingRun(
   latestSettledRun: ConnectorRunSummary | null,
   lastSuccessfulRun: ConnectorRunSummary | null = null
 ): ConnectorRunSummary | null {
-  if (isOwnerCancelledRun(latestSettledRun) || isControllerAbandonedRun(latestSettledRun)) {
+  if (
+    isOwnerCancelledRun(latestSettledRun) ||
+    isControllerAbandonedRun(latestSettledRun) ||
+    isSchedulerSkippedRun(latestSettledRun)
+  ) {
     return lastSuccessfulRun;
   }
-  return isSchedulerSkippedRun(latestSettledRun) ? null : latestSettledRun;
+  return latestSettledRun;
 }
 
 /**
@@ -2619,41 +2845,6 @@ const GENERIC_TERMINAL_FAILURE_REASONS: ReadonlySet<string> = new Set([
   "connector_exited",
   "unknown",
 ]);
-
-// A known-gap recovery-hint action that is a MORE SPECIFIC, connector-emitted
-// classification of "what the owner must do" than a generic credential-reject
-// inference: the connector itself identified this as an interactive/manual
-// step (OTP, a stalled login flow, a captcha) rather than a proven-dead
-// credential. Live evidence (USAA `run_1783787246728`): the SAME run emits
-// BOTH an `interaction_required`/`manual_action_required` gap (self-describing
-// "this exact failure has recurred") AND a generic `run_failed` gap whose
-// message happens to contain "session_failed" and whose recovery_hint is
-// `refresh_credentials` — the two known_gaps disagree about the same failure.
-// `manual_action_required`/`interaction_required` is the connector's own,
-// more-specific read; deferring to it here (rather than manufacturing a
-// `credentials_required`/`session_required` reason from the generic sibling
-// gap) is what stops `credentialsValidCondition` from rendering
-// "Reconnect this account" for a credential that was never actually rejected.
-const OWNER_INTERACTION_RECOVERY_ACTIONS: ReadonlySet<string> = new Set(["manual_action_required"]);
-const OWNER_INTERACTION_GAP_KINDS: ReadonlySet<string> = new Set(["interaction_required"]);
-
-function hasCompetingOwnerInteractionGap(knownGaps: readonly unknown[]): boolean {
-  for (const gap of knownGaps) {
-    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-      continue;
-    }
-    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-    const kind = (gap as { kind?: unknown }).kind;
-    const recoveryAction = (gap as { recovery_hint?: { action?: unknown } }).recovery_hint?.action;
-    if (
-      (typeof kind === "string" && OWNER_INTERACTION_GAP_KINDS.has(kind)) ||
-      (typeof recoveryAction === "string" && OWNER_INTERACTION_RECOVERY_ACTIONS.has(recoveryAction))
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
 
 /**
  * §10-C: recover a credential-specific reason from a run whose top-level
@@ -2908,7 +3099,11 @@ function buildCoverageEvidence(
   pendingDetailGaps: readonly PendingDetailGapSummary[],
   manifestStreams: readonly ManifestStream[],
   localCoverage: LocalCoverageDiagnosticAxis | null = null
-): { axis: CoverageAxis; requiredButAccepted: boolean; unknownStaleCollectorBuild: boolean } {
+): {
+  axis: CoverageAxis;
+  requiredButAccepted: boolean;
+  unknownStaleCollectorBuild: boolean;
+} {
   const requiredButAccepted = pickRequiredAcceptedCoverage(manifestStreams) !== null;
   // Run-derived coverage is authoritative whenever a terminal spine run exists
   // (scheduler-managed connections) or any gap/contradiction evidence is
@@ -2920,7 +3115,11 @@ function buildCoverageEvidence(
   // collector completeness: an empty/drained outbox is NOT proof of coverage.
   const runAxis = mapCoverageAxis(lastRun, pendingDetailGaps, manifestStreams);
   if (runAxis === "unknown" && localCoverage !== null && localCoverage.axis !== "unknown") {
-    return { axis: localCoverage.axis, requiredButAccepted, unknownStaleCollectorBuild: false };
+    return {
+      axis: localCoverage.axis,
+      requiredButAccepted,
+      unknownStaleCollectorBuild: false,
+    };
   }
   const unknownStaleCollectorBuild =
     runAxis === "unknown" && localCoverage !== null && localCoverage.unreliableReason === "missing_stores";
@@ -2963,6 +3162,20 @@ export function rollupCollectionReportCoverageOverride(
     requiredReport.some((entry) => entry.coverage_condition === "unknown")
   ) {
     return "unknown";
+  }
+  // Symmetric promotion: when the run-classification stage (buildCoverageEvidence /
+  // mapCoverageAxis) has no run to classify and lands on `unknown` — for any reason,
+  // on any connector — but the independently-built collection_report already proves
+  // every required stream `complete` from its own durable evidence, promote the
+  // connection axis to match. Never touches an already-resolved degrading axis
+  // (worst-wins preserved) and never fires on partial evidence (every required
+  // stream must be complete).
+  if (
+    currentAxis === "unknown" &&
+    requiredReport.length > 0 &&
+    requiredReport.every((entry) => entry.coverage_condition === "complete")
+  ) {
+    return "complete";
   }
   return null;
 }
@@ -3070,6 +3283,32 @@ function capIsoAnchor(anchor: string | null, cap: string | null): string | null 
 }
 
 /**
+ * Whether a run SUCCEEDED recently enough to satisfy the connection's own
+ * staleness window — the affirmative "this source is collecting" fact.
+ *
+ * Deliberately reads the last SUCCESSFUL run, not the last attempt: a failed
+ * attempt proves nothing collected, and `deriveReferenceFreshness` already
+ * stales a connection whose newest attempt failed after its newest success.
+ * `null`/unparseable anchors and an absent window all answer `false`, so this
+ * predicate can only ever WITHHOLD an override, never manufacture one.
+ */
+function hasSucceededWithinStalenessWindow(
+  lastSuccessfulRunAt: string | null,
+  nowIso: string | null,
+  maximumStalenessSeconds: number
+): boolean {
+  if (lastSuccessfulRunAt === null) {
+    return false;
+  }
+  const successTime = Date.parse(lastSuccessfulRunAt);
+  const nowTime = nowIso === null ? Date.now() : Date.parse(nowIso);
+  if (!(Number.isFinite(successTime) && Number.isFinite(nowTime))) {
+    return false;
+  }
+  return nowTime - successTime <= maximumStalenessSeconds * 1000;
+}
+
+/**
  * Proof-age freshness override: the Healthy gate is anchored to the OLDEST
  * required-stream proof, not the newest run. When stored latest-attempt
  * evidence carried an older proof than the classifying run, freshness is
@@ -3078,6 +3317,39 @@ function capIsoAnchor(anchor: string | null, cap: string | null): string | null 
  * injected `nowIso`), never a post-hoc status comparison. Connections with
  * no staleness window (`maximum_staleness_seconds` absent) have no window to
  * age the proof against and keep their computed freshness unchanged.
+ *
+ * THE CRY-WOLF GUARD (live defect 2026-08-26). `apple_contacts`
+ * (`cin_d344ba53d6d95c7dd343393d`) ran SUCCEEDED four times on 2026-08-26 and
+ * rendered "Needs refresh · Last refreshed yesterday. Refreshes on schedule."
+ * Nothing was wrong with it and the owner had nothing to do.
+ *
+ * The cause is one signal counted twice. `apple_contacts` collects contacts by
+ * incremental CardDAV sync, so a no-change run legitimately commits its
+ * checkpoint while carrying no `covered`/`considered` keys. The stream-fact
+ * fold's measured-boundary guard (`mergeEventStreamFacts`,
+ * `connector-summary-read-model.ts`) then — correctly — KEEPS the older, fully
+ * enumerated `contacts` fact rather than letting an unmeasured pass destroy a
+ * genuine proof. That preserved fact keeps its original provenance, so its
+ * `evidence_as_of` is deliberately frozen at the last full enumeration. Feeding
+ * that intentionally-frozen timestamp back in as a FRESHNESS clock re-reads
+ * "we chose not to overwrite this proof" as "this source has not collected",
+ * flipping `freshness` to `stale`. From there the cascade is mechanical: the
+ * `Fresh` condition goes false at `warning` severity -> `state: degraded` ->
+ * amber tone -> `staleFreshnessIsSoleDegradation` -> the "Needs refresh" pill.
+ *
+ * So: when a run SUCCEEDED inside the connection's own staleness window, this
+ * override is withheld. Proof age is still reported — through
+ * `coverage_proven_at`, which renders "Coverage last proven N days ago." beside
+ * a green pill (80872b1fc). That annotation is the honest channel for this
+ * fact: it states the proof's real age without claiming an owner action that
+ * does not exist. "Needs refresh" must mean the owner has something to do; the
+ * clock advancing past a proof the system deliberately preserved is not that.
+ *
+ * The guard is narrow by construction. It requires an affirmative recent
+ * SUCCESS, so a connection that has genuinely stopped collecting — no
+ * successful run inside its window — still ages against the proof anchor and
+ * still stales exactly as before. Silencing a real staleness would be a worse
+ * defect than the false alarm this removes.
  */
 function proofAgeFreshnessOverride(
   healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0],
@@ -3089,6 +3361,15 @@ function proofAgeFreshnessOverride(
   }
   const maximumStalenessSeconds = getMaximumStalenessSeconds(healthInput.refreshPolicy);
   if (maximumStalenessSeconds === null) {
+    return null;
+  }
+  if (
+    hasSucceededWithinStalenessWindow(
+      healthInput.lastSuccessfulRun?.last_at ?? null,
+      healthInput.nowIso ?? null,
+      maximumStalenessSeconds
+    )
+  ) {
     return null;
   }
   const current = healthInput.freshness;
@@ -4694,6 +4975,7 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     coverage,
     heartbeats,
     unfillableAccounted,
+    coverageHorizons,
   ] = await Promise.all([
     listRetainedSizeConnectionsByInstanceIds(ids),
     listRetainedSizeStreamsByInstanceIds(ids),
@@ -4722,6 +5004,9 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     readCommittedLocalCoverageDiagnosticsByConnectionIds(ids).catch(() => null),
     listSourceInstanceHeartbeatsByConnectionIds(ids).catch(() => null),
     getUnfillableAccountedByStreamForInstanceIds(detailStore, ids),
+    getDefaultConnectorCoverageHorizonStore()
+      .getCurrentCoverageHorizonsByInstanceIds(ids)
+      .catch(() => null),
   ]);
 
   const connectionsByInstanceId = new Map<string, RetainedSizeConnectionProjectionRow>();
@@ -4787,6 +5072,7 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     product: {
       acquisitionByInstanceId: acquisition as ReadonlyMap<string, readonly AcquisitionBatchRow[]> | null,
       attentionByInstanceId: attention,
+      coverageHorizonsByInstanceId: coverageHorizons,
       credentialMetadataByInstanceId: credentials as ReadonlyMap<string, CredentialStoreMetadata> | null,
       detailGapsByInstanceId,
       localCoverageByInstanceId,
@@ -4882,14 +5168,39 @@ function evidenceUnreliableSources(
   return sources;
 }
 
-function requiredCoverageEvidenceIsAuthoritative(evidence: ConnectorSummaryEvidenceRow | null): boolean {
+/**
+ * A local-device (push-mode) connection's outbox is a SEPARATE evidence
+ * source from `ConnectorSummaryEvidenceRow` (a materialized record/manifest
+ * snapshot with no notion of live transport state) — so a stalled outbox
+ * with open dead-letter/backlog work can sit underneath an otherwise-clean
+ * evidence row and let a stream's `collection_report` keep reading `complete`
+ * from proof gathered before the stall began.
+ *
+ * `openspec/changes/define-stream-coverage-freshness-evidence/design.md:344-345`
+ * is explicit that the durable-proof promotion is admitted "only while the
+ * device is fresh, healthy, idle/drained, and its read is reliable: no
+ * unhealthy/stale heartbeat, open outbox work, ...". This function is the
+ * evidence gate `deriveCollectionReportEntryCoverage` withholds a required
+ * `complete` claim behind (`ref-control.ts:4166-4172`); an `axis === "stalled"`
+ * outbox on a `localDeviceBacked` connection is exactly the "open outbox
+ * work" the design doc names, so it withholds authority the same way a dirty
+ * or non-current evidence row already does. Scoped to `localDeviceBacked`
+ * only: scheduler-managed connections have no local push-mode outbox, so
+ * their axis is always `"unknown"`/`"idle"` and this check is a no-op for
+ * them — no connector ID is read anywhere here.
+ */
+export function requiredCoverageEvidenceIsAuthoritative(
+  evidence: ConnectorSummaryEvidenceRow | null,
+  outbox: { readonly axis: OutboxAxis; readonly localDeviceBacked: boolean }
+): boolean {
   return (
     evidence !== null &&
     evidence.dirty === false &&
     evidence.state === "fresh" &&
     evidence.record_snapshot.state === "current" &&
     evidence.terminal_facts.state === "current" &&
-    evidence.manifest_declaration.state === "current"
+    evidence.manifest_declaration.state === "current" &&
+    !(outbox.localDeviceBacked && outbox.axis === "stalled")
   );
 }
 
@@ -5353,7 +5664,14 @@ interface ConnectionHealthScheduleEvidence {
   readonly humanAttentionNeeded: boolean;
   readonly lastErrorCode: string | null;
   readonly lastSuccessfulAt: string | null;
-  readonly schedule: { readonly enabled: boolean } | null;
+  /**
+   * `intervalSeconds` is the source's OWN declared cadence, carried here so
+   * `deriveCadenceLateness` can size lateness against it rather than against a
+   * global constant. Previously this projection narrowed the schedule row to
+   * `{ enabled }` and discarded the interval, which is why no cadence-relative
+   * judgement was possible downstream.
+   */
+  readonly schedule: { readonly enabled: boolean; readonly intervalSeconds: number | null } | null;
 }
 
 function projectConnectionHealthScheduleEvidence(
@@ -5380,7 +5698,15 @@ function projectConnectionHealthScheduleEvidence(
     humanAttentionNeeded: schedule?.human_attention_needed === true,
     lastErrorCode,
     lastSuccessfulAt,
-    schedule: schedule ? { enabled: schedule.enabled !== false } : null,
+    schedule: schedule
+      ? {
+          enabled: schedule.enabled !== false,
+          intervalSeconds:
+            typeof schedule.interval_seconds === "number" && Number.isFinite(schedule.interval_seconds)
+              ? schedule.interval_seconds
+              : null,
+        }
+      : null,
   };
 }
 
@@ -5405,15 +5731,30 @@ function buildLocalDeviceCollectionEvidence(input: {
 export function projectConnectorSummaryConnectionHealth(input: {
   readonly activeRun?: ActiveRunRecord | null;
   /**
+   * Whether a real terminal run proves this connection's one-time import
+   * actually finished ingesting something — e.g. a `lastSuccessfulRun` with
+   * `finished_at` and `collection_facts`/`records_emitted` present. This
+   * SHALL NOT be derived from `source_kind`/schedule absence alone: a manual
+   * connection that has never run is not "complete," it simply has not run
+   * yet. Passed straight through to `computeConnectionHealth` as
+   * `acquisition.complete`, which governs `CollectionSucceeded`.
+   * `false`/omitted preserves the prior no-run behavior (`CollectionSucceeded`
+   * stays `unknown` until proven).
+   */
+  readonly acquisitionReceiptProven?: boolean;
+  /**
    * Whether this connection's data acquisition is finished BY DESIGN
    * (`instance.sourceKind === "manual"`) rather than recurring. A one-time
-   * import ingests an owner-supplied file and never collects again — it has
-   * no future capture to age, so freshness is a category error for it, not a
-   * pending answer. Passed straight through to `computeConnectionHealth` as
-   * `acquisition`; `null`/omitted preserves the prior behavior for every
-   * recurring source kind (freshness stays `unknown` until proven).
+   * import has no future capture to age, so freshness is a category error
+   * for it, not a pending answer. This is a durable fact about the
+   * connection KIND, safe to derive from the immutable `source_kind` value
+   * alone — it makes no claim that any particular import ever finished.
+   * Passed straight through to `computeConnectionHealth` as
+   * `acquisition.freshnessNotApplicable`; `false`/omitted preserves the
+   * prior behavior for every recurring source kind (freshness stays
+   * `unknown` until proven).
    */
-  readonly acquisitionComplete?: boolean;
+  readonly freshnessNotApplicable?: boolean;
   /**
    * Whether this connection authenticates to a provider at all. `false` only
    * for a file-import connector (manifest `setup.modality =
@@ -5565,6 +5906,15 @@ export function projectConnectorSummaryConnectionHealth(input: {
    * controller state has been observed for this connection.
    */
   readonly collectionRate?: CollectionRateSnapshot | null;
+  /**
+   * Provider coverage-horizon/provenance disclosures for this connection,
+   * typically read via `ConnectorCoverageHorizonStore.getCurrentCoverageHorizons`.
+   * Passed straight through to `computeConnectionHealth` as a pure
+   * pass-through annotation — no classification step reads it. `undefined`
+   * (the default) preserves byte-identical prior behavior (empty array on
+   * the snapshot) for every caller not explicitly wired to the store.
+   */
+  readonly coverageHorizons?: readonly ConnectionCoverageHorizon[];
   readonly coverageOverride?: {
     readonly axis: CoverageAxis;
     readonly requiredButAccepted?: boolean;
@@ -5576,13 +5926,21 @@ export function projectConnectorSummaryConnectionHealth(input: {
 }): ConnectionHealthSnapshot {
   // Persisted source kind decides authority before health derives any scheduler
   // fact. A local device may have historical/foreign server runs, but they are
-  // never evidence for its current device-side collection proof.
+  // never evidence for its current device-side collection proof — UNLESS the
+  // row itself proves it is this connection's own current scheduler-managed
+  // run (`scheduler_managed = true`), not a foreign/stale artifact. A local
+  // device can still be enrolled behind this connection's own scheduler (e.g.
+  // a push-mode collector whose runs the scheduler nonetheless records), and
+  // discarding that proof unconditionally left `axes.coverage` stuck at
+  // `"unknown"` forever even when every required stream's collection report
+  // had already proven `"complete"` from the same run's evidence.
   const localDeviceBacked = input.localDeviceBacked === true;
-  const authoritativeLastRun = localDeviceBacked ? null : input.lastRun;
-  const authoritativeLastSuccessfulRun = localDeviceBacked ? null : input.lastSuccessfulRun;
-  const authoritativeLatestSettledRun = localDeviceBacked
-    ? null
-    : (input.latestSettledRun ?? fallbackLatestSettledRun(input.lastRun, input.lastSuccessfulRun));
+  const isOwnScopedRun = (run: ConnectorRunSummary | null): boolean =>
+    !localDeviceBacked || run?.scheduler_managed === true;
+  const authoritativeLastRun = isOwnScopedRun(input.lastRun) ? input.lastRun : null;
+  const authoritativeLastSuccessfulRun = isOwnScopedRun(input.lastSuccessfulRun) ? input.lastSuccessfulRun : null;
+  const fallbackSettledRun = input.latestSettledRun ?? fallbackLatestSettledRun(input.lastRun, input.lastSuccessfulRun);
+  const authoritativeLatestSettledRun = isOwnScopedRun(fallbackSettledRun) ? fallbackSettledRun : null;
   const authoritativeActiveRun = localDeviceBacked ? null : input.activeRun;
   const authoritativeCollectionRate = localDeviceBacked ? null : input.collectionRate;
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : input.ephemeralBrowserRuntime;
@@ -5618,6 +5976,27 @@ export function projectConnectorSummaryConnectionHealth(input: {
   );
   const outbox = input.outbox ?? { axis: "unknown" };
   const freshnessAxis = mapFreshnessAxis(input.freshness);
+  // Cadence-relative lateness: "did the expected collection happen?", sized
+  // against this source's OWN interval. Distinct from `freshnessAxis`, which
+  // answers "is the retained data current enough to serve?" — a source can be
+  // fresh and late (collected recently, then the scheduler stopped) or stale
+  // and on time (a slow cadence whose data legitimately ages). Only lateness
+  // may gate escalation on age, and only once mature; see cadence-lateness.ts.
+  const cadenceLateness = deriveCadenceLateness({
+    intervalSeconds: scheduleEvidence.schedule?.intervalSeconds ?? null,
+    // The RUN's own terminal timestamp is authoritative: `scheduleEvidence`
+    // carries the scheduler's bookkeeping copy, which is null for any
+    // connection the scheduler has not written (and for every fixture that
+    // drives the projection directly). Fall back to it only if the run has no
+    // timestamp of its own.
+    lastSuccessAtMs: (() => {
+      const fromRun = input.lastSuccessfulRun?.finished_at ?? input.lastSuccessfulRun?.last_at ?? null;
+      const iso = fromRun ?? scheduleEvidence.lastSuccessfulAt;
+      const parsed = iso ? Date.parse(iso) : Number.NaN;
+      return Number.isFinite(parsed) ? parsed : null;
+    })(),
+    nowMs: Date.parse(nowIso),
+  });
   // Local-device collection verdict: a local-device-backed connection whose
   // outbox is idle from trusted heartbeat evidence, whose resolved coverage is
   // `complete`, and whose freshness is genuinely `fresh` has finished a clean,
@@ -5650,7 +6029,13 @@ export function projectConnectorSummaryConnectionHealth(input: {
     unreadable: input.pendingDetailGapsUnreliable === true,
   };
   return computeConnectionHealth({
-    acquisition: input.acquisitionComplete === true ? { complete: true } : null,
+    acquisition:
+      input.acquisitionReceiptProven === true || input.freshnessNotApplicable === true
+        ? {
+            complete: input.acquisitionReceiptProven === true,
+            freshnessNotApplicable: input.freshnessNotApplicable === true,
+          }
+        : null,
     activity: { active: scheduleEvidence.activeRunId !== null },
     attention,
     authentication: input.authenticates === false ? { authenticates: false } : null,
@@ -5659,10 +6044,12 @@ export function projectConnectorSummaryConnectionHealth(input: {
     browserSurfaceRepair: input.browserSurfaceRepair ?? null,
     collectionRate: authoritativeCollectionRate ?? null,
     coverage,
+    coverageHorizons: input.coverageHorizons ?? [],
     credential: input.credential ?? null,
     detailGapBacklog,
     ephemeralBrowserRuntime: authoritativeEphemeralBrowserRuntime,
     freshness: { axis: freshnessAxis },
+    lateness: cadenceLateness,
     localDeviceCollection,
     observedAt: nowIso,
     outbox,
@@ -6112,6 +6499,7 @@ interface ConnectorSummaryProjectionDeps {
 interface PageProductEvidence {
   readonly acquisitionByInstanceId: ReadonlyMap<string, readonly AcquisitionBatchRow[]> | null;
   readonly attentionByInstanceId: ReadonlyMap<string, readonly AttentionRecord[]> | null;
+  readonly coverageHorizonsByInstanceId: ReadonlyMap<string, readonly ConnectionCoverageHorizon[]> | null;
   readonly credentialMetadataByInstanceId: ReadonlyMap<string, CredentialStoreMetadata> | null;
   readonly detailGapsByInstanceId: ReadonlyMap<string, DetailGapProjection> | null;
   readonly localCoverageByInstanceId: ReadonlyMap<string, LocalCoverageDiagnosticAxis | null> | null;
@@ -6211,6 +6599,19 @@ function buildRenderedVerdictForSummary(input: {
   readonly freshness: Freshness;
   readonly hasRecoveredDetailGaps: boolean;
   readonly localDeviceBacked: boolean;
+  /**
+   * Durable last-successful-ingest evidence for a local-device connection
+   * (`LocalDeviceProgress.last_ingest_at`), independent of the current
+   * heartbeat/outbox status. Only ever used as a fallback when
+   * `freshness.captured_at` is null — e.g. a stalled outbox blanks the
+   * heartbeat-derived freshness anchor (honesty invariant: a stall must
+   * never read as `fresh`), but the connection may still have collected
+   * real data before the stall began. Without this fallback the freshness
+   * annotation falsely implies data was NEVER collected. `null` for
+   * scheduler-managed connections and local-device connections with no
+   * trusted ingest evidence yet.
+   */
+  readonly localDeviceLastIngestAt: string | null;
   readonly manifestStreams: readonly VerdictManifestStreamLike[];
   readonly observedAt: string;
   readonly refreshPolicy: unknown;
@@ -6248,7 +6649,7 @@ function buildRenderedVerdictForSummary(input: {
     // per-run delta. Keep the exact count in owner-only detail; do not relabel it
     // as "last run" progress.
     gapsDrainedLastRun: null,
-    lastRefreshedAt: input.freshness.captured_at ?? null,
+    lastRefreshedAt: input.freshness.captured_at ?? input.localDeviceLastIngestAt ?? null,
     mode,
     observedAt: input.observedAt,
     recordsCommittedLastRun: null,
@@ -6321,6 +6722,16 @@ interface ConnectorSummarySynthesisInput {
   readonly collectionRate: Awaited<ReturnType<typeof readLatestCollectionRateForRun>>;
   readonly connectorId: string;
   readonly connectorInstanceId: string;
+  /**
+   * Provider coverage-horizon/provenance disclosures for this connection,
+   * pre-fetched by the caller via `ConnectorCoverageHorizonStore` (kept out
+   * of this function so it stays a pure projection over already-resolved
+   * inputs, matching {@link credential}). Empty when no horizon has ever
+   * been confirmed for this connection — never fabricated, never inferred
+   * here. See `runtime/coverage-horizon.ts` and
+   * `openspec/changes/add-coverage-horizon-and-actionability-banner/design.md`.
+   */
+  readonly coverageHorizons: readonly ConnectionCoverageHorizon[];
   /**
    * Durable stored-credential presence evidence for this connection, pre-
    * fetched by the caller (kept out of this function so it stays a pure
@@ -6415,14 +6826,19 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     schedule,
   } = input;
   const localDeviceBacked = instance.sourceKind === "local_device";
+  // See the matching comment in `projectConnectorSummaryConnectionHealth`: a
+  // local device's run evidence is quarantined as foreign/historical UNLESS
+  // the row itself proves it is this connection's own current
+  // scheduler-managed run (`scheduler_managed = true`).
+  const isOwnScopedRun = (run: ConnectorRunSummary | null): boolean =>
+    !localDeviceBacked || run?.scheduler_managed === true;
   const authoritativeActiveRun = localDeviceBacked ? null : activeRun;
   const authoritativeCollectionRate = localDeviceBacked ? null : collectionRate;
   const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : ephemeralBrowserRuntime;
-  const authoritativeLastRun = localDeviceBacked ? null : lastRun;
-  const authoritativeLastSuccessfulRun = localDeviceBacked ? null : lastSuccessfulRun;
-  const authoritativeLatestSettledRun = localDeviceBacked
-    ? null
-    : (latestSettledRun ?? fallbackLatestSettledRun(lastRun, lastSuccessfulRun));
+  const authoritativeLastRun = isOwnScopedRun(lastRun) ? lastRun : null;
+  const authoritativeLastSuccessfulRun = isOwnScopedRun(lastSuccessfulRun) ? lastSuccessfulRun : null;
+  const fallbackSettledRun = latestSettledRun ?? fallbackLatestSettledRun(lastRun, lastSuccessfulRun);
+  const authoritativeLatestSettledRun = isOwnScopedRun(fallbackSettledRun) ? fallbackSettledRun : null;
   const authoritativeLatestStreamFacts = localDeviceBacked ? null : latestStreamFacts;
   const terminalSetupDisposition =
     instance.status === "draft" && authoritativeLastRun
@@ -6463,12 +6879,16 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     refreshPolicy,
   });
   const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
-    // `manual` is a CHECK-constrained, immutable source_kind written once at
-    // creation (ref-manual-upload-draft-connection.ts) — a durable fact about
-    // what this connection IS, never an inference from a missing run. A
-    // one-time import has no future capture to age, so freshness does not
-    // apply; see design-notes/source-state-truth-2026-08-18.md.
-    acquisitionComplete: instance.sourceKind === "manual",
+    // A real terminal run — `authoritativeLastSuccessfulRun` present with a
+    // `finished_at` timestamp — is positive receipt evidence this specific
+    // import actually finished ingesting something. `source_kind === "manual"`
+    // alone is NOT that evidence: a manual connection that has never run is
+    // not "complete," it has simply not run yet. See the ruling recorded in
+    // openspec/changes/add-coverage-horizon-and-actionability-banner/design.md.
+    acquisitionReceiptProven:
+      instance.sourceKind === "manual" &&
+      authoritativeLastSuccessfulRun !== null &&
+      authoritativeLastSuccessfulRun.finished_at !== null,
     activeRun: authoritativeActiveRun,
     attentionRecords: attention.records,
     // A file-import connector contacts no provider, so `CredentialsValid` has
@@ -6478,9 +6898,18 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     authenticates: connectionAuthenticatesToProvider(manifest),
     browserSessionRepairCapable,
     collectionRate: authoritativeCollectionRate,
+    coverageHorizons: input.coverageHorizons,
     credential,
     ephemeralBrowserRuntime: authoritativeEphemeralBrowserRuntime,
     freshness,
+    // `manual` is a CHECK-constrained, immutable source_kind written once at
+    // creation (ref-manual-upload-draft-connection.ts) — a durable fact about
+    // what this connection IS, never an inference from a missing run. A
+    // one-time import has no future capture to age, so freshness does not
+    // apply; see design-notes/source-state-truth-2026-08-18.md. This is
+    // deliberately independent of `acquisitionReceiptProven` above — see
+    // `ConnectionAcquisitionEvidence` in connection-health.ts.
+    freshnessNotApplicable: instance.sourceKind === "manual",
     lastRun: authoritativeLastRun,
     lastSuccessfulRun: authoritativeLastSuccessfulRun,
     latestSettledRun: authoritativeLatestSettledRun,
@@ -6524,7 +6953,10 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     refreshPolicy,
-    requiredCoverageEvidenceAuthoritative: requiredCoverageEvidenceIsAuthoritative(evidence),
+    requiredCoverageEvidenceAuthoritative: requiredCoverageEvidenceIsAuthoritative(evidence, {
+      axis: outbox.axis,
+      localDeviceBacked,
+    }),
     schedule: localDeviceBacked ? null : normalizeScheduleEvidence(schedule),
     terminalDetailGapsByStream: detailGaps.terminalByStream,
     unfillableAccountedByStream: detailGaps.unfillableAccountedByStream,
@@ -6578,6 +7010,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     freshness,
     hasRecoveredDetailGaps: recoveredCount !== null && recoveredCount > 0,
     localDeviceBacked,
+    localDeviceLastIngestAt: localDeviceProgress?.last_ingest_at ?? null,
     manifestStreams: (manifest.streams ?? []) as VerdictManifestStreamLike[],
     observedAt: nowIso,
     refreshPolicy,
@@ -6724,12 +7157,19 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   }
   return {
     acquisition_coverage: acquisitionCoverage,
+    auto_enroll_skip_reason: recordedAutoEnrollSkipReason(instance),
     collection_report: collectionReport,
     connection_health: connectionHealth,
     connection_id: connectorInstanceId,
     connector_display_name: connectorDisplayName,
     connector_id: connectorId,
     connector_instance_id: connectorInstanceId,
+    // Read from `ConnectorCoverageHorizonStore` by the caller
+    // (`projectConnectorSummaryForInstance`/`loadPageProductEvidence`) and
+    // passed straight through — empty only when no horizon has ever been
+    // confirmed for this connection. See `ConnectorSummary.coverage_horizons`'s
+    // doc comment.
+    coverage_horizons: input.coverageHorizons,
     // B8: a source's label must identify WHICH source it is — the device for a
     // device-backed source, the account for an account-backed one. Derived,
     // never stored.
@@ -6770,7 +7210,6 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       : { as_of: null, reason_code: "summary_evidence_unavailable", state: "unobserved" },
     revoked_at: instance.revokedAt ?? null,
     schedule: localDeviceBacked ? null : schedule,
-    auto_enroll_skip_reason: recordedAutoEnrollSkipReason(instance),
     source_binding_kind: connectionBindingKind(instance),
     source_kind: instance.sourceKind,
     source_visibility: sourceVisibility,
@@ -7242,12 +7681,20 @@ async function projectConnectorSummaryForInstance(
   const browserSurfaceProfileKey = readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest);
   const activeVisibleConnectionCount = options.activeVisibleConnectionCount ?? 0;
   // Persisted source kind is the authority boundary, not a hint applied after
-  // fetching scheduler history. Local-device connections never hydrate server
-  // runs or schedules into the projection, even if stale rows still exist.
+  // fetching scheduler history. Local-device connections still hydrate their
+  // own run history (so a genuinely own, current, `scheduler_managed = true`
+  // run can be recognized downstream) but never their schedule — a
+  // local-device collector is never scheduler-driven, so a schedule row for
+  // it is always foreign/historical. `synthesizeConnectorSummary` and
+  // `projectConnectorSummaryConnectionHealth` are the actual authority
+  // boundary for run evidence: they quarantine any hydrated run that is not
+  // proven `scheduler_managed`, exactly as before for every other run.
   const localDeviceBacked = instance.sourceKind === "local_device";
-  const hydrateRunSummaries =
-    !localDeviceBacked &&
-    shouldHydrateRunSummariesForInstance(deps.includeRunSummaries, instance, activeVisibleConnectionCount);
+  const hydrateRunSummaries = shouldHydrateRunSummariesForInstance(
+    deps.includeRunSummaries,
+    instance,
+    activeVisibleConnectionCount
+  );
   const live = await getConnectorRecordProjection(
     recordStorageConnectorIdForConnection(instance),
     connectorInstanceId,
@@ -7316,6 +7763,7 @@ async function projectConnectorSummaryForInstance(
     localCoverage,
     acquisitionCoverage,
     credentialMetadata,
+    coverageHorizons,
   ] = await Promise.all([
     schedulePromise,
     hydrateRunSummaries ? getLatestRunSummaryForConnectionId(connectorInstanceId) : Promise.resolve(null),
@@ -7373,6 +7821,11 @@ async function projectConnectorSummaryForInstance(
         )
       : getAcquisitionCoverageSummary(connectorInstanceId),
     credentialMetadataPromise,
+    pageProductEvidence
+      ? Promise.resolve(pageProductEvidence.coverageHorizonsByInstanceId?.get(connectorInstanceId) ?? [])
+      : getDefaultConnectorCoverageHorizonStore()
+          .getCurrentCoverageHorizons(connectorInstanceId)
+          .catch(() => []),
   ]);
   // Connections that are not static-secret-bound (browser-session connections,
   // or non-static-secret connectors): the ternary above resolved
@@ -7418,6 +7871,7 @@ async function projectConnectorSummaryForInstance(
     collectionRate,
     connectorId,
     connectorInstanceId,
+    coverageHorizons,
     credential,
     detailGaps,
     ephemeralBrowserRuntime,
@@ -7710,10 +8164,7 @@ async function loadConnectorSummaryProjectionDeps(
     ...(latestSettledRunHistoryRows ?? []),
   ]) {
     if (row.runId && row.connectorInstanceId) {
-      latestRunFactsJsonByRunIdentity.set(
-        runFactsCacheKey(row.runId, row.connectorInstanceId),
-        row.factsJson ?? null
-      );
+      latestRunFactsJsonByRunIdentity.set(runFactsCacheKey(row.runId, row.connectorInstanceId), row.factsJson ?? null);
     }
   }
   const evidenceReadFailed = summaryEvidenceRead.failed;

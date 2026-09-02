@@ -53,6 +53,7 @@ import {
   OUTBOX_BLOCKED_BACKLOG_TOLERANCE,
   OUTBOX_STALE_RETRYING_BACKLOG_AGE_MS,
 } from "./connection-health-policy.ts";
+import type { ConnectionCoverageHorizon } from "./coverage-horizon.ts";
 import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Public types ──────────────────────────────────────────────────────────
@@ -311,6 +312,14 @@ export type CoverageAxis =
  *   - `acknowledged` : owner has seen the prompt
  *   - `in_progress`  : owner is actively responding (e.g. OTP entry)
  */
+/**
+ * Cadence-relative lateness: "did the expected collection happen?", sized
+ * against the source's own interval by `server/cadence-lateness.ts`. Owned here
+ * because this module owns the evidence it rides on; consumers import the type
+ * rather than repeating the union.
+ */
+export type CadenceLatenessState = "late" | "on_time" | "overdue" | "unknown";
+
 export type AttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
 
 /**
@@ -846,6 +855,20 @@ export interface ConnectionHealthSnapshot {
   readonly collection_rate: CollectionRateSnapshot | null;
   readonly conditions: readonly ConnectionHealthCondition[];
   /**
+   * Additive, nullable-empty provider coverage-horizon/provenance
+   * disclosures ({@link ConnectionCoverageHorizon}) for this connection. Pure
+   * pass-through annotation, carried straight from
+   * {@link ComputeConnectionHealthInput.coverageHorizons} with no
+   * transformation: NO classification step reads it, so it can never move
+   * the headline `state`, any axis, any condition, or `forward_disposition`.
+   * It is owner-facing disclosure content only, read by the inspection-layer
+   * `detail` (`rendered-verdict.ts`'s `VerdictDetail.coverage_horizons`),
+   * never the tone-bearing `pill`/`channel`. Empty when the caller supplied
+   * none — that means "not read," never "confirmed no horizon exists." See
+   * `runtime/coverage-horizon.ts`.
+   */
+  readonly coverage_horizons: readonly ConnectionCoverageHorizon[];
+  /**
    * Additive, nullable source-pressure detail-gap backlog rollup
    * ({@link DetailGapBacklog}). `null` when no backlog evidence was supplied
    * or the durable gap store was unreadable; a readable-but-drained backlog is
@@ -883,6 +906,17 @@ export interface ConnectionHealthSnapshot {
    */
   readonly forward_disposition: ForwardDisposition;
   readonly last_success_at: string | null;
+  /**
+   * Cadence-relative lateness, carried onto the snapshot so downstream
+   * surfaces read the FACT rather than inferring it from a rendered tone.
+   *
+   * `resolveOwnerStateResolver` previously had only `verdict.pill.tone` to work
+   * with, so an amber pill — which a merely-late source legitimately earns —
+   * was indistinguishable from real system degradation, and ordinary lateness
+   * grouped as `system_issue` and fired the global banner. A presentation
+   * value is the wrong input for that decision.
+   */
+  readonly lateness?: { readonly state: CadenceLatenessState } | null;
   /**
    * Additive, nullable local-device outbox count breakdown carried through
    * from {@link ConnectionOutboxEvidence.counts}. Pure annotation: no
@@ -1102,7 +1136,8 @@ export interface ConnectionFreshnessEvidence {
 
 /**
  * Acquisition-completeness evidence: whether this connection's data collection
- * is FINISHED by design rather than recurring.
+ * is FINISHED by design rather than recurring, and — independently — whether a
+ * finished-by-design source has actually PROVED it collected something.
  *
  * A one-time import (`source_kind = 'manual'`) ingests a file the owner
  * supplied and then never collects again. Google Maps Timeline Import holds
@@ -1112,18 +1147,48 @@ export interface ConnectionFreshnessEvidence {
  * import is a category error, and the shipped model answers it `unknown`
  * forever, which the owner reads as "broken".
  *
- * `complete: true` makes freshness `not_applicable` (a settled answer) instead
- * of `unknown` (a pending one), and lets the healthy predicate accept the
- * absence of a freshness proof it can never obtain. It deliberately does NOT
- * relax coverage: a completed import must still prove it ingested what it
- * claimed, so a gap or unknown coverage keeps it out of green.
+ * These two facts are DELIBERATELY SEPARATE FIELDS and must never be
+ * collapsed back into one flag:
+ *
+ *   - `freshnessNotApplicable: true` is a durable fact about what KIND of
+ *     source this is (a one-time import has no future capture to age
+ *     against). It is safe to derive from `source_kind` alone — that value
+ *     is an immutable, CHECK-constrained fact written once at creation, not
+ *     an inference from a missing run. It makes freshness `not_applicable`
+ *     (a settled answer) instead of `unknown` (a pending one), and lets the
+ *     healthy predicate accept the absence of a freshness proof it can never
+ *     obtain.
+ *
+ *   - `complete: true` is a claim that THIS SPECIFIC IMPORT ACTUALLY
+ *     FINISHED INGESTING SOMETHING. Being a manual-source-kind connection is
+ *     not evidence of that — a manual connection that has never run at all
+ *     is exactly as "complete" as one is has, under `source_kind` alone. This
+ *     field SHALL be set `true` only from positive receipt evidence: a
+ *     terminal run record showing the import actually succeeded (e.g. a
+ *     `lastSuccessfulRun` with `finished_at` and `collection_facts`/
+ *     `records_emitted` present). The absence of any run history is
+ *     evidence of NOTHING HAVING HAPPENED YET, not of completion, and SHALL
+ *     leave `complete: false`. This governs `CollectionSucceeded`, and it
+ *     deliberately does NOT relax coverage: a completed import must still
+ *     prove it ingested what it claimed, so a gap or unknown coverage keeps
+ *     it out of green regardless of `complete`.
  *
  * Omit/`null` for every recurring source. That preserves the shipped behavior
  * exactly — staleness still degrades a source the system was supposed to
  * refresh and did not.
  */
 export interface ConnectionAcquisitionEvidence {
+  /**
+   * A terminal run record proves this specific import actually finished
+   * ingesting. SHALL NOT be derived from `source_kind`/schedule absence
+   * alone — see the interface doc comment.
+   */
   readonly complete: boolean;
+  /**
+   * This source kind has no recurring capture to age freshness against.
+   * Safe to derive from an immutable `source_kind` fact alone.
+   */
+  readonly freshnessNotApplicable: boolean;
 }
 
 /**
@@ -1302,6 +1367,15 @@ export interface ComputeConnectionHealthInput {
   readonly collectionRate?: CollectionRateSnapshot | null;
   readonly coverage: ConnectionCoverageEvidence | null;
   /**
+   * Provider coverage-horizon/provenance disclosures. Passed through
+   * verbatim to the snapshot's {@link ConnectionHealthSnapshot.coverage_horizons}
+   * with no transformation and no classification-step access — see that
+   * field's doc comment. `undefined`/omitted yields an empty array on the
+   * snapshot, preserving byte-identical prior behavior for every caller not
+   * explicitly wired to `ConnectorCoverageHorizonStore`.
+   */
+  readonly coverageHorizons?: readonly ConnectionCoverageHorizon[];
+  /**
    * Durable stored-credential presence evidence. When provided, it lets the
    * credential-readiness condition distinguish "no usable stored credential"
    * from "stored credential rejected" and keeps the credential axis from healing
@@ -1319,6 +1393,20 @@ export interface ComputeConnectionHealthInput {
   readonly detailGapBacklog?: ConnectionDetailGapBacklogEvidence | null;
   readonly ephemeralBrowserRuntime?: EphemeralBrowserRuntimeProjection | null | undefined;
   readonly freshness: ConnectionFreshnessEvidence | null;
+  /**
+   * Cadence-relative lateness — "did the expected collection happen?" — sized
+   * against this source's own interval by `server/cadence-lateness.ts`.
+   *
+   * Deliberately SEPARATE from `freshness`, which answers "is the retained data
+   * current enough to serve?". A source can be fresh and late (collected
+   * recently, then the scheduler stopped) or stale and on time (a slow cadence
+   * whose data legitimately ages between runs). Collapsing the two is what made
+   * ordinary lateness indistinguishable from a broken source.
+   *
+   * Optional and absent-by-default: a caller that supplies no lateness gets
+   * exactly the prior behaviour.
+   */
+  readonly lateness?: { readonly state: CadenceLatenessState } | null;
   /**
    * True when this connection collects through an enrolled local-device
    * collector, so the local-device outbox axis is a question this deployment can
@@ -1399,6 +1487,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const conditionSet = indexConditions(conditions);
   const forwardDisposition = deriveConnectionForwardDisposition(input, conditionSet);
   const collectionRate = input.collectionRate ?? null;
+  const coverageHorizons = input.coverageHorizons ?? [];
   const detailGapBacklog = deriveSourcePressureBacklog(input.detailGapBacklog ?? null);
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const ephemeralBrowserRuntime = input.ephemeralBrowserRuntime;
@@ -1426,10 +1515,20 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       ...args,
       collectionRate,
       conditions,
+      // Attached at the single funnel every classification step returns
+      // through, exactly like `localDeviceOutboxCounts` below, so the
+      // annotation rides along without any step being able to classify on
+      // it.
+      coverageHorizons,
       detailGapBacklog,
       dominantConditionId,
       ephemeralBrowserRuntime,
       forwardDisposition,
+      // Same funnel discipline as `coverageHorizons`: the cadence fact rides
+      // along onto the snapshot so downstream surfaces read EVIDENCE rather
+      // than inferring lateness from a rendered tone. No classification step
+      // can reach it, so it cannot change the headline here.
+      lateness: input.lateness ?? null,
       // Attached at the single funnel every classification step returns
       // through, so the annotation rides along without any step being able to
       // classify on it.
@@ -2261,9 +2360,12 @@ function collectionSucceededCondition(input: ComputeConnectionHealthInput): Conn
     // A completed one-time import writes no spine run either: the owner
     // supplied a file, the ingest finished, and there is nothing to schedule.
     // Its completeness declaration is the collection verdict, exactly as the
-    // local-device verdict is above. Coverage is still proven independently —
-    // the caller only sets `complete` once the import finished ingesting, and
-    // `SourceCoverageComplete` is checked separately by the healthy predicate.
+    // local-device verdict is above. `complete` SHALL be receipt-gated by the
+    // caller (a real terminal run proving the import finished ingesting), not
+    // derived from source_kind/schedule absence alone — see
+    // `ConnectionAcquisitionEvidence`. Coverage is still proven
+    // independently — `SourceCoverageComplete` is checked separately by the
+    // healthy predicate.
     if (input.acquisition?.complete === true) {
       return condition({
         message: "The one-time import finished ingesting.",
@@ -3028,6 +3130,18 @@ function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: Conn
       type: "SourceCoverageComplete",
     });
   }
+  // There is deliberately NO counterpart branch for `retryable_gap` backed by
+  // a coverage horizon. A horizon and a connector `boundary_claim` are
+  // disclosure the owner reads beside the gap, never proof the gap is outside
+  // the servable denominator — see the disclosure-only rationale in
+  // `server/connector-gap-classification.ts` and the normative requirement in
+  // `openspec/changes/add-coverage-horizon-and-actionability-banner/specs/
+  // reference-connection-health/spec.md` ("SHALL participate in NO
+  // classification step ... SHALL NOT by itself mark ... a stream's coverage
+  // complete"). Unlike `unfillableAccounted` above, which rests on per-item
+  // durable evidence of impossibility, no per-gap binding to a horizon EDGE
+  // exists in the protocol, so a retryable gap inside the still-servable
+  // interval would have been accounted away on a broad typed claim alone.
   if (input.coverage?.requiredButAccepted === true || isDegradingCoverage(axes.coverage)) {
     return condition({
       message: "Required source coverage is incomplete.",
@@ -3113,18 +3227,27 @@ export function isAssistedRefresh(refresh: ConnectionRefreshEvidence | null | un
 }
 
 function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxes): ConnectionHealthCondition {
-  // A source whose acquisition is complete by design has no future capture to
-  // age against, so freshness is a question that does not apply here rather
-  // than one awaiting an answer. This branch is first because a completed
-  // import legitimately has no freshness axis at all: it never ran, so the
-  // axis is `unknown`, and that `unknown` is certainty, not doubt.
+  // A source whose KIND has no recurring capture to age against (a one-time
+  // import) makes freshness a question that does not apply here rather than
+  // one awaiting an answer. This is `freshnessNotApplicable`, not `complete`
+  // — it is safe to derive from the immutable source_kind fact alone and
+  // does NOT claim this particular import ever finished ingesting anything;
+  // see `ConnectionAcquisitionEvidence`. This branch is first because a
+  // completed import legitimately has no freshness axis at all: it never
+  // ran, so the axis is `unknown`, and that `unknown` is certainty, not
+  // doubt.
   //
   // Deliberately settled as `not_applicable` rather than `true`: claiming a
   // finished 2023 export is "fresh" would be a second lie replacing the first.
   // The healthy predicate accepts the not-applicable answer instead.
-  if (input.acquisition?.complete === true) {
+  if (input.acquisition?.freshnessNotApplicable === true) {
     return condition({
-      message: "This is a one-time import — its data is complete and will not refresh.",
+      // Only a claim about the KIND of source (a one-time import has no
+      // recurring capture to age against, so it will not refresh). Never a
+      // claim that this particular import finished ingesting anything —
+      // that is `complete`, gated on a real receipt, not this flag. See the
+      // `freshnessNotApplicable` doc comment above and `collectionSucceededCondition`.
+      message: "This is a one-time import — recurring freshness does not apply, and it will not refresh.",
       observedAt: input.run?.lastSuccessAt ?? null,
       origin: "connector",
       reason: CONDITION_REASON.FRESHNESS_NOT_APPLICABLE_COMPLETE,
@@ -3186,6 +3309,51 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
         origin: "connector",
         reason: CONDITION_REASON.STALE_ASSISTED_REFRESH,
         remediation: { action: "retry_by_runtime", label: "Run the connector now", retryable: true, target: "run" },
+        severity: "info",
+        status: "false",
+        type: "Fresh",
+      });
+    }
+    // Cadence hysteresis. Stale data on a source that is NOT yet mature-overdue
+    // against its own interval is ordinary lateness: the run is due or a beat
+    // has been missed, the system keeps retrying, and no owner action exists.
+    // The plan requires that state to be neutral — "crossing one expected
+    // interval produces a neutral Late-equivalent state, not failure" — so it
+    // is emitted at `info`, below the degrading threshold, exactly like the
+    // assisted-refresh advisory above.
+    //
+    // Only MATURE lateness (`overdue`, 3x the interval) falls through to the
+    // degrading `warning`. Even then this is a per-connection severity, not a
+    // banner: `fleet-health.ts` still requires an independently proven
+    // owner-actionable or blocked cause before the global banner fires.
+    //
+    // `unknown` lateness (no declared cadence, or never a successful run)
+    // preserves the prior behaviour: a source with no cadence to be late
+    // against keeps the degrading warning it has always had.
+    // No `remediation` on either branch. The research is explicit that a
+    // stale-but-retrying source "will keep retrying automatically; no action
+    // needed from you right now" — attaching an owner-looking CTA to a state
+    // that needs no owner action is the same false-remedy defect as telling a
+    // suppressed source it refreshes on schedule. The row still shows the age;
+    // it just does not ask for anything.
+    if (input.lateness?.state === "on_time") {
+      // Stale by its freshness policy but NOT late against its own cadence:
+      // a slow-cadence source whose data legitimately ages between runs. Saying
+      // "late" here would be false.
+      return condition({
+        message: "Retained data is older than this connection's freshness policy; its next run is not due yet.",
+        origin: "connector",
+        reason: CONDITION_REASON.STALE,
+        severity: "info",
+        status: "false",
+        type: "Fresh",
+      });
+    }
+    if (input.lateness?.state === "late") {
+      return condition({
+        message: "Retained data is stale; this source is late for its usual schedule and will keep retrying.",
+        origin: "connector",
+        reason: CONDITION_REASON.STALE,
         severity: "info",
         status: "false",
         type: "Fresh",
@@ -3819,11 +3987,13 @@ interface SnapshotArgs {
   readonly badges: ConnectionBadges;
   readonly collectionRate?: CollectionRateSnapshot | null;
   readonly conditions: readonly ConnectionHealthCondition[];
+  readonly coverageHorizons?: readonly ConnectionCoverageHorizon[];
   readonly detailGapBacklog?: DetailGapBacklog | null;
   readonly dominantConditionId: string | null;
   readonly ephemeralBrowserRuntime?: EphemeralBrowserRuntimeProjection | null | undefined;
   readonly forwardDisposition: ForwardDisposition;
   readonly lastSuccessAt: string | null;
+  readonly lateness?: { readonly state: CadenceLatenessState } | null;
   readonly localDeviceOutboxCounts?: OutboxDiagnosticCounts | null;
   readonly nextAction?: NextAction | null;
   readonly nextAttemptAt: string | null;
@@ -3840,11 +4010,13 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
     badges: args.badges,
     collection_rate: args.collectionRate ?? null,
     conditions: args.conditions,
+    coverage_horizons: args.coverageHorizons ?? [],
     detail_gap_backlog: args.detailGapBacklog ?? null,
     dominant_condition_id: args.dominantConditionId,
     ephemeral_browser_runtime: runtimeAnnotationForSnapshot(args.ephemeralBrowserRuntime),
     forward_disposition: args.forwardDisposition,
     last_success_at: args.lastSuccessAt,
+    lateness: args.lateness ?? null,
     local_device_outbox_counts: args.localDeviceOutboxCounts ?? null,
     next_action: args.nextAction ?? null,
     next_attempt_at: args.nextAttemptAt,
@@ -4083,9 +4255,31 @@ export function deriveOutboxAxisFromHeartbeat(
 
 /**
  * Classifies a `blocked` heartbeat: dead letters -> retry+re-run backlog;
- * none -> either a bounded-debris carve-out (`idle`) or a genuine
- * state-read failure. Extracted from `deriveOutboxAxisFromHeartbeat` to
- * keep that function's cognitive complexity within the repo's lint budget.
+ * none -> a bounded-debris carve-out (`idle`), a collector that stopped
+ * checking in (`stale_heartbeat`), or a genuine state-read failure.
+ * Extracted from `deriveOutboxAxisFromHeartbeat` to keep that function's
+ * cognitive complexity within the repo's lint budget.
+ *
+ * Stale-heartbeat split (owner-reported 2026-08-27, Signal/peregrine): a
+ * `blocked` heartbeat with no dead letters used to classify
+ * `state_read_failed` REGARDLESS of heartbeat age, and that cause renders
+ * "The server cannot read the collector's last state from that host." For
+ * `cin_992b0c94cebeb3066ba42a6e` that sentence was simply false — the server
+ * had read the host's state fine (a `blocked` heartbeat plus 22 outbox rows,
+ * all `succeeded`, 7,780 records accepted across 18 batches at HTTP 201). What
+ * had actually happened is that the collector on that machine stopped checking
+ * in five days earlier, on 2026-08-22T01:00:17Z. The owner was told the SERVER
+ * had a reading problem when the truth was that his own machine's collector
+ * was no longer running — so the one action that would have fixed it (start
+ * the collector on that host) was the one action the copy did not name.
+ *
+ * `stale_heartbeat` already exists for exactly this fact and already renders
+ * "...stopped checking in. Run it again on that host." It was previously
+ * reachable only from the `starting`/`retrying` branch, which a collector that
+ * dies while `blocked` never passes through. Routing the stale case here makes
+ * the cause match the evidence; the fresh case keeps `state_read_failed`
+ * unchanged, since a collector that IS checking in and still reports `blocked`
+ * genuinely does describe an unreadable state.
  */
 function classifyBlockedHeartbeat(
   evidence: HeartbeatOutboxEvidence,
@@ -4103,6 +4297,11 @@ function classifyBlockedHeartbeat(
   }
   if (qualifiesForBoundedDebrisCarveOut(evidence, age)) {
     return { axis: "idle", cause: null, unreliable: false };
+  }
+  // The collector stopped checking in. Naming that is both more accurate than
+  // a server-side read failure and more actionable: the fix is on the host.
+  if (age.heartbeatStale) {
+    return { axis: "stalled", cause: "stale_heartbeat", unreliable: false };
   }
   return { axis: "stalled", cause: "state_read_failed", unreliable: false };
 }

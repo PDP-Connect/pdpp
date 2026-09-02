@@ -20,6 +20,7 @@ import {
   makeConnectorInstanceId,
   makeConnectorInstanceSourceBindingKey,
   nonEmptyString,
+  stableJson,
 } from "./connector-instance-utils.ts";
 import {
   ConnectorInstanceAdmissionError,
@@ -27,12 +28,32 @@ import {
   connectorInstanceLockWaitMs,
 } from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
-import { assertTestDatabase, testDatabaseGuardActive } from "./postgres-test-database-guard.ts";
+import {
+  advancePostgresMigrationCursor,
+  blockPostgresMigration,
+  claimPostgresMigration,
+  completePostgresMigration,
+  ensurePostgresMigrationLedger,
+  LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID,
+  readPostgresMigrationLedgerRow,
+} from "./postgres-migration-ledger.ts";
+import {
+  assertTestDatabase,
+  claimAlreadyAdmittedTestDatabaseChildAttachment,
+  testDatabaseGuardActive,
+} from "./postgres-test-database-guard.ts";
 import { RECORD_REJECTION_GENERATION, recordRejectionReplayKey } from "./record-rejection-replay-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
 
 const VALID_BACKENDS = new Set(["sqlite", "postgres"]);
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = "owner_local";
+// Distinguishes two boots of the same pid (container restart, pid reuse) in
+// the migration ledger's lease_owner. Diagnostic only: the advisory bootstrap
+// lock, not this string, is what serializes concurrent boots.
+const POSTGRES_MIGRATION_LEASE_OWNER_NONCE = createHash("sha256")
+  .update(`${process.pid}:${Date.now()}:${Math.random()}`)
+  .digest("hex")
+  .slice(0, 12);
 
 type StorageBackend = "postgres" | "sqlite";
 type StorageLog = (message: string) => void;
@@ -148,6 +169,157 @@ let lexicalPgSearchAvailability = "unavailable";
 const SEMANTIC_VECTOR_INDEXED_DIMENSIONS = 384;
 const SEMANTIC_HNSW_INDEX_NAME = "idx_pg_semantic_search_embedding_hnsw";
 const SEMANTIC_HOT_HNSW_INDEX_PREFIX = "idx_pg_semantic_hnsw_hot_";
+
+/**
+ * The catalog shape a semantic HNSW index must have to accelerate the
+ * production read path. `indisvalid`/`indisready` plus the substring "hnsw"
+ * is not enough: a same-name index built over the wrong dimension, the wrong
+ * operator class, or the wrong partial predicate is valid and ready in the
+ * catalog while accelerating nothing. Treating it as ready is a silent
+ * readiness lie, so repair compares these fields and rebuilds on any mismatch.
+ *
+ * The comparison is structural rather than a diff of `pg_get_indexdef` text.
+ * Generated SQL varies with things that do not change what the index means —
+ * a schema needing quotes renders as `"My-Schema".semantic_search_blob`, and
+ * an operator-supplied `WITH (m='32')` tuning clause is emitted verbatim.
+ * Text equality would drop and rebuild those correct indexes on every startup.
+ */
+interface SemanticHnswIndexShape {
+  accessMethod: string;
+  indexExpression: string | null;
+  indexPredicate: string | null;
+  keyColumnCount: number;
+  operatorClass: string | null;
+  ready: boolean;
+  tableName: string;
+  totalColumnCount: number;
+  valid: boolean;
+}
+
+/**
+ * Select the structural shape of a same-name index. Returns at most one row;
+ * no row means no index of that name exists in the current schema.
+ */
+const SEMANTIC_HNSW_INDEX_SHAPE_QUERY = `
+  SELECT ix.indisvalid AS valid,
+         ix.indisready AS ready,
+         am.amname AS access_method,
+         tbl.relname AS table_name,
+         ix.indnkeyatts AS key_column_count,
+         ix.indnatts AS total_column_count,
+         (SELECT opc.opcname FROM pg_opclass opc WHERE opc.oid = ix.indclass[0]) AS operator_class,
+         pg_get_expr(ix.indexprs, ix.indrelid) AS index_expression,
+         pg_get_expr(ix.indpred, ix.indrelid) AS index_predicate
+    FROM pg_class idx
+    JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+    JOIN pg_index ix ON ix.indexrelid = idx.oid
+    JOIN pg_am am ON am.oid = idx.relam
+    JOIN pg_class tbl ON tbl.oid = ix.indrelid
+   WHERE ns.nspname = current_schema() AND idx.relname = $1
+   LIMIT 1`;
+
+/** Keep SQL NULL distinct from the empty string: a missing predicate is not "". */
+function nullableCatalogText(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function readSemanticHnswIndexShape(row: Record<string, unknown> | undefined): SemanticHnswIndexShape | null {
+  if (!row) {
+    return null;
+  }
+  return {
+    accessMethod: String(row.access_method ?? ""),
+    indexExpression: nullableCatalogText(row.index_expression),
+    indexPredicate: nullableCatalogText(row.index_predicate),
+    keyColumnCount: Number(row.key_column_count ?? 0),
+    operatorClass: nullableCatalogText(row.operator_class),
+    ready: row.ready === true,
+    tableName: String(row.table_name ?? ""),
+    totalColumnCount: Number(row.total_column_count ?? 0),
+    valid: row.valid === true,
+  };
+}
+
+/**
+ * `pg_get_expr` renders the 384-dimension cast as `(embedding)::vector(384)`.
+ * Compare against that canonical rendering so a `vector(3)` index, a cast of
+ * a different column, or a multi-expression index all fail the check.
+ */
+const SEMANTIC_HNSW_CANONICAL_EXPRESSION = `(embedding)::vector(${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})`;
+const SEMANTIC_HNSW_CANONICAL_OPERATOR_CLASS = "vector_cosine_ops";
+const SEMANTIC_HNSW_DIMENSION_PREDICATE = `(vector_dims(embedding) = ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})`;
+
+/** True when the index accelerates the production semantic read path as built. */
+function isSemanticHnswIndexUsable(shape: SemanticHnswIndexShape | null, expectedPredicate: string): boolean {
+  if (shape === null) {
+    return false;
+  }
+  return (
+    shape.valid &&
+    shape.ready &&
+    shape.accessMethod === "hnsw" &&
+    shape.tableName === "semantic_search_blob" &&
+    shape.keyColumnCount === 1 &&
+    shape.totalColumnCount === 1 &&
+    shape.operatorClass === SEMANTIC_HNSW_CANONICAL_OPERATOR_CLASS &&
+    shape.indexExpression === SEMANTIC_HNSW_CANONICAL_EXPRESSION &&
+    shape.indexPredicate === expectedPredicate
+  );
+}
+
+/**
+ * Name the first field that makes an existing index unusable, so the drop log
+ * says why the index is being rebuilt instead of only that it was.
+ */
+function describeSemanticHnswIndexMismatch(shape: SemanticHnswIndexShape, expectedPredicate: string): string {
+  if (!shape.valid) {
+    return "not valid";
+  }
+  if (!shape.ready) {
+    return "not ready";
+  }
+  if (shape.accessMethod !== "hnsw") {
+    return `access method ${shape.accessMethod || "unknown"}, expected hnsw`;
+  }
+  if (shape.tableName !== "semantic_search_blob") {
+    return `table ${shape.tableName || "unknown"}, expected semantic_search_blob`;
+  }
+  if (shape.keyColumnCount !== 1 || shape.totalColumnCount !== 1) {
+    return `${shape.totalColumnCount} indexed columns, expected 1`;
+  }
+  if (shape.operatorClass !== SEMANTIC_HNSW_CANONICAL_OPERATOR_CLASS) {
+    return `operator class ${shape.operatorClass ?? "none"}, expected ${SEMANTIC_HNSW_CANONICAL_OPERATOR_CLASS}`;
+  }
+  if (shape.indexExpression !== SEMANTIC_HNSW_CANONICAL_EXPRESSION) {
+    return `expression ${shape.indexExpression ?? "none"}, expected ${SEMANTIC_HNSW_CANONICAL_EXPRESSION}`;
+  }
+  if (shape.indexPredicate !== expectedPredicate) {
+    return `predicate ${shape.indexPredicate ?? "none"}, expected ${expectedPredicate}`;
+  }
+  return "definition mismatch";
+}
+
+/** Required partial predicate for the global (all-connectors) HNSW index. */
+function semanticGlobalHnswPredicate(): string {
+  return SEMANTIC_HNSW_DIMENSION_PREDICATE;
+}
+
+/**
+ * Required partial predicate for one hot-source HNSW index. `pg_get_expr`
+ * renders the connector filter with an explicit `::text` cast and wraps the
+ * conjunction, so the expected text is built to match that rendering.
+ */
+function semanticHotHnswPredicate(connectorInstanceId: string): string {
+  return (
+    `((connector_instance_id = '${connectorInstanceId.replaceAll("'", "''")}'::text) ` +
+    `AND ${SEMANTIC_HNSW_DIMENSION_PREDICATE})`
+  );
+}
+const POSTGRES_SEMANTIC_HNSW_BUILD_LOCK = [482_571, 152];
+const POSTGRES_SEMANTIC_HNSW_BUILD_TIMEOUT_ENV = "PDPP_PG_SEMANTIC_HNSW_BUILD_TIMEOUT_MS";
+const POSTGRES_SEMANTIC_HNSW_BUILD_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const POSTGRES_SEMANTIC_HNSW_BUILD_HARD_MAX_TIMEOUT_MS = 30 * 60 * 1000;
+const POSTGRES_SEMANTIC_HNSW_BUILD_LOCK_TIMEOUT_MS = 15_000;
 const RECORDS_BLOB_SEARCH_INDEX_LOCK_ID = "8022352479012001";
 const POSTGRES_DIRECT_PRIORITY_IN = /^CHECK \(\(?priority_class IN \([^)]*\)\)?\)$/i;
 const POSTGRES_DIRECT_PRIORITY_ANY = /^CHECK \(\(?priority_class = ANY \(ARRAY\[[^\]]*\]\)\)?\)$/i;
@@ -157,6 +329,14 @@ const CONNECTOR_INSTANCE_SAFE_CHARS = /[^a-zA-Z0-9]/g;
 const POSTGRES_INDEX_NAME = /^[a-z][a-z0-9_]*$/;
 const SEMANTIC_CONNECTOR_SAFE_CHARS = /[^a-z0-9]+/g;
 const SEMANTIC_CONNECTOR_TRIM = /^_+|_+$/g;
+
+export function resolvePostgresSemanticHnswBuildTimeoutMs({ env = process.env }: { env?: NodeJS.ProcessEnv } = {}) {
+  const configured = Number(env[POSTGRES_SEMANTIC_HNSW_BUILD_TIMEOUT_ENV]);
+  if (Number.isInteger(configured) && configured > 0) {
+    return Math.min(configured, POSTGRES_SEMANTIC_HNSW_BUILD_HARD_MAX_TIMEOUT_MS);
+  }
+  return POSTGRES_SEMANTIC_HNSW_BUILD_DEFAULT_TIMEOUT_MS;
+}
 
 async function sequentially<T>(items: readonly T[], visit: (item: T) => Promise<void>): Promise<void> {
   const item = items.at(0);
@@ -366,9 +546,64 @@ const POSTGRES_LEASE_PRIORITY_MIGRATION_LOCK = [482_571, 151];
 // bootstrapped legacy-priority starter; the priority migration retains its own
 // transaction-scoped lock below so its catalog decision is independently safe.
 const POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK = [482_571, 150];
-const POSTGRES_BOOTSTRAP_LOCK_MAX_ATTEMPTS = 120;
 const POSTGRES_BOOTSTRAP_LOCK_INITIAL_DELAY_MS = 25;
 const POSTGRES_BOOTSTRAP_LOCK_MAX_DELAY_MS = 250;
+// The bootstrap DDL batch takes an AccessExclusiveLock on tables (connectors,
+// connector_instances, ...) that an ordinary connector-registration write
+// (persistManifestAndAdvanceGenerations) also touches at row level. Postgres
+// can build a genuine wait-for cycle between the two -- the DDL waiting on
+// the row lock, the row writer waiting on the table lock the DDL has already
+// begun to escalate toward -- and resolves it by aborting one side with
+// SQLSTATE 40P01. This is a real rolling/blue-green-restart shape (a fresh
+// instance bootstraps schema while an already-running instance still serves
+// writes against the same database), not a test-only artifact. The
+// serialization advisory lock above only serializes concurrent BOOTSTRAP
+// callers against each other; it does nothing against an ordinary write
+// transaction that predates the lock acquisition. Retrying the whole
+// bootstrap attempt after Postgres aborts one side of the cycle is the
+// standard resolution for a detected deadlock -- see
+// bootstrapPostgresSchema's retry wrapper below.
+const POSTGRES_BOOTSTRAP_DEADLOCK_SQLSTATE = "40P01";
+const POSTGRES_BOOTSTRAP_DEADLOCK_MAX_ATTEMPTS = 4;
+const POSTGRES_BOOTSTRAP_DEADLOCK_INITIAL_DELAY_MS = 50;
+const POSTGRES_BOOTSTRAP_DEADLOCK_MAX_DELAY_MS = 400;
+const POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_ENV = "PDPP_POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_MS";
+const POSTGRES_BOOTSTRAP_LOCK_EMPTY_DATABASE_TIMEOUT_MS = 2 * 60 * 1000;
+const POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_TIMEOUT_MS = 10 * 60 * 1000;
+const POSTGRES_BOOTSTRAP_LOCK_HARD_MAX_TIMEOUT_MS = 30 * 60 * 1000;
+const POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_BYTES = 64 * 1024 * 1024;
+const POSTGRES_BOOTSTRAP_LOCK_PROGRESS_INTERVAL_MS = 5 * 1000;
+const POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_PATTERN = /^\d+$/;
+
+export interface PostgresBootstrapLockBudget {
+  databaseSizeBytes: number | null;
+  timeoutMs: number;
+}
+
+export function resolvePostgresBootstrapLockTimeoutMs({
+  databaseSizeBytes = null,
+  env = process.env,
+  overrideMs,
+}: {
+  databaseSizeBytes?: number | null;
+  env?: NodeJS.ProcessEnv;
+  overrideMs?: number;
+} = {}): number {
+  const configuredValue = overrideMs ?? env[POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_ENV];
+  let configured = Number.NaN;
+  if (typeof configuredValue === "number") {
+    configured = configuredValue;
+  } else if (POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_PATTERN.test(configuredValue?.trim() ?? "")) {
+    configured = Number(configuredValue);
+  }
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.min(configured, POSTGRES_BOOTSTRAP_LOCK_HARD_MAX_TIMEOUT_MS);
+  }
+  return (databaseSizeBytes ?? POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_BYTES) >=
+    POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_BYTES
+    ? POSTGRES_BOOTSTRAP_LOCK_POPULATED_DATABASE_TIMEOUT_MS
+    : POSTGRES_BOOTSTRAP_LOCK_EMPTY_DATABASE_TIMEOUT_MS;
+}
 
 function samePostgresEnumMembers(actual: readonly string[], expected: readonly string[]): boolean {
   return actual.length === expected.length && actual.every((value) => expected.includes(value));
@@ -472,6 +707,27 @@ async function migratePostgresBrowserSurfaceLeasePriority(client: PoolClient): P
   }
 }
 
+// Add the durable next-page limit used by the resumable connector-summary
+// repair scan. This is additive scheduling state: existing chunk receipts
+// remain valid and use the default page size until their first timeout teaches
+// the scan a smaller limit for this database.
+async function migratePostgresConnectorSummaryEvidenceRepairChunkPageSize(client: PoolClient): Promise<void> {
+  await client.query(`
+    ALTER TABLE connector_summary_evidence_repair_chunk
+      ADD COLUMN IF NOT EXISTS page_size INTEGER
+  `);
+}
+
+async function migratePostgresStreamEvidenceRunRegistry(client: PoolClient): Promise<void> {
+  // Legacy claims remain spent. Nullable columns are deliberate: an old row
+  // cannot be safely upgraded into terminal evidence, so the store rejects it
+  // rather than inventing a replay payload.
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS payload_json TEXT");
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS replay_identity_json TEXT");
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS payload_digest TEXT");
+  await client.query("ALTER TABLE stream_evidence_run_registry ADD COLUMN IF NOT EXISTS event_id TEXT");
+}
+
 async function migratePostgresBrowserSurfaceLeaseLifecycleChecks(client: PoolClient): Promise<void> {
   const constraints = await client.query<ConstraintRow>(`
     SELECT conname, pg_get_constraintdef(oid) AS definition
@@ -538,6 +794,43 @@ async function ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client: PoolCl
       ON browser_surface_leases(connector_id, profile_key, COALESCE(surface_subject_id, ''), COALESCE(account_key, ''))
       WHERE status IN ('waiting_for_browser_surface', 'starting_surface')
     `);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Widen the config-revision status CHECK to admit `'rejected'`.
+ *
+ * An existing deployment carries the four-value constraint, so the owner's
+ * refusal would be rejected by the DATABASE even with the store and route in
+ * place (reproduced 2026-08-26: `CHECK constraint failed: status IN
+ * ('proposed', 'active', 'superseded', 'quarantined')`). Widening only ADDS an
+ * allowed value — no existing row can violate the new constraint, so this is
+ * safe to run against live data and needs no backfill.
+ */
+async function migratePostgresConfigRevisionRejectedStatus(client: PoolClient): Promise<void> {
+  const constraints = await client.query<ConstraintRow>(`
+    SELECT conname, pg_get_constraintdef(oid) AS definition
+    FROM pg_constraint
+    WHERE conrelid = 'connector_instance_config_revisions'::regclass AND contype = 'c'
+      AND conname = 'connector_instance_config_revisions_status_check'
+  `);
+  const definition = constraints.rows[0]?.definition;
+  if (!definition || definition.includes("'rejected'")) {
+    return;
+  }
+  await client.query("BEGIN");
+  try {
+    await client.query(
+      "ALTER TABLE connector_instance_config_revisions DROP CONSTRAINT connector_instance_config_revisions_status_check"
+    );
+    await client.query(
+      `ALTER TABLE connector_instance_config_revisions ADD CONSTRAINT connector_instance_config_revisions_status_check
+       CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined', 'rejected'))`
+    );
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -707,6 +1000,14 @@ export class PostgresStatementTimeoutError extends Error {
   }
 }
 
+/** Translate Postgres's SQLSTATE into the bounded-query contract at every client-query seam. */
+export function asPostgresStatementTimeoutError(err: unknown): PostgresStatementTimeoutError | undefined {
+  if ((err as { code?: string } | null)?.code !== POSTGRES_STATEMENT_TIMEOUT_SQLSTATE) {
+    return undefined;
+  }
+  return new PostgresStatementTimeoutError({ cause: err });
+}
+
 /**
  * Runs exactly one statement under a Postgres-ENFORCED, connection-scoped
  * `SET LOCAL statement_timeout` — the per-unit HARD bound design review
@@ -750,9 +1051,9 @@ export async function postgresQueryBounded<Row extends QueryResultRow = QueryRes
     } catch {
       // Rollback failure must not hide the original statement/timeout error.
     }
-    if ((err as { code?: string } | null)?.code === POSTGRES_STATEMENT_TIMEOUT_SQLSTATE) {
-      // biome-ignore lint/style/useErrorCause: cause is threaded through PostgresStatementTimeoutError's own constructor (matches NekoSurfaceAllocatorServiceError's identical established pattern) — biome cannot trace it through a custom Error subclass.
-      throw new PostgresStatementTimeoutError({ cause: err });
+    const statementTimeout = asPostgresStatementTimeoutError(err);
+    if (statementTimeout) {
+      throw statementTimeout;
     }
     throw err;
   } finally {
@@ -959,6 +1260,22 @@ async function acquireConnectorInstanceXactLock(client: PoolClient, connectorIns
 }
 
 /**
+ * Acquire a class of connector-instance locks in one stable order.  A class
+ * merge must never acquire A then B while another transaction acquires B then
+ * A: sorting the identity values makes that order independent of discovery.
+ */
+async function acquireConnectorInstanceXactLocks(
+  client: PoolClient,
+  connectorInstanceIds: readonly string[]
+): Promise<void> {
+  const ids = [...new Set(connectorInstanceIds)].sort();
+  for (const connectorInstanceId of ids) {
+    // biome-ignore lint/performance/noAwaitInLoops: advisory locks must be acquired in one deterministic order.
+    await acquireConnectorInstanceXactLock(client, connectorInstanceId);
+  }
+}
+
+/**
  * Test-only direct-invocation seam for `acquireConnectorInstanceXactLock`
  * (2026-08-10 red-team follow-up): the prior dedicated-lock-pool design had
  * a deterministic default-CI test (`__setConnectorInstancePostgresLockPoolForTest`)
@@ -988,13 +1305,16 @@ export type PostgresTransactionClient = PoolClient;
 
 export async function withPostgresTransaction<T>(
   fn: (client: PoolClient) => Promise<T>,
-  options?: { lockConnectorInstanceId?: string }
+  options?: { lockConnectorInstanceId?: string; lockConnectorInstanceIds?: readonly string[] }
 ): Promise<T> {
   const client = await getPostgresPool().connect();
   try {
     await client.query("BEGIN");
     if (options?.lockConnectorInstanceId) {
       await acquireConnectorInstanceXactLock(client, options.lockConnectorInstanceId);
+    }
+    if (options?.lockConnectorInstanceIds) {
+      await acquireConnectorInstanceXactLocks(client, options.lockConnectorInstanceIds);
     }
     const value = await fn(client);
     await client.query("COMMIT");
@@ -1039,11 +1359,17 @@ const REPAIR_REQUIRED_TABLES = [
   "spine_events",
 ] as const;
 
+export const POSTGRES_DETAIL_GAP_REPAIR_REQUIRED_TABLES = ["connector_detail_gaps", "records"] as const;
+
 /**
- * Open only existing correction tables. Absence fails closed; this intentionally
- * never runs application bootstrap, DDL, extensions, migrations, or indexes.
+ * Open only an existing repair schema. Absence of a caller-declared required
+ * table fails closed; this intentionally never runs application bootstrap,
+ * DDL, extensions, migrations, or indexes.
  */
-export async function initExistingPostgresRepairStorage(config: StorageConfig | null | undefined) {
+export async function initExistingPostgresRepairStorage(
+  config: StorageConfig | null | undefined,
+  { requiredTables = REPAIR_REQUIRED_TABLES }: { requiredTables?: readonly string[] } = {}
+) {
   if (config?.backend !== "postgres") {
     throw new Error("existing PostgreSQL repair storage requires a PostgreSQL database URL");
   }
@@ -1058,10 +1384,10 @@ export async function initExistingPostgresRepairStorage(config: StorageConfig | 
   try {
     const result = await pool.query<{ table_name: string }>(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name = ANY($1::text[])",
-      [REPAIR_REQUIRED_TABLES]
+      [requiredTables]
     );
     const present = new Set(result.rows.map((row) => row.table_name));
-    const missing = REPAIR_REQUIRED_TABLES.filter((table) => !present.has(table));
+    const missing = requiredTables.filter((table) => !present.has(table));
     if (missing.length) {
       throw new Error(`existing PostgreSQL repair schema is missing required table(s): ${missing.join(", ")}`);
     }
@@ -1078,7 +1404,9 @@ export async function initPostgresStorage(
     log = () => {
       /* no-op */
     },
-  }: { log?: StorageLog } = {}
+    bootstrapLockTimeoutMs,
+    testOnlyAlreadyAdmittedChildAttachment,
+  }: { log?: StorageLog; bootstrapLockTimeoutMs?: number; testOnlyAlreadyAdmittedChildAttachment?: string } = {}
 ) {
   if (config?.backend !== "postgres") {
     activeBackend = "sqlite";
@@ -1095,7 +1423,11 @@ export async function initPostgresStorage(
   // See server/postgres-test-database-guard.ts for why this is a sentinel
   // rather than a production-URL blacklist.
   if (testDatabaseGuardActive()) {
-    await assertTestDatabase(config.databaseUrl);
+    if (testOnlyAlreadyAdmittedChildAttachment === undefined) {
+      await assertTestDatabase(config.databaseUrl);
+    } else {
+      await claimAlreadyAdmittedTestDatabaseChildAttachment(config.databaseUrl, testOnlyAlreadyAdmittedChildAttachment);
+    }
   }
 
   if (pool) {
@@ -1114,7 +1446,7 @@ export async function initPostgresStorage(
   // never touch this new one.
   bumpStorageGeneration();
 
-  await bootstrapPostgresSchema({ log });
+  await bootstrapPostgresSchema({ log, ...(bootstrapLockTimeoutMs === undefined ? {} : { bootstrapLockTimeoutMs }) });
   return pool;
 }
 
@@ -1129,6 +1461,9 @@ export async function closePostgresStorage() {
   activeBackend = "sqlite";
   semanticEmbeddingColumnMode = "jsonb";
   semanticIterativeScanSupported = false;
+  // The verified-index cache describes the database being closed, not whatever
+  // database a later initPostgresStorage() attaches.
+  semanticGlobalHnswVerifiedUsable = false;
   lexicalPgSearchAvailability = "unavailable";
   // Storage-lifecycle fence: any deferred index-maintenance work scheduled
   // against the pool this just closed must never run against whatever pool
@@ -1145,17 +1480,37 @@ export async function closePostgresStorage() {
   }
 }
 
-export async function bootstrapPostgresSchema({
+/**
+ * Runs the full bootstrap DDL/migration batch exactly once, against a fresh
+ * checked-out client. Split out of `bootstrapPostgresSchema` so the retry
+ * wrapper below can re-run the WHOLE attempt -- including the advisory-lock
+ * acquisition and client checkout -- after a detected deadlock, rather than
+ * resuming mid-batch against a client Postgres may have already aborted.
+ */
+async function bootstrapPostgresSchemaOnce({
   log = (() => {
     /* no-op */
   }) as StorageLog,
+  bootstrapLockTimeoutMs,
 }: {
   log?: StorageLog;
+  bootstrapLockTimeoutMs?: number;
 } = {}): Promise<void> {
   const client = await getPostgresPool().connect();
   let bootstrapLockHeld = false;
   try {
-    await acquirePostgresBootstrapLock(client);
+    const databaseSizeBytes = await readPostgresDatabaseSize(client);
+    const lockBudget = {
+      databaseSizeBytes,
+      timeoutMs: resolvePostgresBootstrapLockTimeoutMs({
+        databaseSizeBytes,
+        ...(bootstrapLockTimeoutMs === undefined ? {} : { overrideMs: bootstrapLockTimeoutMs }),
+      }),
+    };
+    log(
+      `postgres bootstrap lock wait budget: ${lockBudget.timeoutMs}ms (database_size_bytes=${lockBudget.databaseSizeBytes ?? "unknown"}, source=${bootstrapLockTimeoutMs === undefined ? "data-aware/default" : "configured"})`
+    );
+    await acquirePostgresBootstrapLock(client, { budget: lockBudget, log });
     bootstrapLockHeld = true;
     // pgvector is optional. When available, the boot migration below moves
     // semantic embeddings to the pgvector representation; without it the
@@ -1342,12 +1697,15 @@ export async function bootstrapPostgresSchema({
         rotated_at TEXT,
         revoked_at TEXT,
         rejected_at TEXT,
-        rejection_reason TEXT
+        rejection_reason TEXT,
+        state_change_json JSONB
       );
       ALTER TABLE connector_instance_credentials
         ADD COLUMN IF NOT EXISTS rejected_at TEXT;
       ALTER TABLE connector_instance_credentials
         ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+      ALTER TABLE connector_instance_credentials
+        ADD COLUMN IF NOT EXISTS state_change_json JSONB;
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_credentials_owner_status
         ON connector_instance_credentials(owner_subject_id, status);
 
@@ -1366,7 +1724,7 @@ export async function bootstrapPostgresSchema({
         option_kind TEXT NOT NULL CHECK (option_kind IN ('collection_scope', 'transport')),
         origin TEXT NOT NULL CHECK (origin IN ('owner', 'agent', 'migration', 'default')),
         is_explicit BOOLEAN NOT NULL,
-        status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined')),
+        status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined', 'rejected')),
         collection_boundary_fingerprint TEXT,
         source_of_change TEXT NOT NULL,
         set_by TEXT NOT NULL,
@@ -1649,6 +2007,15 @@ export async function bootstrapPostgresSchema({
       );
       CREATE INDEX IF NOT EXISTS idx_pg_grants_client_status
         ON grants(client_id, status, issued_at);
+      -- Absent-only grant expiry: grants issued before that normalization
+      -- persisted an explicit JSON null expires_at in grant_json. Null and
+      -- absent both mean "no expiry", so dropping the member is a
+      -- representation change, not an authorization change. Scoped to the
+      -- JSON-null case so string expiries are never touched, and idempotent
+      -- so repeated startups are no-ops.
+      UPDATE grants
+        SET grant_json = grant_json - 'expires_at'
+        WHERE jsonb_typeof(grant_json->'expires_at') = 'null';
 
       CREATE TABLE IF NOT EXISTS tokens (
         token_id TEXT PRIMARY KEY,
@@ -2081,6 +2448,55 @@ export async function bootstrapPostgresSchema({
       -- on legacy duplicate rows.
       CREATE INDEX IF NOT EXISTS idx_pg_connector_detail_gaps_pending
         ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
+
+      -- Provider coverage-horizon/provenance disclosure — see the matching
+      -- SQLite DDL comment in server/db.ts (connector_coverage_horizons) for
+      -- the full rationale. Append-only, reversible-by-supersession; a
+      -- horizon never rewrites/deletes retained records and never by itself
+      -- marks a connection unhealthy.
+      CREATE TABLE IF NOT EXISTS connector_coverage_horizons (
+        horizon_id TEXT PRIMARY KEY,
+        connector_instance_id TEXT NOT NULL REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
+        stream TEXT NOT NULL DEFAULT '*',
+        earliest_available TEXT,
+        confirmed_at TEXT NOT NULL,
+        basis TEXT NOT NULL CHECK (basis IN ('provider_stated', 'provider_confirmed', 'inferred_from_stable_boundary')),
+        reason TEXT NOT NULL CHECK (reason IN ('provider_retention_policy', 'provider_deleted_history', 'provider_never_had_data', 'consent_window')),
+        confirmed_by TEXT NOT NULL,
+        note TEXT,
+        superseded_at TEXT,
+        superseded_by_horizon_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (now()::text)
+      );
+
+      -- At most one CURRENT (non-superseded) horizon per (connection, stream).
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_connector_coverage_horizons_current
+        ON connector_coverage_horizons(connector_instance_id, stream)
+        WHERE superseded_at IS NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_coverage_horizons_instance
+        ON connector_coverage_horizons(connector_instance_id);
+
+      -- Cross-invocation STREAM_EVIDENCE duplicate registry — see the
+      -- matching SQLite DDL comment in server/db.ts
+      -- (stream_evidence_run_registry) for the full rationale. Primary key
+      -- is EXACTLY (run_id, stream), matching spec-collection-profile.md
+      -- rule 5's scope; connector_instance_id is informational only. No
+      -- TTL/reap.
+      CREATE TABLE IF NOT EXISTS stream_evidence_run_registry (
+        run_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        payload_json TEXT,
+        replay_identity_json TEXT,
+        payload_digest TEXT,
+        event_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (now()::text),
+        PRIMARY KEY (run_id, stream)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pg_stream_evidence_run_registry_instance
+        ON stream_evidence_run_registry(connector_instance_id);
 
       CREATE TABLE IF NOT EXISTS connector_attention_records (
         attention_id TEXT PRIMARY KEY,
@@ -2586,6 +3002,22 @@ export async function bootstrapPostgresSchema({
         PRIMARY KEY(connector_instance_id, stream)
       );
 
+      -- One durable optional-maintenance job for the global and hot-source
+      -- HNSW catalog indexes. The row is scheduling/diagnostic state only;
+      -- vector reads remain correct while the state is pending or failed.
+      CREATE TABLE IF NOT EXISTS semantic_hnsw_index_build (
+        build_key TEXT PRIMARY KEY CHECK (build_key = 'semantic_hnsw'),
+        state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'ready', 'unavailable', 'failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT,
+        completed_at TEXT,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO semantic_hnsw_index_build(build_key, state, updated_at)
+      VALUES ('semantic_hnsw', 'pending', (now() AT TIME ZONE 'utc')::text)
+      ON CONFLICT (build_key) DO NOTHING;
+
       CREATE TABLE IF NOT EXISTS semantic_search_backfill_progress (
         connector_id TEXT NOT NULL,
         connector_instance_id TEXT NOT NULL,
@@ -2727,10 +3159,10 @@ export async function bootstrapPostgresSchema({
         manifest_generation BIGINT NOT NULL DEFAULT 0,
         schedule_checkpoint TEXT NOT NULL DEFAULT 'unobserved',
         run_lifecycle_event_seq BIGINT,
-        list_summary_projection_json JSONB,
-        list_summary_projection_state TEXT NOT NULL DEFAULT 'unobserved',
-        list_summary_projection_reason_code TEXT,
-        list_summary_projection_computed_at TEXT
+        -- Reason code only: the projection payload columns were removed
+        -- 2026-08-28 because their read was gated on a state value nothing
+        -- wrote. See the matching SQLite column comment in server/db.ts.
+        list_summary_projection_reason_code TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_summary_evidence_connector
         ON connector_summary_evidence(connector_id);
@@ -2744,6 +3176,33 @@ export async function bootstrapPostgresSchema({
         generation BIGINT NOT NULL DEFAULT 0,
         lease_token TEXT,
         lease_expires_at TEXT
+      );
+
+      -- Durable per-connection resume state for a canonical-count repair scan
+      -- that could not finish inside one bounded admission (a "whale"
+      -- connection with millions of live records). Keyed by
+      -- connector_instance_id, NOT by name like connector_maintenance_cursor
+      -- above -- that table models fleet-wide sweep cursors, a different
+      -- resource; this one is scoped to exactly the connection whose own
+      -- repair is too large for a single statement_timeout admission.
+      -- Scheduling/accumulation state only, never evidence about the owner's
+      -- data: a row here asserts nothing until the scan completes and
+      -- buildRepairedRow's normal upsert publishes it.
+      CREATE TABLE IF NOT EXISTS connector_summary_evidence_repair_chunk (
+        connector_instance_id TEXT PRIMARY KEY,
+        resume_after_id BIGINT,
+        accumulator_json JSONB NOT NULL,
+        -- The source_revision observed while this boundary was advanced. It
+        -- is a diagnostic/final-publication receipt, not resume eligibility:
+        -- records triggers invalidate the chunk only when a mutation touches
+        -- its proven id prefix, so an append above resume_after_id remains
+        -- resumable.
+        source_revision TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        -- Next page limit after a statement_timeout. Scheduling state only;
+        -- NULL on a legacy row means the scan uses the default first.
+        page_size INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS manifest_write_violations (
@@ -2847,13 +3306,16 @@ export async function bootstrapPostgresSchema({
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS run_lifecycle_event_seq BIGINT;
       ALTER TABLE connector_summary_evidence
-        ADD COLUMN IF NOT EXISTS list_summary_projection_json JSONB;
-      ALTER TABLE connector_summary_evidence
-        ADD COLUMN IF NOT EXISTS list_summary_projection_state TEXT NOT NULL DEFAULT 'unobserved';
-      ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS list_summary_projection_reason_code TEXT;
+      -- Drop the unreachable list-summary projection cache (2026-08-28): its
+      -- payload read was gated on list_summary_projection_state = 'current',
+      -- which no write ever produced. Bounded, idempotent DDL — it does not
+      -- scan or rewrite rows. See the matching SQLite migration in
+      -- server/db.ts.
       ALTER TABLE connector_summary_evidence
-        ADD COLUMN IF NOT EXISTS list_summary_projection_computed_at TEXT;
+        DROP COLUMN IF EXISTS list_summary_projection_json,
+        DROP COLUMN IF EXISTS list_summary_projection_state,
+        DROP COLUMN IF EXISTS list_summary_projection_computed_at;
       ALTER TABLE connector_maintenance_cursor
         ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 0;
       ALTER TABLE connector_maintenance_cursor
@@ -3064,6 +3526,7 @@ export async function bootstrapPostgresSchema({
     await migratePostgresBrowserSurfaceLeaseLifecycleChecks(client);
     await migratePostgresBrowserSurfaceLeasePriority(client);
     await migratePostgresRecordRejectionBytePayload(client);
+    await migratePostgresConfigRevisionRejectedStatus(client);
     await migratePostgresRetainedSizeRejectionColumns(client);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
@@ -3077,13 +3540,20 @@ export async function bootstrapPostgresSchema({
     await migratePostgresConnectorMaintenanceCursorNameCheck(client);
     await migratePostgresRecordsBlobSearchInstanceColumns(client);
     await migratePostgresClientEventSubscriptionAuthority(client);
-    await migratePostgresLocalDeviceConnectorInstances(client);
+    // Install the ledger BEFORE the first data migration that consults it.
+    // A migration that reads a missing ledger table would have to guess its
+    // own completion, which is the defect the ledger exists to remove.
+    await ensurePostgresMigrationLedger(client);
+    await migratePostgresLocalDeviceConnectorInstances(client, { log });
     await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
+    await migratePostgresConnectorSummaryEvidenceRepairChunkPageSize(client);
+    await migratePostgresStreamEvidenceRunRegistry(client);
     await migratePostgresSemanticEmbeddingToVector(client, log);
     await ensurePostgresLexicalScopedGinIndex(client, log);
     await ensurePostgresRecordsCanonicalCountIndex(client, log);
     await ensurePostgresRecordsInstanceStreamIdIndex(client, log);
+    await ensurePostgresRecordsInstanceDeletedIdIndex(client, log);
     await ensurePostgresConnectorSummarySourceRevisionPrimitive(client);
   } finally {
     try {
@@ -3092,6 +3562,78 @@ export async function bootstrapPostgresSchema({
       }
     } finally {
       client.release();
+    }
+  }
+}
+
+function bootstrapDeadlockRetryDelay(attempt: number): number {
+  return Math.min(
+    POSTGRES_BOOTSTRAP_DEADLOCK_MAX_DELAY_MS,
+    POSTGRES_BOOTSTRAP_DEADLOCK_INITIAL_DELAY_MS * 2 ** Math.min(attempt, 4)
+  );
+}
+
+interface BootstrapDeadlockRetryOptions {
+  bootstrapLockTimeoutMs?: number;
+  log?: StorageLog;
+  runOnce?: (opts: { log: StorageLog; bootstrapLockTimeoutMs?: number }) => Promise<void>;
+  sleep?: (delayMs: number) => Promise<void>;
+}
+
+/**
+ * Bounded retry of the WHOLE bootstrap attempt, scoped to exactly one
+ * failure mode: SQLSTATE 40P01 (Postgres-detected deadlock) surfacing from
+ * `bootstrapPostgresSchemaOnce`'s DDL batch. This happens when the batch's
+ * AccessExclusiveLock on connectors/connector_instances forms a wait-for
+ * cycle with an ordinary, unrelated connector-registration write already in
+ * flight against the same database -- a real shape under rolling/blue-green
+ * restarts, where a starting instance's bootstrap can overlap an
+ * already-running instance's writes. Postgres resolves the cycle itself by
+ * aborting one side; retrying the aborted side is the standard recovery, not
+ * a workaround.
+ *
+ * Every retry re-runs the FULL attempt (fresh client checkout, fresh
+ * advisory-lock acquisition, the entire DDL/migration batch) after
+ * `bootstrapPostgresSchemaOnce`'s own `finally` has already released the
+ * advisory lock and the client back to the pool -- so a retry never resumes
+ * mid-batch against a connection Postgres may have already aborted, and
+ * never holds the serialization lock across the retry boundary.
+ *
+ * Any other error -- including every other SQLSTATE -- rethrows immediately
+ * on the first attempt. This is not a general-purpose retry: retrying an
+ * arbitrary bootstrap failure could mask a real migration defect instead of
+ * a transient lock-ordering race.
+ */
+export async function bootstrapPostgresSchema({
+  log = NOOP_STORAGE_LOG,
+  bootstrapLockTimeoutMs,
+  sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  runOnce = bootstrapPostgresSchemaOnce,
+}: BootstrapDeadlockRetryOptions = {}): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: bounded retry loop -- each attempt must finish before deciding whether to retry.
+      await runOnce({ log, ...(bootstrapLockTimeoutMs === undefined ? {} : { bootstrapLockTimeoutMs }) });
+      if (attempt > 0) {
+        log(`postgres bootstrap succeeded after ${attempt} deadlock retr${attempt === 1 ? "y" : "ies"}`);
+      }
+      return;
+    } catch (err) {
+      const sqlstate = (err as { code?: string } | null)?.code;
+      if (sqlstate !== POSTGRES_BOOTSTRAP_DEADLOCK_SQLSTATE) {
+        throw err;
+      }
+      if (attempt + 1 >= POSTGRES_BOOTSTRAP_DEADLOCK_MAX_ATTEMPTS) {
+        log(
+          `postgres bootstrap deadlock (40P01) on attempt ${attempt + 1}/${POSTGRES_BOOTSTRAP_DEADLOCK_MAX_ATTEMPTS}: retry budget exhausted, rethrowing`
+        );
+        throw err;
+      }
+      const delayMs = bootstrapDeadlockRetryDelay(attempt);
+      log(
+        `postgres bootstrap deadlock (40P01) on attempt ${attempt + 1}/${POSTGRES_BOOTSTRAP_DEADLOCK_MAX_ATTEMPTS}: retrying whole bootstrap attempt in ${delayMs}ms`
+      );
+      await sleep(delayMs);
     }
   }
 }
@@ -3181,6 +3723,8 @@ async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: Poo
       DECLARE
         new_id TEXT;
         old_id TEXT;
+        new_record_id BIGINT;
+        old_record_id BIGINT;
         new_row JSONB;
         old_row JSONB;
       BEGIN
@@ -3194,6 +3738,9 @@ async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: Poo
               NULLIF(new_row->'data_json'->>'connection_id', '')
             );
           END IF;
+          IF TG_TABLE_NAME = 'records' THEN
+            new_record_id := NULLIF(new_row->>'id', '')::bigint;
+          END IF;
         END IF;
         IF TG_OP <> 'INSERT' THEN
           old_row := to_jsonb(OLD);
@@ -3205,12 +3752,31 @@ async function ensurePostgresConnectorSummarySourceRevisionPrimitive(client: Poo
               NULLIF(old_row->'data_json'->>'connection_id', '')
             );
           END IF;
+          IF TG_TABLE_NAME = 'records' THEN
+            old_record_id := NULLIF(old_row->>'id', '')::bigint;
+          END IF;
         END IF;
         IF new_id IS NOT NULL THEN
           PERFORM pdpp_advance_connector_summary_source_revision(new_id);
         END IF;
         IF old_id IS NOT NULL AND old_id IS DISTINCT FROM new_id THEN
           PERFORM pdpp_advance_connector_summary_source_revision(old_id);
+        END IF;
+        -- A chunk receipt proves only its id prefix. A records append above
+        -- the boundary may advance the broad source_revision but leaves that
+        -- prefix intact; a mutation at or below it must delete the receipt in
+        -- this same writer transaction so the next page restarts from zero.
+        IF TG_TABLE_NAME = 'records' THEN
+          IF new_id IS NOT NULL AND new_record_id IS NOT NULL THEN
+            DELETE FROM connector_summary_evidence_repair_chunk
+             WHERE connector_instance_id = new_id
+               AND new_record_id <= resume_after_id;
+          END IF;
+          IF old_id IS NOT NULL AND old_record_id IS NOT NULL THEN
+            DELETE FROM connector_summary_evidence_repair_chunk
+             WHERE connector_instance_id = old_id
+               AND old_record_id <= resume_after_id;
+          END IF;
         END IF;
         IF TG_OP = 'DELETE' THEN
           RETURN OLD;
@@ -3329,6 +3895,19 @@ function bootstrapLockDelay(attempt: number): number {
   );
 }
 
+async function readPostgresDatabaseSize(client: PoolClient): Promise<number | null> {
+  try {
+    const result = await client.query("SELECT pg_database_size(current_database()) AS bytes");
+    const bytes = Number(result.rows[0]?.bytes);
+    return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null;
+  } catch {
+    // The size probe is advisory. A restricted Postgres role can still run the
+    // schema bootstrap, so an unavailable probe must not turn into a boot
+    // failure. The resolver uses the populated-database budget when unknown.
+    return null;
+  }
+}
+
 /**
  * Names who is holding the bootstrap lock, for the timeout error only.
  *
@@ -3372,27 +3951,67 @@ async function describeBootstrapLockHolders(client: PoolClient): Promise<string>
   }
 }
 
-async function acquirePostgresBootstrapLock(client: PoolClient): Promise<void> {
-  const tryAcquire = async (attempt: number): Promise<void> => {
+interface BootstrapLockWaitOptions {
+  budget: PostgresBootstrapLockBudget;
+  log?: StorageLog;
+  now?: () => number;
+  sleep?: (delayMs: number) => Promise<void>;
+}
+
+async function acquirePostgresBootstrapLock(
+  client: PoolClient,
+  {
+    budget,
+    log = NOOP_STORAGE_LOG,
+    now = () => performance.now(),
+    sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  }: BootstrapLockWaitOptions
+): Promise<void> {
+  const startedAt = now();
+  const deadline = startedAt + budget.timeoutMs;
+  let attempt = 0;
+  let nextProgressAt = startedAt;
+
+  for (;;) {
+    // biome-ignore lint/performance/noAwaitInLoops: This is the bounded polling loop whose deadline is the behavior under test.
     const result = await client.query(
       "SELECT pg_try_advisory_lock($1, $2) AS locked",
       POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK
     );
     if (result.rows[0]?.locked === true) {
+      log(`postgres bootstrap lock acquired after ${now() - startedAt}ms (attempt=${attempt})`);
       return;
     }
+
     // pg_try_advisory_lock completes before this application-side sleep. A
     // contender therefore has no active virtual transaction that could block
     // CREATE/DROP INDEX CONCURRENTLY in the lock holder.
-    await new Promise((resolve) => setTimeout(resolve, bootstrapLockDelay(attempt)));
-    if (attempt + 1 >= POSTGRES_BOOTSTRAP_LOCK_MAX_ATTEMPTS) {
-      throw new Error(
-        `Timed out waiting for PostgreSQL bootstrap serialization lock.${await describeBootstrapLockHolders(client)}`
-      );
+    const current = now();
+    const remainingMs = deadline - current;
+    if (remainingMs <= 0) {
+      break;
     }
-    await tryAcquire(attempt + 1);
-  };
-  await tryAcquire(0);
+    if (current >= nextProgressAt) {
+      log(
+        `postgres bootstrap lock waiting (attempt=${attempt}, elapsed_ms=${current - startedAt}, remaining_ms=${remainingMs}, database_size_bytes=${budget.databaseSizeBytes ?? "unknown"})`
+      );
+      nextProgressAt = current + POSTGRES_BOOTSTRAP_LOCK_PROGRESS_INTERVAL_MS;
+    }
+    await sleep(Math.min(bootstrapLockDelay(attempt), remainingMs));
+    attempt += 1;
+  }
+
+  throw new Error(
+    `Timed out waiting for PostgreSQL bootstrap serialization lock after ${budget.timeoutMs}ms.${await describeBootstrapLockHolders(client)}`
+  );
+}
+
+/** Test-only seam for the real deadline loop; production uses bootstrapPostgresSchema. */
+export function __acquirePostgresBootstrapLockForTest(
+  client: PoolClient,
+  options: BootstrapLockWaitOptions
+): Promise<void> {
+  return acquirePostgresBootstrapLock(client, options);
 }
 
 async function hasPgvectorExtension(client: PoolClient): Promise<boolean> {
@@ -3434,15 +4053,29 @@ async function detectSemanticIterativeScanSupport(client: PoolClient): Promise<b
   }
 }
 
-async function ensureSemanticEmbeddingHnswIndex(client: PoolClient, log: StorageLog): Promise<void> {
-  const existing = await client.query(
-    `SELECT 1 FROM pg_indexes
-      WHERE schemaname = current_schema() AND tablename = 'semantic_search_blob' AND indexname = $1
-      LIMIT 1`,
-    [SEMANTIC_HNSW_INDEX_NAME]
-  );
-  if ((existing.rowCount ?? 0) > 0) {
+async function setSemanticHnswStatementTimeout(client: PoolClient, deadline: number): Promise<void> {
+  const remainingMs = Math.floor(deadline - Date.now());
+  if (remainingMs <= 0) {
+    throw new Error("semantic HNSW maintenance attempt deadline exceeded");
+  }
+  await client.query(`SET statement_timeout = ${remainingMs}`);
+}
+
+async function ensureSemanticEmbeddingHnswIndex(client: PoolClient, log: StorageLog, deadline: number): Promise<void> {
+  const existing = await client.query(SEMANTIC_HNSW_INDEX_SHAPE_QUERY, [SEMANTIC_HNSW_INDEX_NAME]);
+  const shape = readSemanticHnswIndexShape(existing.rows[0]);
+  if (isSemanticHnswIndexUsable(shape, semanticGlobalHnswPredicate())) {
     return;
+  }
+  // The index is about to be absent or replaced; searches must fall back to
+  // the exact scoped scan until a rebuilt index is verified canonical again.
+  semanticGlobalHnswVerifiedUsable = false;
+  if (shape !== null) {
+    log(
+      `[PDPP] Semantic index maintenance: dropping unusable HNSW index ${SEMANTIC_HNSW_INDEX_NAME} (${describeSemanticHnswIndexMismatch(shape, semanticGlobalHnswPredicate())})`
+    );
+    await setSemanticHnswStatementTimeout(client, deadline);
+    await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${sqlIdentifier(SEMANTIC_HNSW_INDEX_NAME)}`);
   }
 
   // HNSW builds want the graph in maintenance_work_mem; the Postgres default
@@ -3451,30 +4084,33 @@ async function ensureSemanticEmbeddingHnswIndex(client: PoolClient, log: Storage
   // size-literal pattern before interpolation.
   const workMem = process.env.PDPP_PG_SEMANTIC_INDEX_MAINTENANCE_WORK_MEM || "256MB";
   const workMemValid = POSTGRES_WORK_MEM_LITERAL.test(workMem);
-  if (workMemValid) {
-    await client.query(`SET maintenance_work_mem = '${workMem}'`);
+  try {
+    if (workMemValid) {
+      await client.query(`SET maintenance_work_mem = '${workMem}'`);
+    }
+    // Parallel HNSW builds allocate dynamic shared memory proportional to
+    // maintenance_work_mem; containerized Postgres commonly runs with the 64MB
+    // /dev/shm default. Build serially so this optional job is safe in the
+    // smallest supported container.
+    await client.query("SET max_parallel_maintenance_workers = 0");
+    log(
+      `[PDPP] Semantic index maintenance: building HNSW index ${SEMANTIC_HNSW_INDEX_NAME} (cosine, ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS} dims${workMemValid ? `, maintenance_work_mem=${workMem}` : ""}, serial build)`
+    );
+    const startedAt = Date.now();
+    await setSemanticHnswStatementTimeout(client, deadline);
+    await client.query(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${SEMANTIC_HNSW_INDEX_NAME}
+         ON semantic_search_blob
+         USING hnsw ((embedding::vector(${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})) vector_cosine_ops)
+         WHERE (vector_dims(embedding) = ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})`
+    );
+    log(`[PDPP] Semantic index maintenance: HNSW index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  } finally {
+    await client.query("RESET max_parallel_maintenance_workers").catch(() => undefined);
+    if (workMemValid) {
+      await client.query("RESET maintenance_work_mem").catch(() => undefined);
+    }
   }
-  // Parallel HNSW builds allocate dynamic shared memory proportional to
-  // maintenance_work_mem; containerized Postgres commonly runs with the 64MB
-  // /dev/shm default and dies with "could not resize shared memory segment".
-  // Build serially — no DSM involved — so the boot migration succeeds in any
-  // container (verified against pgvector/pgvector:pg16).
-  await client.query("SET max_parallel_maintenance_workers = 0");
-  log(
-    `[PDPP] Semantic index migration: building HNSW index ${SEMANTIC_HNSW_INDEX_NAME} (cosine, ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS} dims${workMemValid ? `, maintenance_work_mem=${workMem}` : ""}, serial build)`
-  );
-  const startedAt = Date.now();
-  await client.query(
-    `CREATE INDEX IF NOT EXISTS ${SEMANTIC_HNSW_INDEX_NAME}
-       ON semantic_search_blob
-       USING hnsw ((embedding::vector(${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})) vector_cosine_ops)
-       WHERE (vector_dims(embedding) = ${SEMANTIC_VECTOR_INDEXED_DIMENSIONS})`
-  );
-  await client.query("RESET max_parallel_maintenance_workers");
-  if (workMemValid) {
-    await client.query("RESET maintenance_work_mem");
-  }
-  log(`[PDPP] Semantic index migration: HNSW index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`);
 }
 
 function sqlIdentifier(value: string): string {
@@ -3504,15 +4140,7 @@ function semanticHotHnswIndexName(connectorId: string, connectorInstanceId: stri
   return `${SEMANTIC_HOT_HNSW_INDEX_PREFIX}${connector}_${instance}`.slice(0, 63);
 }
 
-async function ensureSemanticHotHnswIndexes(
-  client: PoolClient,
-  log: StorageLog = () => {
-    /* no-op */
-  }
-): Promise<void> {
-  // bootstrapPostgresSchema holds the polling-acquired session lock while this
-  // concurrent build runs; a losing bootstrap has finished pg_try_advisory_lock
-  // before backing off and cannot form a virtual-xact wait cycle here.
+async function ensureSemanticHotHnswIndexes(client: PoolClient, log: StorageLog, deadline: number): Promise<void> {
   if (!(await hasPgvectorExtension(client))) {
     return;
   }
@@ -3551,8 +4179,22 @@ async function ensureSemanticHotHnswIndexes(
     log(
       `[PDPP] Semantic index migration: ensuring hot-source HNSW index ${indexName} (${row.connector_id}, ${row.indexed_rows} rows)`
     );
+    const existing = await client.query(SEMANTIC_HNSW_INDEX_SHAPE_QUERY, [indexName]);
+    const shape = readSemanticHnswIndexShape(existing.rows[0]);
+    const expectedPredicate = semanticHotHnswPredicate(String(row.connector_instance_id));
+    if (isSemanticHnswIndexUsable(shape, expectedPredicate)) {
+      return;
+    }
+    if (shape !== null) {
+      log(
+        `[PDPP] Semantic index maintenance: dropping unusable hot-source index ${indexName} (${describeSemanticHnswIndexMismatch(shape, expectedPredicate)})`
+      );
+      await setSemanticHnswStatementTimeout(client, deadline);
+      await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${sqlIdentifier(indexName)}`);
+    }
     await client.query("SET max_parallel_maintenance_workers = 0");
     try {
+      await setSemanticHnswStatementTimeout(client, deadline);
       await client.query(
         `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${sqlIdentifier(indexName)}
            ON semantic_search_blob
@@ -3564,6 +4206,174 @@ async function ensureSemanticHotHnswIndexes(
       await client.query("RESET max_parallel_maintenance_workers");
     }
   }, Promise.resolve());
+}
+
+interface PostgresSemanticHnswMaintenanceOptions {
+  log?: StorageLog;
+}
+
+async function updateSemanticHnswBuildState(
+  client: PoolClient,
+  values: {
+    state: "pending" | "running" | "ready" | "unavailable" | "failed";
+    incrementAttempts?: boolean;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    lastError?: string | null;
+  }
+): Promise<void> {
+  await client.query(
+    `UPDATE semantic_hnsw_index_build
+        SET state = $1,
+            attempts = attempts + CASE WHEN $2 THEN 1 ELSE 0 END,
+            started_at = COALESCE($3, started_at),
+            completed_at = $4,
+            last_error = $5,
+            updated_at = (now() AT TIME ZONE 'utc')::text
+      WHERE build_key = 'semantic_hnsw'`,
+    [
+      values.state,
+      values.incrementAttempts === true,
+      values.startedAt ?? null,
+      values.completedAt ?? null,
+      values.lastError ?? null,
+    ]
+  );
+}
+
+function postgresMaintenanceErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 2000);
+}
+
+/**
+ * Run one bounded, durable HNSW attempt. This function is intentionally
+ * separate from bootstrap: the graph is a catalog acceleration, while the
+ * vector column and its read semantics are required storage state.
+ */
+export async function runPostgresSemanticHnswMaintenance({
+  log = NOOP_STORAGE_LOG,
+}: PostgresSemanticHnswMaintenanceOptions = {}): Promise<void> {
+  if (!isPostgresStorageBackend()) {
+    return;
+  }
+  const client = await getPostgresLockPool().connect();
+  let lockHeld = false;
+  let sessionSettingsApplied = false;
+  try {
+    const lock = await client.query("SELECT pg_try_advisory_lock($1, $2) AS locked", POSTGRES_SEMANTIC_HNSW_BUILD_LOCK);
+    if (lock.rows[0]?.locked !== true) {
+      log("[PDPP] Semantic index maintenance: HNSW builder already owned by another process");
+      return;
+    }
+    lockHeld = true;
+
+    const startedAt = new Date().toISOString();
+    await updateSemanticHnswBuildState(client, { incrementAttempts: true, startedAt, state: "running" });
+    if (!(await hasPgvectorExtension(client))) {
+      await updateSemanticHnswBuildState(client, {
+        completedAt: null,
+        lastError: null,
+        state: "unavailable",
+      });
+      log("[PDPP] Semantic index maintenance: pgvector is unavailable; exact semantic reads remain active");
+      return;
+    }
+
+    const timeoutMs = resolvePostgresSemanticHnswBuildTimeoutMs();
+    const deadline = Date.now() + timeoutMs;
+    await client.query(`SET statement_timeout = ${timeoutMs}`);
+    sessionSettingsApplied = true;
+    await client.query(`SET lock_timeout = ${POSTGRES_SEMANTIC_HNSW_BUILD_LOCK_TIMEOUT_MS}`);
+    await ensureSemanticEmbeddingHnswIndex(client, log, deadline);
+    await ensureSemanticHotHnswIndexes(client, log, deadline);
+    await updateSemanticHnswBuildState(client, {
+      completedAt: new Date().toISOString(),
+      lastError: null,
+      state: "ready",
+    });
+    log("[PDPP] Semantic index maintenance: HNSW builder completed");
+  } catch (error) {
+    const message = postgresMaintenanceErrorMessage(error);
+    await updateSemanticHnswBuildState(client, {
+      completedAt: null,
+      lastError: message,
+      state: "failed",
+    }).catch(() => undefined);
+    log(`[PDPP] Semantic index maintenance: HNSW builder failed (retryable): ${message}`);
+  } finally {
+    if (sessionSettingsApplied) {
+      await client.query("RESET statement_timeout").catch(() => undefined);
+      await client.query("RESET lock_timeout").catch(() => undefined);
+    }
+    if (lockHeld) {
+      await client.query("SELECT pg_advisory_unlock($1, $2)", POSTGRES_SEMANTIC_HNSW_BUILD_LOCK).catch(() => undefined);
+    }
+    client.release();
+  }
+}
+
+/**
+ * Whether the global semantic HNSW index is present in the catalog with the
+ * canonical shape. The search path uses this to decide whether it may take the
+ * bounded ANN candidate window; while the answer is false it must stay on the
+ * exact scoped scan, which is slower but cannot under-return.
+ *
+ * Only the positive answer is cached. A verified-canonical index is dropped
+ * only by this module's own maintenance (which clears the cache), so caching
+ * `true` cannot outlive the index. A negative answer is never cached, so a
+ * search issued while the builder is still running picks the index up on the
+ * first call after the build commits.
+ */
+let semanticGlobalHnswVerifiedUsable = false;
+
+export function __resetPostgresSemanticHnswReadinessCacheForTest(): void {
+  semanticGlobalHnswVerifiedUsable = false;
+}
+
+export async function isPostgresSemanticGlobalHnswUsable(): Promise<boolean> {
+  if (!isPostgresStorageBackend()) {
+    return false;
+  }
+  if (semanticGlobalHnswVerifiedUsable) {
+    return true;
+  }
+  try {
+    const existing = await postgresQuery(SEMANTIC_HNSW_INDEX_SHAPE_QUERY, [SEMANTIC_HNSW_INDEX_NAME]);
+    const usable = isSemanticHnswIndexUsable(
+      readSemanticHnswIndexShape(existing.rows[0] as Record<string, unknown> | undefined),
+      semanticGlobalHnswPredicate()
+    );
+    semanticGlobalHnswVerifiedUsable = usable;
+    return usable;
+  } catch {
+    // A catalog read failure must not upgrade the read path to the
+    // possibly-truncating candidate window.
+    return false;
+  }
+}
+
+/** Schedule the optional builder without adding it to the readiness await chain. */
+export function schedulePostgresSemanticHnswMaintenance({
+  log = NOOP_STORAGE_LOG,
+  run = runPostgresSemanticHnswMaintenance,
+}: PostgresSemanticHnswMaintenanceOptions & {
+  run?: (options: PostgresSemanticHnswMaintenanceOptions) => Promise<void>;
+} = {}): Promise<void> {
+  log("[PDPP] Semantic index maintenance: HNSW builder scheduled after AS/RS listen");
+  return new Promise((resolve) => setImmediate(resolve))
+    .then(() => run({ log }))
+    .catch((error) => {
+      log(`[PDPP] Semantic index maintenance: HNSW scheduler failed after listeners (retryable): ${error}`);
+    });
+}
+
+/** Test-only seam for proving the scheduler is outside the readiness chain. */
+export function __schedulePostgresSemanticHnswMaintenanceForTest(options: {
+  log: StorageLog;
+  run: (options: PostgresSemanticHnswMaintenanceOptions) => Promise<void>;
+}): Promise<void> {
+  return schedulePostgresSemanticHnswMaintenance(options);
 }
 
 /**
@@ -3594,8 +4404,6 @@ async function migratePostgresSemanticEmbeddingToVector(
 
   const udtName = await postgresColumnUdtName(client, "semantic_search_blob", "embedding");
   if (udtName === "vector") {
-    await ensureSemanticEmbeddingHnswIndex(client, log);
-    await ensureSemanticHotHnswIndexes(client, log);
     semanticEmbeddingColumnMode = "vector";
     semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
     return;
@@ -3663,8 +4471,6 @@ async function migratePostgresSemanticEmbeddingToVector(
     throw err;
   }
 
-  await ensureSemanticEmbeddingHnswIndex(client, log);
-  await ensureSemanticHotHnswIndexes(client, log);
   semanticEmbeddingColumnMode = "vector";
   semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
   if (total > 0) {
@@ -4938,6 +5744,46 @@ async function ensurePostgresRecordsInstanceStreamIdIndex(
   });
 }
 
+// The summary-evidence repair scans one connection across every stream. Its
+// keyset predicate cannot use the stream-qualified index above because `stream`
+// is not constrained, so keep the matching access path separate.
+const RECORDS_INSTANCE_DELETED_ID_INDEX_LOCK_ID = "8022352479012004";
+
+async function ensurePostgresRecordsInstanceDeletedIdIndex(
+  client: PoolClient,
+  log: StorageLog = NOOP_STORAGE_LOG
+): Promise<void> {
+  await withPostgresAdvisoryLock(client, RECORDS_INSTANCE_DELETED_ID_INDEX_LOCK_ID, async () => {
+    const existing = await client.query(
+      `SELECT ix.indisvalid AS valid
+         FROM pg_class idx
+         JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+         JOIN pg_index ix ON ix.indexrelid = idx.oid
+        WHERE ns.nspname = current_schema()
+          AND idx.relname = 'idx_pg_records_instance_deleted_id'
+        LIMIT 1`
+    );
+    if ((existing.rowCount ?? 0) > 0 && existing.rows[0]?.valid === true) {
+      return;
+    }
+    if ((existing.rowCount ?? 0) > 0) {
+      log("[PDPP] Records migration: dropping invalid instance/deleted/id index before rebuild");
+      await client.query("DROP INDEX CONCURRENTLY IF EXISTS idx_pg_records_instance_deleted_id");
+    }
+
+    log("[PDPP] Records migration: building keyset index idx_pg_records_instance_deleted_id");
+    const startedAt = Date.now();
+    await client.query(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_records_instance_deleted_id
+         ON records(connector_instance_id, deleted, id)
+         INCLUDE (stream, emitted_at)`
+    );
+    log(
+      `[PDPP] Records migration: instance/deleted/id keyset index ready in ${Math.round((Date.now() - startedAt) / 1000)}s`
+    );
+  });
+}
+
 function localDeviceConnectorId(connectorId: string): string {
   return `local-device:${encodeURIComponent(connectorId)}`;
 }
@@ -4949,7 +5795,8 @@ function legacyLocalDeviceConnectorId(connectorId: string, sourceInstanceId: str
 async function mergeEquivalentPostgresConnectorInstances(
   client: PoolClient,
   legacyId: string,
-  canonicalId: string
+  canonicalId: string,
+  { skipDeviceSourceInstanceRewrite = false }: { skipDeviceSourceInstanceRewrite?: boolean } = {}
 ): Promise<void> {
   if (legacyId === canonicalId) {
     return;
@@ -4957,6 +5804,9 @@ async function mergeEquivalentPostgresConnectorInstances(
 
   const existingTables: string[] = [];
   await sequentially(PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES, async (table) => {
+    if (skipDeviceSourceInstanceRewrite && table === "device_source_instances") {
+      return;
+    }
     if (await hasPostgresColumn(client, table, "connector_instance_id")) {
       existingTables.push(table);
     }
@@ -4974,7 +5824,7 @@ async function mergeEquivalentPostgresConnectorInstances(
         AND table_name <> 'connector_instances'`
   );
   await sequentially(references.rows, async ({ table_name: table }) => {
-    if (existingTables.includes(table)) {
+    if (existingTables.includes(table) || (skipDeviceSourceInstanceRewrite && table === "device_source_instances")) {
       return;
     }
     const present = await client.query(
@@ -5024,6 +5874,30 @@ async function mergeEquivalentPostgresConnectorInstances(
           legacyId,
         ]);
       }
+      return;
+    }
+    if (PG_ANY_TWO_OWNERS_TABLES.has(table)) {
+      // connector_state and grant_connector_state fail closed on any
+      // two-sided ownership, not only a same-stream collision: a legacy row
+      // on one stream and a canonical row on a different stream are both
+      // authoritative state that was never reconciled, and must not be
+      // silently combined. This matches the class-level preflight above and
+      // holds even if this function is ever called outside that preflight.
+      const both = await client.query(
+        `SELECT
+           EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $1) AS legacy_present,
+           EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $2) AS canonical_present`,
+        [legacyId, canonicalId]
+      );
+      if (both.rows[0].legacy_present && both.rows[0].canonical_present) {
+        throw new Error(
+          `Cannot coalesce local-device connector instance ${legacyId} → ${canonicalId}: ${table} has colliding owned state; manual reconciliation required.`
+        );
+      }
+      await client.query(`UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`, [
+        canonicalId,
+        legacyId,
+      ]);
       return;
     }
     const keys = await client.query(`SELECT ${uniqueCols.join(", ")} FROM ${table} WHERE connector_instance_id = $1`, [
@@ -5152,168 +6026,838 @@ async function localDeviceMigrationIsTombstoned(
   return tombstone.rows.length > 0;
 }
 
-async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient): Promise<void> {
-  const rows = await client.query(`
-    SELECT
-      dsi.source_instance_id,
-      dsi.device_id,
-      dsi.connector_id,
-      dsi.connector_instance_id,
-      dsi.local_binding_id,
-      COALESCE(dsi.display_name, de.display_name, dsi.local_binding_id) AS display_name,
-      dsi.status,
-      dsi.created_at,
-      dsi.updated_at,
-      dsi.revoked_at,
-      de.owner_subject_id
-    FROM device_source_instances dsi
-    JOIN device_exporters de ON de.device_id = dsi.device_id
-    ORDER BY dsi.created_at, dsi.source_instance_id
-  `);
+/**
+ * Authoritative connector-scoped tables the identity migration rewrites in
+ * the SAME transaction as the identity change.
+ *
+ * These are not reconstructible from anything else: `record_changes` is the
+ * retained change-history authority, `version_counter` is per-stream record
+ * history state, `blobs`/`blob_bindings` carry payload bindings, and the
+ * schedule/run tables are operator/audit state. A connector-id rewrite here
+ * is safe only once the exact connector-instance identity and every
+ * collision check has succeeded, so it stays inside the fail-closed
+ * transaction and never becomes best-effort background work.
+ */
+const PG_LOCAL_DEVICE_AUTHORITATIVE_REWRITE_TABLES = [
+  "connector_state",
+  "grant_connector_state",
+  "connector_detail_gaps",
+  "records",
+  "record_changes",
+  "version_counter",
+  "blobs",
+  "blob_bindings",
+  "connector_schedules",
+  "controller_active_runs",
+  "run_history",
+  "scheduler_last_run_times",
+] as const;
 
-  if (rows.rows.length === 0) {
-    return;
+/**
+ * Derived projection tables the identity migration deliberately does NOT
+ * rewrite inline.
+ *
+ * Their source of truth is canonical `records` plus the registered manifest,
+ * and the ordinary reconcile path already rebuilds them
+ * (`search-index-reconcile.ts`). Rewriting them here was the incident: the
+ * two largest tables on the deployment (24 GB `lexical_search_index`, 9.8 GB
+ * `record_changes`) were both scanned before the server bound a listener,
+ * because `connector_id` is only a residual filter on every instance-leading
+ * index these tables have.
+ *
+ * A stale legacy `connector_id` here is not merely cosmetic: the semantic
+ * reads in `postgres-search.ts` (`postgresListSemanticConnectorInstanceIds`,
+ * `postgresListSemanticStreamsForConnector`) select BY `connector_id`, so a
+ * legacy-keyed projection row is invisible to them. That is why these rows
+ * are deleted rather than repointed — the same disposition
+ * `mergeEquivalentPostgresConnectorInstances` already applies to
+ * `PG_REBUILDABLE_INSTANCE_REFERENCE_TABLES` — and why the scope is marked
+ * dirty in the identity transaction so the read surface reports the backlog
+ * honestly until the rebuild lands.
+ */
+const PG_LOCAL_DEVICE_DERIVED_PROJECTION_TABLES = [
+  "lexical_search_index",
+  "lexical_search_meta",
+  "semantic_search_blob",
+  "semantic_search_meta",
+  "semantic_search_backfill_progress",
+] as const;
+
+/**
+ * Source rows committed per transaction. Small on purpose: the batch is the
+ * crash-resume granularity, and each batch commits its identity writes, its
+ * authoritative rewrites, its projection-repair marks, and its cursor
+ * advance together. A larger batch buys nothing (the per-row work dominates)
+ * and costs a longer lock hold plus more repeated work after a crash.
+ */
+const PG_LOCAL_DEVICE_MIGRATION_DEFAULT_BATCH_SIZE = 25;
+
+/**
+ * Batch size, overridable so a test can force observable batch boundaries.
+ *
+ * Batch boundaries ARE the crash-resume semantics, and at the default size a
+ * small fixture fits in one batch — which would make a resume oracle assert
+ * nothing. The override exists for that oracle, not as a tuning knob:
+ * production leaves the variable unset and gets the default.
+ */
+function pgLocalDeviceMigrationBatchSize(): number {
+  const raw = Number.parseInt(process.env.PDPP_LOCAL_DEVICE_MIGRATION_BATCH_SIZE ?? "", 10);
+  return Number.isInteger(raw) && raw > 0 ? raw : PG_LOCAL_DEVICE_MIGRATION_DEFAULT_BATCH_SIZE;
+}
+
+const PG_LOCAL_DEVICE_MIGRATION_LEASE_MS = 15 * 60 * 1000;
+
+export interface LocalDeviceCanonicalizationReceipt {
+  /** Rows this run actually mutated, summed across authoritative tables. */
+  readonly changedRows: number;
+  /** Source rows this run committed. Zero on a boot that skipped the phase. */
+  readonly processedSourceRows: number;
+  /** Projection scopes this run enqueued for post-readiness repair. */
+  readonly repairScopesEnqueued: number;
+  /** `true` when a durable `complete` receipt made this boot skip the data phase. */
+  readonly skippedByReceipt: boolean;
+}
+
+interface LocalDeviceRowOutcome {
+  readonly changedRows: number;
+  readonly repairScopes: number;
+}
+
+/**
+ * Rewrite one authoritative table's legacy connector-id references for a
+ * single connector instance, returning the rows actually changed.
+ *
+ * The `connector_id IS DISTINCT FROM $1` guard is a COST guard, not the
+ * correctness mechanism — the ledger receipt is what makes the migration
+ * exactly-once. It matters because the pre-guard statement issued a write
+ * for every matching row on every boot even when the value was already
+ * canonical, and because the returned count is the only honest way to say
+ * "this run changed nothing" without inferring it from
+ * `pg_stat_user_tables`.
+ */
+async function rewritePostgresAuthoritativeConnectorId(
+  client: PoolClient,
+  table: string,
+  {
+    connectorInstanceId,
+    newConnectorId,
+    oldConnectorId,
+  }: {
+    connectorInstanceId: string;
+    newConnectorId: string;
+    oldConnectorId: string;
+  }
+): Promise<number> {
+  const result = await client.query(
+    `UPDATE ${pgIdentifier(table)}
+        SET connector_id = $1
+      WHERE connector_id = $2
+        AND connector_instance_id = $3
+        AND connector_id IS DISTINCT FROM $1`,
+    [newConnectorId, oldConnectorId, connectorInstanceId]
+  );
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Drop this instance's legacy-keyed projection rows and enqueue the affected
+ * scopes for post-readiness rebuild.
+ *
+ * The streams are read from the projection tables themselves (not from
+ * `records`) because a scope only needs repair if a legacy-keyed projection
+ * row exists for it — enqueuing every stream the connector ever wrote would
+ * hand the maintenance sweep work it does not need to do.
+ *
+ * Both the delete and the dirty mark run on the caller's transaction client,
+ * so a rollback discards them together with the identity change. A dirty
+ * mark that survived a rolled-back identity change would point the sweep at
+ * a scope whose canonical identity does not exist yet.
+ */
+async function enqueuePostgresLocalDeviceProjectionRepair(
+  client: PoolClient,
+  {
+    connectorInstanceId,
+    newConnectorId,
+    nowIso,
+    oldConnectorId,
+    repairConnectorInstanceId = connectorInstanceId,
+  }: {
+    connectorInstanceId: string;
+    newConnectorId: string;
+    nowIso: string;
+    oldConnectorId: string;
+    /** The canonical identity that owns the rebuilt projection. */
+    repairConnectorInstanceId?: string;
+  }
+): Promise<number> {
+  const scopes = new Set<string>();
+  await sequentially(PG_LOCAL_DEVICE_DERIVED_PROJECTION_TABLES, async (table) => {
+    if (!(await hasPostgresColumn(client, table, "connector_instance_id"))) {
+      return;
+    }
+    // `semantic_search_blob` is keyed by scope_key, not stream. Its rows are
+    // rebuilt from the same per-stream backfill as the rest, so it only
+    // contributes the delete; the stream set comes from the stream-keyed
+    // projections.
+    if (await hasPostgresColumn(client, table, "stream")) {
+      const streams = await client.query<{ stream: string }>(
+        `SELECT DISTINCT stream FROM ${pgIdentifier(table)}
+          WHERE connector_id = $1 AND connector_instance_id = $2`,
+        [oldConnectorId, connectorInstanceId]
+      );
+      for (const { stream } of streams.rows) {
+        scopes.add(stream);
+      }
+    }
+    await client.query(`DELETE FROM ${pgIdentifier(table)} WHERE connector_id = $1 AND connector_instance_id = $2`, [
+      oldConnectorId,
+      connectorInstanceId,
+    ]);
+  });
+
+  await sequentially([...scopes].sort(), async (stream) => {
+    // Deliberately inlined rather than imported from
+    // `stores/search-index-dirty-store.ts`: that module imports THIS one, and
+    // `postgres-storage.ts` is a leaf on purpose so schema bootstrap cannot
+    // be made to depend on store initialization order. The statement is a
+    // verbatim copy of `markSearchIndexDirtyPostgres`, including the
+    // in-statement `revision` increment that the reconcile clear CAS's on;
+    // `postgres-boot-migration-resume.test.ts` asserts the two stay
+    // equivalent, so a drift in either shows up as a test failure rather
+    // than a silently un-reconciled scope.
+    await client.query(
+      `INSERT INTO search_index_dirty(connector_instance_id, connector_id, stream, dirty, marked_at, revision)
+       VALUES ($1, $2, $3, 1, $4, 1)
+       ON CONFLICT(connector_instance_id, stream) DO UPDATE SET
+         connector_id = excluded.connector_id,
+         dirty = 1,
+         marked_at = excluded.marked_at,
+         revision = search_index_dirty.revision + 1`,
+      [repairConnectorInstanceId, newConnectorId, stream, nowIso]
+    );
+  });
+  return scopes.size;
+}
+
+async function migratePostgresLocalDeviceConnectorRow(
+  client: PoolClient,
+  row: LocalDeviceMigrationRow & Record<string, unknown>
+): Promise<LocalDeviceRowOutcome> {
+  // The live enrollment path keys this binding by its stable collector
+  // name. device_id/source_instance_id are per-enrollment facts, so using
+  // them here makes a completed enrollment look like a conflicting second
+  // connector instance on every later boot.
+  const sourceBindingIdentity = {
+    kind: "local_device",
+    local_binding_name: row.local_binding_id,
+  };
+  const sourceBinding = {
+    device_id: row.device_id,
+    kind: "local_device",
+    local_binding_name: row.local_binding_id,
+    source_instance_id: row.source_instance_id,
+  };
+  const sourceBindingKey = makeConnectorInstanceSourceBindingKey(sourceBindingIdentity);
+  // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
+  // connector key, mirroring the SQLite migration and the live ingest/read
+  // paths. Connection isolation is carried by connector_instance_id. See
+  // canonicalize-connector-keys design Decision 7.
+  const connectorKey = canonicalConnectorKey(row.connector_id) ?? row.connector_id;
+  const newConnectorId = connectorKey;
+  const oldConnectorId = legacyLocalDeviceConnectorId(row.connector_id, row.source_instance_id);
+
+  const identity = await resolveLocalDeviceMigrationIdentity(
+    client,
+    row,
+    connectorKey,
+    oldConnectorId,
+    sourceBinding,
+    sourceBindingKey
+  );
+  if (!identity) {
+    return { changedRows: 0, repairScopes: 0 };
+  }
+  const { existingBindingInstanceId, legacyInstanceId } = identity;
+
+  const connectorInstanceId =
+    row.connector_instance_id ||
+    existingBindingInstanceId ||
+    legacyInstanceId ||
+    makeConnectorInstanceId(row.owner_subject_id, connectorKey, "local_device", sourceBindingKey);
+  const now = new Date().toISOString();
+  const manifest = {
+    connector_id: connectorKey,
+    display_name: (row.display_name as string) || connectorKey,
+    streams: [],
+  };
+
+  await client.query(
+    `INSERT INTO connectors(connector_id, manifest, created_at)
+     VALUES($1, $2::jsonb, $3)
+     ON CONFLICT(connector_id) DO NOTHING`,
+    [connectorKey, JSON.stringify(manifest), row.created_at || now]
+  );
+
+  // Existing connector lifecycle is owner authority. The device row is
+  // migration input only and may remain active after a zero-cascade revoke.
+  await client.query(
+    `INSERT INTO connector_instances(
+       connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+     )
+     VALUES($1, $2, $3, $4, $5, 'local_device', $6, $7::jsonb, $8, $9, $10)
+     ON CONFLICT (connector_instance_id) DO UPDATE
+       SET owner_subject_id = EXCLUDED.owner_subject_id,
+           connector_id = EXCLUDED.connector_id,
+           display_name = EXCLUDED.display_name,
+           source_kind = EXCLUDED.source_kind,
+           source_binding_key = EXCLUDED.source_binding_key,
+           source_binding_json = EXCLUDED.source_binding_json,
+           updated_at = GREATEST(connector_instances.updated_at, EXCLUDED.updated_at)`,
+    [
+      connectorInstanceId,
+      row.owner_subject_id,
+      connectorKey,
+      row.display_name,
+      row.status === "revoked" ? "revoked" : "active",
+      sourceBindingKey,
+      JSON.stringify(sourceBinding),
+      row.created_at,
+      row.updated_at || now,
+      row.status === "revoked" ? row.revoked_at || row.updated_at || now : null,
+    ]
+  );
+
+  await client.query(
+    `UPDATE device_source_instances
+        SET connector_instance_id = $1,
+            connector_id = $2,
+            updated_at = CASE WHEN updated_at > $3 THEN updated_at ELSE $3 END
+      WHERE device_id = $4 AND source_instance_id = $5`,
+    [connectorInstanceId, connectorKey, now, row.device_id, row.source_instance_id]
+  );
+
+  let changedRows = 0;
+  await sequentially(PG_LOCAL_DEVICE_AUTHORITATIVE_REWRITE_TABLES, async (table) => {
+    changedRows += await rewritePostgresAuthoritativeConnectorId(client, table, {
+      connectorInstanceId,
+      newConnectorId,
+      oldConnectorId,
+    });
+  });
+
+  const repairScopes = await enqueuePostgresLocalDeviceProjectionRepair(client, {
+    connectorInstanceId,
+    newConnectorId,
+    nowIso: now,
+    oldConnectorId,
+  });
+  return { changedRows, repairScopes };
+}
+
+/**
+ * Versioned, exactly-once, crash-resumable local-device canonicalization.
+ *
+ * WHAT CHANGED AND WHY (2026-08-29)
+ *
+ * This ran as an unconditional boot migration with no durable completion
+ * marker. Every restart enumerated every `device_source_instances` row and
+ * issued one `UPDATE` per row per table across 17 tables — including the
+ * deployment's two largest, `lexical_search_index` (24 GB) and
+ * `record_changes` (9.8 GB) — inside a single transaction that had to commit
+ * before the server bound a listener. `EXPLAIN` on the production shape
+ * confirmed the statements use the instance-leading primary keys with
+ * `connector_id` as a residual FILTER, so an already-canonical instance still
+ * walked millions of index entries to update zero rows. The whole operation
+ * committed once at the end, so any later error rolled everything back and
+ * the next boot repeated it from the beginning.
+ *
+ * The three separable defects, and the three separate fixes:
+ *
+ *  1. NO COMPLETION RECEIPT. The guard was table shape plus row presence, not
+ *     "this migration completed." Fixed by the migration ledger
+ *     (`postgres-migration-ledger.ts`): a `complete` row makes this function
+ *     return without reading `device_source_instances` at all.
+ *
+ *  2. NO RESUME BOUNDARY. One transaction for the whole table meant a crash
+ *     lost all progress. Fixed by committing per batch, with the cursor
+ *     advance in the SAME transaction as the batch's writes — a cursor that
+ *     committed separately would skip a batch after a crash between the two
+ *     commits.
+ *
+ *  3. PROJECTION REWRITES ON THE READINESS PATH. Fixed by removing the
+ *     derived tables from the identity transaction entirely; their stale
+ *     legacy-keyed rows are dropped and the scope is enqueued to the
+ *     EXISTING `search_index_dirty` queue that the post-listen maintenance
+ *     sweep already drains, with the read surface already disclosing that
+ *     backlog honestly (`routes/rs-read.ts`).
+ *
+ * Fail-closed behavior is unchanged and deliberately NOT relaxed: every
+ * collision, ambiguity, and unknown-reference check in
+ * `resolveLocalDeviceMigrationIdentity` /
+ * `mergeEquivalentPostgresConnectorInstances` still throws, the batch rolls
+ * back, and the ledger records `blocked` — never `complete`. A blocked
+ * migration re-attempts on the next boot (an operator may have reconciled the
+ * collision since) but can never be mistaken for a finished one.
+ */
+/**
+ * Fail closed when two local-device `connector_instances` rows still describe
+ * the same real binding and both hold owned state.
+ *
+ * WHY THIS SURVIVES THE COMPLETION RECEIPT
+ *
+ * The ledger retires the migration's ROW-REWRITING work — the multi-GB,
+ * pre-listen index walks that were the incident. It must not retire the
+ * safety property, and `device-enroll-postgres-admission-decoupling.test.ts`
+ * ("D9: restart rejects colliding duplicate-owned state without changing
+ * either identity") states that property as a per-RESTART contract, not a
+ * one-time migration check. Gating the check behind the receipt regressed
+ * that test, which is how the distinction surfaced.
+ *
+ * So the two are separated by cost, not by trust: this sentinel reads only
+ * `connector_instances` (bounded by an owner's connection count, not by
+ * record volume), joins it to itself on the binding identity carried in
+ * `source_binding_json`, and confirms both claimants hold `connector_state`
+ * before refusing. It issues no UPDATE, touches no projection, and never
+ * looks at `records`, `record_changes`, or the search tables.
+ *
+ * The thrown message deliberately matches
+ * `mergeEquivalentPostgresConnectorInstances`'s wording: an operator seeing
+ * this on a converged deployment is looking at the same unresolved
+ * condition, reached by a different route, and should not have to learn a
+ * second vocabulary for it.
+ */
+async function assertNoUnresolvedPostgresLocalDeviceBindingCollision(client: PoolClient): Promise<void> {
+  const collisions = await client.query<{ canonical_id: string; legacy_id: string }>(
+    `SELECT canonical.connector_instance_id AS canonical_id,
+            legacy.connector_instance_id    AS legacy_id
+       FROM connector_instances canonical
+        JOIN connector_instances legacy
+         ON legacy.owner_subject_id = canonical.owner_subject_id
+        AND legacy.connector_id     = canonical.connector_id
+        AND legacy.source_kind      = 'local_device'
+        AND legacy.source_binding_json = canonical.source_binding_json
+        AND legacy.source_binding_key <> canonical.source_binding_key
+        AND legacy.connector_instance_id > canonical.connector_instance_id
+      WHERE canonical.source_kind = 'local_device'
+        AND canonical.source_binding_json <> '{}'::jsonb
+        AND EXISTS(SELECT 1 FROM connector_state WHERE connector_instance_id = canonical.connector_instance_id)
+        AND EXISTS(SELECT 1 FROM connector_state WHERE connector_instance_id = legacy.connector_instance_id)
+      ORDER BY canonical.connector_instance_id, legacy.connector_instance_id
+      LIMIT 1`
+  );
+  const [collision] = collisions.rows;
+  if (collision) {
+    throw new Error(
+      `Cannot coalesce local-device connector instance ${collision.legacy_id} → ${collision.canonical_id}: connector_state has colliding owned state; manual reconciliation required.`
+    );
+  }
+}
+
+interface ExactLocalDeviceBindingClass {
+  readonly canonicalId: string;
+  readonly connectorId: string;
+  readonly connectorInstanceIds: readonly string[];
+  readonly legacyIds: readonly string[];
+}
+
+interface LocalDeviceBindingCandidate {
+  readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly owner_subject_id: string;
+  readonly source_binding_json: unknown;
+  readonly source_binding_key: string;
+}
+
+/**
+ * Returns the stable local-device key only for a complete enrolled binding.
+ *
+ * This is the same identity reduction the enrollment and migration paths use:
+ * device and source ids identify an enrollment, while `local_binding_name`
+ * identifies the enduring connection. Keeping it here lets the COMPLETE
+ * receipt path recognize a stale full-binding key without reopening the
+ * migration input table.
+ */
+function stablePostgresLocalDeviceBindingKey(sourceBinding: unknown): string | null {
+  if (!sourceBinding || typeof sourceBinding !== "object" || Array.isArray(sourceBinding)) {
+    return null;
+  }
+  const localBindingName = (sourceBinding as { local_binding_name?: unknown }).local_binding_name;
+  if (typeof localBindingName !== "string" || localBindingName.length === 0) {
+    return null;
+  }
+  return makeConnectorInstanceSourceBindingKey({ kind: "local_device", local_binding_name: localBindingName });
+}
+
+let postgresLocalDeviceDuplicateDiscoveryHookForTest:
+  | ((bindingClass: ExactLocalDeviceBindingClass) => Promise<void> | void)
+  | null = null;
+
+/** Narrow test seam for a writer that commits after discovery but before the class locks. */
+export function __setPostgresLocalDeviceDuplicateDiscoveryHookForTest(
+  hook: ((bindingClass: ExactLocalDeviceBindingClass) => Promise<void> | void) | null
+): void {
+  postgresLocalDeviceDuplicateDiscoveryHookForTest = hook;
+}
+
+/**
+ * Read the complete duplicate class rooted at one stable-key canonical id.
+ *
+ * A COMPLETE canonicalization receipt forbids reading
+ * `device_source_instances`: it is the migration's unbounded input table.
+ * The durable connector-instance binding already contains all identity facts
+ * needed to recognize a post-enrollment stale full-binding key. Repeating
+ * this query after the deterministic instance locks are held remains the
+ * identity/source-binding revalidation boundary; it deliberately does not
+ * trust a pre-transaction candidate.
+ */
+async function findExactPostgresLocalDeviceBindingClass(
+  client: PoolClient,
+  canonicalId?: string
+): Promise<ExactLocalDeviceBindingClass | null> {
+  const candidates = await client.query<LocalDeviceBindingCandidate>(
+    `SELECT connector_instance_id, owner_subject_id, connector_id, source_binding_key, source_binding_json
+       FROM connector_instances
+      WHERE source_kind = 'local_device'
+        AND source_binding_json <> '{}'::jsonb
+        ${canonicalId ? "AND connector_instance_id = $1" : ""}
+      ORDER BY connector_instance_id`,
+    canonicalId ? [canonicalId] : []
+  );
+  for (const canonical of candidates.rows) {
+    const stableKey = stablePostgresLocalDeviceBindingKey(canonical.source_binding_json);
+    if (stableKey === null || canonical.source_binding_key !== stableKey) {
+      continue;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: candidate iteration stops at the first stable duplicate class; serial queries keep its identity selection deterministic.
+    const legacy = await client.query<{ connector_instance_id: string }>(
+      `SELECT connector_instance_id
+         FROM connector_instances
+        WHERE owner_subject_id = $1
+          AND connector_id = $2
+          AND source_kind = 'local_device'
+          AND source_binding_json = $3::jsonb
+          AND source_binding_key <> $4
+          AND connector_instance_id <> $5
+        ORDER BY connector_instance_id`,
+      [
+        canonical.owner_subject_id,
+        canonical.connector_id,
+        stableJson(canonical.source_binding_json),
+        canonical.source_binding_key,
+        canonical.connector_instance_id,
+      ]
+    );
+    if (legacy.rows.length > 0) {
+      const legacyIds = legacy.rows.map((row) => row.connector_instance_id);
+      return {
+        canonicalId: canonical.connector_instance_id,
+        connectorId: canonical.connector_id,
+        connectorInstanceIds: [canonical.connector_instance_id, ...legacyIds].sort(),
+        legacyIds,
+      };
+    }
+  }
+  return null;
+}
+
+async function assertPostgresConnectorInstanceClassCanMerge(
+  client: PoolClient,
+  bindingClass: ExactLocalDeviceBindingClass
+): Promise<void> {
+  const existingTables: string[] = [];
+  await sequentially(PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES, async (table) => {
+    if (await hasPostgresColumn(client, table, "connector_instance_id")) {
+      existingTables.push(table);
+    }
+  });
+
+  const references = await client.query<{ table_name: string }>(
+    `SELECT table_name
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND column_name = 'connector_instance_id'
+        AND table_name <> 'connector_instances'`
+  );
+  await sequentially(references.rows, async ({ table_name: table }) => {
+    if (existingTables.includes(table)) {
+      return;
+    }
+    const present = await client.query(
+      `SELECT 1 FROM ${pgIdentifier(table)} WHERE connector_instance_id = ANY($1::text[]) LIMIT 1`,
+      [bindingClass.legacyIds]
+    );
+    if ((present.rowCount ?? 0) > 0) {
+      throw new Error(
+        `Cannot coalesce local-device connector instance class ${bindingClass.canonicalId}: unhandled reference in ${table}; manual reconciliation required.`
+      );
+    }
+  });
+
+  await sequentially(existingTables, async (table) => {
+    if (PG_REBUILDABLE_INSTANCE_REFERENCE_TABLES.has(table)) {
+      return;
+    }
+    const uniqueCols = pgUniqueColumnsForLegacyRewrite(table);
+    if (uniqueCols === null) {
+      return;
+    }
+    if (uniqueCols.length === 0 || PG_ANY_TWO_OWNERS_TABLES.has(table)) {
+      // Some tables (singleton rows, or connector_state/grant_connector_state
+      // by policy below) must never have two class members each own an
+      // authoritative row, even when their per-key columns differ. A
+      // same-stream-only collision check would let a legacy row on stream A
+      // and a canonical row on stream B both survive the preflight, then
+      // silently combine two independently owned state histories that were
+      // never reconciled. Fail closed on any two-sided ownership instead.
+      const owners = await client.query<{ count: string }>(
+        `SELECT count(DISTINCT connector_instance_id)::text AS count
+           FROM ${pgIdentifier(table)}
+          WHERE connector_instance_id = ANY($1::text[])`,
+        [bindingClass.connectorInstanceIds]
+      );
+      if (Number(owners.rows[0]?.count ?? 0) > 1) {
+        throw new Error(
+          `Cannot coalesce local-device connector instance ${bindingClass.legacyIds[0]} → ${bindingClass.canonicalId}: ${table} has colliding owned state; manual reconciliation required.`
+        );
+      }
+      return;
+    }
+    const collision = await client.query(
+      `SELECT 1
+         FROM ${pgIdentifier(table)}
+        WHERE connector_instance_id = ANY($1::text[])
+        GROUP BY ${uniqueCols.join(", ")}
+       HAVING count(DISTINCT connector_instance_id) > 1
+        LIMIT 1`,
+      [bindingClass.connectorInstanceIds]
+    );
+    if ((collision.rowCount ?? 0) > 0) {
+      throw new Error(
+        `Cannot coalesce local-device connector instance ${bindingClass.legacyIds[0]} → ${bindingClass.canonicalId}: ${table} has colliding owned state; manual reconciliation required.`
+      );
+    }
+  });
+}
+
+/**
+ * Coalesce an exact post-enrollment legacy/stable duplicate after the
+ * canonicalization receipt is complete. A complete equivalence class is
+ * locked, revalidated, preflighted, and merged in one transaction. If a
+ * supported writer changes the class after discovery, this loop either sees
+ * that newer shape before mutation or rolls back and retries from scratch.
+ */
+async function coalesceExactPostgresLocalDeviceBindingDuplicates(client: PoolClient): Promise<number> {
+  let repairScopesEnqueued = 0;
+  for (;;) {
+    // biome-ignore lint/performance/noAwaitInLoops: each completed class changes the next class discovery and must commit independently.
+    const discovered = await findExactPostgresLocalDeviceBindingClass(client);
+    if (!discovered) {
+      return repairScopesEnqueued;
+    }
+    await postgresLocalDeviceDuplicateDiscoveryHookForTest?.(discovered);
+
+    await client.query("BEGIN");
+    try {
+      await acquireConnectorInstanceXactLocks(client, discovered.connectorInstanceIds);
+      const revalidated = await findExactPostgresLocalDeviceBindingClass(client, discovered.canonicalId);
+      if (
+        !revalidated ||
+        revalidated.connectorInstanceIds.length !== discovered.connectorInstanceIds.length ||
+        revalidated.connectorInstanceIds.some((id, index) => id !== discovered.connectorInstanceIds[index])
+      ) {
+        await client.query("ROLLBACK");
+        continue;
+      }
+      await assertPostgresConnectorInstanceClassCanMerge(client, revalidated);
+      for (const legacyId of revalidated.legacyIds) {
+        // biome-ignore lint/performance/noAwaitInLoops: each generic merger operates on the same locked class transaction.
+        repairScopesEnqueued += await enqueuePostgresLocalDeviceProjectionRepair(client, {
+          connectorInstanceId: legacyId,
+          newConnectorId: revalidated.connectorId,
+          nowIso: new Date().toISOString(),
+          oldConnectorId: revalidated.connectorId,
+          repairConnectorInstanceId: revalidated.canonicalId,
+        });
+        // A COMPLETE receipt is the authority that the source table already
+        // points at the stable identity. This branch may not even inspect
+        // that unbounded migration input; ordinary/blocked/resume claims use
+        // the default path above and keep its source-row rewrite intact.
+        await mergeEquivalentPostgresConnectorInstances(client, legacyId, revalidated.canonicalId, {
+          skipDeviceSourceInstanceRewrite: true,
+        });
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Rollback failure must not hide the coalescence failure.
+      }
+      throw err;
+    }
+  }
+}
+
+async function migratePostgresLocalDeviceConnectorInstances(
+  client: PoolClient,
+  { log = NOOP_STORAGE_LOG }: { log?: StorageLog } = {}
+): Promise<LocalDeviceCanonicalizationReceipt> {
+  const skipped: LocalDeviceCanonicalizationReceipt = {
+    changedRows: 0,
+    processedSourceRows: 0,
+    repairScopesEnqueued: 0,
+    skippedByReceipt: true,
+  };
+
+  const claim = await claimPostgresMigration(client, LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID, {
+    leaseDurationMs: PG_LOCAL_DEVICE_MIGRATION_LEASE_MS,
+    leaseOwner: `${process.pid}@${POSTGRES_MIGRATION_LEASE_OWNER_NONCE}`,
+    nowIso: new Date().toISOString(),
+  });
+  if (!claim) {
+    // The receipt retires the historical row scan, not exact identities
+    // created after it completed. Reject conflicting state first, then merge
+    // only exact one-sided duplicates through the existing fail-closed path.
+    await assertNoUnresolvedPostgresLocalDeviceBindingCollision(client);
+    return {
+      ...skipped,
+      repairScopesEnqueued: await coalesceExactPostgresLocalDeviceBindingDuplicates(client),
+    };
   }
 
-  await client.query("BEGIN");
-  try {
-    await sequentially(rows.rows, async (row) => {
-      // The live enrollment path keys this binding by its stable collector
-      // name. device_id/source_instance_id are per-enrollment facts, so using
-      // them here makes a completed enrollment look like a conflicting second
-      // connector instance on every later boot.
-      const sourceBindingIdentity = {
-        kind: "local_device",
-        local_binding_name: row.local_binding_id,
-      };
-      const sourceBinding = {
-        device_id: row.device_id,
-        kind: "local_device",
-        local_binding_name: row.local_binding_id,
-        source_instance_id: row.source_instance_id,
-      };
-      const sourceBindingKey = makeConnectorInstanceSourceBindingKey(sourceBindingIdentity);
-      // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
-      // connector key, mirroring the SQLite migration and the live ingest/read
-      // paths. Connection isolation is carried by connector_instance_id. See
-      // canonicalize-connector-keys design Decision 7.
-      const connectorKey = canonicalConnectorKey(row.connector_id) ?? row.connector_id;
-      const newConnectorId = connectorKey;
-      const oldConnectorId = legacyLocalDeviceConnectorId(row.connector_id, row.source_instance_id);
+  let { cursor } = claim;
+  let changedRows = 0;
+  let processedSourceRows = 0;
+  let repairScopesEnqueued = 0;
 
-      const identity = await resolveLocalDeviceMigrationIdentity(
-        client,
-        row,
-        connectorKey,
-        oldConnectorId,
-        sourceBinding,
-        sourceBindingKey
-      );
-      if (!identity) {
-        return;
-      }
-      const { existingBindingInstanceId, legacyInstanceId } = identity;
-
-      const connectorInstanceId =
-        row.connector_instance_id ||
-        existingBindingInstanceId ||
-        legacyInstanceId ||
-        makeConnectorInstanceId(row.owner_subject_id, connectorKey, "local_device", sourceBindingKey);
-      const now = new Date().toISOString();
-      const manifest = {
-        connector_id: connectorKey,
-        display_name: row.display_name || connectorKey,
-        streams: [],
-      };
-
-      await client.query(
-        `INSERT INTO connectors(connector_id, manifest, created_at)
-         VALUES($1, $2::jsonb, $3)
-         ON CONFLICT(connector_id) DO NOTHING`,
-        [connectorKey, JSON.stringify(manifest), row.created_at || now]
-      );
-
-      // Existing connector lifecycle is owner authority. The device row is
-      // migration input only and may remain active after a zero-cascade revoke.
-      await client.query(
-        `INSERT INTO connector_instances(
-           connector_instance_id, owner_subject_id, connector_id, display_name, status,
-           source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
-         )
-         VALUES($1, $2, $3, $4, $5, 'local_device', $6, $7::jsonb, $8, $9, $10)
-         ON CONFLICT (connector_instance_id) DO UPDATE
-           SET owner_subject_id = EXCLUDED.owner_subject_id,
-               connector_id = EXCLUDED.connector_id,
-               display_name = EXCLUDED.display_name,
-               source_kind = EXCLUDED.source_kind,
-               source_binding_key = EXCLUDED.source_binding_key,
-               source_binding_json = EXCLUDED.source_binding_json,
-               updated_at = GREATEST(connector_instances.updated_at, EXCLUDED.updated_at)`,
-        [
-          connectorInstanceId,
-          row.owner_subject_id,
-          connectorKey,
-          row.display_name,
-          row.status === "revoked" ? "revoked" : "active",
-          sourceBindingKey,
-          JSON.stringify(sourceBinding),
-          row.created_at,
-          row.updated_at || now,
-          row.status === "revoked" ? row.revoked_at || row.updated_at || now : null,
-        ]
-      );
-
-      await client.query(
-        `UPDATE device_source_instances
-            SET connector_instance_id = $1,
-                connector_id = $2,
-                updated_at = CASE WHEN updated_at > $3 THEN updated_at ELSE $3 END
-          WHERE device_id = $4 AND source_instance_id = $5`,
-        [connectorInstanceId, connectorKey, now, row.device_id, row.source_instance_id]
-      );
-
-      await sequentially(
-        [
-          "connector_state",
-          "grant_connector_state",
-          "connector_detail_gaps",
-          "records",
-          "record_changes",
-          "version_counter",
-          "blobs",
-          "blob_bindings",
-          "lexical_search_index",
-          "lexical_search_meta",
-          "semantic_search_blob",
-          "semantic_search_meta",
-          "semantic_search_backfill_progress",
-          "connector_schedules",
-          "controller_active_runs",
-          "run_history",
-          "scheduler_last_run_times",
-        ],
-        async (table) => {
-          await client.query(
-            `UPDATE ${table}
-              SET connector_id = $1
-            WHERE connector_id = $2 AND connector_instance_id = $3`,
-            [newConnectorId, oldConnectorId, connectorInstanceId]
-          );
-        }
-      );
-    });
-    await client.query("COMMIT");
-  } catch (err) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {
-      // Rollback failure must not hide the original migration error.
+  for (;;) {
+    // Keyset page over the SAME total order the cursor records, so a resumed
+    // boot re-reads exactly the rows the previous boot did not commit. Read
+    // outside the transaction: a page that turns out to be empty must not
+    // leave an open transaction behind, and every row it returns is
+    // re-validated by the fail-closed identity resolution inside the
+    // transaction anyway.
+    //
+    // The ordering key changed from `(created_at, source_instance_id)` to
+    // `source_instance_id` alone. A keyset cursor needs a UNIQUE, stable,
+    // never-rewritten column, and `source_instance_id` is the table's
+    // primary key while `created_at` is a mutable text timestamp that would
+    // make the resume boundary ambiguous. The previous order carried no
+    // semantics: each source row's canonicalization is independent, and
+    // every cross-row interaction (coalescence, collision, tombstone) is
+    // resolved by `resolveLocalDeviceMigrationIdentity` from the DATA, not
+    // from the position a row happens to occupy in the scan.
+    // biome-ignore lint/performance/noAwaitInLoops: Batches are sequential by contract — each page's cursor is only valid after the previous page committed, and concurrency here would defeat the resume boundary.
+    const page = await client.query<LocalDeviceMigrationRow & Record<string, unknown>>(
+      `SELECT
+         dsi.source_instance_id,
+         dsi.device_id,
+         dsi.connector_id,
+         dsi.connector_instance_id,
+         dsi.local_binding_id,
+         COALESCE(dsi.display_name, de.display_name, dsi.local_binding_id) AS display_name,
+         dsi.status,
+         dsi.created_at,
+         dsi.updated_at,
+         dsi.revoked_at,
+         de.owner_subject_id
+       FROM device_source_instances dsi
+       JOIN device_exporters de ON de.device_id = dsi.device_id
+       WHERE $1::text IS NULL OR dsi.source_instance_id > $1::text
+       ORDER BY dsi.source_instance_id
+       LIMIT $2`,
+      [cursor, pgLocalDeviceMigrationBatchSize()]
+    );
+    if (page.rows.length === 0) {
+      break;
     }
-    throw err;
+
+    await client.query("BEGIN");
+    try {
+      let batchChangedRows = 0;
+      let batchRepairScopes = 0;
+      await sequentially(page.rows, async (row) => {
+        const outcome = await migratePostgresLocalDeviceConnectorRow(client, row);
+        batchChangedRows += outcome.changedRows;
+        batchRepairScopes += outcome.repairScopes;
+      });
+      const batchCursor = String(page.rows.at(-1)?.source_instance_id);
+      // Same transaction as the batch's writes. See the function doc: a
+      // cursor that commits separately is not a resume boundary.
+      await advancePostgresMigrationCursor(client, LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID, {
+        changedRows: batchChangedRows,
+        cursor: batchCursor,
+        nowIso: new Date().toISOString(),
+      });
+      await client.query("COMMIT");
+      cursor = batchCursor;
+      changedRows += batchChangedRows;
+      processedSourceRows += page.rows.length;
+      repairScopesEnqueued += batchRepairScopes;
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Rollback failure must not hide the original migration error.
+      }
+      // `blocked` is written on its own connection state AFTER the rollback,
+      // so the receipt survives the discarded batch. It is never `complete`:
+      // a fail-closed stop must not let a later boot skip the data phase.
+      try {
+        await blockPostgresMigration(client, LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID, {
+          error: err instanceof Error ? err.message : String(err),
+          nowIso: new Date().toISOString(),
+        });
+      } catch {
+        // A ledger write failure must not hide the original migration error.
+      }
+      throw err;
+    }
+  }
+
+  await completePostgresMigration(client, LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID, {
+    nowIso: new Date().toISOString(),
+  });
+  if (processedSourceRows > 0) {
+    log(
+      `[PDPP] Local-device canonicalization: ${processedSourceRows} source rows, ${changedRows} authoritative rows changed, ${repairScopesEnqueued} projection scopes queued for post-readiness repair`
+    );
+  }
+  return { changedRows, processedSourceRows, repairScopesEnqueued, skippedByReceipt: false };
+}
+
+/**
+ * Read-only view of the local-device canonicalization receipt, for the boot
+ * path and for tests that must assert a second boot skipped the data phase
+ * without inferring it from timing.
+ */
+export async function readPostgresLocalDeviceCanonicalizationReceipt(): Promise<{
+  attemptCount: number;
+  changedRows: number;
+  cursor: string | null;
+  lastError: string | null;
+  status: string;
+} | null> {
+  const client = await getPostgresPool().connect();
+  try {
+    const row = await readPostgresMigrationLedgerRow(client, LOCAL_DEVICE_CANONICALIZATION_MIGRATION_ID);
+    return row
+      ? {
+          attemptCount: row.attemptCount,
+          changedRows: row.changedRows,
+          cursor: row.cursor,
+          lastError: row.lastError,
+          status: row.status,
+        }
+      : null;
+  } finally {
+    client.release();
   }
 }
 
 const PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES = [
+  "connector_instance_credentials",
   "connector_state",
   "grant_connector_state",
   "records",
@@ -5353,8 +6897,21 @@ const PG_REBUILDABLE_INSTANCE_REFERENCE_TABLES = new Set([
   "connector_summary_evidence",
 ]);
 
+// connector_state and grant_connector_state are keyed per-stream, but a
+// same-stream-only collision check is not sufficient: a legacy identity can
+// authoritatively own state for one stream while a live writer commits new
+// state for a different stream on the canonical identity between discovery
+// and lock acquisition. Both sides then own part of the class's state, on
+// different streams, and a stream-keyed rewrite would silently combine two
+// state histories that were never reconciled. Treat any two-sided ownership
+// in these two tables as a fail-closed collision, exactly like the singleton
+// tables above, regardless of which streams are involved.
+const PG_ANY_TWO_OWNERS_TABLES = new Set(["connector_state", "grant_connector_state"]);
+
 function pgUniqueColumnsForLegacyRewrite(table: string): readonly string[] | null {
   switch (table) {
+    case "connector_instance_credentials":
+      return [];
     case "connector_state":
       return ["stream"];
     case "grant_connector_state":

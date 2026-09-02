@@ -110,7 +110,8 @@ export interface ResolvedGrant {
     };
     client_id: string;
   };
-  expires_at?: string | null;
+  /** ISO 8601 grant expiry. Absent means no expiry; `null` is not a valid value. */
+  expires_at?: string;
   grant_id: string;
   issued_at: string;
   purpose_code: string;
@@ -890,7 +891,7 @@ export const ResolvedGrantSchema = {
       required: ["client_id"],
       type: "object",
     },
-    expires_at: { format: "date-time", type: ["string", "null"] },
+    expires_at: { format: "date-time", type: "string" },
     grant_id: NonEmptyStringSchema,
     issued_at: DateTimeSchema,
     purpose_code: { format: "uri", minLength: 1, type: "string" },

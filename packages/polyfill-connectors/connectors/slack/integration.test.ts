@@ -276,16 +276,15 @@ test("runRequestedStreams: archive message enumeration bounds both derived strea
   // scoped-archive fold calls this function once per archive, and emitting
   // here made every call after the first a duplicate (state_stream, stream)
   // pair the runtime rejects. The caller now emits once, after every archive
-  // is folded into one merged total. What's still true here, and what this
-  // test asserts: the two retained MESSAGE rows are the boundary BOTH
-  // derived streams' eventual coverage is measured against, carried on the
-  // returned `considered`, not the emitted child-record counts (3 reactions,
-  // 2 attachments).
+  // is folded into one merged total. The parent message boundary and each
+  // child stream's own accounting are kept separate.
   assert.equal(
     harness.protocolMessages.some((message) => message.type === "DETAIL_COVERAGE"),
     false
   );
   assert.equal(result.considered, 2, "considered is the two retained MESSAGE rows, not the child counts");
+  assert.deepEqual(result.reactionCoverage, { considered: 3, covered: 3 });
+  assert.deepEqual(result.messageAttachmentCoverage, { considered: 2, covered: 2 });
 });
 
 // ─── Invariant 7a: parent-before-child within a single row ───────────────

@@ -125,6 +125,7 @@ import { currentStorageGeneration, isCurrentStorageGeneration } from "./storage-
 import {
   getChangeHistoryLimit,
   nowIso,
+  RecordIngestRunTerminalError,
   resolveStorageConnectorId,
   resolveStorageConnectorInstanceId,
 } from "./storage-utils.ts";
@@ -862,6 +863,18 @@ export interface ClassifiedIngestFailure {
 }
 
 /**
+ * The console level an ingest write failure is logged at.
+ *
+ * Exported as its own function rather than left as an inline ternary so the
+ * RULE is directly testable. A test that asserts `classified.retryable` only
+ * proves the classifier — it passes with the level split reverted, which is a
+ * test that mirrors the contract instead of pinning it.
+ */
+export function ingestFailureLogLevel(classified: ClassifiedIngestFailure): "error" | "warn" {
+  return classified.retryable ? "warn" : "error";
+}
+
+/**
  * Classify a thrown ingest-write error as PERMANENT (per-record data defect,
  * `retryable: false`) or SYSTEMIC (storage/coordination failure, or unknown,
  * `retryable: true`) by its own typed `.code` field ONLY — never by matching
@@ -876,21 +889,6 @@ export function classifyIngestFailure(err: unknown): ClassifiedIngestFailure {
     return { code, message, retryable: false };
   }
   return { code: code || "ingest_storage_error", message, retryable: true };
-}
-
-// A write already admitted into the per-connector-instance write coordinator
-// for a run that has since reached a terminal state (owner-cancelled, timed
-// out, or otherwise closed). The runtime's own cancellation signal is a
-// client-side AbortSignal that cannot retroactively un-admit a write the
-// server already accepted; this is the storage-layer fence that refuses it
-// instead. See harden-ingest-run-admission-fence.
-export class RecordIngestRunTerminalError extends Error {
-  code: string;
-  constructor(runId: string) {
-    super(`run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`);
-    this.name = "RecordIngestRunTerminalError";
-    this.code = "run_terminal";
-  }
 }
 
 // Admission accounting is GENERATION-SCOPED (one bucket per
@@ -1254,11 +1252,11 @@ export function drainConnectorInstanceIndexWorkForTests(timeoutMs?: number): Pro
  * `maintainRecordIndexes` inline, decoupled from this lane, could publish a
  * STALE snapshot after a same-instance direct writer's own (correctly
  * lane-ordered) publication already ran, corrupting the derived index
- * relative to the winning durable record — this closes that gap. The caller
- * AWAITS the returned promise (unlike the HTTP batch path's fire-and-forget
- * use of the same lane) to preserve the device-exporter contract that its
- * 201 response implies lexical/semantic state already reflects the accepted
- * write. See harden-connector-instance-write-fence-transaction-native.
+ * relative to the winning durable record — this closes that gap. Callers may
+ * await the returned promise when derived state must be ready before their
+ * response, or fire-and-forget it when durable acknowledgement is the
+ * contract; the latter leaves the write-time dirty scope for reconcile. See
+ * harden-connector-instance-write-fence-transaction-native.
  */
 export function enqueueDeviceIndexMaintenance(
   connectorInstanceId: string,
@@ -1941,7 +1939,22 @@ async function ingestRecordsWithinCoordinator(
       // visible NOWHERE — not the client response (redacted by design), not
       // the server log (no statement existed here at all) — leaving every
       // 503 ingest_batch_storage_error undiagnosable from stored evidence.
-      console.error(
+      //
+      // LEVEL follows retryability, because the two say different things to
+      // whoever is reading. A retryable write (`connector_instance_busy` —
+      // writer admission saturated) is BACKPRESSURE the runtime handles by
+      // itself: bounded retry, then success. Logging that at `error` produced
+      // 59 of 82 error lines in a two-hour production window, all from one
+      // connection, none of them an outcome anyone needed to act on. Ordinary
+      // operation printed as failure is the same defect class as a source row
+      // naming a remedy the system will not perform — it teaches the reader to
+      // discount the channel, so the one line that IS a real failure gets
+      // skimmed past with the other fifty-eight.
+      //
+      // Non-retryable keeps `error`: nothing else will fix it, and the comment
+      // above explains why the detail must appear here at all.
+      const logIngestFailure = ingestFailureLogLevel(classified) === "warn" ? console.warn : console.error;
+      logIngestFailure(
         `[records] ingest write failed connector_instance_id=${loggingConnectorInstanceId} run_id=${runId ?? "unknown"} ` +
           `stream=${record.stream} code=${classified.code} retryable=${classified.retryable}: ${classified.message}`
       );

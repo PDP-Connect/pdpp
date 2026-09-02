@@ -48,8 +48,8 @@ const NON_CANONICAL_DOC_PATHS = new Set([
 // indexable URLs, and `lastmod` must represent the last substantive change to
 // that page, not a deploy or build date.
 export function buildSitemap(siteOrigin: string, docPages: readonly DocPageRef[], specLastModified: string) {
-  // /design, /palette, /sandbox are excluded: they are noindex (see their own
-  // layouts and robots.ts) and must not appear here.
+  // /sandbox is excluded: it is noindex (see its layout and robots.ts) and
+  // must not appear here.
   const staticEntries: MetadataRoute.Sitemap = [
     { url: siteOrigin },
     { url: `${siteOrigin}${governanceRoute}` },

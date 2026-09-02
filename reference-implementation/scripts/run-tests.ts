@@ -3,8 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import type { Dirent } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,9 +26,12 @@ import {
 import { collectChildProcessOutput } from "./child-process-output.ts";
 import { deriveDedicatedPostgresDbNameForFile } from "./dedicated-postgres-db-name.ts";
 import { startFileProcessWatchdog } from "./file-process-watchdog.ts";
+import { assertPostgresProfilePreflight } from "./postgres-profile-preflight.ts";
+import { discoverSelectedTestFiles } from "./run-tests-discovery.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
 import { buildScrubbedTestEnv } from "./test-env.ts";
-import { storageProfileEnvironment } from "./test-profile-env.ts";
+import { requireExplicitTestProfile, storageProfileEnvironment } from "./test-profile-env.ts";
+import { assertWorkspaceRuntimeDependencies } from "./workspace-runtime-dependency-preflight.ts";
 
 /** The `run-authority` JSON file shape accepted via `--accounting-authority`. */
 interface AccountingAuthority {
@@ -129,11 +131,12 @@ if (
 ) {
   throw new Error("accounting authority does not bind the selected RI profile");
 }
-if (accountingAuthority?.profile === "postgres" && !process.env.PDPP_TEST_POSTGRES_URL) {
-  throw new Error("postgres profile requires PDPP_TEST_POSTGRES_URL");
-}
-// biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- Biome's narrowing conflates the equality guard above (only reachable when accountingAuthority is set) with the accountingAuthority-undefined branch, where PDPP_TEST_PROFILE is genuinely string|undefined; an isolated tsc repro confirms both `??` fallbacks are real, live branches.
-const selectedProfile = accountingAuthority?.profile ?? process.env.PDPP_TEST_PROFILE ?? "memory-default";
+// The bound authority check above establishes authority.profile === this
+// environment value. Reuse the same explicit-profile policy for both bound
+// and unbound invocations, so malformed metadata cannot select the old
+// memory-default fallback or reach child execution.
+const selectedProfile = requireExplicitTestProfile(process.env);
+await assertWorkspaceRuntimeDependencies(dirname(repoRoot));
 const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY || "", 10);
 // Boot-time schedule auto-enrollment is OFF by default under the test harness.
 //
@@ -159,16 +162,22 @@ const testHarnessEnv: NodeJS.ProcessEnv = {
 };
 const scrubbedBaseEnv = storageProfileEnvironment(selectedProfile, buildScrubbedTestEnv(testHarnessEnv));
 const configuredPostgresTestUrl = scrubbedBaseEnv.PDPP_TEST_POSTGRES_URL;
+const configuredPostgresRestoreUrl = scrubbedBaseEnv.PDPP_TEST_POSTGRES_RESTORE_URL;
 const dedicatedBasePostgresTestUrl: string | null = configuredPostgresTestUrl
   ? dedicatedPostgresTestUrl(configuredPostgresTestUrl)
   : null;
 
-// Validate before the runner derives its admin URL or opens a connection.
-// `pg` lets query parameters override connection-string authority and path,
-// so only the narrow helper contract may enter the real-Postgres lane.
-if (configuredPostgresTestUrl && !dedicatedBasePostgresTestUrl) {
-  throw new Error("PDPP_TEST_POSTGRES_URL must be a query- and fragment-free dedicated loopback PostgreSQL test URL");
-}
+// Validate every persistent PostgreSQL target before the runner derives an
+// admin URL, opens a connection, or starts a test child. `pg` lets query
+// parameters override connection-string authority and path, so only the
+// narrow dedicated-url contract reaches the real-Postgres lane. The restore
+// target is not per-file allocated and must therefore be independently
+// sentinel-provisioned before the backup oracle can touch it.
+await assertPostgresProfilePreflight({
+  primaryUrl: configuredPostgresTestUrl,
+  profile: selectedProfile,
+  restoreUrl: configuredPostgresRestoreUrl,
+});
 
 // --- Per-file Postgres database isolation ---
 //
@@ -429,39 +438,7 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
   });
 }
 
-const entries = await readdir(testDir, { withFileTypes: true });
-const NODE_TEST_EXTENSIONS = [".test.js", ".test.mjs", ".test.ts"];
-const isNodeTest = (name: string) => NODE_TEST_EXTENSIONS.some((extension) => name.endsWith(extension));
-const topLevelTests = entries
-  .filter((entry) => entry.isFile() && isNodeTest(entry.name))
-  .map((entry) => join("test", entry.name));
-
-// Co-located unit tests for focused server modules and operator scripts. The
-// discovery is intentionally narrow by directory, but extension-complete for the
-// Node loader used by the supported RI CI lines, including erasable TypeScript.
-const COLOCATED_TEST_DIRS = [
-  { dir: "runtime", extensions: NODE_TEST_EXTENSIONS },
-  { dir: join("server", "streaming"), extensions: NODE_TEST_EXTENSIONS },
-  { dir: "scripts", extensions: NODE_TEST_EXTENSIONS },
-];
-const colocatedTests: string[] = [];
-for (const { dir: relDir, extensions } of COLOCATED_TEST_DIRS) {
-  const absDir = join(repoRoot, relDir);
-  let dirEntries: Dirent[];
-  try {
-    // biome-ignore lint/performance/noAwaitInLoops: COLOCATED_TEST_DIRS is a fixed 2-entry static list read once at startup; sequential try/catch-per-dir scopes a missing directory's error to that entry alone.
-    dirEntries = await readdir(absDir, { withFileTypes: true });
-  } catch {
-    continue;
-  }
-  for (const entry of dirEntries) {
-    if (entry.isFile() && extensions.some((extension) => entry.name.endsWith(extension))) {
-      colocatedTests.push(join(relDir, entry.name));
-    }
-  }
-}
-
-const testFiles = [...topLevelTests, ...colocatedTests].sort();
+const testFiles = await discoverSelectedTestFiles(repoRoot, testDir, accountingAuthority?.files);
 const defaultConcurrency = Math.max(1, Math.min(2, availableParallelism?.() ?? 1, testFiles.length || 1));
 const fileConcurrency =
   Number.isInteger(requestedConcurrency) && requestedConcurrency > 0 ? requestedConcurrency : defaultConcurrency;

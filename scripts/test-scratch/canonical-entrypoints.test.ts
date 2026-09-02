@@ -30,6 +30,39 @@ test("repository-derived package, workflow, and host-writer inventories have no 
   assert.deepEqual(findings, [], formatRatchetFindings(findings, root));
 });
 
+test("root vendor verification must invoke the scratch owner", async () => {
+  const root = await fixtureRepository();
+  try {
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({
+        scripts: {
+          "test:scratch": "node test-scratch/run-command.ts",
+          "pdpp:vendor:verify": "node --import tsx scripts/check-pdpp-vendored-package-pins.ts",
+        },
+      })
+    );
+    assert.deepEqual(await findCanonicalEntrypointBypasses(root), [
+      { path: "package.json", reason: "package script pdpp:vendor:verify bypasses the scratch owner" },
+    ]);
+
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({
+        scripts: {
+          "test:scratch": "node test-scratch/run-command.ts",
+          "pdpp:vendor:verify": "pnpm test:scratch -- node --import tsx scripts/check-pdpp-vendored-package-pins.ts",
+        },
+      })
+    );
+    assert.deepEqual(await findCanonicalEntrypointBypasses(root), []);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("a newly discovered package test front door cannot bypass the owner", async () => {
   const root = await fixtureRepository();
   try {

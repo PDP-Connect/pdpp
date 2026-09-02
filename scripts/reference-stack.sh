@@ -196,6 +196,18 @@ ensure_dynamic_surface_network() {
 # then falls back to `git describe --tags --always --dirty`, then a bare
 # short SHA. Exported so docker compose inherits it when expanding the
 # ${PDPP_REFERENCE_REVISION:-unknown} build arg in docker-compose.yml.
+#
+# The `git describe`/short-SHA fallback here is intentionally NOT required
+# to be a full-length SHA, unlike the `core`/`core-browser` build path. This
+# script (via docker-compose.yml, SERVICES=(postgres neko neko-allocator
+# reference web) above) only ever builds the `reference` compose service
+# (target: reference) — a stage with no org.opencontainers.image.revision
+# LABEL and no PDPP_BUILD_REVISION identity gate at all. It never builds or
+# gates a `core`/`core-browser` candidate, so deploy/docker/check-image
+# -identity.sh's full-length-hex requirement does not apply to this path.
+# If this script is ever changed to build the `core` target, this fallback
+# would need to emit a full-length SHA (or explicitly accept the gate's
+# --allow-unknown dev-build path) to keep passing that check.
 inject_revision() {
   if [[ -z "${PDPP_REFERENCE_REVISION:-}" ]]; then
     PDPP_REFERENCE_REVISION="$(

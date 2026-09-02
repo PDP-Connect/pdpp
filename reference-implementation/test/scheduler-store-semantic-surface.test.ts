@@ -226,6 +226,7 @@ test("scheduler run history and last-run time round-trip through semantic method
       recordsEmitted: 7,
       reportedRecordsEmitted: null,
       runId: "run_semantic_history",
+      schedulerManaged: false,
       source: { id: SEMANTIC_CONNECTOR, kind: "connector" },
       startedAt,
       status: "succeeded",
@@ -252,6 +253,7 @@ test("scheduler run history and last-run time round-trip through semantic method
       recordsEmitted: 7,
       reportedRecordsEmitted: null,
       runId: "run_semantic_history",
+      schedulerManaged: false,
       source: { id: SEMANTIC_CONNECTOR, kind: "connector" },
       startedAt,
       status: "succeeded",
@@ -708,6 +710,8 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
     { connectorId: "connector-beta", connectorInstanceId: "cin_batch_pg_a", enabled: false, rate: 1 },
   ] as const;
   const ids = fixtures.map((fixture) => fixture.connectorInstanceId);
+  const [firstConnectionId] = ids;
+  assert.ok(firstConnectionId, "PostgreSQL scheduler page-batch fixtures include the first connection ID");
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
   try {
     await postgresQuery("DELETE FROM run_history WHERE connector_instance_id = ANY($1::text[])", [ids]);
@@ -742,6 +746,22 @@ test("PostgreSQL scheduler page batches match SQLite semantics and use one typed
         status: "succeeded",
       });
     }
+
+    assert.equal(
+      (await store.getLatestRunHistoryForConnection(firstConnectionId, "succeeded"))?.schedulerManaged,
+      true,
+      "PostgreSQL single-connection scheduler history preserves scheduler-managed provenance"
+    );
+    assert.deepEqual(
+      (await store.listRunHistory(10))
+        .map((row) => [row.runId, row.schedulerManaged] as const)
+        .sort(([left], [right]) => String(left).localeCompare(String(right))),
+      [
+        ["run_connector-alpha", true],
+        ["run_connector-beta", true],
+      ],
+      "PostgreSQL scheduler history list preserves scheduler-managed provenance"
+    );
 
     const pool = getPostgresPool();
     const originalQuery = pool.query.bind(pool);

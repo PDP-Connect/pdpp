@@ -30,7 +30,9 @@ import {
 } from "../server/records.ts";
 import { __setDeviceIngestPhaseFaultHookForTest } from "../server/routes/ref-device-exporters.ts";
 import { __setLexicalBackfillPhaseHookForTest } from "../server/search.ts";
+import { runSearchIndexDirtyReconcileRound } from "../server/search-index-reconcile.ts";
 import { configureSemanticBackend } from "../server/search-semantic.ts";
+import { isSearchIndexScopeDirty } from "../server/stores/search-index-dirty-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
@@ -453,7 +455,6 @@ interface DriverSnapshot {
 interface Driver {
   asUrl: string;
   changes: (instanceId: string, key: string) => Promise<number>;
-  corruptDerived: (instanceId: string, key: string) => Promise<void>;
   derivedState: (instanceId: string) => Promise<DerivedState>;
   diagnostics: (device: EnrolledDevice, sourceInstanceId: string) => Promise<DiagnosticsSnapshot["source"]>;
   diagnosticsSnapshot: (device: EnrolledDevice, sourceInstanceId: string) => Promise<DiagnosticsSnapshot>;
@@ -598,43 +599,6 @@ function createDriver({
         [instanceId, key]
       );
       return Number(mustExist(row, "a count row must always be returned").count);
-    },
-    async corruptDerived(instanceId, key) {
-      if (kind === "sqlite") {
-        getDb()
-          .prepare(
-            `DELETE FROM lexical_search_index
-            WHERE connector_instance_id = ? AND stream = 'messages' AND record_key = ?`
-          )
-          .run(instanceId, key);
-        getDb()
-          .prepare(
-            `INSERT INTO lexical_search_index(connector_id, connector_instance_id, stream, record_key, field, text)
-           VALUES('codex', ?, 'messages', ?, 'content', 'corrupt lexical value')`
-          )
-          .run(instanceId, key);
-      } else {
-        await postgresQuery(
-          `UPDATE lexical_search_index SET value = 'corrupt lexical value'
-            WHERE connector_instance_id = $1 AND stream = 'messages' AND record_key = $2 AND field = 'content'`,
-          [instanceId, key]
-        );
-      }
-      await this.eraseDerived(instanceId, key);
-      if (kind === "sqlite") {
-        getDb()
-          .prepare(
-            `INSERT INTO lexical_search_index(connector_id, connector_instance_id, stream, record_key, field, text)
-           VALUES('codex', ?, 'messages', ?, 'content', 'corrupt lexical value')`
-          )
-          .run(instanceId, key);
-      } else {
-        await postgresQuery(
-          `INSERT INTO lexical_search_index(connector_id, connector_instance_id, stream, record_key, field, value)
-           VALUES('codex', $1, 'messages', $2, 'content', 'corrupt lexical value')`,
-          [instanceId, key]
-        );
-      }
     },
     async derivedState(instanceId) {
       const [lexicalMeta, semanticMeta, semanticProgress] = await Promise.all([
@@ -1214,18 +1178,75 @@ async function runPhaseFaultMatrix(driver: Driver): Promise<void> {
         throw new Error("deterministic test phase interruption");
       }
     };
-    try {
-      if (hookKind === "route") {
-        __setDeviceIngestPhaseFaultHookForTest(throwOnce);
-      } else {
-        __setRecordIndexFaultHookForTest(throwOnce);
+    if (hookKind === "derived") {
+      // Derived-index maintenance is fire-and-forget: a fault here can no
+      // longer block the HTTP response or strand the reservation. The batch
+      // is fully durable and accepted, and the fault instead leaves the
+      // write-time dirty scope for reconcile — see
+      // runDeviceAckWhileSemanticCapacityHeldOracle for the canonical shape
+      // of this contract.
+      __setRecordIndexFaultHookForTest(throwOnce);
+      try {
+        const accepted = await driver.ingest(device, request);
+        assert.equal(accepted.status, 201, `${phase} must not block an already-durable batch's acceptance`);
+      } finally {
+        __setRecordIndexFaultHookForTest(null);
       }
+      await within(waitForDeferredIndexWorkToDrain(), `${phase} deferred index work to finish`);
+
+      const acceptedOutcome = mustExist(
+        await driver.outcome(device, request.batch_id),
+        "an accepted reservation outcome must exist"
+      );
+      assert.equal(acceptedOutcome.status, "accepted");
+      assert.equal(Number(acceptedOutcome.durable_prefix_count), records.length);
+      assert.equal(await driver.changes(device.connector_instance_id, key), 1);
+      assert.deepEqual(notificationVersions(notifications), [1]);
+      assert.equal(
+        await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+        true,
+        `${phase} leaves the dirty scope set instead of blocking acceptance`
+      );
+
+      for (let round = 0; round < 20; round += 1) {
+        // biome-ignore lint/performance/noAwaitInLoops: bounded reconcile rounds intentionally observe prior state.
+        const stillDirty = await isSearchIndexScopeDirty({
+          connectorInstanceId: device.connector_instance_id,
+          stream: "messages",
+        });
+        if (!stillDirty) {
+          break;
+        }
+        await runSearchIndexDirtyReconcileRound({ maxDurationMs: 5000, pageSize: 100 });
+      }
+      assert.equal(
+        await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+        false,
+        `${phase} eventually converges via the existing dirty-scope reconcile`
+      );
+
+      const replay = await driver.ingest(device, request);
+      assert.equal(replay.status, 201);
+      await assertAcceptedFinalState(driver, {
+        batchId: request.batch_id,
+        changes: 1,
+        content: `content-${phase}`,
+        device,
+        key,
+        notifications,
+        request,
+        version: 1,
+      });
+      return;
+    }
+
+    try {
+      __setDeviceIngestPhaseFaultHookForTest(throwOnce);
       const interrupted = await driver.ingest(device, request);
       assert.equal(interrupted.status, 503, `${phase} must surface only retryable HTTP state`);
       assert.equal(errorCode(interrupted), "device_ingest_retryable");
     } finally {
       __setDeviceIngestPhaseFaultHookForTest(null);
-      __setRecordIndexFaultHookForTest(null);
     }
 
     const beforeSnapshot = await driver.snapshot({
@@ -1268,10 +1289,64 @@ async function runPhaseFaultMatrix(driver: Driver): Promise<void> {
     );
     assert.deepEqual(notificationVersions(notifications), committed ? [1] : []);
 
+    if (phase === "after-accepted-commit") {
+      // The acknowledgement is already durable, but deferred indexing has not
+      // been enqueued. A retry must replay that exact stored 201 without
+      // crediting any immediate projection; reconcile is the only convergence
+      // path exercised by this crash window.
+      assertStoredAcceptedResponse(beforeResume, device, request);
+      const replay = await driver.ingest(device, request);
+      assert.equal(replay.status, 201);
+      assert.deepEqual(replay.body, beforeResume.response_json, "the replay returns the exact stored 201 body");
+      assert.equal(
+        await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+        true,
+        "accepted-before-deferred-work retains the dirty scope before projection"
+      );
+      assert.deepEqual(
+        await driver.lexical(device.connector_instance_id, key),
+        [],
+        "immediate lexical projection must not be credited before reconcile"
+      );
+      assert.deepEqual(
+        await driver.semantic(device.connector_instance_id, key),
+        [],
+        "immediate semantic projection must not be credited before reconcile"
+      );
+
+      const reconcile = await runSearchIndexDirtyReconcileRound({ maxDurationMs: 5000, pageSize: 100 });
+      assert.deepEqual(
+        reconcile,
+        { attempted: 1, failed: 0, incomplete: false, recontended: 0, succeeded: 1 },
+        "the retained scope must converge through a successful reconcile, not a hidden failure"
+      );
+      assert.equal(
+        await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+        false,
+        "successful reconcile clears the accepted batch's dirty scope"
+      );
+      await assertAcceptedFinalState(driver, {
+        batchId: request.batch_id,
+        changes: 1,
+        content: `content-${phase}`,
+        device,
+        key,
+        notifications,
+        request,
+        version: 1,
+      });
+      return;
+    }
+
     const resumed = await driver.ingest(device, request);
     assert.equal(resumed.status, 201);
     const replay = await driver.ingest(device, request);
     assert.equal(replay.status, 201);
+    // Index maintenance for the resume-to-accept call above is fire-and-
+    // forget: drain it before reading lexical/semantic content directly so
+    // this assertion isolates the durable-repair claim from still-in-flight
+    // background publish work.
+    await within(waitForDeferredIndexWorkToDrain(), `${phase} resume deferred index work to finish`);
     if (phase === "after-durable-record") {
       const first = mustExist(await driver.record(device.connector_instance_id, key), "first record must exist");
       const second = mustExist(
@@ -1467,15 +1542,21 @@ async function runDuplicateAndNewerWriterOracle(driver: Driver): Promise<void> {
         throw new Error(`repeated post-durable index interruption at ${point}`);
       }
     });
+    // Derived-index maintenance is fire-and-forget: the injected fault can no
+    // longer block acceptance. The batch durably writes and accepts on the
+    // first call; the dirty scope is left set instead of a stranded
+    // "processing" reservation.
+    let accepted: JsonResponse;
     try {
-      assert.equal((await driver.ingest(device, request)).status, 503);
-      assert.equal((await driver.ingest(device, request)).status, 503);
+      accepted = await driver.ingest(device, request);
+      assert.equal(accepted.status, 201, "an already-durable batch accepts despite a derived-index fault");
     } finally {
       __setRecordIndexFaultHookForTest(null);
     }
-    const stranded = mustExist(await driver.outcome(device, request.batch_id), "a stranded outcome must exist");
-    assert.equal(stranded.status, "processing");
-    assert.equal(stranded.durable_prefix_count, 2);
+    await within(waitForDeferredIndexWorkToDrain(), "deferred device index work to finish");
+    const stored = mustExist(await driver.outcome(device, request.batch_id), "an accepted outcome must exist");
+    assert.equal(stored.status, "accepted");
+    assert.equal(stored.durable_prefix_count, 2);
     const beforeNewer = mustExist(
       await driver.record(device.connector_instance_id, expected.key),
       "the durable record must exist before the newer write"
@@ -1496,10 +1577,16 @@ async function runDuplicateAndNewerWriterOracle(driver: Driver): Promise<void> {
     }
     assert.deepEqual(await driver.lexical(device.connector_instance_id, expected.key), []);
     assert.deepEqual(await driver.semantic(device.connector_instance_id, expected.key), []);
+    assert.equal(
+      await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+      true,
+      "the faulted publish leaves the dirty scope set for reconcile"
+    );
 
-    // The older reservation is deliberately still processing. A newer direct
-    // authoritative write now wins before the old retry rereads its final
-    // records; the retry may repair indexes but cannot restore A/B or a tombstone.
+    // The batch is already accepted. A newer direct authoritative write now
+    // wins before reconcile ever republishes this key; reconcile republishes
+    // whatever is currently authoritative, so it can never resurrect the
+    // stale A/B content or tombstone from the accepted batch.
     await ingestRecord(
       driver.target(device.connector_instance_id),
       directRecord(expected.key, expected.newerContent, { timestamp: "2026-07-16T12:00:02.000Z" })
@@ -1511,8 +1598,24 @@ async function runDuplicateAndNewerWriterOracle(driver: Driver): Promise<void> {
       ).version,
       3
     );
-    assert.equal((await driver.ingest(device, request)).status, 201);
-    assert.equal((await driver.ingest(device, request)).status, 201);
+    for (let round = 0; round < 20; round += 1) {
+      // biome-ignore lint/performance/noAwaitInLoops: bounded reconcile rounds intentionally observe prior state.
+      const stillDirty = await isSearchIndexScopeDirty({
+        connectorInstanceId: device.connector_instance_id,
+        stream: "messages",
+      });
+      if (!stillDirty) {
+        break;
+      }
+      await runSearchIndexDirtyReconcileRound({ maxDurationMs: 5000, pageSize: 100 });
+    }
+    assert.equal(
+      await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+      false,
+      "reconcile eventually clears the accepted batch's dirty scope"
+    );
+    const replay = await driver.ingest(device, request);
+    assert.equal(replay.status, 201, "the accepted batch replays without reapplying the prefix");
     const final = mustExist(
       await driver.record(device.connector_instance_id, expected.key),
       "a final record must exist"
@@ -1529,7 +1632,7 @@ async function runDuplicateAndNewerWriterOracle(driver: Driver): Promise<void> {
     assert.deepEqual(
       notificationVersions(notifications),
       [1, 2, 3],
-      "resuming a durable prefix emits no duplicate notification"
+      "the accepted batch's replay and reconcile emit no duplicate notification"
     );
     assert.deepEqual(await driver.lexical(device.connector_instance_id, expected.key), [
       { field: "content", text: expected.newerContent },
@@ -1551,42 +1654,67 @@ async function runRepairAndCanonicalOracle(driver: Driver): Promise<void> {
   __setRecordIndexFaultHookForTest((point: string) => {
     if (point === "after-lexical-index" && failSemantic) {
       failSemantic = false;
-      throw new Error("processing reservation keeps a corruptible derived phase");
+      throw new Error("a fire-and-forget derived phase must not block acceptance");
     }
   });
+  // Derived-index maintenance is fire-and-forget: the injected fault durably
+  // accepts the batch on the first call and leaves the dirty scope set,
+  // instead of stranding the reservation "processing".
   try {
-    assert.equal((await driver.ingest(device, request)).status, 503);
+    assert.equal((await driver.ingest(device, request)).status, 201);
   } finally {
     __setRecordIndexFaultHookForTest(null);
   }
-  await driver.corruptDerived(device.connector_instance_id, "repair-key");
-  assert.deepEqual(await driver.lexical(device.connector_instance_id, "repair-key"), [
-    { field: "content", text: "corrupt lexical value" },
-  ]);
+  await within(waitForDeferredIndexWorkToDrain(), "deferred device index work to finish");
+  const acceptedOutcome = mustExist(await driver.outcome(device, request.batch_id), "accepted outcome must exist");
+  assert.equal(acceptedOutcome.status, "accepted");
+  assert.equal(acceptedOutcome.durable_prefix_count, 1);
+  assert.equal(await driver.changes(device.connector_instance_id, "repair-key"), 1);
+  assert.deepEqual(notificationVersions(notifications), [1]);
+  assert.equal(
+    await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+    true,
+    "the faulted publish leaves the dirty scope set for reconcile"
+  );
+
+  // Reconcile's drift check is count-based (see backfillLexicalStream): it
+  // proves the derived index is fully POPULATED for an accepted key, not
+  // that its content matches byte-for-byte. Erasing the row entirely (a
+  // genuine count gap) is what this reconcile mechanism is designed to heal
+  // — the accepted-batch equivalent of the missing-semantic-row gap already
+  // exercised above.
+  await driver.eraseDerived(device.connector_instance_id, "repair-key");
+  assert.deepEqual(await driver.lexical(device.connector_instance_id, "repair-key"), []);
   assert.deepEqual(await driver.semantic(device.connector_instance_id, "repair-key"), []);
-  const corruptOutcome = mustExist(await driver.outcome(device, request.batch_id), "corrupt outcome must exist");
-  assert.deepEqual(
-    {
-      acceptedAt: corruptOutcome.accepted_at,
-      prefix: corruptOutcome.durable_prefix_count,
-      status: corruptOutcome.status,
-    },
-    { acceptedAt: null, prefix: 1, status: "processing" }
+
+  // Semantic capacity is unavailable while the scope is already dirty from
+  // the fault above: the scope stays dirty (the crash-safe backstop) rather
+  // than surfacing an HTTP error, matching the fire-and-forget contract.
+  driver.disableSemanticBackend();
+  assert.equal(
+    await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+    true,
+    "the scope stays dirty while semantic capacity is unavailable"
   );
   assert.equal(await driver.changes(device.connector_instance_id, "repair-key"), 1);
-  driver.disableSemanticBackend();
-  try {
-    const unavailable = await driver.ingest(device, request);
-    assert.equal(unavailable.status, 503);
-    assert.equal(errorCode(unavailable), "device_ingest_retryable");
-    const stranded = mustExist(await driver.outcome(device, request.batch_id), "stranded outcome must exist");
-    assert.equal(stranded.status, "processing");
-    assert.equal(stranded.durable_prefix_count, 1);
-    assert.equal(await driver.changes(device.connector_instance_id, "repair-key"), 1);
-    assert.deepEqual(notificationVersions(notifications), [1]);
-  } finally {
-    driver.restoreSemanticBackend();
+  assert.deepEqual(notificationVersions(notifications), [1]);
+  driver.restoreSemanticBackend();
+  for (let round = 0; round < 20; round += 1) {
+    // biome-ignore lint/performance/noAwaitInLoops: bounded reconcile rounds intentionally observe prior state.
+    const stillDirty = await isSearchIndexScopeDirty({
+      connectorInstanceId: device.connector_instance_id,
+      stream: "messages",
+    });
+    if (!stillDirty) {
+      break;
+    }
+    await runSearchIndexDirtyReconcileRound({ maxDurationMs: 5000, pageSize: 100 });
   }
+  assert.equal(
+    await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+    false,
+    "reconcile eventually clears the corrupted scope once semantic capacity returns"
+  );
   assert.equal((await driver.ingest(device, request)).status, 201);
   await assertAcceptedFinalState(driver, {
     batchId: request.batch_id,
@@ -1830,6 +1958,10 @@ async function runStrandedDiagnosticsOracle(driver: Driver): Promise<void> {
       { acceptedAt, batchId: request.batch_id, status: "accepted" },
     ].sort((a, b) => a.batchId.localeCompare(b.batchId))
   );
+  // Index maintenance for the resume-to-accept call above is fire-and-forget:
+  // drain it before snapshotting so this comparison isolates the replay's
+  // effect from still-in-flight background publish work racing these reads.
+  await within(waitForDeferredIndexWorkToDrain(), "resume-to-accept deferred index work to finish");
   const beforeReplay = await driver.snapshot({ batchId: request.batch_id, device, keys: ["stranded-key"] });
   assert.equal((await driver.ingest(device, request)).status, 201);
   const afterReplay = await driver.snapshot({ batchId: request.batch_id, device, keys: ["stranded-key"] });
@@ -2914,8 +3046,10 @@ async function runVersionCasOracle(driver: Driver): Promise<void> {
           [],
           "the crashed publish must not have left partial state"
         );
-        const { runSearchIndexDirtyReconcileRound } = await import("../server/search-index-reconcile.ts");
-        await runSearchIndexDirtyReconcileRound();
+        const { runSearchIndexDirtyReconcileRound: runDirtyReconcileRound } = await import(
+          "../server/search-index-reconcile.ts"
+        );
+        await runDirtyReconcileRound();
         assert.deepEqual(
           await driver.lexical(device.connector_instance_id, key),
           [{ field: "content", text: "crash-content" }],
@@ -3071,6 +3205,128 @@ async function runFullPrefixDeadlineOracle(driver: Driver): Promise<void> {
 }
 
 /**
+ * A durable device batch must be accepted while derived semantic capacity is
+ * held by another instance. This is the device-route equivalent of the
+ * ordinary ingest acknowledgement contract: the record and reservation are
+ * durable first, the existing dirty-scope reconcile is the crash-safe index
+ * backstop, and replay does not execute the batch again.
+ */
+async function runDeviceAckWhileSemanticCapacityHeldOracle(driver: Driver): Promise<void> {
+  const previousLimit = process.env.PDPP_SEMANTIC_WORK_LIMIT;
+  const previousQueueLimit = process.env.PDPP_SEMANTIC_WORK_QUEUE_LIMIT;
+  process.env.PDPP_SEMANTIC_WORK_LIMIT = "1";
+  process.env.PDPP_SEMANTIC_WORK_QUEUE_LIMIT = "1";
+
+  const blocker = await enrollConfiguredDevice(driver, "device-ack-semantic-blocker");
+  const device = await enrollConfiguredDevice(driver, "device-ack-semantic-capacity");
+  const semanticEntered = deferred<void>();
+  const releaseSemantic = deferred<void>();
+  let blockerPromise: Promise<unknown> | undefined;
+  let ingestPromise: Promise<JsonResponse> | undefined;
+  driver.setEmbeddingHook(async (text) => {
+    if (text === "held semantic capacity") {
+      semanticEntered.resolve();
+      await releaseSemantic.promise;
+    }
+  });
+
+  try {
+    blockerPromise = ingestRecord(
+      driver.target(blocker.connector_instance_id),
+      directRecord("capacity-blocker", "held semantic capacity")
+    );
+    await within(semanticEntered.promise, "another instance to hold semantic index capacity");
+
+    const request = batch(device, nextId("device-ack-held-capacity"), [
+      deviceRecord("accepted-while-held", "accepted before semantic indexing"),
+    ]);
+    ingestPromise = driver.ingest(device, request);
+    const accepted = await within(ingestPromise, "device batch acknowledgement while semantic capacity is held", 1500);
+    assert.equal(
+      accepted.status,
+      201,
+      "semantic index throughput must not turn an already-durable device batch into HTTP 503"
+    );
+
+    const stored = await assertOutcomeIdentity(driver, device, request);
+    assert.equal(stored.status, "accepted");
+    assert.equal(Number(stored.durable_prefix_count), Number(stored.record_count));
+    assert.equal(await driver.changes(device.connector_instance_id, "accepted-while-held"), 1);
+    assert.equal(
+      (await driver.outcomes(device)).filter((outcome) => outcome.batch_id === request.batch_id).length,
+      1,
+      "one batch id has exactly one durable reservation completion"
+    );
+    assert.equal(
+      await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+      true,
+      "the durable write retains its dirty scope while derived capacity is unavailable"
+    );
+
+    const replay = await driver.ingest(device, request);
+    assert.equal(replay.status, 201, "the accepted batch replays while indexing is still held");
+    assert.deepEqual(replay.body, accepted.body, "accepted replay returns the stored response");
+    assert.equal(
+      (await driver.outcome(device, request.batch_id))?.accepted_at,
+      stored.accepted_at,
+      "accepted replay does not complete the reservation a second time"
+    );
+    assert.equal(await driver.changes(device.connector_instance_id, "accepted-while-held"), 1);
+
+    releaseSemantic.resolve();
+    await within(Promise.allSettled([blockerPromise, ingestPromise]), "held semantic work to release");
+    await within(waitForDeferredIndexWorkToDrain(), "deferred device index work to finish");
+    assert.equal(
+      await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+      true,
+      "successful per-record repair does not clear the scope before reconcile proves the whole scope"
+    );
+
+    // Sequential rounds are intentional: each round must observe the prior
+    // round's dirty-scope clear before deciding whether convergence is done.
+    for (let round = 0; round < 20; round += 1) {
+      // biome-ignore lint/performance/noAwaitInLoops: bounded reconcile rounds intentionally observe prior state.
+      const stillDirty = await isSearchIndexScopeDirty({
+        connectorInstanceId: device.connector_instance_id,
+        stream: "messages",
+      });
+      if (!stillDirty) {
+        break;
+      }
+      await runSearchIndexDirtyReconcileRound({ maxDurationMs: 5000, pageSize: 100 });
+    }
+    assert.equal(
+      await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+      false,
+      "the existing dirty-scope reconcile eventually clears the accepted batch scope"
+    );
+    assert.deepEqual(await driver.lexical(device.connector_instance_id, "accepted-while-held"), [
+      { field: "content", text: "accepted before semantic indexing" },
+    ]);
+    assert.deepEqual(await driver.semantic(device.connector_instance_id, "accepted-while-held"), [
+      { record_key: "accepted-while-held", scope_key: JSON.stringify(["messages", "content"]) },
+    ]);
+  } finally {
+    releaseSemantic.resolve();
+    await Promise.allSettled(
+      [blockerPromise, ingestPromise].filter((promise): promise is Promise<unknown> => Boolean(promise))
+    );
+    await waitForDeferredIndexWorkToDrain().catch(() => undefined);
+    driver.setEmbeddingHook(null);
+    if (previousLimit === undefined) {
+      delete process.env.PDPP_SEMANTIC_WORK_LIMIT;
+    } else {
+      process.env.PDPP_SEMANTIC_WORK_LIMIT = previousLimit;
+    }
+    if (previousQueueLimit === undefined) {
+      delete process.env.PDPP_SEMANTIC_WORK_QUEUE_LIMIT;
+    } else {
+      process.env.PDPP_SEMANTIC_WORK_QUEUE_LIMIT = previousQueueLimit;
+    }
+  }
+}
+
+/**
  * A failed device-ingest batch attempt must leave a server-side trace.
  *
  * The collector's 503 envelope is a fixed, bounded template by design (no
@@ -3132,6 +3388,7 @@ async function runAttemptFailureServerLogOracle(driver: Driver): Promise<void> {
 const ORACLES: [string, (driver: Driver) => Promise<void>][] = [
   ["phase fault/resume matrix", runPhaseFaultMatrix],
   ["full durable prefix settles under an expired deadline", runFullPrefixDeadlineOracle],
+  ["device ack ignores held semantic index capacity", runDeviceAckWhileSemanticCapacityHeldOracle],
   ["failed batch attempts are logged server-side", runAttemptFailureServerLogOracle],
   ["simultaneous identity matrix", runConcurrentIdentityOracle],
   ["duplicate and newer writer matrix", runDuplicateAndNewerWriterOracle],

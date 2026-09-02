@@ -282,6 +282,15 @@ export type NormalizeTerminalError = (error: TerminalErrorDetails) => TerminalEr
 /** Fields shared by browser and non-browser configs. */
 interface BaseRunConnectorConfig {
   auth?: AuthConfig;
+  /**
+   * Opt in to treating a DECLINED `credentials` interaction as "no stored
+   * credential" rather than a run-ending failure. Only for session-first
+   * browser connectors that authenticate primarily through the owner's
+   * browser profile and have an explicit absent-credential path in
+   * `ensureSession`. Leave unset (the default) for anything that cannot
+   * function without its secret — see `resolveCredentials`.
+   */
+  authOptional?: boolean;
   /** Marks a record as a tombstone; runtime strips to { id } + op:'delete'. */
   isTombstone?: (stream: string, data: RecordData) => boolean;
   name: string;
@@ -746,6 +755,7 @@ export function runConnector(config: RunConnectorConfig): void {
     timeRangeField = "date",
     isTombstone,
     auth,
+    authOptional = false,
   } = config;
   // ensureSession/probeSession are only on BrowserConnectorConfig; extract
   // after the browser-narrowing check.
@@ -1019,6 +1029,7 @@ export function runConnector(config: RunConnectorConfig): void {
     const startMsg = await parseStart(readStart);
     const requested = buildRequested(startMsg);
     const credentials = await resolveCredentials(auth, {
+      authOptional,
       sendInteraction,
       connectorName: name,
     });
@@ -1120,12 +1131,58 @@ function buildRequested(startMsg: StartMessage): Map<string, StreamScope> {
   return requested;
 }
 
-/** Resolve credentials via the configured auth strategy. */
-async function resolveCredentials(
+/**
+ * `<connector>_credentials_missing` — the exact message the `env` auth strategy
+ * throws when a `credentials` INTERACTION is declined or times out. Matched by
+ * name rather than by class because the strategy lives in
+ * `@pdpp/connector-protocol` and throws a plain `Error`.
+ */
+function isCredentialsMissingError(connectorName: string, message: string): boolean {
+  return message === `${connectorName}_credentials_missing`;
+}
+
+/**
+ * Resolve credentials via the configured auth strategy.
+ *
+ * When `authOptional` is set, a missing credential is a supported state rather
+ * than a run-ending failure: the connector authenticates through the owner's
+ * browser profile and treats a stored username/password as an optional
+ * auto-login shortcut. Present credentials are used exactly as before; absent
+ * ones resolve to an empty set WITHOUT ever prompting.
+ *
+ * Root cause history. 6f6765bbb (2026-08-26) fixed half of this: it stopped a
+ * declined prompt from failing the run. But it caught the failure AFTER the
+ * `env` strategy had already opened the `credentials` interaction and awaited
+ * it — it suppressed the ERROR, not the PROMPT. Live prod run
+ * run_1788004675387 showed the remaining half: the run leased and readied a
+ * browser surface, then immediately emitted a `credentials` interaction. The
+ * repair page put a username/password form in front of the owner, which is
+ * unanswerable for a Google-SSO account and blocks the required journey
+ * (repair page -> run -> streamed browser -> owner completes SSO there).
+ * A scheduled run has nobody to answer it at all.
+ *
+ * The flag is now threaded into `AuthStrategyContext` so the strategy returns
+ * before asking, rather than being talked out of the answer afterwards. The
+ * post-hoc catch below is retained deliberately: it still covers a strategy
+ * that reaches the missing-credential branch by another route, and it keeps
+ * this behavior pinned if an older protocol build is ever installed.
+ *
+ * Narrowly scoped on purpose: only connectors that opt in are affected, and
+ * only the credential question is skipped — an `assist`/`manual_action`
+ * interaction from the same run still reaches the owner, which is what the
+ * browser login depends on. Every OTHER auth failure
+ * (`auth_env_required_missing`, `auth_strategy_unknown`, a strategy's own
+ * throw) still fails the run closed, and connectors that never set
+ * `authOptional` — every API connector, e.g. github/ynab/notion — keep the
+ * unchanged prompt-then-fail-closed behavior rather than proceeding
+ * token-less.
+ */
+export async function resolveCredentials(
   auth: AuthConfig | undefined,
   ctx: {
     sendInteraction: BaseCollectContext["sendInteraction"];
     connectorName: string;
+    authOptional: boolean;
   }
 ): Promise<Credentials> {
   if (!auth) {
@@ -1135,6 +1192,9 @@ async function resolveCredentials(
     return await resolveAuth(auth, ctx);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (ctx.authOptional && isCredentialsMissingError(ctx.connectorName, message)) {
+      return {};
+    }
     throw new TerminalError(message, { cause: err });
   }
 }
@@ -1218,6 +1278,66 @@ function makeEmitRecord(deps: {
   return { emit: emitRecord, counters };
 }
 
+interface BrowserSurfaceAssistanceLifecycleDependencies {
+  readonly assist: BaseCollectContext["assist"];
+  readonly completeAssistance: BaseCollectContext["completeAssistance"];
+  readonly nextAssistanceRequestId: () => string;
+  readonly page: Page;
+  readonly prepareTarget?: typeof prepareBrowserInteractionTarget;
+  readonly unregisterTarget?: typeof unregisterBrowserInteractionTarget;
+}
+
+/**
+ * Keep the streamed-page target's lifecycle coupled to the structured
+ * assistance request. This is deliberately separate from session logic: a
+ * failed readiness probe must still terminally close the assistance and free
+ * the target before its error reaches the run lifecycle.
+ */
+export function createBrowserSurfaceAssistanceLifecycle({
+  assist,
+  completeAssistance,
+  nextAssistanceRequestId,
+  page,
+  prepareTarget = prepareBrowserInteractionTarget,
+  unregisterTarget = unregisterBrowserInteractionTarget,
+}: BrowserSurfaceAssistanceLifecycleDependencies): {
+  assist: BaseCollectContext["assist"];
+  close: () => Promise<void>;
+  complete: BaseCollectContext["completeAssistance"];
+} {
+  const openAssistanceIds = new Set<string>();
+
+  return {
+    assist: async (request) => {
+      const assistanceRequestId = request.assistance_request_id ?? nextAssistanceRequestId();
+      if (request.attachments?.some((attachment) => attachment.kind === "browser_surface")) {
+        openAssistanceIds.add(assistanceRequestId);
+        // Registration precedes ASSISTANCE so the reference server can mint a
+        // stream only for this exact ready (run, assistance) target.
+        await prepareTarget({
+          interactionId: assistanceRequestId,
+          page,
+          reason: "manual_action",
+        });
+      }
+      return assist({ ...request, assistance_request_id: assistanceRequestId });
+    },
+    complete: async (assistanceRequestId, status, extra = {}) => {
+      try {
+        await completeAssistance(assistanceRequestId, status, extra);
+      } finally {
+        if (openAssistanceIds.delete(assistanceRequestId)) {
+          await unregisterTarget({ interactionId: assistanceRequestId });
+        }
+      }
+    },
+    close: async () => {
+      await Promise.all([...openAssistanceIds].map((interactionId) => unregisterTarget({ interactionId })));
+      openAssistanceIds.clear();
+    },
+  };
+}
+
 /** Run collect() inside an acquired browser context, with session + tracing. */
 async function runInBrowser(args: {
   browser: BrowserConfig;
@@ -1276,37 +1396,17 @@ async function runInBrowser(args: {
   baseCtx.capture?.setTraceCheckpointHook?.((label) => tracer.checkpoint(label));
   let page: Page | null = null;
   let runSucceeded = false;
-  const openBrowserSurfaceAssistanceIds = new Set<string>();
+  let browserSurfaceAssistance: ReturnType<typeof createBrowserSurfaceAssistanceLifecycle> | null = null;
   try {
     page = await selectBrowserPageForRun(ctx, browser);
-    const browserAssist: BaseCollectContext["assist"] = async (req) => {
-      const assistanceRequestId = req.assistance_request_id ?? nextAssistanceRequestId();
-      if (req.attachments?.some((attachment) => attachment.kind === "browser_surface")) {
-        openBrowserSurfaceAssistanceIds.add(assistanceRequestId);
-        // Registration must happen before ASSISTANCE reaches the reference
-        // server. The server's owner-authenticated mint route can then fail
-        // closed unless this exact (run, assistance) target is ready.
-        await prepareBrowserInteractionTarget({
-          interactionId: assistanceRequestId,
-          page: page as Page,
-          reason: "manual_action",
-        });
-      }
-      return assist({ ...req, assistance_request_id: assistanceRequestId });
-    };
-    const browserCompleteAssistance: BaseCollectContext["completeAssistance"] = async (
-      assistanceRequestId,
-      status,
-      extra = {}
-    ) => {
-      try {
-        await completeAssistance(assistanceRequestId, status, extra);
-      } finally {
-        if (openBrowserSurfaceAssistanceIds.delete(assistanceRequestId)) {
-          await unregisterBrowserInteractionTarget({ interactionId: assistanceRequestId });
-        }
-      }
-    };
+    browserSurfaceAssistance = createBrowserSurfaceAssistanceLifecycle({
+      assist,
+      completeAssistance,
+      nextAssistanceRequestId,
+      page: page as Page,
+    });
+    const browserAssist = browserSurfaceAssistance.assist;
+    const browserCompleteAssistance = browserSurfaceAssistance.complete;
     const browserSendInteraction = makeBrowserInteractionKeepalive({
       context: ctx,
       diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
@@ -1379,14 +1479,7 @@ async function runInBrowser(args: {
     throw err;
   } finally {
     await finalizeDiagnostics();
-    if (page) {
-      await Promise.all(
-        [...openBrowserSurfaceAssistanceIds].map((assistanceRequestId) =>
-          unregisterBrowserInteractionTarget({ interactionId: assistanceRequestId })
-        )
-      );
-      openBrowserSurfaceAssistanceIds.clear();
-    }
+    await browserSurfaceAssistance?.close();
     if (shouldCloseBrowserPageAfterRun(browser, runSucceeded)) {
       await closeBrowserPage(page);
     }
@@ -1425,10 +1518,60 @@ export async function selectBrowserPageForRun(
   return await context.newPage();
 }
 
+/**
+ * Mirrors `browser-launch.ts`'s `HAR_RECORD_PATH_ENV`/
+ * `STORAGE_STATE_RECORD_PATH_ENV` string values as literals rather than a
+ * static import — this module dynamically `import()`s `browser-launch.ts`
+ * only inside `acquireBrowser` specifically so a fetch-only connector never
+ * pays for pulling in `patchright`/`playwright` at load time (see that
+ * call site). Same string-literal-mirror precedent as
+ * `publishCdpEndpointToEnv`'s doc comment in browser-launch.ts (mirrored in
+ * the other direction here). Kept in sync by hand; a mismatch here would
+ * only make `browserRecordingRequested` under-detect (never over-detect),
+ * since a wrong name simply reads `undefined` from `process.env`.
+ */
+const HAR_RECORD_PATH_ENV_MIRROR = "PDPP_SCENARIO_HAR_RECORD_PATH";
+const STORAGE_STATE_RECORD_PATH_ENV_MIRROR = "PDPP_SCENARIO_STORAGE_STATE_RECORD_PATH";
+
+/**
+ * True when `bin/scenario-record.ts --record-har` requested HAR and/or
+ * storageState capture for this run — the same env-var presence check
+ * `acquireBrowserForConnector` uses to decide whether to pass `recordHar`/
+ * a storageState snapshot to Playwright at all.
+ *
+ * BUG THIS GUARDS AGAINST (found live against a real reddit `--record-har`
+ * run: HAR flushed with entries, storageState never did): Patchright's
+ * `launchPersistentContext` ties the whole context's CDP transport to its
+ * pages — closing the connector's LAST open page tears the context down
+ * enough that a subsequent `context.storageState()` throws "Target page,
+ * context or browser has been closed", even though `context.close()`
+ * itself hasn't run yet. `runInBrowser`'s teardown was closing the page
+ * BEFORE calling `release()` (whose `storageState()` read happens just
+ * before `context.close()`), so a recording run always lost storageState
+ * silently — `writeStorageStateBestEffort` swallows the error and only
+ * logs to the subprocess's own stderr, which `bin/scenario-record.ts`
+ * discards on a successful run. HAR still flushed because network-event
+ * buffering is independent of page lifecycle, which is why the two
+ * artifacts diverged instead of failing together.
+ */
+function browserRecordingRequested(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env[HAR_RECORD_PATH_ENV_MIRROR]?.trim() || env[STORAGE_STATE_RECORD_PATH_ENV_MIRROR]?.trim());
+}
+
 export function shouldCloseBrowserPageAfterRun(
   browser: Pick<BrowserConfig, "preservePageOnFailure" | "preservePageOnSuccess">,
-  runSucceeded: boolean
+  runSucceeded: boolean,
+  env: NodeJS.ProcessEnv = process.env
 ): boolean {
+  // A `--record-har` run needs the context's last page to stay open until
+  // `release()` reads `storageState()` — see `browserRecordingRequested`'s
+  // doc comment. `release()`'s own `context.close()` closes the page right
+  // afterward, so skipping this pre-release close costs nothing on a
+  // recording run; it is a no-op change in shape (close happens a moment
+  // later, inside `release()`, instead of here).
+  if (browserRecordingRequested(env)) {
+    return false;
+  }
   if (runSucceeded && browser.preservePageOnSuccess) {
     return false;
   }
@@ -2054,8 +2197,12 @@ export function makeSessionEstablishWatchdog(args: {
     }
   };
 
-  const assistancePausesWatchdog = (req: AssistanceRequest): boolean =>
-    req.progress_posture === "running" && req.response_contract === "none";
+  // A no-response assistance is owned by the connector: the runtime keeps
+  // working or watching for readiness while the owner acts elsewhere or on a
+  // browser surface. It must pause the establishment watchdog regardless of
+  // posture, otherwise a blocked streamed login is killed at the ordinary
+  // no-progress deadline before its declared handoff timeout can elapse.
+  const assistancePausesWatchdog = (req: AssistanceRequest): boolean => req.response_contract === "none";
 
   const pruneExpiredAssistance = (): void => {
     const current = now();

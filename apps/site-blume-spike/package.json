@@ -1,0 +1,18 @@
+{
+  "name": "pdpp-site-blume-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "node scripts/sync-canonical-content.mjs",
+    "precheck": "node scripts/sync-canonical-content.mjs",
+    "predev": "node scripts/sync-canonical-content.mjs",
+    "prevalidate": "node scripts/sync-canonical-content.mjs",
+    "build": "blume build",
+    "check": "blume check",
+    "dev": "blume dev",
+    "validate": "blume validate"
+  },
+  "dependencies": {
+    "blume": "file:./vendor/blume-1.5.3.tgz"
+  }
+}

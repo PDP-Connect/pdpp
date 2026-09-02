@@ -113,6 +113,25 @@ async function closeStartedServer(server: Awaited<ReturnType<typeof startServer>
   await Promise.allSettled([closeOne(server.asServer), closeOne(server.rsServer)]);
 }
 
+function capturingLogger(messages: string[]) {
+  const capture = (...args: unknown[]) => {
+    const message = args.find((arg) => typeof arg === "string");
+    if (typeof message === "string") {
+      messages.push(message);
+    }
+  };
+  const logger = {
+    child: () => logger,
+    debug: capture,
+    error: capture,
+    fatal: capture,
+    info: capture,
+    trace: capture,
+    warn: capture,
+  };
+  return logger;
+}
+
 test("SQLite-mode startup opens the persistent file and seeds clients into it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-storage-boundary-sqlite-"));
   const dbPath = join(dir, "pdpp.sqlite");
@@ -131,6 +150,68 @@ test("SQLite-mode startup opens the persistent file and seeds clients into it", 
     const seeded = await getRegisteredClient(SEED_CLIENT.client_id);
     assert.ok(seeded, "pre-registered client SHALL be readable from the SQLite backend after boot");
     assert.equal(seeded.client_id, SEED_CLIENT.client_id);
+  } finally {
+    await closeStartedServer(server);
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("optional manifest reconciliation is scheduled after protocol listeners bind", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-readiness-order-"));
+  const messages: string[] = [];
+  const logger = capturingLogger(messages);
+  let server: Awaited<ReturnType<typeof startServer>> | null = null;
+  try {
+    server = await startServer({
+      asPort: 0,
+      autoEnrollEligibleSchedules: false,
+      dbPath: join(dir, "pdpp.sqlite"),
+      logger: logger as never,
+      reconcilePolyfillManifests: false,
+      rsPort: 0,
+    });
+    const listenerIndex = messages.indexOf("resource server listening");
+    const scheduledIndex = messages.indexOf("polyfill manifest reconciliation scheduled after AS/RS listen");
+    assert.ok(listenerIndex >= 0, "RS listener log is present");
+    assert.ok(scheduledIndex > listenerIndex, "optional reconciliation is scheduled after the RS listener");
+
+    await server.manifestReconciliationDone;
+    const disabledIndex = messages.indexOf("[manifest-reconcile] disabled by options");
+    assert.ok(disabledIndex > listenerIndex, "the reconciliation work itself also runs after listener bind");
+  } finally {
+    await closeStartedServer(server);
+    closeDb();
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("post-listen manifest maintenance failure is isolated from readiness", async () => {
+  const messages: string[] = [];
+  const logger = capturingLogger(messages);
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-readiness-failure-"));
+  let server: Awaited<ReturnType<typeof startServer>> | null = null;
+  try {
+    server = await startServer({
+      asPort: 0,
+      autoEnrollEligibleSchedules: false,
+      dbPath: join(dir, "pdpp.sqlite"),
+      logger: logger as never,
+      reconcilePolyfillManifests: true,
+      reconcilePolyfillManifestsImpl: () => Promise.reject(new Error("maintenance fixture failure")),
+      rsPort: 0,
+    });
+    await server.manifestReconciliationDone;
+    const asResponse = await fetch(`http://127.0.0.1:${server.asPort}/.well-known/oauth-authorization-server`);
+    const rsResponse = await fetch(`http://127.0.0.1:${server.rsPort}/.well-known/oauth-protected-resource`);
+    assert.equal(asResponse.status, 200, "AS remains available after maintenance failure");
+    assert.equal(rsResponse.status, 200, "RS remains available after maintenance failure");
+    assert.ok(
+      messages.some(
+        (message) => message === "polyfill manifest reconciliation failed after listeners; maintenance will retry"
+      ),
+      "maintenance failure is logged without rejecting the readiness chain"
+    );
   } finally {
     await closeStartedServer(server);
     closeDb();

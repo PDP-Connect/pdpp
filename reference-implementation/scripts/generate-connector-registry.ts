@@ -62,7 +62,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const riRoot = resolve(scriptDir, "..");
@@ -94,7 +94,7 @@ interface ManifestLike {
 // without workspace package resolution — matching the existing
 // `collector-registry.ts` import below.
 const { readPolyfillManifests } = (await import(
-  resolve(repoRoot, "packages/polyfill-connectors/src/manifest-registry.ts")
+  pathToFileURL(resolve(repoRoot, "packages/polyfill-connectors/src/manifest-registry.ts")).href
 )) as { readPolyfillManifests: () => { file: string; manifest: ManifestLike }[] };
 
 /** Parses one reference-implementation manifest JSON file at `manifestPath`. */
@@ -154,7 +154,7 @@ const nativeConnectorKeys = referenceManifests
 // connector_key. An alias entry exists only where the two differ — this is
 // the connector package's own bundling convention, not RI-invented knowledge.
 const { LOCAL_COLLECTOR_DEFINITIONS } = (await import(
-  resolve(repoRoot, "packages/polyfill-connectors/src/collector-registry.ts")
+  pathToFileURL(resolve(repoRoot, "packages/polyfill-connectors/src/collector-registry.ts")).href
 )) as { LOCAL_COLLECTOR_DEFINITIONS: readonly { connector_id: string }[] };
 
 const manifestByBundleSlug = new Map<string, ManifestLike>();

@@ -60,8 +60,8 @@
   "dependencies": {
     "@fastify/formbody": "^9.0.0",
     "@huggingface/transformers": "^4.2.0",
-    "@pdpp/collector-runtime": "file:../vendor/pdpp-collector-runtime-0.0.1.tgz",
-    "@pdpp/connector-protocol": "file:../vendor/pdpp-connector-protocol-0.0.1.tgz",
+    "@pdpp/collector-runtime": "file:../vendor/pdpp-collector-runtime-1.0.0.tgz",
+    "@pdpp/connector-protocol": "file:../vendor/pdpp-connector-protocol-1.0.0.tgz",
     "@pdpp/display": "workspace:*",
     "@pdpp/mcp-server": "workspace:*",
     "@pdpp/reference-contract": "workspace:*",

@@ -16,6 +16,7 @@
 // unit-testable without a database. The imperative variant wraps the scan.
 
 import type { BrowserEnrollmentShellSourceBinding } from "./routes/ref-browser-enrollment-shell.ts";
+import type { CredentialStateChange } from "./stores/connector-instance-credential-store.ts";
 
 export interface EnrollmentShellLike {
   readonly connectorInstanceId: string;
@@ -33,8 +34,40 @@ export interface EnrollmentShellLike {
 // `runInFlight` is the fifth guard and the only one that is not a property of
 // the shell row itself: a shell the owner is actively signing into must not be
 // revoked out from under him mid-attempt. See `expiredEnrollmentShellIds`.
-function enrollmentShellExpired(shell: EnrollmentShellLike, nowMs: number, runInFlight: boolean): boolean {
+function enrollmentShellExpired(
+  shell: EnrollmentShellLike,
+  nowMs: number,
+  runInFlight: boolean,
+  holdsCredential: boolean
+): boolean {
   if (runInFlight) {
+    return false;
+  }
+  // A shell that HOLDS A CAPTURED CREDENTIAL is not an abandoned setup.
+  //
+  // The TTL asks one question — "has the owner abandoned this?" — and an
+  // in-flight run is not the only evidence that he has not. He typed his
+  // password into this shell. That is finished owner work sitting in the row,
+  // and wall-clock alone must not throw it away.
+  //
+  // Production, 2026-08-26: a venmo shell was created 12:08:53 with a genuine
+  // credential captured, its run FAILED at 12:39:07 (so no longer in flight),
+  // the TTL expired at 14:08:53, and the sweep revoked it 39 seconds later.
+  // Seven venmo shells died that way, stranding the owner's real password on
+  // revoked rows while his page showed seven "Setup never completed" cards.
+  //
+  // The 2-hour window is unreachable for exactly the connectors that need it
+  // most: venmo is `derived_mode=manual` (`otp_likely`, `background_safe=false`),
+  // so finishing requires the OWNER to be awake, at his phone, and free. A
+  // retry is not something he can schedule inside two hours.
+  //
+  // This is not immortality. The credential is what defers retirement, so a
+  // shell that never captured one still ages out on the ordinary TTL, and an
+  // owner who abandons a credentialed setup can retire it explicitly through
+  // `/abandon-enrollment` (stamped `owner_abandoned`, a decision rather than a
+  // clock). What it removes is the case where the system destroys owner work
+  // he cannot re-do without being asked to re-do it.
+  if (holdsCredential) {
     return false;
   }
   if (shell.status !== "draft" && shell.status !== "active") {
@@ -83,11 +116,19 @@ function enrollmentShellExpired(shell: EnrollmentShellLike, nowMs: number, runIn
 export function expiredEnrollmentShellIds(
   shells: readonly EnrollmentShellLike[],
   now: string,
-  runInFlightInstanceIds: ReadonlySet<string> = new Set()
+  runInFlightInstanceIds: ReadonlySet<string> = new Set(),
+  credentialedInstanceIds: ReadonlySet<string> = new Set()
 ): readonly string[] {
   const nowMs = new Date(now).getTime();
   return shells
-    .filter((shell) => enrollmentShellExpired(shell, nowMs, runInFlightInstanceIds.has(shell.connectorInstanceId)))
+    .filter((shell) =>
+      enrollmentShellExpired(
+        shell,
+        nowMs,
+        runInFlightInstanceIds.has(shell.connectorInstanceId),
+        credentialedInstanceIds.has(shell.connectorInstanceId)
+      )
+    )
     .map((shell) => shell.connectorInstanceId);
 }
 
@@ -103,6 +144,10 @@ export function expiredEnrollmentShellIds(
 export const TTL_EXPIRED_REVOCATION_REASON = "ttl_expired";
 
 export interface ShellRetirementStore {
+  // The connectorInstanceIds that hold a captured credential. Optional on the
+  // same terms as `listRunInFlightInstanceIds`: absent means "no shell holds
+  // one", which is the historical behavior. Real callers supply it.
+  listCredentialedInstanceIds?: () => Promise<readonly string[]>;
   // List all unresolved browser-enrollment shell instances (any connector) for
   // the given owner, or all owners if ownerSubjectId is null. Implementations
   // may scope this to `source_binding_json->>'kind' =
@@ -120,6 +165,7 @@ export interface ShellRetirementStore {
       updatedAt: string;
       revokedAt?: string | null;
       sourceBindingPatch?: Record<string, unknown> | null;
+      credentialStateChange?: CredentialStateChange;
     }
   ) => Promise<unknown>;
 }
@@ -137,10 +183,20 @@ export async function retireExpiredBrowserEnrollmentShells(
   // window this fix exists to close: claims read first, run starts, shell read
   // second, shell revoked under a live run. See `expiredEnrollmentShellIds`.
   const runInFlightInstanceIds = new Set(await store.listRunInFlightInstanceIds?.());
-  const ids = expiredEnrollmentShellIds(shells, now, runInFlightInstanceIds);
+  // Read AFTER the shell list for the same reason as the claims above: a
+  // credential captured between the two reads is then necessarily visible
+  // here, so the shell holding it is spared. The opposite order would revoke a
+  // shell the owner had just finished typing his password into.
+  const credentialedInstanceIds = new Set(await store.listCredentialedInstanceIds?.());
+  const ids = expiredEnrollmentShellIds(shells, now, runInFlightInstanceIds, credentialedInstanceIds);
   for (const id of ids) {
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     await store.updateStatus(id, {
+      credentialStateChange: {
+        actorId: "browser_enrollment_shell_retirement",
+        actorType: "system",
+        cause: TTL_EXPIRED_REVOCATION_REASON,
+      },
       revokedAt: now,
       sourceBindingPatch: { revocation_reason: TTL_EXPIRED_REVOCATION_REASON },
       status: "revoked",

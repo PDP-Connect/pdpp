@@ -69,8 +69,10 @@
 import { isNullish } from "../lib/nullish.ts";
 import type { ConnectionHealthSnapshot } from "./connection-health.ts";
 import {
+  cadenceLatenessIsSoleDegradation,
   freshnessNotApplicable,
   hasOwnerBlockingAction,
+  importCompletionProven,
   isPassiveScheduledRecovery,
   type RenderedVerdict,
   type ScheduleEvidence,
@@ -415,7 +417,15 @@ function resolveOwnerStateResolver(
   // (design gate #1). Falling through here lets it reach the ordinary
   // green-tone `healthy` resolution below instead of being stuck at
   // `not_measured` forever.
-  if (evidence.source === "none" && !freshnessNotApplicable(snapshot)) {
+  //
+  // `freshnessNotApplicable` alone is NOT enough: it is also true for a
+  // never-run manual connection with no receipt (freshness genuinely does
+  // not apply to that connection KIND), which must still resolve
+  // `not_measured`, not `healthy`. `importCompletionProven` additionally
+  // requires `CollectionSucceeded === true` — receipt-gated evidence a real
+  // import actually finished — so only a genuinely complete import falls
+  // through here.
+  if (evidence.source === "none" && !(freshnessNotApplicable(snapshot) && importCompletionProven(snapshot))) {
     return "not_measured";
   }
 
@@ -440,7 +450,7 @@ function resolveOwnerStateResolver(
     grey: false,
     red: true,
   }[verdict.pill.tone];
-  if (systemDegradedForTone) {
+  if (systemDegradedForTone && !cadenceLatenessIsSoleDegradation(snapshot)) {
     return "system_degraded";
   }
 

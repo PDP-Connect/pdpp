@@ -36,10 +36,20 @@
  *   (d) watchdog emits a typed run_timed_out terminal spine event
  *   (e) watchdog does NOT fire for runs that complete within budget
  *   (f) finalizeRunCleanup is idempotent (double-call is a silent no-op)
+ *   (g) DURABLE-ROW WEDGE (owner-reported "Try Again" defect): a durable
+ *       `controller_active_runs` row can outlive its run when the
+ *       fire-and-forget `clearPersistedActiveRun` in `finalizeRunCleanup`
+ *       fails or races — e.g. a browser session that never finished
+ *       starting. `assertNoConflictingDurableActiveRun` now treats a row
+ *       whose full (run_id, connector_instance_id) identity already has a
+ *       terminal spine event as stale and self-heals it. A terminal event for
+ *       another connection sharing the run ID still blocks; a row with no
+ *       terminal event also blocks (REGRESSION, both backends).
  */
 
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 
 import { emitSpineEvent, getRunTerminalEvent, listSpineEventsPage } from "../lib/spine.ts";
 import {
@@ -50,7 +60,15 @@ import {
 } from "../runtime/controller.ts";
 import type { RuntimeRunConnectorOptions, RuntimeRunConnectorResult } from "../runtime/index.ts";
 import { closeDb, initDb } from "../server/db.ts";
-import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
+import { closePostgresStorage, initPostgresStorage } from "../server/postgres-storage.ts";
+import {
+  createPostgresSchedulerStore,
+  createSqliteSchedulerStore,
+  type ActiveRunRecord,
+  type SchedulerStore,
+} from "../server/stores/scheduler-store.ts";
+import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
 const CONNECTOR_ID = "https://registry.pdpp.dev/connectors/phantom-run-test";
@@ -109,6 +127,84 @@ function createDurableConflictSchedulerStore(existingRow: ActiveRunRecord | null
     upsertActiveRun: () => false,
     upsertLastRunTime: () => undefined,
   };
+}
+
+/**
+ * Like `createDurableConflictSchedulerStore`, but a mutable single-row store
+ * that actually honors `deleteActiveRun` — so a test can seed one orphaned
+ * durable row, drive `runNow`, and then assert on whether the row survived
+ * or was reclaimed. Mirrors the real `controller_active_runs` "one flight
+ * row per connector instance" shape closely enough to exercise
+ * `assertNoConflictingDurableActiveRun` honestly, without a real DB.
+ */
+function createMutableDurableRowSchedulerStore(existingRow: ActiveRunRecord): SchedulerStore & {
+  currentRow: () => ActiveRunRecord | null;
+} {
+  let row: ActiveRunRecord | null = { ...existingRow };
+  return {
+    appendRunHistory: () => undefined,
+    createSchedule: () => undefined,
+    currentRow: () => (row ? { ...row } : null),
+    deleteActiveRun: (connectorInstanceId, runId) => {
+      if (row?.run_id === runId && (row.connector_instance_id ?? row.connector_id) === connectorInstanceId) {
+        row = null;
+      }
+    },
+    deleteSchedule: () => undefined,
+    getActiveRun: (connectorInstanceId) =>
+      row && (row.connector_instance_id ?? row.connector_id) === connectorInstanceId ? { ...row } : null,
+    getLatestRunHistoryForConnection: () => null,
+    getSchedule: () => null,
+    listActiveRuns: () => (row ? [{ ...row }] : []),
+    listLastRunTimes: () => [],
+    listRunHistory: () => [],
+    listSchedules: () => [],
+    setScheduleEnabled: () => undefined,
+    updateSchedule: () => undefined,
+    upsertActiveRun: (record) => {
+      if (row) {
+        return false;
+      }
+      row = { ...record };
+      return true;
+    },
+    upsertLastRunTime: () => undefined,
+  };
+}
+
+/**
+ * `createController`'s startup reconciliation
+ * (`releaseAbandonedControllerRunClaims`, which clears any durable row
+ * present at boot) is not on the public `Controller` interface — it is
+ * internal plumbing consumed only by the browser-surface subsystem. Tests
+ * that need to seed a durable row AFTER boot reconciliation has settled
+ * (so the seeded row models a run orphaned mid-process-life, not one
+ * bootstrap reconciliation would clear anyway) poll the fixture store's own
+ * observable state instead of reaching into that internal promise.
+ */
+async function waitForBootstrapRowCleared(store: { currentRow: () => ActiveRunRecord | null }): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (store.currentRow() === null) {
+      return;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: Deliberately sequential polling with no fixed tick count to wait on.
+    await setTimeoutPromise(1);
+  }
+  throw new Error("timed out waiting for startup reconciliation to clear the bootstrap placeholder row");
+}
+
+async function waitForPersistedActiveRunCleared(
+  store: Pick<SchedulerStore, "getActiveRun">,
+  connectorInstanceId: string
+): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if ((await store.getActiveRun(connectorInstanceId)) === null) {
+      return;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: Deliberately sequential polling for asynchronous boot reconciliation.
+    await setTimeoutPromise(1);
+  }
+  throw new Error("timed out waiting for startup reconciliation to clear the persisted bootstrap row");
 }
 
 // A minimal, production-shaped admission fixture: mints a deterministic
@@ -400,6 +496,271 @@ test("durable active-run row blocks manual and recovery admission after restart"
   );
 
   assert.equal(runConnectorCalled, false, "durable conflict must block connector launch");
+});
+
+// ─── (g) Stuck durable row with a dead session self-heals; a genuinely live
+//         durable row still blocks ──────────────────────────────────────────
+//
+// Reproduces the owner-reported defect: "Try Again" on a failed run returns
+// "Connector already has an active run: run_XXXX" even though the cited run
+// is not active in the UI. Root cause: `finalizeRunCleanup`'s durable delete
+// (`clearPersistedActiveRun`) is fire-and-forget — if it fails or races (a
+// browser session that never finished starting is exactly the kind of fast,
+// early failure most likely to hit this), the in-memory `activeRuns` entry
+// is gone (so the UI, and `assertNoConflictingActiveRun`, see no active run)
+// but the durable `controller_active_runs` row survives. Unlike its
+// in-memory sibling, `assertNoConflictingDurableActiveRun` used to trust
+// that row unconditionally, forever — until the process rebooted and the
+// boot reconciler (which also excludes the CURRENT boot epoch) happened to
+// clear it. The fix: treat a durable row whose run_id already has a
+// terminal spine event as stale and self-heal it, exactly as the in-memory
+// check already does for stale `activeRuns` entries.
+//
+// The row is seeded via `store.upsertActiveRun` AFTER `createController`
+// resolves its startup reconciliation (`releaseAbandonedControllerRunClaims`),
+// which unconditionally clears any row present AT BOOT — the honest analog
+// of a process restart. Seeding before that point would prove nothing about
+// this fix: it would pass (or fail) purely on startup reconciliation's
+// unrelated behavior. The reachable bug is a row orphaned mid-process-life,
+// after boot has already happened once — exactly what this models.
+
+test("a stuck durable row with a dead session (terminal spine event, no live process) self-heals and Try Again succeeds", async (t) => {
+  freshDb(t);
+
+  const store = createMutableDurableRowSchedulerStore({
+    connector_id: CONNECTOR_ID,
+    connector_instance_id: "cin_wedged",
+    run_generation: 0,
+    run_id: "run_bootstrap_placeholder",
+    scenario_id: "scn_bootstrap",
+    started_at: "2026-08-29T00:00:00.000Z",
+    trace_id: "trc_bootstrap",
+  });
+
+  let runConnectorCalled = false;
+  const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    maxRunWallClockMs: Number.POSITIVE_INFINITY,
+    runConnectorImpl: () => {
+      runConnectorCalled = true;
+      return Promise.resolve({ records_emitted: 0, status: "succeeded" });
+    },
+    schedulerStore: store,
+  });
+  // Let boot-time reconciliation clear the placeholder row it inherited,
+  // exactly as it would clear one from a prior process's flight table.
+  await waitForBootstrapRowCleared(store);
+
+  // Now simulate the actual bug: mid-process-life, a run is admitted (its
+  // durable row written), its browser session fails fast, and the
+  // fire-and-forget durable delete in `finalizeRunCleanup` is lost (DB
+  // error, race — never retried). The durable row outlives the run.
+  const orphanedRunId = "run_wedged_session_never_started";
+  const inserted = store.upsertActiveRun({
+    connector_id: CONNECTOR_ID,
+    connector_instance_id: "cin_wedged",
+    run_generation: 1,
+    run_id: orphanedRunId,
+    scenario_id: "scn_wedged",
+    started_at: "2026-08-29T00:05:00.000Z",
+    trace_id: "trc_wedged",
+  });
+  assert.equal(inserted, true);
+  // The dead run's failure WAS observed and recorded on the spine (e.g. by
+  // whatever caught the launch error) even though the durable-row delete
+  // that should have accompanied it was lost.
+  await emitSpineEvent({
+    actor_id: CONNECTOR_ID,
+    actor_type: "runtime",
+    data: {
+      connector_instance_id: "cin_wedged",
+      connection_id: "cin_wedged",
+      failure_reason: "browser_surface_failed",
+      message: "Browser session did not finish starting.",
+      records_emitted: 0,
+    },
+    event_type: "run.browser_surface_failed",
+    object_id: orphanedRunId,
+    object_type: "run",
+    run_id: orphanedRunId,
+    status: "failed",
+  });
+
+  const handle = await controller.runNow(CONNECTOR_ID, {
+    connectorInstanceId: "cin_wedged",
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_try_again",
+  });
+
+  assert.equal(handle.status, "started", "Try Again must succeed once the wedged run is proven terminal");
+  assert.equal(runConnectorCalled, true, "the new run must actually launch, not just be admitted");
+  assert.notEqual(
+    store.currentRow()?.run_id,
+    orphanedRunId,
+    "the stale durable row for the dead run must be cleared, not left behind"
+  );
+
+  await controller.drainActiveRuns(1000);
+});
+
+test("a durable row with NO terminal spine event (genuinely live or unproven) still returns 409", async (t) => {
+  freshDb(t);
+
+  const store = createMutableDurableRowSchedulerStore({
+    connector_id: CONNECTOR_ID,
+    connector_instance_id: "cin_live_durable",
+    run_generation: 0,
+    run_id: "run_bootstrap_placeholder_2",
+    scenario_id: "scn_bootstrap",
+    started_at: "2026-08-29T00:00:00.000Z",
+    trace_id: "trc_bootstrap",
+  });
+
+  let runConnectorCalled = false;
+  const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    maxRunWallClockMs: Number.POSITIVE_INFINITY,
+    runConnectorImpl: () => {
+      runConnectorCalled = true;
+      return Promise.resolve({ records_emitted: 0, status: "succeeded" });
+    },
+    schedulerStore: store,
+  });
+  await waitForBootstrapRowCleared(store);
+
+  // A run is admitted after boot and is still genuinely in flight — no
+  // terminal spine event exists for it. From the spine's point of view this
+  // run has not reached a terminal state, so it must still be presumed
+  // live (fail-closed): a real concurrent run must never be let through.
+  const liveRunId = "run_live_durable";
+  const inserted = store.upsertActiveRun({
+    connector_id: CONNECTOR_ID,
+    connector_instance_id: "cin_live_durable",
+    run_generation: 1,
+    run_id: liveRunId,
+    scenario_id: "scn_live_durable",
+    started_at: "2026-08-29T00:05:00.000Z",
+    trace_id: "trc_live_durable",
+  });
+  assert.equal(inserted, true);
+
+  await assert.rejects(
+    () =>
+      controller.runNow(CONNECTOR_ID, {
+        connectorInstanceId: "cin_live_durable",
+        manifest: MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_try_again_2",
+      }),
+    (err) => err instanceof ControllerError && err.code === "run_already_active" && err.runId === liveRunId
+  );
+
+  assert.equal(runConnectorCalled, false, "a genuinely live (unproven-terminal) durable row must still block");
+  assert.equal(store.currentRow()?.run_id, liveRunId, "the live row must not be touched when no terminal event exists");
+});
+
+test("SQLite: a foreign terminal event sharing a run_id cannot reclaim a live durable row, while a matching terminal event can", async (t) => {
+  freshDb(t);
+
+  const connectorInstanceId = "cin_sqlite_live";
+  const foreignConnectorInstanceId = "cin_sqlite_terminal_elsewhere";
+  const sharedRunId = "run_sqlite_reused";
+  const store = createSqliteSchedulerStore();
+  await store.upsertActiveRun({
+    connector_id: CONNECTOR_ID,
+    connector_instance_id: connectorInstanceId,
+    run_generation: 0,
+    run_id: "run_sqlite_bootstrap",
+    scenario_id: "scn_sqlite_bootstrap",
+    started_at: "2026-08-30T00:00:00.000Z",
+    trace_id: "trc_sqlite_bootstrap",
+  });
+
+  const hang = makeHangingImpl();
+  const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    maxRunWallClockMs: Number.POSITIVE_INFINITY,
+    runConnectorImpl: hang.impl,
+    schedulerStore: store,
+  });
+  await waitForPersistedActiveRunCleared(store, connectorInstanceId);
+
+  assert.equal(
+    await store.upsertActiveRun({
+      connector_id: CONNECTOR_ID,
+      connector_instance_id: connectorInstanceId,
+      run_generation: 1,
+      run_id: sharedRunId,
+      scenario_id: "scn_sqlite_live",
+      started_at: "2026-08-30T00:05:00.000Z",
+      trace_id: "trc_sqlite_live",
+    }),
+    true
+  );
+  await emitSpineEvent({
+    actor_id: CONNECTOR_ID,
+    actor_type: "runtime",
+    data: {
+      connector_instance_id: foreignConnectorInstanceId,
+      connection_id: foreignConnectorInstanceId,
+      source: { id: CONNECTOR_ID, kind: "connector" },
+    },
+    event_type: "run.failed",
+    object_id: sharedRunId,
+    object_type: "run",
+    run_id: sharedRunId,
+    status: "failed",
+  });
+
+  await assert.rejects(
+    () =>
+      controller.runNow(CONNECTOR_ID, {
+        connectorInstanceId,
+        manifest: MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_sqlite_must_not_start",
+      }),
+    (err) => err instanceof ControllerError && err.code === "run_already_active" && err.runId === sharedRunId
+  );
+  assert.equal(
+    (await store.getActiveRun(connectorInstanceId))?.run_id,
+    sharedRunId,
+    "the foreign terminal event must not evict the live SQLite claim"
+  );
+
+  await emitSpineEvent({
+    actor_id: CONNECTOR_ID,
+    actor_type: "runtime",
+    data: {
+      connector_instance_id: connectorInstanceId,
+      connection_id: connectorInstanceId,
+      source: { id: CONNECTOR_ID, kind: "connector" },
+    },
+    event_type: "run.failed",
+    object_id: sharedRunId,
+    object_type: "run",
+    run_id: sharedRunId,
+    status: "failed",
+  });
+
+  const handle = await controller.runNow(CONNECTOR_ID, {
+    connectorInstanceId,
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_sqlite_reclaimed",
+  });
+  assert.equal(handle.status, "started", "a matching terminal event reclaims the real SQLite durable row");
+  assert.equal((await store.getActiveRun(connectorInstanceId))?.run_id, handle.run_id);
+
+  hang.release();
+  await controller.drainActiveRuns(1000);
 });
 
 // ─── (c) REGRESSION: genuinely live in-flight run still returns 409 ──────────
@@ -914,5 +1275,313 @@ test("runWatchdogSettlements drains after an owner cancels a run", async (t) => 
     __getRunWatchdogSettlementsSizeForTests(),
     0,
     "the settlement entry must be dropped once a cancelled run finalizes"
+  );
+});
+
+// ─── (g) Postgres path: same durable-row-wedge fix, real PG-backed spine ─────
+//
+// `runAlreadyTerminal` (the oracle `assertNoConflictingDurableActiveRun` now
+// consults) branches on `isPostgresStorageBackend()` and issues a distinct
+// inline SQL query against real Postgres — the SQLite gate above proves
+// nothing about that branch. Requires the dedicated loopback Postgres test
+// listener (`PDPP_TEST_POSTGRES_URL=postgresql://postgres:postgres@127.0.0.1:
+// 55447/pdpp_test`, or run via `PDPP_TEST_PROFILE=postgres`); skipped
+// otherwise. The `controller_active_runs` row itself still lives in the
+// in-memory fixture store (mirroring the SQLite-path tests above) — only the
+// spine terminal-event oracle needs to be real Postgres to exercise the
+// backend-specific branch.
+
+const RAW_POSTGRES_URL_PHANTOM_RUN = process.env.PDPP_TEST_POSTGRES_URL;
+const POSTGRES_URL_PHANTOM_RUN = dedicatedPostgresTestUrl(RAW_POSTGRES_URL_PHANTOM_RUN);
+if (RAW_POSTGRES_URL_PHANTOM_RUN && !POSTGRES_URL_PHANTOM_RUN) {
+  throw new Error(
+    "PDPP_TEST_POSTGRES_URL must target the dedicated loopback PostgreSQL test listener on 127.0.0.1:55447"
+  );
+}
+
+let phantomRunPostgresDbCounter = 0;
+function phantomRunPostgresDatabaseName(): string {
+  phantomRunPostgresDbCounter += 1;
+  return `pdpp_test_phantom_run_${process.pid}_${Date.now()}_${phantomRunPostgresDbCounter}`;
+}
+
+test("postgres: a stuck durable row with a dead session (terminal spine event, no live process) self-heals and Try Again succeeds", {
+  skip: POSTGRES_URL_PHANTOM_RUN ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  assert.ok(POSTGRES_URL_PHANTOM_RUN);
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: POSTGRES_URL_PHANTOM_RUN,
+      databaseName: phantomRunPostgresDatabaseName(),
+    },
+    async (databaseUrl) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl });
+      __resetControllerInteractionStateForTests();
+      try {
+        const store = createMutableDurableRowSchedulerStore({
+          connector_id: CONNECTOR_ID,
+          connector_instance_id: "cin_wedged_pg",
+          run_generation: 0,
+          run_id: "run_bootstrap_placeholder_pg",
+          scenario_id: "scn_bootstrap_pg",
+          started_at: "2026-08-29T00:00:00.000Z",
+          trace_id: "trc_bootstrap_pg",
+        });
+
+        let runConnectorCalled = false;
+        const controller = createController({
+          admitRunConnection: fakeAdmitRunConnection(),
+          connectorPathResolver: () => "/tmp/connector.js",
+          logger: { error: () => undefined, warn: () => undefined },
+          maxRunWallClockMs: Number.POSITIVE_INFINITY,
+          runConnectorImpl: () => {
+            runConnectorCalled = true;
+            return Promise.resolve({ records_emitted: 0, status: "succeeded" });
+          },
+          schedulerStore: store,
+        });
+        await waitForBootstrapRowCleared(store);
+
+        const orphanedRunId = "run_wedged_session_never_started_pg";
+        const inserted = store.upsertActiveRun({
+          connector_id: CONNECTOR_ID,
+          connector_instance_id: "cin_wedged_pg",
+          run_generation: 1,
+          run_id: orphanedRunId,
+          scenario_id: "scn_wedged_pg",
+          started_at: "2026-08-29T00:05:00.000Z",
+          trace_id: "trc_wedged_pg",
+        });
+        assert.equal(inserted, true);
+        await emitSpineEvent({
+          actor_id: CONNECTOR_ID,
+          actor_type: "runtime",
+          data: {
+            connector_instance_id: "cin_wedged_pg",
+            connection_id: "cin_wedged_pg",
+            failure_reason: "browser_surface_failed",
+            message: "Browser session did not finish starting.",
+            records_emitted: 0,
+          },
+          event_type: "run.browser_surface_failed",
+          object_id: orphanedRunId,
+          object_type: "run",
+          run_id: orphanedRunId,
+          status: "failed",
+        });
+
+        const handle = await controller.runNow(CONNECTOR_ID, {
+          connectorInstanceId: "cin_wedged_pg",
+          manifest: MANIFEST,
+          ownerToken: "owner-token",
+          runId: "run_try_again_pg",
+        });
+
+        assert.equal(handle.status, "started", "Try Again must succeed once the wedged run is proven terminal");
+        assert.equal(runConnectorCalled, true, "the new run must actually launch, not just be admitted");
+        assert.notEqual(
+          store.currentRow()?.run_id,
+          orphanedRunId,
+          "the stale durable row for the dead run must be cleared, not left behind"
+        );
+
+        await controller.drainActiveRuns(1000);
+      } finally {
+        __resetControllerInteractionStateForTests();
+        await closePostgresStorage();
+      }
+    }
+  );
+});
+
+test("postgres: a durable row with NO terminal spine event (genuinely live or unproven) still returns 409", {
+  skip: POSTGRES_URL_PHANTOM_RUN ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  assert.ok(POSTGRES_URL_PHANTOM_RUN);
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: POSTGRES_URL_PHANTOM_RUN,
+      databaseName: phantomRunPostgresDatabaseName(),
+    },
+    async (databaseUrl) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl });
+      __resetControllerInteractionStateForTests();
+      try {
+        const store = createMutableDurableRowSchedulerStore({
+          connector_id: CONNECTOR_ID,
+          connector_instance_id: "cin_live_durable_pg",
+          run_generation: 0,
+          run_id: "run_bootstrap_placeholder_2_pg",
+          scenario_id: "scn_bootstrap_pg",
+          started_at: "2026-08-29T00:00:00.000Z",
+          trace_id: "trc_bootstrap_pg",
+        });
+
+        let runConnectorCalled = false;
+        const controller = createController({
+          admitRunConnection: fakeAdmitRunConnection(),
+          connectorPathResolver: () => "/tmp/connector.js",
+          logger: { error: () => undefined, warn: () => undefined },
+          maxRunWallClockMs: Number.POSITIVE_INFINITY,
+          runConnectorImpl: () => {
+            runConnectorCalled = true;
+            return Promise.resolve({ records_emitted: 0, status: "succeeded" });
+          },
+          schedulerStore: store,
+        });
+        await waitForBootstrapRowCleared(store);
+
+        const liveRunId = "run_live_durable_pg";
+        const inserted = store.upsertActiveRun({
+          connector_id: CONNECTOR_ID,
+          connector_instance_id: "cin_live_durable_pg",
+          run_generation: 1,
+          run_id: liveRunId,
+          scenario_id: "scn_live_durable_pg",
+          started_at: "2026-08-29T00:05:00.000Z",
+          trace_id: "trc_live_durable_pg",
+        });
+        assert.equal(inserted, true);
+
+        await assert.rejects(
+          () =>
+            controller.runNow(CONNECTOR_ID, {
+              connectorInstanceId: "cin_live_durable_pg",
+              manifest: MANIFEST,
+              ownerToken: "owner-token",
+              runId: "run_try_again_2_pg",
+            }),
+          (err) => err instanceof ControllerError && err.code === "run_already_active" && err.runId === liveRunId
+        );
+
+        assert.equal(runConnectorCalled, false, "a genuinely live (unproven-terminal) durable row must still block");
+        assert.equal(
+          store.currentRow()?.run_id,
+          liveRunId,
+          "the live row must not be touched when no terminal event exists"
+        );
+      } finally {
+        __resetControllerInteractionStateForTests();
+        await closePostgresStorage();
+      }
+    }
+  );
+});
+
+test("PostgreSQL: a foreign terminal event sharing a run_id cannot reclaim a live durable row, while a matching terminal event can", {
+  skip: POSTGRES_URL_PHANTOM_RUN ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  assert.ok(POSTGRES_URL_PHANTOM_RUN);
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: POSTGRES_URL_PHANTOM_RUN,
+      databaseName: phantomRunPostgresDatabaseName(),
+    },
+    async (databaseUrl) => {
+      await initPostgresStorage({ backend: "postgres", databaseUrl });
+      __resetControllerInteractionStateForTests();
+      try {
+        const connectorInstanceId = "cin_pg_live";
+        const foreignConnectorInstanceId = "cin_pg_terminal_elsewhere";
+        const sharedRunId = "run_pg_reused";
+        const store = createPostgresSchedulerStore();
+        await store.upsertActiveRun({
+          connector_id: CONNECTOR_ID,
+          connector_instance_id: connectorInstanceId,
+          run_generation: 0,
+          run_id: "run_pg_bootstrap",
+          scenario_id: "scn_pg_bootstrap",
+          started_at: "2026-08-30T00:00:00.000Z",
+          trace_id: "trc_pg_bootstrap",
+        });
+
+        const hang = makeHangingImpl();
+        const controller = createController({
+          admitRunConnection: fakeAdmitRunConnection(),
+          connectorPathResolver: () => "/tmp/connector.js",
+          logger: { error: () => undefined, warn: () => undefined },
+          maxRunWallClockMs: Number.POSITIVE_INFINITY,
+          runConnectorImpl: hang.impl,
+          schedulerStore: store,
+        });
+        await waitForPersistedActiveRunCleared(store, connectorInstanceId);
+
+        assert.equal(
+          await store.upsertActiveRun({
+            connector_id: CONNECTOR_ID,
+            connector_instance_id: connectorInstanceId,
+            run_generation: 1,
+            run_id: sharedRunId,
+            scenario_id: "scn_pg_live",
+            started_at: "2026-08-30T00:05:00.000Z",
+            trace_id: "trc_pg_live",
+          }),
+          true
+        );
+        await emitSpineEvent({
+          actor_id: CONNECTOR_ID,
+          actor_type: "runtime",
+          data: {
+            connector_instance_id: foreignConnectorInstanceId,
+            connection_id: foreignConnectorInstanceId,
+            source: { id: CONNECTOR_ID, kind: "connector" },
+          },
+          event_type: "run.failed",
+          object_id: sharedRunId,
+          object_type: "run",
+          run_id: sharedRunId,
+          status: "failed",
+        });
+
+        await assert.rejects(
+          () =>
+            controller.runNow(CONNECTOR_ID, {
+              connectorInstanceId,
+              manifest: MANIFEST,
+              ownerToken: "owner-token",
+              runId: "run_pg_must_not_start",
+            }),
+          (err) => err instanceof ControllerError && err.code === "run_already_active" && err.runId === sharedRunId
+        );
+        assert.equal(
+          (await store.getActiveRun(connectorInstanceId))?.run_id,
+          sharedRunId,
+          "the foreign terminal event must not evict the live PostgreSQL claim"
+        );
+
+        await emitSpineEvent({
+          actor_id: CONNECTOR_ID,
+          actor_type: "runtime",
+          data: {
+            connector_instance_id: connectorInstanceId,
+            connection_id: connectorInstanceId,
+            source: { id: CONNECTOR_ID, kind: "connector" },
+          },
+          event_type: "run.failed",
+          object_id: sharedRunId,
+          object_type: "run",
+          run_id: sharedRunId,
+          status: "failed",
+        });
+
+        const handle = await controller.runNow(CONNECTOR_ID, {
+          connectorInstanceId,
+          manifest: MANIFEST,
+          ownerToken: "owner-token",
+          runId: "run_pg_reclaimed",
+        });
+        assert.equal(handle.status, "started", "a matching terminal event reclaims the real PostgreSQL durable row");
+        assert.equal((await store.getActiveRun(connectorInstanceId))?.run_id, handle.run_id);
+
+        hang.release();
+        await controller.drainActiveRuns(1000);
+      } finally {
+        __resetControllerInteractionStateForTests();
+        await closePostgresStorage();
+      }
+    }
   );
 });

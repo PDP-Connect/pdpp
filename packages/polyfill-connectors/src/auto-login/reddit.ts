@@ -20,6 +20,10 @@
  * manual_action INTERACTION rather than banging on the form.
  */
 
+import type {
+  AssistanceCompletionStatus,
+  AssistanceRequest,
+} from "@pdpp/connector-protocol/connector-runtime-protocol";
 import type { BrowserContext, Page } from "playwright";
 import { DEADLINE_TIMEOUT, manualBrowserLogin, withDeadline } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse, SessionCheckpointFn } from "../connector-runtime.ts";
@@ -36,7 +40,7 @@ const SUBMIT_SELECTOR = 'button[type="submit"]:has-text("Log In"), button[type="
 const OTP_SELECTOR = 'input[name="otp"], input[name="verification_code"], input[autocomplete="one-time-code"]';
 const SUBMIT_BUTTON_NAME_RE = /^(log in|continue)$/i;
 const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
-  "No optional Reddit sign-in details were provided. Sign in to Reddit in the secure browser, then respond success.";
+  "No optional Reddit sign-in details were provided. Sign in to Reddit in the secure browser. PDPP continues automatically when the session is ready.";
 
 const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
   {
@@ -81,6 +85,16 @@ interface ManualHandoffProbeRetryOptions {
 }
 
 interface EnsureRedditSessionArgs {
+  /**
+   * Runtime's `assist`/`completeAssistance` hooks (see `BaseCollectContext`
+   * in `connector-runtime.ts`). When both are present, the captcha/blocked-
+   * login manual handoffs below self-resolve the moment the connector's own
+   * probe proves the session is live — mirroring `chatgpt.ts`'s no-click
+   * browser-login flow — instead of always waiting on the owner's manual
+   * "Continue collection" click. Optional so the many internal/test callers
+   * that predate this keep compiling and keep the prior click-first behavior.
+   */
+  assist?: (req: AssistanceRequest) => Promise<string>;
   capture?: CaptureSession | null;
   /**
    * Mark a session-establishment phase so the runtime watchdog's no-progress
@@ -95,6 +109,12 @@ interface EnsureRedditSessionArgs {
    * named the whole window rather than the probe that actually stalled.
    */
   checkpoint?: SessionCheckpointFn;
+  /** Paired with `assist` — see `ManualBrowserLoginArgs.completeAssistance`. */
+  completeAssistance?: (
+    assistanceRequestId: string,
+    status: AssistanceCompletionStatus,
+    extra?: { message?: string }
+  ) => Promise<void>;
   context: BrowserContext;
   /**
    * Test seam for the manual-handoff post-interaction re-probe window (see
@@ -433,9 +453,9 @@ async function clickRedditLoginSubmit(page: Page, onCredentialSubmit?: () => voi
 
 function loginBlockedMessage(cfSignals: string[]): string {
   if (cfSignals.length > 0) {
-    return `Cloudflare challenge confirmed (signals: ${cfSignals.join(", ")}). Complete the "Verify you are human" check on reddit.com in the browser window and re-run.`;
+    return `Cloudflare challenge confirmed (signals: ${cfSignals.join(", ")}). Complete the "Verify you are human" check on reddit.com in the secure browser. PDPP continues automatically when the session is ready.`;
   }
-  return "Reddit login page did not render expected inputs and no Cloudflare challenge was detected (the page may have changed). Log in to reddit.com in the browser window and re-run.";
+  return "Reddit login page did not render expected inputs and no Cloudflare challenge was detected (the page may have changed). Log in to reddit.com in the secure browser. PDPP continues automatically when the session is ready.";
 }
 
 /**
@@ -445,27 +465,42 @@ function loginBlockedMessage(cfSignals: string[]): string {
  * function's cognitive-complexity budget is already spent on the real
  * session-establishment branching.
  */
+const MANUAL_HANDOFF_ARG_KEYS = [
+  "assist",
+  "capture",
+  "checkpoint",
+  "completeAssistance",
+  "manualHandoffProbeRetry",
+  "page",
+  "sendInteraction",
+  "sessionProbe",
+] as const;
+type ManualHandoffArgs = Pick<EnsureRedditSessionArgs, (typeof MANUAL_HANDOFF_ARG_KEYS)[number]>;
+
 function manualHandoffArgs({
+  assist,
   capture,
   checkpoint,
+  completeAssistance,
   manualHandoffProbeRetry,
   page,
   sendInteraction,
   sessionProbe,
 }: {
+  assist: EnsureRedditSessionArgs["assist"];
   capture: CaptureSession | null | undefined;
   checkpoint: SessionCheckpointFn | undefined;
+  completeAssistance: EnsureRedditSessionArgs["completeAssistance"];
   manualHandoffProbeRetry: ManualHandoffProbeRetryOptions | undefined;
   page: Page;
   sendInteraction: SendInteraction;
   sessionProbe: SessionProbeOptions | undefined;
-}): Pick<
-  EnsureRedditSessionArgs,
-  "capture" | "checkpoint" | "manualHandoffProbeRetry" | "page" | "sendInteraction" | "sessionProbe"
-> {
+}): ManualHandoffArgs {
   return {
+    ...(assist === undefined ? {} : { assist }),
     ...(capture === undefined ? {} : { capture }),
     ...(checkpoint === undefined ? {} : { checkpoint }),
+    ...(completeAssistance === undefined ? {} : { completeAssistance }),
     ...(manualHandoffProbeRetry === undefined ? {} : { manualHandoffProbeRetry }),
     page,
     sendInteraction,
@@ -474,24 +509,27 @@ function manualHandoffArgs({
 }
 
 async function ensureRedditManualSession({
+  assist,
   capture,
   checkpoint,
+  completeAssistance,
   manualHandoffProbeRetry,
   page,
   sendInteraction,
   sessionProbe,
-}: Pick<
-  EnsureRedditSessionArgs,
-  "capture" | "checkpoint" | "manualHandoffProbeRetry" | "page" | "sendInteraction" | "sessionProbe"
->): Promise<void> {
+}: ManualHandoffArgs): Promise<void> {
   await checkpoint?.("reddit-signin-manual-required");
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
   if (
     await manualBrowserLogin({
+      ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
+      ...(completeAssistance ? { completeAssistance } : {}),
+      isProbeSuccessful: (isLive: boolean) => isLive,
       message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
       page,
       probe: () => isSessionLiveWithRetry(page, { ...sessionProbe, ...manualHandoffProbeRetry }),
+      readinessProbe: (probePage) => isSessionLiveWithRetry(probePage, { ...sessionProbe, ...manualHandoffProbeRetry }),
       sendInteraction,
       timeoutSeconds: 1800,
     })
@@ -502,25 +540,28 @@ async function ensureRedditManualSession({
 }
 
 async function recoverRedditBlockedLogin({
+  assist,
   capture,
   checkpoint,
+  completeAssistance,
   manualHandoffProbeRetry,
   page,
   sendInteraction,
   sessionProbe,
-}: Pick<
-  EnsureRedditSessionArgs,
-  "capture" | "checkpoint" | "manualHandoffProbeRetry" | "page" | "sendInteraction" | "sessionProbe"
->): Promise<void> {
+}: ManualHandoffArgs): Promise<void> {
   await checkpoint?.("reddit-login-blocked-handoff");
   const cf = await detectCloudflareChallenge(page);
   const message = loginBlockedMessage(cf.signals);
   if (
     await manualBrowserLogin({
+      ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
+      ...(completeAssistance ? { completeAssistance } : {}),
+      isProbeSuccessful: (isLive: boolean) => isLive,
       message,
       page,
       probe: () => isSessionLiveWithRetry(page, { ...sessionProbe, ...manualHandoffProbeRetry }),
+      readinessProbe: (probePage) => isSessionLiveWithRetry(probePage, { ...sessionProbe, ...manualHandoffProbeRetry }),
       reason: "captcha",
       sendInteraction,
       timeoutSeconds: 1800,
@@ -532,8 +573,10 @@ async function recoverRedditBlockedLogin({
 }
 
 export async function ensureRedditSession({
+  assist,
   capture,
   checkpoint,
+  completeAssistance,
   context,
   manualHandoffProbeRetry,
   onCredentialSubmit,
@@ -578,7 +621,16 @@ export async function ensureRedditSession({
   const password = process.env.REDDIT_PASSWORD;
   if (!(username && password)) {
     await ensureRedditManualSession(
-      manualHandoffArgs({ capture, checkpoint, manualHandoffProbeRetry, page, sendInteraction, sessionProbe })
+      manualHandoffArgs({
+        assist,
+        capture,
+        checkpoint,
+        completeAssistance,
+        manualHandoffProbeRetry,
+        page,
+        sendInteraction,
+        sessionProbe,
+      })
     );
     return;
   }
@@ -600,7 +652,16 @@ export async function ensureRedditSession({
     // Earn the diagnosis via the shared detector instead of guessing "possible
     // Cloudflare challenge" from absence of inputs alone.
     await recoverRedditBlockedLogin(
-      manualHandoffArgs({ capture, checkpoint, manualHandoffProbeRetry, page, sendInteraction, sessionProbe })
+      manualHandoffArgs({
+        assist,
+        capture,
+        checkpoint,
+        completeAssistance,
+        manualHandoffProbeRetry,
+        page,
+        sendInteraction,
+        sessionProbe,
+      })
     );
     return;
   }

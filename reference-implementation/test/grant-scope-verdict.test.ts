@@ -54,6 +54,7 @@ function snapshot(): ConnectionHealthSnapshot {
         type: "CredentialsValid",
       },
     ],
+    coverage_horizons: [],
     detail_gap_backlog: {
       max_attempt_count: 3,
       next_attempt_at: "2026-06-15T12:00:00.000Z",

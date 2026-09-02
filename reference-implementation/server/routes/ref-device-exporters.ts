@@ -71,11 +71,23 @@ interface AppLike {
 }
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
+const SAFE_ERROR_CODE = /^[a-z0-9_]+$/;
 const DEFAULT_FINAL_INDEX_PLAN_CONCURRENCY = 4;
 const DEFAULT_BATCH_ATTEMPT_DEADLINE_MS = 60_000;
 
 let deviceIngestStoreFaultHook: ((point: string) => void) | null = null;
-let deviceIngestPhaseFaultHook: ((point: string, inputIndex?: number) => void | Promise<void>) | null = null;
+interface DeviceIngestPhaseFaultRequestIdentity {
+  readonly batchId: string;
+  readonly deviceId: string;
+}
+
+type DeviceIngestPhaseFaultHook = (
+  point: string,
+  inputIndex?: number,
+  requestIdentity?: DeviceIngestPhaseFaultRequestIdentity
+) => void | Promise<void>;
+
+let deviceIngestPhaseFaultHook: DeviceIngestPhaseFaultHook | null = null;
 
 export function __setDeviceIngestStoreFaultHookForTest(hook: ((point: string) => void) | null): void {
   deviceIngestStoreFaultHook = typeof hook === "function" ? hook : null;
@@ -87,9 +99,7 @@ export function __setDeviceIngestStoreFaultHookForTest(hook: ((point: string) =>
  * phases adjacent to their committed boundaries lets the conformance oracle
  * prove restart behavior without replacing shipped route dependencies.
  */
-export function __setDeviceIngestPhaseFaultHookForTest(
-  hook: ((point: string, inputIndex?: number) => void | Promise<void>) | null
-): void {
+export function __setDeviceIngestPhaseFaultHookForTest(hook: DeviceIngestPhaseFaultHook | null): void {
   deviceIngestPhaseFaultHook = typeof hook === "function" ? hook : null;
 }
 
@@ -97,8 +107,12 @@ function maybeDeviceIngestStoreFault(point: string): void {
   deviceIngestStoreFaultHook?.(point);
 }
 
-async function maybeDeviceIngestPhaseFault(point: string, inputIndex?: number): Promise<void> {
-  await deviceIngestPhaseFaultHook?.(point, inputIndex);
+async function maybeDeviceIngestPhaseFault(
+  point: string,
+  requestIdentity: DeviceIngestPhaseFaultRequestIdentity,
+  inputIndex?: number
+): Promise<void> {
+  await deviceIngestPhaseFaultHook?.(point, inputIndex, requestIdentity);
 }
 
 // Serializes concurrent HTTP attempts for the SAME (deviceId, batchId) — an
@@ -2679,6 +2693,7 @@ async function processDeviceIngestBatch(
     // Accepted replays returned above intentionally do not consult the current
     // manifest or semantic backend. Every new/processing attempt does.
     const attemptContext = await compileDeviceAttemptContext(ctx, connectorId, records);
+    const phaseFaultRequestIdentity = Object.freeze({ batchId, deviceId });
 
     maybeDeviceIngestStoreFault("before-ensure-processing-batch");
     let reservation = await ctx.deviceExporterStore.ensureProcessingBatch({
@@ -2698,7 +2713,7 @@ async function processDeviceIngestBatch(
       res.status(reservation.httpStatus ?? 201).json(reservation.response ?? {});
       return;
     }
-    await maybeDeviceIngestPhaseFault("after-reservation");
+    await maybeDeviceIngestPhaseFault("after-reservation", phaseFaultRequestIdentity);
     // A retry can find a processing row from a prior manifest/backend. Keep its
     // durable cursor intact, replace only frozen facts, and repair every final
     // key below under the rebuilt attempt context.
@@ -2773,10 +2788,10 @@ async function processDeviceIngestBatch(
         ) {
           durableVersionByInputIndex.set(inputIndex, ingestOutcome.version);
         }
-        await maybeDeviceIngestPhaseFault("after-durable-record", inputIndex);
+        await maybeDeviceIngestPhaseFault("after-durable-record", phaseFaultRequestIdentity, inputIndex);
         assertBatchAttemptBefore(attemptDeadline);
       }
-      await maybeDeviceIngestPhaseFault("after-durable-phase");
+      await maybeDeviceIngestPhaseFault("after-durable-phase", phaseFaultRequestIdentity);
 
       // From here on every record is durable, so all that remains is derived
       // repair/publish plus the reservation's status transition.
@@ -2818,47 +2833,18 @@ async function processDeviceIngestBatch(
         ...entry,
         version: typeof entry.version === "number" ? entry.version : durableVersionByInputIndex.get(entry.inputIndex),
       }));
-      // Index maintenance stays SYNCHRONOUS (awaited before the HTTP
-      // response), preserving the device-exporter contract that 201 implies
-      // lexical/semantic state is already searchable — unlike `ingestRecords`,
-      // which defers this work fire-and-forget. It does NOT run inside any
-      // connector-instance FENCE: `maintainRecordIndexes` uses its own
-      // unrelated admission semaphore (`withIndexWork`), never the write
-      // coordinator, so running it here (after every record's fence has
-      // already released) cannot make an unrelated same-instance writer
-      // queue behind it. It runs on the shared per-instance ordered index
-      // LANE (`enqueueDeviceIndexMaintenance`) every other writer uses for
-      // THROUGHPUT/scheduling reasons only — keeping this batch's slow
-      // embedding work off an unrelated same-instance writer's critical
-      // path. Correctness against a same-instance direct writer racing this
-      // batch's publish does NOT come from the lane's ordering: each
-      // `maintainRecordIndexes` call below is gated on `records.version`
-      // still matching the `version` captured above at the moment its own
-      // short publish transaction commits (see
-      // `maintainRecordIndexesWithinPermit`'s header) — a stale publish
-      // silently no-ops regardless of enqueue/completion order. See
-      // harden-connector-instance-write-fence-transaction-native.
-      await ctx.enqueueDeviceIndexMaintenance(connectorInstanceId, async () => {
-        await mapWithConcurrency(
-          authoritativeFinalPlan,
-          finalIndexPlanConcurrency(),
-          async ({ record, inputIndex, version }) => {
-            assertBatchAttemptBefore(settleDeadline);
-            if (typeof version !== "number") {
-              // No durable version could be resolved for this key (e.g. it was
-              // never actually written this attempt and has no repair reread
-              // either) — nothing to gate a publish against, so there is
-              // nothing safe to publish. Left dirty for the reconcile sweep.
-              return;
-            }
-            await ctx.maintainRecordIndexes(storageTarget, record, version, {
-              attemptContext,
-              deviceFinalInputIndex: inputIndex,
-            });
-            assertBatchAttemptBefore(settleDeadline);
-          }
-        );
-      });
+      // Derived indexing is acknowledged independently of durable acceptance,
+      // matching ordinary HTTP ingest. The write-time dirty scope is the
+      // crash-safe backstop if this process dies before the shared ordered
+      // lane runs, or if index capacity is unavailable. This does NOT run
+      // inside any connector-instance FENCE: `maintainRecordIndexes` uses its
+      // own unrelated admission semaphore (`withIndexWork`), never the write
+      // coordinator, so slow embedding cannot make an unrelated same-instance
+      // writer queue behind it. It runs on the shared per-instance ordered
+      // index LANE (`enqueueDeviceIndexMaintenance`) every other writer uses
+      // for throughput/scheduling. Correctness against a same-instance direct
+      // writer racing this batch's publish comes from the single
+      // `records.version` CAS in `maintainRecordIndexes`, not queue ordering.
       // Deliberately NO deadline check between the last publish and
       // `completeProcessingBatch`: once the publish loop is done the only
       // remaining step is the status transition, and throwing there would
@@ -2890,7 +2876,45 @@ async function processDeviceIngestBatch(
         semanticCapabilityIdentity: attemptContext.semanticCapabilityIdentity,
         sourceInstanceId,
       });
-      await maybeDeviceIngestPhaseFault("after-accepted-commit");
+      await maybeDeviceIngestPhaseFault("after-accepted-commit", phaseFaultRequestIdentity);
+      // Start noncritical derived work only after the accepted transition has
+      // committed. Its local-transformer child may fail-stop this process; it
+      // must therefore never race ahead of the durable acknowledgement that
+      // makes the collector's retry/replay contract safe.
+      ctx
+        .enqueueDeviceIndexMaintenance(connectorInstanceId, async () => {
+          await mapWithConcurrency(
+            authoritativeFinalPlan,
+            finalIndexPlanConcurrency(),
+            async ({ record, inputIndex, version }) => {
+              if (typeof version !== "number") {
+                // No durable version could be resolved for this key (e.g. it was
+                // never actually written this attempt and has no repair reread
+                // either) — nothing to gate a publish against, so there is
+                // nothing safe to publish. Left dirty for the reconcile sweep.
+                return;
+              }
+              await ctx.maintainRecordIndexes(storageTarget, record, version, {
+                attemptContext,
+                deviceFinalInputIndex: inputIndex,
+              });
+            }
+          );
+        })
+        .catch((err) => {
+          const code =
+            err &&
+            typeof err === "object" &&
+            "code" in err &&
+            typeof err.code === "string" &&
+            SAFE_ERROR_CODE.test(err.code)
+              ? err.code
+              : "index_maintenance_failed";
+          console.warn(
+            `[device-ingest] deferred index maintenance failed for ${connectorInstanceId}/${batchId}; ` +
+              `the dirty scope remains for reconcile (code=${code})`
+          );
+        });
       res.status(201).json(response);
     } catch (err) {
       // Server-log-only diagnosability, mirroring the ingest-rejection

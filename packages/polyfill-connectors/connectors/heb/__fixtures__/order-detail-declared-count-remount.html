@@ -1,0 +1,33 @@
+<!-- Synthetic adversarial fixture: initial mounted rows match the declared count,
+     but remount to different content before the DOM settles. Document-order
+     identity must not settle until the surface demonstrates consecutive stable polls. -->
+<!doctype html>
+<html>
+  <head>
+    <style>
+      #app {
+        height: 100px;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="app">
+      <ul id="rows">
+        <li data-qe-id="itemRow">
+          <a data-qe-id="itemRowDetailsName" href="/product-detail/item/transient-1">Transient item 1</a>
+        </li>
+        <li data-qe-id="itemRow">
+          <a data-qe-id="itemRowDetailsName" href="/product-detail/item/transient-2">Transient item 2</a>
+        </li>
+      </ul>
+    </main>
+    <script>
+      setTimeout(() => {
+        document.querySelector("#rows").innerHTML =
+          '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/item/settled-1">Settled item 1</a></li>' +
+          '<li data-qe-id="itemRow"><a data-qe-id="itemRowDetailsName" href="/product-detail/item/settled-2">Settled item 2</a></li>';
+      }, 400);
+    </script>
+  </body>
+</html>

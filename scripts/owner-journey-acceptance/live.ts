@@ -1054,6 +1054,11 @@ async function runLiveSemanticChecks({
     base,
     fetchImpl,
     headers: { accept: "application/json", ...header },
+    // Reconciles against the rendered `/sources` DOM below, which the
+    // console fetches with `sources_visibility=1` — the same opt-in must
+    // apply here or a legitimately-rendered, never-succeeded setup-shell row
+    // reads as missing/extra against the wrong inventory.
+    sourcesVisibility: true,
   });
   if (!connectorsPaged.ok) {
     findings.push({

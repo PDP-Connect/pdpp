@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,40 @@ import { fileURLToPath } from "node:url";
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptsDir, "../..");
 const relativeCliPath = "reference-implementation/scripts/repair/requeue-quarantined-detail-gaps.ts";
+const appliedFalsePattern = /"applied": false/;
+
+let postgresTestDatabaseCounter = 0;
+
+function postgresTestDatabaseName(): string {
+  postgresTestDatabaseCounter += 1;
+  return `pdpp_repair_online_${process.pid}_${postgresTestDatabaseCounter}`;
+}
+
+async function runCli(databaseUrl: string): Promise<{ stderr: string; stdout: string; status: number | null }> {
+  const child = spawn(
+    process.execPath,
+    ["--experimental-strip-types", relativeCliPath, "--connector-id=gmail", "--connector-instance-id=cin_test"],
+    {
+      cwd: repoRoot,
+      env: { ...process.env, PDPP_DATABASE_URL: databaseUrl, PDPP_TEST_POSTGRES_URL: databaseUrl },
+    }
+  );
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+  return await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("repair dry-run did not finish while a live records writer held its transaction"));
+    }, 10_000);
+    child.once("error", reject);
+    child.once("exit", (status) => {
+      clearTimeout(timeout);
+      resolve({ status, stderr: Buffer.concat(stderr).toString(), stdout: Buffer.concat(stdout).toString() });
+    });
+  });
+}
 
 test("direct import does not execute the repair CLI", () => {
   const result = spawnSync(
@@ -217,3 +251,43 @@ test("a consumed flag value is not re-read as a separate argument", () => {
   // biome-ignore lint/performance/useTopLevelRegex: This parser-local expression intentionally avoids shared regular-expression state.
   assert.match(result.stderr, /missing value for: --stream/);
 });
+
+const postgresUrl = process.env.PDPP_TEST_POSTGRES_URL;
+if (postgresUrl) {
+  test("dry-run startup does not deadlock with a concurrent live records write", async () => {
+    const { closePostgresStorage, getPostgresPool, initPostgresStorage } = await import(
+      "../server/postgres-storage.ts"
+    );
+    const { withTemporaryPostgresDatabase } = await import("../test/helpers/postgres-temp-database.ts");
+    await withTemporaryPostgresDatabase(
+      {
+        closeConnections: closePostgresStorage,
+        connectionString: postgresUrl,
+        databaseName: postgresTestDatabaseName(),
+      },
+      async (databaseUrl) => {
+        await initPostgresStorage({ backend: "postgres", databaseUrl });
+        const client = await getPostgresPool().connect();
+        try {
+          await client.query("BEGIN");
+          // UPDATE takes the same relation-level RowExclusiveLock as a normal
+          // live ingest write. The dry-run must finish while this transaction
+          // remains open; full bootstrap DDL would wait here (and, in the
+          // incident's opposite lock ordering, deadlock with this writer).
+          await client.query("UPDATE records SET emitted_at = emitted_at WHERE false");
+          const result = await runCli(databaseUrl);
+          assert.equal(result.status, 0, result.stderr);
+          assert.match(result.stdout, appliedFalsePattern);
+        } finally {
+          await client.query("ROLLBACK").catch(() => {
+            // The temporary database helper closes all remaining connections.
+          });
+          client.release();
+          await closePostgresStorage();
+        }
+      }
+    );
+  });
+} else {
+  test("dry-run startup concurrency guard (skipped: PDPP_TEST_POSTGRES_URL unset)", { skip: true }, () => undefined);
+}

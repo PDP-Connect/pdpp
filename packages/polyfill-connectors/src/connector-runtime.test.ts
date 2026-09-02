@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { EmittedMessage } from "@pdpp/connector-protocol";
 import type { BrowserContext, Page } from "playwright";
+import { manualBrowserLogin, type PrepareBrowserInteractionTargetArgs } from "./browser-handoff.ts";
 import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
@@ -14,6 +15,7 @@ import {
   closeBrowserContextPagesExcept,
   closeBrowserPage,
   composeNormalizedTerminalError,
+  createBrowserSurfaceAssistanceLifecycle,
   createConnectorFailure,
   decorateBrowserManualAction,
   describeUnexpectedFailure,
@@ -151,6 +153,66 @@ test("closeBrowserPage ignores remote target cleanup errors", async () => {
   assert.equal(closeCalls, 1);
 });
 
+test("a self-resolved browser handoff registers before emission and unregisters after terminal completion", async () => {
+  const emitted: Array<{ assistance_request_id?: string }> = [];
+  const completions: Array<{ id: string; status: string }> = [];
+  const registrations: string[] = [];
+  const unregistrations: string[] = [];
+  const lifecycleSteps: string[] = [];
+  const readinessPage = {
+    close: () => Promise.resolve(),
+  } as Page;
+  const ownerPage = {
+    context: () => ({
+      newPage: () => Promise.resolve(readinessPage),
+    }),
+  } as Page;
+  const lifecycle = createBrowserSurfaceAssistanceLifecycle({
+    assist: (request) => {
+      lifecycleSteps.push("emit");
+      emitted.push(request);
+      return Promise.resolve(request.assistance_request_id ?? "missing");
+    },
+    completeAssistance: (id, status) => {
+      lifecycleSteps.push(`complete:${status}`);
+      completions.push({ id, status });
+      return Promise.resolve();
+    },
+    nextAssistanceRequestId: () => "assist_streamed_login",
+    page: ownerPage,
+    prepareTarget: ({ interactionId }: PrepareBrowserInteractionTargetArgs) => {
+      lifecycleSteps.push("register");
+      assert.ok(interactionId, "the lifecycle supplies the generated assistance ID to the registration target");
+      registrations.push(interactionId);
+      return Promise.resolve({ interactionId, registered: true });
+    },
+    unregisterTarget: ({ interactionId }) => {
+      lifecycleSteps.push("unregister");
+      unregistrations.push(interactionId);
+      return Promise.resolve(true);
+    },
+  });
+
+  await manualBrowserLogin({
+    assist: lifecycle.assist,
+    completeAssistance: lifecycle.complete,
+    isProbeSuccessful: (ready: boolean) => ready,
+    message: "Finish sign-in in the secure browser. PDPP continues automatically.",
+    page: ownerPage,
+    probe: (): Promise<boolean> => Promise.resolve(false),
+    readinessProbe: (): Promise<boolean> => Promise.resolve(true),
+    sendInteraction: () => Promise.reject(new Error("manual interaction must not run")),
+  });
+  await lifecycle.close();
+
+  assert.deepEqual(registrations, ["assist_streamed_login"]);
+  assert.equal(emitted.length, 1);
+  assert.equal(emitted[0]?.assistance_request_id, "assist_streamed_login");
+  assert.deepEqual(completions, [{ id: "assist_streamed_login", status: "resolved" }]);
+  assert.deepEqual(unregistrations, ["assist_streamed_login"]);
+  assert.deepEqual(lifecycleSteps, ["register", "emit", "complete:resolved", "unregister"]);
+});
+
 test("closeBrowserPage abandons a wedged remote target close after the deadline", async () => {
   let closeCalls = 0;
   const page = {
@@ -226,6 +288,42 @@ test("shouldCloseBrowserPageAfterRun preserves only opted-in run outcomes", () =
     shouldCloseBrowserPageAfterRun({ preservePageOnFailure: true, preservePageOnSuccess: true }, false),
     false
   );
+});
+
+test("the recording env-var names mirrored in connector-runtime still match browser-launch's exported source of truth", async () => {
+  // connector-runtime.ts mirrors these two names as string literals rather
+  // than importing them, to keep browser-launch.ts (and patchright) out of a
+  // fetch-only connector's load path. A rename on either side would silently
+  // make browserRecordingRequested() under-detect and reintroduce the lost-
+  // storageState bug, with every behavioral test still passing — so pin the
+  // two together here. This import is test-only; it does not affect the
+  // runtime module's own dynamic-import boundary.
+  const { HAR_RECORD_PATH_ENV, STORAGE_STATE_RECORD_PATH_ENV } = await import("./browser-launch.ts");
+  assert.equal(HAR_RECORD_PATH_ENV, "PDPP_SCENARIO_HAR_RECORD_PATH");
+  assert.equal(STORAGE_STATE_RECORD_PATH_ENV, "PDPP_SCENARIO_STORAGE_STATE_RECORD_PATH");
+  // And prove the gate actually keys off those exact names.
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, { [HAR_RECORD_PATH_ENV]: "/tmp/x.har" }), false);
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, { [STORAGE_STATE_RECORD_PATH_ENV]: "/tmp/x.json" }), false);
+});
+
+test("shouldCloseBrowserPageAfterRun keeps the page open when --record-har is active, regardless of preserve flags or outcome", () => {
+  // Root cause this guards: Patchright's launchPersistentContext ties the
+  // whole context's CDP transport to its pages — closing the connector's
+  // LAST page here (before release() reads storageState()) makes
+  // context.storageState() throw "Target page, context or browser has been
+  // closed", silently dropping the recorded session even though the HAR
+  // itself still flushes (network buffering is page-lifecycle-independent).
+  // release()'s own context.close() closes the page a moment later anyway,
+  // so skipping this pre-release close is a no-op in shape, not a leak.
+  const harEnv = { PDPP_SCENARIO_HAR_RECORD_PATH: "/tmp/run1.har" };
+  const storageStateEnv = { PDPP_SCENARIO_STORAGE_STATE_RECORD_PATH: "/tmp/run1.storage-state.json" };
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, harEnv), false);
+  assert.equal(shouldCloseBrowserPageAfterRun({}, false, harEnv), false);
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, storageStateEnv), false);
+  // Empty-string env values (unset-but-present key) must not count as active.
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, { PDPP_SCENARIO_HAR_RECORD_PATH: "" }), true);
+  // Normal (non-recording) runs are unaffected — same behavior as before.
+  assert.equal(shouldCloseBrowserPageAfterRun({}, true, {}), true);
 });
 
 test("resolveBrowserRuntimeVisibility defaults every local browser session to headed", () => {

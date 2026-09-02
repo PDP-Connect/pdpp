@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { BrowserContext, Locator, Page } from "playwright";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import { classifyChaseBrowserSurface, ensureChaseSession, probeChaseSession } from "./chase.ts";
+import { noStoredCredentialReason } from "./login-credentials.ts";
 
 const DASHBOARD_URL = "https://secure.chase.com/web/auth/dashboard";
 const STREAMING_ENV_KEYS = [
@@ -137,7 +138,12 @@ function makeLiveLocator(isLive: () => boolean): Locator {
 function makeLivePage(isLive: () => boolean): FakePage {
   const gotoCalls: string[] = [];
   const signOut = makeLiveLocator(isLive);
-  const fake: Pick<Page, "getByText" | "goto" | "isClosed"> = {
+  const fake: Pick<Page, "close" | "context" | "getByText" | "goto" | "isClosed"> = {
+    close: (): Promise<void> => Promise.resolve(),
+    context: (): BrowserContext =>
+      ({
+        newPage: (): Promise<Page> => Promise.resolve(fake as Page),
+      }) as BrowserContext,
     getByText: (): Locator => signOut,
     goto: (url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> => {
       gotoCalls.push(url);
@@ -658,6 +664,51 @@ test("ensureChaseSession hands off when optional credentials are absent", async 
     assert.doesNotMatch(requests[0]?.message ?? "", /did not render|failed to load/i);
     // Names only, never values.
     assert.doesNotMatch(requests[0]?.message ?? "", /synthetic-password|synthetic-user/u);
+  });
+});
+
+test("ensureChaseSession self-resolves the no-credentials manual handoff via assist/completeAssistance when the connector's own probe proves the session is live, without ever sending a manual_action interaction", async () => {
+  await withoutChaseCredentials(async () => {
+    // First probe call (ensureChaseSession's own initial check) reports not
+    // live; every call after that (manualBrowserLogin's self-probe) reports
+    // live — modeling the owner completing sign-in in the streaming companion
+    // before any click-gated interaction would even be requested.
+    let probeCalls = 0;
+    const { page } = makeLivePage(() => {
+      probeCalls += 1;
+      return probeCalls > 1;
+    });
+    const context = makeLiveContext(page);
+    const assistCalls: unknown[] = [];
+    const completions: { id: string; status: string }[] = [];
+
+    const ok = await ensureChaseSession({
+      assist: (req) => {
+        assistCalls.push(req);
+        return Promise.resolve("assist_req_chase_1");
+      },
+      completeAssistance: (id, status) => {
+        completions.push({ id, status });
+        return Promise.resolve();
+      },
+      context,
+      page,
+      sendInteraction(): Promise<InteractionResponse> {
+        throw new Error("sendInteraction must not be called when the self-probe resolves the assistance");
+      },
+    });
+
+    assert.equal(ok, true);
+    assert.equal(assistCalls.length, 1);
+    assert.deepEqual(assistCalls[0], {
+      attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
+      message: `${noStoredCredentialReason("chase", ["CHASE_USERNAME", "CHASE_PASSWORD"])} Sign in to Chase in the secure browser. PDPP continues automatically when the session is ready.`,
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "none",
+      timeout_seconds: 1800,
+    });
+    assert.deepEqual(completions, [{ id: "assist_req_chase_1", status: "resolved" }]);
   });
 });
 

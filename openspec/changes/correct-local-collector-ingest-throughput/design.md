@@ -18,8 +18,10 @@ inside serial `ingestRecord` calls, making retries unsafe after derived failure.
 2. The durable reservation is `absent -> processing -> accepted`. Every
    device-record transaction verifies the reservation and atomically advances
    its monotonic input cursor. `accepted` stores the exact replay response and
-   can only occur after complete prefix, required index repair, and a
-   manifest/capability generation fence.
+   can only occur after the complete durable prefix and a manifest/capability
+   generation fence. Required derived index repair is scheduled on the shared
+   ordered lane; the durable dirty scope remains until reconcile proves the
+   whole scope converged.
 3. The record layer exposes one durable seam and one derived seam. The durable
    seam retains its existing outcome shape; the route owns duplicate-key final
    planning and the authoritative reread/derived repair needed only for skipped

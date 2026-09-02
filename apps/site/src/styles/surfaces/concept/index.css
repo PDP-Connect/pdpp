@@ -13,10 +13,10 @@
 /* This build exists so concept-exclusive @theme keys (--container-page,
    --spacing-rail, etc. — see tokens/semantic.css) resolve to utilities that
    site.css's build can never generate, since that file's Tailwind pass has
-   no visibility into this one's @theme additions. Scanning root/sandbox-only
+   no visibility into this one's @theme additions. Scanning non-concept
    files here would only ever re-emit utilities site.css already owns for
-   those routes — this build never even loads there (see design/layout.tsx,
-   sandbox/layout.tsx, dashboard has no concept import). Excluding them keeps
+   those routes — this build never even loads there (see sandbox/layout.tsx;
+   dashboard has no concept import). Excluding them keeps
    each unconditional utility emitted by exactly one of the two builds,
    mirroring the exclusion list in site.css. Files a non-concept route also
    renders (components/ui/button.tsx, elements/theme-toggle.tsx,
@@ -25,9 +25,7 @@
    scripts/site-surface-ownership.test.ts for the pinned two-build
    architecture this preserves. */
 @source not "../../../app/dashboard";
-@source not "../../../app/design";
 @source not "../../../app/sandbox";
-@source not "../../../app/palette";
 @source not "../../../components/elements/artifact-link.tsx";
 @source not "../../../components/elements/longview-wordmark.tsx";
 @source not "../../../components/elements/pdpp-logo.tsx";
@@ -56,9 +54,8 @@
    node_modules, so those classes need an explicit @source here — the same
    as operator-ui and brand-react get in site.css for the equivalent reason.
    Before this line existed, this build got those classes only by accident,
-   because it scanned root/sandbox-only files (kitchen-sink pages like
-   design/page.tsx use nearly the whole utility set as literal strings) that
-   are correctly excluded above; removing that accidental supply without
+   because it scanned non-concept files that are correctly excluded above;
+   removing that accidental supply without
    this explicit one silently dropped `display:none` on #nd-subnav and
    #nd-toc below their breakpoints. */
 @source "../../../../node_modules/fumadocs-ui/dist/**/*.js";

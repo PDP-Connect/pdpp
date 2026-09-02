@@ -8,17 +8,31 @@
  * handles INTERACTION, and ingests RECORDs to the RS via owner token.
  */
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { isIP } from "node:net";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { validateRuntimeContinuationFact } from "@pdpp/connector-protocol/connector-runtime-protocol";
 import { emitControllerBootedAndStashEpoch } from "../lib/controller-boot.ts";
 import type { SpineEventInput, SpineEventRecord } from "../lib/spine.ts";
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from "../lib/spine.ts";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
 import { resolveRunConnectorOptions } from "../server/connector-run-config.ts";
-import type { ConnectorInstanceConfigStore } from "../server/stores/connector-instance-config-store.ts";
 import { readStoredCollectionScope } from "../server/local-collection-scope.ts";
+import { encodeKey } from "../server/records.ts";
 import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
+import type { ConnectorInstanceConfigStore } from "../server/stores/connector-instance-config-store.ts";
+import {
+  getDefaultStreamEvidenceRunRegistryStore,
+  type StreamEvidenceClaim,
+  type StreamEvidenceClaimPayload,
+  type StreamEvidenceRunRegistryStore,
+  streamEvidencePayloadDigest,
+  streamEvidenceTerminalEventId,
+} from "../server/stores/stream-evidence-run-registry-store.ts";
 import {
   classifyRecoveryError,
   maybeQuarantineGap,
@@ -57,11 +71,12 @@ import {
   validateDoneRecordsEmitted,
   validateDoneStatus,
 } from "./done-validators.ts";
+import type { IngestResult as StrictIngestResult } from "./ingest-failure.ts";
+import { readIngestResponse as strictReadIngestResponse } from "./ingest-failure.ts";
 import {
   buildHttpFailure,
   buildIngestEnvelopeContractViolationFailure,
   buildIngestHttpFailure,
-  buildInvalidIngestResponseFailure,
 } from "./ingest-failures.ts";
 import {
   DEFAULT_INGEST_RETRY_POLICY,
@@ -169,11 +184,7 @@ interface AvailableBindings {
 }
 
 /** RS ingest response, after `readIngestResponse` proves the counters and receipt vector. */
-interface IngestResult {
-  records_accepted: number;
-  records_attempted: number;
-  records_rejected: number;
-}
+type IngestResult = StrictIngestResult;
 
 /**
  * Ingest/HTTP failure metadata that `ingest-failures.ts` attaches to the Error
@@ -205,6 +216,7 @@ interface RuntimeRunError extends Error {
   reported_records_emitted?: number | null;
   response_status?: number;
   run_id?: string;
+  runtime_retryable?: boolean | null;
   terminal_reason?: string;
   trace_id?: string;
 }
@@ -570,6 +582,12 @@ export interface RuntimeRunConnectorOptions {
    */
   staticSecretEnv?: Record<string, string> | null;
   /**
+   * Cross-invocation STREAM_EVIDENCE duplicate-registry store override for
+   * tests and integration seams. Defaults to
+   * `getDefaultStreamEvidenceRunRegistryStore()` when omitted.
+   */
+  streamEvidenceRunRegistryStore?: StreamEvidenceRunRegistryStore;
+  /**
    * Mode-A streaming-target registration: per-run shared secret minted
    * by the controller. Forwarded as
    * `PDPP_STREAMING_REGISTRATION_TOKEN`. The child sends it as a Bearer
@@ -577,6 +595,35 @@ export interface RuntimeRunConnectorOptions {
    * the registry; never logged.
    */
   streamingRegistrationToken?: string | null;
+  /**
+   * Test-only crash seam. Invoked after the durable STREAM_EVIDENCE claim
+   * commits and immediately before its terminal spine event is written.
+   */
+  testOnlyStreamEvidenceAfterClaimFaultInjector?: (() => void) | null;
+  /**
+   * Test-only fault injector for the terminal-processing callback
+   * (`childTerminalEvent.then(...)`, runtime/index.ts). Invoked once,
+   * strictly AFTER `waitForQueueDrain()` (so a test can force a durable
+   * accepted-key insert first, with no race against the connector's own
+   * async message queue) and strictly BEFORE any of this run's own
+   * terminal-finalization handlers (`recordRunTimedOutTerminal`,
+   * `handleOwnerCancellationClose`, `handleDoneClose`,
+   * `handleConnectorExitClose`, `resolveClosedRun`) — the general class of
+   * fallible pre-finalization work independent review
+   * (STREAM-EVIDENCE-P1-2-REREVIEW.md item 4) named. Defaults to a no-op; a
+   * test may inject a synchronous throw here to prove the surrounding
+   * `try { ... } finally { cleanupChildHandles(); } ` wrapper genuinely
+   * releases every child handle (including the STREAM_EVIDENCE
+   * accepted-keys temp store) even when this exact region fails, without
+   * ever affecting production behavior (no caller outside a test sets
+   * this). See
+   * `test/stream-evidence-accepted-keys-teardown-fault-injection.test.ts`,
+   * which is the PERMANENT oracle this seam exists for — a prior round's
+   * proof of the same property used a temporary, fully-reverted source
+   * mutation instead of a real seam, leaving no reviewable receipt after
+   * the fact.
+   */
+  testOnlyTerminalProcessingFaultInjector?: (() => void) | null;
   traceContext?: RuntimeTraceContext;
   triggerKind?: RuntimeRunTriggerKind | null;
 }
@@ -634,6 +681,7 @@ export interface RuntimeRunConnectorResult {
   records_unresolved_retryable?: number;
   reported_records_emitted?: number | null;
   run_id?: string | null;
+  runtime_retryable?: boolean | null;
   state?: unknown;
   status: "cancelled" | "failed" | "skipped" | "succeeded";
   /**
@@ -843,43 +891,126 @@ function buildAvailableBindings(onInteraction: unknown): AvailableBindings {
   return bindings;
 }
 
-async function readIngestResponse(resp: Response, stream: string, batchSize: number): Promise<IngestResult> {
-  const contentType = resp.headers.get("content-type");
-  const bodyText = await resp.text();
-  if (!resp.ok) {
-    throw buildIngestHttpFailure(`Ingest failed for ${stream}`, stream, batchSize, resp.status, bodyText, contentType);
+// Strict, index-validating, oracle-tested parser (test/read-ingest-response-oracle.test.ts).
+// The hosted RS route (server/routes/rs-mutation.ts) always sets
+// hostedRejectionReceipts: true, so this runtime's ingest responses always
+// carry a validated `rejections` vector on the live path; a weaker inline
+// parser previously dropped that vector on the floor instead of consuming
+// it. See STREAM-EVIDENCE-TERMINAL-DESIGN-REVIEW.md §10.2.
+function readIngestResponse(resp: Response, stream: string, batchSize: number): Promise<IngestResult> {
+  return strictReadIngestResponse(resp, stream, batchSize, { buildHttpFailure });
+}
+
+/**
+ * Lazily-created, disk-backed, per-run distinct-(stream,key) set of records
+ * this run's own flush proved durably accepted. Never touches disk until
+ * `record()` is first called with at least one survivor. `close()` is
+ * idempotent and swallows its own errors — a failure to unlink a temp file
+ * must never convert a succeeded run into a failed one.
+ */
+interface AcceptedKeysStore {
+  /** Remove the temp directory, if one was ever created. Never throws. */
+  close: () => void;
+  /** Exact distinct accepted-key count for `stream`. 0 if the store was never created. */
+  distinctCount: (stream: string) => number;
+  /** Record survivors (batch entries NOT in `rejectedIndexes`) as accepted for `stream`. */
+  record: (stream: string, batch: readonly BufferedRecord[], rejectedIndexes: ReadonlySet<number>) => void;
+}
+
+function createAcceptedKeysStore(): AcceptedKeysStore {
+  let db: InstanceType<typeof DatabaseSync> | null = null;
+  let dir: string | null = null;
+  let insertStmt: ReturnType<InstanceType<typeof DatabaseSync>["prepare"]> | null = null;
+  let countStmt: ReturnType<InstanceType<typeof DatabaseSync>["prepare"]> | null = null;
+
+  function ensureOpen(): void {
+    if (db) {
+      return;
+    }
+    dir = mkdtempSync(joinPath(tmpdir(), "pdpp-stream-evidence-accepted-keys-"));
+    db = new DatabaseSync(joinPath(dir, "accepted-keys.sqlite"));
+    // WAL + synchronous=NORMAL, not the node:sqlite default (rollback-journal,
+    // synchronous=FULL): the default fsyncs twice per COMMIT (journal, then
+    // main file), which is what made the production flush cadence (one
+    // transaction per BATCH_SIZE=500 flush, ~2,000 transactions at 1M rows)
+    // measure ~118x slower than a single 1M-row transaction in independent
+    // review (STREAM-EVIDENCE-P1-2-REREVIEW.md item 1: 138,336ms vs 1,221ms
+    // for the same row count, entirely explained by fsync-per-commit
+    // overhead on slower storage). WAL defers the fsync to a later
+    // checkpoint; synchronous=NORMAL means a transaction commits durably to
+    // the WAL without its own fsync barrier. This is the standard SQLite
+    // safe-for-crash-safety, fast-for-write-heavy-workloads pair (sqlite.org:
+    // "WAL mode is safe from corruption with synchronous=NORMAL... the only
+    // difference is that a transaction committed in WAL mode with
+    // synchronous=NORMAL might roll back following a power loss, but the
+    // database will not be corrupted"), and the loss window it accepts is
+    // irrelevant here: this store is a per-run, per-process ephemeral temp
+    // file with no cross-crash durability requirement in the first place —
+    // a run that dies before this store's final commit already re-derives
+    // (or simply re-runs) rather than trusting anything this store held.
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA synchronous = NORMAL");
+    db.exec("CREATE TABLE accepted_keys (stream TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY (stream, key))");
+    insertStmt = db.prepare("INSERT OR IGNORE INTO accepted_keys (stream, key) VALUES (?, ?)");
+    countStmt = db.prepare("SELECT COUNT(*) AS c FROM accepted_keys WHERE stream = ?");
   }
 
-  // The RS response body is untrusted until the two counters below are proven
-  // finite, so it is parsed as `unknown` and only then asserted `IngestResult`.
-  let result: Partial<IngestResult> | null;
-  try {
-    result = JSON.parse(bodyText) as Partial<IngestResult> | null;
-  } catch (err) {
-    throw buildInvalidIngestResponseFailure({
-      batchSize,
-      bodyText,
-      cause: err instanceof Error ? err.message : String(err),
-      contentType,
-      phase: "parse_response",
-      status: resp.status,
-      stream,
-    });
-  }
-
-  if (!(result && Number.isFinite(result.records_accepted) && Number.isFinite(result.records_rejected))) {
-    throw buildInvalidIngestResponseFailure({
-      batchSize,
-      bodyText,
-      cause: "expected numeric records_accepted and records_rejected",
-      contentType,
-      phase: "validate_response",
-      status: resp.status,
-      stream,
-    });
-  }
-
-  return result as IngestResult;
+  return {
+    close(): void {
+      try {
+        db?.close();
+      } catch {
+        // Best-effort: a close failure must not affect the run's outcome.
+      }
+      db = null;
+      insertStmt = null;
+      countStmt = null;
+      if (dir) {
+        try {
+          rmSync(dir, { force: true, recursive: true });
+        } catch {
+          // Best-effort teardown; an orphaned temp dir is OS-reaped.
+        }
+        dir = null;
+      }
+    },
+    distinctCount(stream: string): number {
+      if (!countStmt) {
+        return 0;
+      }
+      const row = countStmt.get(stream) as { c: number } | undefined;
+      return row?.c ?? 0;
+    },
+    record(stream: string, batch: readonly BufferedRecord[], rejectedIndexes: ReadonlySet<number>): void {
+      const survivors = batch.filter((_, index) => !rejectedIndexes.has(index));
+      if (!survivors.length) {
+        return;
+      }
+      ensureOpen();
+      // One transaction per flush, not one implicit autocommit per row: a
+      // synchronous commit/fsync per INSERT measured ~87x slower than the
+      // same rows batched in one transaction (1,738ms/20 rows vs 218ms/100k
+      // rows on the review's reference hardware) and blocks the runtime
+      // event loop for the duration. `db` is asserted non-null: `ensureOpen`
+      // above is the only path that can leave it null, and it always sets it.
+      (db as InstanceType<typeof DatabaseSync>).exec("BEGIN IMMEDIATE");
+      try {
+        for (const record of survivors) {
+          insertStmt?.run(stream, encodeKey(record.key));
+        }
+        (db as InstanceType<typeof DatabaseSync>).exec("COMMIT");
+      } catch (err) {
+        try {
+          (db as InstanceType<typeof DatabaseSync>).exec("ROLLBACK");
+        } catch {
+          // The transaction may already be gone (e.g. the failure itself was
+          // a commit-time error); a rollback failure must not mask the
+          // original insert error below.
+        }
+        throw err;
+      }
+    },
+  };
 }
 
 /**
@@ -966,7 +1097,167 @@ function runTimeoutFailureMessage(terminalReason: string): string {
 const RUNTIME_FAILURE_MESSAGE_MAX = 500;
 
 function boundedRuntimeFailureMessage(message: string): string {
-  return message.length > RUNTIME_FAILURE_MESSAGE_MAX ? `${message.slice(0, RUNTIME_FAILURE_MESSAGE_MAX)}…` : message;
+  // A runtime Error may have been created from an upstream URL. Preserve the
+  // useful failure class, but never persist a query string: those commonly
+  // carry bearer tokens, signed request material, or other credentials.
+  const withoutUrlQuery = message.replace(/https?:\/\/[^\s?#]+(?:\/[^\s?#]*)?\?[^\s#]*/gi, (url) => {
+    const queryStart = url.indexOf("?");
+    return `${url.slice(0, queryStart)}?[REDACTED]`;
+  });
+  const redacted = boundConnectorErrorMessage(withoutUrlQuery) || "Runtime failure";
+  return redacted.length > RUNTIME_FAILURE_MESSAGE_MAX
+    ? `${redacted.slice(0, RUNTIME_FAILURE_MESSAGE_MAX)}…`
+    : redacted;
+}
+
+interface RuntimeFailureCause {
+  address?: string;
+  code?: string;
+  port?: number;
+  syscall?: string;
+}
+
+interface RuntimeFailureDiagnostic {
+  cause_chain: RuntimeFailureCause[];
+  code: string | null;
+  retryable: boolean | null;
+}
+
+const RUNTIME_FAILURE_CAUSE_CHAIN_MAX = 4;
+// This is deliberately a vocabulary, not a character-class validation.
+// `error.cause` can be any arbitrary object, so accepting "safe-shaped" text
+// here would turn the unredacted code field into a secret-smuggling channel.
+const KNOWN_RUNTIME_NETWORK_CODES = new Set([
+  "EADDRNOTAVAIL",
+  "EAFNOSUPPORT",
+  "EAI_AGAIN",
+  "EAI_FAIL",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ENOTCONN",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_ABORTED",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+const RETRYABLE_RUNTIME_NETWORK_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+const NON_RETRYABLE_RUNTIME_CERTIFICATE_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "CERT_NOT_YET_VALID",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+const KNOWN_RUNTIME_ERROR_CODES = new Set([...KNOWN_RUNTIME_NETWORK_CODES, ...NON_RETRYABLE_RUNTIME_CERTIFICATE_CODES]);
+const KNOWN_RUNTIME_SYSCALLS = new Set([
+  "accept",
+  "bind",
+  "connect",
+  "getaddrinfo",
+  "getpeername",
+  "getsockname",
+  "getsockopt",
+  "listen",
+  "read",
+  "setsockopt",
+  "shutdown",
+  "write",
+]);
+
+function readRuntimeFailureField(value: object, key: string): unknown {
+  try {
+    return (value as Record<string, unknown>)[key];
+  } catch {
+    // Errors from libraries can expose getters. Diagnostics must not replace
+    // the original failure with a second failure while reading one.
+    return undefined;
+  }
+}
+
+function safeRuntimeFailureCode(value: unknown): string | null {
+  return typeof value === "string" && KNOWN_RUNTIME_ERROR_CODES.has(value) ? value : null;
+}
+
+function runtimeFailureCauseFrom(value: object): RuntimeFailureCause | null {
+  const code = safeRuntimeFailureCode(readRuntimeFailureField(value, "code"));
+  const syscallValue = readRuntimeFailureField(value, "syscall");
+  const syscall = typeof syscallValue === "string" && KNOWN_RUNTIME_SYSCALLS.has(syscallValue) ? syscallValue : null;
+  const addressValue = readRuntimeFailureField(value, "address");
+  const address = typeof addressValue === "string" && isIP(addressValue) !== 0 ? addressValue : null;
+  const portValue = readRuntimeFailureField(value, "port");
+  const port =
+    typeof portValue === "number" && Number.isInteger(portValue) && portValue > 0 && portValue <= 65_535
+      ? portValue
+      : null;
+  const cause: RuntimeFailureCause = {
+    ...(address ? { address } : {}),
+    ...(code ? { code } : {}),
+    ...(port ? { port } : {}),
+    ...(syscall ? { syscall } : {}),
+  };
+  return Object.keys(cause).length ? cause : null;
+}
+
+// Node's fetch deliberately exposes only `TypeError: fetch failed` at the
+// top level. The actionable network fact lives in Error.cause, and libraries
+// may wrap it again. Persist a short, allowlisted chain rather than a raw
+// error object/message so diagnostics remain useful without becoming a secret
+// or URL transport.
+function runtimeFailureDiagnostic(error: unknown): RuntimeFailureDiagnostic | null {
+  const causeChain: RuntimeFailureCause[] = [];
+  const seen = new Set<object>();
+  let current = error;
+  let depth = 0;
+  while (current && typeof current === "object" && depth < RUNTIME_FAILURE_CAUSE_CHAIN_MAX) {
+    depth += 1;
+    if (seen.has(current)) {
+      break;
+    }
+    seen.add(current);
+    const cause = runtimeFailureCauseFrom(current);
+    if (cause) {
+      causeChain.push(cause);
+    }
+    current = readRuntimeFailureField(current, "cause");
+  }
+  if (!causeChain.length) {
+    return null;
+  }
+  const codes = causeChain.flatMap((cause) => (cause.code ? [cause.code] : []));
+  let retryable: boolean | null = null;
+  if (codes.some((code) => NON_RETRYABLE_RUNTIME_CERTIFICATE_CODES.has(code))) {
+    retryable = false;
+  } else if (codes.some((code) => RETRYABLE_RUNTIME_NETWORK_CODES.has(code))) {
+    retryable = true;
+  }
+  return { cause_chain: causeChain, code: codes[0] || null, retryable };
+}
+
+function runtimeRetryability(
+  runtimeFailure: RuntimeFailureDiagnostic | null,
+  connectorError: ConnectorDoneError | null | undefined
+): boolean | null {
+  // The connector owns the retry contract when it supplied a terminal error.
+  return connectorError ? null : (runtimeFailure?.retryable ?? null);
 }
 
 // A runtime-side throw (mid-stream message processing, or the post-close
@@ -1586,6 +1877,120 @@ function validateDetailCoverageMessage(
   validateDetailCoverageAgainstManifest(msg, manifestStateStreamByStream, manifestDetailParentStreamsByStream);
 }
 
+// STREAM_EVIDENCE is exclusive to state_stream children (see
+// spec-collection-profile.md, "STREAM_EVIDENCE"): rule 3 rejects any stream
+// that is NOT declared with a static state_stream parent, whether it is
+// parent_streams-declared or self-mapped. This is the inverse guard from
+// DETAIL_COVERAGE's state_stream prohibition above, by design — the two
+// message kinds partition the same manifest-shape space.
+function validateStreamEvidenceAgainstManifest(
+  msg: ConnectorMessage,
+  manifestStateStreamByStream: Map<string, string>
+): void {
+  const stream = msg.stream as string;
+  if (!manifestStateStreamByStream.has(stream)) {
+    throw new Error(
+      `Connector emitted STREAM_EVIDENCE for stream '${stream}', which the manifest does not declare with a` +
+        " static state_stream parent; STREAM_EVIDENCE is exclusive to state_stream-declared streams"
+    );
+  }
+}
+
+/** The four disjoint enumeration outcomes a STREAM_EVIDENCE.outcomes carries. */
+interface StreamEvidenceOutcomes {
+  emitted: number;
+  gapped: number;
+  unaccounted: number;
+  unchanged: number;
+}
+
+const STREAM_EVIDENCE_OUTCOME_KEYS = ["emitted", "unchanged", "gapped", "unaccounted"] as const;
+
+/**
+ * Cross-invocation half of STREAM_EVIDENCE rule 5 ("at most one accepted
+ * STREAM_EVIDENCE per stream per run_id") lives in a durable store
+ * (`server/stores/stream-evidence-run-registry-store.ts`,
+ * `StreamEvidenceRunRegistryStore`), injected into `runConnector` as
+ * `streamEvidenceRunRegistryStore` and defaulted from
+ * `getDefaultStreamEvidenceRunRegistryStore()`.
+ *
+ * An earlier revision kept this fact in an in-process `Map`, scoped to the
+ * `runConnector` invocation OR (in a later revision) to the process
+ * lifetime. Independent exact-head re-review
+ * (STREAM-EVIDENCE-P1-2-EXACT-HEAD-REREVIEW.md) correctly found that ANY
+ * process-lifetime-scoped store loses the fact on process restart, while
+ * root profile rule 5 defines "same run" strictly by `run_id` and grants
+ * no restart exception: `runtime/scheduler/run-executor.ts`'s
+ * `buildAttemptCall` reuses `call.runId` verbatim across every retry
+ * attempt when the caller supplies one, and that retry sequence can span a
+ * process restart (deploy, crash-restart, orchestrator recycle) — a
+ * process-local Map would silently treat a post-restart replay of an
+ * already-accepted `(run_id, stream)` pair as unseen.
+ *
+ * Durable storage in the same database every other runtime-owned
+ * idempotency table (`connector_detail_gaps`, `connector_coverage_horizons`)
+ * already lives in closes that gap without inventing a second, ad hoc
+ * persistence mechanism this deployment does not otherwise have. See the
+ * store module's doc comment for the full argument, including why no
+ * TTL/reap is used (a forgotten run_id must never become reusable).
+ */
+function requireNonNegativeIntegerOutcome(value: unknown, path: string): number {
+  if (!(Number.isSafeInteger(value) && (value as number) >= 0)) {
+    throw new Error(`Connector emitted invalid STREAM_EVIDENCE.${path}: expected a non-negative integer, got ${value}`);
+  }
+  return value as number;
+}
+
+function validateStreamEvidenceMessage(
+  msg: ConnectorMessage,
+  scopeByStream: ScopeByStream,
+  manifestStateStreamByStream: Map<string, string>,
+  streamEvidenceByStream: Map<string, StreamEvidenceOutcomes & { considered: number }>
+): void {
+  if (msg.reference_only !== true) {
+    throw new Error("Connector emitted invalid STREAM_EVIDENCE.reference_only: expected true");
+  }
+  requireOptionalNonEmptyString(msg.stream, "STREAM_EVIDENCE.stream");
+  if (!msg.stream) {
+    throw new Error("Connector emitted invalid STREAM_EVIDENCE.stream: expected non-empty string");
+  }
+  validateOptionalScopedStream(msg.stream, "STREAM_EVIDENCE", scopeByStream);
+  validateStreamEvidenceAgainstManifest(msg, manifestStateStreamByStream);
+  const { considered: rawConsidered, outcomes } = msg;
+  const considered = requireNonNegativeIntegerOutcome(rawConsidered, "considered");
+  if (!(outcomes && typeof outcomes === "object" && !Array.isArray(outcomes))) {
+    throw new Error("Connector emitted invalid STREAM_EVIDENCE.outcomes: expected an object");
+  }
+  const outcomeRecord = outcomes as Record<string, unknown>;
+  let sum = 0;
+  for (const key of STREAM_EVIDENCE_OUTCOME_KEYS) {
+    sum += requireNonNegativeIntegerOutcome(outcomeRecord[key], `outcomes.${key}`);
+  }
+  if (sum !== considered) {
+    throw new Error(
+      `Connector emitted invalid STREAM_EVIDENCE for stream '${msg.stream}': outcomes ` +
+        `(emitted ${outcomeRecord.emitted} + unchanged ${outcomeRecord.unchanged} + gapped ${outcomeRecord.gapped} + ` +
+        `unaccounted ${outcomeRecord.unaccounted} = ${sum}) do not sum to considered (${considered})`
+    );
+  }
+  if (streamEvidenceByStream.has(msg.stream as string)) {
+    throw new Error(`Connector emitted duplicate STREAM_EVIDENCE for stream=${msg.stream}`);
+  }
+  // The cross-invocation half of rule 5 ("at most one accepted
+  // STREAM_EVIDENCE per stream per run_id") is enforced later, at
+  // acceptance (trackStreamEvidence's caller), via
+  // `StreamEvidenceRunRegistryStore.claimStreamEvidenceForRunId` — a single
+  // atomic claim, not a check here followed by a separate mark there. A
+  // check-then-mark split across two calls is a TOCTOU race: two
+  // concurrent invocations for the same (run_id, stream) could both
+  // observe "not yet seen" here before either marks, and both would then
+  // proceed to accept. Deferring the ENTIRE cross-invocation decision to
+  // one atomic database operation at the actual acceptance point removes
+  // that window; this validator only guards the intra-run
+  // `streamEvidenceByStream` Map above, which has no concurrency exposure
+  // (single-threaded within one `runConnector` invocation).
+}
+
 function validateDetailGapRecoveredMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
   requireOptionalNonEmptyString(msg.gap_id, "DETAIL_GAP_RECOVERED.gap_id");
   if (!msg.gap_id) {
@@ -2131,6 +2536,133 @@ function reportRuntimeStart(
   }
 }
 
+/**
+ * Delivers complete JSONL lines without losing a fast connector's first output.
+ *
+ * `runConnector` must write START before it can construct the message handler,
+ * and some connectors can respond while the runtime awaits its run.started
+ * spine event. Buffering only complete lines keeps that startup ordering from
+ * silently changing the protocol transcript.
+ */
+export function createJsonlLineDispatcher(): {
+  dispatch: (rawLine: string) => void;
+  onLine: (listener: (line: string) => void) => void;
+} {
+  const listeners: Array<(line: string) => void> = [];
+  const pendingLines: string[] = [];
+
+  const deliver = (line: string): void => {
+    for (const listener of listeners) {
+      listener(line);
+    }
+  };
+
+  return {
+    dispatch(rawLine: string): void {
+      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      if (listeners.length === 0) {
+        pendingLines.push(line);
+        return;
+      }
+      deliver(line);
+    },
+    onLine(listener: (line: string) => void): void {
+      listeners.push(listener);
+      if (listeners.length !== 1) {
+        return;
+      }
+      for (const line of pendingLines) {
+        listener(line);
+      }
+      pendingLines.length = 0;
+    },
+  };
+}
+
+/**
+ * Exact intra-run duplicate-key closure: a connector claiming `emitted` must
+ * have that many DISTINCT (stream, key) tuples this run's own flush proved
+ * durably accepted. Emitting the same key N times and claiming `emitted: N`
+ * fails here because `acceptedKeysDb` collapses repeats via `INSERT OR
+ * IGNORE`. Rejected records never entered the set, so this also closes
+ * claiming coverage over records the RS permanently rejected — no separate
+ * subtraction term is needed.
+ */
+function assertStreamEvidenceEmittedMatchesAcceptedKeys(
+  stream: string,
+  evidenceEmitted: number,
+  acceptedKeysDb: AcceptedKeysStore
+): void {
+  const distinctAccepted = acceptedKeysDb.distinctCount(stream);
+  if (evidenceEmitted !== distinctAccepted) {
+    throw new Error(
+      `Connector emitted invalid STREAM_EVIDENCE for stream '${stream}': outcomes.emitted ` +
+        `(${evidenceEmitted}) does not equal this run's distinct durably-accepted record count ` +
+        `(${distinctAccepted})`
+    );
+  }
+}
+
+/**
+ * gapped must be reconciled EXACTLY against this stream's own distinct
+ * durable DETAIL_GAP COUNT — a connector cannot declare a gap it never
+ * durably reported, AND cannot under-declare gaps it did durably report
+ * (independent re-review round 3, item 3: an earlier revision of this check
+ * used `evidenceGapped > durableGappedForStream`, a one-sided ceiling that
+ * let `gapped: 1` pass silently when 2 distinct durable gaps actually
+ * existed for the stream this run). `durableDetailGaps` is a run-scoped
+ * append log, not a set: the SAME gap_id is pushed once when the gap is
+ * first recorded pending (recordPendingDetailGap) and again if it is later
+ * recovered (handleDetailGapRecovered) or terminalized/quarantined — so a
+ * raw `.length` over the stream's entries can count one logical gap twice.
+ * Dedupe by gap_id first, then require equality.
+ *
+ * This is an exact COUNT reconciliation, not an identity check (independent
+ * exact-head re-review, P2 item 1): `STREAM_EVIDENCE` carries only the
+ * integer `outcomes.gapped` on the wire, never gap IDs, so the runtime can
+ * prove the CLAIMED NUMBER matches the distinct number of durable gaps this
+ * run recorded for the stream — it cannot prove, and does not claim to
+ * prove, that the connector's internal notion of "which keys are gapped" is
+ * the SAME SET as the runtime's own durable gap records, only that the two
+ * have equal cardinality. A connector could (dishonestly) report gapped:2
+ * while internally meaning two different keys than the two the runtime
+ * durably recorded, and this check cannot detect that — closing it would
+ * require the wire to carry or link gap identities, which is out of scope
+ * here.
+ */
+function assertStreamEvidenceGappedMatchesDurableGaps(
+  stream: string,
+  evidenceGapped: number,
+  durableDetailGaps: readonly DurableDetailGap[]
+): void {
+  // The append log can record the same gap_id more than once in a run (e.g.
+  // pending, then later recovered): last-write-wins per gap_id reflects the
+  // truthful end-of-run status. A gap recovered this run was hydrated this
+  // run, so it must not count toward outcomes.gapped even though it was
+  // pending earlier in the same run.
+  const finalStatusByGapId = new Map<string, string | undefined>();
+  for (const gap of durableDetailGaps) {
+    if (gap.stream === stream) {
+      finalStatusByGapId.set(gap.gap_id, gap.status);
+    }
+  }
+  const outstandingGapCount = [...finalStatusByGapId.values()].filter((status) => status !== "recovered").length;
+  if (evidenceGapped !== outstandingGapCount) {
+    throw new Error(
+      `Connector emitted invalid STREAM_EVIDENCE for stream '${stream}': outcomes.gapped ` +
+        `(${evidenceGapped}) does not equal this run's distinct durable DETAIL_GAP count for the stream ` +
+        `(${outstandingGapCount})`
+    );
+  }
+}
+
+/** Uses the caller-injected store, or the module's shared default when the run didn't provide one. */
+function resolveStreamEvidenceRunRegistryStore(
+  injected: StreamEvidenceRunRegistryStore | undefined
+): StreamEvidenceRunRegistryStore {
+  return injected ?? getDefaultStreamEvidenceRunRegistryStore();
+}
+
 export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<RuntimeRunConnectorResult> {
   const defaultOnProgress =
     process.env.PDPP_RUNTIME_QUIET === "1"
@@ -2198,6 +2730,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     ingestRetryPolicy = DEFAULT_INGEST_RETRY_POLICY,
     ingestRetrySleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
     ingestRetryRandom = Math.random,
+    testOnlyTerminalProcessingFaultInjector = null,
+    testOnlyStreamEvidenceAfterClaimFaultInjector = null,
   } = opts;
   const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
   const claimedConnectorInstanceId = resolveRuntimeConnectorInstanceId({
@@ -2261,11 +2795,18 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     upsertPendingGap: unsupportedDetailGapStoreCapability("pending gap upserts"),
     ...(opts.detailGapStore || (getDefaultConnectorDetailGapStore() as RuntimeDetailGapStoreCapabilities)),
   };
+  const streamEvidenceRunRegistryStore: StreamEvidenceRunRegistryStore = resolveStreamEvidenceRunRegistryStore(
+    opts.streamEvidenceRunRegistryStore
+  );
 
   // Compute runId before spawn so it can be threaded into the child env
   // alongside the streaming registration token. The traceContext is
   // computed below alongside the rest of the run-scoped state.
-  const spawnRunId = opts.runId || `run_${Date.now()}`;
+  // A cryptographically strong UUID keeps the fallback globally
+  // collision-resistant: run_id is the sole uniqueness key for the durable
+  // STREAM_EVIDENCE claim registry, and a millisecond-granularity fallback
+  // can collide across unrelated concurrent runs.
+  const spawnRunId = opts.runId || `run_${randomUUID()}`;
 
   const launchConfig = buildConnectorLaunchConfig({
     automationMode,
@@ -2500,22 +3041,16 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   let _lineBuffer = "";
   // Fake readline-compatible shim so the rest of this file can still call
   // `rl.on('line', ...)` — which we do below, without touching readline APIs.
-  const lineListeners: Array<(line: string) => void> = [];
+  const lineDispatcher = createJsonlLineDispatcher();
   const rl = {
     close() {
       /* noop — stdout closes when the child exits */
     },
     on(event: string, handler: (line: string) => void) {
       if (event === "line") {
-        lineListeners.push(handler);
+        lineDispatcher.onLine(handler);
       }
     },
-  };
-  const emitLine = (rawLine: string) => {
-    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-    for (const h of lineListeners) {
-      h(line);
-    }
   };
   proc.stdout.on("data", (chunk: string) => {
     _lineBuffer += chunk;
@@ -2524,13 +3059,13 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     while (nlIdx !== -1) {
       const line = _lineBuffer.slice(0, nlIdx);
       _lineBuffer = _lineBuffer.slice(nlIdx + 1);
-      emitLine(line);
+      lineDispatcher.dispatch(line);
       nlIdx = _lineBuffer.indexOf("\n");
     }
   });
   proc.stdout.on("end", () => {
     if (_lineBuffer.length > 0) {
-      emitLine(_lineBuffer);
+      lineDispatcher.dispatch(_lineBuffer);
       _lineBuffer = "";
     }
   });
@@ -2806,6 +3341,19 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // a stream that emitted nothing still appears as an honest `collected: 0`
   // (absence of records is a fact, not a missing entry).
   const emittedByStream = new Map<string, number>(startScope.streams.map((streamScope) => [streamScope.name, 0]));
+  // Parent-owned, disk-backed, exact distinct-(stream,key) set of records this
+  // run's own flush proved durably accepted by the hosted RS — populated only
+  // from `readIngestResponse`'s validated survivors (batch minus the
+  // index-exact `rejections` vector), never from the connector's own claims.
+  // Created lazily on first accepted batch so a run that never ingests never
+  // touches disk. `INSERT OR IGNORE` on `PRIMARY KEY (stream, key)` collapses
+  // a retried batch's re-POSTed identical keys to one row, which is what makes
+  // `outcomes.emitted === COUNT(*)` an exact intra-run duplicate-key check
+  // rather than a per-line counter. Lifetime is exactly this `runConnector`
+  // invocation: no cross-run state, no schema/migration, torn down in
+  // `cleanupChildHandles` on every terminal path. See
+  // STREAM-EVIDENCE-TERMINAL-DESIGN-REVIEW.md §10.1(b)/(c), §10.2.
+  const acceptedKeysDb = createAcceptedKeysStore();
   let recordsAttempted = 0;
   let recordsAccepted = 0;
   let recordsPermanentlyRejected = 0;
@@ -2846,6 +3394,18 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   // append path. The cross-run re-defer suppression is the discovered_run_id gate.
   const detailGapRecordedThisRun = new Set<string>();
   const detailCoverageByStateStream = new Map<string, DetailCoverageEntry[]>();
+  // At most one accepted STREAM_EVIDENCE fact per `stream` for the lifetime
+  // of THIS `runConnector` invocation. This Map alone is NOT sufficient to
+  // enforce rule 5 ("at most one accepted STREAM_EVIDENCE per stream per
+  // run_id") across a retry path that reuses the same `run_id` across
+  // separate `runConnector` invocations — each invocation gets its own fresh
+  // Map. That cross-invocation half of rule 5 is enforced separately by the
+  // durable `StreamEvidenceRunRegistryStore` (see its doc comment,
+  // server/stores/stream-evidence-run-registry-store.ts), claimed
+  // atomically in `trackStreamEvidence`. Kept fully separate from
+  // `detailCoverageByStateStream`: STREAM_EVIDENCE is never consulted by
+  // `missingDetailCoverageReports`/`recordDetailCoverageShortfalls`.
+  const streamEvidenceByStream = new Map<string, StreamEvidenceOutcomes & { considered: number }>();
   // Latest `collection_rate` progress payload seen this run. Updated on each
   // rate-change PROGRESS event so the terminal event can carry the final
   // learned state for post-run diagnostics (reference → snapshot derivation).
@@ -3040,6 +3600,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     failureOrigin,
     ingestFailure,
     reportedRecordsEmitted,
+    runtimeFailure,
     violation,
   }: {
     connectorDiagnostics: Record<string, unknown> | null;
@@ -3049,6 +3610,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     failureOrigin: RuntimeFailureOrigin | null;
     ingestFailure: IngestFailureDetail | null;
     reportedRecordsEmitted: unknown;
+    runtimeFailure: RuntimeFailureDiagnostic | null;
     violation: unknown;
   }): Record<string, unknown> {
     const data: Record<string, unknown> = buildTerminalConnectorFields(
@@ -3062,6 +3624,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
     if (failureMessage) {
       data.failure_message = failureMessage;
+    }
+    if (runtimeFailure) {
+      data.runtime_failure = runtimeFailure;
     }
     if (connectorDiagnostics && Object.keys(connectorDiagnostics).length > 0) {
       data.connector_diagnostics = connectorDiagnostics;
@@ -3081,6 +3646,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     ingestFailure,
     reason,
     reportedRecordsEmitted,
+    runtimeFailure,
     stdinClosedAtPhase,
     violation,
   }: {
@@ -3092,6 +3658,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     ingestFailure: IngestFailureDetail | null;
     reason: string | null;
     reportedRecordsEmitted: unknown;
+    runtimeFailure: RuntimeFailureDiagnostic | null;
     stdinClosedAtPhase: string | null;
     violation: unknown;
   }): Record<string, unknown> {
@@ -3105,6 +3672,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         failureOrigin,
         ingestFailure,
         reportedRecordsEmitted,
+        runtimeFailure,
         violation,
       }),
     };
@@ -3140,6 +3708,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     stdinClosedAtPhase = null,
     failureOrigin = null,
     failureMessage = null,
+    runtimeFailure = null,
     connectorDiagnostics = null,
   }: {
     connectorDiagnostics?: Record<string, unknown> | null;
@@ -3151,6 +3720,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     recordsEmitted?: unknown;
     reason?: string | null;
     reportedRecordsEmitted?: unknown;
+    runtimeFailure?: RuntimeFailureDiagnostic | null;
     stdinClosedAtPhase?: string | null;
     violation?: unknown;
   } = {}): Record<string, unknown> {
@@ -3177,6 +3747,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       persistState,
       recoveryOnly: startRecoveryOnly,
       scopeByStream,
+      streamEvidenceByStream,
     } as unknown as Parameters<typeof buildCollectionFacts>[0]);
     // Distinct from `collectionFacts`: a recovery-only run's durable
     // detail-gap-closure count, never an inventory/list-pass claim. See
@@ -3220,6 +3791,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         ingestFailure,
         reason,
         reportedRecordsEmitted,
+        runtimeFailure,
         stdinClosedAtPhase,
         violation,
       }),
@@ -3272,6 +3844,69 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       stream,
     });
     detailCoverageByStateStream.set(stateStream, entries);
+  }
+
+  // Parallel to, but independent from, trackDetailCoverage: STREAM_EVIDENCE
+  // is folded into RuntimeCollectionFact.considered/covered at terminal
+  // collection-fact assembly (buildCollectionFacts) and never into
+  // detailCoverageByStateStream, so it can never reach
+  // missingDetailCoverageReports/recordDetailCoverageShortfalls.
+  //
+  // This is the single acceptance point for the cross-invocation half of
+  // rule 5 ("at most one accepted STREAM_EVIDENCE per stream per run_id"):
+  // `claimStreamEvidenceForRunId` is one atomic database claim, called only
+  // after every other rejection check (validator, emitted/gapped
+  // reconciliation) has already passed, so a rejected message never
+  // consumes a new claim. A matching existing claim with no terminal event
+  // is a recovery of that already-validated fact after a crash, not a second
+  // acceptance; a matching claim whose event exists remains a duplicate.
+  async function trackStreamEvidence(
+    msg: ConnectorMessage,
+    payload: StreamEvidenceClaimPayload,
+    existingClaim?: StreamEvidenceClaim | null
+  ): Promise<StreamEvidenceClaim> {
+    // `validateStreamEvidenceMessage` ran first: stream is a non-empty,
+    // in-scope, state_stream-declared name; considered and every
+    // outcomes.* field are validated non-negative integers summing to
+    // considered; no prior entry exists for this stream in this run's map
+    // instance.
+    const stream = msg.stream as string;
+    const claimResult = existingClaim
+      ? { claim: existingClaim, claimed: false }
+      : await streamEvidenceRunRegistryStore.claimStreamEvidenceForRunId(
+          resolvedConnectorInstanceId,
+          runId,
+          stream,
+          payload
+        );
+    if (!claimResult.claimed && claimResult.claim.terminalEvidencePersisted) {
+      throw new Error(
+        `Connector emitted duplicate STREAM_EVIDENCE for stream=${stream} under run_id=${runId} ` +
+          "(already accepted by a prior runConnector invocation sharing this run_id)"
+      );
+    }
+    let persistedPayload: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(claimResult.claim.normalizedPayloadJson) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("expected a JSON object");
+      }
+      persistedPayload = parsed as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(
+        `STREAM_EVIDENCE claim for (run_id=${runId}, stream=${stream}) has invalid normalized payload: ${String(error)}`,
+        { cause: error }
+      );
+    }
+    const persistedOutcomes = persistedPayload.outcomes as StreamEvidenceOutcomes;
+    streamEvidenceByStream.set(stream, {
+      considered: persistedPayload.considered as number,
+      emitted: persistedOutcomes.emitted,
+      gapped: persistedOutcomes.gapped,
+      unaccounted: persistedOutcomes.unaccounted,
+      unchanged: persistedOutcomes.unchanged,
+    });
+    return claimResult.claim;
   }
 
   // Resolve every STATE_STREAM checkpoint key owned by a data stream, for
@@ -3699,6 +4334,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
     recordsAccepted += result.records_accepted;
     recordsPermanentlyRejected += result.records_rejected;
+    // Record survivors (batch entries the RS did NOT reject, by validated,
+    // index-exact `rejections`) as durably accepted for this stream. Must run
+    // strictly after the envelope contract check above and read `result` as
+    // it stands post-response: inserting before the response is proven would
+    // record keys the RS never accepted.
+    acceptedKeysDb.record(stream, batch, new Set(result.rejections.map((rejection) => rejection.input_index)));
     await emitSpineEventTracked({
       actor_id: connectorId,
       actor_type: "runtime",
@@ -3707,8 +4348,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         grant_id: grantId,
         records_accepted: result.records_accepted,
         records_attempted: result.records_attempted,
-        records_flushed: result.records_accepted,
         records_emitted: totalEmitted,
+        records_flushed: result.records_accepted,
         records_permanently_rejected: result.records_rejected,
         records_rejected: result.records_rejected,
         source: runSource,
@@ -4056,6 +4697,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       cleanedUp = true;
       clearTerminateTimer();
       clearAllAssistanceTimeouts();
+      // Unconditional, swallows its own errors: a failed temp-file unlink must
+      // never turn a succeeded run into a failed one. Runs on every terminal
+      // path (success, failure, cancellation, protocol violation) because this
+      // function itself is the run's one cleanup chokepoint (`cleanedUp` guard
+      // makes it idempotent across the multiple call sites).
+      acceptedKeysDb.close();
       if (cancelSignal) {
         cancelSignal.removeEventListener("abort", handleCancellation);
       }
@@ -4154,6 +4801,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       err.connector_error = null;
       err.known_gaps = buildKnownGapsForTerminal(failureReason, null);
       const runtimeFailureMessage = runtimeAuthoredFailureMessage(err, null);
+      const runtimeFailure = runtimeFailureDiagnostic(err);
+      err.runtime_retryable = runtimeFailure?.retryable ?? null;
 
       if (!terminalEventRecorded) {
         try {
@@ -4168,6 +4817,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
               ingestFailure: err.ingest_failure || null,
               reason: failureReason,
               recordsEmitted: totalEmitted,
+              runtimeFailure,
               violation: err instanceof ProtocolViolation ? err : null,
             }),
             event_type: "run.failed",
@@ -4295,6 +4945,110 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         state_stream: coverageStateStream,
         stream: coverageStream,
         type: "DETAIL_COVERAGE",
+      });
+    }
+
+    async function handleStreamEvidenceMessage(msg: ConnectorMessage): Promise<void> {
+      validateStreamEvidenceMessage(msg, scopeByStream, manifestStateStreamByStream, streamEvidenceByStream);
+      // Same ordering rule as handleDetailCoverageMessage: a claim must never
+      // precede the records it claims durably reached storage. `flushAll()` is
+      // also what populates `acceptedKeysDb` for every stream, so the checks
+      // below MUST read post-flush state.
+      await flushAll();
+      // Proven by the validator: stream is a non-empty, in-scope,
+      // state_stream-declared name; considered and every outcomes.* field are
+      // validated non-negative integers summing to considered.
+      const evidenceStream = msg.stream as string;
+      const evidenceConsidered = msg.considered as number;
+      const outcomes = msg.outcomes as StreamEvidenceOutcomes;
+      const evidenceEmitted = outcomes.emitted;
+      const evidenceGapped = outcomes.gapped;
+      const normalizedEvidencePayload = {
+        considered: evidenceConsidered,
+        grant_id: grantId,
+        outcomes: {
+          emitted: evidenceEmitted,
+          gapped: evidenceGapped,
+          unaccounted: outcomes.unaccounted,
+          unchanged: outcomes.unchanged,
+        },
+        reference_only: true,
+        source: runSource,
+        stream: evidenceStream,
+        ...runConnectionIdentity,
+      } satisfies Record<string, unknown>;
+      // Replay identity is the accepted fact, not the invocation's mutable
+      // authorization/provenance envelope. A retry may use a refreshed grant
+      // or connection while reusing run_id; it must recover the first fact's
+      // persisted terminal payload and event identity, not create a second
+      // fact or reject a metadata-only replay as divergent evidence.
+      const replayIdentityJson = JSON.stringify({
+        considered: evidenceConsidered,
+        outcomes: {
+          emitted: evidenceEmitted,
+          gapped: evidenceGapped,
+          unaccounted: outcomes.unaccounted,
+          unchanged: outcomes.unchanged,
+        },
+        reference_only: true,
+        stream: evidenceStream,
+      });
+      const normalizedPayloadJson = JSON.stringify(normalizedEvidencePayload);
+      const payloadDigest = streamEvidencePayloadDigest(replayIdentityJson);
+      const claimPayload: StreamEvidenceClaimPayload = {
+        normalizedPayloadJson,
+        payloadDigest,
+        replayIdentityJson,
+        terminalEventId: streamEvidenceTerminalEventId(runId, evidenceStream, payloadDigest),
+      };
+      // A replay after the claim/event seam must be allowed to recover the
+      // already-validated payload. A pre-read is not the uniqueness authority:
+      // the INSERT below remains the atomic winner/loser decision for a fresh
+      // claim, including when another invocation wins this race.
+      const existingClaim = await streamEvidenceRunRegistryStore.getStreamEvidenceClaim(
+        runId,
+        evidenceStream,
+        claimPayload
+      );
+
+      if (!existingClaim) {
+        assertStreamEvidenceEmittedMatchesAcceptedKeys(evidenceStream, evidenceEmitted, acceptedKeysDb);
+        assertStreamEvidenceGappedMatchesDurableGaps(evidenceStream, evidenceGapped, durableDetailGaps);
+      }
+
+      const claim = await trackStreamEvidence(msg, claimPayload, existingClaim);
+      const persistedEvidencePayload = JSON.parse(claim.normalizedPayloadJson) as Record<string, unknown>;
+      const persistedOutcomes = persistedEvidencePayload.outcomes as StreamEvidenceOutcomes;
+      // Test-only crash injection. This is deliberately the exact boundary:
+      // the uniqueness row (including payload + digest) is durable, while the
+      // terminal evidence event has not yet been attempted. Restart/replay
+      // uses the stored payload and stable event id to close this seam.
+      testOnlyStreamEvidenceAfterClaimFaultInjector?.();
+      await emitSpineEventTracked({
+        actor_id: connectorId,
+        actor_type: "runtime",
+        data: persistedEvidencePayload,
+        event_id: claim.terminalEventId,
+        event_type: "run.stream_evidence_declared",
+        object_id: runId,
+        object_type: "run",
+        run_id: runId,
+        scenario_id: traceContext.scenario_id,
+        status: "succeeded",
+        stream_id: evidenceStream,
+        trace_id: traceContext.trace_id,
+      });
+      onProgress({
+        considered: persistedEvidencePayload.considered,
+        outcomes: {
+          emitted: persistedOutcomes.emitted,
+          gapped: persistedOutcomes.gapped,
+          unaccounted: persistedOutcomes.unaccounted,
+          unchanged: persistedOutcomes.unchanged,
+        },
+        reference_only: true,
+        stream: evidenceStream,
+        type: "STREAM_EVIDENCE",
       });
     }
 
@@ -4668,6 +5422,16 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // Proven by the validator: non-empty in-scope `stream`; the
       // remaining fields are optional and pass through as-is.
       const gapStream = msg.stream as string;
+      // Same terminal-fact rule as handleRecordMessage: a DETAIL_GAP for a
+      // stream this run already reported STREAM_EVIDENCE for would silently
+      // change that stream's gapped/unaccounted split after the fact the
+      // message claims to be final was declared. Reject rather than accept
+      // and leave the earlier claim stale.
+      if (streamEvidenceByStream.has(gapStream)) {
+        throw new Error(
+          `Connector emitted DETAIL_GAP for stream '${gapStream}' after already reporting STREAM_EVIDENCE for it this run`
+        );
+      }
       const gapReason = (msg.reason as string | undefined) || null;
       const gapParentStream = (msg.parent_stream as string | undefined) || null;
       const gapLastError = (msg.last_error as { class?: string; http_status?: number } | null) ?? null;
@@ -4702,6 +5466,18 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // Proven by the validator: non-empty gap_id and in-scope stream.
       const recoveredGapId = msg.gap_id as string;
       const recoveredStream = msg.stream as string;
+      // Same terminal-fact rule as handleRecordMessage/handleDetailGapMessage:
+      // STREAM_EVIDENCE is a terminal fact per stream per run. A recovery for
+      // the same stream afterward must not be allowed to durably mutate the
+      // gap store or append log -- doing so would let a late recovery
+      // retroactively reinterpret a gapped count the runtime already
+      // accepted as final, rather than being reconciled by a LATER run. This
+      // check runs before any store/append-log mutation below.
+      if (streamEvidenceByStream.has(recoveredStream)) {
+        throw new Error(
+          `Connector emitted DETAIL_GAP_RECOVERED for stream '${recoveredStream}' after already reporting STREAM_EVIDENCE for it this run`
+        );
+      }
       await flushAll();
       const lease = allServedGapLeases.get(recoveredGapId);
       if (msg.lease_id && (!lease || lease.leaseId !== msg.lease_id)) {
@@ -4779,6 +5555,19 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       if (!streamScope) {
         throw new Error(`Connector emitted RECORD for undeclared stream: ${stream}`);
       }
+      // STREAM_EVIDENCE is a terminal fact per stream per run (spec.md:
+      // "exactly two integers, both final for the run" -- now considered
+      // plus the outcomes partition): the connector's own reconciliation of
+      // hydrated/gapped/unaccounted keys MUST have already settled before it
+      // emits the message. A RECORD for the same stream afterward means
+      // either the reconciliation was not actually final or the connector is
+      // re-opening a stream it already closed out -- both are protocol
+      // violations, not a case this runtime can silently accept.
+      if (streamEvidenceByStream.has(stream)) {
+        throw new Error(
+          `Connector emitted RECORD for stream '${stream}' after already reporting STREAM_EVIDENCE for it this run`
+        );
+      }
 
       const manifestStream = manifestByStream.get(stream) || null;
       validateRecordAdmission(stream, streamScope, manifestStream, key, data);
@@ -4811,6 +5600,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         validateRuntimeContinuationFact(continuation);
       }
       const gap = buildKnownGap({
+        boundaryClaim: msg.boundary_claim ?? null,
         continuation,
         diagnostics: msg.diagnostics ?? null,
         explicitSelection: Boolean(skipStream && explicitlyRequestedStreams?.has(skipStream)),
@@ -5157,6 +5947,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       RECORD: handleRecordMessage,
       SKIP_RESULT: handleSkipResultMessage,
       STATE: handleStateMessage,
+      STREAM_EVIDENCE: handleStreamEvidenceMessage,
     };
 
     async function handleMsg(msg: ConnectorMessage): Promise<void> {
@@ -5661,6 +6452,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         err.reported_records_emitted = doneMessage.records_emitted;
       }
       const runtimeFailureMessage = runtimeAuthoredFailureMessage(err, doneMessage?.error);
+      const runtimeFailure = runtimeFailureDiagnostic(err);
+      err.runtime_retryable = runtimeRetryability(runtimeFailure, doneMessage?.error);
 
       if (!terminalEventRecorded) {
         try {
@@ -5676,6 +6469,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
               ingestFailure: err.ingest_failure || null,
               reason: failureReason,
               recordsEmitted: doneMessage ? doneMessage.records_emitted : totalEmitted,
+              runtimeFailure,
             }),
             event_type: "run.failed",
             object_id: runId,
@@ -5702,65 +6496,107 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       await rejectAfterLeaseAccounting(err);
     }
 
+    // Runs the full terminal-event reconciliation (stderr redaction, queue
+    // drain, close-handler dispatch). Broken out of the `.then` callback
+    // below so that callback is just the unconditional cleanup wrapper —
+    // this function owns the actual decision logic and is scored as its own
+    // (pre-existing, unchanged) unit rather than one nested inside the
+    // wrapper's `try`.
+    async function processChildTerminalEvent(terminalEvent: ConnectorChildTerminalEvent): Promise<void> {
+      if (terminalEvent.kind === "error") {
+        await rejectAfterLeaseAccounting(terminalEvent.error);
+        return;
+      }
+      const { code } = terminalEvent;
+      clearTerminateTimer();
+      const stderrTailRaw = stderrTail.finalize();
+      // Connector stderr is untrusted; redact recognized secret markers
+      // before it reaches progress OR the retained diagnostic — progress is
+      // not a lower-trust sink than the retained evidence, so it gets the
+      // same treatment.
+      //
+      // These are the credential values this run resolved and injected into
+      // the connector child's environment, passed so redaction can match them
+      // by IDENTITY. A connector that prints a password into an unlabelled
+      // stderr line ("Login failed for <password>") matches no shape rule and
+      // otherwise reaches a durable spine event verbatim — proven against the
+      // deployed head, with a real owner credential. See stderr-redact.ts.
+      //
+      // The set is every live secret THIS run handed the child, not just the
+      // connection's own credential: `ownerToken` and the streaming
+      // registration token are bearer credentials in the same environment, so
+      // a child that echoes one into stderr leaks it the same way. Scoping to
+      // what was actually injected keeps this a fact about the run rather than
+      // a guess about the connector.
+      const runKnownSecrets = [...Object.values(staticSecretLaunchEnv), ownerToken, streamingRegistrationToken].filter(
+        (value): value is string => typeof value === "string" && value.length > 0
+      );
+      if (stderrTailRaw.text) {
+        onProgress({
+          text: redactStderrTail(stderrTailRaw.text, { knownSecrets: runKnownSecrets }).text,
+          type: "stderr",
+        });
+      }
+      const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw, runKnownSecrets);
+
+      // Drain the connector's own async message queue BEFORE entering
+      // the inner try/catch below: a throw here (from `waitForQueueDrain`
+      // itself, or from the fault-injection seam right after it) must
+      // reach the OUTER `finally`'s `cleanupChildHandles()` directly —
+      // the inner `catch (caught) { await handleCloseFailure(...) }`
+      // ALSO calls `cleanupChildHandles()` on its own path (via
+      // `rejectAfterLeaseAccounting`), which would make a throw inside
+      // that inner try a false negative for testing the outer `finally`
+      // specifically, since the inner catch would rescue it first.
+      await waitForQueueDrain();
+      // Test-only, always-inert-in-production seam: see
+      // `testOnlyTerminalProcessingFaultInjector`'s doc comment. Called
+      // strictly after the connector's own message queue has fully
+      // drained (so a test can force a durable accepted-keys insert
+      // first, with no race against the queue) and strictly OUTSIDE the
+      // inner try below, so a test can prove the OUTER `finally` above
+      // is what guarantees cleanup here, not the inner catch or any of
+      // this run's own terminal-finalization handlers.
+      testOnlyTerminalProcessingFaultInjector?.();
+
+      try {
+        if (!terminalEventRecorded) {
+          if (runTimedOut) {
+            await recordRunTimedOutTerminal(code);
+          } else if (ownerCancelRequested) {
+            await handleOwnerCancellationClose(code);
+          } else if (doneMessage) {
+            if (await handleDoneClose(code)) {
+              return;
+            }
+          } else {
+            await handleConnectorExitClose(code, stderrTailDiagnostic);
+          }
+          terminalEventRecorded = true;
+        }
+        await resolveClosedRun(code, stderrTailDiagnostic);
+      } catch (caught) {
+        await handleCloseFailure(code, caught);
+      }
+    }
+
     childTerminalEvent
       .then(async (terminalEvent) => {
-        if (terminalEvent.kind === "error") {
-          await rejectAfterLeaseAccounting(terminalEvent.error);
-          return;
-        }
-        const { code } = terminalEvent;
-        clearTerminateTimer();
-        const stderrTailRaw = stderrTail.finalize();
-        // Connector stderr is untrusted; redact recognized secret markers
-        // before it reaches progress OR the retained diagnostic — progress is
-        // not a lower-trust sink than the retained evidence, so it gets the
-        // same treatment.
-        //
-        // These are the credential values this run resolved and injected into
-        // the connector child's environment, passed so redaction can match them
-        // by IDENTITY. A connector that prints a password into an unlabelled
-        // stderr line ("Login failed for <password>") matches no shape rule and
-        // otherwise reaches a durable spine event verbatim — proven against the
-        // deployed head, with a real owner credential. See stderr-redact.ts.
-        //
-        // The set is every live secret THIS run handed the child, not just the
-        // connection's own credential: `ownerToken` and the streaming
-        // registration token are bearer credentials in the same environment, so
-        // a child that echoes one into stderr leaks it the same way. Scoping to
-        // what was actually injected keeps this a fact about the run rather than
-        // a guess about the connector.
-        const runKnownSecrets = [
-          ...Object.values(staticSecretLaunchEnv),
-          ownerToken,
-          streamingRegistrationToken,
-        ].filter((value): value is string => typeof value === "string" && value.length > 0);
-        if (stderrTailRaw.text) {
-          onProgress({
-            text: redactStderrTail(stderrTailRaw.text, { knownSecrets: runKnownSecrets }).text,
-            type: "stderr",
-          });
-        }
-        const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw, runKnownSecrets);
-
+        // Unconditional final backstop: `cleanupChildHandles` is idempotent
+        // (the `cleanedUp` guard makes every call after the first a no-op),
+        // so wrapping the ENTIRE terminal-processing body — including the
+        // fallible work inside `processChildTerminalEvent` that runs before
+        // any of the named handlers' own `cleanupChildHandles()` calls
+        // (stderr finalization/redaction, timer teardown) — guarantees the
+        // accepted-keys temp store and every other child handle are
+        // released on every exit from this callback, not only the paths a
+        // named handler happens to reach. Without this, a throw here would
+        // fall straight to the outer `.catch((error) => reject(error))`
+        // below with no cleanup at all.
         try {
-          await waitForQueueDrain();
-          if (!terminalEventRecorded) {
-            if (runTimedOut) {
-              await recordRunTimedOutTerminal(code);
-            } else if (ownerCancelRequested) {
-              await handleOwnerCancellationClose(code);
-            } else if (doneMessage) {
-              if (await handleDoneClose(code)) {
-                return;
-              }
-            } else {
-              await handleConnectorExitClose(code, stderrTailDiagnostic);
-            }
-            terminalEventRecorded = true;
-          }
-          await resolveClosedRun(code, stderrTailDiagnostic);
-        } catch (caught) {
-          await handleCloseFailure(code, caught);
+          await processChildTerminalEvent(terminalEvent);
+        } finally {
+          cleanupChildHandles();
         }
       })
       .catch((error: unknown) => reject(error));
@@ -5769,8 +6605,24 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
 
 /**
  * Default interaction handler — prompts via stdin/stdout of the runtime process itself
+ *
+ * This is the CLI fallback, and it is only ever correct when a person is at the
+ * keyboard. A server-hosted run has no terminal, so `rl.question` never
+ * resolves and the interaction sits until its timeout expires — a silent
+ * 30-minute strand whose logs show a human being asked and never answering,
+ * which reads as "the owner ignored it" rather than "nobody could have seen
+ * it". Refusing up front turns that into an immediate, named failure.
+ *
+ * The check is on the INPUT stream specifically. A run can hold a writable
+ * stderr for logs while having no readable stdin at all, so testing the output
+ * side would pass exactly where the prompt is unanswerable.
  */
-async function defaultInteractionHandler(interaction: ConnectorMessage): Promise<InteractionResponse> {
+export async function defaultInteractionHandler(interaction: ConnectorMessage): Promise<InteractionResponse> {
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `interaction_handler_unattended: this run asked for human input (kind=${String(interaction.kind)}) but no interaction handler was wired and there is no terminal to prompt. A server-hosted run must supply its own onInteraction handler.`
+    );
+  }
   const { createInterface } = await import("node:readline");
   const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
 

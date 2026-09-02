@@ -1192,6 +1192,14 @@ function mergeMessagesPassResults(left: MessagesPassResult, right: MessagesPassR
     maxMessageTs: selectMaxSlackTs(left.maxMessageTs, right.maxMessageTs),
     considered: left.considered + right.considered,
     covered: left.covered + right.covered,
+    messageAttachmentCoverage: {
+      considered: left.messageAttachmentCoverage.considered + right.messageAttachmentCoverage.considered,
+      covered: left.messageAttachmentCoverage.covered + right.messageAttachmentCoverage.covered,
+    },
+    reactionCoverage: {
+      considered: left.reactionCoverage.considered + right.reactionCoverage.considered,
+      covered: left.reactionCoverage.covered + right.reactionCoverage.covered,
+    },
   };
 }
 
@@ -2059,6 +2067,15 @@ export interface MessagesPassResult {
    * the next run uses as a floor, so an unemitted row must not raise it.
    */
   maxMessageTs: string | null;
+  /** Child records derived from every message row the pass enumerated. */
+  messageAttachmentCoverage: MessageDetailCoverage;
+  /** Child records derived from every message row the pass enumerated. */
+  reactionCoverage: MessageDetailCoverage;
+}
+
+interface MessageDetailCoverage {
+  considered: number;
+  covered: number;
 }
 
 function selectMaxSlackTs(current: string | null, candidate: string | null): string | null {
@@ -2078,6 +2095,29 @@ function recordChannelMaxTs(channelMaxTs: Record<string, string>, channelId: str
   const current = channelMaxTs[channelId];
   if (!current || ts > current) {
     channelMaxTs[channelId] = ts;
+  }
+}
+
+/**
+ * Emit one child stream without borrowing the parent message's denominator.
+ * A rejected child remains considered but not covered, so its coverage report
+ * can describe a real detail shortfall.
+ */
+async function emitMessageDetails(
+  deps: MessagesPassDeps,
+  stream: "reactions" | "message_attachments",
+  requested: boolean,
+  records: Iterable<RecordData>,
+  coverage: MessageDetailCoverage
+): Promise<void> {
+  if (!requested) {
+    return;
+  }
+  for (const record of records) {
+    coverage.considered += 1;
+    if ((await deps.emitRecord(stream, record)) !== false) {
+      coverage.covered += 1;
+    }
   }
 }
 
@@ -2145,6 +2185,8 @@ export async function emitMessagesPass(
   let maxMessageTs: string | null = null;
   let considered = 0;
   let covered = 0;
+  const messageAttachmentCoverage: MessageDetailCoverage = { considered: 0, covered: 0 };
+  const reactionCoverage: MessageDetailCoverage = { considered: 0, covered: 0 };
   for (const r of rows) {
     considered += 1;
     // A row whose Slack `ts` will not parse gets a fabricated `sent_at`
@@ -2171,18 +2213,24 @@ export async function emitMessagesPass(
         recordChannelMaxTs(channelMaxTs, r.CHANNEL_ID, ts);
       }
     }
-    if (wantReactions) {
-      for (const rec of buildReactionRecords(parsed)) {
-        await deps.emitRecord("reactions", rec);
-      }
-    }
-    if (wantMsgAttachments) {
-      for (const rec of buildMessageAttachmentRecords(parsed)) {
-        await deps.emitRecord("message_attachments", rec);
-      }
-    }
+    await emitMessageDetails(deps, "reactions", wantReactions, buildReactionRecords(parsed), reactionCoverage);
+    await emitMessageDetails(
+      deps,
+      "message_attachments",
+      wantMsgAttachments,
+      buildMessageAttachmentRecords(parsed),
+      messageAttachmentCoverage
+    );
   }
-  return { channelMaxTs, covered, iteratedChannelMaxTs, maxMessageTs, considered };
+  return {
+    channelMaxTs,
+    covered,
+    iteratedChannelMaxTs,
+    maxMessageTs,
+    considered,
+    messageAttachmentCoverage,
+    reactionCoverage,
+  };
 }
 
 // ─── Per-stream helpers ────────────────────────────────────────────────
@@ -2309,22 +2357,12 @@ async function emitEnumerationFailureGap(
  * per scoped archive during a fold, and the runtime rejects a repeated
  * (state_stream, stream) DETAIL_COVERAGE pair.
  *
- * `reactions` and `message_attachments` deliberately emit NO DETAIL_COVERAGE.
- * The manifest declares both `state_stream: messages`, i.e. static
- * single-parent detail streams, whose checkpoint status is projected from the
- * parent's own commit outcome — so `validateDetailCoverageAgainstManifest`
- * fails the ENTIRE run if either emits coverage of its own.
- *
- * Withholding is also the honest outcome on the numbers alone. The only counts
- * in scope here are the PARENT message pass's: how many messages were walked,
- * not how many reactions or attachments were derived against a per-key
- * denominator. Reporting them under a child stream's name asserts
- * `covered == considered` for children that were never accounted for — the
- * fabricated-denominator anti-pattern this codebase has worked to remove. The
- * children are left honestly unproven rather than falsely complete, exactly as
- * `apple_contacts` withholds a contacts claim it cannot establish.
+ * The two derived streams use the manifest's `parent_streams` protocol: every
+ * child record this pass derives carries its own considered/covered accounting
+ * under the messages checkpoint. These are child counts, never the parent
+ * messages denominator.
  */
-async function declareMergedMessageCoverage(deps: StreamDeps, considered: number, covered: number): Promise<void> {
+async function declareMergedMessageCoverage(deps: StreamDeps, result: MessagesPassResult): Promise<void> {
   if (
     !(deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments"))
   ) {
@@ -2336,10 +2374,34 @@ async function declareMergedMessageCoverage(deps: StreamDeps, considered: number
       stateStream: "messages",
       requiredKeys: [],
       hydratedKeys: [],
-      considered,
-      covered,
+      considered: result.considered,
+      covered: result.covered,
     })
   );
+  if (deps.requested.has("reactions")) {
+    await deps.emit(
+      buildDetailCoverageMessage({
+        stream: "reactions",
+        stateStream: "messages",
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: result.reactionCoverage.considered,
+        covered: result.reactionCoverage.covered,
+      })
+    );
+  }
+  if (deps.requested.has("message_attachments")) {
+    await deps.emit(
+      buildDetailCoverageMessage({
+        stream: "message_attachments",
+        stateStream: "messages",
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: result.messageAttachmentCoverage.considered,
+        covered: result.messageAttachmentCoverage.covered,
+      })
+    );
+  }
 }
 
 /**
@@ -3292,6 +3354,8 @@ export async function runRequestedStreams(
     iteratedChannelMaxTs: {},
     maxMessageTs: null,
     considered: 0,
+    messageAttachmentCoverage: { considered: 0, covered: 0 },
+    reactionCoverage: { considered: 0, covered: 0 },
   };
   if (deps.requested.has("messages") || deps.requested.has("reactions") || deps.requested.has("message_attachments")) {
     const messagesState = state.messages as MessagesState | undefined;
@@ -3648,7 +3712,7 @@ if (isMainModule(import.meta.url)) {
         });
       }
 
-      await declareMergedMessageCoverage(deps, messageResult.considered, messageResult.covered);
+      await declareMergedMessageCoverage(deps, messageResult);
 
       // Drop fingerprint entries for IDs that disappeared from the source
       // since the prior run on streams we actually requested. Streams the

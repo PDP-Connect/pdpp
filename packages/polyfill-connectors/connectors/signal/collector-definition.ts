@@ -47,6 +47,11 @@ export const signalCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "signal",
   entry: "signal",
   bindings: { filesystem: { required: true } },
+  // Declared explicitly (not omitted): this definition targets the
+  // connector-protocol 0.0.2 capability-declaration contract, which
+  // requires an explicit array even when empty. This connector emits no
+  // STREAM_EVIDENCE and needs no protocol capability today.
+  protocol_capabilities: [],
   streams: SIGNAL_DEFAULT_STREAMS,
   time_scopable_streams: SIGNAL_TIME_SCOPABLE_STREAMS,
 };

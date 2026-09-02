@@ -553,7 +553,7 @@ test("parseOrderDetailDom: every product-detail row emits a duplicate aria-hidde
   assert.equal(beef.lineTotal, "$8.97");
 });
 
-test("parseOrderDetailDom dedupes a product-detail href appearing twice", () => {
+test("parseOrderDetailDom preserves two purchased lines with the same product href", () => {
   const html = `<html><body><main><ul>
     <li data-qe-id="itemRow">
       <a data-qe-id="itemRowDetailsName" href="/product-detail/x/500">Widget</a>
@@ -567,7 +567,7 @@ test("parseOrderDetailDom dedupes a product-detail href appearing twice", () => 
     </li>
   </ul></main></body></html>`;
   const detail = parseOrderDetailDom(html);
-  assert.equal(detail?.items.length, 1);
+  assert.equal(detail?.items.length, 2, "same-product lines are distinct purchased items");
 });
 
 test("parseOrderDetailDom returns null for a page with zero item rows", () => {
@@ -634,9 +634,41 @@ test("an Imperva incident report sets the block flag the classifier branches on 
 
 test("isIncapsulaBlocked does not fire on a real page that merely mentions incidentId", () => {
   // H-E-B's own API error envelopes use `errorCode`; only Imperva's report
-  // carries the incidentId+hostName pair, and a real page is never this small.
+  // carries incidentId plus a corroborating field, and a real page is never
+  // this small.
   const realPage = `<html><body><h3>Order history</h3><div data-testid="order-list">${"x".repeat(5000)}<span>"errorCode" : "15"</span></div></body></html>`;
   assert.equal(isIncapsulaBlocked(realPage), false);
+});
+
+// The second observed JSON body, served against /my-account/your-orders:
+// incidentId + proxyId, with NO hostName field. The hostName-only predicate
+// returned false here, so this shape reached the zero-order path and was
+// misreported as selector_drift — the same misclassification the hostName
+// shape caused, from a different edge.
+test("isIncapsulaBlocked detects the incidentId+proxyId JSON body that carries no hostName", () => {
+  const html = fixture("incapsula-json-block.html");
+  assert.ok(!html.includes('"hostName"'), "premise: this fixture genuinely has no hostName field");
+  assert.equal(isIncapsulaBlocked(html), true);
+});
+
+// Discriminating pair for the widened predicate. `incidentId` alone must not
+// fire: widening to `incidentId + (hostName OR proxyId)` must not collapse
+// into "incidentId is enough", which would let any small page quoting that one
+// field be classified as bot protection.
+test("isIncapsulaBlocked requires a corroborating field, not incidentId alone", () => {
+  const incidentIdOnly = `<html><body><pre>{"errorCode":"15","incidentId":"123456789012345678-987654321098765432"}</pre></body></html>`;
+  assert.equal(isIncapsulaBlocked(incidentIdOnly), false);
+
+  const proxyIdOnly = `<html><body><pre>{"errorCode":"15","proxyId":"abcdef12"}</pre></body></html>`;
+  assert.equal(isIncapsulaBlocked(proxyIdOnly), false);
+});
+
+// The byte bound is what stops a large real page that happens to quote both
+// field names from being called a block. Widening the field set must not
+// widen the size envelope.
+test("the incidentId+proxyId shape stays bounded by the incident-report size limit", () => {
+  const oversized = `<html><body><pre>{"errorCode":"15","incidentId":"1-2","proxyId":"abcdef12"}${"x".repeat(5000)}</pre></body></html>`;
+  assert.equal(isIncapsulaBlocked(oversized), false);
 });
 
 test("isIncapsulaBlocked is false for a legitimate empty terminal page (has h3/breadcrumb/testid)", () => {
@@ -757,23 +789,36 @@ test("parseCurrencyCents returns null for null/empty input", () => {
   assert.equal(parseCurrencyCents(""), null);
 });
 
-test("orderItemId prefers product_id over name", () => {
+test("orderItemId preserves the legacy provider-backed id for a unique line", () => {
   assert.equal(orderItemId("HEB123", { productId: "999", name: "Milk" }, 0), "HEB123|999");
 });
 
-test("orderItemId falls back to a normalized name + item index when product_id is absent", () => {
-  assert.equal(
-    orderItemId("HEB123", { productId: null, name: "  Organic   Bananas  " }, 0),
-    "HEB123|organic bananas|0"
-  );
+test("orderItemId keeps same-product lines distinct by explicit source position", () => {
+  const siblings = [
+    { productId: "999", name: "Milk", sourcePosition: 12 },
+    { productId: "999", name: "Milk", sourcePosition: 19 },
+  ] as const;
+  const first = orderItemId("HEB123", siblings[0], 0, siblings);
+  const second = orderItemId("HEB123", siblings[1], 1, siblings);
+  assert.notEqual(first, second);
+  assert.equal(first, "HEB123|999|12");
+  assert.equal(second, "HEB123|999|19");
+});
+
+test("orderItemId falls back to a normalized name when product_id is absent", () => {
+  assert.equal(orderItemId("HEB123", { productId: null, name: "  Organic   Bananas  " }, 0), "HEB123|organic bananas");
 });
 
 test("orderItemId: two same-name, product-id-null items in one order get distinct ids", () => {
-  const first = orderItemId("HEB123", { productId: null, name: "Fresh Produce" }, 0);
-  const second = orderItemId("HEB123", { productId: null, name: "Fresh Produce" }, 1);
+  const siblings = [
+    { productId: null, name: "Fresh Produce", sourcePosition: 3 },
+    { productId: null, name: "Fresh Produce", sourcePosition: 8 },
+  ] as const;
+  const first = orderItemId("HEB123", siblings[0], 0, siblings);
+  const second = orderItemId("HEB123", siblings[1], 1, siblings);
   assert.notEqual(first, second, "two null-product-id items with the same name must not collide");
-  assert.equal(first, "HEB123|fresh produce|0");
-  assert.equal(second, "HEB123|fresh produce|1");
+  assert.equal(first, "HEB123|fresh produce|3");
+  assert.equal(second, "HEB123|fresh produce|8");
 });
 
 // ─── Record builders ──────────────────────────────────────────────────────
@@ -801,6 +846,36 @@ test("buildOrderItemRecord maps a parsed detail item into the emitted order_item
   assert.equal(record.department, "Dairy & eggs");
   assert.equal(record.line_total_cents, 429);
   assert.equal(record.order_date, "2026-07-14");
+});
+
+test("buildOrderItemRecord uses stable source positions for duplicate lines and preserves unique legacy ids", () => {
+  const html = `<html><body><main><ul>
+    <li data-qe-id="itemRow" data-index="12"><a data-qe-id="itemRowDetailsName" href="/product-detail/x/500">Widget</a></li>
+    <li data-qe-id="itemRow" data-index="19"><a data-qe-id="itemRowDetailsName" href="/product-detail/x/500">Widget</a></li>
+  </ul></main></body></html>`;
+  const detail = parseOrderDetailDom(html);
+  assert.ok(detail);
+  assert.deepEqual(
+    detail.items.map((item) => item.sourcePosition),
+    [12, 19]
+  );
+  const records = detail.items.map((item, index) =>
+    buildOrderItemRecord("HEB123", "2026-07-14", item, index, "2026-07-14T12:00:00.000Z", detail.items)
+  );
+  assert.deepEqual(
+    records.map((record) => record.id),
+    ["HEB123|500|12", "HEB123|500|19"]
+  );
+  const rerun = parseOrderDetailDom(html);
+  assert.ok(rerun);
+  assert.deepEqual(
+    rerun.items.map(
+      (item, index) =>
+        buildOrderItemRecord("HEB123", "2026-07-14", item, index, "2026-07-14T12:00:00.000Z", rerun.items).id
+    ),
+    records.map((record) => record.id),
+    "the same positional source produces the same ids on a rerun"
+  );
 });
 
 // ─── Promotional interstitial vs the empty state (run_1787343993082) ──────

@@ -57,6 +57,7 @@ function healthySnapshot(): ConnectionHealthSnapshot {
     badges: { stale: false, syncing: false },
     collection_rate: null,
     conditions: [],
+    coverage_horizons: [],
     detail_gap_backlog: {
       max_attempt_count: 0,
       next_attempt_at: null,

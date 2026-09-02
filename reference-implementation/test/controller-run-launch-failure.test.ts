@@ -214,6 +214,8 @@ test("post-spawn rejection with a runtime-recorded terminal event is not double-
         actor_id: CONNECTOR_ID,
         actor_type: "runtime",
         data: {
+          connection_id: opts.connectorInstanceId,
+          connector_instance_id: opts.connectorInstanceId,
           reason: "connector_reported_failed",
           records_emitted: 0,
           source: { id: CONNECTOR_ID, kind: "connector" },
@@ -241,6 +243,11 @@ test("post-spawn rejection with a runtime-recorded terminal event is not double-
   assert.equal(countTerminalEvents("run_post_spawn"), 1, "runtime terminal is preserved, no controller duplicate");
   const terminal = await getRunTerminalEvent("run_post_spawn");
   assert.equal(terminal?.data?.reason, "connector_reported_failed", "original runtime reason wins");
+  assert.equal(
+    (terminal?.data as Record<string, unknown> | undefined)?.connector_instance_id,
+    "cin_post_spawn",
+    "runtime terminal carries the connection identity used by scoped duplicate suppression"
+  );
 });
 
 // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.

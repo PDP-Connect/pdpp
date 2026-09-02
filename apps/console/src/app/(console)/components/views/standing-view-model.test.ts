@@ -1224,6 +1224,7 @@ test("hero ALARMs when dashboard inputs fail instead of claiming all-clear from 
 
 test("hero consumes the server fleet verdict when no per-connection row supplies the aggregate cause", () => {
   const fleetHealth = {
+    banner_warranted: true,
     state: "unhealthy",
     fully_healthy: false,
     scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },
@@ -1246,8 +1247,57 @@ test("hero consumes the server fleet verdict when no per-connection row supplies
   assert.equal(hero.cta?.href, HREFS.sources);
 });
 
+test("banner_warranted: an indeterminate fleet verdict (in-progress work, unassessed scope) does not claim the alarm hero", () => {
+  const fleetHealth = {
+    banner_warranted: false,
+    state: "indeterminate",
+    fully_healthy: false,
+    scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },
+    dimensions: {
+      runtime: "unknown",
+      coverage_audit: "inconclusive",
+      attention: { needs_owner: [] },
+      system: { degraded_or_broken: [] },
+      recovery: { retryable: [], terminal: [] },
+      stalled_work: [],
+      active_work: [{ connection_id: "a", connector_id: "a", connector_instance_id: "a", display_name: "A" }],
+      freshness_advisories: [],
+      intentional_policy: { manual: [], paused: [] },
+      unknown_evidence: [],
+    },
+  } as const;
+  const hero = computeHero(baseInputs({ fleetHealth }));
+  assert.notEqual(hero.tone, "alarm");
+  assert.notEqual(hero.kicker, "Source fleet needs attention");
+});
+
+test("banner_warranted: a healthy_with_advisories fleet verdict (ordinary lateness) does not claim the alarm hero", () => {
+  const fleetHealth = {
+    banner_warranted: false,
+    state: "healthy_with_advisories",
+    fully_healthy: false,
+    scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },
+    dimensions: {
+      runtime: "healthy",
+      coverage_audit: "pass",
+      attention: { needs_owner: [] },
+      system: { degraded_or_broken: [] },
+      recovery: { retryable: [], terminal: [] },
+      stalled_work: [],
+      active_work: [],
+      freshness_advisories: [{ connection_id: "a", connector_id: "a", connector_instance_id: "a", display_name: "A" }],
+      intentional_policy: { manual: [], paused: [] },
+      unknown_evidence: [],
+    },
+  } as const;
+  const hero = computeHero(baseInputs({ fleetHealth }));
+  assert.notEqual(hero.tone, "alarm");
+  assert.notEqual(hero.kicker, "Source fleet needs attention");
+});
+
 test("a locally alarming source row cannot override a healthy server fleet verdict", () => {
   const fleetHealth = {
+    banner_warranted: false,
     state: "healthy",
     fully_healthy: true,
     scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },

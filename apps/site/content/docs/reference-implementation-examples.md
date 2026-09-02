@@ -543,7 +543,7 @@ TOKEN=$(echo "$APPROVED" | jq -r .token)
 ```
 
 The issued grant carries `access_mode: "single_use"` and (unlike a continuous
-grant, whose `expires_at` may be null) always a bounded `expires_at`; the
+grant, which omits `expires_at`) always a bounded `expires_at`; the
 reference default is 24h from issuance:
 
 ```json

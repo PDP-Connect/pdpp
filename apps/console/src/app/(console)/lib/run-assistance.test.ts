@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { selectNoAssistanceStreamState } from "../syncs/[runId]/stream/stream-state.ts";
 import type { SpineEvent } from "./ref-client.ts";
 import {
   getCurrentBrowserSurfaceAssistance,
@@ -220,6 +221,41 @@ test("a resolved structured browser-surface assistance request reports handoff-r
   assert.equal(hasResolvedBrowserSurfaceAssistance(events), true);
   // The run keeps going — this must not read as fully resolved/ended.
   assert.equal(getCurrentBrowserSurfaceAssistance(events), null);
+});
+
+test("a rejected browser readiness probe closes the streamed assistance so a failed run renders terminal state", () => {
+  const events = [
+    event("run.assistance_requested", {
+      assistance_request_id: "assist_rejected",
+      attachments: [{ kind: "browser_surface", ref: "surface_1", role: "streaming_companion" }],
+      message: "Finish sign-in in the secure browser. PDPP continues automatically.",
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "none",
+    }),
+    event("run.assistance_escalated", { assistance_request_id: "assist_rejected" }),
+  ];
+
+  assert.equal(getCurrentRunAssistance(events), null);
+  assert.equal(selectNoAssistanceStreamState({ runHandleStatus: "failed", terminalStatus: null }), "ended");
+});
+
+test("a self-resolved no-response browser handoff leaves the stream page in its background-continuing state", () => {
+  const events = [
+    event("run.assistance_requested", {
+      assistance_request_id: "assist_resolved",
+      attachments: [{ kind: "browser_surface", ref: "surface_1", role: "streaming_companion" }],
+      message: "Finish sign-in in the secure browser. PDPP continues automatically.",
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "none",
+    }),
+    event("run.assistance_resolved", { assistance_request_id: "assist_resolved" }),
+  ];
+
+  assert.equal(getCurrentRunAssistance(events), null);
+  assert.equal(hasResolvedBrowserSurfaceAssistance(events), true);
+  assert.equal(selectNoAssistanceStreamState({ runHandleStatus: "active", terminalStatus: null }), "running");
 });
 
 test("a resolved legacy manual_action interaction reports handoff-ready", () => {

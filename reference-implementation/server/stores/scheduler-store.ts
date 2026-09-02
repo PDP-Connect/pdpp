@@ -143,6 +143,14 @@ export interface SchedulerRunHistoryRecord {
   readonly recordsEmitted: number;
   readonly reportedRecordsEmitted?: number | null;
   readonly runId?: string | null;
+  /**
+   * `run_history.scheduler_managed` — `true` for a run this connection's own
+   * scheduler produced (including the legacy back-filled default; see
+   * `db.ts`'s `scheduler_managed` migration). Distinguishes this connection's
+   * own current evidence from a foreign/historical row when a reader must
+   * decide whether a `local_device`-backed connection's run is authoritative.
+   */
+  readonly schedulerManaged?: boolean;
   readonly source: Record<string, unknown>;
   readonly startedAt: string;
   /**
@@ -350,7 +358,8 @@ const SCHEDULER_RUN_HISTORY_COLUMNS = `
   started_at,
   completed_at,
   error,
-  attempt`;
+  attempt,
+  scheduler_managed`;
 
 // Product-reader column set (run-history LIST cutover,
 // terminal-read-architecture-fable-0730.md §9 / R9.2): adds `facts_json` so
@@ -385,6 +394,7 @@ interface SchedulerRunHistoryRow extends Record<string, unknown> {
   readonly records_emitted: number;
   readonly reported_records_emitted: number | null;
   readonly run_id: string | null;
+  readonly scheduler_managed?: 0 | 1 | boolean;
   readonly source_json: unknown;
   readonly started_at: string;
   readonly status: "cancelled" | "failed" | "running" | "skipped" | "succeeded";
@@ -447,6 +457,7 @@ function rowToProductRunHistoryRecord(row: SchedulerRunHistoryRow): ProductRunHi
     recordsEmitted: row.records_emitted,
     reportedRecordsEmitted: row.reported_records_emitted,
     runId: row.run_id,
+    schedulerManaged: row.scheduler_managed === true || row.scheduler_managed === 1,
     source: asObjectOrNull(parseJsonValue(row.source_json, {})) ?? {},
     startedAt: row.started_at,
     status: row.status,
@@ -1230,7 +1241,8 @@ export function createPostgresSchedulerStore(): SchedulerStore {
            started_at,
            completed_at,
            error,
-           attempt
+           attempt,
+           scheduler_managed
          FROM run_history
          WHERE connector_instance_id = $1
            AND status <> 'running'
@@ -1381,6 +1393,7 @@ export function createPostgresSchedulerStore(): SchedulerStore {
                   history.completed_at,
                   history.error,
                   history.attempt,
+                  history.scheduler_managed,
                   ROW_NUMBER() OVER (
                     PARTITION BY history.connector_instance_id
                     ORDER BY history.completed_at DESC, history.id DESC
@@ -1434,6 +1447,7 @@ export function createPostgresSchedulerStore(): SchedulerStore {
                   history.completed_at,
                   history.error,
                   history.attempt,
+                  history.scheduler_managed,
                   history.facts_json,
                   ROW_NUMBER() OVER (
                     PARTITION BY history.connector_instance_id
@@ -1486,6 +1500,7 @@ export function createPostgresSchedulerStore(): SchedulerStore {
                   history.completed_at,
                   history.error,
                   history.attempt,
+                  history.scheduler_managed,
                   history.facts_json,
                   ROW_NUMBER() OVER (
                     PARTITION BY history.connector_instance_id
@@ -1531,7 +1546,8 @@ export function createPostgresSchedulerStore(): SchedulerStore {
            started_at,
            completed_at,
            error,
-           attempt
+           attempt,
+           scheduler_managed
          FROM (
            SELECT *
            FROM run_history

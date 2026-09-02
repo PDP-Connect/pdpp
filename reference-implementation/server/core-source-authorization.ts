@@ -537,7 +537,9 @@ export function materializeCoreResolvedGrant({
   const candidate = {
     access_mode: accessMode,
     client: { client_id: clientId },
-    expires_at: expiresAt,
+    // Absent-only expiry: a grant with no expiry omits the field entirely
+    // rather than carrying an explicit `null` (spec-core.md, Grant fields).
+    ...(expiresAt === null || expiresAt === undefined ? {} : { expires_at: expiresAt }),
     grant_id: grantId,
     issued_at: issuedAt,
     purpose_code: purposeCode,
@@ -553,9 +555,80 @@ export function materializeCoreResolvedGrant({
   return parseCoreResolvedGrant(candidate);
 }
 
-/** Parse the closed Source resolved-grant contract used by every binding. */
+/**
+ * Normalize a legacy explicit-null `expires_at` to the absent-only form.
+ *
+ * `expires_at` is absent-only: a grant with no expiry omits the field. Grants
+ * issued before that normalization persisted an explicit `"expires_at": null`
+ * in `grants.grant_json`, and those blobs are re-parsed on every read. Dropping
+ * the member here — rather than rejecting it — keeps already-issued grants
+ * readable while giving every caller downstream the single terminal shape.
+ * `null` and absent already mean the same thing (no expiry), so this is a
+ * representation change, not an authorization change.
+ *
+ * Exported because `grants.grant_json` is not the only durable home of a
+ * resolved grant: `agent_connect_attempts` keeps its own `grant_json` and a
+ * second copy nested in `response_json.grant`. Those blobs are legacy/partial
+ * and cannot be round-tripped through `parseCoreResolvedGrant` (they would
+ * fail full schema validation and break redemption), so the agent-connect
+ * read path applies THIS rule directly. One exported normalizer keeps a single
+ * authority for the representation instead of a second, drifting copy.
+ */
+export function normalizeAbsentOnlyExpiry(candidate: unknown): unknown {
+  if (isObject(candidate) && "expires_at" in candidate && candidate.expires_at === null) {
+    const { expires_at: _legacyNull, ...rest } = candidate;
+    return rest;
+  }
+  return candidate;
+}
+
+/**
+ * Parse the closed Source resolved-grant contract used by every binding.
+ *
+ * TOLERANT BY DESIGN, AND PERSISTED-STATE ONLY. This function deliberately
+ * accepts one shape the current JSON Schema rejects: a legacy explicit
+ * `"expires_at": null`. It drops that member (see `normalizeAbsentOnlyExpiry`)
+ * BEFORE running the validator, so a grant blob written before the absent-only
+ * normalization still parses.
+ *
+ * That tolerance is a persistence-compatibility bridge, NOT a wire contract.
+ * The current wire contract is the JSON Schema, which rejects explicit null.
+ * Nothing here licenses accepting an explicit null from a peer.
+ *
+ * Every current call site honours that restriction, which is what makes the
+ * looser shape safe to keep here for now:
+ *
+ *   - `source-approved-authorization.ts` parses a grant read back from
+ *     durable storage;
+ *   - `source-introspection-context.ts` parses a grant this process just
+ *     reconstructed field-by-field in `resolvedGrantInput()`, which omits
+ *     `expires_at` rather than emitting null, and thereafter re-parses only
+ *     that already-normalized internal object.
+ *
+ * No path feeds newly received, untrusted peer JSON straight into this
+ * function. Keep it that way: if such a caller is ever added, it must NOT
+ * inherit this tolerance.
+ *
+ * FOLLOW-UP (review of #242, "Optional parser-boundary refinement"): the
+ * stronger terminal design splits this into two named boundaries --
+ *
+ *     parseCurrentResolvedGrant()
+ *       - strict current schema
+ *       - explicit null rejected
+ *
+ *     parseLegacyPersistedResolvedGrant()
+ *       - permits only documented legacy deviations
+ *       - normalizes
+ *       - records migration/evidence
+ *       - never used for new untrusted wire input
+ *
+ * That split does not block #242 because the call sites above are verified to
+ * use the tolerant parser only for persisted/internal data. This comment is
+ * the documented restriction the review asked for, so the migration exception
+ * does not silently become permanent protocol acceptance.
+ */
 export function parseCoreResolvedGrant(value: unknown): ResolvedGrant {
-  const candidate = cloneJson(value);
+  const candidate = normalizeAbsentOnlyExpiry(cloneJson(value));
   if (!validateResolvedGrantSchema(candidate)) {
     const details = (validateResolvedGrantSchema.errors ?? [])
       .map((error) => `${error.instancePath || "/"} ${error.message || "is invalid"}`)

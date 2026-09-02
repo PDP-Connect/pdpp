@@ -53,6 +53,7 @@ import {
   type RefConnectionHealthSnapshot,
   type RefConnectorRunSummary,
   type RefConnectorSummary,
+  type RefCoverageHorizon,
   type RefRenderedVerdict,
   type RefRequiredAction,
   type RefSchedule,
@@ -74,8 +75,10 @@ import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } fr
 import { findManifestForConnectorId } from "../lib/relationships.ts";
 import { formatConnectorHeaderCount } from "../sources-view-model.ts";
 import { pauseConnectionAction, resumeConnectionAction, resumeConnectorScheduleAction } from "./actions.ts";
+import { acknowledgeConnectionLossAction, confirmCoverageHorizonAction } from "./confirmation-actions.ts";
 import type { ConfigRevisionWire, ConnectionConfigWire } from "./connection-config-view-model.ts";
 import { ConnectionConfiguration } from "./connection-configuration.tsx";
+import { ConnectionConfirmation } from "./connection-confirmation.tsx";
 import { ConnectionDangerZone } from "./connection-danger-zone.tsx";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { RenameConnection } from "./rename-connection.tsx";
@@ -156,9 +159,13 @@ export interface ConnectorPageModel {
   connectionRenderedVerdict: RefRenderedVerdict | null;
   connectorId: string;
   connectorInstanceId: string | null;
+  /** Current durable horizon disclosures from the reference owner projection. */
+  coverageHorizons: readonly RefCoverageHorizon[];
   deviceLabels: string[];
   displayName: string;
   headerCount: string;
+  /** Latest-run structured gap evidence; never derived from rendered copy. */
+  latestKnownGaps: readonly unknown[] | null | undefined;
   manifest: ConnectorManifest;
   manualUploadHref: string | null;
   overview: ConnectorOverview;
@@ -457,6 +464,7 @@ async function loadConnectorPageModel(
   const { schedule } = diagnostics;
   const overview = toConnectorOverview(summary, streams);
   const recentRuns = connectionRecentRuns(summary);
+  const latestKnownGaps = summary.last_run?.known_gaps;
   const totalRecords = summary.total_records;
   // Per-stream collection facts from the reference's derived `collection_report`
   // (absent on references predating the field → empty map → Streams section
@@ -519,9 +527,11 @@ async function loadConnectorPageModel(
     connectionRenderedVerdict: summary.rendered_verdict ?? null,
     connectorId,
     connectorInstanceId,
+    coverageHorizons: summary.coverage_horizons ?? [],
     deviceLabels,
     displayName,
     headerCount,
+    latestKnownGaps,
     manifest,
     manualUploadHref: manualUploadHrefForConnection(connectorId, connectionId, manifest),
     overview,
@@ -653,9 +663,11 @@ function ConnectorPageView({
     connectorId,
     connectorInstanceId,
     connectionLabelSeed,
+    coverageHorizons,
     deviceLabels,
     displayName,
     headerCount,
+    latestKnownGaps,
     manifest,
     manualUploadHref,
     overview,
@@ -809,6 +821,17 @@ function ConnectorPageView({
       <AcquisitionCoverageSection
         connectionId={connectorInstanceId ?? connectionId}
         coverage={overview.acquisitionCoverage ?? null}
+      />
+
+      <ConnectionConfirmation
+        acknowledgeConnectionLossAction={acknowledgeConnectionLossAction}
+        acknowledgedLoss={connectionRenderedVerdict?.detail.acknowledged_loss ?? null}
+        confirmCoverageHorizonAction={confirmCoverageHorizonAction}
+        connectionId={connectorInstanceId ?? connectionId}
+        error={dangerError}
+        latestKnownGaps={latestKnownGaps}
+        message={dangerMessage}
+        pendingHorizons={coverageHorizons}
       />
 
       <Section
@@ -1117,6 +1140,23 @@ function reauthActionPresentation({
         label: action.cta,
         title: "Open the secure browser session for this connection. Records, history, and schedule are preserved.",
       };
+    case "provider_interaction":
+      // The interaction dock lives on the RUN, not the connection: a provider
+      // interaction (OTP, CAPTCHA, device approval, manual sign-in) can only be
+      // completed while that run is still waiting, and the run's assistance
+      // window expires. Without this case the chip fell to `default` and sent
+      // the owner to the add-source page — a live "Complete the requested
+      // action" prompt that led away from the only surface that could satisfy
+      // it, while the run timed out. `target.run_id` is already on the action
+      // (`exactSyncTargetFromAttention`), so the destination needs no new data.
+      return {
+        href:
+          action.target?.kind === "sync" && action.target.run_id
+            ? `/syncs/${encodeURIComponent(action.target.run_id)}/stream`
+            : fallbackHref,
+        label: action.cta,
+        title: "Open the live run and complete the step this provider is waiting on.",
+      };
     default:
       return {
         href: fallbackHref,
@@ -1201,6 +1241,38 @@ function RenderedVerdictHeaderAction({
         >
           {action.cta}
         </span>
+      );
+    }
+    // A validated sync target is NOT enough on its own: the run must still be
+    // waiting. `exactSyncTargetFromAttention` reads `run_id` off the attention
+    // record with no liveness check, and an `expired` record keeps its `run_id`
+    // forever — so a concluded run still produced a `/syncs/<id>` link. The
+    // owner clicked "Complete the requested action" and nothing happened,
+    // because the run that owned the interaction had already ended and taken
+    // the interaction with it (production, ChatGPT chaka.dondo@gmail.com: three
+    // consecutive `expired` attention records, each still carrying a run id).
+    //
+    // With no live run there is nothing to complete. The honest destination is
+    // the surface that can re-establish the session so a NEW run can ask again.
+    if (!running) {
+      return browserSessionRepairHref === null ? (
+        <span
+          className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
+          data-action-stale-target="true"
+          data-testid="detail-action-rendered-verdict"
+        >
+          {action.cta} — no run is waiting right now
+        </span>
+      ) : (
+        <Link
+          className={buttonVariants({ size: "sm", variant: "default" })}
+          data-action-stale-target="true"
+          data-testid="detail-action-rendered-verdict"
+          href={browserSessionRepairHref}
+          title="No run is waiting right now. Open the secure browser session to sign in again; the next run will pick up from there."
+        >
+          {action.cta}
+        </Link>
       );
     }
     return (

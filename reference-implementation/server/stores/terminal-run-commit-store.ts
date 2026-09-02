@@ -212,38 +212,70 @@ function commitSqlite(input: ResolvedTerminalRunCommit): TerminalRunCommitResult
 
 async function commitPostgres(input: ResolvedTerminalRunCommit): Promise<TerminalRunCommitResult> {
   const eventId = terminalEventId(input);
-  return await withPostgresTransaction(async (client) => {
-    // Serialize equal authorized run bindings before lookup/insert. This avoids a
-    // 23505-aborted transaction on concurrent divergent bodies while exposing
-    // no incumbent receipt fields to the losing caller.
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [terminalRunBindingIdentity(input)]);
-    const existing = await client.query<{ data_json: unknown }>(
-      "SELECT data_json FROM spine_events WHERE event_id = $1",
-      [eventId]
-    );
-    if (existing.rows[0]) {
-      const stored = parseStoredResponse(existing.rows[0].data_json, input);
-      if (!stored) {
-        throw new TerminalRunCommitConflictError();
+  return await withPostgresTransaction(
+    async (client) => {
+      // Serialize equal authorized run bindings before lookup/insert. This avoids a
+      // 23505-aborted transaction on concurrent divergent bodies while exposing
+      // no incumbent receipt fields to the losing caller. This lock is taken
+      // SECOND, after the connector-instance lock `withPostgresTransaction`
+      // already acquired via `lockConnectorInstanceId` below (right after
+      // BEGIN, per `withPostgresTransaction`'s own option-application order
+      // in postgres-storage.ts). The two locks occupy different Postgres
+      // advisory-lock key spaces that cannot collide by construction:
+      // `connectorInstanceAdvisoryLockKey` (connector-instance-write-coordinator.ts)
+      // hashes a `"pdpp:connector-instance-write:v1:\0" + connectorInstanceId`
+      // domain-separated string with SHA-256 and reads the first 8 bytes as a
+      // signed bigint; this call hashes an unrelated JSON tuple
+      // (`terminalRunBindingIdentity`) through Postgres's `hashtextextended`.
+      // Even if the two 64-bit keys ever coincided, `pg_advisory_xact_lock`
+      // is reentrant within one backend/transaction (a second acquisition of
+      // the same key by the same transaction is a no-op), and every caller
+      // of this function applies the same order, so no AB/BA cross-transaction
+      // cycle can form. Global lock order for this module: connector-instance
+      // lock (via `lockConnectorInstanceId`, acquired first inside
+      // `withPostgresTransaction`) THEN the terminal-run-binding lock
+      // (acquired second, here) — matching how
+      // `coalesceExactPostgresLocalDeviceBindingDuplicates` always acquires
+      // its class of connector-instance locks before doing any further work
+      // in the same transaction (postgres-storage.ts:6529-6531).
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [terminalRunBindingIdentity(input)]);
+      const existing = await client.query<{ data_json: unknown }>(
+        "SELECT data_json FROM spine_events WHERE event_id = $1",
+        [eventId]
+      );
+      if (existing.rows[0]) {
+        const stored = parseStoredResponse(existing.rows[0].data_json, input);
+        if (!stored) {
+          throw new TerminalRunCommitConflictError();
+        }
+        return { replayed: true, response: stored };
       }
-      return { replayed: true, response: stored };
-    }
 
-    const occurredAt = new Date().toISOString();
-    const response = responseFor(input, eventId);
-    await putPostgresConnectorStateDeltaInTransaction(
-      client,
-      { connectorId: input.connectorId, connectorInstanceId: input.connectorInstanceId },
-      input.stateDelta,
-      occurredAt,
-      { afterStateWrite: (stream) => maybeFault(`after_state_write:${stream}`) }
-    );
-    await appendPostgresSpineEventInTransaction(client, eventInputFor(input, eventId, response, occurredAt), {
-      afterEventInsert: () => maybeFault("after_event_insert"),
-      afterRunHistoryWrite: () => maybeFault("after_run_history_write"),
-    });
-    return { replayed: false, response };
-  });
+      const occurredAt = new Date().toISOString();
+      const response = responseFor(input, eventId);
+      await putPostgresConnectorStateDeltaInTransaction(
+        client,
+        { connectorId: input.connectorId, connectorInstanceId: input.connectorInstanceId },
+        input.stateDelta,
+        occurredAt,
+        { afterStateWrite: (stream) => maybeFault(`after_state_write:${stream}`) }
+      );
+      await appendPostgresSpineEventInTransaction(client, eventInputFor(input, eventId, response, occurredAt), {
+        afterEventInsert: () => maybeFault("after_event_insert"),
+        afterRunHistoryWrite: () => maybeFault("after_run_history_write"),
+      });
+      return { replayed: false, response };
+    },
+    // Fence this write with the SAME connector-instance advisory lock
+    // `coalesceExactPostgresLocalDeviceBindingDuplicates` takes via
+    // `acquireConnectorInstanceXactLocks` (postgres-storage.ts:6531) before
+    // it revalidates and merges a duplicate class. Without this, a terminal
+    // commit could write a different-stream canonical row for a connector
+    // instance the coalescer is mid-merge on, combining two independently
+    // owned state histories instead of failing closed. See
+    // PR238-POSTGRES-D9-INDEPENDENT-R3-0831.md.
+    { lockConnectorInstanceId: input.connectorInstanceId }
+  );
 }
 
 export async function commitTerminalRun(input: ResolvedTerminalRunCommit): Promise<TerminalRunCommitResult> {

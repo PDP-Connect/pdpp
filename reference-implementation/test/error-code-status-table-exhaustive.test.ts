@@ -65,6 +65,10 @@ const EXPECTED_CODE_TO_STATUS = {
   connector_instance_selector_required: 400,
   connector_instance_store_required: 500,
   connector_invalid: 400,
+  // The submitted value cannot be a secret (mask, placeholder, or whitespace
+  // only). 400 because it is the owner's to correct in the form, not a server
+  // fault — an unmapped code would fall through to 500 and read as our failure.
+  credential_secret_invalid: 400,
   cursor_expired: 410,
   default_account_delete_unsupported: 409,
   field_not_found: 404,

@@ -531,6 +531,31 @@ interface BuildCollectionFactsInput {
    */
   recoveryOnly?: boolean;
   scopeByStream: Map<string, unknown>;
+  /**
+   * Accepted STREAM_EVIDENCE facts, keyed by stream name (see
+   * openspec/changes/prove-state-stream-child-coverage). `covered` for the
+   * shared evidence contract (`@pdpp/reference-contract/evidence`) is derived
+   * here as `emitted + unchanged` — the two outcome terms that genuinely
+   * account for a considered key without leaving it a shortfall. `gapped` and
+   * `unaccounted` are deliberately EXCLUDED from that sum: leaving them out
+   * means `covered < considered` whenever either is nonzero, which routes the
+   * stream to `boundary_shortfall`/`partial` (or, when a durable DETAIL_GAP
+   * backs the gap, `retryable_gap` via `pending_detail_gaps`) through the
+   * SAME unmodified `evaluateStreamCoherence` rule 2 that already gates every
+   * other stream shape — no change to the shared contract was needed. Folded
+   * into that stream's own considered/covered ONLY — never merged into
+   * detailCoverageByStateStream, so it can never reach
+   * missingDetailCoverageReports/recordDetailCoverageShortfalls or influence
+   * checkpoint commit eligibility. DETAIL_COVERAGE wins when both are present
+   * for the same stream (structurally impossible in a conformant run, since
+   * STREAM_EVIDENCE is exclusive to state_stream-declared streams and
+   * DETAIL_COVERAGE is rejected for them, but the precedence is made explicit
+   * here rather than left to map key overwrite order).
+   */
+  streamEvidenceByStream?: Map<
+    string,
+    { considered: number; emitted: number; gapped: number; unaccounted: number; unchanged: number }
+  >;
 }
 
 /**
@@ -577,6 +602,7 @@ export function buildCollectionFacts({
   committedStateStreams,
   persistState,
   recoveryOnly = false,
+  streamEvidenceByStream,
 }: BuildCollectionFactsInput): { reference_only: true; schema_version: number; streams: object[] } | null {
   if (recoveryOnly) {
     // Recovery-only runs perform no forward/list inventory pass by
@@ -710,9 +736,22 @@ export function buildCollectionFacts({
   const pendingDetailGapsForStream = (stream: string): number =>
     durableDetailGaps.filter((gap) => gap.stream === stream && gap.status === "pending").length;
 
+  // STREAM_EVIDENCE is exclusive to state_stream-declared streams, which are
+  // themselves forbidden from emitting DETAIL_COVERAGE — so
+  // declaredConsideredForStream/declaredCoveredForStream are always null for
+  // a stream with an accepted STREAM_EVIDENCE fact in a conformant run. This
+  // fallback only ever fires for that disjoint case; DETAIL_COVERAGE's value
+  // is used as-is when both happen to be present (see the
+  // streamEvidenceByStream doc comment on BuildCollectionFactsInput).
+  const streamEvidenceForStream = (
+    stream: string
+  ): { considered: number; emitted: number; gapped: number; unaccounted: number; unchanged: number } | null =>
+    streamEvidenceByStream?.get(stream) ?? null;
+
   const streams = inScopeStreams.map((stream) => {
-    const considered = declaredConsideredForStream(stream);
-    const covered = declaredCoveredForStream(stream);
+    const evidence = streamEvidenceForStream(stream);
+    const considered = declaredConsideredForStream(stream) ?? evidence?.considered ?? null;
+    const covered = declaredCoveredForStream(stream) ?? (evidence ? evidence.emitted + evidence.unchanged : null);
     const streamSkip = skipForStream(stream);
     const continuation = streamSkip?.continuation;
     const stateStreams = streamToStateStreams.get(stream) || new Set([stream]);
@@ -952,7 +991,22 @@ function classifyKnownGapSeverity({
 
 // ── KNOWN GAP BUILDER ─────────────────────────────────────────────────────────
 
+/**
+ * The closed vocabulary of connector boundary claims the runtime will persist.
+ * Validated HERE, at the trust boundary, rather than downstream: `known_gaps`
+ * is durable evidence, and an unrecognized claim must never be stored as
+ * though it were a recognized one. A connector emitting anything else has its
+ * claim dropped, exactly as if it had emitted none.
+ */
+const PERSISTED_BOUNDARY_CLAIMS: ReadonlySet<string> = new Set(["provider_history_boundary"]);
+
 interface BuildKnownGapInput {
+  /**
+   * A connector's structured claim about a permanent provider boundary. Kept
+   * out of the free-form `diagnostics` blob deliberately: the coverage-horizon
+   * denominator rule reads this field, so it is contract, not telemetry.
+   */
+  boundaryClaim?: unknown;
   continuation?: RuntimeContinuationFact | null;
   diagnostics?: unknown;
   explicitSelection?: boolean;
@@ -968,6 +1022,7 @@ interface BuildKnownGapInput {
 }
 
 export function buildKnownGap({
+  boundaryClaim = null,
   kind,
   stream = null,
   reason = null,
@@ -992,11 +1047,14 @@ export function buildKnownGap({
     unsupportedInDefaultScope,
   });
   const boundedDiagnostics = normalizeConsideredInDiagnostics(boundGapDiagnostics(diagnostics));
+  const persistedBoundaryClaim =
+    typeof boundaryClaim === "string" && PERSISTED_BOUNDARY_CLAIMS.has(boundaryClaim) ? boundaryClaim : null;
   return {
     kind,
     reason: safeReason,
     severity: normalizedSeverity,
     stream: boundGapString(stream),
+    ...(persistedBoundaryClaim ? { boundary_claim: persistedBoundaryClaim } : {}),
     ...(safeMessage ? { message: safeMessage } : {}),
     ...(scope ? { scope } : {}),
     recovery_hint: normalizeRecoveryHint(recoveryHint, {

@@ -24,6 +24,7 @@ import { reconcileConnectorSummaryEvidence } from "../server/connector-summary-e
 import { getConnectorSummaryEvidence } from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { createAlreadyAdmittedTestDatabaseChildAttachment } from "../server/postgres-test-database-guard.ts";
 import { ingestRecord, recordCurrentGenerationUndeclaredWrite } from "../server/records.ts";
 import { createPostgresSchedulerStore, createSqliteSchedulerStore } from "../server/stores/scheduler-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
@@ -176,10 +177,24 @@ function spawnLineFixture(dbPath: string, connectorInstanceId: string, markerPat
   return { child, exitCode, lines, nextLine };
 }
 
-function spawnFailureFixture(dbPath: string | null, connectorInstanceId: string, postgresUrl?: string) {
+function spawnFailureFixture(
+  dbPath: string | null,
+  connectorInstanceId: string,
+  postgresUrl?: string,
+  postgresChildAttachment?: string
+) {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name !== "PDPP_SUMMARY_FAILURE_FIXTURE_POSTGRES_CHILD_ATTACHMENT")
+  );
+  // Do not let a capability from an unrelated parent fixture survive through
+  // the ambient environment. The parent passes this one directly and only to
+  // its PostgreSQL child.
+  if (postgresChildAttachment) {
+    env.PDPP_SUMMARY_FAILURE_FIXTURE_POSTGRES_CHILD_ATTACHMENT = postgresChildAttachment;
+  }
   const child = spawn(process.execPath, [new URL(FAILURE_FIXTURE).pathname], {
     env: {
-      ...process.env,
+      ...env,
       PDPP_SUMMARY_FAILURE_FIXTURE_CONNECTOR_INSTANCE_ID: connectorInstanceId,
       ...(dbPath ? { PDPP_SUMMARY_FAILURE_FIXTURE_DB_PATH: dbPath } : {}),
       ...(postgresUrl ? { PDPP_SUMMARY_FAILURE_FIXTURE_POSTGRES_URL: postgresUrl } : {}),
@@ -479,6 +494,23 @@ test("SQLite failed publication cannot overwrite newer evidence, and deletion re
     const deleteId = "cin_source_revision_deleted_publication";
     seedSecondSqliteInstance(deleteId);
     await warmEvidence(deleteId);
+    const insertRepairChunk = () =>
+      getDb()
+        .prepare(
+          `INSERT INTO connector_summary_evidence_repair_chunk(
+             connector_instance_id, resume_after_id, accumulator_json, source_revision, started_at, updated_at
+           ) VALUES(?, 1, '{}', ?, ?, ?)`
+        )
+        .run(deleteId, sourceRevision(deleteId), NOW, NOW);
+    const repairChunkCount = () =>
+      (
+        getDb()
+          .prepare(
+            "SELECT COUNT(*) AS count FROM connector_summary_evidence_repair_chunk WHERE connector_instance_id = ?"
+          )
+          .get(deleteId) as { count: number }
+      ).count;
+    insertRepairChunk();
     getDb().prepare("DELETE FROM connector_instances WHERE connector_instance_id = ?").run(deleteId);
     let recreated = false;
     __setConnectorInstanceWritePhaseHookForTest((stage, context) => {
@@ -491,7 +523,9 @@ test("SQLite failed publication cannot overwrite newer evidence, and deletion re
     __setConnectorInstanceWritePhaseHookForTest(null);
     assert.equal(recreated, true);
     assert.ok(evidence(deleteId), "a reused connector instance keeps its evidence");
+    assert.equal(repairChunkCount(), 0, "a reused id cannot resume scan state from before its recreation");
 
+    insertRepairChunk();
     getDb().prepare("DELETE FROM connector_instances WHERE connector_instance_id = ?").run(deleteId);
     const deleted = await reconcileConnectorSummaryEvidence([deleteId]);
     assert.equal(deleted.repaired, 1, "the fenced orphan delete publishes only after the second absence check");
@@ -505,6 +539,7 @@ test("SQLite failed publication cannot overwrite newer evidence, and deletion re
       ).count,
       0
     );
+    assert.equal(repairChunkCount(), 0, "orphan cleanup deletes the absent instance's scan state");
   }));
 
 test("SQLite source receipts avoid terminal trigger amplification and preserve exact BIGINT exhaustion", () =>
@@ -724,6 +759,8 @@ test("PostgreSQL stale failure publication cannot overwrite newer evidence", {
 }, async () => {
   await withPostgres(async () => {
     await reconcileConnectorSummaryEvidence([POSTGRES_INSTANCE_ID]);
+    assert.ok(POSTGRES_URL);
+    const childAttachment = await createAlreadyAdmittedTestDatabaseChildAttachment(POSTGRES_URL);
     await installPostgresProjectionFault();
     await ingestRecord(
       { connector_id: POSTGRES_CONNECTOR_ID, connector_instance_id: POSTGRES_INSTANCE_ID },
@@ -736,7 +773,7 @@ test("PostgreSQL stale failure publication cannot overwrite newer evidence", {
     const releasePath = join(directory, "failure.release");
     process.env.PDPP_TEST_REPAIR_FAILURE_MARKER_PATH = markerPath;
     process.env.PDPP_TEST_REPAIR_FAILURE_RELEASE_PATH = releasePath;
-    const fixture = spawnFailureFixture(null, POSTGRES_INSTANCE_ID, POSTGRES_URL ?? undefined);
+    const fixture = spawnFailureFixture(null, POSTGRES_INSTANCE_ID, POSTGRES_URL ?? undefined, childAttachment);
     try {
       assert.equal(JSON.parse(await fixture.nextLine()).ready, true);
       fixture.child.stdin?.write("go\n");

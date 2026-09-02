@@ -27,13 +27,14 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { EmittedMessage } from "@pdpp/connector-protocol";
-import type { Page } from "playwright";
+import { chromium, type Page } from "playwright";
 import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   buildOrdersStateCursor,
   classifyEmptyListPage,
   classifyHebDetailFailure,
+  type DetailFailureKind,
   type EmitDeps,
   emitOrderItemsCoverage,
   emitOrdersCoverage,
@@ -41,6 +42,7 @@ import {
   HEB_HYDRATION_WAIT_MAX_MS,
   HEB_HYDRATION_WAIT_MIN_MS,
   MAX_LIST_PAGES as HEB_MAX_LIST_PAGES,
+  HEB_ORDER_RETENTION_FLOOR_DAYS,
   HEB_REPAIR_RETRY_DELAY_MAX_MS,
   HEB_REPAIR_RETRY_DELAY_MIN_MS,
   hebAllowsInteractiveAuthRepair,
@@ -48,6 +50,7 @@ import {
   newOrdersCoverage,
   type OrderItemsCoverage,
   type OrdersCoverage,
+  priorOrdersAreBeyondRetention,
   priorOrdersEvidenceFromState,
   processListOrder,
   type RepairDeps,
@@ -133,7 +136,7 @@ function makeListOrder(overrides: Partial<ListPageOrder> = {}): ListPageOrder {
     timeslotStart: null,
     timeslotEnd: null,
     total: "$42.00",
-    itemCount: 3,
+    itemCount: 1,
     source: "dom",
     unfulfilledCount: null,
     ...overrides,
@@ -165,6 +168,7 @@ function makePageStub(opts: {
   goto?: (url: string) => void;
   throwsNTimes?: number;
   url?: string;
+  evaluateError?: boolean;
 }): Page {
   let gotoCalls = 0;
   const url = opts.url ?? "https://www.heb.com/my-account/order-history/HEB1000000001";
@@ -184,6 +188,35 @@ function makePageStub(opts: {
         }
         if (prop === "waitForSelector") {
           return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "evaluate") {
+          if (opts.evaluateError) {
+            return (): Promise<never> => Promise.reject(new Error("synthetic evaluate failure"));
+          }
+          return (): Promise<unknown> => {
+            const hasItem = opts.content.includes('data-qe-id="itemRowDetailsName"');
+            const rows = hasItem
+              ? [
+                  {
+                    html: '<li data-qe-id="itemRow" data-index="0"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
+                    key: "position:data-index=0",
+                  },
+                ]
+              : [];
+            return Promise.resolve({
+              actionableControl: null,
+              atEnd: true,
+              clientHeight: 100,
+              loading: false,
+              rowCount: rows.length,
+              rows,
+              scrollHeight: 100,
+              scrollTop: 0,
+            });
+          };
+        }
+        if (prop === "waitForTimeout") {
+          return (): Promise<void> => Promise.resolve();
         }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(opts.content);
@@ -242,6 +275,19 @@ function makeSessionRepairPageStub(opts: { detailHtmlAfterRepair?: string; htmlS
         }
         if (prop === "waitForSelector" || prop === "waitForTimeout") {
           return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "evaluate") {
+          return (): Promise<unknown> =>
+            Promise.resolve({
+              actionableControl: null,
+              atEnd: true,
+              clientHeight: 100,
+              loading: false,
+              rowCount: 0,
+              rows: [],
+              scrollHeight: 100,
+              scrollTop: 0,
+            });
         }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(currentHtml);
@@ -538,6 +584,22 @@ test("fetchOrderDetail: a non-retryable navigation error (e.g. page closed) is n
         if (prop === "waitForSelector") {
           return (): Promise<null> => Promise.resolve(null);
         }
+        if (prop === "evaluate") {
+          return (): Promise<unknown> =>
+            Promise.resolve({
+              actionableControl: null,
+              atEnd: true,
+              clientHeight: 100,
+              loading: false,
+              rowCount: 0,
+              rows: [],
+              scrollHeight: 100,
+              scrollTop: 0,
+            });
+        }
+        if (prop === "waitForTimeout") {
+          return (): Promise<void> => Promise.resolve();
+        }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(DETAIL_HTML);
         }
@@ -795,12 +857,12 @@ test("runForwardScan: an order id repeated across two list pages is only process
   const pages: Record<number, string> = {
     1: `<html><body><main>
       <a href="/my-account/order-history/HEB1000000002">July 14, 2026 $10.00, 1 items</a>
-      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
+      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 1 items</a>
       ${paginationNav}
     </main></body></html>`,
     2: `<html><body><main>
-      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
-      <a href="/my-account/order-history/HEB1000000000">July 12, 2026 $30.00, 3 items</a>
+      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 1 items</a>
+      <a href="/my-account/order-history/HEB1000000000">July 12, 2026 $30.00, 1 items</a>
       ${paginationNav}
     </main></body></html>`,
   };
@@ -818,6 +880,24 @@ test("runForwardScan: an order id repeated across two list pages is only process
         }
         if (prop === "waitForSelector") {
           return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "evaluate") {
+          return (): Promise<unknown> =>
+            Promise.resolve({
+              actionableControl: null,
+              atEnd: true,
+              clientHeight: 100,
+              loading: false,
+              rowCount: 1,
+              rows: [
+                {
+                  html: '<li data-qe-id="itemRow" data-index="0"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
+                  key: "position:data-index=0",
+                },
+              ],
+              scrollHeight: 100,
+              scrollTop: 0,
+            });
         }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(pages[currentPage] ?? "");
@@ -857,12 +937,12 @@ test("runForwardScan: item-enriched scan (wantsItems: true) still fetches page 2
   const listPages: Record<number, string> = {
     1: `<html><body><main>
       <a href="/my-account/order-history/HEB1000000002">July 14, 2026 $10.00, 1 items</a>
-      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
+      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 1 items</a>
       ${paginationNav}
     </main></body></html>`,
     2: `<html><body><main>
-      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 2 items</a>
-      <a href="/my-account/order-history/HEB1000000000">July 12, 2026 $30.00, 3 items</a>
+      <a href="/my-account/order-history/HEB1000000001">July 13, 2026 $20.00, 1 items</a>
+      <a href="/my-account/order-history/HEB1000000000">July 12, 2026 $30.00, 1 items</a>
       ${paginationNav}
     </main></body></html>`,
   };
@@ -887,6 +967,32 @@ test("runForwardScan: item-enriched scan (wantsItems: true) still fetches page 2
         }
         if (prop === "waitForSelector") {
           return (): Promise<null> => Promise.resolve(null);
+        }
+        if (prop === "evaluate") {
+          return (): Promise<unknown> =>
+            Promise.resolve({
+              actionableControl: null,
+              atEnd: true,
+              clientHeight: 100,
+              loading: false,
+              rowCount: 1,
+              rows: [
+                {
+                  html: '<li data-qe-id="itemRow" data-index="0"><a data-qe-id="itemRowDetailsName" href="/product-detail/widget/500">Widget</a></li>',
+                  key: "position:data-index=0",
+                },
+              ],
+              scrollHeight: 100,
+              scrollTop: 0,
+            });
+        }
+        if (prop === "waitForTimeout") {
+          // Detail collection polls a settled surface until it has observed
+          // DETAIL_SURFACE_STABLE_POLLS consecutive stable snapshots, so it
+          // sleeps between polls even when the first snapshot already has
+          // every row. This stub's surface never changes, so the sleep is a
+          // no-op here; what matters to this test is the pagination walk.
+          return (): Promise<void> => Promise.resolve();
         }
         if (prop === "content") {
           return (): Promise<string> => Promise.resolve(lastContent);
@@ -1377,11 +1483,19 @@ test("priorOrdersEvidenceFromState: a committed orders checkpoint is what arms t
   // Pins the checkpoint-to-evidence link that collect() depends on. Without
   // this test, hardcoding `hasPriorOrders: false` in collect() would disarm
   // the guard for every connection while every other test still passed.
-  assert.deepEqual(priorOrdersEvidenceFromState({ checkpoint: "2026-08-17" }), { hasPriorOrders: true });
+  assert.deepEqual(priorOrdersEvidenceFromState({ checkpoint: "2026-08-17" }), {
+    hasPriorOrders: true,
+    // The checkpoint date rides along so the retention exception can ask how
+    // OLD the prior evidence is, not merely whether it exists.
+    newestPriorOrderDate: "2026-08-17",
+  });
   // A never-collected connection stores no checkpoint at all. `exactOptional
   // PropertyTypes` makes an explicitly-undefined checkpoint unrepresentable,
   // so the absent-property case is the only "no prior orders" shape there is.
-  assert.deepEqual(priorOrdersEvidenceFromState({}), { hasPriorOrders: false });
+  assert.deepEqual(priorOrdersEvidenceFromState({}), {
+    hasPriorOrders: false,
+    newestPriorOrderDate: undefined,
+  });
 });
 
 test("runForwardScan: H-E-B's real 'No past orders' page aborts when this connection already collected orders", async () => {
@@ -1445,6 +1559,248 @@ test("runForwardScan: the empty-history abort emits no records and no STATE curs
     [...new Set(protocolMessages.map((m) => m.type))].sort(),
     ["SKIP_RESULT"],
     "the abort's only durable output is the owner-facing SKIP_RESULT"
+  );
+});
+
+// ─── Retention-window exception ───────────────────────────────────────────
+//
+// The live defect (connection cin_c875ca…4288, failing every run since
+// 2026-08-22 with `heb_empty_list_page_heb_empty_history_after_prior_orders`).
+//
+// Evidence from the retained production captures, which these tests encode:
+//   - the account's ONLY two stored orders are dated 2023-08-09 / 2023-08-19,
+//     and the `orders` checkpoint is 2023-08-19 — three years stale;
+//   - every failing run's retained frame renders H-E-B's own empty state
+//     (`orderResults` > `Empty_box`/`OrderEmpty_`, `any_card: 4`,
+//     `order_cards: 0`) on `/my-account/your-orders?page=1`, with H-E-B's own
+//     structured payload reporting `"orders":[]`;
+//   - the session is healthy on those frames: no password form, no Incapsula
+//     interstitial, signed in, same URL and same store as the last good run;
+//   - the page offers NO archive view, year filter, or date picker — the whole
+//     main region is a breadcrumb, the empty-state component, and a "Start
+//     shopping" link.
+//
+// So the orders aged out of H-E-B's retention window. That is not the anomaly
+// the prior-orders guard was built for, and reporting it as a hard failure asks
+// the owner to repair something that is neither broken nor repairable.
+
+const RETENTION_NOW = new Date("2026-08-27T05:01:30.919Z");
+/** The live connection's real `orders` checkpoint (connector_state). */
+const AGED_OUT_CHECKPOINT = "2023-08-19";
+
+test("classifyEmptyListPage: prior orders older than the retention floor read as a proven-empty retention result", () => {
+  // The live defect, at the unit boundary. Same page, same prior-orders
+  // evidence as the escalating case below — only the checkpoint's AGE differs.
+  assert.deepEqual(
+    classifyEmptyListPage(EMPTY_STATE_DIAG, 1, RESOLVED_MAX_PAGE, {
+      hasPriorOrders: true,
+      newestPriorOrderDate: AGED_OUT_CHECKPOINT,
+    }),
+    { action: "terminal", reason: "source_reported_empty_after_retention" }
+  );
+});
+
+test("classifyEmptyListPage: prior orders INSIDE the retention window still escalate", () => {
+  // The negative case that keeps ea9e71ab8 alive. A recent checkpoint means
+  // H-E-B should still be listing these orders, so an empty page is a genuine
+  // contradiction — a purge or a degraded session — and must NOT be laundered
+  // into a proven-empty result by the retention exception.
+  assert.deepEqual(
+    classifyEmptyListPage(EMPTY_STATE_DIAG, 1, RESOLVED_MAX_PAGE, {
+      hasPriorOrders: true,
+      newestPriorOrderDate: "2026-08-01",
+    }),
+    { action: "abort", reason: "heb_empty_history_after_prior_orders" }
+  );
+});
+
+test("classifyEmptyListPage: the retention exception needs a parseable date, never an assumption", () => {
+  // Age-unknown must fall through to the escalating branch in BOTH of its
+  // shapes. Defaulting either one to "old enough" would silently disarm the
+  // guard for every connection whose checkpoint the connector cannot read.
+  for (const evidence of [
+    { hasPriorOrders: true },
+    { hasPriorOrders: true, newestPriorOrderDate: undefined },
+    { hasPriorOrders: true, newestPriorOrderDate: "" },
+    { hasPriorOrders: true, newestPriorOrderDate: "not-a-date" },
+  ]) {
+    assert.deepEqual(
+      classifyEmptyListPage(EMPTY_STATE_DIAG, 1, RESOLVED_MAX_PAGE, evidence, RETENTION_NOW),
+      { action: "abort", reason: "heb_empty_history_after_prior_orders" },
+      `age-unknown evidence must escalate: ${JSON.stringify(evidence)}`
+    );
+  }
+});
+
+test("classifyEmptyListPage: a block outranks the retention exception", () => {
+  // Ordering guard. An established challenge is the more specific diagnosis and
+  // must not be relabelled as a benign retention result — that would turn a
+  // real bot block into a green "nothing to do here".
+  for (const overlay of [{ incapsula_block: true }, { password_form: true }]) {
+    assert.deepEqual(
+      classifyEmptyListPage(
+        { ...EMPTY_STATE_DIAG, ...overlay },
+        1,
+        RESOLVED_MAX_PAGE,
+        { hasPriorOrders: true, newestPriorOrderDate: AGED_OUT_CHECKPOINT },
+        RETENTION_NOW
+      ),
+      { action: "abort", reason: "source_auth_or_challenge" }
+    );
+  }
+});
+
+test("classifyEmptyListPage: the retention exception is gated on the source's own empty state", () => {
+  // An aged-out checkpoint must not excuse selector drift. Without `empty_state`
+  // H-E-B never claimed the history was empty, so a zero-card page is still an
+  // unexplained parse failure no matter how old the checkpoint is.
+  assert.deepEqual(
+    classifyEmptyListPage(
+      { ...EMPTY_STATE_DIAG, empty_state: false },
+      1,
+      RESOLVED_MAX_PAGE,
+      { hasPriorOrders: true, newestPriorOrderDate: AGED_OUT_CHECKPOINT },
+      RETENTION_NOW
+    ),
+    { action: "abort", reason: "selector_drift" }
+  );
+});
+
+test("priorOrdersAreBeyondRetention: the floor is a strict boundary measured in real days", () => {
+  const now = new Date("2026-08-27T00:00:00.000Z");
+  const daysBefore = (days: number): string => new Date(now.getTime() - days * 86_400_000).toISOString().slice(0, 10);
+
+  // Just inside the window -> still escalates.
+  assert.equal(
+    priorOrdersAreBeyondRetention(
+      { hasPriorOrders: true, newestPriorOrderDate: daysBefore(HEB_ORDER_RETENTION_FLOOR_DAYS - 5) },
+      now
+    ),
+    false
+  );
+  // Comfortably past it -> retention result.
+  assert.equal(
+    priorOrdersAreBeyondRetention(
+      { hasPriorOrders: true, newestPriorOrderDate: daysBefore(HEB_ORDER_RETENTION_FLOOR_DAYS + 5) },
+      now
+    ),
+    true
+  );
+  // A connection with no prior orders is never a retention case: it is the
+  // first-run genuinely-empty account, which `source_reported_empty` covers.
+  assert.equal(
+    priorOrdersAreBeyondRetention({ hasPriorOrders: false, newestPriorOrderDate: "2000-01-01" }, now),
+    false
+  );
+});
+
+test("priorOrdersEvidenceFromState: the checkpoint date is carried, not just its existence", () => {
+  // The retention exception is only reachable if the checkpoint DATE survives
+  // the state->evidence hop. A mutation dropping the date here would disarm the
+  // exception for every connection while the pure classifier tests still passed.
+  assert.deepEqual(priorOrdersEvidenceFromState({ checkpoint: AGED_OUT_CHECKPOINT }), {
+    hasPriorOrders: true,
+    newestPriorOrderDate: AGED_OUT_CHECKPOINT,
+  });
+  assert.deepEqual(priorOrdersEvidenceFromState({}), {
+    hasPriorOrders: false,
+    newestPriorOrderDate: undefined,
+  });
+});
+
+test("runForwardScan: the real aged-out page completes the run instead of failing it", async () => {
+  // Integration half, driven by the SAME real capture the escalating test uses.
+  // Same markup, opposite verdict — the only difference is the checkpoint age.
+  const ordersCoverage = newOrdersCoverage();
+  const { deps, emitted, protocolMessages } = makeRecordingDeps({
+    ordersCoverage,
+    wantsItems: false,
+    wantsOrders: true,
+  });
+  const html = readFileSync(join(FIXTURES_DIR, "orders-list-no-past-orders.html"), "utf8");
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  // Must NOT throw: this is the whole defect. Before the fix this rejected with
+  // heb_empty_list_page_heb_empty_history_after_prior_orders.
+  const result = await runForwardScan(page, deps, makeRunFlags(), null, {
+    hasPriorOrders: true,
+    newestPriorOrderDate: AGED_OUT_CHECKPOINT,
+  });
+  assert.equal(result.truncated, false, "a retention-terminal walk is a finished walk, not a truncated one");
+
+  // No SKIP_RESULT on `orders`: a skip marks the stream as an unresolved
+  // attempt and would permanently veto the considered:0 enumeration-boundary
+  // proof, which is exactly what keeps this source amber on /sources.
+  const skips = protocolMessages.filter((m) => m.type === "SKIP_RESULT");
+  assert.deepEqual(skips, [], "a proven retention result must not emit a stream skip");
+
+  // Stored data is untouched: no records written, and the run wrote no cursor
+  // of its own here (collect() owns the STATE emit).
+  assert.equal(emitted.length, 0, "an aged-out history writes no records");
+
+  // Zero considered / zero covered is the measured enumeration boundary that
+  // makes this run provably-empty rather than unknown.
+  assert.equal(ordersCoverage.considered.length, 0);
+  assert.equal(ordersCoverage.covered.length, 0);
+});
+
+test("runForwardScan: the aged-out run states the retention reason in owner-readable progress", async () => {
+  // The owner must still be told WHY zero orders came back, without the run
+  // being marked failed. Progress is the channel that survives a successful run.
+  const progressMessages: string[] = [];
+  const { deps } = makeRecordingDeps({
+    progress: (message: string): Promise<void> => {
+      progressMessages.push(message);
+      return Promise.resolve();
+    },
+    wantsItems: false,
+    wantsOrders: true,
+  });
+  const html = readFileSync(join(FIXTURES_DIR, "orders-list-no-past-orders.html"), "utf8");
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  await runForwardScan(page, deps, makeRunFlags(), null, {
+    hasPriorOrders: true,
+    newestPriorOrderDate: AGED_OUT_CHECKPOINT,
+  });
+
+  const retentionNote = progressMessages.find((m) => m.includes("retention window"));
+  assert.ok(retentionNote, "the run must say why the history came back empty");
+  assert.match(retentionNote, /retained and untouched/, "the owner must be told stored orders are safe");
+  assert.doesNotMatch(retentionNote, /selector|drift/i, "selector drift is not established and must not be blamed");
+  assert.doesNotMatch(retentionNote, /block|bot|captcha/i, "a bot block is not established and must not be blamed");
+});
+
+test("runForwardScan: a first-ever empty account is still proven-empty, not a retention claim", async () => {
+  // NEGATIVE CASE. A brand-new account with no orders and no checkpoint must
+  // keep reporting the plain `source_reported_empty` terminal it already had —
+  // the retention exception must not swallow it, and it must not be forced into
+  // a false success by some other path.
+  const ordersCoverage = newOrdersCoverage();
+  const progressMessages: string[] = [];
+  const { deps, emitted } = makeRecordingDeps({
+    ordersCoverage,
+    progress: (message: string): Promise<void> => {
+      progressMessages.push(message);
+      return Promise.resolve();
+    },
+    wantsItems: false,
+    wantsOrders: true,
+  });
+  const html = readFileSync(join(FIXTURES_DIR, "orders-list-no-past-orders.html"), "utf8");
+  const page = makePageStub({ content: html, url: "https://www.heb.com/my-account/your-orders?page=1" });
+
+  const result = await runForwardScan(page, deps, makeRunFlags(), null, { hasPriorOrders: false });
+
+  assert.equal(result.truncated, false);
+  assert.equal(emitted.length, 0);
+  assert.equal(ordersCoverage.considered.length, 0);
+  // It is empty because H-E-B said so, NOT because anything aged out: this
+  // account never had an order to age out.
+  assert.equal(
+    progressMessages.find((m) => m.includes("retention window")),
+    undefined,
+    "a never-collected account must not be told its orders aged out"
   );
 });
 
@@ -1647,11 +2003,18 @@ test("recoverPendingOrderItemDetailGapsBeforeForwardRun: order_items out of scop
 test("reasonForDetailFailure and classifyHebDetailFailure cover every current DetailFailureKind", () => {
   const kinds = [
     "deferred_budget",
+    "detail_surface_error",
+    "detail_surface_incomplete",
+    "detail_surface_timeout",
     "navigation_failed_non_retryable",
     "navigation_retry_exhausted",
     "parse_missing",
     "session_repair_required",
   ] as const;
+  type MissingKinds = Exclude<DetailFailureKind, (typeof kinds)[number]>;
+  type UnexpectedKinds = Exclude<(typeof kinds)[number], DetailFailureKind>;
+  const exactUnion: [MissingKinds, UnexpectedKinds] extends [never, never] ? true : false = true;
+  assert.equal(exactUnion, true);
   for (const kind of kinds) {
     assert.doesNotThrow(() => reasonForDetailFailure(kind));
     assert.doesNotThrow(() => classifyHebDetailFailure(kind));
@@ -1803,4 +2166,455 @@ test("buildOrdersStateCursor: a truncated scan must not advance the orders check
     "2026-07-14",
     "an honest completion still advances the checkpoint — truncation handling must not freeze normal progress"
   );
+});
+
+// ─── Lazy-load scroll-to-load for order details (0829 shortfall fix) ────────
+
+/**
+ * Mock Page stub for testing lazy-load behavior.
+ * Simulates a page where items are only rendered after scroll is called.
+ * Each scroll increments the item count until a ceiling is reached.
+ */
+function makeLazyLoadPageStub(totalItems: number): Page {
+  const viewportItems = Math.min(15, totalItems);
+  let itemsRendered = viewportItems;
+  let firstVisibleItem = 0;
+  let scrolls = 0;
+  const maxScrolls = Math.ceil(totalItems / 10); // Load ~10 items per scroll
+
+  return new Proxy(
+    {},
+    {
+      get(_target, prop): unknown {
+        if (prop === "goto") {
+          return (): Promise<null> => {
+            itemsRendered = Math.min(15, totalItems);
+            firstVisibleItem = 0;
+            scrolls = 0;
+            return Promise.resolve(null);
+          };
+        }
+        if (prop === "locator") {
+          return (selector: string): { count: () => Promise<number> } => {
+            if (selector === 'a[data-qe-id="itemRowDetailsName"]') {
+              return {
+                count: (): Promise<number> => Promise.resolve(itemsRendered),
+              };
+            }
+            return { count: (): Promise<number> => Promise.resolve(0) };
+          };
+        }
+        if (prop === "evaluate") {
+          return (): Promise<unknown> => {
+            // Simulate a virtualized inner scrollport: each action loads a
+            // later window and unmounts rows from the previous window.
+            const lastVisibleItem = Math.min(firstVisibleItem + viewportItems, itemsRendered);
+            const rows = Array.from({ length: lastVisibleItem - firstVisibleItem }, (_, offset) => {
+              const index = firstVisibleItem + offset;
+              return {
+                html: `<li data-qe-id="itemRow" data-index="${index}"><a data-qe-id="itemRowDetailsName" href="/product-detail/item-${index}">Item ${index}</a></li>`,
+                key: `position:data-index=${index}`,
+              };
+            });
+            const state = {
+              actionableControl: itemsRendered < totalItems ? "scroll" : null,
+              atEnd: itemsRendered >= totalItems,
+              clientHeight: viewportItems,
+              loading: false,
+              rowCount: rows.length,
+              rows,
+              scrollHeight: totalItems,
+              scrollTop: firstVisibleItem,
+            };
+            scrolls += 1;
+            if (scrolls <= maxScrolls && itemsRendered < totalItems) {
+              itemsRendered = Math.min(itemsRendered + 10, totalItems);
+              firstVisibleItem = Math.min(Math.max(itemsRendered - viewportItems, 0), totalItems - viewportItems);
+            }
+            return Promise.resolve(state);
+          };
+        }
+        if (prop === "waitForTimeout") {
+          return (): Promise<void> => Promise.resolve();
+        }
+        if (prop === "content") {
+          return (): Promise<string> => {
+            // Return fake HTML with the current item count
+            const items = Array.from(
+              { length: itemsRendered },
+              (_, i) =>
+                `<li data-qe-id="itemRow" data-index="${i}">
+                <a data-qe-id="itemRowDetailsName" href="/product-detail/item-${i}">Item ${i}</a>
+              </li>`
+            ).join("");
+            return Promise.resolve(`<html><body><ul>${items}</ul></body></html>`);
+          };
+        }
+        if (prop === "url") {
+          return (): string => "https://www.heb.com/my-account/order-history/HEB123";
+        }
+        throw new Error(`unexpected page.${String(prop)} in lazy-load test`);
+      },
+    }
+  ) as Page;
+}
+
+test("fetchOrderDetail: scrolls to load lazy-rendered items before parsing", async () => {
+  const page = makeLazyLoadPageStub(59); // 59-item order, ~15 visible initially
+
+  const result = await fetchOrderDetail(page, "HEB123", {
+    detailSurfaceTimeoutMs: 1000,
+    expectedItemCount: 59,
+    waitForHydration: immediateWait,
+  });
+
+  assert.equal(result.status, "hydrated", "order detail fetched successfully");
+  assert.ok(result.detail, "detail is present");
+  const itemsCollected = result.detail?.items.length ?? 0;
+  assert.equal(itemsCollected, 59, "virtualized rows observed across scroll snapshots are all collected");
+});
+
+test("fetchOrderDetail: real inner scrollport fixture proves virtualization and load-more are honored", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-inner-scrollport.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-INNER-SCROLL", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    const result = await fetchOrderDetail(page, "HEB-INNER-SCROLL", {
+      detailSurfaceTimeoutMs: 15_000,
+      expectedItemCount: 16,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(
+      result.detail?.items.length,
+      16,
+      "all rows behind the inner scrollport and load-more control are collected"
+    );
+    assert.deepEqual(
+      result.detail?.items.map((item) => item.name),
+      Array.from({ length: 16 }, (_, index) =>
+        index === 0 || index === 15 ? "Repeated item" : `Synthetic item ${index}`
+      ),
+      "virtualized row replacement does not lose or reorder any canonical item"
+    );
+    assert.equal(
+      result.detail?.items.filter((item) => item.productUrl === "https://www.heb.com/product-detail/repeated/900")
+        .length,
+      2,
+      "same-product purchased lines remain distinct rows"
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: an incomplete bounded surface becomes an observable gap, not partial hydrated data", async () => {
+  const page = makeLazyLoadPageStub(100); // Deliberately expect more than this fixture exposes.
+
+  const result = await fetchOrderDetail(page, "HEB999", {
+    detailSurfaceTimeoutMs: 1,
+    expectedItemCount: 101,
+    waitForHydration: immediateWait,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.ok(
+    result.failureKind === "detail_surface_timeout" || result.failureKind === "detail_surface_incomplete",
+    `unexpected settlement: ${result.failureKind}`
+  );
+  assert.match(result.diagnostic ?? "", /detail_surface_(timeout|incomplete)/);
+});
+
+test("fetchOrderDetail: a surface evaluation error is an observable gap, not swallowed partial hydration", async () => {
+  const result = await fetchOrderDetail(
+    makePageStub({ content: DETAIL_HTML, evaluateError: true }),
+    "HEB-EVALUATE-ERROR",
+    { expectedItemCount: 1, waitForHydration: immediateWait }
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failureKind, "detail_surface_error");
+  assert.match(result.diagnostic ?? "", /detail_surface_error/);
+  assert.match(result.diagnostic ?? "", /synthetic evaluate failure/);
+});
+
+test("fetchOrderDetail: a visible no-op control fails closed when no declared count exists", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-no-op-control.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-NO-OP", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    const result = await fetchOrderDetail(page, "HEB-NO-OP", {
+      detailSurfaceTimeoutMs: 1000,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "detail_surface_timeout");
+    assert.match(result.diagnostic ?? "", /action=control:Load more/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: a visible no-op control blocks the declared-count settlement branch", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-no-op-control.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-NO-OP-DECLARED", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // The matching count permits document-order keys, but it cannot prove
+    // completion while a visible source control remains actionable. This is
+    // the counter-mutant for dropping !latest.actionableControl from the
+    // declared-count settlement branch.
+    const result = await fetchOrderDetail(page, "HEB-NO-OP-DECLARED", {
+      detailSurfaceTimeoutMs: 1000,
+      expectedItemCount: 1,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "detail_surface_timeout");
+    assert.match(result.diagnostic ?? "", /action=control:Load more/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: a delayed control response is observed before settlement", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-delayed-control.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-DELAYED", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    const result = await fetchOrderDetail(page, "HEB-DELAYED", {
+      detailSurfaceTimeoutMs: 3000,
+      expectedItemCount: 2,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(result.detail?.items.length, 2);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: a row without provider or positional identity fails closed", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-missing-row-identity.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-MISSING-IDENTITY", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    const result = await fetchOrderDetail(page, "HEB-MISSING-IDENTITY", {
+      detailSurfaceTimeoutMs: 1000,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "detail_surface_error");
+    assert.match(result.diagnostic ?? "", /explicit positional identity/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: an unanchored remounting window fails closed instead of using document order", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-unanchored-remount.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-UNANCHORED-REMOUNT", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // No declared count and no provider position means the initial quiet
+    // window cannot prove that the remounting surface is complete. The
+    // current HEAD falsely hydrates before the delayed replacement; this
+    // browser fixture is required because a parser test cannot observe that
+    // settlement race or the hidden overflow shell.
+    const result = await fetchOrderDetail(page, "HEB-UNANCHORED-REMOUNT", {
+      detailSurfaceTimeoutMs: 1200,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "detail_surface_error");
+    assert.match(result.diagnostic ?? "", /static_evidence=none/);
+    assert.match(result.diagnostic ?? "", /explicit positional identity/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: a tall fully mounted static list uses document order only with a matching declared count", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-static-tall.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-STATIC-TALL", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // This is the counterweight to the fail-closed case. The list is taller
+    // than the viewport, so layout alone cannot identify it as static; the
+    // provider-declared count matching all mounted rows is the affirmative
+    // evidence that permits document-order keys.
+    const result = await fetchOrderDetail(page, "HEB-STATIC-TALL", {
+      detailSurfaceTimeoutMs: 3000,
+      expectedItemCount: 20,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(result.detail?.items.length, 20);
+    assert.deepEqual(
+      result.detail?.items.map((item) => item.name),
+      Array.from({ length: 20 }, (_, index) => `Static item ${index}`)
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: a fully mounted small order uses stable document order when the provider exposes no position", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-STATIC-DETAIL", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // The surface is static and complete on the first snapshot, but it starts
+    // scrolled short of the end, so collection needs several polls to reach
+    // atEnd and then DETAIL_SURFACE_STABLE_POLLS more to corroborate
+    // stability: measured 6 snapshots, ~1.5s. A 1s budget times out on a page
+    // that is genuinely complete, so give the stability requirement room.
+    const result = await fetchOrderDetail(page, "HEB-STATIC-DETAIL", {
+      detailSurfaceTimeoutMs: 3000,
+      expectedItemCount: 3,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(result.detail?.items.length, 3);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: small orders (fit in viewport) parse without scroll", async () => {
+  const page = makeLazyLoadPageStub(8); // 8 items, all in initial viewport (15-item initial)
+
+  const result = await fetchOrderDetail(page, "HEB8", { waitForHydration: immediateWait });
+
+  assert.equal(result.status, "hydrated");
+  assert.equal(result.detail?.items.length, 8, "all 8 items collected without scroll");
+});
+
+test("fetchOrderDetail: a declared-count match does not settle on a transient snapshot and waits for stability after remount", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-declared-count-remount.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-DECLARED-REMOUNT", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // The initial snapshot has 2 transient rows matching expectedItemCount=2.
+    // The collector must not complete on snapshot 1 with transient data; it
+    // must observe the remount at T=400ms, update stability, and settle only
+    // after consecutive stable polls on the true settled content.
+    const result = await fetchOrderDetail(page, "HEB-DECLARED-REMOUNT", {
+      detailSurfaceTimeoutMs: 3000,
+      expectedItemCount: 2,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(result.detail?.items.length, 2);
+    assert.deepEqual(
+      result.detail?.items.map((item) => item.name),
+      ["Settled item 1", "Settled item 2"]
+    );
+    const snapshotsMatch = result.diagnostic?.match(/snapshots=(\d+)/);
+    const snapshots = snapshotsMatch ? Number(snapshotsMatch[1]) : 0;
+    assert.ok(snapshots >= 4, `expected multiple polls for stability, got diagnostic=${result.diagnostic}`);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: a remount that changes identity scheme does not accumulate duplicate rows", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-identity-scheme-switch.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-SCHEME-SWITCH", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // The same two items mount first under data-index keys, then remount
+    // without them under document-order keys. The two key namespaces are
+    // disjoint, so an accumulator that spans schemes holds 4 entries for a
+    // 2-item order -- and `collected >= expected` passes *more* easily on the
+    // inflation. Collection must key on the settled scheme only.
+    const result = await fetchOrderDetail(page, "HEB-SCHEME-SWITCH", {
+      detailSurfaceTimeoutMs: 3000,
+      expectedItemCount: 2,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "hydrated");
+    assert.equal(result.detail?.items.length, 2, `expected exactly 2 rows, diagnostic=${result.diagnostic}`);
+    assert.deepEqual(
+      result.detail?.items.map((item) => item.name),
+      ["Settled item 1", "Settled item 2"]
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
+test("fetchOrderDetail: continuous remounts with matching count fail closed without consecutive stable polls", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const fixtureHtml = readFileSync(join(FIXTURES_DIR, "order-detail-declared-count-unstable.html"), "utf8");
+    await page.route("https://www.heb.com/my-account/order-history/HEB-DECLARED-UNSTABLE", async (route) => {
+      await route.fulfill({ body: fixtureHtml, contentType: "text/html" });
+    });
+
+    // Every snapshot matches expectedItemCount=2, but the DOM mutates every
+    // 150ms. The surface never satisfies DETAIL_SURFACE_STABLE_POLLS and must
+    // fail closed on timeout instead of minting false completion.
+    const result = await fetchOrderDetail(page, "HEB-DECLARED-UNSTABLE", {
+      detailSurfaceTimeoutMs: 1000,
+      expectedItemCount: 2,
+      waitForHydration: immediateWait,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureKind, "detail_surface_timeout");
+  } finally {
+    await browser.close();
+  }
 });

@@ -23,8 +23,6 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
-const WRITE = process.argv.includes("--write");
-
 const SPEC_FILENAME_PATTERN = /^spec-.*\.md$/;
 
 function specFiles(): string[] {
@@ -50,6 +48,52 @@ function declaredDate(text: string): { raw: string; iso: string } | null {
 
 function git(args: string[]): string {
   return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" });
+}
+
+interface Options {
+  baseRef?: string;
+  write: boolean;
+}
+
+function parseOptions(rawArgs: string[]): Options {
+  // pnpm 10's bare `pnpm <script> -- <args>` form forwards the `--`
+  // separator itself into the script's argv (npm and `pnpm run` both strip
+  // it), so a single leading `--` is a wrapper artifact, not a real argument.
+  const args = rawArgs[0] === "--" ? rawArgs.slice(1) : rawArgs;
+  let baseRef: string | undefined;
+  let write = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--write") {
+      write = true;
+      continue;
+    }
+    if (arg === "--base") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--") || baseRef) {
+        throw new Error("usage: spec-date-check.ts [--write] [--base <commit-ish>]");
+      }
+      baseRef = value;
+      index += 1;
+      continue;
+    }
+    throw new Error(`unknown argument: ${arg}`);
+  }
+
+  return { baseRef, write };
+}
+
+function resolvedBase(baseRef: string): string {
+  try {
+    return git(["rev-parse", "--verify", `${baseRef}^{commit}`]).trim();
+  } catch {
+    throw new Error(`--base must resolve to a commit: ${baseRef}`);
+  }
+}
+
+function filesChangedFrom(baseCommit: string): string[] {
+  return specFiles().filter((file) => git(["diff", "--name-only", baseCommit, "HEAD", "--", file]).trim() !== "");
 }
 
 // Header block = lines 1-4 (title, blank, Status:, Date:), uniform across
@@ -94,39 +138,60 @@ function lastSubstantiveCommitDate(file: string): string | null {
 }
 
 const HUNK_SPLIT_PATTERN = /^@@ /m;
-const HUNK_HEADER_PATTERN = /^-(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
-// The new-side line COUNT, which `-U0` omits entirely for a single-line hunk.
-const HUNK_NEW_COUNT_PATTERN = /\+\d+,(\d+)/;
+// Captures both sides of a unified-diff hunk header: `-oldStart,oldCount +newStart,newCount @@`.
+// `-U0` omits the count entirely for a single-line range, and a pure-deletion
+// or pure-insertion range can carry an explicit `,0` — both must be told apart
+// from "no count given" (which defaults to a span of 1), so the count capture
+// stays optional and its presence is checked before defaulting.
+const HUNK_HEADER_PATTERN = /^-(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+// A range is wholly inside the header block if it's empty (count 0 — nothing
+// on that side to have left the header) or its last line is within
+// HEADER_LINE_COUNT. `count` is `undefined` when the diff omitted it (single
+// line, span 1), so the "no count" case must default the span to 1, not use
+// falsy-string coercion — a literal count of "0" is a real, meaningful value,
+// not an absent one.
+function rangeIsWithinHeader(start: number, count: number | undefined): boolean {
+  if (count === 0) {
+    return true;
+  }
+  const span = count === undefined ? 1 : count;
+  return start + span - 1 <= HEADER_LINE_COUNT;
+}
 
 function commitIsSubstantive(diffText: string): boolean {
   const hunks = diffText.split(HUNK_SPLIT_PATTERN).slice(1);
   for (const hunk of hunks) {
     const hunkHeaderMatch = hunk.match(HUNK_HEADER_PATTERN);
-    const newStartRaw = hunkHeaderMatch?.[2];
-    const newStart = newStartRaw ? Number.parseInt(newStartRaw, 10) : null;
     const lines = hunk
       .split("\n")
       .slice(1)
       .filter((l) => l.startsWith("+") || l.startsWith("-"));
 
-    // A hunk confined to the header block (lines 1..HEADER_LINE_COUNT) is
-    // header-only regardless of what it says, because the header IS the
-    // title/Status/Date housekeeping this check must not treat as a revision.
+    // A hunk confined to the header block (lines 1..HEADER_LINE_COUNT) on
+    // BOTH sides is header-only regardless of what it says, because the
+    // header IS the title/Status/Date housekeeping this check must not treat
+    // as a revision. Checking only the new side let a deletion whose new-side
+    // range collapsed to the header boundary (e.g. `@@ -6 +5,0 @@`, deleting
+    // the first body line) get misclassified as header-only, because the
+    // deleted content only ever appears on the OLD side.
     //
     // `isHeaderOnlyOrWhitespaceHunk` cannot decide this: it only recognises
     // WHITESPACE, so a `Date:` edit came back "substantive" and every stamp
     // became the next run's revision date. That made the check self-triggering
     // — the exact loop the file comment says it prevents — and it is why the
     // specs carried dates nobody had edited on.
-    //
-    // The window is checked against the hunk's own extent (`@@ -a,b +c,d @@`,
-    // where `-U0` omits the count for a single line), not per-line content.
-    const newLineCount = hunkHeaderMatch?.[0].match(HUNK_NEW_COUNT_PATTERN)?.[1];
-    const hunkSpan = newLineCount ? Number.parseInt(newLineCount, 10) : 1;
-    const hunkEnd = newStart === null ? null : newStart + hunkSpan - 1;
-    const withinHeader = newStart !== null && hunkEnd !== null && hunkEnd <= HEADER_LINE_COUNT;
-    if (withinHeader) {
-      continue;
+    if (hunkHeaderMatch) {
+      const oldStart = Number.parseInt(hunkHeaderMatch[1], 10);
+      const oldCount = hunkHeaderMatch[2] === undefined ? undefined : Number.parseInt(hunkHeaderMatch[2], 10);
+      const newStart = Number.parseInt(hunkHeaderMatch[3], 10);
+      const newCount = hunkHeaderMatch[4] === undefined ? undefined : Number.parseInt(hunkHeaderMatch[4], 10);
+
+      const oldWithinHeader = rangeIsWithinHeader(oldStart, oldCount);
+      const newWithinHeader = rangeIsWithinHeader(newStart, newCount);
+      if (oldWithinHeader && newWithinHeader) {
+        continue;
+      }
     }
     if (isHeaderOnlyOrWhitespaceHunk(lines)) {
       continue;
@@ -238,10 +303,28 @@ function reportFailures(stale: StaleReport[], errors: string[]): void {
 }
 
 function main(): void {
-  const files = specFiles();
+  let parsed: Options;
+  try {
+    parsed = parseOptions(process.argv.slice(2));
+  } catch (error) {
+    console.error(`spec:dates failed: ${(error as Error).message}`);
+    process.exit(1);
+  }
+
+  let files = specFiles();
+  if (parsed.baseRef) {
+    let baseCommit: string;
+    try {
+      baseCommit = resolvedBase(parsed.baseRef);
+    } catch (error) {
+      console.error(`spec:dates failed: ${(error as Error).message}`);
+      process.exit(1);
+    }
+    files = filesChangedFrom(baseCommit);
+  }
   const { stale, errors } = collectResults(files);
 
-  if (WRITE) {
+  if (parsed.write) {
     writeStaleDates(stale);
     return;
   }

@@ -404,6 +404,16 @@ interface RunCalls {
   runConnectorOpts: RuntimeRunConnectorOptions[];
 }
 
+function setupIsolatedControllerDb(t: TestContext): void {
+  closeDb();
+  initDb(tempDbPath());
+  __resetControllerInteractionStateForTests();
+  t.after(() => {
+    __resetControllerInteractionStateForTests();
+    closeDb();
+  });
+}
+
 function setup(
   t: TestContext,
   {
@@ -420,13 +430,7 @@ function setup(
     connectorPathResolver = () => "/tmp/connector.js",
   }: SetupOptions = {}
 ) {
-  closeDb();
-  initDb(tempDbPath());
-  __resetControllerInteractionStateForTests();
-  t.after(() => {
-    __resetControllerInteractionStateForTests();
-    closeDb();
-  });
+  setupIsolatedControllerDb(t);
 
   const calls: RunCalls = {
     clearNonce: 0,
@@ -632,7 +636,9 @@ test("ordinary connector failure keeps a managed lease unavailable until the pre
   );
 });
 
-test("durable active-run row blocks managed manual and recovery admission before browser-surface acquisition", async () => {
+test("durable active-run row blocks managed manual and recovery admission before browser-surface acquisition", async (t) => {
+  setupIsolatedControllerDb(t);
+
   const allocator = createReadyAllocator();
   const manager = createManager();
   const durableRow: ActiveRunRecord = {
@@ -1696,6 +1702,281 @@ test("release frees the lease for the next managed run", async (t) => {
   assert.equal(second.status, "started");
   assert.equal(manager.getLease("lease_1")?.status, "released");
   assert.equal(manager.getLease("lease_2")?.status, "released");
+});
+
+// ─── Owner cancellation during a pending browser-surface assist ──────────────
+//
+// Regression coverage for the production lifecycle proof
+// (VENMO-OWNER-PRE-RETRY-WALK-CODEX-0829.md): an owner calling the supported
+// cancel API (`controller.cancelRun`) while a managed run is blocked on
+// `run.assistance_requested` must (a) leave the lease intact until the run
+// actually terminalizes, (b) release the lease exactly once when it does,
+// (c) leave the surface idle and safely reacquirable by the next run rather
+// than orphaned as a phantom "still active" claim, and (d) behave the same
+// whether the interaction resolves via explicit cancel or via its own
+// timeout. The allocator/container layer intentionally has no lease concept
+// of its own (see neko-surface-allocator-server.ts) and keeps a released
+// surface's container warm for reuse — that retention is by design, not the
+// defect under test here; these tests instead pin down lease/ownership
+// correctness at the layer that DOES track it.
+
+function pendingManualActionRunConnectorImpl(
+  requestId: string
+): (opts: RuntimeRunConnectorOptions) => Promise<RuntimeRunConnectorResult> {
+  return async (opts: RuntimeRunConnectorOptions): Promise<RuntimeRunConnectorResult> => {
+    const response = (await opts.onInteraction?.({
+      kind: "manual_action",
+      message: "Enter the verification code",
+      request_id: requestId,
+    })) as { status: RuntimeRunConnectorResult["status"] };
+    return { checkpoint_summary: null, records_emitted: 0, state: null, status: response.status };
+  };
+}
+
+test("pending assist retains the lease: no release/cancel event fires while the interaction is outstanding", async (t) => {
+  const { controller } = setup(t, { runConnectorImpl: pendingManualActionRunConnectorImpl("int_pending_retain") });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_pending_retain",
+  });
+  await waitFor(
+    () => controller.getPendingInteraction("run_pending_retain")?.interaction_id === "int_pending_retain",
+    "manual action should become pending"
+  );
+
+  // A window where the assist is genuinely outstanding: the lease must not
+  // have been released or cancelled yet.
+  const eventsWhilePending = listRunEventTypes("run_pending_retain");
+  assert.ok(eventsWhilePending.includes("run.browser_surface_leased"), "lease should be leased before assist");
+  assert.equal(
+    eventsWhilePending.some(
+      (type) => type === "run.browser_surface_released" || type === "run.browser_surface_cancelled"
+    ),
+    false,
+    "an outstanding assist must not have released or cancelled its lease yet"
+  );
+
+  // Clean up: resolve the interaction so the run (and its timers) settle.
+  controller.respondToInteraction("run_pending_retain", {
+    interaction_id: "int_pending_retain",
+    status: "cancelled",
+  });
+  await controller.drainActiveRuns(1000);
+});
+
+test("owner cancellation during a pending assist releases the lease exactly once and leaves the surface idle and reacquirable", async (t) => {
+  const { controller, manager } = setup(t, {
+    runConnectorImpl: pendingManualActionRunConnectorImpl("int_owner_cancel"),
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_owner_cancel",
+  });
+  await waitFor(
+    () => controller.getPendingInteraction("run_owner_cancel")?.interaction_id === "int_owner_cancel",
+    "manual action should become pending"
+  );
+
+  const leasedSurfaceId = manager.getLease("lease_1")?.surface_id;
+  assert.ok(leasedSurfaceId, "the pending run must hold a leased surface");
+  assert.equal(
+    manager.getSurface(leasedSurfaceId as string)?.active_lease_id,
+    "lease_1",
+    "surface must show active ownership while leased"
+  );
+
+  // Owner-initiated cancellation via the supported cancel API, mirroring
+  // POST /_ref/runs/:runId/cancel (walk evidence: HTTP 202
+  // `cancel_requested`). The fake connector's `onInteraction` await only
+  // settles once something resolves it; production's abort ultimately
+  // reaches the connector child, which reports its own interaction outcome
+  // back over IPC -- modeled here by resolving the pending interaction
+  // after cancellation has been requested.
+  const cancelResult = await controller.cancelRun("run_owner_cancel", "owner_local");
+  assert.equal(cancelResult.status, "cancel_requested");
+  controller.respondToInteraction("run_owner_cancel", {
+    interaction_id: "int_owner_cancel",
+    status: "cancelled",
+  });
+  await controller.drainActiveRuns(1000);
+
+  // Lease/ownership must clear exactly once, and the surface must show no
+  // active claim afterwards.
+  const finalLease = manager.getLease("lease_1");
+  assert.ok(
+    finalLease?.status === "released" || finalLease?.status === "cancelled",
+    `lease must reach a terminal released/cancelled status, got ${finalLease?.status}`
+  );
+  const surfaceAfterCancel = manager.getSurface(leasedSurfaceId as string);
+  assert.equal(
+    surfaceAfterCancel?.active_lease_id,
+    undefined,
+    "surface must show no active lease/run ownership after cancellation"
+  );
+
+  // No zombie active-run claim: the UI/run-status surface must not still
+  // claim this run as active.
+  assert.equal(controller.findActiveRunByRunId("run_owner_cancel"), null, "cancelled run must not remain active");
+  assert.equal(controller.getActiveRun("managed"), null, "connection's active-run flight must be released");
+
+  // Reusable warm surface, if designed, is represented as idle and safely
+  // reacquirable -- not deleted, but also not claimable as still "active" by
+  // the prior run. A competing/subsequent run for the same profile must be
+  // able to reacquire it (surfaceCap is 1 in the default manager, so this
+  // only succeeds if the prior lease genuinely released capacity).
+  const second = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_after_owner_cancel",
+  });
+  await controller.drainActiveRuns(1000);
+  assert.equal(second.status, "started", "a subsequent run must safely reacquire the released surface");
+  assert.equal(
+    manager.getLease("lease_2")?.surface_id,
+    leasedSurfaceId,
+    "reacquisition should reuse the same warm surface rather than orphaning it"
+  );
+});
+
+test("repeated cancellation of an already-terminal run is idempotent and does not double-release", async (t) => {
+  const { controller, manager } = setup(t, {
+    runConnectorImpl: pendingManualActionRunConnectorImpl("int_double_cancel"),
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_double_cancel",
+  });
+  await waitFor(
+    () => controller.getPendingInteraction("run_double_cancel")?.interaction_id === "int_double_cancel",
+    "manual action should become pending"
+  );
+
+  const first = await controller.cancelRun("run_double_cancel", "owner_local");
+  assert.equal(first.status, "cancel_requested");
+  const second = await controller.cancelRun("run_double_cancel", "owner_local");
+  assert.equal(second.status, "cancel_requested", "a repeat cancel of the same in-flight run is idempotent");
+
+  controller.respondToInteraction("run_double_cancel", {
+    interaction_id: "int_double_cancel",
+    status: "cancelled",
+  });
+  await controller.drainActiveRuns(1000);
+
+  // The fake runConnectorImpl (unlike the real runtime/index.ts child
+  // process) never itself writes a terminal run.cancelled/run.failed spine
+  // event, so `runAlreadyTerminal`'s spine lookup legitimately finds
+  // nothing here. The observable, harness-independent guarantee is that a
+  // cancel call for a settled run never reports `cancel_requested` again
+  // (there is no longer any in-memory run to abort) and never throws.
+  const third = await controller.cancelRun("run_double_cancel", "owner_local");
+  assert.notEqual(
+    third.status,
+    "cancel_requested",
+    "cancelling an already-settled run must not report a fresh cancel_requested"
+  );
+
+  // The lease's actual state-mutating release (browserSurfaceLeaseManager
+  // .release(), fired from finalizeRunCleanup) must happen exactly once,
+  // regardless of how many times the owner calls cancelRun. (A separate
+  // run.browser_surface_cancelled audit marker may also be emitted by
+  // respondToInteraction's interaction-level bookkeeping -- that marker
+  // does not itself mutate lease state and is not what this test guards.)
+  const events = listRunEventTypes("run_double_cancel");
+  const releaseEvents = events.filter((type) => type === "run.browser_surface_released");
+  assert.equal(releaseEvents.length, 1, "the lease must be released exactly once, however many cancel calls arrive");
+  assert.notEqual(manager.getLease("lease_1")?.status, "leased", "lease must not remain leased after settlement");
+});
+
+test("interaction settling without an owner cancelRun call still clears lease/ownership (timeout-equivalent path)", async (t) => {
+  // Production's real assist-timeout (`scheduleAssistanceTimeout` in
+  // runtime/index.ts) resolves the pending interaction from an internal
+  // timer, WITHOUT the owner ever calling `cancelRun`. This test's
+  // controller-level fake cannot reach that internal timer directly, but it
+  // proves the equivalent, harness-observable half of the same claim: lease
+  // release/ownership-clearing is driven by the run's own terminal cleanup
+  // (`finalizeRunCleanup`) whenever the interaction settles -- not by the
+  // owner having called `cancelRun` -- so a timeout that never goes through
+  // `cancelRun` still reaches the identical released/idle outcome.
+  const { controller, manager } = setup(t, {
+    runConnectorImpl: pendingManualActionRunConnectorImpl("int_assist_timeout"),
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_assist_timeout",
+  });
+  await waitFor(
+    () => controller.getPendingInteraction("run_assist_timeout")?.interaction_id === "int_assist_timeout",
+    "manual action should become pending"
+  );
+
+  const leasedSurfaceId = manager.getLease("lease_1")?.surface_id;
+  assert.ok(leasedSurfaceId, "the pending run must hold a leased surface");
+
+  // No cancelRun call anywhere in this test -- only the interaction itself
+  // settling, exactly as an internal timeout would.
+  controller.respondToInteraction("run_assist_timeout", {
+    interaction_id: "int_assist_timeout",
+    status: "cancelled",
+  });
+  await controller.drainActiveRuns(1000);
+
+  const surfaceAfterTimeout = manager.getSurface(leasedSurfaceId as string);
+  assert.equal(
+    surfaceAfterTimeout?.active_lease_id,
+    undefined,
+    "timeout path must clear active ownership just like explicit cancellation"
+  );
+  assert.equal(controller.findActiveRunByRunId("run_assist_timeout"), null, "timed-out run must not remain active");
+});
+
+test("a competing run cannot steal a live (still-leased) surface", async (t) => {
+  const { controller, manager } = setup(t, {
+    runConnectorImpl: pendingManualActionRunConnectorImpl("int_no_steal"),
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_holder",
+  });
+  await waitFor(
+    () => controller.getPendingInteraction("run_holder")?.interaction_id === "int_no_steal",
+    "manual action should become pending"
+  );
+
+  const leasedSurfaceId = manager.getLease("lease_1")?.surface_id;
+  assert.equal(manager.getSurface(leasedSurfaceId as string)?.active_lease_id, "lease_1");
+
+  // A second connector, sharing the same profile key (so it is eligible to
+  // reuse the identical surface) and cap-limited to a single surface, must
+  // not be able to acquire (steal) the still-live lease while the first
+  // run holds it -- it must queue instead of starting.
+  const competing = await controller.runNow("other-managed", {
+    manifest: OTHER_MANAGED_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_competitor",
+  });
+  assert.notEqual(competing.status, "started", "a competing run must not steal a still-live lease");
+  assert.equal(
+    manager.getSurface(leasedSurfaceId as string)?.active_lease_id,
+    "lease_1",
+    "the original lease must remain the surface's active owner throughout"
+  );
+
+  // Clean up: resolve the original interaction so the run settles.
+  controller.respondToInteraction("run_holder", {
+    interaction_id: "int_no_steal",
+    status: "cancelled",
+  });
+  await controller.drainActiveRuns(1000);
 });
 
 // ─── Periodic sweep (openspec/changes/fix-browser-surface-capacity-self-heal) ─

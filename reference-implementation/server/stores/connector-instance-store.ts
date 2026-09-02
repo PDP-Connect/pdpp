@@ -178,6 +178,11 @@ import {
 } from "../connector-instance-write-coordinator.ts";
 import type { PostgresTransactionClient } from "../postgres-storage.ts";
 import { postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
+import {
+  type CredentialStateChange,
+  revokePostgresConnectorInstanceCredentialsWithClient,
+  serializeCredentialStateChange,
+} from "./connector-instance-credential-store.ts";
 
 const ACTIVE_RESOLUTION_LIMIT = 2;
 const ACTIVE_FANIN_LIMIT = 64;
@@ -1867,6 +1872,7 @@ export function createSqliteConnectorInstanceStore() {
         updatedAt,
         revokedAt = null,
         sourceBindingPatch = null,
+        credentialStateChange = { cause: "connection_revoked" },
       }: {
         status: string;
         updatedAt: string;
@@ -1877,22 +1883,44 @@ export function createSqliteConnectorInstanceStore() {
         // "ttl_expired" }`) at the moment of truth, never as a best-effort
         // follow-up write. See `retireExpiredBrowserEnrollmentShells`.
         sourceBindingPatch?: Record<string, unknown> | null;
+        credentialStateChange?: CredentialStateChange;
       }
     ): ConnectorInstance | null {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
+      const effectiveRevokedAt = status === "revoked" ? (revokedAt ?? updatedAt) : revokedAt;
+      const effectiveSourceBindingPatch =
+        status === "revoked" ? (sourceBindingPatch ?? { revocation_reason: "connection_revoked" }) : sourceBindingPatch;
       writeTransaction(() => {
-        if (sourceBindingPatch) {
+        if (effectiveSourceBindingPatch) {
           exec(referenceQueries.connectorInstancesUpdateStatusWithBindingPatch, [
             status,
+            status,
             updatedAt,
-            revokedAt,
-            stableJson(sourceBindingPatch),
+            status,
+            effectiveRevokedAt,
+            effectiveRevokedAt,
+            stableJson(effectiveSourceBindingPatch),
             connectorInstanceId,
           ]);
         } else {
-          exec(referenceQueries.connectorInstancesUpdateStatus, [status, updatedAt, revokedAt, connectorInstanceId]);
+          exec(referenceQueries.connectorInstancesUpdateStatus, [
+            status,
+            status,
+            updatedAt,
+            status,
+            effectiveRevokedAt,
+            effectiveRevokedAt,
+            connectorInstanceId,
+          ]);
+        }
+        if (status === "revoked" && effectiveRevokedAt !== null) {
+          exec(referenceQueries.connectorInstanceCredentialsRevokeByInstance, [
+            effectiveRevokedAt,
+            serializeCredentialStateChange(credentialStateChange),
+            connectorInstanceId,
+          ]);
         }
         exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
           `connector instance status changed to ${status}`,
@@ -2725,6 +2753,7 @@ export function createPostgresConnectorInstanceStore() {
         updatedAt,
         revokedAt = null,
         sourceBindingPatch = null,
+        credentialStateChange = { cause: "connection_revoked" },
       }: {
         status: string;
         updatedAt: string;
@@ -2734,23 +2763,43 @@ export function createPostgresConnectorInstanceStore() {
         // the status write, so the caller can record WHY at the moment of
         // truth.
         sourceBindingPatch?: Record<string, unknown> | null;
+        credentialStateChange?: CredentialStateChange;
       }
     ): Promise<ConnectorInstance | null> {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
       }
+      const effectiveRevokedAt = status === "revoked" ? (revokedAt ?? updatedAt) : revokedAt;
+      const effectiveSourceBindingPatch =
+        status === "revoked" ? (sourceBindingPatch ?? { revocation_reason: "connection_revoked" }) : sourceBindingPatch;
       await withPostgresTransaction(
         async (client: PostgresTransactionClient) => {
-          if (sourceBindingPatch) {
+          if (effectiveSourceBindingPatch) {
             await client.query(
-              "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3, source_binding_json = COALESCE(source_binding_json, '{}'::jsonb) || $4::jsonb WHERE connector_instance_id = $5",
-              [status, updatedAt, revokedAt, stableJson(sourceBindingPatch), connectorInstanceId]
+              "UPDATE connector_instances SET status = $1, updated_at = CASE WHEN $2 = 'revoked' AND status = 'revoked' THEN updated_at ELSE $3 END, revoked_at = CASE WHEN $4 = 'revoked' THEN COALESCE(revoked_at, $5) ELSE $6 END, source_binding_json = COALESCE(source_binding_json, '{}'::jsonb) || $7::jsonb WHERE connector_instance_id = $8",
+              [
+                status,
+                status,
+                updatedAt,
+                status,
+                effectiveRevokedAt,
+                effectiveRevokedAt,
+                stableJson(effectiveSourceBindingPatch),
+                connectorInstanceId,
+              ]
             );
           } else {
             await client.query(
-              "UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3 WHERE connector_instance_id = $4",
-              [status, updatedAt, revokedAt, connectorInstanceId]
+              "UPDATE connector_instances SET status = $1, updated_at = CASE WHEN $2 = 'revoked' AND status = 'revoked' THEN updated_at ELSE $3 END, revoked_at = CASE WHEN $4 = 'revoked' THEN COALESCE(revoked_at, $5) ELSE $6 END WHERE connector_instance_id = $7",
+              [status, status, updatedAt, status, effectiveRevokedAt, effectiveRevokedAt, connectorInstanceId]
             );
+          }
+          if (status === "revoked" && effectiveRevokedAt !== null) {
+            await revokePostgresConnectorInstanceCredentialsWithClient(client, {
+              connectorInstanceId,
+              revokedAt: effectiveRevokedAt,
+              stateChange: credentialStateChange,
+            });
           }
           await client.query(
             `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,

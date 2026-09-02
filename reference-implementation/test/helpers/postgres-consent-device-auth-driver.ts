@@ -178,6 +178,9 @@ export function createPostgresConsentDeviceAuthDriver({ connectionString }: { co
           token_type: "Bearer",
         };
       }
+      if (row.status === "denied") {
+        throw codedError("Owner device authorization was denied", "approval_conflict");
+      }
       if (row.status !== "pending") {
         throw codedError("Owner device authorization is not available", "not_found");
       }
@@ -207,6 +210,12 @@ export function createPostgresConsentDeviceAuthDriver({ connectionString }: { co
       const row = await pendingConsentByRequestUri(requestUri);
       if (!row) {
         throw codedError("Unknown device code", "not_found");
+      }
+      if (row.status === "approved" && typeof row.grant_id === "string" && typeof row.token_id === "string") {
+        return {
+          grant: { grant_id: row.grant_id, version: "0.1.0" },
+          token: row.token_id,
+        };
       }
       if (row.status !== "pending") {
         throw codedError("Pending consent request is not available", "not_found");

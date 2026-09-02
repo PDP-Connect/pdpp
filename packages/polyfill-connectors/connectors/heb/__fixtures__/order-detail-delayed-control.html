@@ -1,0 +1,34 @@
+<!-- Synthetic adversarial fixture: the control responds after longer than
+     the old three-stable-poll window. It must remain unsettled until rows and
+     the control state actually change. -->
+<!doctype html>
+<html>
+  <body>
+    <main>
+      <section>
+        <div id="order-items-scrollport" style="height: 120px; overflow-y: auto">
+          <ul id="rows">
+            <li data-qe-id="itemRow" data-index="0">
+              <a data-qe-id="itemRowDetailsName" href="/product-detail/delayed/1">Delayed item 1</a>
+              <span data-qe-id="checkoutItemPrice">$1.00</span>
+              <span data-qe-id="orderItemQty">Qty: 1</span>
+            </li>
+          </ul>
+          <button id="load-more" type="button">Load more</button>
+        </div>
+      </section>
+    </main>
+    <script>
+      document.querySelector("#load-more").addEventListener("click", () => {
+        const button = document.querySelector("#load-more");
+        setTimeout(() => {
+          document.querySelector("#rows").insertAdjacentHTML(
+            "beforeend",
+            '<li data-qe-id="itemRow" data-index="1"><a data-qe-id="itemRowDetailsName" href="/product-detail/delayed/2">Delayed item 2</a><span data-qe-id="checkoutItemPrice">$1.00</span><span data-qe-id="orderItemQty">Qty: 1</span></li>'
+          );
+          button.remove();
+        }, 1_000);
+      });
+    </script>
+  </body>
+</html>

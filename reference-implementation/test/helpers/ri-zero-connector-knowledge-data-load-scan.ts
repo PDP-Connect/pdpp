@@ -137,6 +137,8 @@ const MANIFEST_ROOTS = ["reference-implementation/fixtures/seed-manifests", "pac
  */
 const SANCTIONED_POLICY_RESOURCES: ReadonlyMap<string, ReadonlySet<string>> = new Map([]);
 
+const POLYFILL_MANIFEST_READ_SITE = "reference-implementation/server/polyfill-manifest-reconcile.ts:98";
+
 /**
  * Closed, human-reviewed allowlist of call sites (file + 1-indexed line of
  * the read call) that consume JSON but were individually inspected and
@@ -201,13 +203,12 @@ const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
   // reconcilePolyfillManifests's `referenceFixturesDir`/`manifestsDir` params) —
   // one hop deeper than this scanner's bounded parameter resolver follows.
   // Verified by direct inspection, not by the scanner, hence the allowlist entry.
-  // Re-derived 2026-08-10 (manual-upload-large-artifact RI-owner ruling closure):
-  // moved from line 96 to 103 after unrelated edits earlier in the file (a
-  // multi-line import and a multi-line type alias) added 7 net lines above
-  // this call site -- the function itself is unchanged. This entry is
+  // Re-derived 2026-08-30: the call site moved from line 103 to 98 after
+  // unrelated edits removed five lines above it -- the function itself is
+  // unchanged. This entry is
   // line-pinned by design (see this array's own doc comment above); it must
   // be re-derived whenever an edit anywhere above the call site shifts it.
-  "reference-implementation/server/polyfill-manifest-reconcile.ts:103",
+  POLYFILL_MANIFEST_READ_SITE,
   // readReviewedCompactionResidueMap() in version-disposition.ts:
   // readFileSync(path, "utf8") where `path` is compactionResidueReviewPath()
   // — process.env.PDPP_COMPACTION_RESIDUE_REVIEW_PATH, an OPERATOR-supplied
@@ -418,7 +419,7 @@ function resolveNewUrlSegment(expr: Node, analysis: FileAnalysis, depth: number,
   return anchored.kind === "static" ? { kind: "anchored", relPath: anchored.relPath } : UNRESOLVABLE;
 }
 
-/** `join(...)`/`resolve(...)`/`fileURLToPath(...)` as a nested segment. */
+/** `join(...)`/`resolve(...)`/`fileURLToPath(...)`/`pathToFileURL(...)` as a nested segment. */
 function resolveCallExpressionSegment(
   expr: Node,
   analysis: FileAnalysis,
@@ -430,7 +431,13 @@ function resolveCallExpressionSegment(
     const joined = resolveJoinOrResolveCall(expr, analysis, depth, visiting);
     return joined.kind === "static" ? { kind: "anchored", relPath: joined.relPath } : UNRESOLVABLE;
   }
-  if (name === "fileURLToPath") {
+  // fileURLToPath(<url>) and pathToFileURL(<path>) are each other's inverse:
+  // one unwraps a file:// URL to a filesystem path, the other wraps a
+  // filesystem path as a file:// URL (needed so `import()` accepts an
+  // absolute path on Windows, where a bare "C:\..." string parses as a URL
+  // with scheme "c:" instead of a filesystem path). Neither changes WHICH
+  // file is denoted, so both resolve transparently to their argument.
+  if (name === "fileURLToPath" || name === "pathToFileURL") {
     const [first] = nodeArrayField(expr, "arguments");
     if (first) {
       const anchored = resolveAnchoredExpr(first, analysis, depth + 1, visiting);
@@ -1049,7 +1056,22 @@ export function scanFileDataLoads(
       return true;
     }
     const siteKey = `${relPath}:${lineOf(node)}`;
+    const second = nodeArrayField(node, "arguments")[1];
+    // This one reviewed site is exempt only for the exact production shape:
+    // awaited `readFile(path, "utf8")` whose result reaches JSON.parse.
+    // A line match with a different read shape fails closed below.
+    const matchesPolyfillManifestReadShape =
+      isIdentifier(callee, "readFile") &&
+      parent?.type === "AwaitExpression" &&
+      isIdentifier(first, "path") &&
+      nodeArrayField(node, "arguments").length === 2 &&
+      second?.type === "StringLiteral" &&
+      second.value === "utf8" &&
+      flowsIntoJsonParse(node, parent);
     if (SANCTIONED_GENERIC_DATA_READ_CALL_SITES.has(siteKey)) {
+      if (siteKey === POLYFILL_MANIFEST_READ_SITE && !matchesPolyfillManifestReadShape) {
+        report(node, "unresolvable-data-resource-load");
+      }
       return true;
     }
     const consumesJson = flowsIntoJsonParse(node, parent);

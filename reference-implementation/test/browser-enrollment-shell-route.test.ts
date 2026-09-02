@@ -579,14 +579,26 @@ test("retireExpiredBrowserEnrollmentShells flips expired draft/active shell bind
   );
 
   assert.deepEqual(retired, ["cin_expired_1", "cin_active"]);
-  // Quiet-expiry defect fix (owner ruling 2026-08-22): the sweep now stamps
+  // Quiet-expiry defect fix (owner ruling 2026-08-22): the sweep stamps
   // `sourceBindingPatch: { revocation_reason: "ttl_expired" }` on every row it
   // retires, so `deriveSourceVisibility`/`archiveRenderedVerdict`
   // (ref-control.ts) can render an honest "expired while waiting for you"
   // verdict instead of a silent, unexplained revocation.
+  //
+  // Attribute-state-transitions fix (openspec/changes/
+  // attribute-credential-state-transitions, 2026-08-27): the sweep also
+  // stamps `credentialStateChange` with system/TTL provenance, so the
+  // cascaded credential revoke carries a closed cause and an attributable
+  // actor instead of the generic `connection_revoked` default `updateStatus`
+  // would otherwise apply.
   assert.deepEqual(updates, [
     {
       args: {
+        credentialStateChange: {
+          actorId: "browser_enrollment_shell_retirement",
+          actorType: "system",
+          cause: "ttl_expired",
+        },
         revokedAt: "2026-06-10T12:00:00.000Z",
         sourceBindingPatch: { revocation_reason: "ttl_expired" },
         status: "revoked",
@@ -596,6 +608,11 @@ test("retireExpiredBrowserEnrollmentShells flips expired draft/active shell bind
     },
     {
       args: {
+        credentialStateChange: {
+          actorId: "browser_enrollment_shell_retirement",
+          actorType: "system",
+          cause: "ttl_expired",
+        },
         revokedAt: "2026-06-10T12:00:00.000Z",
         sourceBindingPatch: { revocation_reason: "ttl_expired" },
         status: "revoked",

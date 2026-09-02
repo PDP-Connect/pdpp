@@ -30,6 +30,7 @@
  *     reference-implementation/test/checkpoint-dependency-profile-conformance-postgres.test.ts
  */
 
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { runConnector } from "../runtime/index.ts";
 import { startServer as startServerUntyped } from "../server/index.ts";
@@ -42,6 +43,7 @@ import {
   runSubsetParentCoverageScenario,
   runUndeclaredParentScenario,
 } from "./helpers/checkpoint-dependency-multi-parent-scenario.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
@@ -69,6 +71,36 @@ interface StartServerOptions {
 }
 const startServer = startServerUntyped as unknown as (opts: StartServerOptions) => Promise<ClosableServer>;
 
+// Each scenario writes committed records to `records` and this file never
+// truncates between tests, so a shared database would leave the second
+// scenario's admission fail-closed on the first scenario's rows (the guard's
+// intended behavior -- see postgres-test-database-guard.ts). Each scenario
+// therefore gets its own disposable database via withTemporaryPostgresDatabase,
+// the same isolation pattern other multi-test Postgres suites use.
+async function withScenarioServer(baseUrl: string, scenario: (server: ClosableServer) => Promise<void>): Promise<void> {
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: baseUrl,
+      databaseName: `pdpp_checkpoint_dependency_profile_${randomUUID().replaceAll("-", "")}`,
+    },
+    async (databaseUrl) => {
+      const server = await startServer({
+        asPort: 0,
+        databaseUrl,
+        quiet: true,
+        rsPort: 0,
+        storageBackend: "postgres",
+      });
+      try {
+        await scenario(server);
+      } finally {
+        await closeServer(server);
+      }
+    }
+  );
+}
+
 async function closeServer(server: ClosableServer): Promise<void> {
   server.abortStartupBackfill("test shutdown");
   server.schedulerManager?.stop?.();
@@ -88,17 +120,12 @@ async function closeServer(server: ClosableServer): Promise<void> {
 }
 
 if (POSTGRES_URL) {
+  const baseUrl = POSTGRES_URL;
+
   test("SQLite/Postgres parity scenario (Postgres side): one detail stream independently proves two parent checkpoints", async () => {
-    const server = await startServer({
-      asPort: 0,
-      databaseUrl: POSTGRES_URL,
-      quiet: true,
-      rsPort: 0,
-      storageBackend: "postgres",
-    });
-    const asUrl = `http://localhost:${server.asPort}`;
-    const rsUrl = `http://localhost:${server.rsPort}`;
-    try {
+    await withScenarioServer(baseUrl, async (server) => {
+      const asUrl = `http://localhost:${server.asPort}`;
+      const rsUrl = `http://localhost:${server.rsPort}`;
       await runMultiParentScenario({
         admitOwnerRunConnection,
         asUrl,
@@ -107,25 +134,16 @@ if (POSTGRES_URL) {
         rsUrl,
         runConnector,
       });
-    } finally {
-      await closeServer(server);
-    }
+    });
   });
 
   // Case 7: SQLite/Postgres parity for the core rejection + subset-withholding
   // cases, run against the SAME scenario functions the SQLite conformance
   // file uses (see checkpoint-dependency-multi-parent-scenario.ts).
   test("case 1/5/6 (Postgres): a state_stream-declared stream emitting DETAIL_COVERAGE is rejected", async () => {
-    const server = await startServer({
-      asPort: 0,
-      databaseUrl: POSTGRES_URL,
-      quiet: true,
-      rsPort: 0,
-      storageBackend: "postgres",
-    });
-    const asUrl = `http://localhost:${server.asPort}`;
-    const rsUrl = `http://localhost:${server.rsPort}`;
-    try {
+    await withScenarioServer(baseUrl, async (server) => {
+      const asUrl = `http://localhost:${server.asPort}`;
+      const rsUrl = `http://localhost:${server.rsPort}`;
       await runStaticParentEmitsCoverageScenario({
         admitOwnerRunConnection,
         asUrl,
@@ -134,22 +152,13 @@ if (POSTGRES_URL) {
         rsUrl,
         runConnector,
       });
-    } finally {
-      await closeServer(server);
-    }
+    });
   });
 
   test("case 2 (Postgres): a parent_streams stream emitting DETAIL_COVERAGE naming an undeclared parent is rejected", async () => {
-    const server = await startServer({
-      asPort: 0,
-      databaseUrl: POSTGRES_URL,
-      quiet: true,
-      rsPort: 0,
-      storageBackend: "postgres",
-    });
-    const asUrl = `http://localhost:${server.asPort}`;
-    const rsUrl = `http://localhost:${server.rsPort}`;
-    try {
+    await withScenarioServer(baseUrl, async (server) => {
+      const asUrl = `http://localhost:${server.asPort}`;
+      const rsUrl = `http://localhost:${server.rsPort}`;
       await runUndeclaredParentScenario({
         admitOwnerRunConnection,
         asUrl,
@@ -158,22 +167,13 @@ if (POSTGRES_URL) {
         rsUrl,
         runConnector,
       });
-    } finally {
-      await closeServer(server);
-    }
+    });
   });
 
   test("case 3/4 (Postgres): a declared parent with no live coverage report is withheld", async () => {
-    const server = await startServer({
-      asPort: 0,
-      databaseUrl: POSTGRES_URL,
-      quiet: true,
-      rsPort: 0,
-      storageBackend: "postgres",
-    });
-    const asUrl = `http://localhost:${server.asPort}`;
-    const rsUrl = `http://localhost:${server.rsPort}`;
-    try {
+    await withScenarioServer(baseUrl, async (server) => {
+      const asUrl = `http://localhost:${server.asPort}`;
+      const rsUrl = `http://localhost:${server.rsPort}`;
       await runSubsetParentCoverageScenario({
         admitOwnerRunConnection,
         asUrl,
@@ -182,9 +182,7 @@ if (POSTGRES_URL) {
         rsUrl,
         runConnector,
       });
-    } finally {
-      await closeServer(server);
-    }
+    });
   });
 } else {
   test("SQLite/Postgres parity scenario (Postgres side, skipped: PDPP_TEST_POSTGRES_URL unset)", {

@@ -24,6 +24,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { exec, getMany, getOne, referenceQueries } from "../../lib/db.ts";
 import { parsePendingConsentRequestUri } from "../auth.ts";
+import { normalizeAbsentOnlyExpiry } from "../core-source-authorization.ts";
 import { applyCredentialResponseNoStoreHeaders } from "../credential-response-cache.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.ts";
 import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
@@ -139,7 +140,38 @@ function objectFromStoredJson(value: unknown): Record<string, unknown> | null {
 }
 
 function grantFromRecoveredConsent(recovered: RecoveredApprovedConsent): Record<string, unknown> | null {
-  return objectFromStoredJson(recovered.grant_json) ?? objectFromStoredJson(recovered.package_json);
+  const grant = objectFromStoredJson(recovered.grant_json) ?? objectFromStoredJson(recovered.package_json);
+  // `grants.grant_json` is migrated at startup, but `grant_packages.package_json`
+  // is not, and a rolling upgrade can still have an older node writing explicit
+  // nulls. Normalize at the point of copy so the null never reaches the durable
+  // agent-connect row in the first place.
+  return grant === null ? null : (normalizeAbsentOnlyExpiry(grant) as Record<string, unknown>);
+}
+
+/**
+ * Drop a legacy explicit-null `expires_at` from a materialized token response.
+ *
+ * Returns the SAME reference when nothing changed, so callers can use identity
+ * to decide whether a durable rewrite is warranted and avoid a pointless write
+ * on the overwhelmingly common already-normal path.
+ */
+function normalizeResponseBody(body: Record<string, unknown>): Record<string, unknown> {
+  const { grant } = body;
+  if (!(grant && typeof grant === "object")) {
+    return body;
+  }
+  const normalized = normalizeAbsentOnlyExpiry(grant);
+  return normalized === grant ? body : { ...body, grant: normalized };
+}
+
+/** Parse a stored `response_json` and normalize its nested grant copy. */
+function parseStoredResponse(responseJson: string): {
+  body: Record<string, unknown>;
+  rewritten: boolean;
+} {
+  const stored = JSON.parse(responseJson) as Record<string, unknown>;
+  const body = normalizeResponseBody(stored);
+  return { body, rewritten: body !== stored };
 }
 
 export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
@@ -169,10 +201,15 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
     if (typeof row.completed_at === "string") {
       attempt.completedAt = row.completed_at;
     }
+    // Normalize on READ rather than relying on a one-shot migration: an
+    // attempt row can be written by an older node mid-upgrade, and its grant
+    // can originate from `grant_packages.package_json`, which no migration
+    // rewrites. Reading through the shared normalizer makes the absent-only
+    // representation hold for every row whatever wrote it.
     if (typeof grantJson === "string") {
-      attempt.grant = JSON.parse(grantJson) as Record<string, unknown>;
+      attempt.grant = normalizeAbsentOnlyExpiry(JSON.parse(grantJson)) as Record<string, unknown>;
     } else if (grantJson && typeof grantJson === "object") {
-      attempt.grant = grantJson as Record<string, unknown>;
+      attempt.grant = normalizeAbsentOnlyExpiry(grantJson) as Record<string, unknown>;
     }
     if (typeof row.token === "string") {
       attempt.token = row.token;
@@ -187,6 +224,64 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
     }
     const row = getOne<Record<string, unknown>>(referenceQueries.authAgentConnectAttemptsGetById, [id]);
     return row ? rowToAttempt(row) : undefined;
+  };
+  /**
+   * Atomically replace a stored `response_json` with its normalized form.
+   *
+   * Atomicity comes from a single conditional UPDATE guarded on the exact
+   * prior value rather than from a read-modify-write: the row moves from the
+   * old blob to the new one in one statement, so a concurrent reader sees one
+   * or the other and never a half-normalized response. A racing redemption
+   * that already normalized the row simply matches zero rows.
+   *
+   * Best-effort by design. The caller has already produced a correct body, so
+   * a lost race or a write failure must not turn a valid redemption into an
+   * error; it only means the next replay normalizes again on read.
+   */
+  const rewriteStoredResponse = async (id: string, previous: string, normalized: string): Promise<void> => {
+    if (isPostgresStorageBackend()) {
+      await postgresQuery(
+        `UPDATE agent_connect_attempts
+            SET response_json = $2
+          WHERE id = $1
+            AND status = 'approved'
+            AND response_json = $3`,
+        [id, normalized, previous]
+      );
+      return;
+    }
+    exec(referenceQueries.authAgentConnectAttemptsRewriteResponseJson, [normalized, id, previous]);
+  };
+  /**
+   * Return a stored response, normalized, and heal the row that produced it.
+   *
+   * A response materialized BEFORE the absent-only migration still holds the
+   * legacy null in its nested grant copy, and the replay path returns the
+   * stored blob without ever consulting `attempt.grant`. So normalization has
+   * to happen here too, and the durable row is rewritten so the null cannot
+   * resurface on a later replay.
+   *
+   * The rewrite is best-effort: the returned body is already correct, so a
+   * lost race or a failed write must not turn a valid redemption into an
+   * error. It only means the next replay normalizes again on read. The write
+   * is therefore wrapped in its own try/catch: an uncaught rejection here
+   * (e.g. a dropped connection) would otherwise propagate out of `redeem`
+   * and fail an already-normalized, already-valid redemption.
+   */
+  const replayStoredResponse = async (id: string, responseJson: string): Promise<Record<string, unknown>> => {
+    const { body, rewritten } = parseStoredResponse(responseJson);
+    if (rewritten) {
+      try {
+        await rewriteStoredResponse(id, responseJson, JSON.stringify(body));
+      } catch (err) {
+        console.error(
+          `[agent-connect] best-effort response_json healing write failed for attempt ${id}, returning normalized body anyway: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
+    return body;
   };
   const tokenIsActive = async (tokenId: string | undefined): Promise<boolean> => {
     if (!tokenId) {
@@ -727,7 +822,7 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
         return { outcome: "missing" };
       }
       if (attempt.responseJson) {
-        return { body: JSON.parse(attempt.responseJson) as Record<string, unknown>, outcome: "approved", replay: true };
+        return { body: await replayStoredResponse(id, attempt.responseJson), outcome: "approved", replay: true };
       }
       const body = {
         access_token: attempt.token,
@@ -751,8 +846,10 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
           const reread = await client.query("SELECT response_json FROM agent_connect_attempts WHERE id = $1", [id]);
           const [row] = reread.rows;
           if (typeof row?.response_json === "string") {
+            // Lost the race to a concurrent redemption. The winner may have
+            // written a pre-normalization response, so normalize what we read.
             return {
-              body: JSON.parse(row.response_json) as Record<string, unknown>,
+              body: parseStoredResponse(row.response_json).body,
               outcome: "approved",
               replay: true,
             };
@@ -766,7 +863,8 @@ export function createAgentConnectAttemptStore(): AgentConnectAttemptStore {
       }
       const replay = await getRow(id);
       if (replay?.responseJson) {
-        return { body: JSON.parse(replay.responseJson) as Record<string, unknown>, outcome: "approved", replay: true };
+        // Same lost-race case as the Postgres branch above.
+        return { body: parseStoredResponse(replay.responseJson).body, outcome: "approved", replay: true };
       }
       return { outcome: "missing" };
     },

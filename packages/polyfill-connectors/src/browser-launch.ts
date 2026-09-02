@@ -28,7 +28,7 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { chmod, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext, chromium } from "playwright";
@@ -38,6 +38,26 @@ import { isRunningInContainer } from "./runtime-environment.ts";
 const PROFILE_NAME_RE = /^[A-Za-z0-9_-]+$/;
 const EXTRA_BROWSER_ARGS_RE = /\s+/;
 export const BROWSER_HEADLESS_ENV = "PDPP_BROWSER_HEADLESS";
+/**
+ * Env-var channel for `bin/scenario-record.ts` to request HAR recording
+ * from INSIDE the connector subprocess it spawns — mirrors
+ * `subprocess-fetch-preloads.ts`'s `PDPP_SCENARIO_CLOCK_FIXED_NOW_ENV`
+ * exactly: the recorder CLI and the connector's own browser-acquisition
+ * call happen in different OS processes (`spawn(process.execPath, ...)`),
+ * so a function argument can't cross that boundary — `process.env` (set on
+ * the child's `env` at spawn time) is the only channel available. Resolved
+ * in `acquireBrowserForConnector` (the entry point every browser-driven
+ * connector's subprocess actually calls — see `connector-runtime.ts`'s
+ * `acquireBrowser`), not in every individual connector, so no connector
+ * needs to know this capability exists.
+ */
+export const HAR_RECORD_PATH_ENV = "PDPP_SCENARIO_HAR_RECORD_PATH";
+/**
+ * Env-var channel for `bin/scenario-record.ts` to request a `storageState()`
+ * snapshot alongside the HAR — see `storageStateRecording`'s doc comment.
+ * Same subprocess-boundary rationale as `HAR_RECORD_PATH_ENV`.
+ */
+export const STORAGE_STATE_RECORD_PATH_ENV = "PDPP_SCENARIO_STORAGE_STATE_RECORD_PATH";
 // The two halves of the transient remote-CDP-attach race signature. See
 // `isCdpAttachSessionRaceError` for the full root-cause explanation.
 const CDP_ATTACH_RACE_METHOD_RE = /Network\.setCacheDisabled/;
@@ -46,10 +66,81 @@ const CDP_ATTACH_RACE_SESSION_CLOSED_RE = /session closed/i;
 export interface IsolatedBrowser {
   browser: Browser | null;
   context: BrowserContext;
+  /**
+   * Present only when this context was launched with `harRecording` set
+   * (see `AcquireIsolatedBrowserOptions.harRecording`). MUST be called
+   * AFTER `release()` resolves — Playwright only flushes the HAR to disk
+   * during context close, so calling this before `release()` would race
+   * the flush and could report `flushed: false` for a capture that was
+   * about to succeed. Absent entirely when `harRecording` was not
+   * requested, so a caller that never asked for a HAR has no way to
+   * mistakenly read a stale/undefined outcome as a real one.
+   */
+  harRecordingOutcome?: () => Promise<HarRecordingOutcome>;
   release: () => Promise<void>;
+  /**
+   * Present only when this context was launched with `storageStateRecording`
+   * set. Same MUST-call-after-`release()` ordering rule as
+   * `harRecordingOutcome` — `storageState()` itself is called from inside
+   * `release()`, before `context.close()`, since Playwright cannot read
+   * storage state from an already-closed context.
+   */
+  storageStateRecordingOutcome?: () => Promise<StorageStateRecordingOutcome>;
 }
 
 export interface AcquireIsolatedBrowserOptions {
+  /**
+   * Opt-in network-level HAR (HTTP Archive) capture for this browser
+   * context — the RECORD half of the connector-verification scenario
+   * harness's browser driver (see `bin/scenario-record.ts`'s
+   * `--record-har` flag). OFF by default and zero-cost when omitted: no
+   * `recordHar` option is added to `baseLaunchOptions`, so an ordinary
+   * connector run's launch options are byte-identical to before this field
+   * existed.
+   *
+   * When set, `path` becomes Playwright's `recordHar.path` — passed through
+   * `baseLaunchOptions` at BOTH `launchPersistentContext` call sites (the
+   * explicit-channel branch and the default-channel branch), so this option
+   * covers every local-launch path the same way `streamingEnabled` does.
+   * Does NOT apply to `acquireRemoteCdpBrowser` (n.eko-attached contexts):
+   * `connectOverCDP` attaches to an ALREADY-launched remote context, so
+   * there is no `launchPersistentContext` call to carry `recordHar` on that
+   * path — recording a remote-CDP session's traffic is out of scope here.
+   *
+   * `content: "embed"` (inline base64/text in the HAR JSON, chosen over
+   * Playwright's zip-friendly `"attach"`) is a deliberate choice: the
+   * scenario-verify replay half needs a HAR whose response bodies are
+   * actually present to route requests from (`context.routeFromHAR`) —
+   * `"omit"` would produce a HAR that satisfies nothing downstream. A
+   * single embedded JSON file is also the easiest shape for this module's
+   * own post-close redaction pass (see `redactHarFile`) to reason about:
+   * one file, one parse, no companion resource directory to also scrub.
+   * The cost is size and secret exposure inside `content.text` — mitigated
+   * by `redactHarFile` stripping `Set-Cookie`/`Authorization`/etc. headers
+   * (see that function's doc comment for exactly what it does and does NOT
+   * redact) but NOT by touching response bodies, which are handed to
+   * `redactHarFile`'s caller un-inspected — see this option's own doc
+   * comment continuation below on residual exposure.
+   *
+   * RESIDUAL EXPOSURE: response/request BODIES are embedded verbatim.
+   * Unlike the existing fetch-preload's structured per-field JSON body
+   * capture (which this harness never applies to HAR — a HAR entry's body
+   * is an opaque blob with unknown shape per provider), this driver cannot
+   * safely redact arbitrary body content field-by-field. A HAR captured
+   * this way is `capture.privacy_class: "local-only"` territory, same as
+   * every other scenario artifact this package's recorders produce — never
+   * committed or shared without a scrub pass, exactly like
+   * `bin/scenario-record.ts`'s existing capture output.
+   *
+   * Known gap, verified unexercised as of this change: `recordHar` does
+   * NOT capture WebSocket frames, and a page's native download flow can
+   * bypass HAR capture entirely. Checked against the connector fleet
+   * (2026-08-21): zero of the 45 connectors use WebSocket/EventSource/SSE,
+   * and none drive a browser download. Both gaps are real limitations of
+   * this driver, left unaddressed because nothing currently exercises them
+   * — not because they were solved.
+   */
+  harRecording?: { path: string };
   headless?: boolean;
   /**
    * Skip remote-CDP page-target cleanup before attach. Use only when the
@@ -77,6 +168,37 @@ export interface AcquireIsolatedBrowserOptions {
    */
   remoteCdpUrl?: string;
   /**
+   * Opt-in capture of this context's `storageState()` (cookies +
+   * localStorage/origins) at release time, WRITTEN TO ITS OWN FILE — never
+   * embedded in the HAR. Companion to `harRecording`, addressing a gap a
+   * HAR alone cannot close: `launchPersistentContext` reuses a WARM
+   * profile with existing session cookies, so replaying the HAR's captured
+   * requests against a fresh/anonymous context hits the provider's own
+   * login wall in the replaying page's JS and never reaches the recorded
+   * request shapes at all. Recording the session alongside the HAR lets the
+   * REPLAY half (owned elsewhere — see `bin/scenario-record.ts`'s
+   * `--record-har` doc comment) seed a matching starting session.
+   *
+   * DELIBERATELY UNREDACTED, and this is a stated decision, not an
+   * oversight: `storageState()`'s cookies ARE the live session — the value
+   * of the session cookie is the credential that keeps the replaying page
+   * logged in. Blanking it the way `harRecording`'s redaction pass blanks
+   * HAR headers/cookies would produce a file that LOOKS like a safety
+   * measure but actually just breaks the one thing this capture exists to
+   * provide, without removing any real risk (the HAR's own cookie headers
+   * are already redacted independently; this file is the one place a real,
+   * usable session snapshot must exist for replay to be possible at all).
+   * Treat a written storageState file as carrying live, unredacted
+   * credentials — AT LEAST as sensitive as the raw scenario capture's
+   * `capture.privacy_class: "local-only"` bodies, arguably more so (a
+   * session cookie is immediately, directly usable by anyone who reads it;
+   * a HAR body needs the specific provider context to be useful). Callers
+   * MUST NOT commit, share, or embed this file's contents anywhere a HAR
+   * or scenario JSON might otherwise be shared after a scrub pass — there
+   * is no scrub pass that makes a live session cookie safe to publish.
+   */
+  storageStateRecording?: { path: string };
+  /**
    * When true, the launcher launches Chromium in CDP-port mode
    * (`--remote-debugging-port=0` plus `--remote-debugging-address=127.0.0.1`), reads
    * the resolved random port out of `<userDataDir>/DevToolsActivePort`,
@@ -100,6 +222,44 @@ export interface AcquireIsolatedBrowserOptions {
    * this `false` or omit it.
    */
   streamingEnabled?: boolean;
+}
+
+/**
+ * Mirrors `HarRecordingOutcome` for the storageState side — see
+ * `storageStateRecording`'s doc comment for why this file is intentionally
+ * unredacted and must be handled as live credentials, not a shareable
+ * artifact.
+ */
+export interface StorageStateRecordingOutcome {
+  flushed: boolean;
+  path: string;
+}
+
+/**
+ * Per-context-close, best-effort record of whether a requested HAR capture
+ * actually reached disk. `acquireIsolatedBrowser`'s caller (via the
+ * `harRecording` option) gets this back from `release()`'s resolved value
+ * rather than from `IsolatedBrowser` itself, so every existing `release():
+ * Promise<void>` caller keeps compiling unchanged — this is a strictly
+ * additive read path, not a signature change to the widely-used
+ * `IsolatedBrowser` interface.
+ */
+export interface HarRecordingOutcome {
+  /**
+   * True only when `context.close()` completed AND the HAR file was found
+   * on disk afterward with nonzero size. A `false` here after a requested
+   * `harRecording` option means exactly what it says: no trustworthy HAR
+   * exists at `path` — a crash, a SIGKILL (e.g. `bin/scenario-record.ts`'s
+   * inactivity watchdog), or any other non-graceful teardown before
+   * `context.close()` runs leaves NO har file at all (Playwright buffers
+   * HAR content in memory and only flushes it during context close — see
+   * playwright-core's `HarRecorder.flush()`), never a silently truncated
+   * one. Callers MUST check this before treating `path` as a real artifact
+   * — never assume success just because `harRecording` was requested.
+   */
+  flushed: boolean;
+  /** Absolute path the HAR was requested at (echoes `harRecording.path`). */
+  path: string;
 }
 
 /**
@@ -216,6 +376,84 @@ export function decideContainerHeadedBrowserGate(inputs: ContainerHeadedBrowserG
     return { kind: "warn_and_proceed" };
   }
   return { kind: "fail_closed" };
+}
+
+/**
+ * Stable error thrown by `failFastOnUnusableViewport` when a HEADED launch's
+ * initial page reports a definitively-zero viewport — the observable
+ * fingerprint of a display that is set but unusable (Chromium's GPU/
+ * compositor init failed silently, so the launch API still returns a live
+ * page, but it can never lay out content). Distinct from
+ * `HeadedBrowserUnavailableError` (which fires BEFORE any launch attempt,
+ * for the container policy gate) — this fires AFTER a launch that
+ * "succeeded" by Playwright's own bookkeeping but is unusable in practice.
+ */
+export const UNUSABLE_VIEWPORT_CODE = "browser_viewport_unusable";
+
+export class UnusableViewportError extends Error {
+  readonly code: typeof UNUSABLE_VIEWPORT_CODE;
+
+  constructor(args: { message: string }) {
+    super(args.message);
+    this.name = "UnusableViewportError";
+    this.code = UNUSABLE_VIEWPORT_CODE;
+  }
+}
+
+/**
+ * Pure predicate: does this viewport reading indicate a definitively-zero
+ * (unusable) display? Exported so the decision can be unit-tested without a
+ * real Chromium — `failFastOnUnusableViewport` is not itself practical to
+ * exercise headless-in-CI (a real headless launch has a real, non-zero
+ * viewport by construction; reproducing a broken-display headed launch
+ * needs an actual misconfigured X server).
+ *
+ * Deliberately conservative: only `0` (not merely small, not undefined/NaN)
+ * on BOTH dimensions counts as unusable. `viewportSize()` returning `null`
+ * alone is not enough — `viewport: null` (this launcher's own baseline
+ * option, matching the window's native size) is Playwright's DOCUMENTED
+ * normal behavior for using the OS window size instead of an emulated one,
+ * so a null `viewportSize()` is the common case for a perfectly healthy
+ * headed launch and must never trip this check by itself. A real broken
+ * display must show up as an actual zero measurement from the page itself
+ * (`window.innerWidth`/`innerHeight`), not merely the absence of an
+ * explicit emulated viewport size.
+ */
+export function isDefinitivelyZeroViewport(measurement: {
+  innerHeight: number | undefined;
+  innerWidth: number | undefined;
+}): boolean {
+  return measurement.innerWidth === 0 && measurement.innerHeight === 0;
+}
+
+const UNUSABLE_VIEWPORT_MESSAGE =
+  "Browser launched but its viewport measures 0x0 - no usable display (DISPLAY is set but the window " +
+  "never laid out; common when Chromium's GPU/compositor init silently fails, e.g. tmux with an empty " +
+  "XAUTHORITY). Remedies: set PDPP_BROWSER_HEADLESS=1, or fix XAUTHORITY for this display.";
+
+/**
+ * Checks the just-launched initial page's real viewport and throws
+ * `UnusableViewportError` if it is definitively zero (see
+ * `isDefinitivelyZeroViewport`), instead of letting the caller proceed into
+ * a run that can never succeed. Best-effort on the measurement itself: if
+ * `window.innerWidth`/`innerHeight` cannot be read at all (page not ready,
+ * evaluate throws), this does NOT fail the launch — an unreadable
+ * measurement is not evidence of a broken display, and a normal
+ * headless/headed launch must be unaffected by this check.
+ */
+async function failFastOnUnusableViewport(page: { evaluate: <T>(fn: () => T) => Promise<T> }): Promise<void> {
+  let measurement: { innerHeight: number | undefined; innerWidth: number | undefined };
+  try {
+    measurement = await page.evaluate(() => {
+      const browserWindow = (globalThis as { window?: { innerWidth?: number; innerHeight?: number } }).window;
+      return { innerWidth: browserWindow?.innerWidth, innerHeight: browserWindow?.innerHeight };
+    });
+  } catch {
+    return; // unreadable is not evidence of unusable — never block a launch on this alone.
+  }
+  if (isDefinitivelyZeroViewport(measurement)) {
+    throw new UnusableViewportError({ message: UNUSABLE_VIEWPORT_MESSAGE });
+  }
 }
 
 export function configuredBrowserChannel(env: Record<string, string | undefined> = process.env): string | undefined {
@@ -671,6 +909,276 @@ function redactCdpUrl(rawUrl: string): string {
   }
 }
 
+// ─── HAR secret-hygiene pass (post-close, best-effort) ─────────────────────
+//
+// Playwright's own `recordHar` has no redaction knob — it captures headers,
+// cookies, and bodies verbatim. This package's existing recorder
+// (subprocess-fetch-preloads.ts's `writeRecordPreload`) never persists
+// Cookie/Set-Cookie/Authorization at all (its capture shape doesn't even
+// have a request-header field), redacts credential-shaped query params by
+// name, and (src/interaction-handler.ts's `SECRET_FIELD_RE`) never persists
+// a credentials-kind prompt response. This pass follows the SAME posture at
+// the HAR layer: strip session/auth-carrying HEADERS and HAR's own
+// structured `cookies[]` arrays (both request and response sides) plus
+// credential-shaped request POST DATA — see `redactHarEntry`'s doc comment
+// for the exact field list. It does NOT touch response/request BODY
+// content (see `harRecording`'s doc comment for why that's a stated,
+// deliberate gap, not an oversight).
+
+/** Case-insensitive header names stripped from every HAR entry, both
+ *  request and response sides. `cookie`/`set-cookie` carry session
+ *  identity; `authorization` carries bearer/basic credentials;
+ *  `x-csrf-token`/`x-xsrf-token` are the common CSRF-header spellings this
+ *  package's connectors and their providers use. Matched by exact
+ *  lower-cased name, not a substring/regex, so an unrelated header that
+ *  merely CONTAINS one of these words (unlikely, but the query-param
+ *  redaction elsewhere in this package uses substring matching precisely
+ *  because query param names are freeform — HTTP header names are not) is
+ *  never mistakenly dropped. */
+const REDACTED_HAR_HEADER_NAMES = new Set(["cookie", "set-cookie", "authorization", "x-csrf-token", "x-xsrf-token"]);
+
+const REDACTED_HAR_HEADER_PLACEHOLDER = "[redacted-by-scenario-record]";
+
+interface HarNameValue {
+  name: string;
+  value: string;
+}
+
+interface HarPostDataParam {
+  name: string;
+  value?: string;
+}
+
+interface HarRequestOrResponse {
+  cookies?: HarNameValue[];
+  headers?: HarNameValue[];
+  postData?: { mimeType?: string; params?: HarPostDataParam[]; text?: string };
+}
+
+interface HarEntry {
+  request?: HarRequestOrResponse;
+  response?: HarRequestOrResponse;
+}
+
+interface HarDocument {
+  log?: { entries?: HarEntry[] };
+}
+
+/** Redacts headers matching `REDACTED_HAR_HEADER_NAMES` in place, returning
+ *  a NEW array (does not mutate the input) with matching entries'
+ *  `value` replaced by the placeholder — the header NAME is kept (so a
+ *  reader can still see e.g. "an Authorization header was sent here"
+ *  without learning its value), matching this package's existing
+ *  `--persist-otp`-adjacent posture of recording the SHAPE of what happened
+ *  without the secret itself. */
+function redactHeaders(headers: HarNameValue[]): HarNameValue[] {
+  return headers.map((header) =>
+    REDACTED_HAR_HEADER_NAMES.has(header.name.toLowerCase())
+      ? { name: header.name, value: REDACTED_HAR_HEADER_PLACEHOLDER }
+      : header
+  );
+}
+
+/** HAR's own structured `cookies[]` array (distinct from the `Cookie`/
+ *  `Set-Cookie` HEADER, which `redactHeaders` also strips — Playwright
+ *  populates both independently, so both must be redacted or the cookie
+ *  value survives in the array even with the header blanked). Keeps the
+ *  cookie NAME, drops the value. */
+function redactCookies(cookies: HarNameValue[]): HarNameValue[] {
+  return cookies.map((cookie) => ({ name: cookie.name, value: REDACTED_HAR_HEADER_PLACEHOLDER }));
+}
+
+/**
+ * Redacts a request's `postData` when it looks like a credential
+ * submission — mirrors `bin/scenario-record.ts`'s `isCredentialsPrompt`
+ * posture (never persist a real credential value) rather than inventing a
+ * new philosophy: a login POST is exactly the browser-driven analogue of
+ * the Collection Profile `credentials`-kind INTERACTION that CLI already
+ * redacts unconditionally. Heuristic, not a parser: `application/
+ * x-www-form-urlencoded` or `multipart/form-data` bodies whose PARSED
+ * fields (Playwright already gives us `params[]` for these content types)
+ * include a name matching `CREDENTIAL_FORM_FIELD_RE` (password/passwd/pwd/
+ * secret/token/otp/pin) get every param value blanked — a JSON login body
+ * has no such structured `params[]` from Playwright, so it falls through
+ * unredacted; see this function's caller-side doc comment on residual
+ * exposure for that honestly-stated gap.
+ */
+const CREDENTIAL_FORM_FIELD_RE = /pass(word|wd)?|secret|token|\botp\b|\bpin\b/i;
+
+type HarPostData = NonNullable<HarRequestOrResponse["postData"]>;
+
+function looksLikeCredentialFormPost(postData: HarPostData): boolean {
+  if (!postData.params) {
+    return false;
+  }
+  return postData.params.some((param) => CREDENTIAL_FORM_FIELD_RE.test(param.name));
+}
+
+function redactPostData(postData: HarPostData): HarPostData {
+  if (!looksLikeCredentialFormPost(postData)) {
+    return postData;
+  }
+  const out: HarPostData = {};
+  if (postData.mimeType !== undefined) {
+    out.mimeType = postData.mimeType;
+  }
+  if (postData.text !== undefined) {
+    out.text = REDACTED_HAR_HEADER_PLACEHOLDER;
+  }
+  if (postData.params) {
+    out.params = postData.params.map((param) => ({ name: param.name, value: REDACTED_HAR_HEADER_PLACEHOLDER }));
+  }
+  return out;
+}
+
+function redactHarRequestOrResponse(side: HarRequestOrResponse): HarRequestOrResponse {
+  const out: HarRequestOrResponse = { ...side };
+  if (side.headers) {
+    out.headers = redactHeaders(side.headers);
+  }
+  if (side.cookies) {
+    out.cookies = redactCookies(side.cookies);
+  }
+  if (side.postData) {
+    out.postData = redactPostData(side.postData);
+  }
+  return out;
+}
+
+/** Pure redaction of one parsed HAR document — exported so this exact
+ *  transform is independently unit-testable against a synthetic HAR
+ *  without touching the filesystem. See the module-scope "HAR secret-
+ *  hygiene pass" comment above for the full posture and what is
+ *  deliberately NOT redacted (response/request body content). */
+export function redactHarDocument(har: HarDocument): HarDocument {
+  const entries = har.log?.entries;
+  if (!entries) {
+    return har;
+  }
+  return {
+    ...har,
+    log: {
+      ...har.log,
+      entries: entries.map((entry) => {
+        const out: HarEntry = { ...entry };
+        if (entry.request) {
+          out.request = redactHarRequestOrResponse(entry.request);
+        }
+        if (entry.response) {
+          out.response = redactHarRequestOrResponse(entry.response);
+        }
+        return out;
+      }),
+    },
+  };
+}
+
+/**
+ * Reads the HAR JSON at `path`, applies `redactHarDocument`, and writes it
+ * back 0600 — best-effort: a missing file (the honest "context.close()
+ * never ran / HAR was never flushed" case — see `HarRecordingOutcome`'s doc
+ * comment) or an unparseable file logs a warning and returns without
+ * throwing, so a redaction-pass failure never turns into an unhandled
+ * rejection that crashes the caller's `release()`. The mode is set
+ * EXPLICITLY (not left to Playwright's own create-time umask-dependent
+ * default) — mirrors `bin/scenario-record.ts`'s `writeScenarioAtomically`,
+ * which never trusts umask for a file that may hold real captured data
+ * either.
+ *
+ * EXPORTED so test fixtures that simulate a browser-driven connector
+ * WITHOUT a real Chromium (this package's convention — see
+ * `browser-launch.test.ts`'s module comment) can call the SAME redaction
+ * `acquireIsolatedBrowser`'s `release()` runs, instead of a test double
+ * re-implementing (and potentially drifting from) this logic. See
+ * `src/test-fixtures/scenario-record-har-stub-connector.ts`.
+ */
+export async function redactHarFileBestEffort(path: string): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    // No file to redact — either recording was never enabled for real (a
+    // logic error upstream, since this is only called when it was) or
+    // context.close() never completed (crash/SIGKILL). Either way there is
+    // nothing to redact, and `harRecordingOutcome` is the honest signal for
+    // "no HAR exists" — this function does not duplicate that reporting.
+    return;
+  }
+  let parsed: HarDocument;
+  try {
+    parsed = JSON.parse(raw) as HarDocument;
+  } catch (err) {
+    process.stderr.write(
+      `[browser-launch] HAR at ${path} was not valid JSON; leaving it UNREDACTED and unmodified. ` +
+        `Treat this file as sensitive until manually reviewed. (${err instanceof Error ? err.message : String(err)})\n`
+    );
+    return;
+  }
+  const redacted = redactHarDocument(parsed);
+  try {
+    // `mode` on writeFile only applies at file CREATION; the HAR already
+    // exists (Playwright created it), so force 0600 explicitly afterward —
+    // same two-step belt-and-suspenders as `writeScenarioAtomically`.
+    await writeFile(path, JSON.stringify(redacted), "utf8");
+    await chmod(path, 0o600);
+  } catch (err) {
+    process.stderr.write(
+      `[browser-launch] failed to write redacted HAR back to ${path}: ` +
+        `${err instanceof Error ? err.message : String(err)}. The file may still contain UNREDACTED secrets.\n`
+    );
+  }
+}
+
+/**
+ * Writes `context.storageState()` to `path`, 0600, UNREDACTED (see
+ * `storageStateRecording`'s doc comment on `AcquireIsolatedBrowserOptions`
+ * for why redacting this file would defeat its purpose). Best-effort: a
+ * failure here (context already unusable, disk error) logs a warning and
+ * returns without throwing — `storageStateRecordingOutcome()` is the
+ * caller-facing honest signal for "no session snapshot exists"; this
+ * function does not duplicate that reporting, it only guarantees a failure
+ * here can never block `release()`'s subsequent `context.close()`.
+ */
+async function writeStorageStateBestEffort(context: BrowserContext, path: string): Promise<void> {
+  try {
+    const state = await context.storageState();
+    await writeFile(path, JSON.stringify(state), { mode: 0o600 });
+  } catch (err) {
+    process.stderr.write(
+      `[browser-launch] failed to capture storageState to ${path}: ` +
+        `${err instanceof Error ? err.message : String(err)}. Replay will have no seeded session for this capture.\n`
+    );
+  }
+}
+
+/**
+ * Reports whether a file this module was supposed to write actually reached
+ * disk, nonempty — shared by `HarRecordingOutcome` and
+ * `StorageStateRecordingOutcome` (both are the same "did the expected
+ * side-effect file land" question). Checks for a nonempty file rather than
+ * mere existence: a zero-byte file at this path is not a real capture (a
+ * write raced with a read, or a placeholder was created some other way) —
+ * treated the same as "does not exist" rather than reported as a false
+ * success.
+ *
+ * EXPORTED so `bin/scenario-record.ts` can call this directly: HAR/
+ * storageState recording is requested via an env var that crosses into a
+ * SEPARATE OS process (the spawned connector subprocess), so the CLI has no
+ * live `IsolatedBrowser` handle to call `harRecordingOutcome()`/
+ * `storageStateRecordingOutcome()` on — it must independently re-check the
+ * same path after the subprocess exits, using the identical honesty rule
+ * (nonempty file, not mere existence) rather than a second, potentially
+ * divergent implementation.
+ */
+export async function fileFlushOutcome(path: string): Promise<{ flushed: boolean; path: string }> {
+  try {
+    const info = await stat(path);
+    return { path, flushed: info.isFile() && info.size > 0 };
+  } catch {
+    return { path, flushed: false };
+  }
+}
+
 /**
  * Launch an isolated per-connection browser context with its own profile dir.
  * The connector runtime scopes the profile name with the stable connector
@@ -682,6 +1190,8 @@ export async function acquireIsolatedBrowser({
   streamingEnabled,
   remoteCdpUrl,
   preserveRemotePagesOnAcquire,
+  harRecording,
+  storageStateRecording,
 }: AcquireIsolatedBrowserOptions): Promise<IsolatedBrowser> {
   if (!(profileName && PROFILE_NAME_RE.test(profileName))) {
     throw new Error("profileName required, must be [A-Za-z0-9_-]+");
@@ -777,6 +1287,14 @@ export async function acquireIsolatedBrowser({
     headless: effectiveHeadless,
     viewport: null,
     args: baseArgs,
+    // OFF by default (`harRecording` is opt-in and normally omitted), so an
+    // ordinary connector launch never has a `recordHar` key at all — not
+    // merely a falsy one, an ABSENT one — matching Playwright's own "HAR is
+    // not recorded" default and keeping this launch path a true no-op for
+    // every caller that doesn't ask for it. See `harRecording`'s doc
+    // comment on `AcquireIsolatedBrowserOptions` for the `content: "embed"`
+    // justification.
+    ...(harRecording ? { recordHar: { path: harRecording.path, content: "embed" as const } } : {}),
   };
 
   const explicitChannel = configuredBrowserChannel();
@@ -801,6 +1319,22 @@ export async function acquireIsolatedBrowser({
     return localChromium.launchPersistentContext(isolatedDir, baseLaunchOptions);
   });
 
+  // Fail fast on an unusable display instead of proceeding into a doomed
+  // run. Root-cause precedent (see the venmo fix in this same change and
+  // the DISPLAY/XAUTHORITY warning above): a headed launch whose display is
+  // set but unauthenticated/unusable (common under tmux with an empty
+  // XAUTHORITY) still returns a live Browser/Context/Page from Playwright —
+  // the GPU/compositor failure is silent at the launch API. The page then
+  // never lays out, `page.goto` never actually commits visually, and every
+  // downstream probe fails with an opaque transport error dozens of seconds
+  // later. `launchPersistentContext` already opens an initial page for a
+  // persistent context, so this is the earliest point a real viewport
+  // reading is available.
+  const [initialPage] = context.pages();
+  if (initialPage) {
+    await failFastOnUnusableViewport(initialPage);
+  }
+
   // Publish the CDP host:port to env so the browser-binding-local handoff
   // helper (`browser-handoff.ts`) can compose per-interaction wsUrls at
   // `manual_action` emission time. The launcher does NOT register any
@@ -818,12 +1352,42 @@ export async function acquireIsolatedBrowser({
     context,
     browser: context.browser(),
     release: async (): Promise<void> => {
+      // storageState() MUST be read BEFORE context.close() — Playwright
+      // cannot read state off an already-closed context. Best-effort: a
+      // crash here must not prevent context.close() from still being
+      // attempted below (the pre-existing shutdown contract every other
+      // caller relies on).
+      if (storageStateRecording) {
+        await writeStorageStateBestEffort(context, storageStateRecording.path);
+      }
       try {
         await context.close();
       } catch {
         /* ignore */
       }
+      // Playwright only flushes recordHar content during context close (see
+      // `HarRecordingOutcome`'s doc comment) — running redaction here, AFTER
+      // `context.close()` has been awaited (success OR failure), is the
+      // earliest point a HAR file could possibly exist. A `harRecording`
+      // caller that reads `harRecordingOutcome()` before this point would
+      // race the flush; ordering `release()`'s own internals this way means
+      // the race can only ever make redaction correctly report "not
+      // written yet" on a violated call-order, never a false positive.
+      if (harRecording) {
+        await redactHarFileBestEffort(harRecording.path);
+      }
     },
+    ...(harRecording
+      ? {
+          harRecordingOutcome: (): Promise<HarRecordingOutcome> => fileFlushOutcome(harRecording.path),
+        }
+      : {}),
+    ...(storageStateRecording
+      ? {
+          storageStateRecordingOutcome: (): Promise<StorageStateRecordingOutcome> =>
+            fileFlushOutcome(storageStateRecording.path),
+        }
+      : {}),
   };
 }
 
@@ -1230,5 +1794,22 @@ export async function acquireBrowserForConnector(options: AcquireIsolatedBrowser
     );
   }
 
-  return await acquireIsolatedBrowser({ ...options, headless: effectiveHeadless });
+  // FIX (scenario-record HAR capture): resolve the subprocess-boundary env
+  // vars into the same typed options `acquireIsolatedBrowser` already
+  // accepts programmatically — an explicit `options.harRecording`/
+  // `options.storageStateRecording` (a same-process caller, e.g. a future
+  // test or tool) always wins over the env var, matching every other
+  // env-vs-explicit-option precedence in this file (e.g.
+  // `resolveDeploymentBrowserHeadless`'s `headless ?? env[...]`).
+  const harRecordPath = process.env[HAR_RECORD_PATH_ENV]?.trim() || undefined;
+  const storageStateRecordPath = process.env[STORAGE_STATE_RECORD_PATH_ENV]?.trim() || undefined;
+  const harRecording = options.harRecording ?? (harRecordPath ? { path: harRecordPath } : undefined);
+  const storageStateRecording =
+    options.storageStateRecording ?? (storageStateRecordPath ? { path: storageStateRecordPath } : undefined);
+  return await acquireIsolatedBrowser({
+    ...options,
+    headless: effectiveHeadless,
+    ...(harRecording ? { harRecording } : {}),
+    ...(storageStateRecording ? { storageStateRecording } : {}),
+  });
 }

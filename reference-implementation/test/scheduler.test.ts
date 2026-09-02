@@ -51,10 +51,9 @@ function readServerSchedulerFixtureManifest(): Record<string, unknown> & {
   display_name: string;
   manifest_uri: string;
 } {
-  const base = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")) as Record<
-    string,
-    unknown
-  > & { capabilities?: Record<string, unknown> };
+  const base = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  ) as Record<string, unknown> & { capabilities?: Record<string, unknown> };
   return {
     ...base,
     capabilities: {
@@ -267,7 +266,6 @@ async function waitForRunTerminalEvent(asUrl: string, runId: string, timeoutMs =
     const { body } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`);
     const timeline = body as TimelineBody;
     if (
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: assertion retains its defensive runtime boundary
       timeline.data?.some((event) =>
         ["run.completed", "run.failed", "run.cancelled", "run.abandoned"].includes(event.event_type)
       )
@@ -626,11 +624,7 @@ test("server-owned scheduler refreshes after schedule route mutations", async ()
       // biome-ignore lint/performance/noAwaitInLoops: sequential sampling of a negative is the point
       await new Promise((resolve) => setTimeout(resolve, PAUSE_OBSERVATION_SAMPLE_MS));
     }
-    assert.equal(
-      readAttempts(attemptsPath).length,
-      1,
-      "paused route mutation should stop the live scheduler (final)"
-    );
+    assert.equal(readAttempts(attemptsPath).length, 1, "paused route mutation should stop the live scheduler (final)");
   } finally {
     await closeServer(server);
     rmSync(tmpDir, { force: true, recursive: true });
@@ -638,7 +632,9 @@ test("server-owned scheduler refreshes after schedule route mutations", async ()
 });
 
 test("server-owned scheduler ignores paused and deleted persisted schedules", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-server-scheduler-paused-deleted-"));
   const dbPath = join(tmpDir, "pdpp.sqlite");
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
@@ -814,7 +810,6 @@ test("autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_
       `run-history connectorId should be canonical '${canonicalKey}', got '${record.connectorId}'`
     );
     assert.equal(
-      // biome-ignore lint/suspicious/noUnnecessaryConditions: assertion retains its defensive runtime boundary
       (record.source as { id?: unknown })?.id,
       canonicalKey,
       `spine run source.id should be canonical '${canonicalKey}', got '${JSON.stringify(record.source)}'`
@@ -838,7 +833,9 @@ test("autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_
 });
 
 test("scheduler history records checkpoint summaries from runConnector results", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -930,7 +927,9 @@ test("scheduler history records checkpoint summaries from runConnector results",
 });
 
 test("scheduler hydrates persisted history without bypassing a fresh persisted last-run interval", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -1484,7 +1483,7 @@ rl.on('line', (line) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "POST" && url.pathname.startsWith("/v1/ingest/")) {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+      res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
       return;
     }
 
@@ -2692,7 +2691,7 @@ rl.on('line', (line) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "POST" && url.pathname === "/v1/ingest/items") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+      res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
       return;
     }
 
@@ -3016,7 +3015,7 @@ rl.on('line', (line) => {
       }
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+      res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
       return;
     }
 
@@ -3156,7 +3155,7 @@ rl.on('line', (line) => {
       }
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+      res.end(JSON.stringify({ records_accepted: 1, records_attempted: 1, records_rejected: 0, rejections: [] }));
       return;
     }
 
@@ -3223,7 +3222,9 @@ rl.on('line', (line) => {
 });
 
 test("scheduler treats single_use grants as one successful run followed by exhausted skips without persisting state", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -3330,7 +3331,9 @@ test("scheduler treats single_use grants as one successful run followed by exhau
 });
 
 test("scheduler does not start overlapping runs for the same connector while a prior run is active", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-active-run-"));
   const attemptsPath = join(tmpDir, "attempts.log");
   const connectorPath = join(tmpDir, "slow-connector.mjs");
@@ -3413,7 +3416,9 @@ rl.on('line', (line) => {
 });
 
 test("scheduler keeps single_use grants reusable after failed runs until a later success consumes them", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-single-use-retry-"));
   const attemptsPath = join(tmpDir, "attempts.log");
   const connectorPath = join(tmpDir, "flaky-single-use-connector.mjs");
@@ -3556,7 +3561,9 @@ rl.on('line', (line) => {
 });
 
 test("scheduler stop prevents retryable failures from launching another attempt after backoff", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-stop-retry-"));
   const attemptsPath = join(tmpDir, "attempts.log");
   const connectorPath = join(tmpDir, "retryable-connector.mjs");
@@ -3658,7 +3665,9 @@ rl.on('line', (line) => {
 });
 
 test("scheduler start is idempotent and does not launch a second immediate run", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -3863,7 +3872,9 @@ rl.on('line', (line) => {
 });
 
 test("scheduler skips automatic run with needs_human_attention when isNeedsHuman returns true", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -3927,7 +3938,9 @@ test("scheduler skips automatic run with needs_human_attention when isNeedsHuman
 });
 
 test("scheduler records one not-ready skip for automatic runs when runtime prerequisites are absent", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-not-ready-test",
@@ -3994,7 +4007,9 @@ test("scheduler records one not-ready skip for automatic runs when runtime prere
 });
 
 test("scheduler emits a fresh not-ready skip when readiness reason changes", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-not-ready-changing-test",
@@ -4059,7 +4074,9 @@ test("scheduler emits a fresh not-ready skip when readiness reason changes", asy
 });
 
 test("scheduler default readiness checker skips missing manifest-declared external tools", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-missing-tool-test",
@@ -4132,7 +4149,9 @@ test("scheduler default readiness checker skips missing manifest-declared extern
 });
 
 test("scheduler default readiness checker probes a manifest-declared executable_env_override with version when set", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-slackdump-bin-test",
@@ -4292,7 +4311,9 @@ test("scheduler default readiness checker applies local-source checks declared b
 });
 
 test("scheduler default readiness checker does not treat browser bindings as ready by default", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-browser-not-ready-test",
@@ -4400,7 +4421,9 @@ test("scheduler default readiness checker does not treat browser bindings as rea
 });
 
 test("scheduler default readiness checker treats PDPP_NEKO_CDP_HTTP_URL as managed browser surface", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-browser-neko-cdp-ready-test",
@@ -4496,7 +4519,9 @@ test("scheduler default readiness checker treats PDPP_NEKO_CDP_HTTP_URL as manag
 });
 
 test("scheduler default readiness checker treats PDPP_NEKO_MANAGED_CONNECTORS as managed browser surface", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-browser-neko-managed-ready-test",
@@ -4713,7 +4738,9 @@ rl.on('line', (line) => {
 // the last-run map is empty, and the skip-message formatter substitutes
 // safe phrasing if the resolved timestamp is still epoch-suspicious.
 test("scheduler backoff skip derives next_attempt_at from history when last_run_time is missing", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-backoff-1970-regression",
@@ -4834,7 +4861,9 @@ test("scheduler backoff skip derives next_attempt_at from history when last_run_
 // `gave_up` phrasing instead, and a one-shot `schedule.gave_up` event
 // fires.
 test("scheduler backoff skip uses gave_up phrasing once health-state crosses blocked threshold", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-backoff-blocked-msg",
@@ -4934,7 +4963,9 @@ test("scheduler backoff skip uses gave_up phrasing once health-state crosses blo
 });
 
 test("scheduler does not re-emit persisted backoff transition markers on restart", async () => {
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8")
+  );
   const manifest = {
     ...spotifyManifest,
     connector_id: "scheduler-backoff-restart-noise",

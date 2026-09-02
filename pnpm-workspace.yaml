@@ -3,27 +3,25 @@ packages:
   - "packages/*"
   - "reference-implementation"
 # @pdpp/collector-runtime and @pdpp/connector-protocol left this monorepo for
-# data-connect (PDP-Connect/data-connect, this is now a consumer of them via a
-# commit-pinned git dependency; see packages/polyfill-connectors/package.json
-# and reference-implementation/package.json). pnpm resolves a git-hosted
-# package's own build scripts in an isolated tmpdir before it's linked into
-# any workspace, so blockExoticSubdeps must be off — otherwise pnpm refuses to
-# let the overrides below resolve a git-hosted package's transitive deps.
-blockExoticSubdeps: false
+# data-connect (PDP-Connect/data-connect). This repo consumes them as vendored
+# tarballs (see vendor/README.md for provenance and
+# scripts/check-pdpp-vendored-package-pins.ts for the pin verification), not a
+# git dependency — the two packages are lockstep-versioned by data-connect's
+# semantic-release pipeline, so both tarballs always carry the same package
+# version, and collector-runtime's packed package.json pins its
+# connector-protocol dependency to that exact version (never "*").
 overrides:
   "@pdpp/cli": "workspace:*"
   "@pdpp/read-core": "workspace:*"
-  # @pdpp/collector-runtime declares "@pdpp/connector-protocol": "*" and
-  # "@pdpp/reference-contract": "*" in its own package.json (npm's convention
-  # for "resolve from the workspace root," which is how data-connect itself
-  # resolves it). Outside that workspace, pnpm has nothing to resolve "*"
-  # against and falls through to the public npm registry, where both names
-  # 404 (they're private). These overrides supply the resolution pnpm can't
-  # infer on its own: connector-protocol to the same pinned git commit,
-  # reference-contract to this repo's own real package (not
-  # data-connect's minimal same-named stand-in — see its README for why that
-  # distinction matters).
-  "@pdpp/connector-protocol": "file:./vendor/pdpp-connector-protocol-0.0.1.tgz"
+  # collector-runtime's own dependencies map already pins connector-protocol
+  # to an exact version (see above), but pnpm needs the override below so a
+  # transitive resolution of connector-protocol from anywhere else in this
+  # workspace also lands on the same vendored tarball rather than falling
+  # through to the public npm registry, where the scoped package 404s
+  # (private). reference-contract overrides to this repo's own real package
+  # (not data-connect's minimal same-named stand-in — see its README for why
+  # that distinction matters).
+  "@pdpp/connector-protocol": "file:./vendor/pdpp-connector-protocol-1.0.0.tgz"
   "@pdpp/reference-contract": "workspace:*"
 # React's own package ships no types, so a dependency's `import * as React from
 # "react"` resolves types by walking up from its isolated pnpm store directory —

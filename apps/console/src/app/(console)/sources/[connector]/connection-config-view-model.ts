@@ -37,7 +37,7 @@ export type ConfigOptionType = "boolean" | "integer" | "string" | "string_array"
 /** Platform-decided kind. `transport` self-activates; `collection_scope` does not. */
 export type ConfigOptionKind = "collection_scope" | "transport";
 
-export type ConfigRevisionStatus = "active" | "proposed" | "quarantined" | "superseded";
+export type ConfigRevisionStatus = "active" | "proposed" | "quarantined" | "rejected" | "superseded";
 
 export type ConfigOrigin = "agent" | "default" | "migration" | "owner";
 
@@ -606,6 +606,11 @@ export function statusLabel(status: ConfigRevisionStatus, isCurrent: boolean): s
     case "proposed": {
       return "Awaiting confirmation";
     }
+    case "rejected": {
+      // His decision, in his words. NOT "blocked" or "invalid" — nothing was
+      // wrong with the proposal; he was asked and said no.
+      return "You declined this change";
+    }
     case "superseded": {
       return "Replaced by a newer revision";
     }
@@ -638,14 +643,37 @@ export function originLabel(origin: ConfigOrigin, actor: string): string {
   }
 }
 
-/** `client:daisy` is an internal handle; render the readable half. */
+/**
+ * Render WHO proposed a change, in words the owner can act on.
+ *
+ * This FAILS CLOSED, and that is the point. It previously fell through to
+ * `return trimmed` — the raw actor string — so an internal orchestration handle
+ * was presented to the owner as a first-class identity. Live on 2026-08-26 his
+ * UI read:
+ *
+ *   "Proposed by agent:pdpp-slack-archived-run-0822 (NOT owner-authored)"
+ *
+ * A workflow lane name, an internal parenthetical written for US, and a date
+ * stamp — rendered as a person. The server cannot authenticate a lane name, so
+ * showing one invents an accountable party that does not exist, and it makes
+ * the owner parse our internal caveats as part of someone's name.
+ *
+ * Only an actor shape the product actually models (`client:<name>`, a
+ * registered app) earns a specific name. Everything else — including any
+ * future handle nobody remembered to map — renders as an honest generic
+ * phrase. Saying "an automated process" is less informative than a real name
+ * and infinitely more truthful than a fabricated one.
+ */
+const REGISTERED_APP_PREFIX = "client:";
+const UNIDENTIFIED_AUTOMATED_ACTOR = "an automated process";
+
 export function describeAgentActor(actor: string): string {
   const trimmed = actor.trim();
-  if (trimmed.startsWith("client:")) {
-    const name = trimmed.slice("client:".length).trim();
-    return name || "an app";
+  if (trimmed.startsWith(REGISTERED_APP_PREFIX)) {
+    const name = trimmed.slice(REGISTERED_APP_PREFIX.length).trim();
+    return name || UNIDENTIFIED_AUTOMATED_ACTOR;
   }
-  return trimmed === "agent" || trimmed === "" ? "an app" : trimmed;
+  return UNIDENTIFIED_AUTOMATED_ACTOR;
 }
 
 export interface RevisionHistoryEntry {

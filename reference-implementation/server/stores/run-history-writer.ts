@@ -163,6 +163,31 @@ function factsJsonFromTerminalData(data: Record<string, unknown>): string {
   return JSON.stringify(facts);
 }
 
+function runtimeFailureConnectorErrorJson(data: Record<string, unknown>): string | null {
+  const { failure_message, failure_origin, runtime_failure } = data as {
+    failure_message?: unknown;
+    failure_origin?: unknown;
+    runtime_failure?: unknown;
+  };
+  if (typeof failure_message !== "string" || !failure_message) {
+    return null;
+  }
+  const runtimeFailure =
+    runtime_failure && typeof runtime_failure === "object" && !Array.isArray(runtime_failure)
+      ? (runtime_failure as Record<string, unknown>)
+      : null;
+  const runtimeFailureCode = typeof runtimeFailure?.code === "string" ? runtimeFailure.code : null;
+  const runtimeFailureRetryable = typeof runtimeFailure?.retryable === "boolean" ? runtimeFailure.retryable : null;
+  const runtimeFailureCauseChain = Array.isArray(runtimeFailure?.cause_chain) ? runtimeFailure.cause_chain : null;
+  return JSON.stringify({
+    code: runtimeFailureCode,
+    message: failure_message,
+    origin: typeof failure_origin === "string" && failure_origin ? failure_origin : "runtime",
+    retryable: runtimeFailureRetryable,
+    ...(runtimeFailureCauseChain?.length ? { cause_chain: runtimeFailureCauseChain } : {}),
+  });
+}
+
 function connectorErrorJsonFromTerminalData(data: Record<string, unknown>): string | null {
   // The executor flattens connector-error fields onto the terminal event's
   // data (buildTerminalConnectorFields, runtime/index.ts) rather than
@@ -187,19 +212,7 @@ function connectorErrorJsonFromTerminalData(data: Record<string, unknown>): stri
     // event (buildTerminalErrorFields, runtime/index.ts); carry it through so
     // the stored error is never blank. `failure_origin` distinguishes it from
     // a connector-authored message.
-    const { failure_message, failure_origin } = data as {
-      failure_message?: unknown;
-      failure_origin?: unknown;
-    };
-    if (typeof failure_message !== "string" || !failure_message) {
-      return null;
-    }
-    return JSON.stringify({
-      code: null,
-      message: failure_message,
-      origin: typeof failure_origin === "string" && failure_origin ? failure_origin : "runtime",
-      retryable: null,
-    });
+    return runtimeFailureConnectorErrorJson(data);
   }
   return JSON.stringify({
     code: connector_error_code ?? null,

@@ -794,6 +794,7 @@
     },
     {
       "name": "message_attachments",
+      "required": false,
       "description": "Link-preview unfurls and bot-generated rich attachments inlined on messages. One row per (message, attachment index).",
       "display": {
         "label": "Link previews and message attachments",
@@ -883,12 +884,13 @@
           "semantic_fields": ["title", "text", "fallback"]
         }
       },
-      "coverage_strategy": "checkpoint_window",
-      "state_stream": "messages",
+      "coverage_strategy": "parent_detail_accounting",
+      "parent_streams": ["messages"],
       "freshness_strategy": "scheduled_window"
     },
     {
       "name": "reactions",
+      "required": false,
       "description": "Reactions as (message, emoji, user) triples.",
       "display": {
         "label": "Slack reactions",
@@ -937,8 +939,8 @@
           "cardinality": "has_one"
         }
       ],
-      "coverage_strategy": "checkpoint_window",
-      "state_stream": "messages",
+      "coverage_strategy": "parent_detail_accounting",
+      "parent_streams": ["messages"],
       "freshness_strategy": "scheduled_window"
     },
     {

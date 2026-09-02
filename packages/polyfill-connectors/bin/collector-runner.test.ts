@@ -2,10 +2,37 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
-import { buildCollectorStartMessage } from "@pdpp/collector-runtime";
-import { buildConnectorSpec, parseArgs, scopedDefaultQueuePath } from "./collector-runner.ts";
+import { buildCollectorStartMessage, LocalDeviceOutbox } from "@pdpp/collector-runtime";
+import {
+  buildConnectorSpec,
+  parseArgs,
+  readOutboxStatus,
+  recoverDeadLetters,
+  scopedDefaultQueuePath,
+} from "./collector-runner.ts";
+
+async function tempOutboxPath(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-collector-runner-outbox-"));
+  return join(dir, "outbox.sqlite");
+}
+
+/** Enqueue one record batch and dead-letter it (claim → deadLetter, the only valid transition). */
+function seedOneDeadLetter(outboxPath: string, sourceInstanceId: string, error: string): void {
+  const outbox = new LocalDeviceOutbox({ path: outboxPath });
+  try {
+    outbox.enqueue({ id: "item-1", kind: "record_batch", payload: { ok: true }, sourceInstanceId });
+    const [claimed] = outbox.claimReady({ holder: "seed", leaseMs: 60_000, sourceInstanceId });
+    assert.ok(claimed, "expected to claim the seeded item");
+    outbox.deadLetter({ error, holder: "seed", id: claimed.id, leaseEpoch: claimed.lease_epoch });
+  } finally {
+    outbox.close();
+  }
+}
 
 // These tests pin the START wire for stream backfill:
 // CLI argv → parseArgs → buildConnectorSpec → buildCollectorStartMessage.
@@ -94,6 +121,8 @@ test("CLI --resources reaches the connector as START scope resources", () => {
     "messages,reactions",
     "--resources",
     "messages:C07JYF0U8BY|C016X99931T",
+    "--protocol-capabilities",
+    "none",
   ]);
   const spec = buildConnectorSpec(options);
   const start = buildCollectorStartMessage(spec.streams, spec.streamsToBackfill, null, spec.resources);
@@ -176,6 +205,34 @@ test("CLI local-agent defaults request safe inventory and coverage streams", () 
   assert(!codex.streams.includes("memories"), "Codex memories remain diagnostics-only");
 });
 
+test("CLI run --connector signal uses its own LocalCollectorDefinition streams, not a hand-maintained CLI table", () => {
+  // Regression for the drift this fixes: `KNOWN_CONNECTOR_DEFAULTS` used to
+  // be a hand-copied table that only listed codex/claude_code/gmail, so any
+  // other registered local-collector connector (signal included) failed
+  // with "run requires --streams" before spawn, even though its own
+  // `LocalCollectorDefinition` (src/collector-registry.ts) already declares
+  // a default stream set. Reproduced pre-fix; this pins the fix.
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "signal",
+    "--device-id",
+    "dev",
+    "--device-token",
+    "tok",
+    "--source-instance-id",
+    "src",
+  ]);
+  const spec = buildConnectorSpec(options);
+  assert.equal(spec.connector_id, "signal");
+  assert.equal(spec.command, "tsx");
+  assert.deepEqual(spec.args, ["connectors/signal/index.ts"]);
+  assert.deepEqual(spec.streams, ["messages", "conversations", "reactions", "attachments"]);
+  assert.equal(spec.runtime_requirements?.bindings?.filesystem?.required, true);
+});
+
 test("CLI --backfill-streams supports comma-separated lists (forward compatibility for additional historical streams)", () => {
   const options = parseArgs([
     "run",
@@ -240,4 +297,77 @@ test("default collector queue path is scoped by connection id", () => {
     scopedDefaultQueuePath("/tmp/custom.json", "/tmp/collector-runner-queue.json", "conn/a b"),
     "/tmp/custom.json"
   );
+});
+
+// ─── status / recover: bounded, read-only outbox inspection and dead-letter
+// recovery (no network call, no connector spawn). These pin the honest
+// distinction "the collector stopped" (a genuinely empty/idle outbox) from
+// "the source is stuck" (a dead-lettered record blocking the outbox), the
+// same distinction `docs/operator/local-collector-runbook.md`'s
+// `lifecycle_state` table documents for the published local collector.
+
+test("status: an idle outbox with no work reports healthy_idle and zero dead letters", async () => {
+  const outboxPath = await tempOutboxPath();
+  const report = readOutboxStatus(outboxPath, "conn-1");
+  assert.equal(report.lifecycleState, "healthy_idle");
+  assert.equal(report.summary.total, 0);
+  assert.equal(report.deadLetterErrors.dead_letter_count, 0);
+});
+
+test("status: a dead-lettered record reports dead_letter lifecycle and names the error class", async () => {
+  const outboxPath = await tempOutboxPath();
+  seedOneDeadLetter(outboxPath, "conn-1", "boom: mime_type must be a valid media type");
+  const report = readOutboxStatus(outboxPath, "conn-1");
+  assert.equal(report.lifecycleState, "dead_letter");
+  assert.equal(report.summary.deadLetter, 1);
+  assert.equal(report.deadLetterErrors.dead_letter_count, 1);
+  assert.equal(report.deadLetterErrors.top_classes[0]?.count, 1);
+});
+
+test("status: dead-lettered work in another connection's outbox lane does not appear (source-instance scoping)", async () => {
+  const outboxPath = await tempOutboxPath();
+  seedOneDeadLetter(outboxPath, "conn-other", "boom");
+  const report = readOutboxStatus(outboxPath, "conn-1");
+  assert.equal(report.lifecycleState, "healthy_idle");
+  assert.equal(report.summary.total, 0);
+});
+
+test("recover: preview (no --apply) reports the match count but does not requeue", async () => {
+  const outboxPath = await tempOutboxPath();
+  seedOneDeadLetter(outboxPath, "conn-1", "boom");
+  const preview = recoverDeadLetters(outboxPath, "conn-1", false);
+  assert.equal(preview.applied, false);
+  assert.equal(preview.matched, 1);
+  assert.equal(preview.requeued, 0);
+  // A preview must not have mutated the outbox — status still shows the dead letter.
+  const status = readOutboxStatus(outboxPath, "conn-1");
+  assert.equal(status.summary.deadLetter, 1);
+});
+
+test("recover: --apply requeues the dead letter so the next run can retry it", async () => {
+  const outboxPath = await tempOutboxPath();
+  seedOneDeadLetter(outboxPath, "conn-1", "boom");
+  const applied = recoverDeadLetters(outboxPath, "conn-1", true);
+  assert.equal(applied.applied, true);
+  assert.equal(applied.matched, 1);
+  assert.equal(applied.requeued, 1);
+  const status = readOutboxStatus(outboxPath, "conn-1");
+  assert.equal(status.summary.deadLetter, 0);
+  assert.equal(status.summary.ready, 1);
+  assert.equal(status.lifecycleState, "draining");
+});
+
+test("CLI status/recover subcommands parse --connection-id and --apply", () => {
+  const status = parseArgs(["status", "--connection-id", "conn-1"]);
+  assert.equal(status.command, "status");
+  assert.equal(status.sourceInstanceId, "conn-1");
+  assert.equal(status.apply, undefined);
+
+  const recoverPreview = parseArgs(["recover", "--connection-id", "conn-1"]);
+  assert.equal(recoverPreview.command, "recover");
+  assert.equal(recoverPreview.apply, undefined);
+
+  const recoverApply = parseArgs(["recover", "--connection-id", "conn-1", "--apply"]);
+  assert.equal(recoverApply.command, "recover");
+  assert.equal(recoverApply.apply, true);
 });

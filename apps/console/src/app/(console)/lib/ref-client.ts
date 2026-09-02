@@ -600,6 +600,24 @@ export type RefCountState = "known" | "known_zero" | "unobserved" | "stale" | "u
 /** Mirrors the server-owned `ConnectorSummary.source_work` projection. */
 export type RefSourceWorkGroup = "needs_owner" | "not_measured" | "review" | "system_issue" | "working" | "none";
 
+export interface RefCoverageHorizon {
+  readonly basis: "inferred_from_stable_boundary" | "provider_confirmed" | "provider_stated";
+  readonly confirmedAt: string;
+  readonly confirmedBy: string;
+  readonly connectorInstanceId: string;
+  readonly earliestAvailable: string | null;
+  readonly horizonId: string;
+  readonly note: string | null;
+  readonly reason:
+    | "consent_window"
+    | "provider_deleted_history"
+    | "provider_never_had_data"
+    | "provider_retention_policy";
+  readonly stream: string;
+  readonly supersededAt: string | null;
+  readonly supersededByHorizonId: string | null;
+}
+
 export interface RefConnectorSummary {
   /**
    * Owner/control-plane acquisition provenance for manual imports, device
@@ -607,6 +625,8 @@ export interface RefConnectorSummary {
    * grant-scoped `/v1` reads.
    */
   acquisition_coverage?: RefAcquisitionCoverageSummary | null;
+  /** Reason recorded by boot auto-enrollment when this source has no schedule. */
+  auto_enroll_skip_reason?: string | null;
   /**
    * Per-stream Collection Report derived on read by the reference
    * (`define-connector-progress-evidence-contract`). Optional on the mirror:
@@ -620,6 +640,13 @@ export interface RefConnectorSummary {
   connector_display_name?: string;
   connector_id: string;
   connector_instance_id?: string;
+  /**
+   * Durable, attributed disclosures of provider-retention boundaries. Optional
+   * on the mirror: a reference predating this field omits it and the console
+   * renders no horizons rather than inventing a state. Pass-through from
+   * `server/ref-control.ts#projectConnectorSummaryConnectionHealth`.
+   */
+  coverage_horizons?: readonly RefCoverageHorizon[];
   display_name: string;
   freshness: Record<string, unknown>;
   last_run: RefConnectorRunSummary | null;
@@ -678,8 +705,6 @@ export interface RefConnectorSummary {
   /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
   revoked_at?: string | null;
   schedule: RefSchedule | null;
-  /** Reason recorded by boot auto-enrollment when this source has no schedule. */
-  auto_enroll_skip_reason?: string | null;
   source_binding_kind?: string | null;
   /**
    * The connection's source kind and non-secret source-binding kind. Owner
@@ -825,6 +850,12 @@ export interface RefFleetConnectionReference {
 }
 
 export interface RefFleetHealthVerdict {
+  /**
+   * Server-computed actionability gate for the global banner — narrower than
+   * `state !== "healthy"`. See `FleetHealthVerdict.banner_warranted` in
+   * `reference-implementation/server/fleet-health.ts` for the full rule.
+   */
+  banner_warranted: boolean;
   dimensions: {
     active_work: readonly RefFleetConnectionReference[];
     attention: { needs_owner: readonly RefFleetConnectionReference[] };
@@ -1031,7 +1062,25 @@ export interface RefSuppressedSignal {
   reason: string;
 }
 
+export type RefAcknowledgedLossCause =
+  | "provider_access_withdrawn"
+  | "provider_data_contradictory"
+  | "provider_deleted_upstream";
+
+export type RefAcknowledgedLossScope = "partial" | "total";
+
+/** Durable owner acknowledgement projected by the reference into owner-only verdict detail. */
+export interface RefAcknowledgedLossRecord {
+  acknowledgedAt: string;
+  acknowledgedBy: string;
+  cause: RefAcknowledgedLossCause;
+  note?: string | null;
+  scope: RefAcknowledgedLossScope;
+  streams?: readonly string[];
+}
+
 export interface RefRenderedVerdictDetail {
+  acknowledged_loss?: RefAcknowledgedLossRecord | null;
   suppressed?: readonly RefSuppressedSignal[];
 }
 

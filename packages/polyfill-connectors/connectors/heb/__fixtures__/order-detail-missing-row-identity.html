@@ -1,0 +1,30 @@
+<!-- Synthetic adversarial fixture: a virtualized scrollport has no
+     provider-backed or positional row identity, so collection must fail
+     closed rather than use a local index that can repeat after remount. -->
+<!doctype html>
+<html>
+  <head>
+    <style>
+      #virtual-scrollport {
+        height: 40px;
+        overflow-y: auto;
+      }
+
+      li {
+        height: 40px;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="virtual-scrollport">
+      <ul>
+        <li data-qe-id="itemRow">
+          <a data-qe-id="itemRowDetailsName" href="/product-detail/missing/1">Missing identity</a>
+        </li>
+        <li data-qe-id="itemRow">
+          <a data-qe-id="itemRowDetailsName" href="/product-detail/missing/2">Missing identity 2</a>
+        </li>
+      </ul>
+    </main>
+  </body>
+</html>

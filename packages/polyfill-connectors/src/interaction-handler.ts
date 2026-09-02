@@ -105,18 +105,73 @@ function promptStdin(question: string): Promise<string> {
   });
 }
 
+const SECRET_FIELD_RE = /password|secret|token|passphrase|pin\b|api_key/i;
+
+/**
+ * Like `promptStdin`, but never echoes what the user types (each keystroke
+ * renders as `*`). Implemented with raw-mode stdin rather than readline's
+ * private `_writeToOutput` hook: the hook redraws the whole line per
+ * keystroke, which erased the question text in practice (found live by the
+ * owner). Handles Enter, Backspace, and Ctrl-C; falls back to the plain
+ * prompt when stdin has no raw mode (non-TTY callers never reach this —
+ * they use --answer flags or fail loudly upstream).
+ */
+function promptStdinMasked(question: string): Promise<string> {
+  const { stdin } = process;
+  if (!stdin.isTTY || typeof stdin.setRawMode !== "function") {
+    return promptStdin(question);
+  }
+  return new Promise((resolve) => {
+    process.stdout.write(question);
+    stdin.setRawMode(true);
+    stdin.resume();
+    let buffer = "";
+    const onData = (chunk: Buffer) => {
+      const ch = chunk.toString("utf8");
+      if (ch === "\r" || ch === "\n") {
+        stdin.setRawMode(false);
+        stdin.off("data", onData);
+        stdin.pause();
+        process.stdout.write("\n");
+        resolve(buffer);
+        return;
+      }
+      if (ch === "\u0003") {
+        // Ctrl-C: restore the terminal before letting the process die.
+        stdin.setRawMode(false);
+        process.stdout.write("\n");
+        process.kill(process.pid, "SIGINT");
+        return;
+      }
+      if (ch === "\u007f" || ch === "\b") {
+        if (buffer.length > 0) {
+          buffer = buffer.slice(0, -1);
+          process.stdout.write("\b \b");
+        }
+        return;
+      }
+      buffer += ch;
+      process.stdout.write("*".repeat(ch.length));
+    };
+    stdin.on("data", onData);
+  });
+}
+
 async function respondViaTerminal(msg: InteractionMessage): Promise<InteractionResponseInner | null> {
   // Only handle the simple/common kinds inline. Anything else falls back to
   // file drop so we don't fake a response the user didn't intend.
   if (msg.kind === "otp") {
-    const code = await promptStdin(`[interaction] OTP required (${msg.message || ""}): `);
+    const code = await promptStdinMasked(`[interaction] OTP required (${msg.message || ""}): `);
     return { status: "success", data: { code: code.trim() } };
   }
   if (msg.kind === "credentials" && msg.schema?.properties) {
     const data: Record<string, string> = {};
     for (const [key, schema] of Object.entries(msg.schema.properties)) {
       const hint = schema.description ? ` (${schema.description})` : "";
-      const value = await promptStdin(`[interaction] ${key}${hint}: `);
+      // Mask secret-named fields (passwords, tokens); usernames stay
+      // visible so the operator can see what they typed.
+      const ask = SECRET_FIELD_RE.test(key) ? promptStdinMasked : promptStdin;
+      const value = await ask(`[interaction] ${key}${hint}: `);
       data[key] = value;
     }
     return { status: "success", data };
@@ -175,12 +230,24 @@ export async function handleInteraction(
 
   await writeFile(reqPath, JSON.stringify(msg, null, 2), "utf8").catch((): undefined => undefined);
 
-  const instructions = [
-    `[interaction] ${connectorName} needs ${msg.kind}: ${msg.message || "(no message)"}`,
-    `[interaction] request written to ${reqPath}`,
-    `[interaction] write response JSON to ${respPath} to resume`,
-    `[interaction] example: echo '{"status":"success","data":{"code":"123456"}}' > ${respPath}`,
-  ];
+  // On an interactive terminal the operator answers the prompt below, so the
+  // file-drop channel is noise that competes with it (observed live: the
+  // echo-example line printed directly above a live prompt, with no
+  // indication either channel would work). Keep the full instructions for
+  // non-TTY runs, where file drop is the only way in, and a single pointer
+  // line otherwise.
+  const interactive = process.stdin.isTTY === true;
+  const instructions = interactive
+    ? [
+        `[interaction] ${connectorName} needs ${msg.kind}: ${msg.message || "(no message)"}`,
+        `[interaction] answer below, or drop a response file at ${respPath}`,
+      ]
+    : [
+        `[interaction] ${connectorName} needs ${msg.kind}: ${msg.message || "(no message)"}`,
+        `[interaction] request written to ${reqPath}`,
+        `[interaction] write response JSON to ${respPath} to resume`,
+        `[interaction] example: echo '{"status":"success","data":{"code":"123456"}}' > ${respPath}`,
+      ];
   for (const line of instructions) {
     process.stderr.write(`${line}\n`);
   }

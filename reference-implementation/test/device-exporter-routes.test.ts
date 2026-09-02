@@ -15,24 +15,28 @@ import { startServer } from "../server/index.ts";
 import {
   __setIngestFaultHookForTest,
   deleteConnectionRecordRowsSqlite,
+  drainConnectorInstanceIndexWorkForTests,
   enumerateConnectionStreams,
   ingestRecord,
   setClientEventEnqueueHook,
   teardownConnectionSearchProjection,
 } from "../server/records.ts";
 import { __setDeviceIngestStoreFaultHookForTest } from "../server/routes/ref-device-exporters.ts";
+import { runSearchIndexDirtyReconcileRound } from "../server/search-index-reconcile.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
+import { isSearchIndexScopeDirty } from "../server/stores/search-index-dirty-store.ts";
 
 const PROTOCOL_HEADERS = { "X-PDPP-Collector-Protocol": COLLECTOR_PROTOCOL_VERSION };
 const CONNECTOR_INSTANCE_ID_PATTERN = /^cin_/;
 const NARROW_ONLY_REJECTION_MESSAGE_PATTERN = /may only narrow, never widen/;
-const ATTEMPT_MODEL_PATTERN = /attempt-model-c/;
 const SEMANTIC_SENTINEL_PATTERN = /private-semantic-preflight-sentinel/;
 const UNBOUNDED_SENTINEL_PATTERN = /private-unbounded-backend-sentinel/;
 const DATA_SENTINEL_PATTERN = /private-data-sentinel|key and data disagree/;
 const RESERVATION_SENTINEL_PATTERN = /private-reservation-store-sentinel/;
 const DURABLE_SENTINEL_PATTERN = /private-durable-second-record-sentinel/;
 const BACKEND_SENTINEL_PATTERN = /private-semantic-backend-sentinel/;
+const IDENTITY_DRIFT_MODEL_A_PATTERN = /identity-drift-model-a/;
+const IDENTITY_DRIFT_MODEL_B_PATTERN = /identity-drift-model-b/;
 
 type Row = Record<string, unknown>;
 
@@ -477,35 +481,15 @@ test("declared semantic fields with empty values complete as a zero-row device i
   });
 });
 
-test("device ingest preflight and immutable attempt facts fence drift while accepted replay remains validation-free", async () => {
+test("device ingest preflight rejects before reservation while an accepted replay stays validation-free despite later manifest drift", async () => {
   let model = "attempt-model-a";
-  let manifestChanged = false;
-  let flipSemanticIdentity = false;
-  let observeAcceptedBackfill = false;
-  let acceptedStatusBeforeBackfill: string | undefined;
-  let sawAcceptedBackfill = false;
   const backend = deterministicAttemptBackend({
     document: () => {
-      if (observeAcceptedBackfill) {
-        sawAcceptedBackfill ||= acceptedStatusBeforeBackfill === "accepted";
-      }
-      if (!manifestChanged) {
-        const manifest = readCodexManifest();
-        const messages = mustExist(
-          manifest.streams.find((stream) => stream.name === "messages"),
-          "messages stream must exist"
-        );
-        messages.query.search.semantic_fields = ["role"];
-        messages.cursor_field = "updated_at";
-        messages.consent_time_field = "updated_at";
-        messages.primary_key = ["session_id"];
-        writeCodexManifest(manifest);
-        manifestChanged = true;
-        model = "attempt-model-b";
-      } else if (flipSemanticIdentity) {
-        model = "attempt-model-c";
-        flipSemanticIdentity = false;
-      }
+      // Fire-and-forget derived indexing means embed-time side effects can
+      // no longer race the durable-write/accept decision for the SAME
+      // attempt (see processDeviceIngestBatch's fire-and-forget use of
+      // enqueueDeviceIndexMaintenance) — manifest/model drift is exercised
+      // explicitly BETWEEN calls below instead of as an embed side effect.
     },
     model: () => model,
   });
@@ -551,41 +535,16 @@ test("device ingest preflight and immutable attempt facts fence drift while acce
       updated_at: "2026-04-30T13:00:00.000Z",
     };
     first.body_hash = bodyHash(first.records);
-    const stale = await postJson(
+    // The durable write and acceptance happen together immediately: derived
+    // indexing can no longer block or strand this attempt on today's
+    // attempt-model-a facts.
+    const accepted = await postJson(
       `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
       first,
       authHeaders(device.device_token)
     );
-    assert.equal(stale.status, 503, JSON.stringify(stale.body));
-    const staleRow = selectRow<{
-      durable_prefix_count: number;
-      semantic_capability_identity: string;
-      status: string;
-    }>(
-      `
-      SELECT status, durable_prefix_count, manifest_fingerprint, semantic_capability_identity
-        FROM device_ingest_batch_outcomes WHERE batch_id = ?
-    `,
-      "batch-manifest-drift"
-    );
-    assert.equal(staleRow.status, "processing");
-    assert.equal(staleRow.durable_prefix_count, 1);
-    assert.equal(staleRow.semantic_capability_identity.includes("attempt-model-a"), true);
-    assert.equal(
-      selectRow<{ semantic_time: string }>(
-        "SELECT semantic_time FROM records WHERE connector_instance_id = ? AND record_key = ?",
-        device.connector_instance_id,
-        "same-key"
-      ).semantic_time,
-      "2026-04-30T11:00:00.000Z"
-    );
-
-    const repaired = await postJson(
-      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
-      first,
-      authHeaders(device.device_token)
-    );
-    assert.equal(repaired.status, 201);
+    assert.equal(accepted.status, 201, JSON.stringify(accepted.body));
+    await drainConnectorInstanceIndexWorkForTests();
     const acceptedRow = selectRow<{
       durable_prefix_count: number;
       record_count: number;
@@ -606,7 +565,42 @@ test("device ingest preflight and immutable attempt facts fence drift while acce
       },
       { durable_prefix_count: 1, record_count: 1, status: "accepted" }
     );
-    assert.equal(acceptedRow.semantic_capability_identity.includes("attempt-model-b"), true);
+    assert.equal(acceptedRow.semantic_capability_identity.includes("attempt-model-a"), true);
+    assert.equal(
+      selectRow<{ semantic_time: string }>(
+        "SELECT semantic_time FROM records WHERE connector_instance_id = ? AND record_key = ?",
+        device.connector_instance_id,
+        "same-key"
+      ).semantic_time,
+      "2026-04-30T11:00:00.000Z"
+    );
+
+    // The manifest and semantic identity drift explicitly, between calls —
+    // an already-accepted batch never re-derives attempt facts on replay
+    // (see processDeviceIngestBatch's accepted-status early return), so the
+    // durable derived value can only be repaired by a mechanism that runs
+    // independently of this batch's own reservation: registerConnector's
+    // synchronous backfill, exercised below.
+    const driftedManifest = readCodexManifest();
+    const driftedMessages = mustExist(
+      driftedManifest.streams.find((stream) => stream.name === "messages"),
+      "messages stream must exist"
+    );
+    driftedMessages.query.search.semantic_fields = ["role"];
+    driftedMessages.cursor_field = "updated_at";
+    driftedMessages.consent_time_field = "updated_at";
+    driftedMessages.primary_key = ["session_id"];
+    writeCodexManifest(driftedManifest);
+    model = "attempt-model-b";
+
+    const statusBeforeBackfill = mustExist(
+      typedDb()
+        .prepare<[string], { status: string }>("SELECT status FROM device_ingest_batch_outcomes WHERE batch_id = ?")
+        .get("batch-manifest-drift"),
+      "outcome row must exist"
+    ).status;
+    assert.equal(statusBeforeBackfill, "accepted", "registration's backfill runs against an already-accepted batch");
+    await registerConnector(driftedManifest);
     assert.equal(
       selectRow<{ semantic_time: string }>(
         "SELECT semantic_time FROM records WHERE connector_instance_id = ? AND record_key = ?",
@@ -614,27 +608,7 @@ test("device ingest preflight and immutable attempt facts fence drift while acce
         "same-key"
       ).semantic_time,
       "2026-04-30T13:00:00.000Z",
-      "retry must repair durable semantic_time from the current manifest facts"
-    );
-
-    // A newly reserved batch can encounter an anchored, byte-identical row
-    // after attempt facts changed. Acceptance still requires repairing the
-    // durable derived value even though this input allocates no new version.
-    getDb()
-      .prepare("UPDATE records SET semantic_time = ? WHERE connector_instance_id = ? AND record_key = ?")
-      .run("2026-04-30T11:00:00.000Z", device.connector_instance_id, "same-key");
-    const freshNoop = await postJson(
-      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
-      { ...first, batch_id: "batch-fresh-noop-derived-repair" },
-      authHeaders(device.device_token)
-    );
-    assert.equal(freshNoop.status, 201, JSON.stringify(freshNoop.body));
-    assert.deepEqual(
-      getDb()
-        .prepare("SELECT version, semantic_time FROM records WHERE connector_instance_id = ? AND record_key = ?")
-        .get(device.connector_instance_id, "same-key"),
-      { semantic_time: "2026-04-30T13:00:00.000Z", version: 1 },
-      "fresh no-op input repairs attempt-derived state without version churn"
+      "registration backfill repairs durable semantic_time from the current manifest facts"
     );
     const repairedVector = selectRow<{ scope_key: string }>(
       `
@@ -651,62 +625,6 @@ test("device ingest preflight and immutable attempt facts fence drift while acce
     );
     assert.equal(repairedVector.scope_key, JSON.stringify(["messages", "role"]));
 
-    flipSemanticIdentity = true;
-    const semanticDrift = makeBatch(device, "batch-semantic-drift", "second");
-    firstRecord(semanticDrift).data.content = "semantic identity content";
-    firstRecord(semanticDrift).data.role = "assistant";
-    semanticDrift.body_hash = bodyHash(semanticDrift.records);
-    const semanticStale = await postJson(
-      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
-      semanticDrift,
-      authHeaders(device.device_token)
-    );
-    assert.equal(semanticStale.status, 503);
-    const semanticRetry = await postJson(
-      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
-      semanticDrift,
-      authHeaders(device.device_token)
-    );
-    assert.equal(semanticRetry.status, 201);
-    assert.match(
-      selectRow<{ semantic_capability_identity: string }>(
-        "SELECT semantic_capability_identity FROM device_ingest_batch_outcomes WHERE batch_id = ?",
-        "batch-semantic-drift"
-      ).semantic_capability_identity,
-      ATTEMPT_MODEL_PATTERN
-    );
-
-    // A later registration mutation is allowed to be the final writer only
-    // after the accepted attempt. Its synchronous backfill observes that
-    // terminal state and rebuilds the changed manifest fields.
-    const registeredManifest = readCodexManifest();
-    const registeredMessages = mustExist(
-      registeredManifest.streams.find((stream) => stream.name === "messages"),
-      "messages stream must exist"
-    );
-    registeredMessages.query.search.lexical_fields = ["role"];
-    registeredMessages.query.search.semantic_fields = ["content"];
-    acceptedStatusBeforeBackfill = mustExist(
-      typedDb()
-        .prepare<[string], { status: string }>("SELECT status FROM device_ingest_batch_outcomes WHERE batch_id = ?")
-        .get("batch-manifest-drift"),
-      "outcome row must exist"
-    ).status;
-    observeAcceptedBackfill = true;
-    await registerConnector(registeredManifest);
-    observeAcceptedBackfill = false;
-    assert.equal(sawAcceptedBackfill, true);
-    const registrationLexical = typedDb()
-      .prepare<[string], { field: string }>(`
-      SELECT field FROM lexical_search_index
-       WHERE connector_instance_id = ? AND stream = 'messages' AND record_key = 'same-key'
-    `)
-      .all(device.connector_instance_id);
-    assert.deepEqual(
-      registrationLexical.map((row) => row.field),
-      ["role"]
-    );
-
     // The accepted response is an immutable replay contract. Corrupting the
     // current manifest must not make that exact batch suddenly invalid.
     getDb().prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?").run("{invalid json", "codex");
@@ -717,6 +635,126 @@ test("device ingest preflight and immutable attempt facts fence drift while acce
     );
     assert.equal(replay.status, 201);
     assert.equal(bodyOf(replay).status, "accepted");
+  });
+});
+
+test("semantic-capability-identity-only drift (no manifest change) is captured at acceptance and repaired by registration backfill", async () => {
+  // Isolates semantic_capability_identity drift from manifest_fingerprint
+  // drift: only the backend's model() return value changes here, never the
+  // manifest content. compileDeviceAttemptContext derives these two facts
+  // independently (manifestFingerprint from the manifest JSON,
+  // semanticCapabilityIdentity from ctx.getSemanticCapabilityIdentity()), so
+  // this is real, distinct coverage the manifest-drift test above cannot
+  // exercise. Like that test, the drift is applied explicitly BETWEEN calls
+  // — never as an embed-callback side effect racing the same in-flight
+  // attempt — since fire-and-forget derived indexing means an embed-time
+  // side effect can no longer influence whether the durable write that
+  // triggered it has already been acknowledged.
+  let model = "identity-drift-model-a";
+  const backend = deterministicAttemptBackend({
+    document: () => {
+      // No side effects: drift is applied explicitly between calls below.
+    },
+    model: () => model,
+  });
+
+  await withServer({ semanticRetrievalBackend: backend }, async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, "semantic-identity-drift");
+    const manifest = readCodexManifest();
+    const messages = mustExist(
+      manifest.streams.find((stream) => stream.name === "messages"),
+      "messages stream must exist"
+    );
+    messages.query.search.semantic_fields = ["content"];
+    writeCodexManifest(manifest);
+
+    const batch = makeBatch(device, "batch-semantic-identity-drift", "unused");
+    firstRecord(batch).data = {
+      ...firstRecord(batch).data,
+      content: "semantic identity drift content",
+    };
+    batch.body_hash = bodyHash(batch.records);
+    const accepted = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
+      batch,
+      authHeaders(device.device_token)
+    );
+    assert.equal(accepted.status, 201, JSON.stringify(accepted.body));
+    await drainConnectorInstanceIndexWorkForTests();
+    const acceptedRow = selectRow<{ semantic_capability_identity: string; status: string }>(
+      "SELECT status, semantic_capability_identity FROM device_ingest_batch_outcomes WHERE batch_id = ?",
+      "batch-semantic-identity-drift"
+    );
+    assert.equal(acceptedRow.status, "accepted");
+    assert.match(acceptedRow.semantic_capability_identity, IDENTITY_DRIFT_MODEL_A_PATTERN);
+    const vectorBeforeDrift = selectRow<{ scope_key: string }>(
+      `
+      SELECT scope_key FROM semantic_search_blob
+       WHERE connector_instance_id = ? AND scope_key = ? AND record_key = 'same-key'
+      UNION ALL
+      SELECT scope_key FROM semantic_search_rowid
+       WHERE connector_instance_id = ? AND scope_key = ? AND record_key = 'same-key'
+    `,
+      device.connector_instance_id,
+      JSON.stringify(["messages", "content"]),
+      device.connector_instance_id,
+      JSON.stringify(["messages", "content"])
+    );
+    assert.equal(vectorBeforeDrift.scope_key, JSON.stringify(["messages", "content"]));
+
+    // The semantic identity drifts alone; the manifest is re-registered
+    // byte-identical. An already-accepted batch never re-derives attempt
+    // facts on replay, so only registerConnector's synchronous backfill
+    // (unconditional on manifest content actually changing) can observe and
+    // repair the backend-identity mismatch recorded in semantic_search_meta.
+    model = "identity-drift-model-b";
+    const statusBeforeBackfill = mustExist(
+      typedDb()
+        .prepare<[string], { status: string }>("SELECT status FROM device_ingest_batch_outcomes WHERE batch_id = ?")
+        .get("batch-semantic-identity-drift"),
+      "outcome row must exist"
+    ).status;
+    assert.equal(statusBeforeBackfill, "accepted", "registration's backfill runs against an already-accepted batch");
+    await registerConnector(manifest);
+
+    const metaAfterBackfill = selectRow<{ model_id: string }>(
+      "SELECT model_id FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = 'messages'",
+      device.connector_instance_id
+    );
+    assert.match(
+      metaAfterBackfill.model_id,
+      IDENTITY_DRIFT_MODEL_B_PATTERN,
+      "registration backfill repairs semantic_search_meta from the current backend identity alone"
+    );
+    const vectorAfterDrift = selectRow<{ scope_key: string }>(
+      `
+      SELECT scope_key FROM semantic_search_blob
+       WHERE connector_instance_id = ? AND scope_key = ? AND record_key = 'same-key'
+      UNION ALL
+      SELECT scope_key FROM semantic_search_rowid
+       WHERE connector_instance_id = ? AND scope_key = ? AND record_key = 'same-key'
+    `,
+      device.connector_instance_id,
+      JSON.stringify(["messages", "content"]),
+      device.connector_instance_id,
+      JSON.stringify(["messages", "content"])
+    );
+    assert.equal(
+      vectorAfterDrift.scope_key,
+      JSON.stringify(["messages", "content"]),
+      "the vector re-publishes under the drifted backend identity without a manifest edit"
+    );
+
+    // The accepted response is an immutable replay contract even after the
+    // semantic-identity-only drift and its backfill repair.
+    const replay = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
+      batch,
+      authHeaders(device.device_token)
+    );
+    assert.equal(replay.status, 201);
+    assert.equal(bodyOf(replay).status, "accepted");
+    assert.deepEqual(replay.body, accepted.body, "accepted replay returns the stored response unchanged");
   });
 });
 
@@ -782,18 +820,22 @@ test("device ingest preserves op and rejects unsupported op or malformed data be
   });
 });
 
-test("batch attempt deadline leaves the durable prefix sticky and retryable", async () => {
+test("batch attempt deadline cannot block acceptance once derived indexing is deferred", async () => {
+  // Derived index maintenance runs on the shared ordered lane after the
+  // route responds (see enqueueDeviceIndexMaintenance's fire-and-forget use
+  // in processDeviceIngestBatch): the batch-attempt deadline only bounds the
+  // durable-write phase, so a slow embedding call can no longer blow the
+  // deadline mid-response. A tiny deadline still can't turn an already-
+  // durable batch into a 503 — it durably writes and accepts immediately,
+  // and the slow embed lands afterward on the deferred lane.
   const previousDeadline = process.env.PDPP_INGEST_BATCH_ATTEMPT_DEADLINE_MS;
   process.env.PDPP_INGEST_BATCH_ATTEMPT_DEADLINE_MS = "10";
-  let delaySemantic = true;
   const backend = {
     available: () => true,
     dimensions: () => 3,
     distanceMetric: () => "cosine",
     embedDocument: async () => {
-      if (delaySemantic) {
-        await new Promise((resolve) => setTimeout(resolve, 30));
-      }
+      await new Promise((resolve) => setTimeout(resolve, 30));
       return new Float32Array([0.1, 0.2, 0.3]);
     },
     embedQuery: async () => new Float32Array([0.1, 0.2, 0.3]),
@@ -812,13 +854,12 @@ test("batch attempt deadline leaves the durable prefix sticky and retryable", as
         batch,
         authHeaders(device.device_token)
       );
-      assert.equal(first.status, 503, JSON.stringify(first.body));
-      assert.equal(errorCode(first), "device_ingest_retryable");
+      assert.equal(first.status, 201, JSON.stringify(first.body));
       assert.deepEqual(
         getDb()
           .prepare("SELECT status, durable_prefix_count FROM device_ingest_batch_outcomes WHERE batch_id = ?")
           .get(batch.batch_id),
-        { durable_prefix_count: 1, status: "processing" }
+        { durable_prefix_count: 1, status: "accepted" }
       );
       assert.equal(
         selectRow<{ count: number }>(
@@ -828,8 +869,7 @@ test("batch attempt deadline leaves the durable prefix sticky and retryable", as
         1
       );
 
-      delaySemantic = false;
-      process.env.PDPP_INGEST_BATCH_ATTEMPT_DEADLINE_MS = "1000";
+      await drainConnectorInstanceIndexWorkForTests();
       const retry = await postJson(
         `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
         batch,
@@ -848,7 +888,7 @@ test("batch attempt deadline leaves the durable prefix sticky and retryable", as
           device.connector_instance_id
         ).count,
         1,
-        "retry resumes derived work without allocating a second version"
+        "accepted replay does not allocate a second version"
       );
     });
   } finally {
@@ -1122,7 +1162,7 @@ interface ClientEventNotification extends Row {
   version: number;
 }
 
-test("a post-durable index retry repairs from the newer authoritative writer on SQLite", async () => {
+test("reconcile repairs from the newer authoritative writer after a post-durable index fault on SQLite", async () => {
   let failFirstSemantic = true;
   const backend = {
     available: () => true,
@@ -1160,14 +1200,18 @@ test("a post-durable index retry repairs from the newer authoritative writer on 
         body_hash: bodyHash(records),
         records,
       };
+      // Derived index maintenance is fire-and-forget: the injected semantic
+      // fault can no longer block acceptance. The batch durably writes and
+      // accepts on the first call, and the fault leaves the dirty scope set
+      // for reconcile instead of stranding the reservation "processing".
       const first = await postJson(
         `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
         batch,
         authHeaders(device.device_token)
       );
-      assert.equal(first.status, 503);
-      assert.equal(errorCode(first), "device_ingest_retryable");
+      assert.equal(first.status, 201, JSON.stringify(first.body));
       assert.doesNotMatch(JSON.stringify(first.body), BACKEND_SENTINEL_PATTERN);
+      await drainConnectorInstanceIndexWorkForTests();
       assert.equal(
         selectRow<{ version: number }>(
           "SELECT version FROM records WHERE connector_instance_id = ? AND stream = ? AND record_key = ?",
@@ -1177,7 +1221,16 @@ test("a post-durable index retry repairs from the newer authoritative writer on 
         ).version,
         1
       );
+      assert.equal(
+        await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+        true,
+        "the faulted publish leaves the dirty scope set for reconcile"
+      );
 
+      // The batch is already accepted. A newer direct authoritative write
+      // now wins before reconcile ever republishes this key; reconcile
+      // republishes whatever is currently authoritative, so it can never
+      // resurrect the stale payload-a content the faulted publish missed.
       await ingestRecord(
         { connector_id: device.connector_id, connector_instance_id: device.connector_instance_id },
         {
@@ -1194,21 +1247,37 @@ test("a post-durable index retry repairs from the newer authoritative writer on 
         "SQLite notification versions define the backend-parity oracle"
       );
 
-      const retry = await postJson(
+      for (let round = 0; round < 20; round += 1) {
+        // biome-ignore lint/performance/noAwaitInLoops: bounded reconcile rounds intentionally observe prior state.
+        const stillDirty = await isSearchIndexScopeDirty({
+          connectorInstanceId: device.connector_instance_id,
+          stream: "messages",
+        });
+        if (!stillDirty) {
+          break;
+        }
+        await runSearchIndexDirtyReconcileRound({ maxDurationMs: 5000, pageSize: 100 });
+      }
+      assert.equal(
+        await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+        false,
+        "reconcile eventually clears the accepted batch's dirty scope"
+      );
+      const replay = await postJson(
         `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
         batch,
         authHeaders(device.device_token)
       );
-      assert.equal(retry.status, 201);
+      assert.equal(replay.status, 201, "the accepted batch replays without reapplying the prefix");
       const current = selectRow<{ record_json: string; semantic_time: string; version: number }>(
         "SELECT version, record_json, semantic_time FROM records WHERE connector_instance_id = ? AND stream = ? AND record_key = ?",
         device.connector_instance_id,
         "messages",
         "same-key"
       );
-      assert.equal(current.version, 2, "retry must not allocate a third version");
+      assert.equal(current.version, 2, "the replay must not allocate a third version");
       assert.equal(JSON.parse(current.record_json).content, "payload-b");
-      assert.equal(notifications.length, 2, "authoritative repair must not emit a retry notification");
+      assert.equal(notifications.length, 2, "reconcile and accepted replay must not emit a retry notification");
       assert.equal(
         selectRow<{ count: number }>(
           "SELECT COUNT(*) AS count FROM record_changes WHERE connector_instance_id = ? AND stream = ? AND record_key = ?",
