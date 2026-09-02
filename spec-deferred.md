@@ -223,6 +223,18 @@ _Newly deferred (2026-09-02)._
 
 **Design constraint for a future version:** If the register is exposed as a TRQP endpoint from phase 2, recognition of another registry becomes a TRQP query rather than a bilateral arrangement, and withdrawal of recognition propagates through the same query path. Any interface Core describes in the meantime should not assume a single register.
 
+**Where it would live:** In a profile or binding, not in Core's normative text. Core states what an authorization server must establish about a source declaration before accepting it; it does not name the protocol by which the server asks a third party. Naming TRQP in Core would bind the specification to a document still in public review and without a test suite. Naming it in a binding keeps the commitment real without dating it, and matches how this specification treats other binding-level mechanisms.
+
+### Owner-operated authorization server over a platform's data (UMA-style)
+
+_Newly deferred (2026-09-02)._
+
+**Description:** A topology in which the platform continues to hold the owner's data, but the owner runs their own authorization server in front of it, so that the owner's server — not the platform's — decides who may read what. This is the arrangement UMA describes, and it is distinct from the on-behalf-of chain in Core Section 3, where a personal server holds an ordinary grant against the platform and the two relationships stay separate.
+
+**Why it is open:** It requires the platform's resource server to accept grants issued by an authorization server the platform does not operate and did not choose, which is a trust relationship PDPP does not currently define and platforms have no incentive to accept unilaterally. It also needs a rule for what happens when the platform's own policy and the owner's authorization server disagree.
+
+**v0.1 posture:** Not introduced. Core's Section 3 topologies are source-native fulfillment, personal-server fulfillment, and the on-behalf-of chain that follows from them. This is a fourth arrangement, and its absence from Core is deliberate rather than an oversight.
+
 ---
 
 ## Decided (recorded for history)
