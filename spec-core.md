@@ -176,18 +176,35 @@ described is equally within Core. The [PDPP Collection Profile](spec-collection-
 describes one such mechanism, connector collection, and describes it for
 builders rather than as a conformance requirement.
 
-A third arrangement neither example draws, recorded here because it is a
-consequence of the two above rather than a new capability: a personal server
-may itself act as a client of a provider's PDPP surface, holding an
-owner-issued grant against that provider and serving the resulting records
-onward under grants the owner issues from the personal server. Core already
-permits this — the personal server is a conformant client in the first
-relationship and a conformant resource server in the second, and no new
-protocol element is required. What Core does not yet state is what the second
-grant may say about the first: whether the onward grant can outlive, or exceed
-the scope of, the grant the records arrived under. Until that is settled, an
-implementation SHOULD NOT issue an onward grant broader in scope or longer in
-duration than the grant under which it obtained the records.
+**On-behalf-of access is two ordinary grants, not one delegated grant.** A
+third arrangement neither example draws follows from the two above rather than
+extending them: a personal server that fetches from an upstream platform on the
+owner's behalf is an ordinary PDPP client of that platform, holding an ordinary
+grant the owner issued there. It is then an ordinary resource server to the
+apps the owner authorizes against it. The chain is two independent grants — the
+owner to the platform, and the owner to the personal server — each issued by the
+owner, each revocable by the owner on its own, and each an ordinary grant under
+this specification.
+
+PDPP therefore defines no delegated-grant, sub-grant, or grant-chaining
+construct, and none is needed to build this. The same shape is already how
+account aggregation works in deployed systems: an open banking aggregator holds
+the user's consent at each bank and its own consent from the user, rather than
+subdividing one authorization. Where a binding needs to exchange one credential
+for another across the two relationships, OAuth Token Exchange (RFC 8693) is the
+existing mechanism, and it is a concern of the binding rather than of Core.
+
+What Core does not yet state is what the second grant may say about the first:
+whether the onward grant can outlive, or exceed the scope of, the grant the
+records arrived under. Until that is settled, an implementation SHOULD NOT issue
+an onward grant broader in scope or longer in duration than the grant under
+which it obtained the records.
+
+A different topology — the owner running their own authorization server in front
+of a platform's data, so that the platform holds the data but the owner's server
+decides who may read it — is not introduced by this specification. It is the
+arrangement UMA describes, it is not the arrangement above, and it is recorded
+as deferred rather than left ambiguous.
 
 ### Protocol layering
 
