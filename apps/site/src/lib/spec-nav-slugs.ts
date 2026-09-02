@@ -85,6 +85,16 @@ export const governanceRoute = "/governance";
 // The slug of that page inside the fumadocs collection.
 export const GOVERNANCE_SLUG = "governance";
 
+// The canonical URL for the PDPP Principles, on the same terms as governance
+// above: authored inside the fumadocs collection so it carries the TOC, the
+// Copy Markdown affordance and search indexing, served at its own top-level
+// route because it is a programme document rather than a specification.
+// /specification/principles 308-redirects here.
+export const principlesRoute = "/principles";
+
+// The slug of that page inside the fumadocs collection.
+export const PRINCIPLES_SLUG = "principles";
+
 // Everything the repository carries that is not normative protocol text:
 // guides, design rationale, architectural context, deferred concerns, open
 // questions, and the superseded Data Query API.

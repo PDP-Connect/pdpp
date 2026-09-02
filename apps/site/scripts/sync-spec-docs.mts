@@ -186,23 +186,59 @@ for (const spec of SPECS) {
 // path keeps the spec header contract strict rather than loosening it to
 // accommodate a file that was never meant to satisfy it.
 //
-// The body is taken from below the `# Title` line, with the five-line
-// `**Label:** value` status block also stripped (see stripGovernanceStatusBlock)
-// for the SITE copy only: the rail card now renders those same facts (see
-// GOVERNANCE_FRONT_MATTER below and rail.tsx), and a document has one status
-// block — rendered chrome replaces the in-body list rather than sitting beside
-// it. The root GOVERNANCE.md keeps the list; only the generated .mdx elides it.
-const PROGRAMME_DOCS = [{ header: "governance", root: "GOVERNANCE", slug: "governance" }];
+// PRINCIPLES.md joins it here rather than getting a third path: same shape (a
+// `# Title`, then a bolded `**Label:** value` block, then body), different
+// labels — Version and Status, not the governance calendar. So the block of
+// labels to strip is per-document rather than one shared constant, and a
+// document whose labels change throws instead of leaking the block into the
+// page body.
+//
+// The body is taken from below the `# Title` line, with that
+// `**Label:** value` status block also stripped (see stripStatusBlock) for the
+// SITE copy only: the rail card renders those same facts (see
+// GOVERNANCE_FRONT_MATTER / PRINCIPLES_FRONT_MATTER below and rail.tsx), and a
+// document has one status block — rendered chrome replaces the in-body list
+// rather than sitting beside it. The root files keep the list; only the
+// generated .mdx elides it.
+//
+// Every label in each list is a superset of the labels the rail card sources
+// from that document (see requireHeaderMatch below): governance's Supporter
+// signing opens and Reports are stripped from the site copy but have no rail
+// row, so a label missing here would leak into the generated page body rather
+// than throw.
+const PROGRAMME_DOCS = [
+  {
+    header: "governance",
+    root: "GOVERNANCE",
+    slug: "governance",
+    statusLabels: [
+      "Status",
+      "Circulated",
+      "Formal review",
+      "Supporter signing opens",
+      "Programme live",
+      "Applies to",
+      "Reports",
+    ],
+  },
+  {
+    header: "principles",
+    root: "PRINCIPLES",
+    slug: "principles",
+    statusLabels: ["Version", "Status"],
+  },
+] as const;
 
-// Matches exactly the label set the rail card sources from this same block
-// (see requireGovernanceMatch below): Status, Circulated, Formal review,
-// Programme live, Applies to. Anchored to `**Label:**` at the start of a line
-// so it cannot match a similarly-worded sentence deeper in the document.
-const GOVERNANCE_STATUS_LABEL_PATTERN = /^\*\*(?:Status|Circulated|Formal review|Programme live|Applies to):\*\*.*$/;
+// Anchored to `**Label:**` at the start of a line so it cannot match a
+// similarly-worded sentence deeper in the document.
+function statusLabelPattern(labels: readonly string[]): RegExp {
+  return new RegExp(`^\\*\\*(?:${labels.join("|")}):\\*\\*.*$`);
+}
 
-function stripGovernanceStatusBlock(body: string[]): string[] {
+function stripStatusBlock(body: string[], labels: readonly string[]): string[] {
+  const pattern = statusLabelPattern(labels);
   const rest = [...body];
-  while (rest.length && GOVERNANCE_STATUS_LABEL_PATTERN.test(rest[0] ?? "")) {
+  while (rest.length && pattern.test(rest[0] ?? "")) {
     rest.shift();
   }
   while (rest.length && rest[0].trim() === "") {
@@ -211,7 +247,7 @@ function stripGovernanceStatusBlock(body: string[]): string[] {
   return rest;
 }
 
-function extractProgrammeBody(rootText: string, docName: string): string {
+function extractProgrammeBody(rootText: string, docName: string, statusLabels: readonly string[]): string {
   const lines = rootText.split("\n");
 
   if (!lines[0]?.startsWith("# ")) {
@@ -224,7 +260,7 @@ function extractProgrammeBody(rootText: string, docName: string): string {
   while (body.length && body[0].trim() === "") {
     body.shift();
   }
-  body = stripGovernanceStatusBlock(body);
+  body = stripStatusBlock(body, statusLabels);
 
   return body.join("\n");
 }
@@ -241,12 +277,12 @@ for (const doc of PROGRAMME_DOCS) {
   }
 
   const header = readFileSync(headerPath, "utf8").replace(/\s*$/, "");
-  const body = extractProgrammeBody(readFileSync(rootPath, "utf8"), doc.root);
+  const body = extractProgrammeBody(readFileSync(rootPath, "utf8"), doc.root, doc.statusLabels);
 
   // .mdx, NOT .md — same reason as the spec loop above: emitting .mdx parses
   // the header sidecar's `<Callout>` as the real JSX component instead of
-  // dropping it as a raw HTML block. Safe here because the governance body
-  // contains no `<` or `{` for MDX to trip on.
+  // dropping it as a raw HTML block. Safe here because neither programme body
+  // contains a `<` or `{` for MDX to trip on.
   writeFileSync(path.join(contentDir, `${doc.slug}.mdx`), `${header}\n\n${body.replace(/\s*$/, "")}\n`);
   generated += 1;
 }
@@ -297,65 +333,52 @@ if (editors.length === 0) {
   throw new Error("sync-spec-docs: MAINTAINERS.md has no Active maintainer rows.");
 }
 
-// GOVERNANCE.md's own rail facts — Status / Circulated / Formal review /
-// Programme live / Applies to — for the /governance rail card (see
-// apps/site/src/components/specification/rail-context.tsx). Governance has no
-// Editors row: the document is amended by a vote of Partners, not maintained
-// the way the specification is (see MAINTAINERS.md).
+// The programme documents' own rail facts — governance's Status / Circulated /
+// Formal review / Programme live / Applies to, and the Principles' Version /
+// Status — for the /governance and /principles rail cards (see
+// apps/site/src/components/specification/rail-context.tsx). Neither has an
+// Editors row: they are not maintained the way the specification is (see
+// MAINTAINERS.md).
 //
-// GOVERNANCE.md's header block (lines 3-6, `**Label:** value<br />`) is prose
+// Each header block (one `**Label:** value` per line, below the title) is prose
 // meant for a reader, not a machine-parseable field list — unlike spec-core.md's
-// uniform `Status:`/`Date:` lines, so this parses the exact known sentences
-// rather than a generic label:value grammar. A future rewording that doesn't
-// match throws loudly rather than silently emitting a stale or empty rail row.
+// uniform `Status:`/`Date:` lines, so this reads each label by name and takes
+// the rest of its line verbatim. A future rewording that drops or renames a
+// label throws loudly rather than silently emitting a stale or empty rail row.
 const governanceText = readFileSync(path.join(repoRoot, "GOVERNANCE.md"), "utf8");
+const principlesText = readFileSync(path.join(repoRoot, "PRINCIPLES.md"), "utf8");
 
-function requireGovernanceMatch(pattern: RegExp, fieldName: string): string {
-  const match = governanceText.match(pattern);
+function requireHeaderMatch(sourceText: string, sourceName: string, label: string): string {
+  const match = sourceText.match(new RegExp(`^\\*\\*${label}:\\*\\*\\s*(.+?)\\s*$`, "m"));
   const value = match?.[1]?.trim();
   if (!value) {
     throw new Error(
-      `sync-spec-docs: GOVERNANCE.md header ${fieldName} line did not match the expected shape. ` +
+      `sync-spec-docs: ${sourceName} header ${label} line did not match the expected shape. ` +
         "Update scripts/sync-spec-docs.mts to match the new wording."
     );
   }
   return value;
 }
 
-const governanceStatus = requireGovernanceMatch(/^\*\*Status:\*\*\s*([^.]+)\./m, "Status");
-const governanceCirculated = requireGovernanceMatch(/^\*\*Circulated:\*\*\s*(.+?)<br \/>\s*$/m, "Circulated");
-const formalReviewOpens = requireGovernanceMatch(
-  /^\*\*Formal review:\*\*\s*Opens\s+(.+?)\s+at GDC\./m,
-  "Formal review (opens)"
-);
-const formalReviewCloses = requireGovernanceMatch(
-  /^\*\*Formal review:\*\*.*?Closes\s+(.+?)\.<br \/>\s*$/m,
-  "Formal review (closes)"
-);
-const governanceProgrammeLive = requireGovernanceMatch(
-  /^\*\*Programme live:\*\*\s*(.+?)<br \/>\s*$/m,
-  "Programme live"
-);
-const governanceAppliesTo = requireGovernanceMatch(/^\*\*Applies to:\*\*\s*([^.]+)\./m, "Applies to");
-
-// "3 September 2026" / "1 October 2026" -> "3 September – 1 October 2026":
-// drop the opens-date's year when both ends share one, rather than repeating
-// it. Falls back to showing both years in full if a future edit ever makes
-// the review window span a year boundary.
-const TRAILING_YEAR_PATTERN = /\s+(\d{4})$/;
-const opensYear = formalReviewOpens.match(TRAILING_YEAR_PATTERN)?.[1];
-const closesYear = formalReviewCloses.match(TRAILING_YEAR_PATTERN)?.[1];
-const formalReview =
-  opensYear && opensYear === closesYear
-    ? `${formalReviewOpens.replace(TRAILING_YEAR_PATTERN, "")} – ${formalReviewCloses}`
-    : `${formalReviewOpens} – ${formalReviewCloses}`;
-
 const governanceFrontMatter = {
-  status: governanceStatus,
-  circulated: governanceCirculated,
-  formalReview,
-  programmeLive: governanceProgrammeLive,
-  appliesTo: governanceAppliesTo,
+  status: requireHeaderMatch(governanceText, "GOVERNANCE.md", "Status"),
+  circulated: requireHeaderMatch(governanceText, "GOVERNANCE.md", "Circulated"),
+  // The header states the review window as one range ("3 September to 1
+  // October 2026"), so the rail row is that line verbatim. It was previously
+  // composed from separate Opens/Closes sentences.
+  formalReview: requireHeaderMatch(governanceText, "GOVERNANCE.md", "Formal review"),
+  programmeLive: requireHeaderMatch(governanceText, "GOVERNANCE.md", "Programme live"),
+  appliesTo: requireHeaderMatch(governanceText, "GOVERNANCE.md", "Applies to"),
+};
+
+// PRINCIPLES.md's own rail facts. Only two: the Principles ARE versioned (the
+// register records which version each Supporter signed), so unlike governance
+// this card carries a Version row, and unlike the specification it carries no
+// Date or Editors — the document states its publication date inside its own
+// Status line.
+const principlesFrontMatter = {
+  status: requireHeaderMatch(principlesText, "PRINCIPLES.md", "Status"),
+  version: requireHeaderMatch(principlesText, "PRINCIPLES.md", "Version"),
 };
 
 const generatedDir = path.join(siteDir, "src", "generated");
@@ -366,14 +389,16 @@ writeFileSync(
 // SPDX-License-Identifier: Apache-2.0
 //
 // GENERATED by scripts/sync-spec-docs.mjs from the repo-root spec-core.md,
-// MAINTAINERS.md, and GOVERNANCE.md. Do not edit: run \`pnpm prebuild\` (or
-// predev) instead.
+// MAINTAINERS.md, GOVERNANCE.md and PRINCIPLES.md. Do not edit: run
+// \`pnpm prebuild\` (or predev) instead.
 export const SPEC_FRONT_MATTER = ${JSON.stringify({ date, editors, status, version: versionMatch[1] }, null, 2)} as const;
 export const GOVERNANCE_FRONT_MATTER = ${JSON.stringify(governanceFrontMatter, null, 2)} as const;
+export const PRINCIPLES_FRONT_MATTER = ${JSON.stringify(principlesFrontMatter, null, 2)} as const;
 `
 );
 
 console.log(`[sync-spec-docs] generated ${generated} spec page(s) from root spec-*.md`);
 console.log(
-  `[sync-spec-docs] wrote src/generated/spec-front-matter.ts (${versionMatch[1]}, ${status}, ${date}, ${editors.length} editor(s); governance: ${governanceStatus})`
+  `[sync-spec-docs] wrote src/generated/spec-front-matter.ts (${versionMatch[1]}, ${status}, ${date}, ${editors.length} editor(s); ` +
+    `governance: ${governanceFrontMatter.status}; principles: v${principlesFrontMatter.version})`
 );

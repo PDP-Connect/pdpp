@@ -14,7 +14,11 @@ import {
 } from "fumadocs-ui/layouts/docs/slots/sidebar";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PdppRailFrontMatter, PdppRailGovernanceFrontMatter } from "@/components/sections/rail-front-matter.tsx";
+import {
+  PdppRailFrontMatter,
+  PdppRailGovernanceFrontMatter,
+  PdppRailPrinciplesFrontMatter,
+} from "@/components/sections/rail-front-matter.tsx";
 import { PdppRailSectionLabel } from "@/components/sections/rail-section-label.tsx";
 import { useSpecRailData } from "./rail-context.tsx";
 
@@ -58,9 +62,10 @@ function RailItem({ item }: { item: PageTree.Item }) {
 // a bare rule rather than a title, which keeps a stray tree entry from ever
 // reading as a rival section heading.
 //
-// "Programme" is a heading rather than a seventh row under "Specification"
-// because the two groups change by different routes: the specifications under
-// the Community Specification process, governance by a vote of Partners.
+// "Programme" is a heading rather than more rows under "Specification" because
+// the two groups change by different routes: the specifications under the
+// Community Specification process, governance and the Principles by a vote of
+// Partners.
 const RAIL_SECTION_LABELS = new Set(["Specification", "Programme"]);
 
 function RailSeparator({ item }: { item: PageTree.Separator }) {
@@ -87,6 +92,9 @@ function RailBanner() {
         status={status}
       />
     );
+  }
+  if (frontMatter.kind === "principles") {
+    return <PdppRailPrinciplesFrontMatter status={frontMatter.value.status} version={frontMatter.value.version} />;
   }
   const { date, editors, status, version } = frontMatter.value;
   return <PdppRailFrontMatter date={date} editors={editors} status={status} version={version} />;

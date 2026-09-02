@@ -1,16 +1,26 @@
 # Governance, Membership and Conformance
 
-**Status:** Pre-consultation draft. Not open for formal review.<br />
-**Circulated:** 24 August 2026<br />
-**Formal review:** Opens 3 September 2026 at GDC. Closes 1 October 2026.<br />
-**Programme live:** 1 October 2026<br />
-**Applies to:** PDP-Connect programme documents. Not part of the normative protocol.
+**Status:** Consultation draft
+**Circulated:** 24 August 2026. Revised 2 September 2026.
+**Formal review:** 3 September to 1 October 2026
+**Supporter signing opens:** 3 September 2026
+**Programme live:** 15 October 2026
+**Applies to:** PDP-Connect programme documents
+**Reports:** pdpp-dev-reports@lfdecentralizedtrust.org
 
-Nothing in this draft is settled. It is circulated now so that it can be argued with before it is fixed, and it will change in response.
+---
 
-From 3 September 2026 the specification and this document are locked for the duration of the formal review period. No change is made to either during that window except to correct a factual error, and any such correction is published with its date and its ground.
+**Programme document.** This is a programme document, not normative protocol text. It defines how PDP-Connect is governed and how conformance status is obtained. It does not change the specification, and no status it defines is a conformance requirement.
 
-Every comment received during formal review is logged and given a disposition: accepted, declined with a reason, or deferred. The comment resolution log is published.
+This document is in two parts.
+
+**Part A, Operating rules,** is in force from programme live. It describes what PDP-Connect does now, as a Lab of LF Decentralized Trust, with the powers a Lab has.
+
+**Part B, Proposed structure,** is not in force. It describes what PDP-Connect proposes to become once it holds a legal home that can stand behind conformance findings. It is published for comment and will change in response.
+
+From 3 September 2026 the specification and Part A are locked for the duration of the formal review period. No change is made to either during that window except to correct a factual error, and any such correction is published with its date and its ground. Part B remains open to revision throughout.
+
+Every comment received during formal review is logged and given a disposition: accepted, declined with a reason, or deferred. The comment resolution log is published. During disposition the maintainers may hold further open consultations or one-on-one conversations with commenters, and will say so in the log.
 
 Where review produces material change, or where a material question remains in dispute at close, the changed text goes out for a further 15-day review before it is final. Non-material change proceeds to publication.
 
@@ -24,199 +34,153 @@ Where review produces material change, or where a material question remains in d
 
 **Three kinds of party.** Data comes from somewhere, an application asks for some of it, and machines record and enforce what was approved. The programme calls these Source, Accessor and Operator. Every conformance status belongs to exactly one of them.
 
-**What conformance status is.** It says a party has been checked against published criteria and the result is published where anyone can read it. It is not a licence, and it is not required. Anyone may build on PDPP without holding a status, joining anything, or dealing with PDP-Connect at all. That is stated in [§1](#1-scope-and-standing) and it cannot be amended.
+**What conformance status is.** It says a party has been checked against published criteria and the result is published where anyone can read it. It is not a licence, and it is not required. Anyone may build on PDPP without holding a status, joining anything, or dealing with PDP-Connect at all. That is stated in §1 and it cannot be amended.
 
-**What membership is.** Separate from conformance. Membership records what a company has publicly committed to, from a statement of support up to operating without ever holding user data. It costs nothing, and it confers no conformance status.
+**What membership is.** Separate from conformance. Membership records what a company or an individual has publicly committed to, from a statement of support up to operating without ever holding user data. It costs nothing, and it confers no conformance status.
 
-**Where this sits.** PDP-Connect is a Lab of LF Decentralized Trust, part of the Linux Foundation. The specification and reference implementation are open source. This document governs the programme around them, not the protocol itself.
+**Where this sits.** PDP-Connect is a Lab of LF Decentralized Trust, part of the Linux Foundation. It was started by the Vana Foundation. PDPP is a community specification, owned, governed and managed by the community. The specification and reference implementation are open source. This document governs the programme around them, not the protocol itself.
 
 ---
+
+# Part A. Operating rules
+
+In force from programme live.
 
 ## 1. Scope and standing
 
 This document defines how PDP-Connect is governed, the membership it operates, and the conformance programme it proposes.
 
-Nothing in this document is a conformance requirement. [Core §9](https://pdpp.dev/specification#conformance) states that conformance is role- and behaviour-based, and that a conformant implementation is not required to use any particular vendor-hosted service, token, chain, centralised registry operator, domain, or repository deployment. That remains the case. Any party may implement PDPP without holding any status described here, without joining any tier described here, and without any dealing with PDP-Connect.
+Nothing in this document is a conformance requirement. Core §9 states that conformance is role- and behaviour-based, and that a conformant implementation is not required to use any particular vendor-hosted service, token, chain, centralised registry operator, domain, or repository deployment. That remains the case. Any party may implement PDPP without holding any status described here, without joining any tier described here, and without any dealing with PDP-Connect.
 
 Conformance status is a signal about parties. It is not permission to operate.
 
-The two principles in the preceding two paragraphs are not amendable: no status under this programme is a conformance requirement, and conformance status is not permission to operate. No vote of Partners, decision of the board, or act of the technical committee reaches them.
+The two principles in the preceding two paragraphs are not amendable: no status under this programme is a conformance requirement, and conformance status is not permission to operate. No vote of Partners, decision of the steering committee, or act of the technical committee reaches them.
 
-The rest of this document is amended under [§2.9](#29-amendment).
-
-### Relationship to the Linux Foundation
+### 1.1 Relationship to the Linux Foundation
 
 PDP-Connect is an LF Decentralized Trust Lab. Labs are initiated and managed by the community rather than overseen by the LFDT Technical Advisory Committee. The Labs Stewards approve entry to the programme and curate it, and hold no oversight of a Lab's own affairs. A Lab is not required to adopt a formal governance model. This document adopts one because the programme it describes issues findings that third parties rely on.
 
 Reference implementation code is Apache-2.0 and all commits carry DCO sign-off, as the Labs programme requires. Specification text is CSL-1.0 and documentation is CC-BY-4.0.
 
-The conformance programme in [§4](#4-conformance) is modelled on the Certified Kubernetes Conformance Program and follows its structure: self-service testing against an open source suite, public submission of results, review and approval in the open, and no fee for participation.
+### 1.2 Legal status
 
----
+PDP-Connect is not a separate legal entity. It holds no funds, enters into no agreements, and issues no marks. It operates within the LF Decentralized Trust Labs series of LF Projects, LLC.
 
-## 2. Governance
+Findings published under Part A are the published output of the process described here. They are not certification, they carry no warranty, and participants act in their own capacity.
 
-### 2.1 The board
+Where PDP-Connect's programme should legally sit is an open question, raised at the fourth working session and being worked with LF Decentralized Trust. Part B describes the structure PDP-Connect proposes to adopt once that question is resolved. Nothing in Part A depends on the answer.
 
-The board has five seats, all elected by Partners.
+### 1.3 The model
 
-The board:
+The conformance programme is modelled on the Certified Kubernetes Conformance Program and follows its structure: self-service testing against an open source suite, public submission of results, review and approval in the open, and no fee for participation.
 
-- sets the conformance criteria and the currency requirements in [§4.7](#47-rules-common-to-all-statuses);
-- grants and withdraws status, on the recommendation of the technical committee;
-- hears appeals under [§4.8](#48-reports-and-appeals);
-- appoints the technical committee;
-- publishes specification versions the committee has approved;
-- represents the programme to the Linux Foundation;
-- publishes its decisions.
+## 2. How the programme is run
 
-### 2.2 The Chair
+The programme moves through four stages: a preparatory stage before programme live, then the three numbered phases. Each is defined by who holds authority and what can appear on the register.
 
-The Chair holds one of the five board seats, elected directly by Partners on the same terms as the other four, and holds a full vote. The office is not appointed by the board and cannot be filled by board appointment.
+| Phase | Who runs it | What is on the register | Ends when |
+| --- | --- | --- | --- |
+| Pre | The maintainers | Public comment on the specification and Part A. Principles v1.0 published. Supporter signing opens | Programme live, 15 October 2026 |
+| 1. Launch | The maintainers | Supporters | The interim technical committee is named |
+| 2. Interim | The maintainers, with an interim technical committee | Supporters, and every status in §5 | Partners elect the steering committee |
+| 3. Full | The steering committee and the technical committee it appoints | As phase 2 | Amended under Part B |
 
-In addition to serving as a board member, the Chair:
+### 2.1 Phase 1: the maintainers
 
-- convenes the board and records its decisions;
-- maintains the register;
-- administers submissions, and merges them once the board has granted;
-- calls and organises elections;
-- publishes the criteria and decisions the board makes.
+The maintainers are those listed as maintainers in the PDPP repository at github.com/PDP-Connect/pdpp as at 3 September 2026.
 
-### 2.3 The technical committee
+In phase 1 the maintainers administer the register, run the change processes in §7, receive reports under §6, and prepare the interim technical committee. They make no finding about any third party.
 
-The board appoints a technical committee. The committee:
+The maintainers cannot amend this document. See §9.
 
-- maintains the conformance test suite;
-- reviews submissions and recommends that status be granted or refused;
-- publishes the review standard it applies;
-- receives and considers community-proposed changes to the specification;
-- runs the change processes listed in [§5](#5-change-processes);
-- recommends versions for publication.
+### 2.2 Phase 2: the interim technical committee
 
-**Merge rights.** The committee approves and merges pull requests against the specification, its companion documents and the test suite. It does not merge conformance submissions. See [§2.9](#29-amendment).
+Within 30 days of programme live, the maintainers name an interim technical committee of five.
 
-The committee is an expert panel. It recommends, and the board decides. It does not grant or withdraw status under [§4](#4-conformance) and does not set membership terms.
+The committee is constituted on five rules, all of which are published before anyone is named:
 
-Committee size and terms are set by the board, and members serve at the board's discretion. Appointment requires demonstrated technical qualification: contribution to the specification or its reference implementation, or equivalent standing in authorization, identity, or data portability standards work. The board publishes the qualification criteria it applies and the basis on which each appointment is made.
+1. **Published criteria.** Appointment requires demonstrated technical qualification: contribution to the specification or its reference implementation, or equivalent standing in authorization, identity, or data portability standards work. The maintainers publish the criteria and the basis on which each appointment is made.
+2. **Majority independent.** At least three of the five members are unaffiliated with Vana Foundation, Open Data Labs, or any organisation under common control with either. Every member's affiliation is published.
+3. **Appointed once.** The maintainers name the committee and cannot remove any member. Only the first elected steering committee may remove a member, and only for cause published with reasons.
+4. **Term ends at the first election.** The committee stands down when the steering committee is seated under Part B.
+5. **Decisions in the open.** Every decision is published with reasons and with each member's vote named. A member does not vote on a matter concerning their own organisation, and recusal reduces the number needed for a majority.
 
-### 2.4 Elections, terms and removal
+The committee reviews conformance submissions under §5, maintains the conformance test suite and the review standard, and runs the change processes in §7. Until PDP-Connect's legal home is confirmed, the register describes the committee's findings as reviewed by the interim technical committee.
 
-Board members serve a term of two years. There is no limit on the number of terms a member may serve. Members remain in office until their successors are seated.
+### 2.3 How the committee decides
 
-The Chair calls and organises each election and runs it fairly and in a procedurally sound manner. That includes publishing the timetable, the eligibility rules and the method of counting in advance, giving notice long enough for candidates to stand and Partners to vote, and publishing the result with the count.
+Each submission is assigned to two members, neither from the applicant's organisation. They examine it in public against the published review standard and write a recommendation of no more than one page: grant or refuse, with reasons.
 
-Where the Chair stands for re-election, the board appoints an independent returning officer to run that election. The same applies where the office is vacant.
+The full committee votes on that recommendation, asynchronously, within seven days. A recommendation passes by a majority of the whole committee, less any member who has recused. A recommendation that does not reach a majority does not pass.
 
-**Removal.** A board member, including the Chair, is removed by a resolution of the board supported by a vote of Partners. Both are required.
+A refused applicant receives the written reasons and may correct and resubmit. There is no appeal from the interim committee; appeals open when the steering committee is seated. That is stated here so that no applicant expects a route that does not yet exist.
 
-**Vacancies.** Where one of the four other seats falls vacant between elections, the board may appoint to it for the remainder of the term, or call an early election for that seat. Where the Chair seat falls vacant, an election is held for it. The board designates one of its members to discharge the Chair's administrative functions until that election concludes, and appoints an independent returning officer to run it.
+Reviewer pairs rotate.
 
-### 2.5 Voting and decisions
+### 2.4 Separation
 
-**Partner votes.** One organisation, one vote. An organisation is a separate legal entity not under common control with another voting organisation. Every Partner votes. Voting is not conditioned on any fee.
+Authoring the specification, operating commercially on it, and reviewing conformance submissions against it are not held by one organisation. The majority-independent rule in §2.2 is how that is achieved before an elected structure exists.
 
-**Board decisions.** Decisions pass by majority. A decision that does not reach a majority does not pass.
+## 3. Open participation
 
-**Conflicts.** A board member does not vote on a decision concerning their own status, the status of an organisation they are employed by or control, or their own removal. This applies to every seat.
+The work happens in the open, and joining requires no signature.
 
-### 2.6 Interim arrangements and transition
+**Open channels.** The PDP-Connect mailing list and the #pdp-connect channel on the LF Decentralized Trust Discord are open to anyone. Both are linked from pdpp.dev. Drafts, working sessions, and the comment resolution log are announced there.
 
-In this document, the maintainers are those listed as maintainers in the PDPP repository at github.com/PDP-Connect/pdpp as at 3 September 2026.
+**Working sessions** are public and recorded.
 
-Until the transition below, the maintainers act as the board, discharge the Chair function collectively, and review submissions under §4.
+**Public bodies.** Regulators, government agencies and international organisations are welcome to participate in the open channels and working sessions as observers, without signing anything, holding any status, or appearing on any register. A named contact for public bodies is listed on pdpp.dev.
 
-The criteria the maintainers apply are published from programme live.
+## 4. Membership
 
-The maintainers cannot amend this document. See [§2.9](#29-amendment).
+Membership records what a party has publicly committed to. It is separate from conformance status and confers none.
 
-**Transition.** The interim arrangement ends at the sooner of 100 Partners or one year from programme live, and in no case earlier than six months from programme live. At that point an election is held and all five board seats are filled.
+### 4.1 Supporter
 
-### 2.7 Separation
+A Supporter has signed the PDPP Principles, a short statement of the intentions behind the protocol, published at pdpp.dev and versioned separately from the specification.
 
-Authoring the specification, operating commercially on it, and reviewing conformance submissions against it are not held by one organisation. The interim arrangement in [§2.6](#26-interim-arrangements-and-transition) is an exception, made because no alternative exists at launch, and it ends on transition.
+Signing is a statement of intent. It is not an undertaking to implement PDPP, and it does not indicate agreement with any particular version of the specification. Individuals and organisations both sign. An individual's affiliation, if given, is shown for identification only; the individual signs in a personal capacity. A signature attaches to the version of the Principles signed, and a signatory is invited, not moved, when the Principles are revised.
 
-### 2.8 What the committee decides and what the board decides
+Supporters are listed on the public register by name (individuals) or by organisation, type and country (organisations), with the date and the Principles version signed. The register is in date order, without ranking or tiers. No badge or mark is issued.
 
-Assessment and rule-setting are held by different bodies. The committee assesses. The board sets the rules and decides who holds status. Neither does the other's job.
+Supporter is self-declared. Nobody grants it, and it can be withdrawn at any time.
 
-| | Technical committee | Board |
-| --- | --- | --- |
-| Specification text | Approves and merges | Publishes versions |
-| Test suite and review standard | Approves and merges | Sets the criteria the standard must meet |
-| Conformance submissions | Reviews and recommends | Grants or refuses |
-| Purpose codes, views, extensions | Decides, under [§5](#5-change-processes) | Does not decide |
-| Membership terms | No role | Decides |
-| Appeals | No role | Hears, under [§4.8](#48-reports-and-appeals) |
-| Committee membership | No role | Appoints and removes |
+Supporter is the only membership available in phase 1. Signing opens 3 September 2026, ahead of programme live, because a Supporter register needs no body to administer it beyond the maintainers.
 
-Two consequences worth stating plainly.
+### 4.2 Partner
 
-**The committee cannot grant itself a status.** It reviews conformance submissions but never merges them. A submission is merged by the Chair, and only once the board has granted. If the merge were the grant, the body that reviews would also be the body that decides, and the separation above would exist on paper only.
+A Partner is an organisation that holds at least one status under §5. The register entry states which. Partners receive drafts ahead of publication, participate in working groups, and vote under Part B once the steering committee election is called.
 
-**The board cannot rewrite the specification.** It publishes what the committee approves. A board that could edit protocol text on a majority vote would make the standard answerable to whoever holds four seats.
+Partner is not granted. It follows from holding a status, and lapses when the last status lapses.
 
-`main` is protected. Nothing reaches it except by pull request with the approvals set out in this section.
+Partner opens in phase 2.
 
-### 2.9 Amendment
+### 4.3 Steward
 
-**This document** is amended by a majority of Partners, except for the two principles stated as unamendable in §1.
+A Steward holds no custody of user data and operates where the data lives.
 
-**The specification** changes through the technical committee, which receives and oversees community-proposed changes and recommends versions for publication. Specification text is licensed under CSL-1.0 and changes under the Community Specification process. Membership votes do not decide protocol semantics.
+Steward opens in phase 2 as a declared commitment: the organisation states publicly that it takes no custody, and the register records the claim as declared. It converts to a confirmed Steward on Verified Operator status, once the test suite is published. Declared and confirmed are shown distinctly on the register.
 
-**Before a board exists.** Partners vote only after the board is seated under [§2.6](#26-interim-arrangements-and-transition). Until then this document cannot be amended, and the maintainers cannot amend it.
+Membership carries no fee at any level.
 
-Two consequences follow, and both are intended. The interim body is bound by terms it cannot change, including the terms under which its own authority ends. And errors identified during the interim period cannot be corrected by ordinary amendment.
+## 5. Conformance
 
-To avoid entrenching a defect for up to a year, a narrow exception applies. The maintainers may issue published errata correcting factual errors, broken cross-references and dates. Errata may not alter criteria, statuses, tiers, voting arrangements, or the transition trigger in [§2.6](#26-interim-arrangements-and-transition). Every erratum is published with its date and its ground, and is subject to ratification or reversal by the first seated board.
+### 5.1 Who does what
 
----
+**The interim technical committee** examines every submission in public against the published review standard and decides under §2.3. Members are named on every decision.
 
-## 3. Membership
+**The maintainers** administer submissions, run the admissions check in Appendix A, merge on a committee decision, and maintain the register.
 
-Membership records what a company has committed to. It is separate from conformance status and confers none. Conformance status is separate from membership and does not require it.
+There is no accreditation body and there are no licensed assessors.
 
-Each tier states who decides it.
-
-**Supporter.** A public statement of support. No implementation required, no assessment. Listed by name. *Self-declared. Nobody grants it, and it can be withdrawn by the company at any time.*
-
-**Partner.** The company holds at least one status under [§4.3](#43-statuses). The register entry states which. Partners participate in working groups, receive drafts ahead of publication, and vote under [§2.5](#25-voting-and-decisions). *Granted by the board, on the recommendation of the technical committee, under [§4.2](#42-how-status-is-obtained). Withdrawn the same way.*
-
-**Steward.** The company holds no custody of user data and operates where the data lives.
-
-Steward opens at programme live as a declared commitment: the company states publicly that it takes no custody, and the register records the claim as declared. It converts to a confirmed Steward on Verified Operator status, once the test suite is published. Declared and confirmed are shown distinctly on the register.
-
-*Declared Steward is self-declared. Confirmed Steward is granted by the board under [§4.2](#42-how-status-is-obtained).*
-
-The board is the only body that grants or withdraws a status. The technical committee reviews and recommends; it does not grant. No fee, no membership, and no commercial relationship affects a grant. See [§4.7](#47-rules-common-to-all-statuses).
-
-Membership carries no fee.
-
----
-
-## 4. Conformance
-
-### 4.1 Who does what
-
-**The board** grants and withdraws status, sets the criteria, and hears appeals. It is the only body that grants.
-
-**The technical committee** examines every submission in public against the published review standard and recommends that status be granted or refused, with reasons. It maintains the conformance test suite and the review standard it applies. Members are named on every recommendation they make.
-
-The committee is an expert panel, not a tier of management. It is appointed by the board, serves at the board's discretion, and does not grant status.
-
-**The Chair** administers submissions, merges them once the board has granted, and maintains the register.
-
-Assessment and rule-setting sit with different bodies, and the split is set out in [§2.8](#28-what-the-committee-decides-and-what-the-board-decides). The short version: the committee assesses and can merge specification changes, the board decides who holds status, and the committee never merges a conformance submission.
-
-There is no accreditation body and there are no licensed assessors. During the interim period in [§2.6](#26-interim-arrangements-and-transition), the maintainers act in place of both the board and the committee.
-
-### 4.2 How status is obtained
+### 5.2 How status is obtained
 
 Four steps, the same for every status:
 
 1. **Submit.** The applicant opens a pull request containing the evidence for the status sought, together with the participation form.
-2. **Review.** The technical committee examines the submission in public against the published review standard and recommends that it be granted or refused, with reasons.
-3. **Grant.** The board grants or refuses on that recommendation.
-4. **Publish.** On grant, the Chair merges the submission and the result is published to the register. The committee does not merge conformance submissions. See [§2.8](#28-what-the-committee-decides-and-what-the-board-decides).
+2. **Check.** The maintainers run the admissions check in Appendix A. A submission that fails a check is returned with the item cited. The maintainers exercise no discretion at this step.
+3. **Review.** The interim technical committee examines the submission and decides under §2.3.
+4. **Publish.** On a decision to grant, the maintainers merge the submission and the result is published to the register.
 
 What is submitted at step 1 differs by status:
 
@@ -227,116 +191,185 @@ What is submitted at step 1 differs by status:
 | Verified Accessor | Identity and vetting evidence against the published criteria |
 | Verified Operator | Results of the open source conformance test suite, run by the applicant |
 
-Only Verified Operator involves a test suite. Source and Accessor submissions are assessed rather than tested, because no suite establishes whether a description is accurate or whether a party is who it claims to be.
+**Recognition short-circuits steps 1 to 3.** Where a recognised external register has already made the equivalent finding, the result is published. At programme live the recognised list holds one entry: the Data Transfer Initiative's Data Trust Registry, recognised as a basis for Verified Accessor under §5.5.
 
-Anyone may reproduce a published Verified Operator result by running the same suite against the same implementation.
+### 5.3 Statuses
 
-**Recognition short-circuits steps 1 to 3.** Where a recognised external register has already made the equivalent finding, the board recognises it and the result is published.
-
-The board may recognise an external register as an alternative basis for a named status where that register makes the equivalent finding. Recognised registers are named individually with the reasoning published. At programme live the recognised list holds one entry: the Data Transfer Initiative's Data Trust Registry, recognised as a basis for Verified Accessor under [§4.5](#45-accessor-status).
-
-### 4.3 Statuses
-
-Four statuses. Each belongs to exactly one role, as defined in [Core §2](https://pdpp.dev/specification#2-terminology-and-actors).
-
-**Source.** Where data comes from. Anyone may publish a description of a source.
-**Accessor.** An application or agent requesting data. [Core §2](https://pdpp.dev/specification#2-terminology-and-actors) calls this the Client.
-**Operator.** A party running the authorization server, the resource server, or both.
+Four statuses. Each belongs to exactly one role, as defined in Core §2.
 
 | Status | Role | Finding | How established | Opens |
 | --- | --- | --- | --- | --- |
-| Verified Source | Source | The published description is accurate and a named party is accountable for it. | Assessed | Programme live |
-| Official Source | Source | Verified, and the publisher is authenticated as the platform itself. Carries an official tag and display priority. | Assessed, plus identifier check | Programme live |
-| Verified Accessor | Accessor | The party is who it claims to be and has been vetted. | Assessed, or recognised | Programme live |
-| Verified Operator | Operator | The implementation conforms to [Core §9](https://pdpp.dev/specification#conformance). | Tested | Publication of the test suite |
+| Verified Source | Source | The published description is accurate and a named party is accountable for it. | Reviewed | Phase 2 |
+| Official Source | Source | Verified, and the publisher is authenticated as the platform itself. Carries an official tag and display priority. | Reviewed, plus identifier check | Phase 2 |
+| Verified Accessor | Accessor | The party is who it claims to be and has been vetted. | Reviewed, or recognised | Phase 2 |
+| Verified Operator | Operator | The implementation conforms to Core §9. | Tested | Publication of the test suite |
 
-### 4.4 Source statuses
+### 5.4 Source statuses
 
-**Verified Source.** The published description is assessed against the data it describes, and a named party accepts accountability for its accuracy. There is no test suite for this status. See [§4.2](#42-how-status-is-obtained).
+**Verified Source.** The published description is assessed against the data it describes, and a named party accepts accountability for its accuracy. There is no test suite for this status.
 
 **Official Source.** Verified Source, plus authentication that the publisher is the platform whose data is described. Authentication uses the check in Discovery and Trust §2: `source.id` must be identical to the accepted protected-resource identifier, and the authorization server rejects any mismatch before consent.
 
 Official Source does not substitute for review. A platform meets the same accuracy criteria as anyone else.
 
-**Coexistence.** Official Source does not displace anything. Where a source already holds one or more Verified Source descriptions, the Official description is published alongside them under its own identifier, and the register lists all of them together with what each exposes.
+**Coexistence.** Official Source does not displace anything. Where a source already holds one or more Verified Source descriptions, the Official description is published alongside them under its own identifier, and the register lists all of them together with what each exposes. What Official Source carries is an official tag and display priority: an authorization server presents the Official description by default, with the others reachable. Anyone remains free to publish, maintain and extend a Verified Source description for the same source, including one that exposes more.
 
-What Official Source carries is an official tag and display priority: an authorization server presents the Official description by default, with the others reachable. Anyone remains free to publish, maintain and extend a Verified Source description for the same source, including one that exposes more.
-
-Existing grants remain bound to the declaration snapshot they were issued against and continue until expiry or revocation. [Core §7](https://pdpp.dev/specification#grant) does not support grant narrowing, and no migration is forced.
+Existing grants remain bound to the declaration snapshot they were issued against and continue until expiry or revocation. Core §7 does not support grant narrowing, and no migration is forced.
 
 **Why source descriptions carry the most weight.** A description that is wrong corrupts consent at its input, and nothing downstream catches it, because the system then behaves exactly as specified.
 
-### 4.5 Accessor status
+### 5.5 Accessor status
 
 The question is whether the party is who it claims to be.
 
 Two routes lead to Verified Accessor. Both confer the same status. The register records which was used.
 
-**Assessment.** The applicant submits identity and vetting evidence through the four steps in [§4.2](#42-how-status-is-obtained).
+**Review.** The applicant submits identity and vetting evidence through the four steps in §5.2.
 
-**Recognition.** A recognised external register has already made the equivalent finding, and the board recognises it rather than repeating it. See [§4.2](#42-how-status-is-obtained).
+**Recognition.** A recognised external register has already made the equivalent finding, and the result is published rather than repeated.
 
 Both routes exist because the populations differ. The Data Trust Registry vets services seeking access to platforms' portability interfaces. An accessor operating against a personal server may never approach one, and so may have no basis to appear there.
 
-Verified Accessor by either route is a positive trust signal for [Core §6](https://pdpp.dev/specification#selection-request), which requires an authorization server to render verified status distinctly where it holds such a signal and to treat a client as unverified where it does not. Neither route is exclusive: an authorization server may recognise other signals, including local registration and domain verification, under its own policy.
+Verified Accessor by either route is a positive trust signal for Core §6, which requires an authorization server to render verified status distinctly where it holds such a signal and to treat a client as unverified where it does not. Neither route is exclusive: an authorization server may recognise other signals, including local registration and domain verification, under its own policy.
 
-### 4.6 Operator status
+### 5.6 Operator status
 
-**Verified Operator.** The applicant runs the conformance test suite against its authorization server and resource server implementation and submits the results under [§4.2](#42-how-status-is-obtained). A Verified Operator claim states which [Core §9](https://pdpp.dev/specification#conformance) roles and tiers it covers, and against which specification version the results were produced.
+**Verified Operator.** The applicant runs the conformance test suite against its authorization server and resource server implementation and submits the results under §5.2. A Verified Operator claim states which Core §9 roles and tiers it covers, and against which specification version the results were produced.
 
-[Core §9](https://pdpp.dev/specification#conformance) notes that a conformance test suite is planned and not defined in v0.1. The suite is published within three months of programme live, and Verified Operator opens on its publication. Until then operator conformance is self-asserted and PDP-Connect makes no finding about it.
+Core §9 notes that a conformance test suite is planned and not defined in v0.1. The suite is published by 1 January 2027, and Verified Operator opens on its publication. Until then operator conformance is self-asserted and PDP-Connect makes no finding about it.
 
-### 4.7 Rules common to all statuses
+### 5.7 Rules common to all statuses
 
-**Grounds.** Standing depends on conduct alone. It does not depend on membership or on any commercial relationship with PDP-Connect or its members. A party that has never held membership may hold any status in [§4.3](#43-statuses).
+**Grounds.** Standing depends on conduct alone. It does not depend on membership or on any commercial relationship with PDP-Connect or its members.
 
 **Change.** A Source description is versioned, and every version is compared against the one before it. A change that widens scope, meaning a new stream, a new field, or a new endpoint, returns to review before the new version carries the status. Any other change passes automatically and is recorded.
 
-**Currency.** Status is granted against a stated specification version. To remain current, a holder resubmits against the most recent version within twelve months of its publication. Status that is not renewed lapses, and the register records it as lapsed rather than withdrawn.
+**Currency.** Status is granted against a stated specification version. To remain current, a holder resubmits against the most recent version within twelve months of its publication. Renewal is a re-declaration by the holder plus a fresh run of the admissions check and, for Verified Operator, the test suite. The committee re-reviews only where a check fails or a report under §6 is open. Status that is not renewed lapses, and the register records it as lapsed rather than withdrawn.
 
-**Withdrawal.** Every status is revocable on evidence. Status held by recognition lapses when the underlying registry membership lapses, and an authorization server relying on it is responsible for ceasing to render verified status. Status held by submission is withdrawn by the board.
+**Withdrawal.** Every status is revocable on evidence, by the committee under §2.3. Status held by recognition lapses when the underlying registry membership lapses, and an authorization server relying on it is responsible for ceasing to render verified status.
 
-**Scope.** A status is granted for a named role and does not extend to any other. A recognised external register confers only the status [§4.2](#42-how-status-is-obtained) names it for.
+**Scope.** A status is granted for a named role and does not extend to any other. A recognised external register confers only the status §5.2 names it for.
 
-**The register.** The register is authoritative and any badge or mark is a pointer to it. It shows lapsed and withdrawn status alongside current status, with the date, the ground, the specification version, and the route by which the status was held.
+**The register.** The register is authoritative. It shows lapsed, withdrawn and disputed status alongside current status, with the date, the ground, the specification version, and the route by which the status was held. No badge or mark is issued until PDP-Connect holds a legal home.
 
-### 4.8 Reports and appeals
+## 6. Reports
 
-**Reports.** Anyone may report a source description as inaccurate, or any other conduct bearing on a status, to [reports@pdpp.dev](mailto:reports@pdpp.dev).
+Anyone may report a source description as inaccurate, a Supporter entry as misattributed, or any other conduct bearing on a status or a register entry, to pdpp-dev-reports@lfdecentralizedtrust.org.
 
-The Chair acknowledges a report within five working days and refers it to the board. Where a report is credible on its face, the board may suspend the status pending the outcome.
+The maintainers designated as responders, listed on pdpp.dev, acknowledge a report within five working days.
 
-The outcome is published with reasons. Where a description is found to be inaccurate, the status is withdrawn and the finding records the period during which the description was live, so that operators can identify the grants affected.
+**In phase 1,** no body exists to adjudicate. The register records the entry as disputed and publishes the report alongside it. The entry is not removed unless the party withdraws it.
 
-**Appeals.** A party refused a status, or whose status is withdrawn, may appeal to the board. A board member who took part in the decision under appeal does not vote on the appeal.
+**In phase 2,** the report is referred to the interim technical committee, which decides under §2.3. Where a report is credible on its face, the committee may suspend the status pending the outcome. The outcome is published with reasons. Where a description is found to be inaccurate, the status is withdrawn and the finding records the period during which the description was live, so that operators can identify the grants affected.
 
----
+## 7. Change processes
 
-## 5. Change processes
+Anyone may make a proposal under this section, whether or not they hold a status or a membership. In phase 1 the maintainers run these processes; from phase 2 the interim technical committee does.
 
-Anyone may make a proposal under this section, whether or not they hold a status or a membership.
+**Purpose codes.** Core Appendix A defines the initial registry. `https://pdpp.dev/purpose/ai_training` carries the only protocol-level consent requirement. Proposals are considered on a published regular cycle, deciding whether to add a code, and whether it carries a protocol-level consent requirement.
 
-**Purpose codes.** [Core Appendix A](https://pdpp.dev/specification#appendix-a-purpose-code-registry) defines the initial registry. `https://pdpp.dev/purpose/ai_training` carries the only protocol-level consent requirement. The technical committee considers proposals on a published regular cycle and decides whether to add a code, and whether it carries a protocol-level consent requirement.
+**Views.** Core §5 states that views under `pdpp.dev` URI namespaces are controlled through a public change process. That process is the one in this section.
 
-**Views.** [Core §5](https://pdpp.dev/specification#source-declaration) states that views under `pdpp.dev` URI namespaces are controlled through a public change process. That process is the one in this section.
+**Extension profiles.** Core §5 states that an extension cannot redefine or weaken Core semantics. Every proposed extension is reviewed against that requirement and the finding is published. An extension that fails review is not published under the `pdpp.dev` namespace.
 
-**Extension profiles.** [Core §5](https://pdpp.dev/specification#source-declaration) states that an extension cannot redefine or weaken Core semantics. The technical committee reviews every proposed extension against that requirement and publishes the finding. An extension that fails review is not published under the `pdpp.dev` namespace.
+**The specification.** Proposals are triaged on a published regular cycle, worked in public, and published under CSL-1.0 through the Community Specification process. Membership votes do not decide protocol semantics.
 
-**The specification.** The technical committee triages proposals on a published regular cycle, works them in public, and recommends versions to the board for publication under CSL-1.0. The board publishes. It does not decide protocol semantics.
-
-**The test suite.** The technical committee maintains the suite and versions it alongside the specification. Changes to what conformance means are published before they take effect.
+**The test suite.** Maintained and versioned alongside the specification. Changes to what conformance means are published before they take effect.
 
 Decisions under this section are published with reasons.
 
----
-
-## 6. Timeline
+## 8. Timeline
 
 | Stage | Date |
 | --- | --- |
-| Specification and this document locked, published for public comment | 3 September 2026 |
+| Specification and Part A locked, published for public comment. PDPP Principles v1.0 published. Supporter signing opens | 3 September 2026 |
 | Comment period closes | 1 October 2026 |
-| Programme live. Source and Accessor submissions open | 1 October 2026 |
+| Disposition published. Further 15-day review if material change | From 1 October 2026 |
+| Programme live | 15 October 2026 |
+| Interim technical committee named | By 14 November 2026 |
+| Source and Accessor submissions open | On the committee being named |
 | Conformance test suite published | By 1 January 2027 |
-| Verified Operator and Steward open | On publication of the test suite |
-| Interim governance ends, board seated | Sooner of 100 Partners or 1 October 2027, not before 1 April 2027 |
+| Verified Operator and confirmed Steward open | On publication of the test suite |
+| Steering committee election called | Sooner of 100 Partners or 15 October 2027, not before 15 April 2027 |
+
+## 9. Amendment of Part A
+
+Part A cannot be amended during phases 1 and 2. The maintainers and the interim technical committee are bound by it, including the terms under which their own authority ends.
+
+To avoid entrenching a defect, a narrow exception applies. The maintainers may issue published errata correcting factual errors, broken cross-references and dates. Errata may not alter criteria, statuses, tiers, the constitution of the interim committee, or the election trigger in §8. Every erratum is published with its date and its ground, and is subject to ratification or reversal by the first seated steering committee.
+
+From phase 3, Part A is amended under Part B §B.5.
+
+---
+
+# Part B. Proposed structure
+
+Not in force. Published for comment. Contingent on PDP-Connect holding a legal home able to stand behind conformance findings, which is being worked with LF Decentralized Trust.
+
+## B.1 Path to project status
+
+The programme starts under the LF Decentralized Trust Labs structure, which provides no separate legal personality. When the conformance test suite is published and Verified Operator opens, PDP-Connect applies for its own legal home. The candidates are LF Decentralized Trust project status, a series of Joint Development Foundation Projects, LLC, which is how the Coalition for Content Provenance and Authenticity and Trust over IP are constituted, or another Linux Foundation category if one is better suited to a programme that issues findings.
+
+At that point membership can become a signed agreement, findings can become certification, marks can be issued and enforced, and the programme can hold funds and form liaisons with other standards bodies. Until then: no fees, no contracts, no marks.
+
+## B.2 The steering committee
+
+Five seats, all elected by Partners. The Chair holds one of the five, elected directly on the same terms as the other four.
+
+The steering committee sets the conformance criteria and currency rules, grants and withdraws status on the technical committee's recommendation, hears appeals, appoints the technical committee, publishes specification versions the committee has approved, represents the programme to the Linux Foundation, and publishes its decisions.
+
+The Chair convenes the committee and records its decisions, maintains the register, administers submissions and merges them once granted, calls and organises elections, and publishes criteria and decisions.
+
+**Open questions from the fourth working session, carried here for comment:** whether five seats or three; whether one organisation, one vote deters large participants; and whether the technical committee should recommend or grant.
+
+## B.3 The technical committee
+
+Appointed by the steering committee on demonstrated technical qualification, as in §2.2. It maintains the test suite and the review standard, reviews submissions and recommends, receives community-proposed changes to the specification, runs the change processes in §7, and recommends versions for publication.
+
+The committee approves and merges pull requests against the specification, its companion documents and the test suite. It does not merge conformance submissions. It recommends; the steering committee decides.
+
+## B.4 Elections, terms, removal and voting
+
+Steering committee members serve two years, no term limit, and remain in office until successors are seated. The Chair runs elections and publishes the timetable, eligibility rules, counting method and result. Where the Chair stands for re-election or the seat is vacant, an independent returning officer is appointed.
+
+Removal of any member, including the Chair, requires both a resolution of the steering committee and a vote of Partners.
+
+Partner votes: one organisation, one vote. An organisation is a separate legal entity not under common control with another voting organisation. Voting is not conditioned on any fee. Steering committee decisions pass by majority. A member does not vote on a decision concerning their own status, their own organisation, or their own removal.
+
+## B.5 Amendment
+
+This document is amended by a majority of Partners, except for the two principles stated as unamendable in §1. The specification changes through the technical committee under the Community Specification process, never by membership vote.
+
+## B.6 Under consideration
+
+Annual attestation and compliance review for assessed statuses, on the model offered at the fourth working session. Appeals from the interim technical committee's decisions, once a steering committee exists to hear them. Marks and badges, once an entity exists to own and enforce them.
+
+---
+
+# Appendix A. Admissions check
+
+Applied by the maintainers at §5.2 step 2. The list is exhaustive: a submission cannot be returned for a reason not on it. The maintainers have no discretion to return a submission that meets every item. Every return cites the item and is logged.
+
+For every submission:
+
+1. The participation form is complete.
+2. The submission names the specification version it is made against.
+3. A named party accepts accountability, with working contact details.
+4. The pull request carries DCO sign-off.
+
+For Supporter:
+
+5. The signatory has confirmed by email.
+6. For an organisation, the signatory's email is at the organisation's domain and the authority declaration is checked.
+
+For Source statuses:
+
+7. The declaration is well-formed and parses against the specification version named.
+8. Declared endpoints resolve.
+9. For Official Source, the identifier check in Discovery and Trust §2 passes.
+
+For Verified Operator:
+
+10. Test suite results are attached, name the suite version, and are reproducible.
+
+Separately from this check, the maintainers may decline to publish content that is unlawful, fraudulent or abusive, under the Code of Conduct. That is repository moderation, not a status decision, and is recorded as such.

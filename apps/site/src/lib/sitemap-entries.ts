@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { MetadataRoute } from "next";
-import { GOVERNANCE_SLUG, governanceRoute, MAINTAINER_DOC_SLUGS, specDocExtension } from "./spec-nav-slugs.ts";
+import {
+  GOVERNANCE_SLUG,
+  governanceRoute,
+  MAINTAINER_DOC_SLUGS,
+  PRINCIPLES_SLUG,
+  principlesRoute,
+  specDocExtension,
+} from "./spec-nav-slugs.ts";
 
 // Pure by design: takes plain { path, url } pairs rather than a fumadocs
 // Page, so this can be unit-tested without loading the generated MDX source
@@ -28,10 +35,11 @@ export interface DocPageRef {
 //   and their own noindex all keep out. Derived from MAINTAINER_DOC_SLUGS
 //   rather than repeated, so the rail and the sitemap cannot disagree about
 //   what is unlisted.
-// - governance.mdx: canonical at /governance, not at the /specification/governance
-//   URL fumadocs derives for it (that URL 308-redirects). Listing the fumadocs
-//   URL would put a redirect in the sitemap; the canonical route is added as a
-//   static entry below instead.
+// - governance.mdx and principles.mdx: canonical at /governance and
+//   /principles, not at the /specification/<slug> URLs fumadocs derives for
+//   them (those URLs 308-redirect). Listing the fumadocs URL would put a
+//   redirect in the sitemap; the canonical routes are added as static entries
+//   below instead.
 //
 // Extensions come from specDocExtension rather than a hardcoded ".md": some
 // maintainer docs are single-sourced from a root spec-*.md and generated as
@@ -41,6 +49,7 @@ export interface DocPageRef {
 const NON_CANONICAL_DOC_PATHS = new Set([
   "README.md",
   `${GOVERNANCE_SLUG}.mdx`,
+  `${PRINCIPLES_SLUG}.mdx`,
   ...MAINTAINER_DOC_SLUGS.map((slug) => `${slug}.${specDocExtension(slug)}`),
 ]);
 
@@ -53,6 +62,7 @@ export function buildSitemap(siteOrigin: string, docPages: readonly DocPageRef[]
   const staticEntries: MetadataRoute.Sitemap = [
     { url: siteOrigin },
     { url: `${siteOrigin}${governanceRoute}` },
+    { url: `${siteOrigin}${principlesRoute}` },
     { url: `${siteOrigin}/self-host` },
     { url: `${siteOrigin}/participate` },
   ];

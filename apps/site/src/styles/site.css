@@ -45,6 +45,7 @@
    architecture this preserves. */
 @source not "../app/(concept)";
 @source not "../app/governance";
+@source not "../app/principles";
 @source not "../app/not-found.tsx";
 @source not "../app/specification";
 @source not "../components/layout/concept-page.tsx";

@@ -5,7 +5,14 @@ import type * as PageTree from "fumadocs-core/page-tree";
 import { type InferPageType, loader } from "fumadocs-core/source";
 import { lucideIconsPlugin } from "fumadocs-core/source/plugins/lucide-icons";
 import { docs } from "../../.source/dynamic.ts";
-import { docsRoute, GOVERNANCE_SLUG, governanceRoute, PRIMARY_SLUGS } from "./spec-nav-slugs.ts";
+import {
+  docsRoute,
+  GOVERNANCE_SLUG,
+  governanceRoute,
+  PRIMARY_SLUGS,
+  PRINCIPLES_SLUG,
+  principlesRoute,
+} from "./spec-nav-slugs.ts";
 
 export const source = loader({
   baseUrl: docsRoute,
@@ -45,13 +52,22 @@ function pick(byUrl: Map<string, PageTree.Item>, slugs: readonly string[]): Page
     .filter((item): item is PageTree.Item => item !== undefined);
 }
 
-// Governance is authored inside the fumadocs collection (so it is indexed and
-// carries the same page furniture as a spec page) but is SERVED at its own
-// top-level /governance route. The tree item therefore keeps the name fumadocs
-// resolved for it while pointing at the canonical URL — without this the rail
-// would link to /specification/governance, which only 308-redirects here.
+// The programme documents are authored inside the fumadocs collection (so they
+// are indexed and carry the same page furniture as a spec page) but are SERVED
+// at their own top-level routes. Each tree item therefore keeps the name
+// fumadocs resolved for it while pointing at the canonical URL — without this
+// the rail would link to /specification/governance and
+// /specification/principles, which only 308-redirect there.
+//
+// Governance first: it is the document that says what a status means, and the
+// Principles are one thing it governs.
+const PROGRAMME_DOCS = [
+  { route: governanceRoute, slug: GOVERNANCE_SLUG },
+  { route: principlesRoute, slug: PRINCIPLES_SLUG },
+] as const;
+
 function programmeItems(byUrl: Map<string, PageTree.Item>): PageTree.Item[] {
-  return pick(byUrl, [GOVERNANCE_SLUG]).map((item) => ({ ...item, url: governanceRoute }));
+  return PROGRAMME_DOCS.flatMap(({ route, slug }) => pick(byUrl, [slug]).map((item) => ({ ...item, url: route })));
 }
 
 // The tree the rail renders: the specification set, then the programme
