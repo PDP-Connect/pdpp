@@ -25,12 +25,7 @@ const expectedNodeEngine = ">=22.14.0";
 // active docs below, so the docs cannot silently regress operators onto the
 // dead prerelease channel.
 const retiredDistTag = "beta";
-const installDocRoots = [
-  "README.md",
-  "docs",
-  "apps/site/content/docs",
-  "packages/local-collector/README.md",
-];
+const installDocRoots = ["README.md", "docs", "apps/site/content/docs", "packages/local-collector/README.md"];
 
 interface PackageManifest {
   dependencies?: Record<string, string>;

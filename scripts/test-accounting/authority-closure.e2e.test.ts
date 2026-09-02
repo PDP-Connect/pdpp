@@ -95,11 +95,7 @@ test("e2e: a real reference-contract .test.ts renamed to .test.js (N->N-1, sibli
 
     execFileSync(
       "git",
-      [
-        "mv",
-        "packages/reference-contract/test/builders.test.ts",
-        "packages/reference-contract/test/builders.test.js",
-      ],
+      ["mv", "packages/reference-contract/test/builders.test.ts", "packages/reference-contract/test/builders.test.js"],
       { cwd: root }
     );
     commitAll(root, "fixture: rename one reference-contract test off its executable suffix");
@@ -172,11 +168,7 @@ test("e2e: reverting the closure-check wiring makes the reference-contract renam
   await withRealWorktree(async (root) => {
     execFileSync(
       "git",
-      [
-        "mv",
-        "packages/reference-contract/test/builders.test.ts",
-        "packages/reference-contract/test/builders.test.js",
-      ],
+      ["mv", "packages/reference-contract/test/builders.test.ts", "packages/reference-contract/test/builders.test.js"],
       { cwd: root }
     );
     commitAll(root, "fixture: rename one reference-contract test off its executable suffix");

@@ -35,9 +35,7 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const OUTPUT_PATH = join(REPO_ROOT, "docs", "reference", "stream-evidence-inventory.md");
 
-const MANIFEST_DIRS = [
-  { label: "polyfill", path: join(REPO_ROOT, "packages", "polyfill-connectors", "manifests") },
-];
+const MANIFEST_DIRS = [{ label: "polyfill", path: join(REPO_ROOT, "packages", "polyfill-connectors", "manifests") }];
 
 const JSON_EXTENSION_PATTERN = /\.json$/;
 
