@@ -967,3 +967,18 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   color: var(--on-primary-emphasis);
   border-color: var(--on-primary-emphasis);
 }
+
+/* Review ticker. Two identical tracks translated by exactly -50% so the seam
+   between them is invisible: at the moment the first copy leaves the viewport
+   the second sits precisely where the first began. A JS ticker would re-render
+   every frame and fight the compositor; this runs off the main thread.
+   Pausing (not hiding) under prefers-reduced-motion is handled by the
+   component's motion-reduce:animate-none — the message must stay readable. */
+@keyframes pdpp-ticker {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}

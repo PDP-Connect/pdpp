@@ -212,9 +212,9 @@ export function PdppConceptMasthead() {
             data-open={mobileNavOpen}
             id="pdpp-primary-nav"
           >
-            {publicSiteNav.map((item) => {
+            {publicSiteNav().map((item) => {
               const active = pathname === item.link || pathname.startsWith(`${item.link}/`);
-              return (
+              const label = (
                 <Text
                   aria-current={active ? "page" : undefined}
                   as={Link}
@@ -230,10 +230,50 @@ export function PdppConceptMasthead() {
                   family="sans"
                   href={item.link}
                   inline
-                  key={item.link}
                 >
                   {item.text}
                 </Text>
+              );
+
+              // Only Specification carries children. The panel opens on hover
+              // AND on focus-within, so it is reachable by keyboard without a
+              // click handler or any open/closed state to keep in sync — the
+              // links inside are ordinary tab stops. Below the nav's collapse
+              // width the panel is rendered inline rather than floating, since
+              // a floating panel inside an already-expanded disclosure has
+              // nothing to float over.
+              if (!item.children || item.children.length <= 1) {
+                return <span key={item.link}>{label}</span>;
+              }
+
+              return (
+                <span className="relative md:group" key={item.link}>
+                  {label}
+                  <span
+                    className={cn(
+                      "z-30 flex-col gap-2 whitespace-nowrap",
+                      "md:absolute md:top-full md:left-0 md:hidden md:pt-3",
+                      "md:group-hover:flex md:group-focus-within:flex",
+                      "max-md:mt-2 max-md:ml-3 max-md:flex"
+                    )}
+                  >
+                    <span className="flex flex-col gap-2 border border-border bg-background p-3 max-md:border-0 max-md:bg-transparent max-md:p-0">
+                      {item.children.map((child) => (
+                        <Text
+                          as={Link}
+                          className="hover:text-primary! focus-visible:text-primary!"
+                          color="muted"
+                          family="sans"
+                          href={child.link}
+                          inline
+                          key={child.link}
+                        >
+                          {child.text}
+                        </Text>
+                      ))}
+                    </span>
+                  </span>
+                </span>
               );
             })}
             <div className="flex items-center gap-5 pr-2">

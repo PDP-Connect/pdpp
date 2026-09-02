@@ -6,7 +6,7 @@
 
 ---
 
-When an individual permits a service to use information held about them by another, the permission is commonly granted in general terms and recorded nowhere the individual can examine. The choice is often between all of the information and none of it, and once given, the permission is rarely visible, rarely verifiable, and rarely reversible in practice.
+When an individual permits a service to use information held about them by another, the permission is commonly granted in general terms and recorded nowhere the individual can examine. The choice is often between all of the information and none of it, and once given, the permission is rarely visible, rarely verifiable, and rarely reversible in practice. The party relying on the information carries the same uncertainty, since it holds no reliable record of what was consented to, for what purpose, or by whom.
 
 As more of daily life is mediated by systems that act on personal information, and as artificial intelligence increases what can be done with it, the absence of a specific, durable and enforceable account of what has been agreed has become a matter of general concern.
 

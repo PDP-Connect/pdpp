@@ -327,6 +327,55 @@ const principlesFrontMatter = {
     status: requireHeaderMatch(principlesText, "PRINCIPLES.md", "Status"),
     version: requireHeaderMatch(principlesText, "PRINCIPLES.md", "Version"),
 };
+// The Principles, parsed into structured content for the site.
+//
+// /principles and the home page both render the six principles and the
+// preamble. Neither may retype them: PRINCIPLES.md is the document people
+// sign, and a second copy in site source is a second thing to keep true. The
+// numbered list is parsed into { title, body } so the site can render each
+// principle as a card with its own heading, which markdown alone cannot
+// express, while the words stay the document's.
+//
+// Parsing is strict and throws: the six principles are the substance of the
+// page, and rendering five because a list marker changed would be worse than
+// failing the build.
+const principlesLines = principlesText.split("\n");
+const principlesBodyStart = principlesLines.findIndex((line) => line.trim() === "---");
+if (principlesBodyStart < 0) {
+    throw new Error("sync-spec-docs: PRINCIPLES.md has no '---' rule after the status block.");
+}
+// Preamble: the prose paragraphs between the first rule and the first
+// numbered principle.
+const preamble = [];
+const principles = [];
+// `1. **Title.** Body` — the shape every principle in the document uses.
+const PRINCIPLE_ROW = /^\d+\.\s+\*\*(.+?)\*\*\s*(.*)$/;
+for (const raw of principlesLines.slice(principlesBodyStart + 1)) {
+    const line = raw.trim();
+    if (!line || line === "---") {
+        continue;
+    }
+    // The document continues past the principles into "Add your name" and its
+    // footnote; those are rendered from their own source, not here.
+    if (line.startsWith("## ")) {
+        break;
+    }
+    const match = line.match(PRINCIPLE_ROW);
+    if (match?.[1]) {
+        principles.push({ body: (match[2] ?? "").trim(), title: match[1].replace(/\.$/, "") });
+        continue;
+    }
+    if (principles.length === 0) {
+        preamble.push(line);
+    }
+}
+if (principles.length !== 6) {
+    throw new Error(`sync-spec-docs: expected 6 principles in PRINCIPLES.md, parsed ${principles.length}. ` +
+        "Update scripts/sync-spec-docs.mts if the list shape changed.");
+}
+if (preamble.length === 0) {
+    throw new Error("sync-spec-docs: PRINCIPLES.md has no preamble paragraphs before the numbered list.");
+}
 const generatedDir = path.join(siteDir, "src", "generated");
 mkdirSync(generatedDir, { recursive: true });
 writeFileSync(path.join(generatedDir, "spec-front-matter.ts"), `// Copyright The PDP-Connect Contributors
@@ -338,6 +387,8 @@ writeFileSync(path.join(generatedDir, "spec-front-matter.ts"), `// Copyright The
 export const SPEC_FRONT_MATTER = ${JSON.stringify({ date, editors, status, version: versionMatch[1] }, null, 2)} as const;
 export const GOVERNANCE_FRONT_MATTER = ${JSON.stringify(governanceFrontMatter, null, 2)} as const;
 export const PRINCIPLES_FRONT_MATTER = ${JSON.stringify(principlesFrontMatter, null, 2)} as const;
+export const PRINCIPLES_PREAMBLE = ${JSON.stringify(preamble, null, 2)} as const;
+export const PRINCIPLES_LIST = ${JSON.stringify(principles, null, 2)} as const;
 `);
 console.log(`[sync-spec-docs] generated ${generated} spec page(s) from root spec-*.md`);
 console.log(`[sync-spec-docs] wrote src/generated/spec-front-matter.ts (${versionMatch[1]}, ${status}, ${date}, ${editors.length} editor(s); ` +

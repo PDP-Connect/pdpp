@@ -5,6 +5,7 @@ import type { ComponentPropsWithoutRef } from "react";
 import { cn } from "@/lib/utils.ts";
 import { PdppConceptFooter } from "./footer.tsx";
 import { PdppConceptMasthead } from "./masthead.tsx";
+import { PdppReviewBanner } from "./review-banner.tsx";
 
 /** CSS cascade scope for legacy prose and teal-deep overrides. */
 export const CONCEPT_SURFACE = "concept" as const;
@@ -26,6 +27,7 @@ export function PdppConceptShell({ children, className, ...props }: ComponentPro
       {...props}
     >
       <PdppConceptMasthead />
+      <PdppReviewBanner />
       {children}
       <PdppConceptFooter />
     </div>

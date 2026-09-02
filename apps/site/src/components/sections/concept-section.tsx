@@ -9,8 +9,12 @@ export interface PdppConceptSectionProps {
   children?: ReactNode;
   className?: string;
   id: string;
-  /** Editorial numeral on the section title (e.g. "01"). */
-  sectionIndex: string;
+  /** Editorial numeral on the section title (e.g. "01"). OPTIONAL: the
+      four-intent site carries no ordinal numbering on section headings, so a
+      section that omits this renders a bare title. Numbers that are CONTENT —
+      the six principles, Step 1-4, Level 1-3, the spec's own § numerals —
+      are part of the copy and are unaffected. */
+  sectionIndex?: string;
   title: string;
 }
 
