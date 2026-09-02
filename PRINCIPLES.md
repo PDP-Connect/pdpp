@@ -1,7 +1,8 @@
 # PDPP Principles
 
 **Version:** 1.0
-**Status:** Final. Published 3 September 2026. Signing open.
+**Status:** Final. Published 3 September 2026. Signing will open pending hosting confirmation.
+
 
 ---
 
