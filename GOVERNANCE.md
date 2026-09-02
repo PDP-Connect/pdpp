@@ -214,6 +214,10 @@ A source enters the system as a published declaration of what it exposes: fields
 
 Existing grants remain bound to the declaration snapshot they were issued against and continue until expiry or revocation. Core §7 does not support grant narrowing, and no migration is forced.
 
+**Who may update a declaration.** A source declaration may be updated only by the account that submitted it, or by an account listed in the declaration's own maintainers field. A pull request from any other account is returned at the admissions check. Every new version passes the automated check in Appendix A before it is published, whatever the level of the status it carries. A Verified declaration whose new version widens scope returns to review under §5.8.
+
+**Archival.** The technical committee may recommend that a declaration with low or no usage be archived. The usage threshold and measurement are published before any archival is proposed, and the accountable party is notified and given 30 days to respond before the recommendation is made. Archival is merged by the same route as any other change to the register. An archived declaration remains readable, is marked archived on the register, and is not presented by default by an authorization server. It does not affect grants already issued against it. The accountable party may reinstate it at any time by submitting a new version, which passes the automated check as above.
+
 ### 5.6 Accessors
 
 An accessor is an application or agent requesting data.
@@ -240,7 +244,7 @@ Core §9 notes that a conformance test suite is planned and not defined in v0.1.
 
 **Grounds.** Standing depends on conduct alone. It does not depend on membership or on any commercial relationship with PDP-Connect or its members.
 
-**Change.** A source declaration is versioned, and every version is compared against the one before it. A change that widens scope, meaning a new stream, a new field, or a new endpoint, returns through the same route by which the status was obtained before the new version carries it. Any other change passes automatically and is recorded.
+**Change.** A source declaration is versioned, and every version is compared against the one before it. Every version passes the automated check before publication. A change that widens scope, meaning a new stream, a new field, or a new endpoint, additionally returns through the same route by which the status was obtained before the new version carries it. Any other change is recorded.
 
 **Currency.** Status is granted against a stated specification version. To remain current, a holder resubmits against the most recent version within twelve months of its publication. Renewal is a re-declaration by the holder plus a fresh run of the admissions check and, for Verified Operator, the test suite. The committee re-reviews a Verified status only where a check fails or a report under §6 is open. Status that is not renewed lapses, and the register records it as lapsed rather than withdrawn.
 
@@ -366,6 +370,8 @@ For Source statuses:
 
 7. The declaration validates against the PDPP schema for the specification version named.
 8. Declared endpoints resolve.
+
+8a. For an update to an existing declaration, the submitting account is the original submitter or is listed in the declaration's maintainers field.
 
 For any Verified status:
 
