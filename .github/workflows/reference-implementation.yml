@@ -31,6 +31,52 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  write-freeze-guard:
+    # Move B cutover: the reference implementation now begins in
+    # PDP-Connect/data-connect (PR data-connect#42). This repo's copy keeps
+    # running the product until a follow-up PR deletes it, but is frozen for
+    # direct edits under reference-implementation/. Fails a PR that touches
+    # that path unless it carries the
+    # `reference-implementation-write-freeze-override` label.
+    # Mirrors packages/polyfill-connectors' write-freeze-guard job
+    # (.github/workflows/polyfill-connectors.yml) exactly: same
+    # override-label mechanism, same fail-red behavior. Reporting-only for
+    # now — not yet added to the main ruleset's required checks — until the
+    # owner flips that switch once this has a short proving period.
+    name: write-freeze guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check for frozen-path reference-implementation edits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HAS_OVERRIDE: ${{ contains(github.event.pull_request.labels.*.name, 'reference-implementation-write-freeze-override') }}
+        run: |
+          set -euo pipefail
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'reference-implementation/**')
+          if [ -z "$CHANGED" ]; then
+            echo "No frozen reference-implementation paths touched."
+            exit 0
+          fi
+          echo "Frozen reference-implementation paths touched:"
+          echo "$CHANGED"
+          if [ "$HAS_OVERRIDE" = "true" ]; then
+            echo "reference-implementation-write-freeze-override label present — allowing."
+            exit 0
+          fi
+          echo ""
+          echo "reference-implementation/ is frozen for direct edits."
+          echo "Reference implementation work now begins in PDP-Connect/data-connect."
+          echo "Add the 'reference-implementation-write-freeze-override' label if this PR is an intentional exception."
+          exit 1
+
   classify:
     name: classify reference-impacting changes
     runs-on: ubuntu-latest
