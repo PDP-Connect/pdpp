@@ -166,6 +166,29 @@ flowchart TB
     Source -.->|collected by| Runtime
 ```
 
+**Core defines no ingest path.** Core specifies the authorization server, the
+resource server, and what passes between them and a client. It does not specify
+how records reach the resource server, and conformance to Core does not depend
+on any particular answer. Examples A and B are illustrations, not a
+classification: a resource server holding data placed there by regulatory
+export, manual import, a provider's own write path, or a mechanism not yet
+described is equally within Core. The [PDPP Collection Profile](spec-collection-profile)
+describes one such mechanism, connector collection, and describes it for
+builders rather than as a conformance requirement.
+
+A third arrangement neither example draws, recorded here because it is a
+consequence of the two above rather than a new capability: a personal server
+may itself act as a client of a provider's PDPP surface, holding an
+owner-issued grant against that provider and serving the resulting records
+onward under grants the owner issues from the personal server. Core already
+permits this — the personal server is a conformant client in the first
+relationship and a conformant resource server in the second, and no new
+protocol element is required. What Core does not yet state is what the second
+grant may say about the first: whether the onward grant can outlive, or exceed
+the scope of, the grant the records arrived under. Until that is settled, an
+implementation SHOULD NOT issue an onward grant broader in scope or longer in
+duration than the grant under which it obtained the records.
+
 ### Protocol layering
 
 PDPP separates three concerns that other systems conflate:
