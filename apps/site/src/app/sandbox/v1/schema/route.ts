@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { executeSchemaGet } from "pdpp-reference-implementation/operations/rs-schema-get";
+import { executeSchemaGet } from "@pdpp/reference-operations-sandbox/rs-schema-get";
 import { createSandboxSchemaGetDependencies } from "../../_demo/operations-fixtures.ts";
 import { jsonResponse } from "../_helpers.ts";
 

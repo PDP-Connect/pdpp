@@ -1,0 +1,22 @@
+{
+  "name": "@pdpp/reference-operations-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Small vendored snapshot of the pure, dependency-injected reference operations that apps/site's public sandbox/demo routes call. Mirrors the D-22 pattern used for @pdpp/reference-contract: the canonical source of these operations stays in reference-implementation/operations/ (now hosted in data-connect post-Move-B); this package is a deliberate, versioned seam apps/site depends on instead of reaching into the moved server's internals directly.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    "./package-info": "./src/package-info.ts",
+    "./as-authorization-server-metadata": "./src/operations/as-authorization-server-metadata/index.ts",
+    "./ref-dataset-summary": "./src/operations/ref-dataset-summary/index.ts",
+    "./ref-spine-correlations-list": "./src/operations/ref-spine-correlations-list/index.ts",
+    "./ref-spine-events-page": "./src/operations/ref-spine-events-page/index.ts",
+    "./rs-protected-resource-metadata": "./src/operations/rs-protected-resource-metadata/index.ts",
+    "./rs-records-detail": "./src/operations/rs-records-detail/index.ts",
+    "./rs-records-list": "./src/operations/rs-records-list/index.ts",
+    "./rs-schema-get": "./src/operations/rs-schema-get/index.ts",
+    "./rs-search-lexical": "./src/operations/rs-search-lexical/index.ts",
+    "./rs-streams-detail": "./src/operations/rs-streams-detail/index.ts",
+    "./rs-streams-list": "./src/operations/rs-streams-list/index.ts"
+  }
+}

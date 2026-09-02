@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { executeRefSpineCorrelationsList } from "pdpp-reference-implementation/operations/ref-spine-correlations-list";
+import { executeRefSpineCorrelationsList } from "@pdpp/reference-operations-sandbox/ref-spine-correlations-list";
 import { createSandboxRefSpineCorrelationsListDependencies } from "../../_demo/operations-fixtures.ts";
 import { jsonResponse, readListParams } from "../../v1/_helpers.ts";
 
