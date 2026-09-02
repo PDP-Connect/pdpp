@@ -153,6 +153,42 @@ The main still-live issue from that pass is not terminology but default posture:
 
 This is a design philosophy question, not just a technical one.
 
+### Derivative Data
+
+_Newly deferred (2026-09-02)._
+
+**Description:** Data produced by computing over data a grant already covers — an embedding, a summary, a classification, a model fine-tuned on the records, an inference about the owner. PDPP today authorizes reads of declared streams. It says nothing about what a client may do with the output of compute over what it read, and nothing about whether that output is itself owner data requiring its own grant.
+
+**Why it is open:** Answering it means deciding, at minimum: whether derivative data is in scope for PDPP at all; whether producing it needs its own grant or is implied by the read; whether it is a distinct semantic class or a source in its own right; how revocation of the underlying grant reaches an artifact already derived; and whether the answer differs for a reversible transformation (an index) and an irreversible one (trained weights). `purpose_code`, and the explicit protocol-level consent rule for `ai_training`, are the only places v0.1 touches this, and they constrain declared purpose, not derived artifacts.
+
+**v0.1 posture:** Out of scope. Nothing in v0.1 asserts that derivative data is authorized, and nothing asserts it is not. The specification is silent, and silence should not be read as permission.
+
+**Design constraint for a future version:** A derivative-data model should be addable without redefining the existing grant, most plausibly as an additional semantic class or an additional grant kind rather than as a change to `StreamGrant`.
+
+### Cross-Source Category Grants
+
+_Newly deferred (2026-09-02)._
+
+**Description:** Granting by category across sources — "my health data", not five named providers. PDPP has the shape of this within one source: a named view is a source-declared subset a user can consent to by name. The open question is the same idea one level up, spanning sources.
+
+**Why it is open:** It needs a shared category vocabulary that is meaningful across arbitrary sources, and a rule for what happens when a source is added to the owner's server after the grant was issued — whether it joins an existing category grant automatically, and if so, how a user consented to something that did not exist yet. That second question is the harder one: it is the same widening problem the specification forbids elsewhere (a field added after a grant is issued MUST NOT become visible to that grant). The related but distinct problem of naming views consistently across connectors is tracked separately as [Canonical View Naming Vocabulary](#canonical-view-naming-vocabulary).
+
+**Candidate prior art, not yet evaluated:** W3C Verifiable Credentials, ODRL, DCAT, schema.org category vocabularies, FHIR resource categories, Solid type indexes, and ToIP's Trust Registry Query Protocol were all named as possibilities. None has been assessed for fit. The evaluation should judge each on whether it supplies a category vocabulary that survives arbitrary sources, not on general standing.
+
+**v0.1 posture:** Out of scope. Grants bind to a single `source.id`. A user wanting a category across five providers issues five grants today.
+
+### Trust Registry Query Protocol (TRQP) as the register interface
+
+_Newly deferred (2026-09-02)._
+
+**Description:** ToIP's Trust Registry Query Protocol is a read-only interface for asking "is X authorized to do Y in this ecosystem", and registries using it can recognize one another. That is the shape of the question an authorization server asks about a source declaration under Section 6, and the shape of what the PDP-Connect register answers.
+
+**Why it is open:** TRQP is in public review and has no test suite, so it cannot be a dated commitment. The design question for the specification is narrower than adoption: whether Core should describe the register lookup in terms general enough that a TRQP endpoint is one conforming implementation of it, rather than describing a PDP-Connect-specific interface a TRQP endpoint would then have to be adapted to.
+
+**v0.1 posture:** Core does not define a register interface, so nothing in v0.1 forecloses this. Trust registry and connector certification are already listed as deferred in Core Section 12.
+
+**Design constraint for a future version:** If the register is exposed as a TRQP endpoint from phase 2, recognition of another registry becomes a TRQP query rather than a bilateral arrangement, and withdrawal of recognition propagates through the same query path. Any interface Core describes in the meantime should not assume a single register.
+
 ---
 
 ## Decided (recorded for history)
