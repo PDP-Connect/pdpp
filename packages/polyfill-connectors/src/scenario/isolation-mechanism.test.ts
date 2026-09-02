@@ -485,6 +485,227 @@ test("a PATH-prepended fake `unshare` is never selected by the probe or by a rea
   }
 });
 
+// ─── Trusted shell resolution (P1-1, external review of ced8300be) ────────
+//
+// The review's exact finding: the trusted-launcher fix above closes how
+// `unshare`/`bwrap` THEMSELVES are resolved, but never touched the `sh` those
+// launchers exec their closure script into — both `unshareProcMountProbeArgv()`
+// (the probe) and `spawnWithNetworkIsolation`'s `unshare` branch (the real
+// execution) passed the bare string `"sh"` as an argv entry to the
+// already-trusted `unshare` binary (`unshare ... -- sh -c <script>`).
+// `unshare` performs `execvp("sh", ...)` on that argv entry, and `execvp`
+// resolves a bare name through the PATH environment variable of the process
+// PERFORMING THE EXEC at that moment — the calling Node process's own
+// `spawn()` env, fully caller-controlled — NOT `TRUSTED_SETUP_PATH` (that
+// assignment is the FIRST STATEMENT INSIDE the very script the fake `sh`
+// would be asked to interpret, too late to matter: a fake `sh` can ignore it,
+// skip straight to running the connector unisolated, and still report
+// success).
+//
+// A trivial marker-touch-and-exit-0 fake would only prove the fake was never
+// invoked — it would NOT prove the specific exploit this closes, because a
+// naive test could pass by coincidence (e.g. if isolation still worked via
+// some other path). These fakes are FUNCTIONING substitutes instead: the
+// probe fake prints the real success sentinel and exits 0 WITHOUT performing
+// the actual `--map-root-user --net --mount --pid --ipc --uts --fork` mount
+// sequence a real `sh` would (it can't, since only a real trusted `sh` would
+// even receive namespace capabilities in a way that matters — the fake just
+// unconditionally claims success), and the execution fake execs the target
+// command directly with no filesystem closure or network isolation at all —
+// exactly what "a fake sh silently reports success and skips real
+// containment" looks like if this fix were absent. Each still touches its
+// own marker file so the test can assert, directly, that it was never
+// invoked at all — not merely that the outward-visible behavior happened to
+// look correct.
+
+test("resolveTrustedLauncherPath('sh'): resolves the real trusted-location shell, ignoring a fake earlier in $PATH", {
+  skip: process.platform !== "linux",
+}, () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-sh-path-"));
+  const fakeMarkerPath = join(fakeBinDir, "fake-sh-ran");
+  writeFileSync(
+    join(fakeBinDir, "sh"),
+    ["#!/bin/sh", `touch ${JSON.stringify(fakeMarkerPath)}`, "exit 0"].join("\n"),
+    { mode: 0o755 }
+  );
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const resolved = resolveTrustedLauncherPath("sh");
+    assert.ok(
+      !resolved.startsWith(fakeBinDir),
+      `resolveTrustedLauncherPath('sh') must never return the PATH-prepended fake; got ${JSON.stringify(resolved)}`
+    );
+    // Unlike `unshare`/`bwrap` (real binaries at their own name), `/bin/sh`
+    // is commonly a symlink to a DIFFERENTLY-NAMED real shell on a
+    // merged-usr host (e.g. Debian/Ubuntu's `/bin/sh` -> `dash`) —
+    // `resolveTrustedLauncherPath` follows that symlink via `realpathSync`
+    // (same as it does for `unshare`/`bwrap`, see that function's doc
+    // comment), so the resolved path's BASENAME need not be `sh`. Assert the
+    // trust boundary that actually matters instead: an absolute path,
+    // rooted under one of the fixed trusted directories, executable.
+    assert.ok(resolved.startsWith("/"), `expected an absolute path; got ${JSON.stringify(resolved)}`);
+    assert.ok(
+      ["/usr/sbin/", "/usr/bin/", "/sbin/", "/bin/"].some((dir) => resolved.startsWith(dir)),
+      `expected a path under a trusted directory; got ${JSON.stringify(resolved)}`
+    );
+    spawnSync(resolved, ["-c", "true"], { stdio: "ignore" });
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake sh's marker file must NOT exist — resolveTrustedLauncherPath('sh')'s return value must never invoke the fake"
+    );
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+/** Builds a FUNCTIONING fake `sh` for the probe path: prints the exact
+ *  success sentinel `unshareProcMountProbeArgv()` looks for and exits 0
+ *  WITHOUT running any of the real mount-and-verify sequence — the shape
+ *  that would make `probeUnshare()` misreport `available: true` off a fake
+ *  shell doing none of the real work, if the bare `"sh"` bug were still
+ *  present. Also touches `markerPath` so the test can assert directly that
+ *  this fake was never invoked, independent of what the probe result was. */
+function functioningFakeProbeShellScript(markerPath: string): string {
+  return ["#!/bin/sh", `touch ${JSON.stringify(markerPath)}`, "echo PDPP_PROC_MOUNT_OK", "exit 0"].join("\n");
+}
+
+/** Builds a FUNCTIONING fake `sh` for the real-execution path: execs
+ *  whatever command was passed to `-c` DIRECTLY, with no mount, no
+ *  pivot_root, no filesystem closure, no network-isolation setup at all —
+ *  the exact "silently skip real containment and just run the connector
+ *  unisolated" shape the review's repro describes. Also touches `markerPath`
+ *  so the test can assert directly that this fake was never invoked. */
+function functioningFakeExecutionShellScript(markerPath: string): string {
+  return [
+    "#!/bin/sh",
+    `touch ${JSON.stringify(markerPath)}`,
+    // $2 is the script text passed after `-c` — hand it straight to the
+    // REAL /bin/sh so a caller that (incorrectly) believes this fake still
+    // ran the closure keeps getting a plausible exit code, but with zero
+    // containment actually applied (no namespace setup ran before this).
+    'exec /bin/sh -c "$2"',
+  ].join("\n");
+}
+
+test("a PATH-prepended FUNCTIONING fake `sh` is never invoked by the unshare capability probe", {
+  skip: !unshareUsable,
+}, () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-sh-probe-"));
+  const fakeMarkerPath = join(fakeBinDir, "fake-sh-probe-ran");
+  writeFileSync(join(fakeBinDir, "sh"), functioningFakeProbeShellScript(fakeMarkerPath), { mode: 0o755 });
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const cap = isNamespaceIsolationAvailable();
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake sh's marker must NOT exist after the capability probe — the probe must resolve the real trusted-path shell, never the PATH-prepended fake, even though the fake prints the exact success sentinel and would otherwise make the probe misreport success"
+    );
+    // The probe's own verdict is unaffected by the fake either way (it never
+    // ran) — this is a secondary sanity check, not the load-bearing
+    // assertion above.
+    assert.ok(typeof cap.available === "boolean", "sanity: probe still returns a real verdict");
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+test("a PATH-prepended FUNCTIONING fake `sh` is never invoked by a real isolated unshare spawn — the child stays genuinely network-isolated", {
+  skip: !unshareUsable,
+}, async () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-sh-exec-"));
+  const fakeMarkerPath = join(fakeBinDir, "fake-sh-exec-ran");
+  writeFileSync(join(fakeBinDir, "sh"), functioningFakeExecutionShellScript(fakeMarkerPath), { mode: 0o755 });
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const exitCode = await new Promise<number | null>((resolveExit) => {
+      const child = spawnWithNetworkIsolation(
+        process.execPath,
+        [
+          "-e",
+          'require("http").get("http://1.1.1.1",()=>process.exit(9)).on("error",()=>process.exit(0));setTimeout(()=>process.exit(0),4000)',
+        ],
+        { isolate: "unshare", stdio: "ignore" }
+      );
+      child.on("close", resolveExit);
+    });
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake sh's marker must NOT exist after a real isolated spawn — spawnWithNetworkIsolation must resolve the real trusted-path shell, never the PATH-prepended fake, even though the fake would have execed the target directly with zero containment if it had run"
+    );
+    assert.equal(
+      exitCode,
+      0,
+      "the spawn must still be genuinely network-isolated (exit 9 would mean the fake sh ran instead and skipped the real filesystem/network closure entirely)"
+    );
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+// bwrap's own filesystem view is default-deny (`--tmpfs /` plus only
+// `requiredFilesystemBinds()`), so a PATH-prepended fake living OUTSIDE that
+// view (e.g. a bare `mkdtemp(tmpdir())` scratch dir) is simply unreachable
+// from inside the sandbox's own `execvp` — proven empirically (see this
+// finding's commit message): bwrap does inherit the caller's PATH env var,
+// but `execvp("sh", ...)` inside the sandbox can only find a candidate that
+// actually EXISTS in the sandbox's own mount table. That does NOT mean
+// bwrap's inner `sh` is safe, though: `filesystemBindPath` (the caller's own
+// evidence workspace) is the ONE path every isolated child gets `rw`
+// AND — being the caller's own writable directory before the spawn even
+// starts — is exactly where an attacker (a compromised connector's own
+// setup step, or a caller constructing this path) could plant a same-named
+// `sh`. Confirmed empirically: a fake `sh` placed inside `filesystemBindPath`
+// and prepended to PATH WAS reached and exec'd by bwrap's old bare-`"sh"`
+// argv (its own `touch` failed only because the FIRST version of this repro
+// placed the marker under `/usr`, itself `ro`-bound — moving the marker
+// inside the same `rw` workspace made the exec visible). This test uses that
+// realistic vector, not an unbound scratch dir.
+test("a FUNCTIONING fake `sh` planted inside filesystemBindPath (the one rw path a caller/attacker controls) is never invoked by bwrap's inner sh -c wrapper", {
+  skip: !bwrapUsable,
+}, async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-sh-bwrap-workspace-"));
+  const fakeMarkerPath = join(workspace, "fake-sh-bwrap-ran");
+  writeFileSync(join(workspace, "sh"), functioningFakeExecutionShellScript(fakeMarkerPath), { mode: 0o755 });
+  const realPath = process.env.PATH;
+  // Prepend the WORKSPACE itself (not an unrelated scratch dir) — this is
+  // the one location the isolated child's own filesystem view actually
+  // contains as `rw`, so a fake placed here is the realistic threat, not a
+  // vacuous one bwrap's default-deny root would reject before ever reaching
+  // `execvp`.
+  process.env.PATH = `${workspace}:${realPath ?? ""}`;
+  try {
+    const exitCode = await new Promise<number | null>((resolveExit) => {
+      const child = spawnWithNetworkIsolation(
+        process.execPath,
+        [
+          "-e",
+          'require("http").get("http://1.1.1.1",()=>process.exit(9)).on("error",()=>process.exit(0));setTimeout(()=>process.exit(0),4000)',
+        ],
+        { isolate: "bwrap", stdio: "ignore", filesystemBindPath: workspace }
+      );
+      child.on("close", resolveExit);
+    });
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake sh's marker must NOT exist after a real isolated bwrap spawn — bwrapArgvForFilesystemClosure must resolve the real trusted-path shell, never the PATH-prepended fake planted inside the one rw path (filesystemBindPath) an attacker actually controls"
+    );
+    assert.equal(
+      exitCode,
+      0,
+      "the spawn must still be genuinely network-isolated (exit 9 would mean the fake sh ran instead and skipped containment)"
+    );
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 // ─── Fail-closed setup — forced-failure controls for every mandatory step ──
 //
 // P1-1 (ninth review): the OLD `filesystemClosureShellPrelude` discarded the
@@ -1081,10 +1302,16 @@ test("spawnWithNetworkIsolation given an already-resolved mechanism does NOT re-
 
       const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
       // Exactly one bwrap call: the ACTUAL wrapped spawn (`bwrap --unshare-net
-      // ... -- sh -c ...`), never a probe call (`bwrap --unshare-net
-      // --dev-bind / / true`, no trailing `-- sh -c`) and never an `unshare`
-      // call at all — proving detectMechanism()'s `isNamespaceIsolationAvailable()`
-      // re-probe path was never taken when the mechanism was already known.
+      // ... -- <trusted-absolute-sh> -c ...`), never a probe call (`bwrap
+      // --unshare-net --dev-bind / / true`, no trailing `-- <sh> -c`) and
+      // never an `unshare` call at all — proving detectMechanism()'s
+      // `isNamespaceIsolationAvailable()` re-probe path was never taken when
+      // the mechanism was already known. The inner shell is asserted by
+      // PATTERN (`-- /<trusted-dir>/<shell-basename> -c`), not the literal
+      // string `"-- sh -c"` — P1-1 (external review of ced8300be) resolves
+      // that shell through `resolveTrustedLauncherPath("sh")`'s absolute,
+      // symlink-followed path (e.g. `/usr/bin/dash` on a merged-usr host
+      // where `/bin/sh` -> `dash`), never the bare name `"sh"`.
       assert.equal(
         invocations.length,
         1,
@@ -1095,8 +1322,12 @@ test("spawnWithNetworkIsolation given an already-resolved mechanism does NOT re-
         `expected the one invocation to be bwrap; got ${JSON.stringify(invocations)}`
       );
       assert.ok(
-        invocations[0]?.includes("-- sh -c"),
-        `expected the real wrapped-spawn argv shape, not a probe; got ${JSON.stringify(invocations)}`
+        /-- \/\S+ -c/.test(invocations[0] ?? ""),
+        `expected the real wrapped-spawn argv shape (an absolute-path shell after "--"), not a probe; got ${JSON.stringify(invocations)}`
+      );
+      assert.ok(
+        !invocations[0]?.includes("-- sh -c"),
+        `the inner shell must be an absolute trusted path, never the bare string "sh" (P1-1, external review of ced8300be); got ${JSON.stringify(invocations)}`
       );
     });
   } finally {

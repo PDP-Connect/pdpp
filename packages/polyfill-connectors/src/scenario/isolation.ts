@@ -268,12 +268,14 @@ export type NamespaceIsolationCapability =
 /**
  * The same fixed, absolute directory list as `TRUSTED_SETUP_PATH`, as an
  * array — used by `resolveTrustedLauncherPath` below to find the LAUNCHER
- * binaries themselves (`unshare`, `bwrap`), not the setup commands the
- * launched shell script runs. Kept as a literal array (not derived by
- * splitting `TRUSTED_SETUP_PATH`) so the two stay independently readable at
- * their own call sites, but the values are the same list for the same
- * reason: this is the operating system's own set of locations for trusted,
- * privileged system binaries, nothing caller- or environment-specific.
+ * binaries themselves (`unshare`, `bwrap`, and — P1-1, external review of
+ * ced8300be, see that function's doc comment — the `sh` interpreter those
+ * launchers exec into), not the setup commands the launched shell script
+ * runs. Kept as a literal array (not derived by splitting
+ * `TRUSTED_SETUP_PATH`) so the two stay independently readable at their own
+ * call sites, but the values are the same list for the same reason: this is
+ * the operating system's own set of locations for trusted, privileged system
+ * binaries, nothing caller- or environment-specific.
  */
 const TRUSTED_LAUNCHER_DIRECTORIES: readonly string[] = ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 
@@ -326,13 +328,48 @@ const TRUSTED_LAUNCHER_DIRECTORIES: readonly string[] = ["/usr/sbin", "/usr/bin"
  * memoizing avoids repeating four `existsSync`+`accessSync` checks (up to
  * eight, across both binaries) on every single replay run in a scenario with
  * many runs.
+ *
+ * `"sh"` (P1-1, external review of ced8300be) — a THIRD name resolved through
+ * this exact allowlist, for exactly the same reason as `unshare`/`bwrap`
+ * themselves. WHAT THIS CLOSES: before this fix, both `unshareProcMountProbeArgv()`
+ * (the probe) and `spawnWithNetworkIsolation`'s `unshare` branch (the real
+ * execution) passed the bare string `"sh"` as an argv entry to the already-
+ * trusted, absolute-path `unshare` binary — `unshare --map-root-user --net
+ * ... -- sh -c <script>`. `unshare` itself then `execvp("sh", ...)`s that
+ * argv entry, and `execvp` on a bare name (no `/`) resolves it through the
+ * PATH environment variable of the process performing the exec — which, at
+ * that moment, is whatever `PATH` this Node process's `spawn()` call handed
+ * to the `unshare` child (this package's own subprocess-env construction,
+ * fully caller-controlled), NOT `TRUSTED_SETUP_PATH`. `TRUSTED_SETUP_PATH` is
+ * assigned as the FIRST STATEMENT INSIDE the shell script that bare `sh` is
+ * asked to interpret — so it can only take effect once a trustworthy `sh` is
+ * already running it; it does nothing to select WHICH `sh` runs it in the
+ * first place. Confirmed empirically in a privileged test container: with
+ * `/tmp/fakebin` (holding a fake `sh` that touches a marker file and execs
+ * the real `/bin/sh`) prepended to `PATH`, `unshare --map-root-user --net
+ * --mount --pid --ipc --uts --fork -- sh -c 'echo hi'` ran the FAKE `sh`
+ * first (marker file present) — the exact "PATH-prepended fake sh satisfies
+ * the probe sentinel, or replaces the real closure script's interpreter at
+ * execution time" attack the review describes, closed by passing
+ * `resolveTrustedLauncherPath("sh")`'s absolute result (e.g. `/bin/sh`) as
+ * the argv entry instead of the bare string `"sh"` — same empirical test with
+ * the absolute path in place: fake `sh` never runs, marker absent. Applied at
+ * all three call sites that build a `sh -c` argv for a launcher to exec:
+ * `unshareProcMountProbeArgv()` (the probe), `bwrapArgvForFilesystemClosure()`
+ * (bwrap's own inner `sh -c` — lower risk in isolation, since it runs inside
+ * bwrap's already-closed filesystem view where only `requiredFilesystemBinds()`
+ * entries are visible, but the review's fix applies to "both the probe and
+ * execution" without carving out bwrap, and the same PATH-inheritance
+ * mechanism applies identically to bwrap's own child-argv exec), and
+ * `spawnWithNetworkIsolation`'s `unshare` branch (the real execution the
+ * review's repro targets).
  */
 const trustedLauncherPathCache = new Map<string, string>();
 
 /** Exported for `isolation-mechanism.test.ts`'s direct unit-level proof that
  *  resolution is `$PATH`-independent — production code never needs to call
  *  this from outside the module, every internal call site already does. */
-export function resolveTrustedLauncherPath(name: "unshare" | "bwrap"): string {
+export function resolveTrustedLauncherPath(name: "unshare" | "bwrap" | "sh"): string {
   const cached = trustedLauncherPathCache.get(name);
   if (cached !== undefined) {
     return cached;
@@ -413,7 +450,25 @@ const PROC_MOUNT_PROBE_OK = "PDPP_PROC_MOUNT_OK";
  */
 function unshareProcMountProbeArgv(): string[] {
   const script = `${procMountVerifyStatements().join(" && ")} && echo ${PROC_MOUNT_PROBE_OK}`;
-  return ["--map-root-user", "--net", "--mount", "--pid", "--ipc", "--uts", "--fork", "--", "sh", "-c", script];
+  // TRUSTED SHELL (P1-1, external review of ced8300be): resolved via
+  // resolveTrustedLauncherPath("sh"), never the bare string "sh" — see that
+  // function's doc comment. unshare execs this argv entry via execvp, which
+  // resolves a bare name through the calling process's own inherited PATH,
+  // not TRUSTED_SETUP_PATH (that assignment is a statement INSIDE the script
+  // this shell is asked to interpret, too late to matter here).
+  return [
+    "--map-root-user",
+    "--net",
+    "--mount",
+    "--pid",
+    "--ipc",
+    "--uts",
+    "--fork",
+    "--",
+    resolveTrustedLauncherPath("sh"),
+    "-c",
+    script,
+  ];
 }
 
 /**
@@ -1584,7 +1639,20 @@ export function bwrapArgvForFilesystemClosure(
   filesystemBindPath: string | undefined
 ): string[] {
   const innerCommand = [cmd, ...args].map(shQuote).join(" ");
-  return ["--unshare-net", ...bwrapFilesystemClosureArgs(filesystemBindPath), "--", "sh", "-c", `exec ${innerCommand}`];
+  // TRUSTED SHELL (P1-1, external review of ced8300be): resolved via
+  // resolveTrustedLauncherPath("sh"), never the bare string "sh" — bwrap
+  // execs this argv entry the same way unshare does (execvp against the
+  // spawning Node process's own inherited PATH, fully caller-controlled),
+  // so the same PATH-prepended-fake risk applies even though this shell runs
+  // inside bwrap's own already-closed filesystem view.
+  return [
+    "--unshare-net",
+    ...bwrapFilesystemClosureArgs(filesystemBindPath),
+    "--",
+    resolveTrustedLauncherPath("sh"),
+    "-c",
+    `exec ${innerCommand}`,
+  ];
 }
 
 export function spawnWithNetworkIsolation(
@@ -1633,9 +1701,39 @@ export function spawnWithNetworkIsolation(
   // function's doc comment. Note this is the LAUNCHER binary itself; the
   // commands INSIDE the shell script it runs (mount, pivot_root, ...) are
   // separately trusted via TRUSTED_SETUP_PATH above.
+  //
+  // TRUSTED SHELL (P1-1, external review of ced8300be): the shell `unshare`
+  // execs the closure script INTO is ALSO resolved via
+  // resolveTrustedLauncherPath("sh"), never the bare string "sh" — this is
+  // the exact call site the review's repro targets. `unshare` performs
+  // `execvp("sh", [...])` on this argv entry; execvp resolves a bare name
+  // through the PATH environment variable of the process performing the
+  // exec at THAT moment — which is whatever `spawnOpts.env`/inherited
+  // `process.env.PATH` this spawn() call carries, fully caller-controlled,
+  // NOT `TRUSTED_SETUP_PATH` (that assignment is the FIRST STATEMENT INSIDE
+  // `shScript`, so it can only protect commands the script itself later
+  // runs — it cannot select which `sh` interprets the script in the first
+  // place). Confirmed empirically: with a fake `sh` (touches a marker file,
+  // then execs the real `/bin/sh` to still "work") prepended to PATH, the
+  // bare-string version invoked the fake before `TRUSTED_SETUP_PATH` could
+  // ever matter; the absolute-path version never does — see
+  // `resolveTrustedLauncherPath`'s own doc comment and
+  // `isolation-mechanism.test.ts`'s poisoned-PATH tests for both mechanisms.
   return spawn(
     resolveTrustedLauncherPath("unshare"),
-    ["--map-root-user", "--net", "--mount", "--pid", "--ipc", "--uts", "--fork", "--", "sh", "-c", shScript],
+    [
+      "--map-root-user",
+      "--net",
+      "--mount",
+      "--pid",
+      "--ipc",
+      "--uts",
+      "--fork",
+      "--",
+      resolveTrustedLauncherPath("sh"),
+      "-c",
+      shScript,
+    ],
     spawnOpts
   );
 }
