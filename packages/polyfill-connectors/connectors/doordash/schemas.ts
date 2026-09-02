@@ -1,5 +1,6 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
+// THROWAWAY-WRITE-FREEZE-PROOF: comment-only touch, live behavioral proof for pdpp#271.
 
 /**
  * Zod schemas for DoorDash stream records. Shape-check-before-emit per
