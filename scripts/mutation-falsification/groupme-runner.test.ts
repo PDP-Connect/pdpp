@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   aggregateOperatorAttempts,
+  cleanupWorkspaceForReceipt,
   commitMutant,
   ForbiddenPathChangeError,
   isMutationAttributable,
@@ -42,6 +43,88 @@ test("judgeIdentityFor: differs between operators and the null (clean-baseline) 
   assert.notEqual(a, b);
   assert.notEqual(a, c);
   assert.notEqual(b, c);
+});
+
+// ── cleanupWorkspaceForReceipt: real outcome, observed BEFORE any receipt ──
+//
+// P1-2: the clean-baseline path used to publish `cleanup: { status: "ok" }`
+// unconditionally, then destroy the workspace afterward in a `finally`
+// block — so a receipt claiming clean cleanup could reach the evidence
+// store even when destruction later failed. `cleanupWorkspaceForReceipt` is
+// the single shared primitive both the operator-attempt path and the
+// clean-baseline path now call; these tests fault-inject a destroy failure
+// directly against it, independent of any real filesystem/git workspace.
+
+test("cleanupWorkspaceForReceipt: destroy succeeding returns an ok axis and never quarantines", async () => {
+  const calls: string[] = [];
+  const axis = await cleanupWorkspaceForReceipt(
+    "/fake/workspace",
+    async (dir) => {
+      calls.push(`destroy:${dir}`);
+    },
+    async (dir, reason) => {
+      calls.push(`quarantine:${dir}:${reason}`);
+      return `${dir}-quarantined`;
+    }
+  );
+  assert.deepEqual(axis, { status: "ok" });
+  assert.deepEqual(calls, ["destroy:/fake/workspace"]);
+});
+
+test("cleanupWorkspaceForReceipt: an injected destroy failure returns a failed axis (never ok) and quarantines", async () => {
+  const calls: string[] = [];
+  const axis = await cleanupWorkspaceForReceipt(
+    "/fake/workspace",
+    async () => {
+      calls.push("destroy-attempted");
+      throw new Error("injected: lingering process still references workspace");
+    },
+    async (dir, reason) => {
+      calls.push(`quarantine:${dir}:${reason}`);
+      return `${dir}-quarantined`;
+    }
+  );
+  assert.equal(axis.status, "failed");
+  if (axis.status === "failed") {
+    assert.equal(axis.failure, "workspace_cleanup_failed");
+    assert.match(axis.detail, /injected: lingering process/);
+  }
+  assert.deepEqual(calls, ["destroy-attempted", "quarantine:/fake/workspace:injected: lingering process still references workspace"]);
+});
+
+test("cleanupWorkspaceForReceipt: destroy is fully awaited (real outcome observed) BEFORE the axis is returned — never assumed ahead of time", async () => {
+  let destroyCompleted = false;
+  const axis = await cleanupWorkspaceForReceipt(
+    "/fake/workspace",
+    async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      destroyCompleted = true;
+    },
+    async (dir) => dir
+  );
+  // If the caller ever reverted to hardcoding `{ status: "ok" }` ahead of an
+  // async destroy, this assertion would still incidentally pass on the
+  // happy path — the real proof is the injected-failure test above, which
+  // can only pass if the axis reflects destroy's ACTUAL outcome rather
+  // than a value fixed before destroy ran.
+  assert.equal(destroyCompleted, true);
+  assert.deepEqual(axis, { status: "ok" });
+});
+
+test("cleanupWorkspaceForReceipt: a quarantine failure does not mask the original cleanup failure", async () => {
+  const axis = await cleanupWorkspaceForReceipt(
+    "/fake/workspace",
+    async () => {
+      throw new Error("injected destroy failure");
+    },
+    async () => {
+      throw new Error("injected quarantine failure too");
+    }
+  );
+  assert.equal(axis.status, "failed");
+  if (axis.status === "failed") {
+    assert.match(axis.detail, /injected destroy failure/);
+  }
 });
 
 // ── isMutationAttributable: never treats infra/protocol/timeout failures as mutation signal ──
@@ -83,6 +166,7 @@ function fakeReceipt(): AttemptReceipt {
     schema: ATTEMPT_SCHEMA,
     attemptId: "00000000-0000-0000-0000-000000000000",
     trialKey: "a".repeat(64),
+    intentDigest: "e".repeat(64),
     policyVersion: "v1",
     baseCommitSha: "b".repeat(40),
     mutantIdentity: "c".repeat(40),
@@ -112,6 +196,29 @@ test("aggregateOperatorAttempts: contradictory outcomes (killed vs survived) for
   const result = aggregateOperatorAttempts(outcomes);
   assert.equal(result.projection, "inconclusive");
   assert.equal(result.failingAxis, "contradictory_trial_key");
+});
+
+// P1-5: two "killed" outcomes that disagree on selectorMiss must surface
+// as a disagreement, not silently collapse to whichever attempt is first —
+// this is the exact reviewer-flagged gap (a broad-projection-only compare
+// would have treated these as agreeing).
+test("aggregateOperatorAttempts: killed-with-selectorMiss vs killed-without is a disagreement, not a silent pick", () => {
+  const withMiss: OperatorAttemptOutcome = {
+    attemptId: "1",
+    operatorId: "groupme-page-ceiling-v1",
+    receipt: fakeReceipt(),
+    projection: { projection: "killed", selectorMiss: true },
+  };
+  const withoutMiss: OperatorAttemptOutcome = {
+    attemptId: "2",
+    operatorId: "groupme-page-ceiling-v1",
+    receipt: fakeReceipt(),
+    projection: { projection: "killed" },
+  };
+  const forward = aggregateOperatorAttempts([withMiss, withoutMiss]);
+  const reversed = aggregateOperatorAttempts([withoutMiss, withMiss]);
+  assert.equal(forward.projection, "inconclusive");
+  assert.deepEqual(forward, reversed);
 });
 
 // ── commitMutant: forbidden-path enforcement (fault injection, tasks.md 2.5) ──

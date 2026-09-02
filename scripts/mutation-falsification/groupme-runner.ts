@@ -333,6 +333,32 @@ export function isMutationAttributable(axes: Omit<AttemptAxes, "cleanup">): bool
 }
 
 /**
+ * Destroys `workspaceDir` and reports its REAL, already-observed outcome as
+ * a cleanup axis — never a hardcoded `{ status: "ok" }` assumed ahead of
+ * time. On failure, quarantines the workspace (best-effort) and returns a
+ * `failed` axis instead of throwing, so the caller can still publish an
+ * honest (non-`ok`) receipt rather than leaving the attempt marker
+ * incomplete forever. Shared by every call site that must publish a receipt
+ * only after cleanup has actually run — `runOperatorAttempt` and the
+ * clean-baseline step of `runGroupMePilotBatch` both call this, so neither
+ * can drift back into publishing `cleanup: ok` before cleanup completes.
+ */
+export async function cleanupWorkspaceForReceipt(
+  workspaceDir: string,
+  destroy: (dir: string) => Promise<void> = destroyWorkspace,
+  quarantine: (dir: string, reason: string) => Promise<string> = quarantineWorkspace
+): Promise<AttemptAxes["cleanup"]> {
+  try {
+    await destroy(workspaceDir);
+    return { status: "ok" };
+  } catch (error) {
+    const detail = (error as Error).message;
+    await quarantine(workspaceDir, detail).catch(() => undefined);
+    return { status: "failed", failure: "workspace_cleanup_failed", detail };
+  }
+}
+
+/**
  * Runs one operator attempt end to end inside a fresh isolated workspace:
  * apply + commit the mutant, run the focused check, and — only if focused
  * passes — the mandatory complete mutant backstop. Cleanup (destroy or
@@ -356,14 +382,7 @@ async function runOperatorAttempt(
   const workspace = await createIsolatedWorkspace(policy.workspacePolicy, policy.sourceRepoRoot, baseCommitSha);
   const computation = await computeOperatorAttempt(workspace, operator, policy, attemptId);
 
-  let cleanupAxis: AttemptAxes["cleanup"];
-  try {
-    await destroyWorkspace(workspace.workspaceDir);
-    cleanupAxis = { status: "ok" };
-  } catch (error) {
-    cleanupAxis = { status: "failed", failure: "workspace_cleanup_failed", detail: (error as Error).message };
-    await quarantineWorkspace(workspace.workspaceDir, (error as Error).message).catch(() => undefined);
-  }
+  const cleanupAxis = await cleanupWorkspaceForReceipt(workspace.workspaceDir);
 
   const axes: AttemptAxes = { ...computation.nonCleanupAxes, cleanup: cleanupAxis };
   const runtimeMs = Date.now() - startedAt;
@@ -377,6 +396,7 @@ async function runOperatorAttempt(
     schema: ATTEMPT_SCHEMA,
     attemptId,
     trialKey,
+    intentDigest: intent.intentDigest,
     policyVersion: policy.policyVersion,
     baseCommitSha,
     mutantIdentity: computation.mutantCommitSha || null,
@@ -413,13 +433,24 @@ export async function runGroupMePilotBatch(
   await scanForIncompleteOrCorrupt(policy.evidenceStorePolicy.evidenceRoot);
   await mkdir(policy.evidenceStorePolicy.evidenceRoot, { recursive: true });
 
-  // Clean complete backstop at batch start.
+  // Clean complete backstop at batch start. Mirrors runOperatorAttempt's
+  // discipline exactly: cleanup (destroy or quarantine the workspace) runs
+  // and its REAL outcome is observed BEFORE the receipt is built, so the
+  // published receipt's cleanup axis is never a hardcoded assumption — a
+  // failed cleanup here yields a `cleanup: failed` receipt (which
+  // projection.ts's row 1 always resolves to inconclusive), never a
+  // `cleanup: ok` receipt published ahead of the destroy actually running.
   const cleanWorkspace = await createIsolatedWorkspace(
     policy.workspacePolicy,
     policy.sourceRepoRoot,
     intent.baseCommitSha
   );
   let cleanExecutionRawCount = 0;
+  const cleanBackstopAttemptId = randomUUID();
+  await issueAttemptMarker(policy.evidenceStorePolicy.evidenceRoot, cleanBackstopAttemptId, intent);
+
+  let cleanResult: { artifacts: AttemptReceipt["evidenceArtifacts"]; axis: AttemptAxes["backstop"]; runIds: string[] } | undefined;
+  let materializationError: Error | undefined;
   try {
     const { execFileSync } = await import("node:child_process");
     execFileSync(
@@ -427,42 +458,60 @@ export async function runGroupMePilotBatch(
       ["install", "--frozen-lockfile", "--offline", "--ignore-scripts", "--node-linker=hoisted", "--package-import-method=copy"],
       { cwd: cleanWorkspace.repoRoot, env: cleanWorkspace.env }
     );
-    const cleanBackstopAttemptId = randomUUID();
-    await issueAttemptMarker(policy.evidenceStorePolicy.evidenceRoot, cleanBackstopAttemptId, intent);
-    const cleanResult = await runCompleteBackstop(cleanWorkspace.repoRoot, policy.evidenceStorePolicy, cleanBackstopAttemptId);
+    cleanResult = await runCompleteBackstop(cleanWorkspace.repoRoot, policy.evidenceStorePolicy, cleanBackstopAttemptId);
     cleanExecutionRawCount += 1;
-    if (cleanResult.axis.status !== "ok") {
-      throw new Error(
-        `groupme-runner: clean complete backstop failed before any mutant was interpreted: ${JSON.stringify(cleanResult.axis)}`
-      );
-    }
-    const cleanReceipt: AttemptReceipt = {
-      schema: ATTEMPT_SCHEMA,
-      attemptId: cleanBackstopAttemptId,
-      trialKey: digestOf({ intentDigest: intent.intentDigest, kind: "clean-backstop", baseCommitSha: intent.baseCommitSha }),
-      policyVersion: policy.policyVersion,
-      baseCommitSha: intent.baseCommitSha,
-      mutantIdentity: null,
-      judgeIdentity: judgeIdentityFor(null),
-      environmentProfile: Object.keys(cleanWorkspace.env),
-      evidenceArtifacts: cleanResult.artifacts,
-      axes: {
-        baseline: { status: "ok" },
-        materialization: { status: "ok" },
-        focused: { status: "not_applicable" },
-        backstop: cleanResult.axis,
-        reachability: { status: "not_applicable" },
-        cleanup: { status: "ok" },
-      },
-      runtimeMs: Date.now() - batchStartedAt,
-      attemptStatus: { exitCode: 0, signal: null },
-      referencedAccountingRunIds: cleanResult.runIds,
-    };
-    await publishCompleteReceipt(policy.evidenceStorePolicy.evidenceRoot, cleanReceipt);
-  } finally {
-    await destroyWorkspace(cleanWorkspace.workspaceDir).catch(async (error) => {
-      await quarantineWorkspace(cleanWorkspace.workspaceDir, (error as Error).message).catch(() => undefined);
-    });
+  } catch (error) {
+    materializationError = error as Error;
+  }
+
+  const cleanupAxis = await cleanupWorkspaceForReceipt(cleanWorkspace.workspaceDir);
+
+  if (materializationError) {
+    throw new Error(
+      `groupme-runner: clean complete backstop's dependency materialization or execution failed before any mutant was interpreted (cleanup axis: ${JSON.stringify(cleanupAxis)}): ${materializationError.message}`
+    );
+  }
+  if (!cleanResult) {
+    throw new Error("groupme-runner: clean complete backstop produced no result despite no recorded error");
+  }
+  if (cleanResult.axis.status !== "ok") {
+    throw new Error(
+      `groupme-runner: clean complete backstop failed before any mutant was interpreted: ${JSON.stringify(cleanResult.axis)}`
+    );
+  }
+
+  const cleanReceipt: AttemptReceipt = {
+    schema: ATTEMPT_SCHEMA,
+    attemptId: cleanBackstopAttemptId,
+    trialKey: digestOf({ intentDigest: intent.intentDigest, kind: "clean-backstop", baseCommitSha: intent.baseCommitSha }),
+    intentDigest: intent.intentDigest,
+    policyVersion: policy.policyVersion,
+    baseCommitSha: intent.baseCommitSha,
+    mutantIdentity: null,
+    judgeIdentity: judgeIdentityFor(null),
+    environmentProfile: Object.keys(cleanWorkspace.env),
+    evidenceArtifacts: cleanResult.artifacts,
+    axes: {
+      baseline: { status: "ok" },
+      materialization: { status: "ok" },
+      focused: { status: "not_applicable" },
+      backstop: cleanResult.axis,
+      reachability: { status: "not_applicable" },
+      cleanup: cleanupAxis,
+    },
+    runtimeMs: Date.now() - batchStartedAt,
+    attemptStatus: { exitCode: 0, signal: null },
+    referencedAccountingRunIds: cleanResult.runIds,
+  };
+  await publishCompleteReceipt(policy.evidenceStorePolicy.evidenceRoot, cleanReceipt);
+  if (cleanupAxis.status !== "ok") {
+    // The receipt is honest evidence (cleanup: failed), but a failed
+    // cleanup at the mandatory clean baseline still means no mutant may be
+    // interpreted — matching "stop or narrow on any cleanup failure"
+    // (design.md tasks.md 3.2).
+    throw new Error(
+      `groupme-runner: clean complete backstop's workspace cleanup failed — published as cleanup: failed, but refusing to proceed to any operator: ${JSON.stringify(cleanupAxis)}`
+    );
   }
 
   const operatorOutcomes: OperatorAttemptOutcome[] = [];
