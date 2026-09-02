@@ -5,19 +5,22 @@ branches:
   - name: main
 tagFormat: "v${version}"
 preset: "conventionalcommits"
-# @pdpp/cli, @pdpp/mcp-server, and @pdpp/read-core publish from a single
-# shared version stream. To keep the release-notes per-package readable, we
-# define typed sections per Conventional Commit scope so e.g.
-# `feat(cli): ...` lands under "Features (@pdpp/cli)", with commits that
-# don't carry a recognised scope falling back to the generic sections.
+# @pdpp/cli, @pdpp/mcp-server, and @pdpp/read-core used to publish from a
+# single shared version stream. To keep the release-notes per-package
+# readable, this defined typed sections per Conventional Commit scope so
+# e.g. `feat(cli): ...` landed under "Features (@pdpp/cli)", with commits
+# that don't carry a recognised scope falling back to the generic sections.
 # See openspec/changes/publish-pdpp-local-collector/design.md §5.
 #
-# @pdpp/local-collector left this shared stream when its package moved to
-# the data-connect repo: release and publishing responsibility for it now
-# travels with the package, not with this monorepo. The local-collector
-# scope sections below are kept only so historical commits (made while it
-# still published from here) still parse into a readable section instead
-# of falling back to a generic one.
+# @pdpp/local-collector, @pdpp/cli, @pdpp/mcp-server, and @pdpp/read-core
+# have all since left this shared stream — local-collector when its package
+# moved to the data-connect repo, and cli/mcp-server/read-core when Move B
+# relocated the reference implementation there too. Release and publishing
+# responsibility for all four now travels with data-connect, not this
+# monorepo (no @semantic-release/npm pkgRoot entries remain below). Every
+# scope section is kept only so historical commits (made while these
+# packages still published from here) still parse into a readable section
+# instead of falling back to a generic one.
 plugins:
   - - "@semantic-release/commit-analyzer"
     - preset: conventionalcommits
@@ -157,12 +160,6 @@ plugins:
           - type: ci
             section: "Continuous Integration"
             effect: hidden
-  - - "@semantic-release/npm"
-    - pkgRoot: "packages/cli"
-  - - "@semantic-release/npm"
-    - pkgRoot: "packages/mcp-server"
-  - - "@semantic-release/npm"
-    - pkgRoot: "packages/read-core"
   - - "@semantic-release/github"
     - successComment: false
       failComment: false

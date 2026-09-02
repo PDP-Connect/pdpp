@@ -1,7 +1,6 @@
 packages:
   - "apps/*"
   - "packages/*"
-  - "reference-implementation"
 # @pdpp/collector-runtime and @pdpp/connector-protocol left this monorepo for
 # data-connect (PDP-Connect/data-connect). This repo consumes them as vendored
 # tarballs (see vendor/README.md for provenance and
@@ -11,8 +10,6 @@ packages:
 # version, and collector-runtime's packed package.json pins its
 # connector-protocol dependency to that exact version (never "*").
 overrides:
-  "@pdpp/cli": "workspace:*"
-  "@pdpp/read-core": "workspace:*"
   # collector-runtime's own dependencies map already pins connector-protocol
   # to an exact version (see above), but pnpm needs the override below so a
   # transitive resolution of connector-protocol from anywhere else in this

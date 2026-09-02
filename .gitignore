@@ -7,7 +7,6 @@ local/
 .env
 .env.*
 !.env.example
-!.env.docker.example
 
 # Local ad-hoc notes (not committed)
 agent-access.md
@@ -22,17 +21,11 @@ __pycache__/
 !docs/explorer/uat/**/*.png
 !lefthook.yml
 !.github/**/*.yml
-!docker-compose.yml
-!docker-compose.dev.yml
-!docker-compose.neko.yml
 core.*
-# `core.*` is for core dumps; committed deploy env examples are exempt.
-!deploy/*/core.env.example
 tmp/
 docs/inbox/
 docs/outbox/
 packages/polyfill-connectors/.pdpp-data/
-reference-implementation/report.*.json
 perf-results/
 .agents/
 .claude/

@@ -11,8 +11,6 @@ const LEDGER_PATH = "docs/retained-js-mjs-boundaries.json";
 const REQUIRED_FIELDS = ["owner", "runtimeReason", "probe", "review"] as const;
 const JS_MJS_CJS_PATH_PATTERN = /\.(?:cjs|js|mjs)$/;
 const HOST_MJS_BOUNDARIES = new Set([
-  "apps/console/next.config.mjs",
-  "apps/console/postcss.config.mjs",
   "apps/site/.source/source.config.mjs",
   "apps/site/next.config.mjs",
   "apps/site/postcss.config.mjs",
@@ -64,40 +62,13 @@ function isBoundaryLedger(value: unknown): value is BoundaryLedger {
   return isRecord(value) && Array.isArray(value.entries) && value.entries.every(isBoundaryEntry);
 }
 
-const GENERATED_WRAPPERS: Record<string, GeneratedWrapper> = {
-  "reference-implementation/scripts/quality-ratchet/check-mass-ratchet.test.mjs": {
-    header: "// Generated test-discovery artifact.",
-    source: "check-mass-ratchet.source.ts",
-  },
-  "reference-implementation/scripts/quality-ratchet/measure-mass.test.mjs": {
-    header: "// Generated test-discovery artifact.",
-    source: "measure-mass.source.ts",
-  },
-  "reference-implementation/scripts/quality-ratchet/regenerate-mass-baseline.test.mjs": {
-    header: "// Generated test-discovery artifact.",
-    source: "regenerate-mass-baseline.source.ts",
-  },
-  "reference-implementation/scripts/requeue-quarantined-detail-gaps.test.mjs": {
-    header: "// Generated test-discovery artifact.",
-    source: "requeue-quarantined-detail-gaps.source.ts",
-  },
-  "reference-implementation/test/fixtures/connector-instance-two-process-race-fixture.mjs": {
-    header: "#!/usr/bin/env node\n// Generated subprocess artifact.",
-    source: "connector-instance-two-process-race-fixture.ts",
-  },
-  "reference-implementation/test/fixtures/device-ingest-failstop-server.mjs": {
-    header: "#!/usr/bin/env node\n// Generated subprocess artifact.",
-    source: "device-ingest-failstop-server.ts",
-  },
-  "reference-implementation/test/fixtures/summary-evidence-two-process-repair-fixture.mjs": {
-    header: "#!/usr/bin/env node\n// Generated subprocess artifact.",
-    source: "summary-evidence-two-process-repair-fixture.ts",
-  },
-  "scripts/ri-suite/fixtures/fake-run-tests.mjs": {
-    header: "#!/usr/bin/env node\n// Generated runtime artifact.",
-    source: "fake-run-tests.ts",
-  },
-};
+// The reference-implementation-rooted generated wrappers (quality-ratchet
+// test-discovery shims, two-process-race subprocess fixtures) and
+// scripts/ri-suite/fixtures/fake-run-tests.mjs were removed with Move B —
+// the reference implementation and its RI test-suite completion oracle now
+// live canonically in PDP-Connect/data-connect. No generated MJS wrappers
+// remain tracked in this repo.
+const GENERATED_WRAPPERS: Record<string, GeneratedWrapper> = {};
 
 function trackedJavaScriptPaths(): string[] {
   return execFileSync("git", ["ls-files", "*.js", "*.mjs", "*.cjs"], { cwd: ROOT, encoding: "utf8" })
@@ -182,21 +153,11 @@ function assertGeneratedWrapperParity(): void {
 }
 
 function assertGeneratedWrapperExecution(): void {
-  execFileSync(
-    process.execPath,
-    [
-      "--test",
-      "--import",
-      "tsx",
-      ...Object.keys(GENERATED_WRAPPERS).filter(
-        (path) => path.includes("/quality-ratchet/") || path.includes("/requeue-quarantined-detail-gaps.")
-      ),
-      "reference-implementation/test/connector-instance-delete-upsert-two-process-race.test.ts",
-      "reference-implementation/test/connector-summary-evidence-engine-two-process-interleaving.test.ts",
-      "scripts/ri-suite/completion-oracle.test.ts",
-    ],
-    { cwd: ROOT, stdio: "inherit" }
-  );
+  const wrapperPaths = Object.keys(GENERATED_WRAPPERS);
+  if (wrapperPaths.length === 0) {
+    return;
+  }
+  execFileSync(process.execPath, ["--test", "--import", "tsx", ...wrapperPaths], { cwd: ROOT, stdio: "inherit" });
 }
 
 function assertMjsBoundaryKinds(trackedPaths: string[]): void {

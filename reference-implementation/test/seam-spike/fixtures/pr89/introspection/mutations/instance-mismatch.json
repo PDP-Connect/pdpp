@@ -1,5 +1,0 @@
-{
-  "kind": "request",
-  "query": "connection_id=account-b",
-  "expected": "context.instance_mismatch"
-}

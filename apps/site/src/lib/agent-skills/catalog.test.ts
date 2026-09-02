@@ -120,7 +120,10 @@ test("llms index points trusted owner agents at the canonical onboarding surface
 
 test("reference docs and web copy use the CLI package-info source of truth", () => {
   const expectedCommand = createPdppCliCommand("<provider-url>");
-  const files = ["apps/site/content/docs/reference-implementation.md", "reference-implementation/README.md"];
+  // reference-implementation/README.md moved to PDP-Connect/data-connect
+  // with the rest of the reference implementation (Move B); this repo no
+  // longer has a local copy to cross-check.
+  const files = ["apps/site/content/docs/reference-implementation.md"];
 
   for (const file of files) {
     const contents = readFileSync(path.join(REPO_ROOT, file), "utf8");

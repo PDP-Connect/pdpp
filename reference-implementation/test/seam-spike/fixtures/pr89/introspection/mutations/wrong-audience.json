@@ -1,6 +1,0 @@
-{
-  "kind": "response",
-  "path": "aud",
-  "value": "https://wrong.example",
-  "expected": "context.audience_mismatch"
-}

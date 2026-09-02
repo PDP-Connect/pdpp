@@ -46,7 +46,6 @@ function sha512IntegrityBase64(path: string): string {
 function buildValidFixtureRepo(): { root: string } {
   const root = mkdtempSync(join(tmpdir(), "pdpp-pin-fixture-repo-"));
   mkdirSync(join(root, "vendor"), { recursive: true });
-  mkdirSync(join(root, "reference-implementation"), { recursive: true });
   mkdirSync(join(root, "packages/polyfill-connectors"), { recursive: true });
 
   const runtimeArchive = EXPECTED_PACKAGES[0].archive;
@@ -81,19 +80,6 @@ function buildValidFixtureRepo(): { root: string } {
     ].join("\n")
   );
 
-  writeFileSync(
-    join(root, "reference-implementation/package.json"),
-    JSON.stringify(
-      {
-        dependencies: {
-          "@pdpp/collector-runtime": `file:../${runtimeArchive}`,
-          "@pdpp/connector-protocol": `file:../${protocolArchive}`,
-        },
-      },
-      null,
-      2
-    )
-  );
   writeFileSync(
     join(root, "packages/polyfill-connectors/package.json"),
     JSON.stringify(

@@ -28,12 +28,8 @@ const retiredDistTag = "beta";
 const installDocRoots = [
   "README.md",
   "docs",
-  "reference-implementation/README.md",
-  "reference-implementation/docs",
   "apps/site/content/docs",
-  "packages/cli/README.md",
   "packages/local-collector/README.md",
-  "packages/mcp-server/README.md",
 ];
 
 interface PackageManifest {

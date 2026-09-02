@@ -4,10 +4,14 @@
 
 // Generated stream-evidence inventory (task 9.2).
 //
-// Walks packages/polyfill-connectors/manifests/*.json and
-// reference-implementation/fixtures/seed-manifests/*.json and emits a deterministic
-// markdown table of every declared stream's coverage/freshness evidence
-// posture: docs/reference/stream-evidence-inventory.md.
+// Walks packages/polyfill-connectors/manifests/*.json and emits a
+// deterministic markdown table of every declared stream's coverage/freshness
+// evidence posture: docs/reference/stream-evidence-inventory.md.
+//
+// The reference-implementation manifest set (reference-implementation/
+// fixtures/seed-manifests/**) was removed by Move B — that tree now lives
+// canonically in PDP-Connect/data-connect. Only the polyfill-connectors
+// manifest set remains in this repo.
 //
 // Modes:
 //   node scripts/stream-evidence-inventory.ts           writes the file
@@ -33,7 +37,6 @@ const OUTPUT_PATH = join(REPO_ROOT, "docs", "reference", "stream-evidence-invent
 
 const MANIFEST_DIRS = [
   { label: "polyfill", path: join(REPO_ROOT, "packages", "polyfill-connectors", "manifests") },
-  { label: "reference", path: join(REPO_ROOT, "reference-implementation", "fixtures", "seed-manifests") },
 ];
 
 const JSON_EXTENSION_PATTERN = /\.json$/;
@@ -111,8 +114,8 @@ export function renderInventory(manifests: ManifestEntry[]): RenderedInventory {
   );
   lines.push("");
   lines.push(
-    "One row per declared manifest stream, across `packages/polyfill-connectors/manifests/*.json` and " +
-      "`reference-implementation/fixtures/seed-manifests/*.json`. `required` defaults to `true` when the manifest does not " +
+    "One row per declared manifest stream, from `packages/polyfill-connectors/manifests/*.json`. " +
+      "`required` defaults to `true` when the manifest does not " +
       "declare it. This inventory records declared strategy, not observed runtime proof — see " +
       "`openspec/changes/define-stream-coverage-freshness-evidence/specs/reference-connection-health/spec.md` " +
       "for how the runtime derives per-stream coverage from these strategies plus observed collection facts."
