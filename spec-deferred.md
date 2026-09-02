@@ -177,6 +177,38 @@ _Newly deferred (2026-09-02)._
 
 **v0.1 posture:** Out of scope. Grants bind to a single `source.id`. A user wanting a category across five providers issues five grants today.
 
+### Subgrants
+
+_Newly deferred (2026-09-02; raised in the 2026-08-19 working session)._
+
+**Description:** Whether a client holding a grant may pass a narrower piece of that access on to another party, without the owner issuing a second grant directly.
+
+**Why it is open:** A grant is immutable and bound to one `client_id`. A subgrant needs a rule for what the owner sees and approves, whether the subgrantee is visible to the owner at all, how revocation of the parent reaches the child, and whether a subgrant can outlive its parent. Answering it badly produces exactly the re-delegation surface the grant model exists to prevent.
+
+**v0.1 posture:** Out of scope. Access under a grant is not transferable, and a second party needs its own grant.
+
+### Change of client ownership and undisclosed sub-processing
+
+_Newly deferred (2026-09-02; raised in the 2026-08-19 working session)._
+
+**Description:** An owner grants access to a client on assumptions about that specific relationship. If the client is acquired, changes legal structure, or outsources processing to a third party the owner never saw, those assumptions no longer hold, and the grant does not know it.
+
+**Why it is open:** The protocol has no representation of who the client is as a legal entity, and no event by which a change of control could reach an issued grant. One suggestion from the session was to require clients to declare ownership type. Whether that belongs in the protocol, in the conformance programme, or nowhere is undecided, as is whether a change of control should force revocation, force re-consent, or merely be disclosed.
+
+**Related:** ISO MyTerms was raised in the same discussion as prior art for owner-specified terms under which a first party holds data. It has not been evaluated for fit, and whether owner-specified terms belong in Core, in a companion RFC with the authorization server holding templates, or outside PDPP entirely is itself open.
+
+**v0.1 posture:** Out of scope. `client_claims` carries client-authored, explicitly non-enforceable statements about a specific request; it is not an ownership record and must not be read as one.
+
+### Bulk export as a distinct access path
+
+_Newly deferred (2026-09-02; raised in the 2026-08-19 working session)._
+
+**Description:** PDPP has focused on continuous synchronization rather than a Takeout-style bulk export. The question raised was whether export deserves its own defined access path rather than being left as a special case of query.
+
+**Why it is open:** Core already has owner-token self-export as a SHOULD-level resource server conformance item (Section 9), so the primitive exists. What does not exist is a defined export path for a client under a grant, or an answer to whether a bulk export differs from paginating the same query to its end in anything other than convenience.
+
+**v0.1 posture:** Owner self-export is in scope at SHOULD level. Client-side bulk export is not defined and is served, if at all, by ordinary paginated query under the grant.
+
 ### Trust Registry Query Protocol (TRQP) as the register interface
 
 _Newly deferred (2026-09-02)._
