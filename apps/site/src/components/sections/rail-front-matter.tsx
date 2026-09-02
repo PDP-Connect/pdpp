@@ -13,6 +13,11 @@ export interface PdppRailFrontMatterProps {
   version: string;
 }
 
+export interface PdppRailPrinciplesFrontMatterProps {
+  status: string;
+  version: string;
+}
+
 export interface PdppRailGovernanceFrontMatterProps {
   appliesTo: string;
   circulated: string;
@@ -86,6 +91,25 @@ export function PdppRailGovernanceFrontMatter({
         <RailMetaRow label="Programme live">{programmeLive}</RailMetaRow>
         <RailMetaRow label="Applies to">{appliesTo}</RailMetaRow>
         <RailSourceRow href={repoBlobUrl("GOVERNANCE.md")} />
+      </dl>
+    </div>
+  );
+}
+
+/**
+ * Principles rail banner: VERSION / STATUS / SOURCE. Version is present here
+ * and absent from the governance card because the Principles are versioned and
+ * the register records which version each Supporter signed. No Date row — the
+ * document states its publication date inside its own Status line — and no
+ * Editors row, for the same reason governance has none.
+ */
+export function PdppRailPrinciplesFrontMatter({ status, version }: PdppRailPrinciplesFrontMatterProps) {
+  return (
+    <div className="mb-10 text-[13px] text-muted-foreground leading-normal" data-slot="pdpp-rail-front-matter">
+      <dl className="m-0">
+        <RailMetaRow label="Version">{version}</RailMetaRow>
+        <RailMetaRow label="Status">{status}</RailMetaRow>
+        <RailSourceRow href={repoBlobUrl("PRINCIPLES.md")} />
       </dl>
     </div>
   );

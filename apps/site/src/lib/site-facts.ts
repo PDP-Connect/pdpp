@@ -42,6 +42,29 @@ export const DISCORD_INVITE_URL = "https://discord.gg/FV4bkZBdmA";
 export const LFDT_COPYRIGHT_NOTICE = "Copyright © LF Decentralized Trust Labs a Series of LF Projects, LLC";
 export const LFPROJECTS_URL = "https://lfprojects.org";
 
+// Whether the public register of Supporters is open for signing.
+//
+// PRINCIPLES.md's own "Add your name" section describes signing in the present
+// tense, because the Principles are final and signing is the intended next
+// step. It is not open yet: the register needs a host, and where it sits is
+// still being worked with LF Decentralized Trust (GOVERNANCE.md §1.2). While
+// this is false, /principles renders ONE interim notice under that section
+// saying so, and nothing else on the site changes.
+//
+// Flipping this to true is the whole of what "signing opens" costs on the
+// site: the notice disappears. It is deliberately a boolean rather than a date
+// — the date is not known, and a date that passes without the register
+// existing would be a worse claim than no date at all.
+// Typed `boolean`, not inferred as the literal `false`: without the annotation
+// every read narrows to `false` at compile time and the lint rule that flags
+// always-falsy conditions rejects the one place that reads it.
+export const SUPPORTER_SIGNING_OPEN: boolean = false;
+
+// Shown only while SUPPORTER_SIGNING_OPEN is false. Wording is the programme's,
+// not the site's: it names the condition (hosting confirmed with LFDT) rather
+// than promising a date.
+export const SUPPORTER_SIGNING_INTERIM_NOTICE = "Signing opens once hosting is confirmed with LF Decentralized Trust";
+
 export const SITE_LICENSES = [
   {
     artifact: "Specification text",

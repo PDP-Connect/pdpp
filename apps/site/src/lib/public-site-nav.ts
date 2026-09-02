@@ -6,14 +6,17 @@ export interface PublicSiteNavLink {
   readonly text: string;
 }
 
-// Public-site nav: the spec, how the programme around it is governed, how to
-// run it, and how the standard changes. Specification / Governance / Self-Host
-// / Participate. Sandbox remains reachable from /self-host but is not a
-// top-level nav item — the masthead carries exactly four links.
+// Public-site nav: the spec, how the programme around it is governed, what it
+// is for, how to run it, and how the standard changes. Specification /
+// Governance / Principles / Self-Host / Participate. Sandbox remains reachable
+// from /self-host but is not a top-level nav item.
 //
 // Governance sits directly after Specification because it is the document that
 // says what the specification's status means; it is a programme document, not
-// part of the normative protocol. The owner console lives on its own deployed origin and uses
+// part of the normative protocol. Principles follows it for the same reason —
+// the two are the programme's own documents, and the Principles are the
+// document a reader is asked to sign, so it sits next to the one that says
+// what signing does. The owner console lives on its own deployed origin and uses
 // clean top-level routes; public-site navigation does not carry an
 // operator-console prefix.
 //
@@ -28,6 +31,7 @@ export interface PublicSiteNavLink {
 export const publicSiteNav: readonly PublicSiteNavLink[] = [
   { text: "Specification", link: "/specification" },
   { text: "Governance", link: "/governance" },
+  { text: "Principles", link: "/principles" },
   { text: "Self-Host", link: "/self-host" },
   { text: "Participate", link: "/participate" },
 ];

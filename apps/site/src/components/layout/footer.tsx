@@ -114,11 +114,16 @@ export function PdppConceptFooter() {
                 </a>{" "}
                 Lab.
               </Text>
-              {/* Internal route, so next/link rather than the bare <a> the
+              {/* Internal routes, so next/link rather than the bare <a> the
                   LFDT attribution above uses (that one leaves the site). */}
               <Text color="onAccentSoft" size="inherit">
                 <Link className={footerLinkClassName} href="/governance">
                   Governance, membership and conformance
+                </Link>
+              </Text>
+              <Text color="onAccentSoft" size="inherit">
+                <Link className={footerLinkClassName} href="/principles">
+                  PDPP Principles
                 </Link>
               </Text>
             </div>

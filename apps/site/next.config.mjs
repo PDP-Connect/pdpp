@@ -116,6 +116,12 @@ const nextConfig = {
         permanent: true,
         source: "/specification/governance",
       },
+      // The Principles are served at /principles on the same terms.
+      {
+        destination: "/principles",
+        permanent: true,
+        source: "/specification/principles",
+      },
       {
         destination: "/specification/spec-collection-profile",
         permanent: true,

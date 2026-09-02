@@ -17,9 +17,9 @@ type RailFrontMatterProp = Parameters<typeof SpecRailProvider>[0]["frontMatter"]
 // sidebar behavior, mobile drawer, active state, and document tree.
 // `railFrontMatter` defaults to the specification's own block, tagged "spec"
 // so RailBanner (rail.tsx) knows which card shape to render. Pass a
-// "governance"-tagged block (see the governance route) or null on a surface
-// that is neither, so the rail keeps the document list without claiming a
-// front-matter block it doesn't have data for.
+// "governance"- or "principles"-tagged block (see those routes) or null on a
+// surface that is none of them, so the rail keeps the document list without
+// claiming a front-matter block it doesn't have data for.
 export function SpecificationShell({
   children,
   railFrontMatter = { kind: "spec", value: getSpecFrontMatter() },

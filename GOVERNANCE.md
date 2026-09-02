@@ -38,7 +38,7 @@ Where review produces material change, or where a material question remains in d
 
 **What membership is.** Separate from conformance. Membership records what a company or an individual has publicly committed to, from a statement of support up to operating without ever holding user data. It costs nothing, and it confers no conformance status.
 
-**Where this sits.** PDP-Connect is a Lab of LF Decentralized Trust, part of the Linux Foundation. The specification and reference implementation are open source. This document governs the programme around them, not the protocol itself.
+**Where this sits.** PDP-Connect is a Lab of LF Decentralized Trust, part of the Linux Foundation. It was started by the Vana Foundation. PDPP is a community specification, owned, governed and managed by the community. The specification and reference implementation are open source. This document governs the programme around them, not the protocol itself.
 
 ---
 
@@ -76,13 +76,14 @@ The conformance programme is modelled on the Certified Kubernetes Conformance Pr
 
 ## 2. How the programme is run
 
-The programme moves through three phases. Each phase is defined by who holds authority and what can appear on the register.
+The programme moves through four stages: a preparatory stage before programme live, then the three numbered phases. Each is defined by who holds authority and what can appear on the register.
 
 | Phase | Who runs it | What is on the register | Ends when |
 | --- | --- | --- | --- |
+| Pre | The maintainers | Public comment on the specification and Part A. Principles v1.0 published. Supporter signing opens | Programme live, 15 October 2026 |
 | 1. Launch | The maintainers | Supporters | The interim technical committee is named |
 | 2. Interim | The maintainers, with an interim technical committee | Supporters, and every status in §5 | Partners elect the steering committee |
-| 3. Elected | The steering committee and the technical committee it appoints | As phase 2 | Amended under Part B |
+| 3. Full | The steering committee and the technical committee it appoints | As phase 2 | Amended under Part B |
 
 ### 2.1 Phase 1: the maintainers
 
@@ -249,7 +250,7 @@ Core §9 notes that a conformance test suite is planned and not defined in v0.1.
 
 **Scope.** A status is granted for a named role and does not extend to any other. A recognised external register confers only the status §5.2 names it for.
 
-**The register.** The register is authoritative. It shows lapsed, withdrawn and disputed status alongside current status, with the date, the ground, the specification version, and the route by which the status was held. No badge or mark is issued under Part A.
+**The register.** The register is authoritative. It shows lapsed, withdrawn and disputed status alongside current status, with the date, the ground, the specification version, and the route by which the status was held. No badge or mark is issued until PDP-Connect holds a legal home.
 
 ## 6. Reports
 
