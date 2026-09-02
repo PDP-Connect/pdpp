@@ -1891,7 +1891,17 @@ function printCoverageReport(
     driverEvidenceSatisfied: driverEvidenceOk,
   });
   if (decision.claim === "recorded_replay") {
-    process.stdout.write(`\nrecorded_replay: PASS (captured ${capturedAt})\n`);
+    // A bare "PASS (captured ...)" line let a reader tell THAT the strong
+    // claim was earned but not WHAT was checked — the preconditions only
+    // ever surfaced as named limitations on the WITHHELD path. Since the
+    // trusted-launcher and recursive-read-only checks are unconditionally
+    // wired into every isolated spawn (see isolationEvidenceBoundaryProven
+    // above), reaching this branch already proves all three; restate them
+    // inline instead of making the reader go read claims.ts.
+    process.stdout.write(
+      `\nrecorded_replay: PASS (captured ${capturedAt}; preconditions: trusted absolute launcher path, ` +
+        "every ro-bind submount verified read-only, no pre-existing sockets under writable-bound paths)\n"
+    );
   } else {
     process.stdout.write(`\ndiagnostic_replay: PASS (captured ${capturedAt})\n`);
     process.stdout.write("recorded_replay: WITHHELD\n");
