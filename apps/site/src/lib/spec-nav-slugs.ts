@@ -19,9 +19,17 @@ export const docsRoute = "/specification";
 // MAINTAINER_DOC_SLUGS.
 export const maintainersRoute = "/maintainers";
 
-// The specification IS the page. The rail lists the normative core, its
-// companion specification, and the three extension profiles — the whole of what
-// the protocol normatively defines, and nothing else.
+// The specification IS the page. Core is the only normative document; the two
+// guidance documents and the three extension profiles follow it.
+//
+// Discovery and Trust and the Collection Profile are informative as of
+// 2026-09-02 — their load-bearing requirements moved into Core (equivocation,
+// source acceptance, publisher attribution). They stay listed here because both
+// are still worth reading and their URLs must not break; each page carries an
+// "Informative" callout from its header sidecar so a reader can tell them apart
+// from Core. PR #283 regroups them under a separate "Implementer guidance" rail
+// heading, which is the better presentation; this list is deliberately left
+// unrestructured so the two changes do not collide.
 //
 // Order is the reading order of the specification set, not alphabetical.
 export const PRIMARY_SLUGS = [

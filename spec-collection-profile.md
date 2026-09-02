@@ -1,6 +1,6 @@
 # PDPP Collection Profile v0.1.0
 
-Status: Companion profile draft
+Status: Informative. Builder guidance for connector collection. Not a conformance requirement.
 Date: 2026-08-29
 
 Companion to the Personal Data Portability Protocol (PDPP) core spec.

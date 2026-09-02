@@ -1,6 +1,6 @@
 # PDPP Source Declaration Discovery and Trust v0.1.0
 
-Status: Companion specification draft
+Status: Informative. Implementation guidance. The load-bearing requirements moved into Core on 2026-09-02: equivocation into Core §5 Versioning and snapshots, source acceptance into Core §6 Source acceptance, and publisher attribution into Core §5 SourceDeclaration fields.
 Date: 2026-08-14
 
 ---

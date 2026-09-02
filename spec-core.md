@@ -566,7 +566,7 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `protocol_version` | Version of the PDPP SourceDeclaration schema. This contract requires exactly `0.1.0`. |
 | `source` | Exactly `{ kind, id }`. `kind` is `connector` or `provider_native`; `id` is the absolute URI authorization identity for the source's data surface. |
 | `declaration_version` | Opaque, non-empty revision identifier for this source declaration. It is not the connector software version and has no implied ordering. |
-| `publisher.id` | Absolute URI identifying the declaration publisher. Discovery and trust policy determine how this attribution is authenticated. |
+| `publisher.id` | Absolute URI identifying the declaration publisher. It is an attribution claim, not an authenticated identity. The authorization server MUST treat `publisher.id` as authenticated only where an accepted channel or configured mapping binds that publisher to the declaration; absent that binding it MUST NOT support source acceptance, redirect policy, attribution, or any other trust decision. |
 | `display.name` | Human-readable source name for consent UIs. It is display metadata, not source identity. |
 | `selection_presets` | Optional preset selections. The authorization server expands a selected preset into explicit stream terms before issuing a grant. |
 | `streams[].name` | Unique non-empty stream name, source-local. `*` is request-only and is not a declaration stream name. |
@@ -609,7 +609,7 @@ Streams MAY include a `display` object with human-readable metadata for the cons
 | `display.label` | string | Short human-readable name shown in the consent card (e.g., "Who you follow"). If absent, the AS SHOULD display `streams[].description` or fall back to the stream name. |
 | `display.detail` | string | Consent-oriented description of what data is included and, where relevant, what is excluded (e.g., "Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists."). If absent, the AS MAY generate a description from the stream schema, or display no detail. |
 
-**Authorship principle:** `display.label` and `display.detail` describe the data itself, not the requester's purpose. They are attributed to the accepted declaration publisher. The requesting client MUST NOT override or supplement these descriptions in the selection request. The authorization server's discovery and trust policy determines whether publisher attribution is authenticated.
+**Authorship principle:** `display.label` and `display.detail` describe the data itself, not the requester's purpose. They are attributed to the accepted declaration publisher. The requesting client MUST NOT override or supplement these descriptions in the selection request. Publisher attribution is authenticated only under the conditions in [SourceDeclaration fields](#source-declaration).
 
 ```json
 {
@@ -693,6 +693,16 @@ may make a request technically unsupported, but it does not reinterpret what
 the user approved. The Resource Server enforces the resolved grant without a
 current declaration lookup. Current serving metadata may only route, describe
 current capabilities, narrow, or reject.
+
+An accepted declaration revision is keyed by the accepted source authority,
+`source.id`, and the opaque `declaration_version`. Once the authorization
+server has accepted a revision under that key, later content retrieved under
+the same key MUST compare equal as parsed JSON. Different parsed content under
+an accepted key is equivocation: the authorization server MUST reject the later
+content and retain the previously accepted revision. An implementation MAY use
+an internal content fingerprint to accelerate this comparison; the fingerprint
+algorithm is not a protocol identity and need not be portable between
+implementations.
 
 ---
 
@@ -837,6 +847,15 @@ failure before consent. If the request omits `source.kind`, the AS derives
 provenance from the accepted declaration and records it in consent evidence
 and any issued grant. The OAuth/RAR binding returns RFC 9396
 `invalid_authorization_details` for invalid authorization details.
+
+#### Source acceptance {#source-acceptance}
+
+A selection request SHALL name only a source the authorization server has
+already accepted. A client SHALL NOT select a source authority, declaration
+location, or declaration revision as part of an authorization request. How a
+source becomes accepted — owner or operator onboarding, an installed catalog,
+a registry entry, or explicit local provisioning — is a deployment concern and
+is out of scope for this document.
 
 #### AI training consent {#ai-training-consent}
 
