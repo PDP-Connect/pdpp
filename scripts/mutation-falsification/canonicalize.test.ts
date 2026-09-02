@@ -95,3 +95,82 @@ test("isHexDigest: accepts a 64-character lowercase hex string and rejects every
   assert.ok(!isHexDigest(123));
   assert.ok(!isHexDigest(null));
 });
+
+// ── Official RFC 8785 test vector ─────────────────────────────────
+
+//
+// RFC 8785 §3.2.2's own worked example (https://www.rfc-editor.org/rfc/rfc8785).
+// Both the RFC's input JSON source and its published canonical output are
+// reproduced here as escaped SOURCE TEXT (via JSON.parse of an explicit
+// JSON string, and a plain string literal using only \u/standard JSON
+// escapes) -- never as literal control characters in this file -- so there
+// is no transcription ambiguity about which bytes each line contains. This
+// is independent of this file's own implementation: the expected output
+// string was published by the RFC, not derived by running this code.
+const RFC_8785_INPUT_JSON_SOURCE =
+  '{"numbers": [333333333.33333329, 1E30, 4.50, 2e-3, 0.000000000000000000000000001], ' +
+  '"string": "\\u20ac$\\u000f\\nA\'\\u0042\\u0022\\u005c\\\\\\"\\/", ' +
+  '"literals": [null, true, false]}';
+const RFC_8785_CANONICAL_OUTPUT =
+  '{"literals":[null,true,false],"numbers":[333333333.3333333,1e+30,4.5,0.002,1e-27],"string":"€$\\u000f\\nA\'B\\"\\\\\\\\\\"/"}';
+
+test("RFC 8785 §3.2.2 official test vector: input object canonicalizes to the RFC's own published output", () => {
+  const value = JSON.parse(RFC_8785_INPUT_JSON_SOURCE);
+  assert.equal(canonicalizeJSON(value), RFC_8785_CANONICAL_OUTPUT);
+});
+// ── RFC 8785 Appendix B numeric edge-case vectors (independently known) ──
+
+test("RFC 8785 Appendix B number vectors: round-trip through ECMA-262 Number::toString exactly as the RFC requires", () => {
+  const vectors: Array<[number, string]> = [
+    [0, "0"],
+    [-0, "0"],
+    [1, "1"],
+    [-1, "-1"],
+    [10, "10"],
+    [1.0000000000000002, "1.0000000000000002"],
+    [10000000000000000, "10000000000000000"],
+    [9223372036854775807, "9223372036854776000"],
+    [1e21, "1e+21"],
+    [-1e21, "-1e+21"],
+    [0.000001, "0.000001"],
+    [-0.000001, "-0.000001"],
+    [1e-7, "1e-7"],
+    [-1e-7, "-1e-7"],
+    [Number.MAX_SAFE_INTEGER, "9007199254740991"],
+    [Number.MAX_VALUE, "1.7976931348623157e+308"],
+    [Number.MIN_VALUE, "5e-324"],
+  ];
+  for (const [input, expected] of vectors) {
+    assert.equal(canonicalizeJSON(input), expected, `canonicalizeJSON(${input})`);
+  }
+});
+
+// ── Adversarial vectors: invalid Unicode must terminate, never degrade ──
+//
+// RFC 8785's normative output is UTF-8. A lone (unpaired) UTF-16 surrogate
+// has no valid UTF-8 encoding, so a conformant canonicalizer must reject it
+// rather than silently emit a `\uD800`-style escape (which is what
+// `JSON.stringify` alone does — verified: it does not throw).
+
+test("adversarial: a lone high surrogate in a string value is rejected, not silently escaped", () => {
+  assert.throws(() => canonicalizeJSON({ value: "\ud800" }), /unpaired high surrogate/);
+});
+
+test("adversarial: a lone low surrogate in a string value is rejected", () => {
+  assert.throws(() => canonicalizeJSON({ value: "\udc00" }), /unpaired low surrogate/);
+});
+
+test("adversarial: a lone high surrogate at the very end of a string (no following code unit) is rejected", () => {
+  assert.throws(() => canonicalizeJSON("abc\ud800"), /unpaired high surrogate/);
+});
+
+test("adversarial: a lone surrogate in an OBJECT KEY is rejected, not just in values", () => {
+  const record: Record<string, unknown> = {};
+  record["bad\ud800key"] = 1;
+  assert.throws(() => canonicalizeJSON(record), /unpaired high surrogate/);
+});
+
+test("adversarial: a properly paired surrogate (real astral character) still canonicalizes normally", () => {
+  const emoji = "\u{1f600}"; // U+1F600, a valid surrogate pair in UTF-16
+  assert.equal(canonicalizeJSON({ value: emoji }), '{"value":"😀"}');
+});

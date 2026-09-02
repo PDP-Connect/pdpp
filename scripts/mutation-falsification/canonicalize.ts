@@ -20,13 +20,47 @@ import { createHash } from "node:crypto";
 const HEX_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 
 /**
+ * RFC 8785's normative output is UTF-8, so a string containing an unpaired
+ * (lone) UTF-16 surrogate cannot be canonicalized at all — there is no valid
+ * UTF-8 encoding for it. `JSON.stringify` degrades a lone surrogate to a
+ * `\uD800`-style escape instead of rejecting it (verified locally: it does
+ * not throw), which would silently produce non-conformant output. This scan
+ * is the one place that gap is closed — every caller of `canonicalizeString`
+ * routes through it first.
+ */
+function assertNoUnpairedSurrogate(value: string, label: string): void {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    const isHighSurrogate = code >= 0xd800 && code <= 0xdbff;
+    const isLowSurrogate = code >= 0xdc00 && code <= 0xdfff;
+    if (isHighSurrogate) {
+      const next = value.charCodeAt(i + 1);
+      if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) {
+        throw new Error(
+          `canonicalizeJSON: ${label} contains an unpaired high surrogate at index ${i} — RFC 8785 output is UTF-8 and cannot represent it`
+        );
+      }
+      i++; // Skip the matched low surrogate; it's part of the same code point.
+      continue;
+    }
+    if (isLowSurrogate) {
+      throw new Error(
+        `canonicalizeJSON: ${label} contains an unpaired low surrogate at index ${i} — RFC 8785 output is UTF-8 and cannot represent it`
+      );
+    }
+  }
+}
+
+/**
  * RFC 8785 string serialization: identical to RFC 8259 (JSON) string
  * escaping, which is exactly what `JSON.stringify` already produces for a
  * single string value — object-key ordering and number formatting are the
  * only places JCS diverges from `JSON.stringify`'s default behavior, and
- * both are handled by the caller (`canonicalizeValue`), not here.
+ * both are handled by the caller (`canonicalizeValue`), not here. Rejects
+ * unpaired surrogates first — see `assertNoUnpairedSurrogate`.
  */
-function canonicalizeString(value: string): string {
+function canonicalizeString(value: string, label = "string"): string {
+  assertNoUnpairedSurrogate(value, label);
   return JSON.stringify(value);
 }
 
@@ -59,7 +93,7 @@ function canonicalizeValue(value: unknown): string {
     return canonicalizeNumber(value);
   }
   if (typeof value === "string") {
-    return canonicalizeString(value);
+    return canonicalizeString(value, "a string value");
   }
   if (Array.isArray(value)) {
     return `[${value.map((entry) => canonicalizeValue(entry === undefined ? null : entry)).join(",")}]`;
@@ -71,7 +105,7 @@ function canonicalizeValue(value: unknown): string {
     const keys = Object.keys(record)
       .filter((key) => record[key] !== undefined) // JSON has no `undefined`; drop it like JSON.stringify does.
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${keys.map((key) => `${canonicalizeString(key)}:${canonicalizeValue(record[key])}`).join(",")}}`;
+    return `{${keys.map((key) => `${canonicalizeString(key, "an object key")}:${canonicalizeValue(record[key])}`).join(",")}}`;
   }
   throw new Error(`canonicalizeJSON: cannot canonicalize value of type ${typeof value}`);
 }
