@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/jellyfin",
   "version": "0.1.0",
   "display_name": "Jellyfin",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><polygon points=\"12,2 22,12 12,22 2,12\"/><polygon points=\"10,8 16,12 10,16\" fill=\"#ffffff\"/></svg>",
+    "color": "#00A4DC"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

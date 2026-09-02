@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/heb",
   "version": "0.2.0",
   "display_name": "H-E-B",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><path fill=\"#E4002B\" d=\"M4 3h5v7H4z\"/><path fill=\"#E4002B\" d=\"M10 3h4v18h-4z\"/><path fill=\"#E4002B\" d=\"M15 3h5v7h-5z\"/><path fill=\"#E4002B\" d=\"M4 14h5v7H4z\"/><path fill=\"#E4002B\" d=\"M15 14h5v7h-5z\"/></svg>",
+    "color": "#E4002B"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

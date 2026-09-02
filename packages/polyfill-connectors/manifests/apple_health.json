@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/apple-health",
   "version": "0.1.0",
   "display_name": "Apple Health",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><path d=\"M12 21s-7.5-4.7-10-9.6C.6 8 2.3 4.5 5.8 4c2.3-.3 4.2 1 6.2 3 2-2 3.9-3.3 6.2-3 3.5.5 5.2 4 3.8 7.4C19.5 16.3 12 21 12 21z\"/><polyline points=\"6,12 9,12 10.5,9 13,15 14.5,12 18,12\" stroke=\"#ffffff\" stroke-width=\"1.3\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"/></svg>",
+    "color": "#FF2D55"
+  },
   "runtime_requirements": {
     "bindings": {
       "filesystem": {

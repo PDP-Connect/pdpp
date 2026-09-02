@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/google-maps-data-portability",
   "version": "0.1.0",
   "display_name": "Google Maps Data Portability",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><path d=\"M12 2c-4.4 0-8 3.6-8 8 0 6 8 12 8 12s8-6 8-12c0-4.4-3.6-8-8-8z\"/><circle cx=\"12\" cy=\"10\" r=\"3\" fill=\"#ffffff\"/><polyline points=\"10,20.5 12,22.5 14,20.5\" stroke=\"#ffffff\" stroke-width=\"1.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"/><line x1=\"12\" y1=\"17\" x2=\"12\" y2=\"22.5\" stroke=\"#ffffff\" stroke-width=\"1.4\" stroke-linecap=\"round\"/></svg>",
+    "color": "#4285F4"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

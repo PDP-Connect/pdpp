@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/groupme",
   "version": "0.1.0",
   "display_name": "GroupMe",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><circle cx=\"8\" cy=\"8\" r=\"3\"/><circle cx=\"16\" cy=\"8\" r=\"3\"/><path d=\"M2 20c0-3.3 2.7-6 6-6s6 2.7 6 6\"/><path d=\"M10 20c0-3.3 2.7-6 6-6s6 2.7 6 6\"/></svg>",
+    "color": "#00AFF0"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/chase",
   "version": "0.1.0",
   "display_name": "Chase",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><path d=\"M3 21h18v-2H3v2zM4 18h3V9H4v9zm6.5 0h3V9h-3v9zM17 18h3V9h-3v9zM2 8l10-6 10 6H2z\"/></svg>",
+    "color": "#117ACA"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

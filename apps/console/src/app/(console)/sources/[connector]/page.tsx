@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
+import { buttonVariants, ConnectorIcon, IcButton, IcTimestamp } from "@pdpp/brand-react";
 import type { StreamManifestEntry } from "@pdpp/display";
 import {
   formatConnectorKeyForDisplay,
@@ -745,6 +745,7 @@ function ConnectorPageView({
         }
         title={
           <span className="inline-flex items-center gap-2">
+            <ConnectorIcon icon={manifest.icon} name={displayName} />
             {displayName}
             <RenameConnection
               connectionId={renameSelector}

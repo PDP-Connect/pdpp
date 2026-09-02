@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/google-maps",
   "version": "0.1.0",
   "display_name": "Google Maps Timeline Import",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><path d=\"M12 2c-4.4 0-8 3.6-8 8 0 6 8 12 8 12s8-6 8-12c0-4.4-3.6-8-8-8z\"/><circle cx=\"12\" cy=\"10\" r=\"3\" fill=\"#ffffff\"/></svg>",
+    "color": "#4285F4"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

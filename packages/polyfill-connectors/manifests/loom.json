@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/loom",
   "version": "0.1.0",
   "display_name": "Loom",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><circle cx=\"12\" cy=\"12\" r=\"4\" fill=\"#ffffff\"/><circle cx=\"12\" cy=\"12\" r=\"1.6\"/></svg>",
+    "color": "#625DF5"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

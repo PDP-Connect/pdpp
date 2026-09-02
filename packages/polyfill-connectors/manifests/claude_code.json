@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/claude-code",
   "version": "0.3.0",
   "display_name": "Claude Code",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><path d=\"M12 3l3 7.5H21L14.5 15 17 21l-5-4-5 4 2.5-6L2 10.5h6z\"/><path d=\"M6 17l-2.5 2 2.5 2\" stroke=\"#D97757\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"/><path d=\"M18 17l2.5 2-2.5 2\" stroke=\"#D97757\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"/></svg>",
+    "color": "#D97757"
+  },
   "runtime_requirements": {
     "bindings": {
       "filesystem": {

@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/strava",
   "version": "0.1.0",
   "display_name": "Strava",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><polygon points=\"10,2 16,13 12,13 15,22 6,11 10,11\"/></svg>",
+    "color": "#FC4C02"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

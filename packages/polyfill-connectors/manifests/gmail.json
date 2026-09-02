@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/gmail",
   "version": "0.2.0",
   "display_name": "Gmail",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><rect x=\"2\" y=\"5\" width=\"20\" height=\"14\" rx=\"2\"/><path d=\"M2 6l10 8 10-8\" fill=\"none\" stroke=\"#ffffff\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>",
+    "color": "#EA4335"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

@@ -318,6 +318,9 @@ importers:
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../pdpp-brand
+      '@pdpp/brand-react':
+        specifier: workspace:*
+        version: link:../pdpp-brand-react
       '@pdpp/display':
         specifier: workspace:*
         version: link:../display

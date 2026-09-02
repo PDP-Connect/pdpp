@@ -3,6 +3,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { ConnectorIcon, type ConnectorIconLike } from "@pdpp/brand-react";
 import Image from "next/image";
 import React from "react";
 import { Button } from "../../ui/button.tsx";
@@ -84,6 +85,8 @@ export interface ConsentCardStream {
    */
   connections?: ConsentCardConnection[];
   detail: string; // manifest display.detail — server-trusted
+  /** Manifest-declared source brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: ConnectorIconLike | null;
   key: string;
   label: string; // manifest display.label — server-trusted
 }
@@ -92,6 +95,8 @@ export interface ConsentCardOptional {
   consequenceOff: string; // server-generated generic copy in v0.1
   consequenceOn: string; // server-generated generic copy in v0.1
   detail: string; // manifest display.detail — server-trusted
+  /** Manifest-declared source brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: ConnectorIconLike | null;
   key: string;
   label: string; // manifest display.label — server-trusted
 }
@@ -369,12 +374,14 @@ function RequiredStreamRow({
   connections,
   detail,
   expanded,
+  icon,
   label,
   onToggle,
 }: {
   connections?: ConsentCardConnection[];
   detail: string;
   expanded: boolean;
+  icon?: ConnectorIconLike | null;
   label: string;
   onToggle: () => void;
 }) {
@@ -391,6 +398,7 @@ function RequiredStreamRow({
       >
         <span className="flex min-w-0 items-center gap-2">
           <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-authorship-manifest-accent" />
+          <ConnectorIcon icon={icon} name={label} />
           <span className="flex min-w-0 flex-col">
             <span className="font-medium text-foreground text-xs">{label}</span>
             {hasMultipleConnections && (
@@ -458,6 +466,7 @@ function OptionalStreamRow({
         >
           <span className={`flex min-w-0 items-center gap-2 ${enabled ? "opacity-100" : "opacity-50"}`}>
             <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-authorship-manifest-accent" />
+            <ConnectorIcon icon={optional.icon} name={optional.label} />
             <span className="font-medium text-foreground text-xs">
               {optional.label}
               <span className="ml-1.5 font-normal text-muted-foreground">optional</span>
@@ -581,11 +590,12 @@ export function ConsentCard({
           <div className="pt-2.5 pb-0.5">
             <AuthorshipEyebrow authorship="manifest">your server will share</AuthorshipEyebrow>
           </div>
-          {streams.map(({ connections, key, label, detail }) => (
+          {streams.map(({ connections, key, label, detail, icon }) => (
             <RequiredStreamRow
               connections={connections}
               detail={detail}
               expanded={!!expanded[key]}
+              icon={icon}
               key={key}
               label={label}
               // biome-ignore lint/performance/noJsxPropsBind: Handler captures the current row or component state; extracting it would add indirection without a stable consumer boundary.

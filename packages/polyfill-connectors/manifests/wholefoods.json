@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/wholefoods",
   "version": "0.1.0",
   "display_name": "Whole Foods",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><path fill=\"#00674B\" d=\"M5 8h14l-1.5 12h-11z\"/><path fill=\"#00674B\" d=\"M9 8a3 3 0 016 0\" stroke=\"#00674B\" stroke-width=\"2\" fill=\"none\"/></svg>",
+    "color": "#00674B"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

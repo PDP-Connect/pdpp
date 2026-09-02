@@ -75,6 +75,7 @@
   },
   "dependencies": {
     "@pdpp/brand": "workspace:*",
+    "@pdpp/brand-react": "workspace:*",
     "@pdpp/display": "workspace:*",
     "@pdpp/list-envelope": "workspace:*",
     "class-variance-authority": "^0.7.1",

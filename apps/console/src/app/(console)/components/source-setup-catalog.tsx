@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { buttonVariants, IcButton, IcInput } from "@pdpp/brand-react";
+import { buttonVariants, ConnectorIcon, IcButton, IcInput } from "@pdpp/brand-react";
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import type { ConnectorAcquisitionPath, ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
@@ -296,6 +296,7 @@ function SourceSetupCard({
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
+          <ConnectorIcon icon={entry.icon} name={entry.displayName} />
           <h3 className="pdpp-title text-foreground">{entry.displayName}</h3>
           {/* Current support / blocked fact, kept distinct from the next action. */}
           <span

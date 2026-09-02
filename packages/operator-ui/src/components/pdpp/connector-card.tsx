@@ -3,6 +3,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { ConnectorIcon, type ConnectorIconLike } from "@pdpp/brand-react";
 import React from "react";
 
 // ─── Connector Card ──────────────────────────────────────────────────────────
@@ -10,7 +11,7 @@ import React from "react";
 // Props contract — all fields from connector manifest (§7):
 //
 // FROM manifest (server-trusted):
-//   connectorId, displayName, version, streams[], profiles[]
+//   connectorId, displayName, version, streams[], profiles[], icon
 
 export interface ConnectorStream {
   label?: string; // display.label, may be absent
@@ -31,12 +32,14 @@ export interface ConnectorProfile {
 export interface ConnectorCardProps {
   connectorId: string;
   displayName: string;
+  /** Manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: ConnectorIconLike | null;
   profiles?: ConnectorProfile[];
   streams: ConnectorStream[];
   version: string;
 }
 
-export function ConnectorCard({ connectorId, displayName, version, streams, profiles }: ConnectorCardProps) {
+export function ConnectorCard({ connectorId, displayName, version, streams, profiles, icon }: ConnectorCardProps) {
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const toggleExpand = (key: string) => setExpanded((v) => ({ ...v, [key]: !v[key] }));
 
@@ -49,7 +52,8 @@ export function ConnectorCard({ connectorId, displayName, version, streams, prof
         {/* ── Header ── */}
         <div className="px-5 pt-5 pb-4">
           <div className="mb-1 flex items-center justify-between gap-3">
-            <span className="font-medium text-sm" style={{ color: "var(--foreground)" }}>
+            <span className="flex min-w-0 items-center gap-2 font-medium text-sm" style={{ color: "var(--foreground)" }}>
+              <ConnectorIcon icon={icon} name={displayName} />
               {displayName}
             </span>
             <span className="font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>

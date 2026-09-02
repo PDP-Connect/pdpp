@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/pocket",
   "version": "0.1.0",
   "display_name": "Pocket",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><path d=\"M3 4h18v9a9 9 0 0 1-18 0V4z\"/><polyline points=\"8,10 12,14 16,10\" stroke=\"#ffffff\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"/></svg>",
+    "color": "#EF4056"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {

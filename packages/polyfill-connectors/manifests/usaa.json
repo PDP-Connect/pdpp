@@ -5,6 +5,11 @@
   "manifest_uri": "https://registry.pdpp.org/connectors/usaa",
   "version": "0.1.0",
   "display_name": "USAA",
+  "icon": {
+    "kind": "inline_svg",
+    "svg": "<svg viewBox=\"0 0 24 24\"><path d=\"M2 9l10-6 10 6v2H2V9z\"/><rect x=\"4\" y=\"11\" width=\"3\" height=\"8\"/><rect x=\"10.5\" y=\"11\" width=\"3\" height=\"8\"/><rect x=\"17\" y=\"11\" width=\"3\" height=\"8\"/><rect x=\"2\" y=\"19\" width=\"20\" height=\"2\"/></svg>",
+    "color": "#003057"
+  },
   "runtime_requirements": {
     "bindings": {
       "network": {
