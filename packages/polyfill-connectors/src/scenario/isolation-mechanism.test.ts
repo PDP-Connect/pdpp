@@ -525,11 +525,9 @@ test("resolveTrustedLauncherPath('sh'): resolves the real trusted-location shell
 }, () => {
   const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-sh-path-"));
   const fakeMarkerPath = join(fakeBinDir, "fake-sh-ran");
-  writeFileSync(
-    join(fakeBinDir, "sh"),
-    ["#!/bin/sh", `touch ${JSON.stringify(fakeMarkerPath)}`, "exit 0"].join("\n"),
-    { mode: 0o755 }
-  );
+  writeFileSync(join(fakeBinDir, "sh"), ["#!/bin/sh", `touch ${JSON.stringify(fakeMarkerPath)}`, "exit 0"].join("\n"), {
+    mode: 0o755,
+  });
   const realPath = process.env.PATH;
   process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
   try {
@@ -2447,7 +2445,10 @@ test("findPreexistingSocketsUnderReadOnlyBinds: does NOT descend into symlinks (
     // the bounded, finite walk this function's own doc comment promises).
     symlinkSync(nestedDir, symlinkPath, "dir");
     const result = findPreexistingSocketsUnderReadOnlyBinds();
-    assert.ok(Array.isArray(result.sockets), "the scan must complete (not hang/throw) against a self-referential symlink");
+    assert.ok(
+      Array.isArray(result.sockets),
+      "the scan must complete (not hang/throw) against a self-referential symlink"
+    );
     assert.ok(result.complete, "a symlink loop must not itself be reported as an enumeration failure");
   } finally {
     rmSync(nestedDir, { recursive: true, force: true });
@@ -2678,7 +2679,7 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
     mkdirSync(nestedDir, { recursive: true });
     const markerPath = join(tmpdir(), `pdpp-isolation-orphan-marker-${mechanism}-${String(process.pid)}`);
     rmSync(markerPath, { force: true });
-    let firstServer = createServer();
+    const firstServer = createServer();
     let secondServer: ReturnType<typeof createServer> | undefined;
     try {
       await new Promise<void>((resolveListen, rejectListen) => {

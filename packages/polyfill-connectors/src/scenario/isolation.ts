@@ -908,8 +908,6 @@ const SOCKET_SCAN_EXCLUDED_SYSTEM_PATHS: readonly string[] = ["/usr", "/etc"];
  * structurally distinct, never collapsible into the same falsy-array shape.
  */
 export interface SocketScanResult {
-  /** Absolute paths of every socket the scan actually found. */
-  sockets: readonly string[];
   /** `false` whenever ANY scanned subtree could not be fully enumerated
    *  (an `EACCES` on `readdirSync`, from either a `000` or a `311`
    *  directory — see this module's own doc comment above for why both fail
@@ -924,6 +922,8 @@ export interface SocketScanResult {
    *  elsewhere (e.g. `buildPreexistingSocketLimitation`). Empty whenever
    *  `complete` is `true`. */
   errors: readonly string[];
+  /** Absolute paths of every socket the scan actually found. */
+  sockets: readonly string[];
 }
 
 export function findPreexistingSocketsUnderReadOnlyBinds(): SocketScanResult {
@@ -1385,10 +1385,10 @@ const MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION = [
   "  n = length(s);",
   "  i = 1;",
   "  while (i <= n) {",
-  '    c1 = substr(s, i, 1);',
+  "    c1 = substr(s, i, 1);",
   '    if (c1 == "\\\\" && i + 3 <= n) {',
   "      c2 = substr(s, i + 1, 3);",
-  '      if (c2 ~ /^[0-7][0-7][0-7]$/) {',
+  "      if (c2 ~ /^[0-7][0-7][0-7]$/) {",
   "        code = 0;",
   "        for (j = 1; j <= 3; j++) { code = code * 8 + (substr(c2, j, 1) + 0) }",
   '        result = result sprintf("%c", code);',
@@ -1478,7 +1478,7 @@ const MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION = [
 function findDecodedSubmountsShellFragment(stagedPathShQuoted: string): string {
   const awkProgram =
     `${MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION} ` +
-    `{ mp = pdpp_decode_mountinfo_path($5); if (mp == staged) next; if (index(mp, stagedslash) == 1) print mp }`;
+    "{ mp = pdpp_decode_mountinfo_path($5); if (mp == staged) next; if (index(mp, stagedslash) == 1) print mp }";
   return (
     `awk -v staged=${stagedPathShQuoted} -v stagedslash=${stagedPathShQuoted}"/" ` +
     `${shQuote(awkProgram)} /proc/self/mountinfo`
@@ -1508,8 +1508,7 @@ function findDecodedSubmountsShellFragment(stagedPathShQuoted: string): string {
  */
 function recursiveReadOnlyRemountCommand(stagedPathShQuoted: string): string {
   const findSubmounts = findDecodedSubmountsShellFragment(stagedPathShQuoted);
-  const loop =
-    `${findSubmounts} | while IFS= read -r __submount; do mount -o remount,ro,bind "$__submount" || exit 1; done`;
+  const loop = `${findSubmounts} | while IFS= read -r __submount; do mount -o remount,ro,bind "$__submount" || exit 1; done`;
   // `req` (see REQ_FUNCTION_DEFINITION's doc comment) executes its wrapped
   // command as `"$@"` — a single command name plus argv entries, not a
   // shell snippet — so a compound statement like this pipeline must be
