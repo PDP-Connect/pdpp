@@ -45,13 +45,13 @@
     "playwright": "^1.62.1",
     "saxes": "^6.0.0",
     "ws": "^8.21.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.2"
   },
   "devDependencies": {
     "@babel/parser": "8.0.4",
-    "@biomejs/biome": "2.5.10",
+    "@biomejs/biome": "2.5.11",
     "@types/better-sqlite3": "^9.6.0",
     "@types/ws": "^8.18.1",
-    "ultracite": "7.10.6"
+    "ultracite": "7.10.7"
   }
 }
