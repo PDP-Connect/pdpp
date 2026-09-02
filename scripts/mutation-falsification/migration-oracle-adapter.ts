@@ -166,13 +166,30 @@ function spawnWithLimits(command: string[], cwd: string, wallTimeMs: number, byt
       clearTimeout(timer);
       reject(error);
     });
+    // Resolve on "close", not "exit": "exit" fires the instant the process
+    // itself terminates, but stdio pipes can outlive the process (this
+    // child is spawned `detached: true` as its own process-group leader —
+    // a grandchild it spawned, or a lingering fd duplicate, can keep a pipe
+    // open after the parent process has already exited). Resolving on
+    // "exit" risked returning `stdoutPrefix` before every already-buffered
+    // "data" event had actually been delivered. "close" fires only after
+    // Node has observed EOF on every stdio stream, so `stdoutPrefix` is
+    // guaranteed final by the time this resolves. exitCode/signal are
+    // captured from "exit" (the only event that carries them) and reused
+    // here.
+    let exitCode: number | null = null;
+    let exitSignal: string | null = null;
     child.on("exit", (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
+    });
+    child.on("close", () => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timer);
-      resolvePromise({ exitCode: code, signal, stdoutPrefix, stdoutTotalBytes, deadlineFired, byteCapExceeded });
+      resolvePromise({ exitCode, signal: exitSignal, stdoutPrefix, stdoutTotalBytes, deadlineFired, byteCapExceeded });
     });
   });
 }
