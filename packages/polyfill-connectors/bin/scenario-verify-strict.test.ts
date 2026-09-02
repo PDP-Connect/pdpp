@@ -857,6 +857,7 @@ function eligibleDigestObservations(): {
   currentSourceDigestComputed: boolean;
   observedUnsupportedEvidenceSurface: boolean;
   driverEvidenceSatisfied: boolean;
+  isolationEvidenceBoundaryProven: boolean;
 } {
   return {
     capturedDeclarationDigestPresent: true,
@@ -865,6 +866,7 @@ function eligibleDigestObservations(): {
     currentSourceDigestComputed: true,
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
+    isolationEvidenceBoundaryProven: true,
   };
 }
 
@@ -954,6 +956,7 @@ test("evaluateClaimEligibility negative control: source-only historical scenario
     currentSourceDigestComputed: true,
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
+    isolationEvidenceBoundaryProven: true,
     isNamespaceIsolationActive: true,
   });
   assert.equal(decision.claim, "diagnostic_replay");
@@ -971,6 +974,7 @@ test("evaluateClaimEligibility negative control: declaration-only scenario (sour
     currentSourceDigestComputed: true,
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
+    isolationEvidenceBoundaryProven: true,
     isNamespaceIsolationActive: true,
   });
   assert.equal(decision.claim, "diagnostic_replay");
@@ -988,6 +992,7 @@ test("evaluateClaimEligibility negative control: missing current manifest (decla
     currentSourceDigestComputed: true,
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
+    isolationEvidenceBoundaryProven: true,
     isNamespaceIsolationActive: true,
   });
   assert.equal(decision.claim, "diagnostic_replay");
@@ -1005,6 +1010,7 @@ test("evaluateClaimEligibility negative control: missing current connector sourc
     currentSourceDigestComputed: false,
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
+    isolationEvidenceBoundaryProven: true,
     isNamespaceIsolationActive: true,
   });
   assert.equal(decision.claim, "diagnostic_replay");
@@ -1029,6 +1035,7 @@ test("evaluateClaimEligibility negative control: legacy top-level digests only (
     currentSourceDigestComputed: true,
     observedUnsupportedEvidenceSurface: false,
     driverEvidenceSatisfied: true,
+    isolationEvidenceBoundaryProven: true,
     isNamespaceIsolationActive: true,
   });
   assert.equal(decision.claim, "diagnostic_replay");
@@ -1111,6 +1118,7 @@ test("evaluateClaimEligibility: multiple failing conditions are all reported at 
     observedUnsupportedEvidenceSurface: true,
     driverEvidenceSatisfied: false,
     isNamespaceIsolationActive: false,
+    isolationEvidenceBoundaryProven: false,
   });
   assert.equal(decision.claim, "diagnostic_replay");
   assert.ok(decision.claim === "diagnostic_replay");
@@ -1150,6 +1158,64 @@ test("evaluateClaimEligibility: with every other condition eligible, the claim t
     assert.ok(decision.claim === "diagnostic_replay");
     assert.deepEqual(decision.limitations, ["network isolation: process-local only - descendant escape not excluded"]);
   }
+});
+
+// ─── Bounded P1 repair (external review of ab415be6c): isolation evidence
+// boundary — launcher trust + recursive read-only, on TOP of namespace
+// activity alone ────────────────────────────────────────────────────────────
+//
+// The review found that `isNamespaceIsolationActive: true` (the OS
+// namespaces genuinely exist) was being treated as sufficient for
+// `recorded_replay`, even though two separate defects meant the FILESYSTEM
+// half of that isolation could be unproven: the `unshare`/`bwrap` launcher
+// binaries were resolved through the caller's inherited `$PATH` (a
+// PATH-prepended fake launcher could be selected), and the unshare
+// mechanism's `--rbind` submounts only had their top mount remounted
+// read-only, leaving nested mounts under a `ro` bind writable. These tests
+// pin that namespace-active alone can never reach `recorded_replay` — the
+// new `isolationEvidenceBoundaryProven` observation must ALSO be true.
+
+test("evaluateClaimEligibility: namespace isolation active but isolationEvidenceBoundaryProven false withholds recorded_replay (launcher trust / recursive-ro not proven)", () => {
+  const decision = evaluateClaimEligibility({
+    scenario: eligibleScenario(),
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    isNamespaceIsolationActive: true,
+    isolationEvidenceBoundaryProven: false,
+  });
+  assert.equal(decision.claim, "diagnostic_replay");
+  assert.ok(decision.claim === "diagnostic_replay");
+  assert.deepEqual(decision.limitations, [
+    "network isolation: launcher trust or recursive read-only filesystem closure not proven for this run",
+  ]);
+});
+
+test("evaluateClaimEligibility: namespace isolation active AND isolationEvidenceBoundaryProven true — recorded_replay is reachable again", () => {
+  const decision = evaluateClaimEligibility({
+    scenario: eligibleScenario(),
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    isNamespaceIsolationActive: true,
+    isolationEvidenceBoundaryProven: true,
+  });
+  assert.deepEqual(decision, { claim: "recorded_replay" });
+});
+
+test("evaluateClaimEligibility: namespace isolation NOT active reports only the coarser process-local limitation, never BOTH isolation limitations at once", () => {
+  // When isolation isn't active at all, the boundary-proof limitation is
+  // redundant with (and would be confusing alongside) the coarser
+  // process-local-only limitation — evaluateClaimEligibility's `else if`
+  // must report exactly one of the two, never both.
+  const decision = evaluateClaimEligibility({
+    scenario: eligibleScenario(),
+    isEntrypointOverride: false,
+    ...eligibleDigestObservations(),
+    isNamespaceIsolationActive: false,
+    isolationEvidenceBoundaryProven: false,
+  });
+  assert.equal(decision.claim, "diagnostic_replay");
+  assert.ok(decision.claim === "diagnostic_replay");
+  assert.deepEqual(decision.limitations, ["network isolation: process-local only - descendant escape not excluded"]);
 });
 
 // ─── Repair wave 6, P1-1: driver-evidence prerequisite ─────────────────────

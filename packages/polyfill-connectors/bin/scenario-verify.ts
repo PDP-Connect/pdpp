@@ -1844,6 +1844,16 @@ function printCoverageReport(
     currentDeclarationDigestComputed: digestObservation.currentDeclarationDigestComputed,
     currentSourceDigestComputed: digestObservation.currentSourceDigestComputed,
     isNamespaceIsolationActive: isolationCapability.available,
+    // WITHHELD PENDING BOUNDED P1 REPAIR (external review of ab415be6c):
+    // hardcoded false until the trusted-launcher resolution and the
+    // recursive-read-only post-pivot verification are both wired in and
+    // proven — see claims.ts's `isolationEvidenceBoundaryProven` doc comment.
+    // Every intermediate state of this repair must stay honest: a build that
+    // has the launcher-trust or recursive-ro fix applied only partially must
+    // still print `diagnostic_replay`, never `recorded_replay`, until this
+    // literal is flipped to the real, wired-in proof in the commit that
+    // completes both fixes.
+    isolationEvidenceBoundaryProven: false,
     observedUnsupportedEvidenceSurface: observedUnsupportedEvidenceSurfaceFlag,
     driverEvidenceSatisfied: driverEvidenceOk,
   });

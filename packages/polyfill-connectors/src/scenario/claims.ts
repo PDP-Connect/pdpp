@@ -100,6 +100,7 @@ export type ClaimLimitation =
   | "non-recorded-http driver - canonical replay is defined only for recorded-http"
   | "legacy scenario without protocol trace"
   | "network isolation: process-local only - descendant escape not excluded"
+  | "network isolation: launcher trust or recursive read-only filesystem closure not proven for this run"
   | "connector exercised an evidence surface the oracle cannot observe (ASSISTANCE)"
   | "no recorded provider interaction - driver evidence for recorded-http not satisfied"
   | "no recorded HAR entries - driver evidence for recorded-browser not satisfied"
@@ -166,6 +167,26 @@ export interface ClaimEligibilityInput {
    *  `isNamespaceIsolationAvailable()`) was ACTIVE for this replay, as
    *  opposed to the weaker process-local-only fallback (condition f). */
   isNamespaceIsolationActive: boolean;
+  /**
+   * External review of the merged tree (ab415be6c) found the evidence
+   * boundary this claim rests on was itself unproven in two ways: (1) the
+   * `unshare`/`bwrap` launcher binaries were resolved through the CALLER's
+   * inherited `$PATH` rather than a trusted absolute path, so a
+   * PATH-prepended fake launcher could be selected in place of the real one;
+   * (2) the unshare mechanism's `--rbind` submounts only had their TOP mount
+   * remounted read-only — Linux does not apply `remount,ro,bind` recursively
+   * — so a nested mount under a `ro` bind (e.g. `REPO_ROOT`) stayed writable.
+   * Either defect lets `isNamespaceIsolationActive` read `true` (namespaces
+   * genuinely exist) while the filesystem/launcher half of the OS-isolation
+   * claim does not actually hold. `isNamespaceIsolationActive` alone is no
+   * longer sufficient for `recorded_replay`: this field must ALSO be true,
+   * set by `bin/scenario-verify.ts` only once both the trusted-launcher
+   * resolution (isolation.ts's `resolveTrustedLauncherPath`) and the
+   * recursive-read-only post-pivot verification
+   * (`postPivotVerificationStatements`'s per-submount check) are wired in and
+   * this replay's own isolated child was verified against them.
+   */
+  isolationEvidenceBoundaryProven: boolean;
   /** Repair wave 4 (P1-2, FIX 2d): true when this run's messages included at
    *  least one kind `TRACE_POLICY` (verify.ts) dispositions
    *  `"unsupported_claim_withheld"` — today, ASSISTANCE or ASSISTANCE_STATUS.
@@ -250,6 +271,10 @@ export function evaluateClaimEligibility(input: ClaimEligibilityInput): ClaimDec
   }
   if (!input.isNamespaceIsolationActive) {
     limitations.push("network isolation: process-local only - descendant escape not excluded");
+  } else if (!input.isolationEvidenceBoundaryProven) {
+    limitations.push(
+      "network isolation: launcher trust or recursive read-only filesystem closure not proven for this run"
+    );
   }
   if (input.observedUnsupportedEvidenceSurface) {
     limitations.push("connector exercised an evidence surface the oracle cannot observe (ASSISTANCE)");
