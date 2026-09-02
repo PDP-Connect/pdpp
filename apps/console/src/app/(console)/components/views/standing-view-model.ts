@@ -1069,27 +1069,21 @@ function buildPartialDataHero(loadIssues: readonly string[], hrefs: StandingHref
   };
 }
 
+/**
+ * The single alarm-toned hero slot is scarce and reserved for genuinely
+ * owner-actionable trouble. Gate on `banner_warranted`
+ * (server-computed, narrower than `state !== "healthy"`) rather than `state`
+ * directly: `indeterminate` (in-progress work, reconciliation gaps, unknown
+ * evidence) and `healthy_with_advisories` (ordinary cadence-relative
+ * lateness) are real, useful diagnostic states — the per-source rows and
+ * "Anything wrong" surface still disclose them — but neither is proof that
+ * anything needs the owner right now, so neither may claim the hero. See
+ * `FleetHealthVerdict.banner_warranted` (`reference-implementation/server/
+ * fleet-health.ts`) for the exact rule.
+ */
 function buildFleetHealthHero(fleetHealth: RefFleetHealthVerdict, hrefs: StandingHrefs): StandingHero | null {
-  if (fleetHealth.state === "healthy") {
+  if (!fleetHealth.banner_warranted) {
     return null;
-  }
-  if (fleetHealth.state === "healthy_with_advisories") {
-    return {
-      tone: "decide",
-      kicker: "Sources need a refresh",
-      line: { text: "Source health has ", emphasis: "advisories", tail: "." },
-      sub: "Some sources are intentionally manual or paused and are no longer current.",
-      cta: { label: "Review sources", href: hrefs.sources },
-    };
-  }
-  if (fleetHealth.state === "indeterminate") {
-    return {
-      tone: "alarm",
-      kicker: "Source health is not settled",
-      line: { text: "PDPP cannot yet confirm that every source is ", emphasis: "healthy", tail: "." },
-      sub: "Collection or assessment is still in progress. This overview will not claim all-clear.",
-      cta: { label: "Review sources", href: hrefs.sources },
-    };
   }
   return {
     tone: "alarm",

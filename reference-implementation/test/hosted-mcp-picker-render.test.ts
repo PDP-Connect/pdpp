@@ -37,6 +37,7 @@ import {
 } from "../server/hosted-mcp-selection.ts";
 import { escapeHtml } from "../server/hosted-ui.ts";
 import {
+  ActiveBindingLookupError,
   type ConsentPickerBinding,
   type ConsentPickerCapabilities,
   type ConsentUiRenderer,
@@ -308,33 +309,19 @@ test("listHostedMcpPickerRows skips internal connectors and emits canonical owne
   assert.deepEqual(names, ["Personal listening"], "only the distinct connection name survives");
 });
 
-test("a connector with zero bindings still yields one unconfigured-connector row", async () => {
-  const caps = makeCaps({
-    listActiveBindingsForGrant: async () => [],
-    listRegisteredConnectorIds: async () => [SPOTIFY_ID],
-  });
-  const rows = await listHostedMcpPickerRows(caps, "owner_local");
-  assert.equal(rows.length, 1, "one connector-level row when no connections exist");
-  const row = mustExist(rows[0], "the unconfigured-connector row must exist");
-  assert.equal(row.connectionId, null, "unconfigured row has a null connection id");
-  assert.equal(row.connectorTypeLabel, "Spotify");
-});
-
-// ── Honesty fix: "N streams available" must describe holdings, not catalog ───
+// ── Instances-not-catalog fix: an unheld connector renders no row at all ─────
 //
-// Root cause: the picker's "N streams available" meta line was sourced from
-// `manifest.streams.length` — the connector's full grantable catalog — for
-// EVERY row, including a connector the owner has never connected. An owner
-// reading "2 streams available" on a source they don't hold reasonably reads
-// that as "I have 2 streams of data here", which is false. The owner's own
-// framing: "it's weird that the consent page showed me data I don't have."
-//
-// This is the "connector the owner does NOT hold" reproduction: Spotify is
-// registered (so it appears in the picker at all — the picker only lists
-// registered connectors) but has zero active bindings, mirroring production's
-// 25 offerable-but-not-held manifests (e.g. `google_maps_data_portability`)
-// against 20 actually-held connectors.
-test("an unheld connector never claims manifest streams are 'available'", async () => {
+// Root cause (owner-reported): the picker rendered one row per REGISTERED
+// connector, including connectors the owner has never connected (e.g. Oura
+// sleep/readiness/activity appeared for an owner with no Oura connection at
+// all). Selecting such a row — or a "select all" over the rendered rows —
+// produced `{"error":"source.authorization_details_invalid"}`: the AS has no
+// eligible connector instance to satisfy a grant against a connector the
+// owner does not hold. The fix: the picker must render only what the owner's
+// instance actually has, not the static connector catalog. A connector with
+// zero active bindings now yields NO row, and a "select all" over what
+// remains can never name an uninstalled connector.
+test("a connector with zero bindings yields no picker row at all", async () => {
   const caps = makeCaps({
     listActiveBindingsForGrant: async () => [],
     listRegisteredConnectorIds: async () => [SPOTIFY_ID],
@@ -347,22 +334,39 @@ test("an unheld connector never claims manifest streams are 'available'", async 
     },
   });
   const rows = await listHostedMcpPickerRows(caps, "owner_local");
-  const row = mustExist(rows[0], "the unconfigured-connector row must exist");
+  assert.deepEqual(rows, [], "a registered-but-unconnected connector must render no picker row");
+});
 
-  // Spotify's manifest declares 2 streams (saved_tracks, top_artists). The
-  // OLD behavior rendered "2 streams available" here, sourced straight from
-  // manifest.streams.length regardless of whether the owner held anything.
+test("a mix of held and unheld connectors renders rows only for the held ones", async () => {
+  const caps = makeCaps({
+    listActiveBindingsForGrant: async ({ connectorId }: { connectorId: string }) =>
+      connectorId === SPOTIFY_ID ? (BINDINGS[SPOTIFY_ID] ?? []) : [],
+    listRegisteredConnectorIds: async () => [SPOTIFY_ID, GITHUB_ID],
+  });
+  const rows = await listHostedMcpPickerRows(caps, "owner_local");
+  assert.equal(rows.length, 1, "only the connected connector (Spotify) yields a row");
+  const row = mustExist(rows[0], "the Spotify row must exist");
+  assert.equal(row.connectorId, SPOTIFY_ID);
   assert.equal(
-    row.meta.includes("streams available") || row.meta.includes("stream available"),
+    rows.some((r) => r.connectorId === GITHUB_ID),
     false,
-    `an unheld connector must not claim any stream count as "available" (got meta: ${row.meta})`
+    "GitHub has zero active bindings and must not appear"
   );
-  assert.match(row.meta, /not connected/i, "an unheld connector states plainly that it isn't connected");
+});
 
-  // The checkbox and its full stream list must still be present and enabled:
-  // the owner can still pre-authorize this source for future data. Hiding it
-  // would be the opposite defect (P1: no real grant capability disappears).
-  assert.equal(row.streams.length, 2, "the manifest's full stream catalog must remain grantable, not hidden");
+test("an active-binding storage failure is not rendered as an unconnected source", async () => {
+  const caps = makeCaps({
+    listActiveBindingsForGrant: async () => {
+      throw new Error("injected storage failure");
+    },
+    listRegisteredConnectorIds: async () => [SPOTIFY_ID],
+  });
+
+  await assert.rejects(
+    listHostedMcpPickerRows(caps, "owner_local"),
+    ActiveBindingLookupError,
+    "a failed active-binding lookup must remain distinguishable from an honest empty binding list"
+  );
 });
 
 // ── Anti-over-correction guard: a HELD connector still renders its real streams ──

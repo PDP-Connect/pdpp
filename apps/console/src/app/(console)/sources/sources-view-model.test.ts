@@ -802,6 +802,7 @@ test("toSourceInstanceView drops blank stream names", () => {
 test("toSourceInstanceView surfaces a revoked instance with a struck status", () => {
   const view = toSourceInstanceView(summary({ revoked_at: "2026-06-01T00:00:00Z", status: "revoked" }));
   assert.equal(view.revoked, true);
+  assert.equal(view.sourceScope, "revoked");
   assert.equal(view.status.kind, "revoked");
 });
 
@@ -845,6 +846,61 @@ test("toSourceInstanceView keeps connector type when the source title does not i
   assert.deepEqual(view.passportFields[0], { k: "type", mono: false, value: "Amazon" });
 });
 
+// Observed live on /sources 2026-08-27: "peregrine Codex OpenAI Codex CLI".
+// The owner names a connection in his words ("peregrine Codex"); the manifest
+// spells the product more fully ("OpenAI Codex CLI"). Whole-label containment
+// finds no overlap between those two strings and appends the kind, so the page
+// names the same connector twice. Its sibling on the same machine reads
+// correctly only because "peregrine Claude Code" happens to contain "Claude
+// Code" verbatim.
+test("toSourceInstanceView drops the connector type when the title already names it in fewer words", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_display_name: "OpenAI Codex CLI",
+      connector_id: "codex",
+      display_name: "peregrine Codex",
+    })
+  );
+
+  assert.equal(view.displayName, "peregrine Codex");
+  assert.equal(
+    view.listKind,
+    null,
+    'appending here renders "peregrine Codex OpenAI Codex CLI" — the connector named twice'
+  );
+});
+
+// The other half of the same rule: suppressing on a shared word must not hide a
+// kind the title genuinely omits. "peregrine" alone identifies a machine, not a
+// connector, so the kind is the only thing making the row legible.
+test("toSourceInstanceView keeps the connector type when the title shares no word with it", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_display_name: "Signal Desktop",
+      connector_id: "signal",
+      display_name: "peregrine",
+    })
+  );
+
+  assert.equal(view.displayName, "peregrine");
+  assert.equal(view.listKind, "Signal Desktop", "a bare hostname needs its connector type to mean anything");
+});
+
+// A generic word shared by chance is not the connector named twice. Without the
+// generic-word filter, "Work Desktop" would swallow "Signal Desktop" and the row
+// would read as an unidentified machine.
+test("toSourceInstanceView keeps the connector type when only a generic word matches", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_display_name: "Signal Desktop",
+      connector_id: "signal",
+      display_name: "Work Desktop",
+    })
+  );
+
+  assert.equal(view.listKind, "Signal Desktop", '"Desktop" alone identifies no connector');
+});
+
 test("toSourceInstanceView links the detail page, never a raw action target", () => {
   const view = toSourceInstanceView(summary({ connection_id: "conn x/y" }));
   assert.equal(view.detailHref, "/sources/conn%20x%2Fy");
@@ -873,6 +929,7 @@ test("sourceDetailHrefFor routes a draft connection to /connect/status/:id, not 
 
 test("toSourceInstanceView projects a draft connection as pending, links /connect/status/:id, and offers Continue setup", () => {
   const view = toSourceInstanceView(draftSummary());
+  assert.equal(view.sourceScope, "draft");
   assert.equal(view.detailHref, "/connect/status/conn_1");
   assert.equal(view.status.kind, "pending");
   assert.equal(view.status.label, "Setup in progress");

@@ -35,6 +35,7 @@ import {
   truncateId,
   validateArgs,
 } from "../scripts/repair/connector-cursor-reset.ts";
+import { connectorInstanceAdvisoryLockKey } from "../server/connector-instance-write-coordinator.ts";
 
 const REGEXP_1 = /connector-instance-id/;
 const REGEXP_2 = /at least one --stream/;
@@ -47,6 +48,7 @@ const REGEXP_8 = /\[APPLY\]/;
 const REGEXP_9 = /reset_count=1/;
 const REGEXP_10 = /backup_table=ccr_backup_/;
 const REGEXP_11 = /POST \/v1\/owner\/connections/;
+const REGEXP_12 = /connector-instance writer admission is saturated/;
 
 const { Pool } = pg;
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
@@ -327,6 +329,182 @@ if (POSTGRES_URL) {
       assert.equal(result.resetCount, 0);
       assert.equal(result.backupTable, null);
       assert.equal(result.failed, false);
+    });
+  });
+
+  // D9 fence: connector-instance advisory lock (PR238-POSTGRES-D9-FIX-R5-0831)
+
+  test("apply blocks on the connector-instance advisory lock (deterministic contention, D9 fence)", async () => {
+    await withFixture(async ({ pool, connectorId, connectorInstanceId, stamp }) => {
+      await seedCursor(pool, {
+        connectorId,
+        connectorInstanceId,
+        stateJson: { last_updated_at: "2026-06-04T05:37:44Z" },
+        stream: "issues",
+      });
+
+      // Hold the SAME connector-instance advisory lock this apply-mode reset
+      // must acquire, on a separate raw connection, in an open (uncommitted)
+      // transaction — modeling a concurrent D9 coalescence merge (or any
+      // other production writer) that is already mid-transaction on this
+      // instance. If the reset's write reached connector_state without
+      // taking this lock, it would proceed uncontended; proving it BLOCKS
+      // proves the lock is real, not decorative.
+      const holderPool = new Pool({ connectionString: POSTGRES_URL });
+      const holder = await holderPool.connect();
+      try {
+        await holder.query("BEGIN");
+        await holder.query("SELECT pg_advisory_xact_lock($1::bigint)", [
+          connectorInstanceAdvisoryLockKey(connectorInstanceId),
+        ]);
+
+        // runCursorReset never throws — its outer catch converts a
+        // lock-acquisition failure into { failed: true, error }, same as any
+        // other transaction error. Assert on that contract, not a rejection.
+        const contended = await runCursorReset({
+          apply: true,
+          connectorInstanceId,
+          pool,
+          stamp,
+          streams: ["issues"],
+        });
+        assert.equal(contended.failed, true);
+        assert.match(contended.error ?? "", REGEXP_12);
+
+        // The reset's transaction never got past lock acquisition, so the
+        // cursor must be exactly as seeded — no partial write, no backup
+        // table created.
+        const after = await readCursor(pool, connectorInstanceId, "issues");
+        assert.deepEqual(after, { last_updated_at: "2026-06-04T05:37:44Z" });
+
+        await holder.query("ROLLBACK");
+      } finally {
+        holder.release();
+        await holderPool.end();
+      }
+
+      // Once the holder releases, an otherwise-identical apply succeeds —
+      // proving the fence serializes rather than permanently wedging the
+      // instance.
+      const recovered = await runCursorReset({ apply: true, connectorInstanceId, pool, stamp, streams: ["issues"] });
+      assert.equal(recovered.failed, false);
+      assert.deepEqual(await readCursor(pool, connectorInstanceId, "issues"), {});
+    });
+  });
+
+  test("D9 legacy-target coalescence seam: a reset against a connector instance mid-coalescence-merge is fenced, not raced", async () => {
+    await withFixture(async ({ pool, connectorId, connectorInstanceId, stamp }) => {
+      await seedCursor(pool, {
+        connectorId,
+        connectorInstanceId,
+        stateJson: { last_updated_at: "2026-06-04T05:37:44Z" },
+        stream: "issues",
+      });
+
+      // Simulate the exact shape of coalesceExactPostgresLocalDeviceBindingDuplicates's
+      // merge transaction: BEGIN, acquire the connector-instance lock, do
+      // some merge work (here: nothing further is needed — holding the lock
+      // open is the race window itself), then either COMMIT or ROLLBACK.
+      // This proves the reset cannot land INSIDE that window regardless of
+      // whether the merge eventually commits or rolls back.
+      const mergePool = new Pool({ connectionString: POSTGRES_URL });
+      const merge = await mergePool.connect();
+      try {
+        await merge.query("BEGIN");
+        await merge.query("SELECT pg_advisory_xact_lock($1::bigint)", [
+          connectorInstanceAdvisoryLockKey(connectorInstanceId),
+        ]);
+
+        const duringMerge = await runCursorReset({
+          apply: true,
+          connectorInstanceId,
+          pool,
+          stamp,
+          streams: ["issues"],
+        });
+        assert.equal(duringMerge.failed, true);
+        assert.match(duringMerge.error ?? "", REGEXP_12);
+
+        await merge.query("COMMIT");
+      } finally {
+        merge.release();
+        await mergePool.end();
+      }
+
+      // The merge's own commit did not touch connector_state in this
+      // simulation, so the cursor is still exactly as seeded — the fenced
+      // reset attempt left no trace (no orphaned backup table, no partial
+      // update).
+      assert.deepEqual(await readCursor(pool, connectorInstanceId, "issues"), {
+        last_updated_at: "2026-06-04T05:37:44Z",
+      });
+    });
+  });
+
+  // Mutation/counterweight: proves the test suite above actually
+  // discriminates a fenced implementation from an unfenced one, rather than
+  // passing regardless of whether the lock is taken. Drives the exact SQL
+  // sequence an UNFENCED runCursorReset would issue (BEGIN, backup snapshot,
+  // UPDATE, COMMIT — no pg_advisory_xact_lock call at all) against a
+  // connector instance whose lock is held open by a concurrent transaction.
+  // The unfenced sequence is expected to SUCCEED uncontended (proving the
+  // regression this fix closes existed), which is the mirror image of the
+  // real tool's expected BLOCK above.
+  test("mutation counterweight: an UNFENCED reset sequence (no advisory lock) succeeds uncontended, proving the lock above is load-bearing", async () => {
+    await withFixture(async ({ pool, connectorId, connectorInstanceId, stamp }) => {
+      await seedCursor(pool, {
+        connectorId,
+        connectorInstanceId,
+        stateJson: { last_updated_at: "2026-06-04T05:37:44Z" },
+        stream: "issues",
+      });
+
+      const holderPool = new Pool({ connectionString: POSTGRES_URL });
+      const holder = await holderPool.connect();
+      try {
+        await holder.query("BEGIN");
+        await holder.query("SELECT pg_advisory_xact_lock($1::bigint)", [
+          connectorInstanceAdvisoryLockKey(connectorInstanceId),
+        ]);
+
+        // The exact write sequence runCursorReset's apply path uses, MINUS
+        // the acquireConnectorInstanceLock call — this is what the tool
+        // looked like before this fix. It must succeed uncontended even
+        // while the holder above has the connector-instance lock open,
+        // because it never asks for that lock.
+        const client = await pool.connect();
+        const backupTable = backupTableName({ connectorInstanceId, stamp, streams: ["issues"] });
+        try {
+          await client.query("BEGIN");
+          await client.query(
+            `CREATE TABLE "${backupTable}" AS
+               SELECT connector_id, connector_instance_id, stream, state_json, updated_at
+                 FROM connector_state
+                WHERE connector_instance_id = $1 AND stream = ANY($2::text[])`,
+            [connectorInstanceId, ["issues"]]
+          );
+          await client.query(
+            `UPDATE connector_state
+                SET state_json = '{}'::jsonb
+              WHERE connector_instance_id = $1 AND stream = ANY($2::text[])`,
+            [connectorInstanceId, ["issues"]]
+          );
+          await client.query("COMMIT");
+        } finally {
+          client.release();
+        }
+
+        assert.deepEqual(
+          await readCursor(pool, connectorInstanceId, "issues"),
+          {},
+          "an unfenced write reaches connector_state even while a concurrent transaction holds the connector-instance lock — this is the exact race the real tool's lock acquisition (asserted above) closes"
+        );
+
+        await holder.query("ROLLBACK");
+      } finally {
+        holder.release();
+        await holderPool.end();
+      }
     });
   });
 } else {

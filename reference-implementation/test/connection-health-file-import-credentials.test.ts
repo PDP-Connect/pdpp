@@ -34,7 +34,7 @@ const NOW = "2026-08-20T12:00:00.000Z";
 /** A finished file import: no credential, no session, no run history. */
 function fileImport(overrides: Partial<ComputeConnectionHealthInput> = {}): ComputeConnectionHealthInput {
   return {
-    acquisition: { complete: true },
+    acquisition: { complete: true, freshnessNotApplicable: true },
     activity: null,
     attention: null,
     authentication: { authenticates: false },

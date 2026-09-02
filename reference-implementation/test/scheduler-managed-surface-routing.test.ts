@@ -270,7 +270,9 @@ test("T2c: scheduled managed connector retries runtime-retryable terminal known 
         controllerCalls.push(Date.now());
         if (controllerCalls.length === 1) {
           return {
-            connector_error: { message: String(runtimeGap.message), retryable: false },
+            // Runtime evidence, not a connector verdict: no connector_error.retryable
+            // marker, so the structured retry_by_runtime known_gap below decides.
+            connector_error: { message: String(runtimeGap.message) },
             known_gaps: [runtimeGap],
             run_id: "run-runtime-race-001",
             status: "failed",
@@ -434,7 +436,7 @@ test("T2b: scheduled managed-connector recovery dispatch preserves recoveryOnly"
 
 // ── T3: browser_surface_queued → SKIP not failure ──────────────────────────
 
-test("T3: browser_surface_queued status maps to skipped RunRecord (not failure-retry)", async () => {
+test("T3: waiting_for_browser_surface status maps to skipped RunRecord (not failure-retry)", async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), "sched-managed-"));
   try {
     const connectorPath = writeDummyConnector(tmpDir);
@@ -456,9 +458,15 @@ test("T3: browser_surface_queued status maps to skipped RunRecord (not failure-r
       onInteraction: async () => ({ accepted: true, status: "cancelled" }),
       onRunComplete: (record) => completedRuns.push(record),
       rsUrl: "http://localhost.invalid",
+      // "waiting_for_browser_surface" is the REAL BrowserSurfaceLeaseStatus a
+      // queued acquire early-returns (run-coordinator.ts's
+      // acquireManagedBrowserSurfaceAttempt, `refreshedLease.status ===
+      // "waiting_for_browser_surface"` branch) -- not the fictitious
+      // "run_browser_surface_queued" this test used to assert on, which is
+      // never a value `runNowResult.status` can actually hold.
       runManagedConnectorViaController: () => ({
         run_id: `run_${Date.now()}`,
-        status: "run_browser_surface_queued",
+        status: "waiting_for_browser_surface",
         trace_id: "trace-queued",
       }),
     });
@@ -470,7 +478,7 @@ test("T3: browser_surface_queued status maps to skipped RunRecord (not failure-r
 
       const [record] = completedRuns;
       assert.ok(record, "a completed run record was captured");
-      assert.equal(record.status, "skipped", "browser_surface_queued must produce a skipped RunRecord");
+      assert.equal(record.status, "skipped", "waiting_for_browser_surface must produce a skipped RunRecord");
       assert.ok(
         typeof record.error === "string" && record.error.includes("browser_surface_unavailable"),
         `error should include browser_surface_unavailable, got: ${record.error}`
@@ -575,6 +583,233 @@ test("T3b: surface_failed status also maps to skipped RunRecord", async () => {
       const [record] = completedRuns;
       assert.ok(record, "a completed run record was captured");
       assert.equal(record.status, "skipped", "surface_failed must produce a skipped RunRecord");
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+});
+
+// ── T3d: deferred → SKIP not failure (the live bug this closes) ────────────
+//
+// Live production evidence (2026-08-28, connection cin_11deac1e728b244aaeb56765,
+// connector chatgpt): a scheduler-managed run settled with
+// status: "failed", 66ms duration, event_count: 0, records_emitted: 0,
+// terminal_reason: null, failure_reason: null, connector_error: null --
+// exactly the shape a browser-surface lease resolving to "deferred"
+// produces (run-coordinator.ts's `handleStartingSurfaceWaitForRun` /
+// `reclaimWaitingLeaseIfNeeded`, which early-return before the connector is
+// ever invoked). Before this fix, `"deferred"` was absent from
+// BROWSER_SURFACE_UNAVAILABLE_STATUSES, so it fell through to
+// `buildManagedRunTerminalRecord` -> `schedulerStatusFromRuntimeResult` ->
+// "failed", corrupting the connection's coverage axis via the ordinary
+// worst-wins degrade even though no connector code ever ran.
+
+test("T3d: deferred status maps to skipped RunRecord (not failure-retry) -- the live production bug", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "sched-managed-"));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const completedRuns: RunRecord[] = [];
+
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
+          connectorPath,
+          intervalMs: 25,
+          manifest: BACKGROUND_SAFE_MANIFEST,
+          maxRetries: 0,
+          ownerSubjectId: "owner-managed",
+          ownerToken: "owner-token",
+        },
+      ],
+      onInteraction: async () => ({ accepted: true, status: "cancelled" }),
+      onRunComplete: (record) => completedRuns.push(record),
+      rsUrl: "http://localhost.invalid",
+      runManagedConnectorViaController: () => ({
+        run_id: `run_${Date.now()}`,
+        status: "deferred",
+        trace_id: "trace-deferred",
+      }),
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 1, 5000);
+      scheduler.stop();
+
+      const [record] = completedRuns;
+      assert.ok(record, "a completed run record was captured");
+      assert.equal(record.status, "skipped", "deferred must produce a skipped RunRecord, not failed");
+      assert.ok(
+        typeof record.error === "string" && record.error.includes("browser_surface_unavailable"),
+        `error should include browser_surface_unavailable, got: ${record.error}`
+      );
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+});
+
+// ── T3e: expired / released also → SKIP (same early-exit family) ───────────
+
+test("T3e: expired and released statuses also map to skipped RunRecords", async () => {
+  for (const status of ["expired", "released"]) {
+    const tmpDir = mkdtempSync(join(tmpdir(), "sched-managed-"));
+    try {
+      const connectorPath = writeDummyConnector(tmpDir);
+      const completedRuns: RunRecord[] = [];
+
+      const scheduler = createScheduler({
+        connectors: [
+          {
+            connectorId: "chatgpt",
+            connectorInstanceId: "chatgpt",
+            connectorPath,
+            intervalMs: 25,
+            manifest: BACKGROUND_SAFE_MANIFEST,
+            maxRetries: 0,
+            ownerSubjectId: "owner-managed",
+            ownerToken: "owner-token",
+          },
+        ],
+        onInteraction: async () => ({ accepted: true, status: "cancelled" }),
+        onRunComplete: (record) => completedRuns.push(record),
+        rsUrl: "http://localhost.invalid",
+        runManagedConnectorViaController: () => ({
+          run_id: `run_${Date.now()}`,
+          status,
+          trace_id: `trace-${status}`,
+        }),
+      });
+
+      try {
+        scheduler.start();
+        await waitFor(() => completedRuns.length >= 1, 5000);
+        scheduler.stop();
+
+        const [record] = completedRuns;
+        assert.ok(record, `a completed run record was captured for ${status}`);
+        assert.equal(record.status, "skipped", `${status} must produce a skipped RunRecord, not failed`);
+      } finally {
+        scheduler.stop();
+      }
+    } finally {
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  }
+});
+
+// ── T3f: cancelled is NOT swept into the surface-unavailable skip ──────────
+//
+// Counterweight for the generic BROWSER_SURFACE_LEASE_STATUSES-derived set:
+// "cancelled" is a real BrowserSurfaceLeaseStatus, but an owner-initiated
+// cancel already has its own distinct RunRecord.status ("cancelled", via
+// schedulerStatusFromRuntimeResult) and must not be reclassified as a
+// surface-unavailable skip.
+
+test("T3f: cancelled status is NOT swept into the surface-unavailable skip", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "sched-managed-"));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const completedRuns: RunRecord[] = [];
+
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
+          connectorPath,
+          intervalMs: 25,
+          manifest: BACKGROUND_SAFE_MANIFEST,
+          maxRetries: 0,
+          ownerSubjectId: "owner-managed",
+          ownerToken: "owner-token",
+        },
+      ],
+      onInteraction: async () => ({ accepted: true, status: "cancelled" }),
+      onRunComplete: (record) => completedRuns.push(record),
+      rsUrl: "http://localhost.invalid",
+      runManagedConnectorViaController: () => ({
+        run_id: `run_${Date.now()}`,
+        status: "cancelled",
+        trace_id: "trace-cancelled",
+      }),
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 1, 5000);
+      scheduler.stop();
+
+      const [record] = completedRuns;
+      assert.ok(record, "a completed run record was captured");
+      assert.equal(record.status, "cancelled", "cancelled must stay cancelled, not become a surface-unavailable skip");
+      assert.ok(
+        !(typeof record.error === "string" && record.error.includes("browser_surface_unavailable")),
+        `cancelled record must not carry a browser_surface_unavailable error, got: ${record.error}`
+      );
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+});
+
+// ── T3g: leased is NOT swept into the surface-unavailable skip ─────────────
+//
+// Counterweight for the generic BROWSER_SURFACE_LEASE_STATUSES-derived set:
+// "leased" is the one status where the connector actually goes on to run.
+// In production `runNow`/`awaitRun` always resolve a leased run to its real
+// "succeeded"/"failed" outcome before `routeScheduledManagedRun` sees it, so
+// this exercises the mock seam directly to pin that a bare "leased" result
+// is treated as a real (non-skip) outcome rather than silently swallowed.
+
+test("T3g: leased status is NOT swept into the surface-unavailable skip", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "sched-managed-"));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const completedRuns: RunRecord[] = [];
+
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
+          connectorPath,
+          intervalMs: 25,
+          manifest: BACKGROUND_SAFE_MANIFEST,
+          maxRetries: 0,
+          ownerSubjectId: "owner-managed",
+          ownerToken: "owner-token",
+        },
+      ],
+      onInteraction: async () => ({ accepted: true, status: "cancelled" }),
+      onRunComplete: (record) => completedRuns.push(record),
+      rsUrl: "http://localhost.invalid",
+      runManagedConnectorViaController: () => ({
+        run_id: `run_${Date.now()}`,
+        status: "leased",
+        trace_id: "trace-leased",
+      }),
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 1, 5000);
+      scheduler.stop();
+
+      const [record] = completedRuns;
+      assert.ok(record, "a completed run record was captured");
+      assert.ok(
+        !(typeof record.error === "string" && record.error.includes("browser_surface_unavailable")),
+        `leased record must not carry a browser_surface_unavailable error, got: ${record.error}`
+      );
     } finally {
       scheduler.stop();
     }

@@ -68,6 +68,17 @@ export async function handleLocalDeviceTerminalRunCommit(input: {
     const normalizedFacts =
       body && Array.isArray(body.terminal_facts) ? normalizeTerminalFacts(body.terminal_facts) : null;
     const canonicalConnectorId = ctx.canonicalConnectorKey(authorized.sourceInstance.connectorId);
+    // Canonicalize BOTH sides before comparing, exactly as `sameConnectorType`
+    // in routes/ref-device-exporters.ts already does for the record-batch leg.
+    // Canonicalizing only the server's side and then demanding the device match
+    // that exact spelling rejects a legacy alias the server itself recognises:
+    // `canonicalConnectorKey("claude_code")` is `"claude-code"`, so a device
+    // configured `PDPP_COLLECTOR_CONNECTOR=claude_code` failed this one guard
+    // while its 10,000 record batches passed the symmetric one. Falling back to
+    // the raw value keeps an unknown key failing closed.
+    const reportedConnectorKey = reportedConnectorId
+      ? (ctx.canonicalConnectorKey(reportedConnectorId) ?? reportedConnectorId)
+      : null;
     if (
       body?.version !== 1 ||
       !commitId ||
@@ -80,7 +91,7 @@ export async function handleLocalDeviceTerminalRunCommit(input: {
       !stateDelta ||
       !normalizedFacts ||
       !canonicalConnectorId ||
-      reportedConnectorId !== canonicalConnectorId
+      reportedConnectorKey !== canonicalConnectorId
     ) {
       ctx.pdppError(res, 400, "invalid_request", "terminal run commit body or binding is invalid");
       return;
@@ -89,7 +100,17 @@ export async function handleLocalDeviceTerminalRunCommit(input: {
     const canonicalEnvelope = {
       collection_boundary: collectionBoundary,
       commit_id: commitId,
-      connector_id: canonicalConnectorId,
+      // The hash MUST be recomputed over the connector id the device actually
+      // SENT, not the canonicalized one. The collector hashes the bytes it puts
+      // on the wire and compares that digest against the `envelope_hash` this
+      // route returns; substituting the canonical spelling here rehashes a
+      // different envelope, so the digests never match. The guard above is
+      // deliberately alias-tolerant, which means `claude_code` is accepted and
+      // then silently rewritten to `claude-code` — every legacy alias that is
+      // not identity (apple_photos, claude_code, google_messages,
+      // google_takeout) dead-lettered its terminal commit forever. Storage
+      // identity below stays canonical; only the hash input follows the wire.
+      connector_id: reportedConnectorId,
       connector_instance_id: reportedConnectorInstanceId,
       device_id: deviceId,
       run_id: runId,

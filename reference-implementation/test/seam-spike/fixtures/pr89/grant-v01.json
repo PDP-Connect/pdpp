@@ -3,7 +3,6 @@
   "client": {
     "client_id": "pr89-seam-client"
   },
-  "expires_at": null,
   "grant_id": "grt_pr89",
   "issued_at": "2026-08-11T11:55:00Z",
   "purpose_code": "https://pdpp.dev/purpose/personal_ai_assistant",

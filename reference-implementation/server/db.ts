@@ -661,6 +661,7 @@ CREATE TABLE IF NOT EXISTS connector_instance_credentials (
   revoked_at            TEXT,
   rejected_at           TEXT,
   rejection_reason      TEXT,
+  state_change_json     TEXT,
   FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
 );
 
@@ -739,7 +740,12 @@ CREATE TABLE IF NOT EXISTS connector_instance_config_revisions (
   -- quarantined: server-detected integrity problem (e.g. an untrusted
   --             direct DB write) -- never runnable, never silently
   --             attributed to an author.
-  status                   TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined')),
+  -- rejected:   the OWNER was asked and said no. Distinct from superseded
+  --             (a newer revision won, which says nothing about what he
+  --             wanted) and from quarantined (a server integrity finding,
+  --             not a decision). Terminal: never resurrected, never
+  --             activated; a later change is a NEW revision.
+  status                   TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'active', 'superseded', 'quarantined', 'rejected')),
   -- The collection-boundary fingerprint this revision's collection_scope
   -- keys resolve to, following the same declassification contract already
   -- proven for START.scope (see local-collection-scope.ts). NULL for a
@@ -1812,6 +1818,91 @@ CREATE TABLE IF NOT EXISTS connector_detail_gaps (
 CREATE INDEX IF NOT EXISTS idx_connector_detail_gaps_pending
   ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
 
+-- Provider coverage-horizon/provenance disclosure. A durable, append-only,
+-- reversible record of the boundary of what a source can EVER provide —
+-- orthogonal to connection health (see runtime/coverage-horizon.ts): a
+-- horizon never rewrites/deletes retained records and never by itself marks
+-- a connection unhealthy. Each confirmation is a new row; a later
+-- contradiction supersedes the prior row (superseded_at set) rather than
+-- overwriting it, so provenance is never silently lost. The "current" row
+-- for a connection is the one with superseded_at IS NULL, enforced by the
+-- partial unique index below rather than a second table.
+--
+-- Scoped by (connector_instance_id, stream) so a connector can disclose a
+-- horizon for one stream (e.g. GroupMe's "group-message" history boundary)
+-- without claiming it for every stream the connection carries; a
+-- connection-wide horizon uses stream = '*'.
+CREATE TABLE IF NOT EXISTS connector_coverage_horizons (
+  horizon_id             TEXT PRIMARY KEY,
+  connector_instance_id  TEXT NOT NULL,
+  stream                 TEXT NOT NULL DEFAULT '*',
+  earliest_available     TEXT,
+  confirmed_at           TEXT NOT NULL,
+  basis                  TEXT NOT NULL CHECK (basis IN ('provider_stated', 'provider_confirmed', 'inferred_from_stable_boundary')),
+  reason                 TEXT NOT NULL CHECK (reason IN ('provider_retention_policy', 'provider_deleted_history', 'provider_never_had_data', 'consent_window')),
+  confirmed_by           TEXT NOT NULL,
+  note                   TEXT,
+  superseded_at          TEXT,
+  superseded_by_horizon_id TEXT,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+);
+
+-- At most one CURRENT (non-superseded) horizon per (connection, stream). A
+-- new confirmation must supersede the old row in the same transaction before
+-- inserting the new one, never leave two current rows to disagree over.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_coverage_horizons_current
+  ON connector_coverage_horizons(connector_instance_id, stream)
+  WHERE superseded_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_connector_coverage_horizons_instance
+  ON connector_coverage_horizons(connector_instance_id);
+
+-- Cross-invocation half of STREAM_EVIDENCE rule 5 ("at most one accepted
+-- STREAM_EVIDENCE per stream per run_id"): a durable record of every
+-- (run_id, stream) pair this runtime has ever accepted a STREAM_EVIDENCE
+-- fact for. The primary key is EXACTLY (run_id, stream) because that is the
+-- exact scope spec-collection-profile.md rule 5 defines "same run" over —
+-- the wire protocol's guarantee is not connector/instance-scoped, so this
+-- table must not narrow it to one. connector_instance_id is carried as an
+-- informational, non-key column only (operational lookups/debugging),
+-- never part of the uniqueness check.
+--
+-- Exists because a retry path may reuse the SAME caller-chosen run_id
+-- across separate runConnector invocations
+-- (runtime/scheduler/run-executor.ts's buildAttemptCall), and each
+-- invocation is a separate process lifetime — an in-memory guard alone
+-- loses the fact on process restart, silently permitting the exact
+-- duplicate this table exists to reject. See
+-- server/stores/stream-evidence-run-registry-store.ts's doc comment for the
+-- full argument.
+--
+-- No TTL/reap: a run_id remaining in this table forever is exactly what
+-- correctness requires (root profile rule 5 grants no restart or age
+-- exception), and growth is bounded by legitimate accepted STREAM_EVIDENCE
+-- events, not request volume — the same bound the prior in-memory registry
+-- already accepted as safe.
+-- The claim row also carries the exact normalized terminal payload, its
+-- replay identity, digest, and deterministic terminal event ID. The replay
+-- identity excludes changing grant/source/connection provenance, so a retry
+-- may refresh metadata while recovering the first accepted fact. The fields
+-- are nullable only for legacy rows: such rows remain spent and fail closed
+-- because they cannot safely be used to reconstruct evidence after a crash.
+CREATE TABLE IF NOT EXISTS stream_evidence_run_registry (
+  run_id                TEXT NOT NULL,
+  stream                TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
+  payload_json          TEXT,
+  replay_identity_json  TEXT,
+  payload_digest        TEXT,
+  event_id              TEXT,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (run_id, stream)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stream_evidence_run_registry_instance
+  ON stream_evidence_run_registry(connector_instance_id);
+
 CREATE TABLE IF NOT EXISTS version_counter (
   connector_id  TEXT NOT NULL,
   connector_instance_id TEXT NOT NULL,
@@ -2198,17 +2289,45 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   -- whose best-effort dirty marker was lost, using the spine's own
   -- already-durable, atomically-assigned sequence as the repair receipt.
   run_lifecycle_event_seq INTEGER,
-  -- Complete owner LIST-item projection, published only by bounded
-  -- maintenance after all durable axes have converged. This is deliberately
-  -- one named projection payload, not a generic cache: its state is coupled
-  -- to this row's canonical evidence envelope and is invalidated with it.
-  list_summary_projection_json TEXT,
-  list_summary_projection_state TEXT NOT NULL DEFAULT 'unobserved',
-  list_summary_projection_reason_code TEXT,
-  list_summary_projection_computed_at TEXT
+  -- Why the owner LIST-item projection is a reason code and nothing else:
+  -- the payload columns (_json, _state, _computed_at) were removed
+  -- 2026-08-28. _state was only ever written 'stale', so the read that served
+  -- the payload (state = 'current') could never be true; the JSON was written
+  -- on every repair and never read back. This reason code is the part owners
+  -- actually see, so it stays.
+  list_summary_projection_reason_code TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
   ON connector_summary_evidence(connector_id);
+
+-- Completion receipt for data migrations that rewrite rows. Mirrors the
+-- Postgres table installed by server/postgres-migration-ledger.ts; see that
+-- module for the semantics of each column and why completion may never be
+-- inferred from the data.
+--
+-- SQLite has no writer for it today, and that is deliberate rather than an
+-- omission: this backend's local-device canonicalization
+-- (migrateLocalDeviceConnectorInstances below) is a synchronous
+-- single-file transaction whose cost profile is not the one the Postgres
+-- ledger exists to bound -- there is no pre-listen multi-GB index scan and
+-- no 503 window to protect. The table is created here so the two backends'
+-- schemas stay at parity (backup-table-policy.ts's parity invariant, proven
+-- by test/backup-table-inventory.test.ts) and so a SQLite deployment that
+-- later needs the same receipt does not require a schema migration to get
+-- one.
+CREATE TABLE IF NOT EXISTS storage_migration_ledger (
+  migration_id      TEXT PRIMARY KEY,
+  status            TEXT NOT NULL CHECK(status IN ('pending', 'running', 'complete', 'blocked')),
+  cursor            TEXT,
+  lease_owner       TEXT,
+  lease_expires_at  TEXT,
+  attempt_count     INTEGER NOT NULL DEFAULT 0,
+  changed_rows      INTEGER NOT NULL DEFAULT 0,
+  last_error        TEXT,
+  started_at        TEXT,
+  updated_at        TEXT NOT NULL,
+  completed_at      TEXT
+);
 
 -- Durable scheduling cursors for bounded, periodic maintenance sweeps
 -- (name-keyed, one row per stage). Not evidence, not owner-visible data.
@@ -2219,6 +2338,36 @@ CREATE TABLE IF NOT EXISTS connector_maintenance_cursor (
   generation                   INTEGER NOT NULL DEFAULT 0,
   lease_token                  TEXT,
   lease_expires_at             TEXT
+);
+
+-- Durable per-connection resume state for a canonical-count repair scan that
+-- could not finish inside one bounded admission (a "whale" connection with
+-- millions of live records). Keyed by connector_instance_id, NOT by name
+-- like connector_maintenance_cursor above -- that table models fleet-wide
+-- sweep cursors, a different resource; this one is scoped to exactly the
+-- connection whose own repair is too large for a single statement_timeout
+-- admission. Scheduling/accumulation state only, never evidence about the
+-- owner's data: a row here asserts nothing until the scan completes and
+-- buildRepairedRow's normal upsert publishes it. SQLite has no
+-- statement_timeout to bound against, so this table is exercised by tests
+-- (a chunked scan still shares the one accumulation function both backends
+-- use) but stays empty in production on this backend -- a repair always
+-- completes in the single call that starts it.
+CREATE TABLE IF NOT EXISTS connector_summary_evidence_repair_chunk (
+  connector_instance_id        TEXT PRIMARY KEY,
+  resume_after_id              INTEGER,
+  accumulator_json             TEXT NOT NULL,
+  -- The source_revision observed while this boundary was advanced. It is a
+  -- diagnostic/final-publication receipt, not resume eligibility: records
+  -- triggers invalidate the chunk only when a mutation touches its proven
+  -- id prefix, so an append above resume_after_id remains resumable.
+  source_revision               TEXT NOT NULL,
+  started_at                   TEXT NOT NULL,
+  updated_at                   TEXT NOT NULL,
+  -- The next page limit to try after a statement_timeout. This is scheduling
+  -- state for a resumable scan, not evidence; NULL on a legacy row means the
+  -- scan starts with the default limit and learns on its first cancellation.
+  page_size                    INTEGER
 );
 
 -- Explicit provenance for a rejected write against this exact manifest
@@ -2695,15 +2844,23 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "source_revision", "INTEGER");
   addColumnIfMissing(raw, "connector_summary_evidence", "schedule_checkpoint", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "run_lifecycle_event_seq", "INTEGER");
-  addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_json", "TEXT");
-  addColumnIfMissing(
-    raw,
-    "connector_summary_evidence",
-    "list_summary_projection_state",
-    "TEXT NOT NULL DEFAULT 'unobserved'"
-  );
   addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_reason_code", "TEXT");
-  addColumnIfMissing(raw, "connector_summary_evidence", "list_summary_projection_computed_at", "TEXT");
+  // Drop the unreachable list-summary projection cache (2026-08-28). The
+  // payload was gated on `list_summary_projection_state = 'current'`, a value
+  // no code path ever wrote — every write set 'stale' — so the cache could not
+  // hit by construction while still costing ~8 kB per row on each repair.
+  // Bounded, idempotent DDL only; it does not scan or rewrite rows. The
+  // sibling `_reason_code` column stays: it is populated on every row and is
+  // the projection state owners actually read.
+  for (const column of [
+    "list_summary_projection_json",
+    "list_summary_projection_state",
+    "list_summary_projection_computed_at",
+  ]) {
+    if (hasTableColumn(raw, "connector_summary_evidence", column)) {
+      raw.exec(`ALTER TABLE connector_summary_evidence DROP COLUMN ${column}`);
+    }
+  }
 }
 
 function ensureRetainedSizeRejectionColumns(raw: SqliteDatabase): void {
@@ -2819,6 +2976,24 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
            ELSE 9223372036854775807
          END
        WHERE connector_instance_id IN (${newIdentitySql}, ${oldIdentitySql});`;
+  // A chunk receipt proves only the id prefix it folded. Records appended
+  // above its durable boundary leave that proof intact even though the broad
+  // source_revision advances. A record mutation at or below the boundary
+  // destroys the proof, so the records triggers delete exactly that receipt
+  // in the same transaction as the canonical write and receipt advance.
+  const deleteChunkForPrefix = (identitySql: string, recordIdSql: string): string => `
+      DELETE FROM connector_summary_evidence_repair_chunk
+       WHERE connector_instance_id = ${identitySql}
+         AND ${recordIdSql} <= resume_after_id;`;
+  const deleteChunkForEitherPrefix = (
+    newIdentitySql: string,
+    oldIdentitySql: string,
+    newRecordIdSql: string,
+    oldRecordIdSql: string
+  ): string => `
+      DELETE FROM connector_summary_evidence_repair_chunk
+       WHERE (connector_instance_id = ${newIdentitySql} AND ${newRecordIdSql} <= resume_after_id)
+          OR (connector_instance_id = ${oldIdentitySql} AND ${oldRecordIdSql} <= resume_after_id);`;
 
   for (const table of sourceTables) {
     const insertName = `pdpp_source_revision_${table}_insert`;
@@ -2835,6 +3010,16 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
         AFTER UPDATE ON ${table}
         BEGIN
           ${advanceEither(sourceIdentity("NEW", table), sourceIdentity("OLD", table))}
+          ${
+            table === "records"
+              ? deleteChunkForEitherPrefix(
+                  sourceIdentity("NEW", table),
+                  sourceIdentity("OLD", table),
+                  "NEW.id",
+                  "OLD.id"
+                )
+              : ""
+          }
         END;`;
     raw.exec(`
       DROP TRIGGER IF EXISTS ${insertName};
@@ -2844,12 +3029,14 @@ function ensureConnectorSummarySourceRevisionPrimitive(raw: SqliteDatabase): voi
         AFTER INSERT ON ${table}
         BEGIN
           ${advance(sourceIdentity("NEW", table))}
+          ${table === "records" ? deleteChunkForPrefix(sourceIdentity("NEW", table), "NEW.id") : ""}
         END;
       ${updateTrigger}
       CREATE TRIGGER ${deleteName}
         AFTER DELETE ON ${table}
         BEGIN
           ${advance(sourceIdentity("OLD", table))}
+          ${table === "records" ? deleteChunkForPrefix(sourceIdentity("OLD", table), "OLD.id") : ""}
         END;
     `);
   }
@@ -5876,6 +6063,15 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   runWithSqliteBusyRetrySync(() => raw.exec(SCHEMA), {
     onRetry: opts.onSchemaRetry,
   });
+  // Older registries contain only the uniqueness key. Keep those claims
+  // spent, but leave them without a replay payload so the store fails closed
+  // instead of fabricating terminal evidence from an incomplete row.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "stream_evidence_run_registry", "payload_json", "TEXT"));
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "stream_evidence_run_registry", "replay_identity_json", "TEXT")
+  );
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "stream_evidence_run_registry", "payload_digest", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "stream_evidence_run_registry", "event_id", "TEXT"));
   // Idempotent column additions for tables that pre-existed before the
   // column was introduced. SQLite has no `ADD COLUMN IF NOT EXISTS`, so
   // we probe pragma table_info and only ALTER when the column is missing.
@@ -5906,6 +6102,42 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   });
   runWithSqliteBusyRetrySync(() => {
     raw.exec("CREATE INDEX IF NOT EXISTS idx_tokens_refresh_family ON tokens(refresh_family_id, revoked)");
+  });
+  // Absent-only grant expiry: grants issued before that normalization
+  // persisted an explicit `"expires_at": null` in grant_json. `null` and
+  // absent both mean "no expiry", so dropping the member is a representation
+  // change, not an authorization change. Scoped to the JSON-null case so a
+  // string expiry is never touched, and idempotent so repeated boots are
+  // no-ops.
+  //
+  // `json_valid(grant_json)` is load-bearing, not defensive decoration. This
+  // column is TEXT with no database-level JSON constraint, so it can hold a
+  // malformed blob, and SQLite's `json_type()` raises `malformed JSON` rather
+  // than returning NULL when it reads one. Without the guard a single corrupt
+  // historical row — possibly for a long-revoked grant — would abort this
+  // migration and take the whole server down at boot. Availability wins here:
+  // a malformed grant is skipped and reported, never repaired or deleted, and
+  // it stays unusable because the parser that reads it still fails closed.
+  // The PostgreSQL column is JSONB, which cannot hold malformed JSON, so the
+  // equivalent migration there carries no such risk and needs no guard.
+  const malformedGrantIds = runWithSqliteBusyRetrySync(
+    () =>
+      raw.prepare("SELECT grant_id FROM grants WHERE json_valid(grant_json) = 0 ORDER BY grant_id").all() as {
+        grant_id: string;
+      }[]
+  ).map((row) => row.grant_id);
+  if (malformedGrantIds.length > 0) {
+    console.warn(
+      `[db] absent-only grant expiry migration skipped ${malformedGrantIds.length} grant row(s) whose grant_json is not valid JSON; these grants remain unusable and were left untouched: ${malformedGrantIds.join(", ")}`
+    );
+  }
+  runWithSqliteBusyRetrySync(() => {
+    raw.exec(`
+      UPDATE grants
+         SET grant_json = json_remove(grant_json, '$.expires_at')
+       WHERE json_valid(grant_json)
+         AND json_type(grant_json, '$.expires_at') = 'null';
+    `);
   });
   runWithSqliteBusyRetrySync(() => {
     raw.transaction(() =>
@@ -5996,6 +6228,12 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorSummaryEvidenceColumns(raw));
+  // Adaptive whale-repair pages: pre-existing databases have the durable
+  // chunk table but not the next page limit. Add it without rewriting the
+  // retained records or changing any evidence authority.
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "connector_summary_evidence_repair_chunk", "page_size", "INTEGER")
+  );
   runWithSqliteBusyRetrySync(() => ensureRetainedSizeRejectionColumns(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorMaintenanceCursorColumns(raw));
   runWithSqliteBusyRetrySync(() => migrateManifestWriteViolations(raw));
@@ -6097,6 +6335,11 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialStatusRejected(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheckAccessTokenApiKey(raw, opts));
+  // NULL preserves the honest "unknown" state for credentials written before
+  // latest-transition provenance existed; no historical actor is invented.
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "connector_instance_credentials", "state_change_json", "TEXT")
+  );
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
   // Additive and NULL-tolerant: rows written before this column existed read

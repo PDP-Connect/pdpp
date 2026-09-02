@@ -416,10 +416,38 @@ test("status and origin read as owner language, never as raw enum values", () =>
   assert.equal(originLabel("migration", "script"), "Carried over during upgrade");
 });
 
+// Hoisted per lint/performance/useTopLevelRegex.
+const LANE_HANDLE_LEAK_RE = /pdpp-slack-archived-run|NOT owner-authored/;
+
 test("an agent proposal names the app and never reads as owner confirmation", () => {
   assert.equal(originLabel("agent", "client:daisy"), "Proposed by daisy");
-  assert.equal(originLabel("agent", "agent"), "Proposed by an app");
+  assert.equal(originLabel("agent", "agent"), "Proposed by an automated process");
   assert.doesNotMatch(originLabel("agent", "client:daisy"), YOU_WORD_RE);
+});
+
+test("an internal orchestration handle NEVER renders as a pseudo-identity", () => {
+  // Live on 2026-08-26 the owner's UI read:
+  //   "Proposed by agent:pdpp-slack-archived-run-0822 (NOT owner-authored)"
+  // — a workflow lane name plus an internal parenthetical written for US,
+  // presented as the party who proposed a change to his data collection. The
+  // server cannot authenticate a lane name, so naming one invents an
+  // accountable identity that does not exist.
+  const laneHandle = "agent:pdpp-slack-archived-run-0822 (NOT owner-authored)";
+  assert.equal(originLabel("agent", laneHandle), "Proposed by an automated process");
+  assert.doesNotMatch(originLabel("agent", laneHandle), LANE_HANDLE_LEAK_RE);
+
+  // Fails CLOSED: any unmodelled shape, including one nobody remembered to
+  // map, degrades to the honest generic rather than leaking the raw handle.
+  for (const unknown of ["waspflow/lane-7", "agent:whatever", "  ", "svc-account-12"]) {
+    assert.equal(
+      originLabel("agent", unknown),
+      "Proposed by an automated process",
+      `unmodelled actor ${JSON.stringify(unknown)} must not be rendered verbatim`
+    );
+  }
+
+  // A REGISTERED app still earns its name — this is not a blanket anonymiser.
+  assert.equal(originLabel("agent", "client:daisy"), "Proposed by daisy");
 });
 
 test("history answers what changed, why, and by whom before any machine field", () => {

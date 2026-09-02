@@ -304,8 +304,24 @@ export interface RenderedProgress {
  * attention layer drops. Owner-only — never grant-scoped.
  */
 export interface VerdictDetail {
+  /**
+   * Durable owner acknowledgement, carried verbatim from the projection.
+   * This is structured evidence for owner controls; it is never inferred from
+   * the rendered forward statement and is removed by the grant-scoped mapper.
+   */
+  readonly acknowledged_loss: AcknowledgedLossRecord | null;
   readonly collection_rate: ConnectionHealthSnapshot["collection_rate"];
   readonly conditions: ConnectionHealthSnapshot["conditions"];
+  /**
+   * Provider coverage-horizon/provenance disclosures, carried verbatim from
+   * {@link ConnectionHealthSnapshot.coverage_horizons}. PURE PASS-THROUGH:
+   * no tone/channel/label computation above reads this field — it exists
+   * solely so the owner-facing inspection layer can render
+   * `coverageHorizonDisclosure` (`runtime/coverage-horizon.ts`) text. Never
+   * present on `pill`/`channel`/`annotations`. Empty when the caller did not
+   * supply horizon evidence.
+   */
+  readonly coverage_horizons: ConnectionHealthSnapshot["coverage_horizons"];
   readonly detail_gap_backlog: ConnectionHealthSnapshot["detail_gap_backlog"];
   readonly dominant_condition_id: string | null;
   readonly forward_disposition: ForwardDisposition;
@@ -661,6 +677,14 @@ function hasNonOutboxFalseCondition(snapshot: ConnectionHealthSnapshot): boolean
  * every other cause, and blanket-listing it would relabel genuine coverage
  * gaps. Requiring `Fresh` to be the sole current false condition keeps every
  * other degrading cause on "Missing data".
+ *
+ * Exported for `fleet-health.ts`'s `materiallyBlocked` gate (workstream A,
+ * cadence-relative lateness): the SAME evidence-based test that keeps this
+ * module's pill from misreading ordinary lateness as "Missing data" must
+ * also keep the fleet banner from misreading it as a material block — see
+ * `banner_warranted`'s doc comment on `FleetHealthVerdict`, which already
+ * commits to "does NOT fire for ordinary cadence-relative lateness." A
+ * single shared predicate is the only way both surfaces cannot drift apart.
  */
 /**
  * Whether the connection's most recent run failed. This is the `degraded` cause
@@ -674,7 +698,51 @@ function hasFailedCollectionCondition(snapshot: ConnectionHealthSnapshot): boole
   );
 }
 
-function staleFreshnessIsSoleDegradation(snapshot: ConnectionHealthSnapshot): boolean {
+/**
+ * Whether cadence lateness is the ONLY thing wrong with this connection.
+ *
+ * ONE predicate, shared by `owner-state.ts` (resolver) and `fleet-health.ts`
+ * (material/diagnostic classification), so those two surfaces cannot drift
+ * apart on the same question. `staleFreshnessIsSoleDegradation` above is
+ * retained for LABEL selection, where its broader "any staleness-only
+ * degradation" reading is intentional; this one is narrower and is the only
+ * input permitted to suppress a system-fault classification.
+ *
+ * Keyed on the explicit `snapshot.lateness` FACT, never on the rendered tone. A
+ * merely-late source legitimately earns an amber pill, which made it
+ * indistinguishable from real degradation: ordinary lateness resolved
+ * `system_degraded`, grouped as `system_issue`, and fired the global banner for
+ * a source whose next run simply had not happened yet.
+ *
+ * Fails closed on every axis:
+ *  - requires a POSITIVE lateness fact (`late` or `overdue`). `unknown` — no
+ *    declared cadence, or never a successful run — softens nothing, so a source
+ *    that cannot be judged keeps whatever verdict it had.
+ *  - requires the freshness axis to be `stale`. Lateness explains staleness and
+ *    nothing else.
+ *  - requires EVERY current false condition to be `Fresh`. One unrelated
+ *    failing condition — credentials, runtime, coverage, outbox — and this
+ *    returns false, so a genuinely broken source is never softened by also
+ *    happening to be late.
+ *
+ * `overdue` is included: mature lateness is a real degradation on the ROW (it
+ * keeps `warning` severity and its `degraded` headline) but it is still not a
+ * SYSTEM FAULT, and may not banner without an independently proven
+ * owner-actionable or blocked cause.
+ */
+export function cadenceLatenessIsSoleDegradation(snapshot: ConnectionHealthSnapshot): boolean {
+  const lateness = snapshot.lateness?.state;
+  if (lateness !== "late" && lateness !== "overdue") {
+    return false;
+  }
+  if (snapshot.axes.freshness !== "stale") {
+    return false;
+  }
+  const falseConditions = snapshot.conditions.filter((condition) => condition.current && condition.status === "false");
+  return falseConditions.length > 0 && falseConditions.every((condition) => condition.type === "Fresh");
+}
+
+export function staleFreshnessIsSoleDegradation(snapshot: ConnectionHealthSnapshot): boolean {
   if (snapshot.state !== "degraded" || snapshot.axes.freshness !== "stale") {
     return false;
   }
@@ -716,8 +784,7 @@ function amberLabel(
   const stateIsNotActuallyBroken =
     NON_DEGRADING_AMBER_STATES.has(snapshot.state) || staleFreshnessIsSoleDegradation(snapshot);
   const stateIsBroken =
-    !stateIsNotActuallyBroken &&
-    TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
+    !stateIsNotActuallyBroken && TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
   const dispositionIsBroken =
     disposition !== "owner_refresh_due" && TONE_RANK[dispositionTone(disposition)] >= TONE_RANK.amber;
   const hasDegradingAxis = toneInputs.some(
@@ -743,7 +810,14 @@ function labelForPill(
   // not_applicable, not because it proved current. "Healthy" implies an
   // ongoing collection loop this source will never run again; "Import
   // complete" names the actual, final state honestly.
-  if (tone === "green" && freshnessNotApplicable(snapshot)) {
+  //
+  // `importCompletionProven` (receipt-gated: `CollectionSucceeded === true`)
+  // is required alongside `freshnessNotApplicable`, not `freshnessNotApplicable`
+  // alone: an `idle` connection with no prior success ALSO tones green (see
+  // `baseStateTone`), so a never-run manual connector — `Fresh: not_applicable`
+  // from source-kind alone, but no receipt ever proving an import finished —
+  // must not be labeled "Import complete".
+  if (tone === "green" && importCompletionProven(snapshot) && freshnessNotApplicable(snapshot)) {
     return "Import complete";
   }
   if (tone === "amber") {
@@ -823,6 +897,32 @@ export function freshnessNotApplicable(snapshot: ConnectionHealthSnapshot): bool
   );
 }
 
+/**
+ * Whether a one-time import has POSITIVE RECEIPT PROOF that it actually
+ * finished ingesting something — i.e. `CollectionSucceeded` settled `true`
+ * via `CONDITION_REASON.COLLECTION_SUCCEEDED_IMPORT_COMPLETE`, which
+ * `collectionSucceededCondition` (`connection-health.ts`) only grants from
+ * `ConnectionAcquisitionEvidence.complete`, which the caller (`ref-control.ts`)
+ * only sets from a real terminal run record — never from `source_kind` alone.
+ *
+ * `freshnessNotApplicable` above answers a NARROWER question ("does the
+ * freshness axis apply to this connection kind at all") and is correctly
+ * `true` even for a manual connection that has never run — that is honest
+ * copy about why there is no freshness timestamp. This function answers the
+ * STRONGER question callers actually mean when they render a completion
+ * claim ("Import complete", `ownerState.resolver === "healthy"`): use this
+ * one, not `freshnessNotApplicable` alone, anywhere the answer feeds an
+ * owner-facing claim that data collection succeeded.
+ */
+export function importCompletionProven(snapshot: ConnectionHealthSnapshot): boolean {
+  return snapshot.conditions.some(
+    (condition) =>
+      condition.type === "CollectionSucceeded" &&
+      condition.status === "true" &&
+      condition.reason === CONNECTION_CONDITION_REASONS.COLLECTION_SUCCEEDED_IMPORT_COMPLETE
+  );
+}
+
 function freshnessHealthTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
   if (freshnessNotApplicable(snapshot)) {
     return "green";
@@ -889,9 +989,10 @@ function dispositionTone(disposition: ForwardDisposition): VerdictTone {
 function terminalAwareTone(
   tone: VerdictTone,
   snapshot: ConnectionHealthSnapshot,
-  disposition: ForwardDisposition
+  disposition: ForwardDisposition,
+  progress: ProgressEvidence | null
 ): VerdictTone {
-  if (tone === "red" && softensTerminalCoverageToDegraded(snapshot, disposition)) {
+  if (tone === "red" && softensTerminalCoverageToDegraded(snapshot, disposition, progress)) {
     return "amber";
   }
   return tone;
@@ -1133,11 +1234,35 @@ function latestCollectionSucceeded(snapshot: ConnectionHealthSnapshot): boolean 
   );
 }
 
+/**
+ * The last successful run is the capability evidence for this source. A newer
+ * failed run or an unrelated projection-read problem may change the health
+ * state, but it cannot turn a source that collected today into one that cannot
+ * collect at all.
+ */
+function collectionSucceededToday(snapshot: ConnectionHealthSnapshot, progress: ProgressEvidence | null): boolean {
+  return (
+    latestCollectionSucceeded(snapshot) ||
+    relativeDayAge(snapshot.last_success_at, progress?.observed_at ?? null) === "today"
+  );
+}
+
 function softensTerminalCoverageToDegraded(
   snapshot: ConnectionHealthSnapshot,
-  disposition: ForwardDisposition
+  disposition: ForwardDisposition,
+  progress: ProgressEvidence | null
 ): boolean {
-  return disposition === "terminal" && snapshot.state === "degraded" && latestCollectionSucceeded(snapshot);
+  // Same-day success only softens a terminal disposition when the
+  // CONNECTION's own coverage axis independently shows the gap. A required
+  // stream's rollup can drive `disposition` to `terminal` on its own even
+  // when the connection-level axis reads `complete` — that is a real,
+  // irreversible loss on a load-bearing stream, and same-day success
+  // elsewhere on the connection does not undo it.
+  return (
+    disposition === "terminal" &&
+    snapshot.axes.coverage === "terminal_gap" &&
+    collectionSucceededToday(snapshot, progress)
+  );
 }
 
 /**
@@ -1180,8 +1305,14 @@ const TERMINAL_COVERAGE_CTA = "Missing data needs review";
  * case is a coverage GAP in an otherwise-succeeding run, this one is data that
  * cannot be collected at all, and the sentence beside it says so in full.
  */
-function terminalCoverageCta(snapshot: ConnectionHealthSnapshot, disposition: ForwardDisposition): string {
-  return softensTerminalCoverageToDegraded(snapshot, disposition) ? SOFTENED_COVERAGE_CTA : TERMINAL_COVERAGE_CTA;
+function terminalCoverageCta(
+  snapshot: ConnectionHealthSnapshot,
+  disposition: ForwardDisposition,
+  progress: ProgressEvidence | null
+): string {
+  return softensTerminalCoverageToDegraded(snapshot, disposition, progress)
+    ? SOFTENED_COVERAGE_CTA
+    : TERMINAL_COVERAGE_CTA;
 }
 
 /** Open structured owner attention (the `needs_attention` driver). */
@@ -1683,7 +1814,7 @@ function buildRequiredActions(
     actions.push({
       affects: terminalStreamIds(streams),
       audience: "maintainer",
-      cta: terminalCoverageCta(snapshot, disposition),
+      cta: terminalCoverageCta(snapshot, disposition, progress),
       kind: "code_fix",
       satisfied_when: { kind: "none" },
       surface: { kind: "maintainer" },
@@ -2014,7 +2145,7 @@ function freshnessAnnotationText(
     return "This is a one-time import. It finished and will not refresh.";
   }
   if (snapshot.axes.freshness === "unknown") {
-    return "Freshness has not been measured yet.";
+    return unknownFreshnessText(progress);
   }
   const stuckSince = retryGapStuckSinceText(snapshot, actions);
   if (stuckSince) {
@@ -2025,7 +2156,27 @@ function freshnessAnnotationText(
   if (snapshot.badges.syncing) {
     return "Refreshing now.";
   }
-  return staleRefreshPolicyText(refresh, scheduleEvidence, progress);
+  return staleRefreshPolicyText(snapshot, refresh, scheduleEvidence, progress);
+}
+
+/**
+ * Copy for `axes.freshness === "unknown"`. The generic "not been measured
+ * yet" reading is honest for a connection that has genuinely never
+ * collected anything, but a local-device connection can lose its freshness
+ * anchor mid-stream — e.g. a stalled outbox blanks the heartbeat evidence
+ * (honesty invariant: a stall must never read as `fresh`) even though the
+ * device ingested real data before the stall began. When durable
+ * last-ingest evidence is available for that case, name the last known
+ * collection instead of implying zero collection history ever existed.
+ */
+function unknownFreshnessText(progress: ProgressEvidence | null): string {
+  if (progress?.mode === "local_device") {
+    const age = relativeDayAge(progress.last_refreshed_at ?? null, progress.observed_at ?? null);
+    if (age) {
+      return `Last known collection ${age}.`;
+    }
+  }
+  return "Freshness has not been measured yet.";
 }
 
 /** Named per retry_gap action, e.g. "Messages stuck since Jul 3." */
@@ -2044,10 +2195,18 @@ function retryGapStuckSinceText(snapshot: ConnectionHealthSnapshot, actions: rea
  * keyed to the connection's refresh policy (manual / scheduled / assisted).
  */
 function staleRefreshPolicyText(
+  snapshot: ConnectionHealthSnapshot,
   refresh: ConnectionRefreshEvidence | null,
   scheduleEvidence: ScheduleEvidence | null,
   progress: ProgressEvidence | null
 ): string {
+  // An enabled schedule is not an executable schedule while unresolved owner
+  // attention suppresses automatic dispatch. Bind this copy to that cause,
+  // rather than to the row's enabled bit: telling the owner to wait for the
+  // schedule here would name a remedy the controller will not perform.
+  if (snapshot.axes.attention !== "none") {
+    return "Waiting on you before the next run can make progress.";
+  }
   const refreshedAge = relativeDayAge(progress?.last_refreshed_at ?? null, progress?.observed_at ?? null);
   if (
     progress?.mode === "manual" ||
@@ -2164,13 +2323,14 @@ function humanizeStreamId(streamId: string): string {
 function terminalForwardStatement(
   primary: RequiredAction | null,
   snapshot: ConnectionHealthSnapshot,
-  disposition: ForwardDisposition
+  disposition: ForwardDisposition,
+  progress: ProgressEvidence | null
 ): string {
   if (primary?.kind === "reauth") {
     return "Reconnect this account before further collection.";
   }
   if (primary?.kind === "code_fix") {
-    if (softensTerminalCoverageToDegraded(snapshot, disposition)) {
+    if (softensTerminalCoverageToDegraded(snapshot, disposition, progress)) {
       return "Latest collection completed with known coverage gaps.";
     }
     return "Some data from this source can't be collected.";
@@ -2185,11 +2345,31 @@ function terminalForwardStatement(
  * `freshnessNotApplicable`) has no future run to make that promise — the
  * same honest distinction `buildForwardStatement`'s `default` branch already
  * draws for the connection-level statement.
+ *
+ * A local-device connection whose collector build predates the
+ * `coverage_diagnostics` evidence the server now requires (`SourceCoverageComplete`
+ * condition, reason `coverage_unknown_stale_collector` —
+ * `sourceCoverageCondition`, `connection-health.ts`) is a DIFFERENT claim from
+ * "not measured yet": the generic copy implies the next scheduled run will
+ * resolve it, but a stale collector binary will re-run and land in the exact
+ * same unmeasured state forever. `design-notes/source-state-truth-2026-08-18.md`
+ * named this exact gap — the specific, owner-actionable message the condition
+ * already carries ("Update the local collector") was computed and then
+ * discarded behind this generic sentence.
  */
 function unmeasuredCoverageForwardStatement(snapshot: ConnectionHealthSnapshot): string {
-  return freshnessNotApplicable(snapshot)
-    ? "Coverage can't be measured — this one-time import ended before it finished a full pass, and it will not run again."
-    : "Coverage has not been measured yet.";
+  if (freshnessNotApplicable(snapshot)) {
+    return "Coverage can't be measured — this one-time import ended before it finished a full pass, and it will not run again.";
+  }
+  const staleCollector = snapshot.conditions.find(
+    (item) =>
+      item.type === "SourceCoverageComplete" &&
+      item.reason === CONNECTION_CONDITION_REASONS.COVERAGE_UNKNOWN_STALE_COLLECTOR
+  );
+  if (staleCollector) {
+    return "This local collector build predates coverage evidence the server now requires. Update the collector.";
+  }
+  return "Coverage has not been measured yet.";
 }
 
 /**
@@ -2207,13 +2387,14 @@ function buildForwardStatement(
   disposition: ForwardDisposition,
   actions: readonly RequiredAction[],
   snapshot: ConnectionHealthSnapshot,
+  progress: ProgressEvidence | null,
   streams: readonly StreamRollup[] = []
 ): string {
   const primary = actions[0] ?? null;
 
   if (disposition === "terminal") {
     // A terminal disposition must never imply recovery.
-    return terminalForwardStatement(primary, snapshot, disposition);
+    return terminalForwardStatement(primary, snapshot, disposition, progress);
   }
 
   if (primary && primary.audience === "owner") {
@@ -2268,10 +2449,7 @@ function buildForwardStatement(
  * descending order of how much it should dominate the sentence. Only when all
  * of them are clear is the unconditional all-clear honest.
  */
-function noActionOwedForwardStatement(
-  snapshot: ConnectionHealthSnapshot,
-  streams: readonly StreamRollup[]
-): string {
+function noActionOwedForwardStatement(snapshot: ConnectionHealthSnapshot, streams: readonly StreamRollup[]): string {
   if (snapshot.axes.outbox === "active") {
     return "The local collector is uploading saved records.";
   }
@@ -2564,11 +2742,14 @@ function buildSuppressed(
 function buildDetail(
   snapshot: ConnectionHealthSnapshot,
   disposition: ForwardDisposition,
-  suppressed: readonly SuppressedSignal[]
+  suppressed: readonly SuppressedSignal[],
+  acknowledgedLoss: AcknowledgedLossRecord | null = null
 ): VerdictDetail {
   return {
+    acknowledged_loss: acknowledgedLoss,
     collection_rate: snapshot.collection_rate,
     conditions: snapshot.conditions,
+    coverage_horizons: snapshot.coverage_horizons,
     detail_gap_backlog: snapshot.detail_gap_backlog,
     dominant_condition_id: snapshot.dominant_condition_id,
     // The synthesizer's oracle-derived connection disposition (worst-wins over the
@@ -2872,11 +3053,14 @@ function assertInvariants(
 }
 
 /** A minimal, honest grey verdict used as the prod fallback on an invariant failure. */
-function safeGreyVerdict(snapshot: ConnectionHealthSnapshot): RenderedVerdict {
+function safeGreyVerdict(
+  snapshot: ConnectionHealthSnapshot,
+  acknowledgedLoss: AcknowledgedLossRecord | null = null
+): RenderedVerdict {
   return {
     annotations: [],
     channel: "calm",
-    detail: buildDetail(snapshot, "complete", []),
+    detail: buildDetail(snapshot, "complete", [], acknowledgedLoss),
     forward_statement: "Status could not be classified.",
     pill: { label: "Not measured", tone: "grey" },
     progress: buildProgress(null, "checking", [], snapshot.badges.syncing),
@@ -2927,8 +3111,8 @@ export function synthesizeRenderedVerdict(
 ): RenderedVerdict {
   // ── tone: worst-wins over base(state) + every axis ──
   const disposition = connectionDisposition(snapshot, streams, refresh, scheduleEvidence);
-  const coverageHealthTone = terminalAwareTone(worstStreamCoverageTone(streams), snapshot, disposition);
-  const dispositionHealthTone = terminalAwareTone(dispositionTone(disposition), snapshot, disposition);
+  const coverageHealthTone = terminalAwareTone(worstStreamCoverageTone(streams), snapshot, disposition, progress);
+  const dispositionHealthTone = terminalAwareTone(dispositionTone(disposition), snapshot, disposition, progress);
   const toneInputs: { axis: string; tone: VerdictTone }[] = [
     { axis: "state", tone: baseStateTone(snapshot.state, snapshot.last_success_at) },
     { axis: "freshness", tone: freshnessHealthTone(snapshot) },
@@ -2992,7 +3176,7 @@ export function synthesizeRenderedVerdict(
   // renderer does not fall back to a generic guess.
   const forwardStatement = acknowledgedLoss
     ? acknowledgedLossStatement(acknowledgedLoss)
-    : buildForwardStatement(disposition, actions, snapshot, streams);
+    : buildForwardStatement(disposition, actions, snapshot, progress, streams);
   const streamRows = buildStreamRows(streams, snapshot, refresh, scheduleEvidence, actions);
   const synthesizedProgress = buildProgress(progress, disposition, actions, snapshot.badges.syncing);
   const renderedProgress = acknowledgedLoss
@@ -3004,7 +3188,7 @@ export function synthesizeRenderedVerdict(
 
   // ── inspection layer: suppressed signals routed to detail, never deleted ──
   const suppressed = buildSuppressed(snapshot, channel, runtime_ok);
-  const detail = buildDetail(snapshot, disposition, suppressed);
+  const detail = buildDetail(snapshot, disposition, suppressed, acknowledgedLoss);
 
   const primary = actions[0] ?? null;
   const trace: CalibrationTrace = {
@@ -3037,7 +3221,7 @@ export function synthesizeRenderedVerdict(
     if (shouldThrowOnViolation()) {
       throw new VerdictInvariantError(violations.join("; "));
     }
-    return safeGreyVerdict(snapshot);
+    return safeGreyVerdict(snapshot, acknowledgedLoss);
   }
   return verdict;
 }

@@ -69,8 +69,10 @@ function verdictWithActions(actions: readonly RequiredAction[]): RenderedVerdict
     annotations: [],
     channel: "calm",
     detail: {
+      acknowledged_loss: null,
       collection_rate: null,
       conditions: [],
+      coverage_horizons: [],
       detail_gap_backlog: null,
       dominant_condition_id: null,
       forward_disposition: "complete",

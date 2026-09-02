@@ -224,6 +224,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
         args: [fixture],
         command: process.execPath,
         connector_id: CONNECTOR_ID,
+        protocol_capabilities: [],
         runtime_requirements: { bindings: {} },
         streams: ["messages", "coverage_diagnostics"],
       },

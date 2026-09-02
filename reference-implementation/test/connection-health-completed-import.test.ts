@@ -25,7 +25,7 @@ const NOW = "2026-08-18T12:00:00.000Z";
 /** A finished manual import: complete coverage, no schedule, no run history. */
 function completedImport(overrides: Partial<ComputeConnectionHealthInput> = {}): ComputeConnectionHealthInput {
   return {
-    acquisition: { complete: true },
+    acquisition: { complete: true, freshnessNotApplicable: true },
     activity: null,
     attention: null,
     backoff: null,
@@ -77,4 +77,36 @@ test("a recurring source that is genuinely stale is never rescued by this path",
     completedImport({ acquisition: null, freshness: { axis: "stale" }, schedule: { enabled: true } })
   );
   assert.notEqual(snap.state, "healthy");
+});
+
+// `complete` and `freshnessNotApplicable` are deliberately separate facts on
+// `ConnectionAcquisitionEvidence` (see its doc comment): a manual source_kind
+// alone proves freshness does not apply, but proves NOTHING about whether an
+// import actually finished. `CollectionSucceeded` SHALL require the
+// receipt-gated `complete` fact, never a bare `freshnessNotApplicable: true`.
+
+test("a never-run manual connector does not get CollectionSucceeded=true from source-kind alone", () => {
+  const snap = computeConnectionHealth(
+    completedImport({ acquisition: { complete: false, freshnessNotApplicable: true } })
+  );
+  const collectionSucceeded = snap.conditions.find((item) => item.type === "CollectionSucceeded");
+  assert.notEqual(collectionSucceeded?.status, "true");
+  assert.notEqual(snap.state, "healthy");
+});
+
+test("a never-run manual connector still reports Fresh as not_applicable (freshness and completion are independent)", () => {
+  const snap = computeConnectionHealth(
+    completedImport({ acquisition: { complete: false, freshnessNotApplicable: true } })
+  );
+  const fresh = snap.conditions.find((item) => item.type === "Fresh");
+  assert.equal(fresh?.status, "not_applicable");
+});
+
+test("a manual connector with a real successful-import receipt gets CollectionSucceeded=true", () => {
+  const snap = computeConnectionHealth(
+    completedImport({ acquisition: { complete: true, freshnessNotApplicable: true } })
+  );
+  const collectionSucceeded = snap.conditions.find((item) => item.type === "CollectionSucceeded");
+  assert.equal(collectionSucceeded?.status, "true");
+  assert.equal(collectionSucceeded?.reason, "collection_succeeded_import_complete");
 });

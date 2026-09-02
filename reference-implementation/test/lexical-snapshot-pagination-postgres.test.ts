@@ -46,6 +46,23 @@ interface DeviceTokenBody {
   access_token: string;
 }
 
+function withCoreSourceDeclaration<
+  T extends { connector_id: string; display_name: string; protocol_version: string; streams: unknown[] },
+>(manifest: T) {
+  return {
+    ...manifest,
+    manifest_uri: `https://implementations.example/connectors/${manifest.connector_id}`,
+    source_declaration: {
+      declaration_version: `${manifest.connector_id}-declaration-v1`,
+      display: { name: manifest.display_name },
+      protocol_version: manifest.protocol_version,
+      publisher: { id: "https://pdpp.dev/reference-implementation/tests" },
+      source: { id: `https://registry.pdpp.dev/connectors/${manifest.connector_id}`, kind: "connector" },
+      streams: manifest.streams,
+    },
+  };
+}
+
 interface LexicalRecord {
   emitted_at?: string;
   id: string;
@@ -67,9 +84,10 @@ interface SearchListResponse {
   object?: string;
 }
 
-async function waitForIndexedPage(
+async function waitForFullyIndexedSearch(
   url: string,
   ownerToken: string,
+  expectedResultCount: number,
   timeoutMs = 10_000
 ): Promise<{ body: SearchListResponse; status: number }> {
   const deadline = Date.now() + timeoutMs;
@@ -77,7 +95,11 @@ async function waitForIndexedPage(
   while (Date.now() < deadline) {
     const response = await fetchJson(url, { headers: { Authorization: `Bearer ${ownerToken}` } });
     latest = { body: response.body as SearchListResponse, status: response.status };
-    if (latest.status === 200 && latest.body.data.length === 3 && latest.body.has_more === true) {
+    if (
+      latest.status === 200 &&
+      latest.body.data.length === expectedResultCount &&
+      latest.body.has_more === false
+    ) {
       return latest;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -173,7 +195,7 @@ if (POSTGRES_URL) {
     const suffix = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `pg_snap_pagination_${suffix}`;
     const term = `pgsnapterm${suffix}`;
-    const manifest = {
+    const manifest = withCoreSourceDeclaration({
       capabilities: { human_interaction: ["credentials"] },
       connector_id: connectorId,
       display_name: "Postgres Snapshot Pagination",
@@ -199,7 +221,7 @@ if (POSTGRES_URL) {
         },
       ],
       version: "1.0.0",
-    };
+    });
 
     let server: StartedServer | null = null;
     const previousDatabaseUrl = process.env.PDPP_DATABASE_URL;
@@ -236,12 +258,16 @@ if (POSTGRES_URL) {
       }));
       await ingest(rsUrl, ownerToken, connectorId, "posts", records);
 
+      // Ingest acknowledges durable records before derived indexes finish. Wait
+      // for all seven before making the page-1 request: three records plus
+      // has_more only proves a four-record partial index, which cannot support
+      // the required three-record page 2.
+      await waitForFullyIndexedSearch(`${rsUrl}/v1/search?q=${encodeURIComponent(term)}&limit=7`, ownerToken, 7);
+
       // ── Page 1: fresh request → buildSnapshot + persistSnapshot (PG adapter).
-      // Ingest acknowledges durable records before derived indexes finish.
-      // Poll fresh searches until the public result shape proves enough of the
-      // index has converged to exercise pagination; the snapshot under test is
-      // the final response returned here, not an earlier partial snapshot.
-      const page1 = await waitForIndexedPage(`${rsUrl}/v1/search?q=${encodeURIComponent(term)}&limit=3`, ownerToken);
+      const page1 = await fetchJson(`${rsUrl}/v1/search?q=${encodeURIComponent(term)}&limit=3`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
       assert.equal(page1.status, 200);
       const page1Body = page1.body as SearchListResponse;
       assert.equal(page1Body.object, "list");

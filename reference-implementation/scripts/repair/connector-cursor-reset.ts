@@ -42,10 +42,22 @@
  * Safety model
  * ------------
  *   - Default is dry-run. `--apply` is required to write.
+ *   - Apply mode acquires the SAME transaction-scoped connector-instance
+ *     advisory lock (`pg_advisory_xact_lock` on
+ *     `connectorInstanceAdvisoryLockKey(connectorInstanceId)`) that
+ *     `commitTerminalRun`/`createPostgresConnectorStateStore().putState` take
+ *     via `withPostgresTransaction({ lockConnectorInstanceId })`, as the FIRST
+ *     statement after BEGIN — before any read or write of `connector_state`.
+ *     This serializes the reset against D9 coalescence
+ *     (`coalesceExactPostgresLocalDeviceBindingDuplicates`, which acquires
+ *     the same lock class before merging) and against any other production
+ *     writer of this connector instance's state, closing the race the prior
+ *     revision of this tool explicitly accepted. See
+ *     PR238-POSTGRES-D9-FIX-R5-0831.md.
  *   - Before any write, the prior `state_json` for every targeted pair is
  *     snapshotted into a backup table (prefix `ccr_backup`) so the operator can
  *     restore the exact pre-image. The backup is taken inside the same
- *     transaction as the reset.
+ *     transaction as the reset, after the lock is held.
  *   - Only streams that actually have a `connector_state` row are reset; a
  *     `--stream` with no stored cursor is reported as `absent` and skipped (a
  *     missing cursor already behaves as "no since filter").
@@ -83,8 +95,42 @@ import { createHash } from "node:crypto";
 import process from "node:process";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import pg from "pg";
+import {
+  ConnectorInstanceAdmissionError,
+  connectorInstanceAdvisoryLockKey,
+  connectorInstanceLockWaitMs,
+} from "../../server/connector-instance-write-coordinator.ts";
 
 const { Pool } = pg;
+
+// Postgres SQLSTATE raised when `SET LOCAL lock_timeout` expires waiting on
+// `pg_advisory_xact_lock` — same translation as
+// `acquireConnectorInstanceXactLock` in postgres-storage.ts.
+const POSTGRES_LOCK_NOT_AVAILABLE_SQLSTATE = "55P03";
+
+/**
+ * Acquire the transaction-scoped connector-instance advisory lock, matching
+ * `acquireConnectorInstanceXactLock` (postgres-storage.ts) exactly: same
+ * derived key, same bounded `SET LOCAL lock_timeout` before the blocking
+ * call, same `55P03` -> `ConnectorInstanceAdmissionError` translation. Must
+ * be the first statement inside the transaction, before any read or write of
+ * `connector_state`, so this CLI's write serializes against
+ * commitTerminalRun / putState / D9 coalescence exactly as if it were
+ * another production writer.
+ */
+async function acquireConnectorInstanceLock(client: pg.PoolClient, connectorInstanceId: string): Promise<void> {
+  const key = connectorInstanceAdvisoryLockKey(connectorInstanceId);
+  await client.query(`SET LOCAL lock_timeout = '${connectorInstanceLockWaitMs()}ms'`);
+  try {
+    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [key]);
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code === POSTGRES_LOCK_NOT_AVAILABLE_SQLSTATE) {
+      // biome-ignore lint/style/useErrorCause: matches ConnectorInstanceAdmissionError's existing no-arg constructor contract.
+      throw new ConnectorInstanceAdmissionError();
+    }
+    throw err;
+  }
+}
 
 // Postgres truncates identifiers to 63 bytes; the backup-table name is
 // composed to stay within this bound (same discipline as the projection
@@ -288,6 +334,17 @@ export async function runCursorReset({
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+
+    // Acquire the connector-instance advisory lock FIRST, before any read or
+    // write of connector_state. This is the same lock class
+    // commitTerminalRun/createPostgresConnectorStateStore().putState take via
+    // withPostgresTransaction({ lockConnectorInstanceId }), and the same lock
+    // class coalesceExactPostgresLocalDeviceBindingDuplicates acquires before
+    // merging a duplicate class — so a reset now serializes against
+    // concurrent coalescence instead of racing it. Global lock order for
+    // this tool: connector-instance lock, then the backup snapshot, then the
+    // reset write; no narrower lock is acquired before this one.
+    await acquireConnectorInstanceLock(client, connectorInstanceId);
 
     // Snapshot the pre-image cursor for every present stream before the reset.
     // The backup carries the full prior state_json so the operator can restore

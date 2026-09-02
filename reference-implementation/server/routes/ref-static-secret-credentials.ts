@@ -28,6 +28,7 @@ import {
   staticSecretIdentityClaim,
   staticSecretSetupFieldsFromBinding,
 } from "../static-secret-identity.ts";
+import type { CredentialStateChange } from "../stores/connector-instance-credential-store.ts";
 import { isCredentialEncryptionConfigured } from "../stores/credential-encryption.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { codeToStatus } from "./ref-error-status.ts";
@@ -129,6 +130,11 @@ interface ConnectorInstanceCredentialStore {
     credentialKind: string;
     secret: string;
     now: string;
+    // Attribution for the capture/rotate transition. Optional here for the
+    // same reason it is optional on the store: a caller that cannot name an
+    // actor must not be forced to invent one — the store falls back to a
+    // bare `credential_captured`/`credential_rotated` cause.
+    stateChange?: CredentialStateChange;
   }) => Promise<CredentialMetadata> | CredentialMetadata;
   // Non-secret, key-derived fingerprint of a candidate plaintext — used to
   // prove "is this the exact same credential already stored" without
@@ -164,7 +170,13 @@ interface ConnectorInstanceStore {
   }) => Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
   updateStatus: (
     connectorInstanceId: string,
-    args: { readonly revokedAt?: string | null; readonly status: string; readonly updatedAt: string }
+    args: {
+      readonly credentialStateChange?: CredentialStateChange;
+      readonly revokedAt?: string | null;
+      readonly sourceBindingPatch?: Record<string, unknown> | null;
+      readonly status: string;
+      readonly updatedAt: string;
+    }
   ) => Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
 }
 
@@ -402,9 +414,10 @@ async function emitCaptureAudit(
     outcome: "succeeded" | "failed";
     ownerSubjectId?: string | null;
     rotated?: boolean;
+    trace?: TraceContext;
   }
 ): Promise<void> {
-  const trace = buildAuditTrace(ctx, res);
+  const trace = args.trace ?? buildAuditTrace(ctx, res);
   const ownerSubjectId = args.ownerSubjectId ?? req.ownerSession?.sub ?? null;
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
@@ -600,7 +613,13 @@ async function resolveIdentityBindingConflict(
   if (winner.connectorInstanceId !== current.connectorInstanceId && current.status === "draft") {
     const now = nowFor(ctx);
     await store.updateStatus(current.connectorInstanceId, {
+      credentialStateChange: {
+        actorId: input.ownerSubjectId,
+        actorType: "owner_session",
+        cause: "duplicate_static_secret_identity",
+      },
       revokedAt: now,
+      sourceBindingPatch: { revocation_reason: "duplicate_static_secret_identity" },
       status: "revoked",
       updatedAt: now,
     });
@@ -1102,12 +1121,20 @@ async function storeAndRespond(
   const store = ctx.createRequestConnectorInstanceCredentialStore();
   const previous = await store.getMetadata(args.namespace.connectorInstanceId);
   const now = ctx.now ? ctx.now() : new Date().toISOString();
+  const trace = buildAuditTrace(ctx, res);
   const metadata = await store.capture({
     connectorInstanceId: args.namespace.connectorInstanceId,
     credentialKind: args.credentialKind ?? "",
     now,
     ownerSubjectId: args.ownerSubjectId,
     secret: args.secret,
+    stateChange: {
+      actorId: args.ownerSubjectId,
+      actorType: "owner_session",
+      cause: previous ? "credential_rotated" : "credential_captured",
+      requestId: trace.request_id,
+      traceId: trace.trace_id,
+    },
   });
   ctx.invalidateConnectorSummariesCache?.();
   const resumed = await resumePausedConnectionAfterCredentialCapture(ctx, args.namespace.connectorInstanceId, now);
@@ -1123,6 +1150,7 @@ async function storeAndRespond(
     outcome: archiveResume.kind === "failed" ? "failed" : "succeeded",
     ownerSubjectId: args.ownerSubjectId,
     rotated,
+    trace,
   });
   if (archiveResume.kind === "failed") {
     // Honest failure: the credential IS stored (this route's own job

@@ -44,6 +44,7 @@ export function accountingEventLine(event: unknown): string {
 // over emitted identities, never over static source occurrences.
 export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "PostgreSQL device-ingest conformance: derived repair and canonical records",
+  "PostgreSQL device-ingest conformance: device ack ignores held semantic index capacity",
   "PostgreSQL device-ingest conformance: device/direct writer collision matrix",
   "PostgreSQL device-ingest conformance: duplicate and newer writer matrix",
   "PostgreSQL device-ingest conformance: failed batch attempts are logged server-side",
@@ -68,6 +69,13 @@ export const POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS: readonly string[] = [
   "PostgreSQL: zero spine_events statements for a terminal run's GET",
   "PostgreSQL: zero spine_events statements for an in-progress run's GET (collection_rate merged via run.progress_reported)",
   "Postgres ClientEventSubscriptionStore round-trips a full lifecycle",
+  "Postgres connection revoke revokes its bound credential and stamps the timestamp",
+  "Postgres connection revoke leaves a same-connector sibling credential active",
+  "Postgres connection re-revoke preserves the original connection and credential timestamps",
+  "Postgres connection revoke rolls back when credential revocation fails",
+  "Postgres connection credential cascade records the revoking actor, cause, and trace",
+  "Postgres TTL retirement records system cause and reports the retired connection ids",
+  "Postgres connection credential cascade leaves an unknown actor absent",
   "Postgres ConnectorInstanceStore conforms when PDPP_TEST_POSTGRES_URL is set",
   "Postgres DeviceExporterStore conforms when PDPP_TEST_POSTGRES_URL is set",
   "Postgres SourceWebhookEventStore claims each source event once when PDPP_TEST_POSTGRES_URL is set",

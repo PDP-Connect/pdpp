@@ -70,6 +70,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Owner-visible connector attention state must survive restore.",
   },
+  connector_coverage_horizons: {
+    classification: "backup_required",
+    reason:
+      "Provider coverage-horizon confirmations are owner/operator-recorded provenance (basis, reason, confirmed_by); losing them silently reverts a confirmed provider boundary back to unconfirmed.",
+  },
   connector_detail_gaps: {
     classification: "backup_required",
     reason: "Gap evidence records source coverage state.",
@@ -116,6 +121,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
   connector_summary_evidence: {
     classification: "backup_required",
     reason: "Summary evidence is a projection rebuilt from records and connector state.",
+  },
+  connector_summary_evidence_repair_chunk: {
+    classification: "backup_required",
+    reason:
+      "Chunked whale-repair resume state. A restore that drops it is safe — an absent cursor simply restarts that connection's scan from the beginning — but it is captured like every other table so the inventory stays a complete census rather than a judgement call about which rows matter.",
   },
   connectors: {
     classification: "backup_required",
@@ -283,6 +293,11 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Dirty flags are reconciled by bounded search-index repair.",
   },
+  semantic_hnsw_index_build: {
+    classification: "backup_required",
+    reason:
+      "Scheduling/diagnostic state for the optional HNSW catalog-acceleration build (server/postgres-storage.ts runPostgresSemanticHnswMaintenance). A restore that drops the row is safe: bootstrap reseeds it to 'pending' via INSERT ... ON CONFLICT DO NOTHING, and maintenance rebuilds the index with CREATE INDEX CONCURRENTLY IF NOT EXISTS, so no reader depends on the row surviving. It is still captured, like connector_summary_evidence_repair_chunk, so the inventory stays a complete census rather than a judgement call about which rows matter.",
+  },
   semantic_search_backfill_progress: {
     classification: "backup_required",
     reason: "Semantic backfill progress is recomputed while rebuilding semantic search.",
@@ -315,6 +330,16 @@ export const BACKUP_TABLE_INVENTORY: Record<string, BackupTableInventoryEntry> =
     classification: "backup_required",
     reason: "Disclosure-spine events are durable audit state.",
   },
+  storage_migration_ledger: {
+    classification: "backup_required",
+    reason:
+      "The completion receipt for data migrations that rewrite rows (server/postgres-migration-ledger.ts). It cannot be rebuilt from the data it describes — inferring completion from row shape is precisely the guess the ledger replaced — so a lost row makes the next boot re-run a completed migration against a restored database, reinstating the repeated pre-listen rewrite this table exists to prevent. A lost `blocked` row is worse: it erases an operator-visible fail-closed stop and lets a later boot re-attempt a collision silently.",
+  },
+  stream_evidence_run_registry: {
+    classification: "backup_required",
+    reason:
+      "The accepted-(run_id, stream) claims enforcing spec-collection-profile.md rule 5 ('at most one accepted STREAM_EVIDENCE per stream per run_id'). Rows are never deleted and cannot be rebuilt from any other table: rule 5 defines 'same run' strictly by caller-chosen run_id and grants no restart or restore exception, so a claim lost at the durability boundary lets a reused run_id re-accept and admit duplicate authority — the same replay-admits-duplicates hazard source_webhook_run_receipts is retained against.",
+  },
   tokens: {
     classification: "backup_required",
     reason: "Access-token state is core authorization state.",
@@ -337,6 +362,10 @@ const POSTGRES_LAZY_APPLICATION_TABLES = [
   "explore_cursor_store",
 ] as const;
 const POSTGRES_SQLITE_ONLY_TABLES = ["semantic_search_rowid"] as const;
+// pgvector/HNSW has no SQLite counterpart; the build-progress row only ever exists
+// under the Postgres backend, so it is the Postgres-side mirror of the
+// SQLite-only exception above rather than part of the shared storage seam.
+const SQLITE_POSTGRES_ONLY_TABLES = ["semantic_hnsw_index_build"] as const;
 
 export function isInternalBackupCatalogTable(name: string): boolean {
   return SQLITE_INTERNAL_TABLES.has(name) || isShadowTable(name);
@@ -345,6 +374,7 @@ export function isInternalBackupCatalogTable(name: string): boolean {
 export const SQLITE_LAZY_STORAGE_TABLES = Object.freeze([...SQLITE_LAZY_APPLICATION_TABLES]);
 export const POSTGRES_LAZY_STORAGE_TABLES = Object.freeze([...POSTGRES_LAZY_APPLICATION_TABLES]);
 export const POSTGRES_SQLITE_ONLY_STORAGE_TABLES = Object.freeze([...POSTGRES_SQLITE_ONLY_TABLES]);
+export const SQLITE_POSTGRES_ONLY_STORAGE_TABLES = Object.freeze([...SQLITE_POSTGRES_ONLY_TABLES]);
 
 export const POSTGRES_STORAGE_TABLES = Object.freeze(
   Object.keys(BACKUP_TABLE_INVENTORY).filter((name) => name !== "semantic_search_rowid")

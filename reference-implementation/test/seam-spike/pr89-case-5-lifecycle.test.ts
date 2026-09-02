@@ -35,8 +35,9 @@ function runTestFile(file: string): Promise<string> {
   });
 }
 
-test("authorization and refresh lifecycle portfolio passes on PostgreSQL", async () => {
-  assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
+test("authorization and refresh lifecycle portfolio passes on PostgreSQL", {
+  skip: process.env.PDPP_TEST_POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
   const output = [
     await runTestFile("test/token-refresh-postgres-path.test.ts"),
     await runTestFile("test/grant-package-postgres-path.test.ts"),

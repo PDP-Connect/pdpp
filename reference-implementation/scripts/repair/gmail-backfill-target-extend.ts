@@ -76,11 +76,31 @@
  * Safety model
  * ------------
  *   - Default is dry-run. `--apply` is required to write.
+ *   - Apply mode acquires the SAME transaction-scoped connector-instance
+ *     advisory lock (`pg_advisory_xact_lock` on
+ *     `connectorInstanceAdvisoryLockKey(connectorInstanceId)`) that
+ *     `commitTerminalRun`/`createPostgresConnectorStateStore().putState` take
+ *     via `withPostgresTransaction({ lockConnectorInstanceId })`, as the
+ *     FIRST statement after BEGIN — before the cursor read used to plan the
+ *     extension and before the guarded write. This serializes the extend
+ *     against D9 coalescence
+ *     (`coalesceExactPostgresLocalDeviceBindingDuplicates`, which acquires
+ *     the same lock class before merging) and against any other production
+ *     writer of this connector instance's state, closing the race the prior
+ *     revision of this tool explicitly accepted. See
+ *     PR238-POSTGRES-D9-FIX-R5-0831.md.
  *   - Before any write, the prior `state_json` is snapshotted into a backup
- *     table (prefix `gbte_backup`) inside the same transaction as the update.
- *   - The update is guarded in SQL so a concurrent connector STATE commit
- *     cannot be clobbered: it re-checks that `target_uid` still holds the
- *     value that was read, and that the new target is strictly greater.
+ *     table (prefix `gbte_backup`) inside the same transaction as the update,
+ *     after the lock is held.
+ *   - The update is ALSO guarded in SQL so a concurrent connector STATE
+ *     commit on the SAME instance cannot be clobbered: it re-checks that
+ *     `target_uid` still holds the value that was read, and that the new
+ *     target is strictly greater. The advisory lock and the CAS guard cover
+ *     different things — the lock serializes against a DIFFERENT
+ *     connector_instance_id's coalescence merge; the CAS guard catches a
+ *     same-id write that lands between this tool's own read and write. Lock
+ *     order: connector-instance lock first, CAS-guarded write second; no
+ *     narrower lock is acquired before the connector-instance lock.
  *   - Refuses to run if the stored cursor has no `backfill.target_uid`, or if
  *     `uidvalidity` does not match the expected epoch (a UIDVALIDITY change
  *     invalidates every stored UID and calls for a full resync instead).
@@ -115,8 +135,42 @@ import { createHash } from "node:crypto";
 import process from "node:process";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import pg from "pg";
+import {
+  ConnectorInstanceAdmissionError,
+  connectorInstanceAdvisoryLockKey,
+  connectorInstanceLockWaitMs,
+} from "../../server/connector-instance-write-coordinator.ts";
 
 const { Pool } = pg;
+
+// Postgres SQLSTATE raised when `SET LOCAL lock_timeout` expires waiting on
+// `pg_advisory_xact_lock` — same translation as
+// `acquireConnectorInstanceXactLock` in postgres-storage.ts.
+const POSTGRES_LOCK_NOT_AVAILABLE_SQLSTATE = "55P03";
+
+/**
+ * Acquire the transaction-scoped connector-instance advisory lock, matching
+ * `acquireConnectorInstanceXactLock` (postgres-storage.ts) exactly: same
+ * derived key, same bounded `SET LOCAL lock_timeout` before the blocking
+ * call, same `55P03` -> `ConnectorInstanceAdmissionError` translation. Must
+ * be the first statement inside the transaction, before the cursor read
+ * used to plan the extension, so this CLI's read-then-write serializes
+ * against commitTerminalRun / putState / D9 coalescence exactly as if it
+ * were another production writer.
+ */
+async function acquireConnectorInstanceLock(client: pg.PoolClient, connectorInstanceId: string): Promise<void> {
+  const key = connectorInstanceAdvisoryLockKey(connectorInstanceId);
+  await client.query(`SET LOCAL lock_timeout = '${connectorInstanceLockWaitMs()}ms'`);
+  try {
+    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [key]);
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code === POSTGRES_LOCK_NOT_AVAILABLE_SQLSTATE) {
+      // biome-ignore lint/style/useErrorCause: matches ConnectorInstanceAdmissionError's existing no-arg constructor contract.
+      throw new ConnectorInstanceAdmissionError();
+    }
+    throw err;
+  }
+}
 
 const PG_IDENTIFIER_MAX = 63;
 
@@ -323,6 +377,19 @@ export function planExtend(args: {
   };
 }
 
+/** Parse a `connector_state.state_json` cell into the typed cursor shape (or null when absent). */
+function decodeMessagesCursor(raw: unknown): MessagesCursor | null {
+  // `state_json` is stored as text in some deployments and jsonb in others; the
+  // driver hands back a string for the former and a decoded object for the latter.
+  if (typeof raw === "string") {
+    return JSON.parse(raw) as MessagesCursor;
+  }
+  if (raw !== null && raw !== undefined) {
+    return raw as MessagesCursor;
+  }
+  return null;
+}
+
 /**
  * Read the cursor, plan the extension, and (with `apply`) write it under a
  * guard that fails rather than clobbering a concurrent STATE commit.
@@ -344,37 +411,52 @@ export async function runExtend(args: {
     plan: null,
   };
 
-  const read = await args.pool.query(
-    "SELECT state_json FROM connector_state WHERE connector_instance_id = $1 AND stream = $2",
-    [args.connectorInstanceId, MESSAGES_STREAM]
-  );
-  const raw = read.rows[0]?.state_json ?? null;
-  // `state_json` is stored as text in some deployments and jsonb in others; the
-  // driver hands back a string for the former and a decoded object for the latter.
-  let cursor: MessagesCursor | null = null;
-  if (typeof raw === "string") {
-    cursor = JSON.parse(raw) as MessagesCursor;
-  } else if (raw !== null) {
-    cursor = raw as MessagesCursor;
-  }
-
-  const planned = planExtend({
-    cursor,
-    expectUidvalidity: args.expectUidvalidity,
-    newTargetUid: args.newTargetUid,
-  });
-  if ("error" in planned) {
-    return { ...base, error: planned.error, failed: true };
-  }
-  const { plan } = planned;
   if (!args.apply) {
-    return { ...base, plan };
+    // Dry-run never writes, so it never needs the advisory lock — it reads
+    // outside any transaction, exactly like before.
+    const read = await args.pool.query(
+      "SELECT state_json FROM connector_state WHERE connector_instance_id = $1 AND stream = $2",
+      [args.connectorInstanceId, MESSAGES_STREAM]
+    );
+    const cursor = decodeMessagesCursor(read.rows[0]?.state_json ?? null);
+    const planned = planExtend({ cursor, expectUidvalidity: args.expectUidvalidity, newTargetUid: args.newTargetUid });
+    if ("error" in planned) {
+      return { ...base, error: planned.error, failed: true };
+    }
+    return { ...base, plan: planned.plan };
   }
 
   const table = backupTableName({ connectorInstanceId: args.connectorInstanceId, stamp: args.stamp });
   const client = await args.pool.connect();
   try {
     await client.query("BEGIN");
+
+    // Acquire the connector-instance advisory lock FIRST — before the cursor
+    // read used to build the plan, and before any write. This is the same
+    // lock class commitTerminalRun/createPostgresConnectorStateStore()
+    // .putState take via withPostgresTransaction({ lockConnectorInstanceId }),
+    // and the same lock class coalesceExactPostgresLocalDeviceBindingDuplicates
+    // acquires before merging a duplicate class. Reading the cursor only
+    // after the lock is held (rather than before BEGIN, as dry-run does)
+    // means the plan is always built against a value that cannot be
+    // concurrently coalesced out from under this transaction. Global lock
+    // order for this tool: connector-instance lock, then the cursor read,
+    // then the backup snapshot, then the CAS-guarded write; no narrower lock
+    // is acquired before the connector-instance lock.
+    await acquireConnectorInstanceLock(client, args.connectorInstanceId);
+
+    const read = await client.query(
+      "SELECT state_json FROM connector_state WHERE connector_instance_id = $1 AND stream = $2",
+      [args.connectorInstanceId, MESSAGES_STREAM]
+    );
+    const cursor = decodeMessagesCursor(read.rows[0]?.state_json ?? null);
+    const planned = planExtend({ cursor, expectUidvalidity: args.expectUidvalidity, newTargetUid: args.newTargetUid });
+    if ("error" in planned) {
+      await client.query("ROLLBACK");
+      return { ...base, error: planned.error, failed: true };
+    }
+    const { plan } = planned;
+
     // Snapshot the exact pre-image inside the same transaction as the write.
     await client.query(
       `CREATE TABLE IF NOT EXISTS "${table}" (
@@ -392,8 +474,14 @@ export async function runExtend(args: {
       [args.connectorInstanceId, MESSAGES_STREAM]
     );
     // Guarded update: only raise target_uid, and only if it still holds the
-    // value we planned against. A concurrent connector STATE commit changes
-    // that value and this write then matches zero rows rather than clobbering.
+    // value we planned against. A concurrent connector STATE commit on the
+    // SAME id changes that value and this write then matches zero rows
+    // rather than clobbering. This CAS guard is a second, narrower fence on
+    // top of the connector-instance lock above — it catches a same-id write
+    // that could otherwise land between this transaction's read and write
+    // (e.g. a non-coalescence STATE commit that does not contend on the same
+    // advisory-lock key ordering point); the advisory lock is what fences
+    // cross-identity D9 coalescence.
     const updated = await client.query(
       `UPDATE connector_state
           SET state_json = jsonb_set(
@@ -422,7 +510,7 @@ export async function runExtend(args: {
     return { ...base, backupTable: table, plan };
   } catch (e) {
     await client.query("ROLLBACK").catch((): undefined => undefined);
-    return { ...base, error: e instanceof Error ? e.message : String(e), failed: true, plan };
+    return { ...base, error: e instanceof Error ? e.message : String(e), failed: true, plan: null };
   } finally {
     client.release();
   }

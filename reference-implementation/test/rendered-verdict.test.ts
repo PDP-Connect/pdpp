@@ -166,6 +166,7 @@ function snapshot(overrides: SnapshotOverrides = {}): ConnectionHealthSnapshot {
     badges: { stale: false, syncing: false, ...(overrides.badges ?? {}) },
     collection_rate: null,
     conditions: overrides.conditions ?? [],
+    coverage_horizons: [],
     detail_gap_backlog: overrides.detail_gap_backlog ?? null,
     dominant_condition_id: overrides.dominant_condition_id ?? null,
     ephemeral_browser_runtime: null,
@@ -211,6 +212,7 @@ const ASSISTED_REFRESH: ConnectionRefreshEvidence = {
   interactionPosture: "manual_action_likely",
   recommendedMode: "automatic",
 };
+const REFRESHES_ON_SCHEDULE_RE = /refreshes on schedule/i;
 
 // ─── Composite invariant harness (task 4.3) ──────────────────────────────────
 //
@@ -669,6 +671,34 @@ test("tone: unknown coverage on an ordinary (still-refreshing) source keeps the 
   assert.equal(v.streams[0]?.statement, "Coverage has not been measured yet.");
 });
 
+test("tone: unknown coverage from a stale local collector build names the fix, not the generic YET copy", () => {
+  // Production shape (design-notes/source-state-truth-2026-08-18.md,
+  // peregrine Claude Code): a local-device collector build that predates the
+  // `coverage_diagnostics` stream the server now requires re-runs forever and
+  // lands in the exact same unmeasured state every time. The generic "not
+  // measured YET" copy implies the next scheduled run resolves it, which is
+  // false here — only an updated collector build does.
+  const staleCollectorCoverage = condition({
+    id: "SourceCoverageComplete:coverage_unknown_stale_collector",
+    message: "This local collector build predates coverage evidence the server now requires. Update the collector.",
+    reason: CONNECTION_CONDITION_REASONS.COVERAGE_UNKNOWN_STALE_COLLECTOR,
+    status: "unknown",
+    type: "SourceCoverageComplete",
+  });
+  const snap = snapshot({
+    axes: { coverage: "unknown", freshness: "fresh" },
+    conditions: [staleCollectorCoverage],
+    forward_disposition: "unmeasured",
+    state: "idle",
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream({ coverage: "unknown" })], null, true);
+  assert.notEqual(v.forward_statement, "Coverage has not been measured yet.");
+  assert.equal(
+    v.forward_statement,
+    "This local collector build predates coverage evidence the server now requires. Update the collector."
+  );
+});
+
 test("tone: active unknown coverage renders Checking because work is active", () => {
   const snap = snapshot({
     axes: { coverage: "unknown", freshness: "fresh" },
@@ -1044,6 +1074,71 @@ test("channel: stalled outbox state-read block asks for re-run, not dead-letter 
   assert.notEqual(v.forward_statement, "Current and collecting normally.");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.doesNotMatch(JSON.stringify(action), /dead[- ]letter/i);
+});
+
+test("freshness: stalled local-device outbox with prior ingest evidence names the last known collection, not a false never-measured claim", () => {
+  // A local-device connection (Signal-shape: peregrine/cin_992b0c94cebeb3066ba42a6e)
+  // whose outbox is stalled loses its heartbeat-derived freshness anchor by
+  // design (a stall must never read `fresh`), so `axes.freshness` reads
+  // `unknown` even though the device ingested real data days before the
+  // stall began. The generic "Freshness has not been measured yet." copy is
+  // then FALSE — it implies zero collection history when durable
+  // `last_ingest_at` evidence proves otherwise. `mode: "local_device"` +
+  // `last_refreshed_at` is the caller-supplied last-ingest fallback
+  // (`ref-control.ts` threads `local_device_progress.last_ingest_at` here
+  // when `freshness.captured_at` is null).
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "complete", freshness: "unknown", outbox: "stalled" },
+      conditions: [
+        localExporterStalledCondition(
+          CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED,
+          "Local exporter is blocked reading prior state. There are zero dead-letter rows to retry."
+        ),
+        backlogStalledCondition(
+          CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED,
+          "Local-device outbox is blocked on a failed state read, not a backlog."
+        ),
+      ],
+      forward_disposition: "complete",
+      reason_code: "local_exporter_state_read_failed",
+      state: "degraded",
+    }),
+    [stream({ coverage: "complete" })],
+    null,
+    true,
+    { last_refreshed_at: "2026-08-22T01:00:17.599Z", mode: "local_device", observed_at: "2026-08-26T20:44:55.204Z" }
+  );
+  assert.equal(v.pill.tone, "red");
+  assert.equal(v.pill.label, "Can't collect");
+  const freshness = v.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? "";
+  assert.equal(freshness, "Last known collection 4 days ago.");
+  // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+  assert.doesNotMatch(freshness, /not been measured/i);
+});
+
+test("freshness: local-device outbox with no prior ingest evidence keeps the honest never-measured copy", () => {
+  // Same stalled shape, but the device has genuinely never ingested anything
+  // (`last_refreshed_at: null`) — the generic copy stays correct here; this
+  // pins the fallback does not fabricate a date when there is none.
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "complete", freshness: "unknown", outbox: "stalled" },
+      conditions: [
+        localExporterStalledCondition(CONNECTION_CONDITION_REASONS.LOCAL_EXPORTER_STATE_READ_FAILED),
+        backlogStalledCondition(CONNECTION_CONDITION_REASONS.OUTBOX_STATE_READ_FAILED),
+      ],
+      forward_disposition: "complete",
+      reason_code: "local_exporter_state_read_failed",
+      state: "degraded",
+    }),
+    [stream({ coverage: "complete" })],
+    null,
+    true,
+    { last_refreshed_at: null, mode: "local_device", observed_at: "2026-08-26T20:44:55.204Z" }
+  );
+  const freshness = v.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? "";
+  assert.equal(freshness, "Freshness has not been measured yet.");
 });
 
 test("channel: dead-letter stalled outbox includes recover preview before apply", () => {
@@ -1729,6 +1824,33 @@ test("progress: idle scheduled eligibility (no active run, no committed run) doe
   });
   assert.equal(v.progress.mode, "scheduled");
   assert.equal(v.progress.headline, "Refreshes on schedule.");
+});
+
+test("needs-human scheduled source names the owner action instead of a refresh that cannot run", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { attention: "open", freshness: "stale" },
+      forward_disposition: "awaiting_owner",
+      state: "needs_attention",
+    }),
+    [stream()],
+    ASSISTED_REFRESH,
+    true,
+    {
+      last_refreshed_at: "2026-08-26T12:00:00.000Z",
+      mode: "scheduled",
+      observed_at: "2026-08-27T12:00:00.000Z",
+    },
+    { hasPriorSuccess: true, mode: "scheduled-active" }
+  );
+
+  const freshness = v.annotations.find((annotation) => annotation.kind === "freshness")?.text ?? "";
+  assert.equal(freshness, "Waiting on you before the next run can make progress.");
+  assert.doesNotMatch(freshness, REFRESHES_ON_SCHEDULE_RE);
+  assert.ok(
+    v.required_actions.some((action) => action.audience === "owner" && action.cta === "Complete the requested action"),
+    "the owner receives the existing actionable CTA"
+  );
 });
 
 test("progress: an active scheduled run does say collecting", () => {

@@ -34,12 +34,7 @@ const JSON_EXTENSION_RE = /\.json$/;
 // auth.js is still JavaScript; the imported functions are typed
 // loosely below since their full signatures land with the auth.js
 // migration slice. Until then we narrow the surface used here.
-import { getConnectorManifest, registerConnector } from "./auth.ts";
-// connector-key.js is a small, DB-free, pure module (no auth.js coupling),
-// so it's safe to import directly rather than duplicate. Used to predict
-// the storage-normalized shape of a shipped manifest for comparison; see
-// `normalizeForComparison` below.
-import { canonicalConnectorKeyFromManifest } from "./connector-key.ts";
+import { getConnectorManifest, normalizeConnectorManifestForStorage, registerConnector } from "./auth.ts";
 // records.js is also still JavaScript. The invalidation helper is
 // scoped to the reconciliation flip path; see the design notes under
 // openspec/changes/reconcile-invalidates-stale-records/.
@@ -123,45 +118,6 @@ function manifestsEqual(a: unknown, b: unknown): boolean {
     return false;
   }
   return canonicalize(a) === canonicalize(b);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-/**
- * Predict the shape a shipped manifest will take once persisted, WITHOUT
- * writing anything. `registerConnector` → `normalizeConnectorManifestForStorage`
- * (auth.js) rewrites `connector_id`/`connector_key` to the canonical short
- * key and may add `manifest_uri`, so the persisted row never byte-matches a
- * shipped manifest that declares a long-form `connector_id` (e.g.
- * `https://registry.pdpp.dev/connectors/amazon`). Every first-party shipped
- * manifest uses that long form, so comparing raw shipped bytes against the
- * persisted row made `manifestsEqual` return false on EVERY reconcile pass
- * for EVERY first-party connector, even when nothing changed — triggering
- * the full re-registration + per-record sort-position backfill
- * unconditionally on every startup.
- *
- * Mirrors `normalizeConnectorManifestForStorage` in auth.js. Kept duplicated
- * (like `fingerprintManifest` above) so this module doesn't take on
- * auth.js's storage-layer dependencies just to predict a shape; the shared,
- * DB-free `canonicalConnectorKeyFromManifest` helper is imported directly
- * since it carries no such coupling.
- */
-function normalizeForComparison(manifest: PolyfillManifest): PolyfillManifest {
-  const connectorId = canonicalConnectorKeyFromManifest(manifest) ?? manifest.connector_id;
-  const normalized: PolyfillManifest = {
-    ...manifest,
-    connector_id: connectorId,
-    connector_key: connectorId,
-  };
-  if (!normalized.manifest_uri && isNonEmptyString(manifest.connector_id)) {
-    const originalConnectorId = manifest.connector_id.trim();
-    if (originalConnectorId !== connectorId) {
-      normalized.manifest_uri = originalConnectorId;
-    }
-  }
-  return normalized;
 }
 
 export interface ReconcileSummary {
@@ -725,7 +681,8 @@ async function reconcileEntry(entryName: string, ctx: EntryContext): Promise<Ent
     // continues to gate background runs independently.
     return reconcileMissingManifestEntry(loadedEntry.shipped, connectorId, entryName, ctx);
   }
-  if (manifestsEqual(normalizeForComparison(loadedEntry.shipped), persisted)) {
+  const { storedManifest } = normalizeConnectorManifestForStorage(loadedEntry.shipped);
+  if (manifestsEqual(storedManifest, persisted)) {
     return reconcileUnchangedManifestEntry();
   }
   // Default path: the manifest changed shape but the diff is ordinary

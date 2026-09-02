@@ -20,6 +20,7 @@ interface RunConnectorError {
   readonly reported_records_emitted?: number | null;
   readonly response_status?: number;
   readonly run_id?: string | null;
+  readonly runtime_retryable?: boolean | null;
   readonly terminal_reason?: TerminalReason | null;
   readonly trace_id?: string | null;
 }
@@ -148,7 +149,7 @@ function runRequiresOwnerAuthRepair(err: RunConnectorError | null | undefined): 
 }
 
 function shouldRetryRunFailure(err: RunConnectorError | null | undefined): boolean {
-  if (!hasRetryableRunFailureContext(err)) {
+  if (!err) {
     return false;
   }
   if (!isRetryableHttpStatus(err.response_status)) {
@@ -160,11 +161,27 @@ function shouldRetryRunFailure(err: RunConnectorError | null | undefined): boole
   if (err.terminal_reason && NON_RETRYABLE_TERMINAL_REASONS.has(err.terminal_reason)) {
     return false;
   }
-  if (hasRetryableRunFailureKnownGap(err.known_gaps)) {
-    return true;
-  }
+  // A connector-declared non-retryable error remains authoritative even if a
+  // future adapter accidentally also supplies a runtime transport hint.
   if (err.connector_error?.retryable === false) {
     return false;
+  }
+  if (!hasRetryableRunFailureContext(err)) {
+    return false;
+  }
+  // A connector's affirmative verdict is only safe after the owner-auth gate
+  // above: a manual-action gap must never restart the same doomed run.
+  if (err.connector_error?.retryable === true) {
+    return true;
+  }
+  // This is a runtime-derived verdict from a safe, structured Node/undici
+  // cause code. It is more precise than the message/gap heuristics below and
+  // is set only when a connector DID NOT report its own terminal error.
+  if (typeof err.runtime_retryable === "boolean") {
+    return err.runtime_retryable;
+  }
+  if (hasRetryableRunFailureKnownGap(err.known_gaps)) {
+    return true;
   }
   return true;
 }

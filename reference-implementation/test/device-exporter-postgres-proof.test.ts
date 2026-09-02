@@ -23,12 +23,16 @@ import {
   postgresQuery,
   withPostgresTransaction,
 } from "../server/postgres-storage.ts";
-import { ingestRecord, setClientEventEnqueueHook } from "../server/records.ts";
+import { createAlreadyAdmittedTestDatabaseChildAttachment } from "../server/postgres-test-database-guard.ts";
+import { drainConnectorInstanceIndexWorkForTests, ingestRecord, setClientEventEnqueueHook } from "../server/records.ts";
+import { runSearchIndexDirtyReconcileRound } from "../server/search-index-reconcile.ts";
+import { __setDeviceIngestPhaseFaultHookForTest } from "../server/routes/ref-device-exporters.ts";
 import { makeLocalTransformerBackend } from "../server/search-semantic.ts";
 import {
   advancePostgresDeviceIngestPrefix,
   createPostgresDeviceExporterStore,
 } from "../server/stores/device-exporter-store.ts";
+import { isSearchIndexScopeDirty } from "../server/stores/search-index-dirty-store.ts";
 import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
@@ -509,7 +513,8 @@ async function within<T>(promise: Promise<T>, timeoutMs: number, message: string
 
 async function startFailStopServerFixture(
   postgresDatabaseUrl: string,
-  mode: string
+  mode: string,
+  childAttachment: string
 ): Promise<{
   asUrl: string;
   child: import("node:child_process").ChildProcess;
@@ -527,6 +532,7 @@ async function startFailStopServerFixture(
   const child = spawn(process.execPath, [FAILSTOP_SERVER_FIXTURE], {
     env: {
       ...process.env,
+      PDPP_FAILSTOP_FIXTURE_CHILD_ATTACHMENT: childAttachment,
       PDPP_FAILSTOP_FIXTURE_DATABASE_URL: postgresDatabaseUrl,
       PDPP_FAILSTOP_FIXTURE_MODE: mode,
     },
@@ -592,6 +598,39 @@ function stopServerFixture(fixture: {
     fixture.child.kill("SIGTERM");
   }
   return awaitFixtureExit(fixture);
+}
+
+async function installAcceptedTransitionBarrier(databaseUrl: string): Promise<() => Promise<void>> {
+  const lockClass = 482_571;
+  const lockKey = 320;
+  const functionName = "pdpp_test_device_ingest_acceptance_barrier";
+  const triggerName = "pdpp_test_device_ingest_acceptance_barrier_trigger";
+  const blocker = new Pool({ connectionString: databaseUrl });
+  await blocker.query("SELECT pg_advisory_lock($1, $2)", [lockClass, lockKey]);
+  await blocker.query(`
+    CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.status = 'accepted' AND OLD.status IS DISTINCT FROM 'accepted' THEN
+        PERFORM pg_advisory_xact_lock(${lockClass}, ${lockKey});
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+  `);
+  await blocker.query(`
+    CREATE TRIGGER ${triggerName}
+      BEFORE UPDATE OF status ON device_ingest_batch_outcomes
+      FOR EACH ROW EXECUTE FUNCTION ${functionName}()
+  `);
+  return async () => {
+    try {
+      await blocker.query("SELECT pg_advisory_unlock($1, $2)", [lockClass, lockKey]);
+      await blocker.query(`DROP TRIGGER IF EXISTS ${triggerName} ON device_ingest_batch_outcomes`);
+      await blocker.query(`DROP FUNCTION IF EXISTS ${functionName}()`);
+    } finally {
+      await blocker.end();
+    }
+  };
 }
 
 if (DEDICATED_POSTGRES_URL) {
@@ -939,7 +978,7 @@ if (DEDICATED_POSTGRES_URL) {
     });
   });
 
-  test("PostgreSQL retry rereads a newer writer and repairs derived facts without a third version or notification", async () => {
+  test("PostgreSQL deferred semantic failure accepts durable state and reconcile preserves a newer writer", async () => {
     let failFirst = true;
     const backend = deterministicBackend({
       onEmbed: (text) => {
@@ -966,12 +1005,21 @@ if (DEDICATED_POSTGRES_URL) {
             batch,
             authHeaders(device.device_token)
           );
-          assert.equal(first.status, 503, JSON.stringify(first.body));
-          assert.equal(
-            requiredString(requiredJsonRecord(first.body.error, "first ingest error"), "code", "first ingest error"),
-            "device_ingest_retryable"
-          );
+          // Durable acknowledgement is intentionally independent from the
+          // deferred index lane. Drain the lane before asserting the fault's
+          // dirty-scope consequence; the HTTP receipt itself must stay 201.
+          assert.equal(first.status, 201, JSON.stringify(first.body));
           assert.doesNotMatch(JSON.stringify(first.body), PRIVATE_PG_SEMANTIC_SENTINEL);
+          await drainConnectorInstanceIndexWorkForTests();
+          assert.equal(
+            await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+            true,
+            "the failed deferred publish leaves the durable scope for reconcile"
+          );
+
+          // The barrier above proves the first publish already failed before
+          // the direct writer commits. This adversarial order distinguishes
+          // reconcile of the authoritative row from a stale batch retry.
           await ingestRecord(
             { connector_id: "codex", connector_instance_id: device.connector_instance_id },
             {
@@ -987,6 +1035,7 @@ if (DEDICATED_POSTGRES_URL) {
             }
           );
           assert.equal(notifications.length, 2);
+          await drainConnectorInstanceIndexWorkForTests();
           const directCurrent = await postgresQuery(
             `SELECT record_json, emitted_at, cursor_value, semantic_time
                FROM records WHERE connector_instance_id = $1 AND stream = 'messages' AND record_key = 'same-key'`,
@@ -997,26 +1046,35 @@ if (DEDICATED_POSTGRES_URL) {
             new Date(requiredFirstRow(directCurrent.rows, "direct current record").emitted_at).toISOString(),
             "2026-07-16T00:00:01.000Z"
           );
-          const retry = await postJson(
+          await runSearchIndexDirtyReconcileRound({ maxDurationMs: 5000, pageSize: 100 });
+          assert.equal(
+            await isSearchIndexScopeDirty({ connectorInstanceId: device.connector_instance_id, stream: "messages" }),
+            false,
+            "the existing dirty-scope reconcile converges after semantic capacity returns"
+          );
+          const callsBeforeReplay = backend.calls();
+          const replay = await postJson(
             `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
             batch,
             authHeaders(device.device_token)
           );
-          assert.equal(retry.status, 201, JSON.stringify(retry.body));
+          assert.equal(replay.status, 201, JSON.stringify(replay.body));
+          assert.deepEqual(replay.body, first.body);
+          assert.equal(backend.calls(), callsBeforeReplay, "accepted replay must not repeat semantic work");
           const durable = await postgresQuery(
             `SELECT version, record_json, cursor_value, primary_key_text, semantic_time
                FROM records WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3`,
             [device.connector_instance_id, "messages", "same-key"]
           );
-          assert.equal(Number(requiredFirstRow(durable.rows, "durable repaired record").version), 2);
-          assert.equal(requiredFirstRow(durable.rows, "durable repaired record").record_json.content, "payload-b");
+          assert.equal(Number(requiredFirstRow(durable.rows, "durable authoritative record").version), 2);
+          assert.equal(requiredFirstRow(durable.rows, "durable authoritative record").record_json.content, "payload-b");
           assert.equal(
-            requiredFirstRow(durable.rows, "durable repaired record").cursor_value,
+            requiredFirstRow(durable.rows, "durable authoritative record").cursor_value,
             "2026-07-16T00:00:01.000Z"
           );
-          assert.equal(requiredFirstRow(durable.rows, "durable repaired record").primary_key_text, "same-key");
+          assert.equal(requiredFirstRow(durable.rows, "durable authoritative record").primary_key_text, "same-key");
           assert.equal(
-            requiredFirstRow(durable.rows, "durable repaired record").semantic_time,
+            requiredFirstRow(durable.rows, "durable authoritative record").semantic_time,
             "2026-07-16T00:00:01.000Z"
           );
           assert.equal(notifications.length, 2);
@@ -1025,7 +1083,7 @@ if (DEDICATED_POSTGRES_URL) {
               WHERE connector_instance_id = $1 AND stream = 'messages' AND record_key = 'same-key' AND field = 'content'`,
             [device.connector_instance_id]
           );
-          assert.equal(requiredFirstRow(lexical.rows, "repaired lexical record").value, "payload-b");
+          assert.equal(requiredFirstRow(lexical.rows, "authoritative lexical record").value, "payload-b");
           const semantic = await postgresQuery(
             `SELECT embedding::text AS embedding FROM semantic_search_blob
               WHERE connector_instance_id = $1 AND scope_key LIKE '["messages",%' AND record_key = 'same-key'`,
@@ -1033,7 +1091,7 @@ if (DEDICATED_POSTGRES_URL) {
           );
           assert.equal(semantic.rowCount, 1);
           assert.match(
-            requiredFirstRow(semantic.rows, "repaired semantic record").embedding,
+            requiredFirstRow(semantic.rows, "authoritative semantic record").embedding,
             SEMANTIC_VECTOR_COMPONENT
           );
         } finally {
@@ -1043,13 +1101,51 @@ if (DEDICATED_POSTGRES_URL) {
     });
   });
 
-  test("PostgreSQL manifest drift repairs cursor, primary-key, and semantic durable facts", async () => {
+  test("PostgreSQL manifest drift keeps the failed reservation bound until retry", async () => {
     let changed = false;
+    let targetTriggerFires = 0;
     const backend = deterministicBackend({
-      model: () => (changed ? "pg-drift-b" : "pg-drift-a"),
-      onEmbed: async () => {
-        if (!changed) {
+      model: () => "pg-drift",
+    });
+    await withTempPostgres(async (url) => {
+      await withServer(url, { semanticRetrievalBackend: backend }, async ({ asUrl }) => {
+        const device = await enrollDevice(asUrl, `pg-drift-${Date.now()}`);
+        const unrelatedDevice = await enrollDevice(asUrl, `pg-drift-unrelated-${Date.now()}`);
+        await setMessagesManifest((messages) => {
+          // biome-ignore lint/performance/noDelete: establish the optional-field-absent baseline for this manifest proof.
+          delete messages.schema.properties.updated_at;
+          messages.cursor_field = "timestamp";
+          messages.consent_time_field = "timestamp";
+          messages.primary_key = ["id"];
+          messages.query.search.semantic_fields = ["content"];
+        });
+        const initialManifest = requiredFirstRow(
+          (
+            await postgresQuery<{ manifest: JsonValue }>("SELECT manifest FROM connectors WHERE connector_id = $1", [
+              "codex",
+            ])
+          ).rows,
+          "initial connector manifest"
+        ).manifest;
+        const initialManifestFingerprint = fingerprintDeviceAttemptManifest(initialManifest);
+        const initialSemanticCapabilityIdentity = backend.model();
+        const records = [recordFor("same-key", "drift-content")];
+        requiredFirstRow(records, "manifest drift record").data.updated_at = "2026-07-16T13:00:00.000Z";
+        const batch = batchFor(device, "pg-manifest-drift", records);
+        __setDeviceIngestPhaseFaultHookForTest(async (point, inputIndex, requestIdentity) => {
+          // The hook is a process-global test seam. Its request identity keeps
+          // this mutation bound to the target's durable boundary only.
+          if (
+            point !== "after-durable-record" ||
+            inputIndex !== 0 ||
+            requestIdentity?.deviceId !== device.device_id ||
+            requestIdentity.batchId !== batch.batch_id ||
+            changed
+          ) {
+            return;
+          }
           changed = true;
+          targetTriggerFires += 1;
           await setMessagesManifest((messages) => {
             messages.schema.properties.updated_at = { format: "date-time", type: "string" };
             messages.cursor_field = "updated_at";
@@ -1057,35 +1153,32 @@ if (DEDICATED_POSTGRES_URL) {
             messages.primary_key = ["session_id"];
             messages.query.search.semantic_fields = ["role"];
           });
+        });
+        let first: Awaited<ReturnType<typeof postJson>>;
+        try {
+          const unrelated = await postJson(
+            `${asUrl}/_ref/device-exporters/${encodeURIComponent(unrelatedDevice.device_id)}/ingest-batches`,
+            batchFor(unrelatedDevice, "pg-manifest-drift-unrelated", [recordFor("unrelated-key", "unrelated-content")]),
+            authHeaders(unrelatedDevice.device_token)
+          );
+          assert.equal(unrelated.status, 201, JSON.stringify(unrelated.body));
+          assert.equal(changed, false, "an unrelated batch cannot mutate the target manifest trigger");
+          assert.equal(targetTriggerFires, 0, "an unrelated batch cannot consume the target trigger");
+          first = await postJson(
+            `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
+            batch,
+            authHeaders(device.device_token)
+          );
+        } finally {
+          __setDeviceIngestPhaseFaultHookForTest(null);
         }
-      },
-    });
-    await withTempPostgres(async (url) => {
-      await withServer(url, { semanticRetrievalBackend: backend }, async ({ asUrl }) => {
-        const device = await enrollDevice(asUrl, `pg-drift-${Date.now()}`);
-        const records = [recordFor("same-key", "drift-content")];
-        requiredFirstRow(records, "manifest drift record").data.updated_at = "2026-07-16T13:00:00.000Z";
-        const batch = batchFor(device, "pg-manifest-drift", records);
-        const first = await postJson(
-          `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
-          batch,
-          authHeaders(device.device_token)
+        assert.equal(changed, true, "the target record mutates the registered manifest");
+        assert.equal(targetTriggerFires, 1, "the target trigger fires exactly once");
+        assert.equal(
+          backend.model(),
+          initialSemanticCapabilityIdentity,
+          "manifest drift proof keeps semantic capability identity constant"
         );
-        assert.equal(first.status, 503, JSON.stringify(first.body));
-        const stale = await postgresQuery(
-          `SELECT cursor_value, primary_key_text, semantic_time
-             FROM records WHERE connector_instance_id = $1 AND stream = 'messages' AND record_key = 'same-key'`,
-          [device.connector_instance_id]
-        );
-        const staleOutcome = await postgresQuery(
-          `SELECT durable_prefix_count FROM device_ingest_batch_outcomes
-             WHERE device_id = $1 AND batch_id = $2`,
-          [device.device_id, batch.batch_id]
-        );
-        assert.equal(Number(requiredFirstRow(staleOutcome.rows, "stale outcome").durable_prefix_count), 1);
-        assert.equal(requiredFirstRow(stale.rows, "stale record").cursor_value, "2026-07-16T00:00:00.000Z");
-        assert.equal(requiredFirstRow(stale.rows, "stale record").primary_key_text, "same-key");
-        assert.equal(requiredFirstRow(stale.rows, "stale record").semantic_time, "2026-07-16T00:00:00.000Z");
         const changedManifest = requiredFirstRow(
           (
             await postgresQuery<{ manifest: JsonValue }>("SELECT manifest FROM connectors WHERE connector_id = $1", [
@@ -1095,19 +1188,36 @@ if (DEDICATED_POSTGRES_URL) {
           "changed connector manifest"
         ).manifest;
         const changedManifestFingerprint = fingerprintDeviceAttemptManifest(changedManifest);
-        const staleReservation = requiredFirstRow(
-          (
-            await postgresQuery<{ manifest_fingerprint: string }>(
-              "SELECT manifest_fingerprint FROM device_ingest_batch_outcomes WHERE device_id = $1 AND batch_id = $2",
-              [device.device_id, batch.batch_id]
-            )
-          ).rows,
-          "stale reservation"
+        assert.notEqual(
+          changedManifestFingerprint,
+          initialManifestFingerprint,
+          "the target manifest mutation must produce a distinct production fingerprint"
+        );
+        assert.equal(first.status, 503, JSON.stringify(first.body));
+        const stale = await postgresQuery(
+          `SELECT cursor_value, primary_key_text, semantic_time
+             FROM records WHERE connector_instance_id = $1 AND stream = 'messages' AND record_key = 'same-key'`,
+          [device.connector_instance_id]
+        );
+        const staleOutcome = await postgresQuery(
+          `SELECT durable_prefix_count, manifest_fingerprint, semantic_capability_identity FROM device_ingest_batch_outcomes
+             WHERE device_id = $1 AND batch_id = $2`,
+          [device.device_id, batch.batch_id]
+        );
+        assert.equal(Number(requiredFirstRow(staleOutcome.rows, "stale outcome").durable_prefix_count), 1);
+        assert.equal(requiredFirstRow(stale.rows, "stale record").cursor_value, "2026-07-16T00:00:00.000Z");
+        assert.equal(requiredFirstRow(stale.rows, "stale record").primary_key_text, "same-key");
+        assert.equal(requiredFirstRow(stale.rows, "stale record").semantic_time, "2026-07-16T00:00:00.000Z");
+        const staleReservation = requiredFirstRow(staleOutcome.rows, "stale reservation");
+        assert.equal(
+          staleReservation.manifest_fingerprint,
+          initialManifestFingerprint,
+          "the failed reservation remains bound to the manifest captured before deferred work"
         );
         assert.notEqual(
           staleReservation.manifest_fingerprint,
           changedManifestFingerprint,
-          "the first attempt must remain bound to the manifest it actually used"
+          "the deferred mutation must differ from the manifest captured by the first attempt"
         );
         const retry = await postJson(
           `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
@@ -1117,8 +1227,8 @@ if (DEDICATED_POSTGRES_URL) {
         assert.equal(retry.status, 201, JSON.stringify(retry.body));
         const refreshedReservation = requiredFirstRow(
           (
-            await postgresQuery<{ manifest_fingerprint: string }>(
-              "SELECT manifest_fingerprint FROM device_ingest_batch_outcomes WHERE device_id = $1 AND batch_id = $2",
+            await postgresQuery<{ manifest_fingerprint: string; semantic_capability_identity: string }>(
+              "SELECT manifest_fingerprint, semantic_capability_identity FROM device_ingest_batch_outcomes WHERE device_id = $1 AND batch_id = $2",
               [device.device_id, batch.batch_id]
             )
           ).rows,
@@ -1127,7 +1237,12 @@ if (DEDICATED_POSTGRES_URL) {
         assert.equal(
           refreshedReservation.manifest_fingerprint,
           changedManifestFingerprint,
-          "the retry must bind the processing reservation to the re-read manifest"
+          "the retry binds the processing reservation to the re-read manifest"
+        );
+        assert.equal(
+          refreshedReservation.semantic_capability_identity,
+          staleReservation.semantic_capability_identity,
+          "the retry holds semantic capability identity constant across manifest drift"
         );
         const repaired = await postgresQuery(
           `SELECT cursor_value, primary_key_text, semantic_time
@@ -1208,6 +1323,11 @@ if (DEDICATED_POSTGRES_URL) {
           const elapsedMs = performance.now() - started;
           assert.equal(accepted.status, 201, JSON.stringify(accepted.body));
           assert.ok(elapsedMs < 6500, `deterministic overlap latency ${elapsedMs.toFixed(1)}ms exceeded 6500ms`);
+          // `201` proves durable acceptance, not immediate search visibility.
+          // Use the deferred lane's own settlement barrier before reading the
+          // lexical/semantic projections; the latency assertion above remains
+          // deliberately independent from deferred convergence.
+          await drainConnectorInstanceIndexWorkForTests();
           const counts = await postgresQuery(
             `SELECT
                (SELECT COUNT(*) FROM records WHERE connector_instance_id = $1 AND stream = 'messages' AND deleted = FALSE)::integer AS records,
@@ -1252,16 +1372,28 @@ if (DEDICATED_POSTGRES_URL) {
     }
   });
 
-  test("spawned server fail-stops on unconfirmed child exit and restart resumes the PostgreSQL reservation", async () => {
+  test("spawned server preserves the durable acknowledgement before deferred child fail-stop", async () => {
     await withTempPostgres(async (url) => {
       const payloadSentinel = "private-spawned-failstop-record-sentinel";
+      const timingMutation = process.env.PDPP_FAILSTOP_TIMING_MUTATION_ORACLE === "1";
       let failedServer: Awaited<ReturnType<typeof startFailStopServerFixture>> | null = null;
       let recoveryServer: Awaited<ReturnType<typeof startFailStopServerFixture>> | null = null;
+      let releaseAcceptedTransitionBarrier: (() => Promise<void>) | null = null;
       try {
-        failedServer = await startFailStopServerFixture(url, "fail");
+        const failedAttachment = await createAlreadyAdmittedTestDatabaseChildAttachment(url);
+        const recoveryAttachment = await createAlreadyAdmittedTestDatabaseChildAttachment(url);
+        failedServer = await startFailStopServerFixture(url, "fail", failedAttachment);
+        // Start the recovery child while the guarded database is still empty.
+        // Its independent process stays idle until the fail-stop child exits,
+        // then proves an accepted batch is a durable replay rather than a
+        // response emitted by the crashed process.
+        recoveryServer = await startFailStopServerFixture(url, "recover", recoveryAttachment);
         const device = await enrollDevice(failedServer.asUrl, `pg-failstop-${Date.now()}`);
         const records = [recordFor("failstop-record", payloadSentinel)];
         const batch = batchFor(device, "pg-spawned-failstop-restart", records);
+        if (timingMutation) {
+          releaseAcceptedTransitionBarrier = await installAcceptedTransitionBarrier(url);
+        }
         type InFlightResult =
           | { error: unknown; kind: "error" }
           | { kind: "response"; response: { body: HttpResponseBody; status: number } };
@@ -1273,17 +1405,55 @@ if (DEDICATED_POSTGRES_URL) {
           (response) => ({ kind: "response", response }),
           (error: unknown) => ({ error, kind: "error" })
         );
-        const failedExit = await awaitFixtureExit(failedServer, 10_000);
-        assert.deepEqual(
-          failedExit,
-          { code: 1, signal: null },
-          "unconfirmed SIGKILL receipt must fail-stop the server nonzero"
-        );
-        const interrupted = await inFlight;
-        assert.equal(interrupted.kind, "error", "the fail-stopped parent must not acknowledge the interrupted request");
-        if (interrupted.kind === "error") {
-          assert.ok(interrupted.error);
+        const failedExit = timingMutation ? await awaitFixtureExit(failedServer, 10_000) : null;
+        const acknowledged = await inFlight;
+        if (timingMutation) {
+          assert.deepEqual(
+            failedExit,
+            { code: 1, signal: null },
+            "the timing mutant must fail-stop before the accepted transition can commit"
+          );
+          assert.equal(acknowledged.kind, "error", "a pre-acceptance child fail-stop must not return 201");
+          const releaseBarrier = releaseAcceptedTransitionBarrier;
+          if (!releaseBarrier) {
+            throw new Error("timing mutation acceptance barrier was not installed");
+          }
+          await releaseBarrier();
+          releaseAcceptedTransitionBarrier = null;
+          const verify = new Pool({ connectionString: url });
+          try {
+            const processing = await verify.query(
+              "SELECT status, durable_prefix_count FROM device_ingest_batch_outcomes WHERE device_id = $1 AND batch_id = $2",
+              [device.device_id, batch.batch_id]
+            );
+            assert.deepEqual(requiredFirstRow(processing.rows, "timing-mutant processing reservation"), {
+              durable_prefix_count: 1,
+              status: "processing",
+            });
+          } finally {
+            await verify.end();
+          }
+          return;
         }
+        assert.equal(
+          acknowledged.kind,
+          "response",
+          "a post-acceptance child failure must preserve the durable acknowledgement"
+        );
+        if (acknowledged.kind === "response") {
+          assert.equal(acknowledged.response.status, 201, JSON.stringify(acknowledged.response.body));
+        }
+
+        const confirmedFailedExit = await awaitFixtureExit(failedServer, 10_000);
+        assert.deepEqual(
+          confirmedFailedExit,
+          { code: 1, signal: null },
+          "an unconfirmed SIGKILL receipt must fail-stop the server nonzero after acknowledgement"
+        );
+        assert.ok(
+          failedServer.output().includes('"event":"transformer-child-sigkill"'),
+          "the fixture must reach the child SIGKILL path after durable acceptance"
+        );
 
         const verify = new Pool({ connectionString: url });
         try {
@@ -1298,19 +1468,18 @@ if (DEDICATED_POSTGRES_URL) {
           );
           assert.deepEqual(
             {
-              changes: requiredFirstRow(processing.rows, "fail-stop processing state").changes,
-              prefix: Number(requiredFirstRow(processing.rows, "fail-stop processing state").prefix),
-              records: requiredFirstRow(processing.rows, "fail-stop processing state").records,
-              status: requiredFirstRow(processing.rows, "fail-stop processing state").status,
-              version: Number(requiredFirstRow(processing.rows, "fail-stop processing state").version),
+              changes: requiredFirstRow(processing.rows, "fail-stop accepted state").changes,
+              prefix: Number(requiredFirstRow(processing.rows, "fail-stop accepted state").prefix),
+              records: requiredFirstRow(processing.rows, "fail-stop accepted state").records,
+              status: requiredFirstRow(processing.rows, "fail-stop accepted state").status,
+              version: Number(requiredFirstRow(processing.rows, "fail-stop accepted state").version),
             },
-            { changes: 1, prefix: 1, records: 1, status: "processing", version: 1 }
+            { changes: 1, prefix: 1, records: 1, status: "accepted", version: 1 }
           );
         } finally {
           await verify.end();
         }
 
-        recoveryServer = await startFailStopServerFixture(url, "recover");
         const resumed = await postJson(
           `${recoveryServer.asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
           batch,
@@ -1346,7 +1515,10 @@ if (DEDICATED_POSTGRES_URL) {
               status: requiredFirstRow(accepted.rows, "fail-stop accepted state").status,
               version: Number(requiredFirstRow(accepted.rows, "fail-stop accepted state").version),
             },
-            { changes: 1, lexical: 1, prefix: 1, semantic: 1, status: "accepted", version: 1 }
+            // The child died while acknowledgement-independent index work was
+            // pending. The durable reply must replay exactly; reconcile owns
+            // any later projection convergence.
+            { changes: 1, lexical: 0, prefix: 1, semantic: 0, status: "accepted", version: 1 }
           );
         } finally {
           await after.end();
@@ -1359,6 +1531,7 @@ if (DEDICATED_POSTGRES_URL) {
         assert.equal(captured.includes(device.device_token), false);
         assert.equal(captured.includes("pdpp_test"), false);
       } finally {
+        await releaseAcceptedTransitionBarrier?.();
         if (failedServer?.child.exitCode === null && failedServer?.child.signalCode === null) {
           failedServer.child.kill("SIGKILL");
         }

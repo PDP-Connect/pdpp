@@ -82,7 +82,7 @@ import {
   postgresGetSemanticProgress,
   postgresGetSemanticRecord,
   postgresListAllSemanticMetaIdentities,
-  postgresListExistingSemanticKeys,
+  postgresListExistingSemanticKeysForRecords,
   postgresListSemanticConnectorInstanceIds,
   postgresListSemanticStreamsForConnector,
   postgresSemanticIndexDelete,
@@ -2437,6 +2437,14 @@ function backendStorageIdentity(b: SemanticEmbeddingBackend): string {
   return parts.join(";");
 }
 
+/**
+ * "Resume, and resolve already-indexed keys one page at a time."
+ *
+ * A distinct object identity rather than `null`, which already means "the index
+ * is empty, skip nothing" on the fresh-rebuild path.
+ */
+const RESUME_KEYS_PER_PAGE: Set<string> = new Set<string>();
+
 async function buildSemanticIndexEntries(
   rows: readonly SemanticDbRow[],
   declaredFields: readonly string[],
@@ -2579,13 +2587,31 @@ async function rebuildSemanticIndexForStream({
     const lastRow = rows.at(-1);
     const nextLastId = lastRow ? Number(lastRow.id) : lastId;
     const nextScanned = scanned + rows.length;
+    // Resolve already-indexed keys for THIS PAGE only when resuming on
+    // Postgres. buildSemanticIndexEntries can only ever test keys belonging to
+    // rows in the page it was handed, so a page-scoped answer is identical to
+    // the whole-stream one — at O(500) retained instead of O(stream size).
+    const pageExistingKeys =
+      existingKeys === RESUME_KEYS_PER_PAGE
+        ? await postgresListExistingSemanticKeysForRecords({
+            connectorId,
+            connectorInstanceId,
+            recordKeys: rows.map((row) => String(row.record_key)),
+            // EXACT scope keys, never a prefix. The primary key is
+            // (connector_instance_id, scope_key, record_key); a LIKE on the
+            // MIDDLE column cannot be an index condition, so Postgres falls
+            // back to scanning every row for the instance. Measured on the
+            // live 1.82M-row table: prefix LIKE 5924ms, exact keys 0.069ms.
+            scopeKeys: declaredFields.map((field) => encodeScopeKey(stream, field)),
+          })
+        : existingKeys;
     const entries = await buildSemanticIndexEntries(
       rows,
       declaredFields,
       connectorId,
       connectorInstanceId,
       stream,
-      existingKeys
+      pageExistingKeys
     );
     const nextIndexed = indexed + entries.length;
     // Fenced ONLY for this page's bounded, already version-CAS'd write
@@ -2899,7 +2925,16 @@ async function prepareSemanticBackfillKeys({
 }): Promise<Set<string> | null> {
   const { connectorId, index, usePostgres, vectorIndex } = context;
   if (usePostgres && canResume) {
-    return postgresListExistingSemanticKeys({ connectorId, connectorInstanceId, stream });
+    // NOT postgresListExistingSemanticKeys: that reads every key the stream has
+    // ever indexed into one Set — O(stream size), held live. On 2026-08-27 that
+    // was 1,515,064 keys (~200 MB) for one claude-code stream and it took
+    // production down: heap ceiling reached ~20 min after every boot, forever.
+    //
+    // The sentinel says "resume, but resolve per page". `null` cannot carry
+    // that meaning: the fresh-index branch below DELETES the index and returns
+    // null to mean "nothing exists, skip nothing". Reusing null here would make
+    // a resume re-embed every row it was supposed to skip.
+    return RESUME_KEYS_PER_PAGE;
   }
   if (canResume && index && typeof index.listExistingKeys === "function") {
     return index.listExistingKeys({ connectorId, connectorInstanceId, stream });

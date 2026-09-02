@@ -37,10 +37,12 @@ import {
   postgresSemanticSearch,
 } from "../server/postgres-search.ts";
 import {
+  __acquirePostgresBootstrapLockForTest,
   closePostgresStorage,
   getStorageBackendKind,
   initPostgresStorage,
   postgresQuery,
+  resolvePostgresBootstrapLockTimeoutMs,
   resolveStorageBackend,
 } from "../server/postgres-storage.ts";
 import {
@@ -183,6 +185,7 @@ const RE_POSTGRES_URL_REQUIRED = /requires PDPP_DATABASE_URL or DATABASE_URL/;
 const RE_SNIPPET_ELLIPSIS = /…$/;
 const RE_RECORD_NOT_FOUND = /Record not found/;
 const RE_CHANGES_SINCE_UNSUPPORTED = /not supported with changes_since/;
+const RE_BOOTSTRAP_LOCK_TIMEOUT = /Timed out waiting for PostgreSQL bootstrap serialization lock after 80ms/;
 
 async function closeStartedServer(
   server: { asServer: import("node:http").Server; rsServer: import("node:http").Server } | null
@@ -256,6 +259,72 @@ test("Postgres runtime storage accepts standard DATABASE_URL when PDPP_DATABASE_
     }),
     { backend: "postgres", databaseUrl: "postgres://explicit:pass@localhost:5432/pdpp" }
   );
+});
+
+test("Postgres bootstrap lock budget is data-aware and explicitly configurable", () => {
+  assert.equal(resolvePostgresBootstrapLockTimeoutMs({ databaseSizeBytes: 0, env: {} }), 120_000);
+  assert.equal(resolvePostgresBootstrapLockTimeoutMs({ databaseSizeBytes: 64 * 1024 * 1024, env: {} }), 600_000);
+  assert.equal(
+    resolvePostgresBootstrapLockTimeoutMs({
+      databaseSizeBytes: 0,
+      env: { PDPP_POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_MS: "73000" },
+    }),
+    73_000
+  );
+  assert.equal(
+    resolvePostgresBootstrapLockTimeoutMs({
+      databaseSizeBytes: 0,
+      env: { PDPP_POSTGRES_BOOTSTRAP_LOCK_TIMEOUT_MS: "999999999" },
+    }),
+    1_800_000,
+    "configuration remains bounded by the hard safety maximum"
+  );
+});
+
+test("Postgres bootstrap lock contention waits for release without a crash-loop timeout", async () => {
+  const outcomes = [false, false, true];
+  let now = 0;
+  const delays: number[] = [];
+  const logs: string[] = [];
+  const client = {
+    query: async () => ({ rows: [{ locked: outcomes.shift() ?? false }] }),
+  };
+
+  await __acquirePostgresBootstrapLockForTest(client as never, {
+    budget: { databaseSizeBytes: 128 * 1024 * 1024, timeoutMs: 10_000 },
+    log: (line) => logs.push(line),
+    now: () => now,
+    sleep: (delayMs) => {
+      delays.push(delayMs);
+      now += delayMs;
+      return Promise.resolve();
+    },
+  });
+
+  assert.deepEqual(delays, [25, 50]);
+  assert.equal(outcomes.length, 0);
+  assert.ok(logs.some((line) => line.includes("bootstrap lock waiting")));
+  assert.ok(logs.some((line) => line.includes("bootstrap lock acquired")));
+});
+
+test("Postgres bootstrap lock loser has one bounded outer deadline", async () => {
+  let now = 0;
+  const client = {
+    query: async () => ({ rows: [{ locked: false }] }),
+  };
+
+  await assert.rejects(
+    __acquirePostgresBootstrapLockForTest(client as never, {
+      budget: { databaseSizeBytes: 128 * 1024 * 1024, timeoutMs: 80 },
+      now: () => now,
+      sleep: (delayMs) => {
+        now += delayMs;
+        return Promise.resolve();
+      },
+    }),
+    RE_BOOTSTRAP_LOCK_TIMEOUT
+  );
+  assert.equal(now, 80, "the final sleep is clipped to the single outer deadline");
 });
 
 test("polyfill manifest reconciliation defaults on for Postgres deployments", () => {
@@ -481,7 +550,7 @@ if (POSTGRES_URL) {
 
   test("postgres lexical backfill rebuilds partial historical indexes", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-    const connectorId = `pg_lexical_backfill_${suffix}`;
+    const connectorId = `https://test.pdpp.dev/connectors/pg_lexical_backfill_${suffix}`;
     const connectorInstanceId = `cin_pg_lexical_backfill_${suffix}`;
     const stream = "messages";
     const manifest = {
@@ -510,6 +579,8 @@ if (POSTGRES_URL) {
             required: ["id"],
             type: "object",
           },
+          selection: { fields: true, resources: false },
+          semantics: "append_only",
         },
       ],
       version: "1.0.0",
@@ -1766,7 +1837,7 @@ if (POSTGRES_URL) {
   //       #"Counts").
   test("postgres records list honors canonical sort and graded count", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-    const connectorId = `pg_canonical_${suffix}`;
+    const connectorId = `https://test.pdpp.dev/connectors/pg_canonical_${suffix}`;
     const connectorInstanceId = makeDefaultAccountConnectorInstanceId("owner_local", connectorId);
     const stream = "events";
     const grant = {
@@ -1793,6 +1864,7 @@ if (POSTGRES_URL) {
             type: "object",
           },
           selection: { fields: true, resources: false },
+          semantics: "mutable_state",
         },
       ],
       version: "1.0.0",

@@ -218,6 +218,15 @@ export function runConsentDeviceAuthConformance({
       const afterApprove = await driver.lookupPendingConsentByRequestUri(start.request_uri);
       assert.equal(afterApprove, null, "after approval, public lookup MUST NOT return a pending view");
 
+      const persisted = await driver.lookupPendingConsentByApprovalId(start.approval_id);
+      assert.ok(persisted, "approval_id lookup MUST retain the approved consent record");
+      assert.equal(persisted.status, "approved", "persisted consent MUST be terminal after approval");
+      assert.equal(
+        persisted.grant_id,
+        result.grant.grant_id,
+        "approval retry MUST resume the grant_id persisted by the first approval"
+      );
+
       const resumed = await driver.approvePendingConsent(start.request_uri);
       assert.deepEqual(resumed, result, "approval retry MUST resume the exact persisted grant and token");
     } finally {
@@ -616,6 +625,23 @@ export function runConsentDeviceAuthConformance({
         `approve-after-deny MUST throw code='approval_conflict'; got '${errorCode(approveErr)}'`
       );
 
+      // A missing user_code is a lookup failure, not a terminal-denial
+      // conflict. This discriminator catches adapters that collapse denied
+      // and unknown approval requests into one error code.
+      // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.
+      let unknownApproveErr = null;
+      try {
+        await driver.approveOwnerDeviceAuth(`${start.user_code}-unknown`);
+      } catch (e) {
+        unknownApproveErr = e;
+      }
+      assert.ok(unknownApproveErr, "approve with an unknown user_code MUST throw");
+      assert.equal(
+        errorCode(unknownApproveErr),
+        "not_found",
+        `approve with an unknown user_code MUST throw code='not_found'; got '${errorCode(unknownApproveErr)}'`
+      );
+
       // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.
       let exchangeErr = null;
       try {
@@ -654,6 +680,23 @@ export function runConsentDeviceAuthConformance({
         }
         throw err;
       }
+
+      // Expiry is unavailable rather than a denial conflict. Assert this
+      // independently of the exchange error below so adapters preserve the
+      // approval endpoint's not_found contract for expired rows.
+      // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.
+      let approveErr = null;
+      try {
+        await driver.approveOwnerDeviceAuth(start.user_code);
+      } catch (e) {
+        approveErr = e;
+      }
+      assert.ok(approveErr, "approve on an expired owner-device request MUST throw");
+      assert.equal(
+        errorCode(approveErr),
+        "not_found",
+        `expired owner-device approval MUST throw code='not_found'; got '${errorCode(approveErr)}'`
+      );
 
       // biome-ignore lint/suspicious/noEvolvingTypes: localized test assertion preserves its explicit contract.
       let exchangeErr = null;

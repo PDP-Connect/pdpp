@@ -2079,6 +2079,60 @@ test("outbox axis: a small open backlog does NOT get the debris carve-out when t
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
   );
   assert.equal(r.axis, "stalled");
+  // The carve-out is correctly refused (the axis stays `stalled`), but the
+  // CAUSE is `stale_heartbeat`, not `state_read_failed`: a heartbeat this old
+  // is evidence the collector stopped checking in, not that the server failed
+  // to read its state. This assertion previously read `state_read_failed` and
+  // encoded the owner-facing defect fixed on 2026-08-27 — see the
+  // Signal/peregrine test below.
+  assert.equal(r.cause, "stale_heartbeat");
+});
+
+// Owner-reported 2026-08-27 on /sources: the Signal source (connection
+// cin_992b0c94cebeb3066ba42a6e, local_device on host "peregrine") rendered
+// "Can't collect · Freshness has not been measured yet." The connector was
+// never broken — it had accepted 7,780 records across 18 ingest batches, every
+// one HTTP 201, last at 2026-08-22T01:00:17Z. What changed is that the
+// collector on that machine stopped checking in; five days later the device
+// row still read `last_heartbeat_status = 'blocked'` with
+// `{total: 22, succeeded: 22, dead_letter: 0, pending: 0, backlog_open: 1}`.
+//
+// That shape fails the bounded-debris carve-out on heartbeat age alone, and
+// used to fall through to `state_read_failed`, whose owner-facing copy claims
+// "The server cannot read the collector's last state from that host." The
+// server could read it fine. The honest fact — and the only one that points at
+// the action that fixes it — is that the collector is no longer running on the
+// owner's own machine.
+test("outbox axis: the Signal/peregrine shape blames the stopped collector, not a server read failure", () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({
+      backlogOpenCount: 1,
+      deadLetterCount: 0,
+      lastHeartbeatAt: OLD,
+      lastHeartbeatStatus: "blocked",
+      recordsPending: 0,
+    }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "stalled");
+  assert.equal(
+    r.cause,
+    "stale_heartbeat",
+    "a collector that stopped checking in must not be reported as a server-side state-read failure"
+  );
+  assert.equal(r.unreliable, false);
+});
+
+// The split is keyed on heartbeat AGE, not on `blocked` alone. A collector that
+// is demonstrably still checking in and still reports `blocked` genuinely does
+// describe an unreadable state, so that case must keep its original cause —
+// otherwise the fix would trade one inaccurate sentence for another.
+test("outbox axis: a FRESH blocked heartbeat still reads state_read_failed", () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ backlogOpenCount: 9, lastHeartbeatStatus: "blocked", recordsPending: 0 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS }
+  );
+  assert.equal(r.axis, "stalled");
   assert.equal(r.cause, "state_read_failed");
 });
 

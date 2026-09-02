@@ -111,3 +111,24 @@ export function resolveStorageConnectorInstanceId(storageTarget: StorageTarget, 
 export function getChangeHistoryLimit(): number {
   return Math.max(Number.parseInt(process.env.PDPP_CHANGE_HISTORY_LIMIT || "0", 10) || 0, 0);
 }
+
+// A write already admitted into the per-connector-instance write coordinator
+// for a run that has since reached a terminal state (owner-cancelled, timed
+// out, or otherwise closed). The runtime's own cancellation signal is a
+// client-side AbortSignal that cannot retroactively un-admit a write the
+// server already accepted; this is the storage-layer fence that refuses it
+// instead. See harden-ingest-run-admission-fence.
+//
+// Defined here, not in records.ts, so BOTH the SQLite (records.ts) and
+// Postgres (postgres-records.ts) run-admission fences can throw this same
+// typed error without records.ts and postgres-records.ts importing from each
+// other -- records.ts already imports postgres-records.ts for the async
+// storage capabilities, so the reverse import would be a cycle.
+export class RecordIngestRunTerminalError extends Error {
+  code: string;
+  constructor(runId: string) {
+    super(`run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`);
+    this.name = "RecordIngestRunTerminalError";
+    this.code = "run_terminal";
+  }
+}

@@ -27,7 +27,7 @@ const SCRATCH_LIFECYCLE_ORACLE_PATHS = [
   "scripts/test-scratch/run-command.test.ts",
 ] as const;
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
-function compareStrings(a: string, b: string): number {
+export function compareStrings(a: string, b: string): number {
   if (a < b) {
     return -1;
   }

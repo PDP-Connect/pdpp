@@ -18,6 +18,7 @@ import {
   ResolvedGrantSchema,
   validateResponse,
 } from "@pdpp/reference-contract";
+import type { ResolvedGrant } from "@pdpp/reference-contract/public/source";
 import {
   allowUnboundedReadAcknowledged,
   exec,
@@ -313,24 +314,28 @@ interface StoreWriteResult {
 }
 type SqliteBusyRetryOptions = NonNullable<Parameters<typeof runWithSqliteBusyRetry>[1]>;
 
-interface GrantEnvelope extends DbRow {
-  access_mode: string;
-  client: {
-    client_id: string;
+/**
+ * The resolved grant as it travels through this module.
+ *
+ * This is the PUBLIC contract type widened with an index signature, not a
+ * parallel restatement of it. It previously declared its own `expires_at:
+ * string | null`, which was a second compile-time authority disagreeing with
+ * the contract's absent-only `expires_at?: string`; the `as unknown as`
+ * bridges at every construction site hid that disagreement rather than
+ * surfacing it. Deriving from `ResolvedGrant` means a future reintroduction of
+ * nullable expiry in the contract cannot pass unnoticed here, and a
+ * reintroduction here is impossible because the field is no longer restated.
+ *
+ * The index signature is what `DbRow`-shaped consumers need (rows are passed
+ * around as loose records); it is additive and does not relax any member type.
+ * `streams` is re-stated only to add that same index signature element-wise —
+ * the local `ResolvedGrantStream` is the contract's stream shape widened the
+ * same way, not a different shape.
+ */
+type GrantEnvelope = Omit<ResolvedGrant, "streams"> &
+  Record<string, unknown> & {
+    streams: ResolvedGrantStream[];
   };
-  expires_at: string | null;
-  grant_id: string;
-  issued_at: string;
-  purpose_code: string;
-  purpose_description: string | undefined;
-  retention: unknown;
-  selection_preset?: string;
-  source: SourceBinding;
-  source_declaration: { version: string };
-  streams: ResolvedGrantStream[];
-  subject: { id: string };
-  version: string;
-}
 
 interface ResolvedGrantStream extends Record<string, unknown> {
   fields: string[];
@@ -5225,7 +5230,14 @@ export async function registerConnector(
   return connectorId;
 }
 
-function normalizeConnectorManifestForStorage(manifest: Record<string, unknown>): {
+/**
+ * Produce the exact manifest representation persisted by `registerConnector`.
+ *
+ * Callers that compare a candidate manifest with storage MUST use this
+ * authority. In particular, legacy manifest projection adds a durable source
+ * declaration that is not present in the shipped JSON.
+ */
+export function normalizeConnectorManifestForStorage(manifest: Record<string, unknown>): {
   connectorId: string;
   storedManifest: Record<string, unknown>;
 } {
@@ -6562,7 +6574,7 @@ async function persistApprovedBatchGrantAtomically({
         resolved.slice
       ) as unknown as import("./core-source-authorization.ts").RetainedCoreConsentSnapshot,
       subjectId,
-    }) as unknown as GrantEnvelope;
+    }) as GrantEnvelope;
     const source = describePackageMemberSource(grant);
     if (!isNonEmptyString(grant.grant_id)) {
       throw bindingError("grant_invalid", "Issued child grant is missing grant_id");
@@ -7222,7 +7234,7 @@ export async function approveGrant(
       request
     ) as unknown as import("./core-source-authorization.ts").RetainedCoreConsentSnapshot,
     subjectId,
-  }) as unknown as GrantEnvelope;
+  }) as GrantEnvelope;
 
   const token = await persistApprovedSingleGrantAtomically({
     accessMode: selection.access_mode,
@@ -8317,7 +8329,7 @@ async function persistChildGrantForPackage({
     selectionPreset: selection.selection_preset,
     snapshot: snapshot as unknown as import("./core-source-authorization.ts").RetainedCoreConsentSnapshot,
     subjectId,
-  }) as unknown as GrantEnvelope;
+  }) as GrantEnvelope;
 
   await getGrantPackageStore().insertChildGrant({
     accessMode: selection.access_mode,

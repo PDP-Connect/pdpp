@@ -23,9 +23,9 @@
 //     `connector_instance_id` (== `connection_id`) to status `revoked`. Routine
 //     ingest already refuses a non-active instance (the resolver's active-status
 //     gate), so no new run/ingest lands for the connection.
-//   - Already-collected records, dataset projections, spine evidence, device
-//     rows, and SIBLING connections are untouched — revoke is zero-cascade.
-//     Records stay readable; revoke is not delete.
+//   - Revoke also revokes this connection's stored credential. Already-collected
+//     records, dataset projections, spine evidence, device rows, and SIBLING
+//     connections are untouched. Records stay readable; revoke is not delete.
 //   - It is durable: implicit default-account materialization no longer
 //     resurrects a revoked row (the durability guard in
 //     `ensureDefaultAccountConnection` + the resolver's non-active fail-closed),
@@ -62,6 +62,7 @@
 //        #"Owner-agent control mutations SHALL be auditable and secret-safe")
 //       design.md "Deferred: connection-revoke durability" → Unit 2.
 
+import type { CredentialStateChange } from "../stores/connector-instance-credential-store.ts";
 import {
   auditActorKind,
   buildAuditTrace,
@@ -173,12 +174,19 @@ export interface MountOwnerConnectionRevokeContext {
   setReferenceTraceId: (res: RouteResponse, traceId: string) => void;
   // Connection-scoped soft-flip primitive. Owner-scoped because the namespace
   // was already resolved + ownership-verified owner-side; flips exactly one
-  // connector_instance to status `revoked`, zero cascade. Returns the updated
-  // row. The SAME store primitive the device-collected and default-account
-  // classes share — no new destructive semantic is introduced here.
+  // connector_instance and its stored credential to status `revoked`. Returns
+  // the updated row. The SAME store primitive the device-collected and
+  // default-account classes share — no new destructive semantic is introduced
+  // here.
   updateConnectorInstanceStatus: (
     connectorInstanceId: string,
-    options: { status: "revoked"; updatedAt: string; revokedAt: string }
+    options: {
+      status: "revoked";
+      updatedAt: string;
+      revokedAt: string;
+      sourceBindingPatch: { revocation_reason: "owner_revoked" };
+      credentialStateChange: CredentialStateChange;
+    }
   ) => Promise<RevokedInstance> | RevokedInstance;
 }
 
@@ -197,9 +205,10 @@ async function emitRevokeAudit(
     outcome: "succeeded" | "failed";
     ownerSubjectId?: string | null;
     selector: "connection_id" | "connector_id";
+    trace?: TraceContext;
   }
 ): Promise<void> {
-  const trace = buildAuditTrace(ctx, req, res);
+  const trace = args.trace ?? buildAuditTrace(ctx, req, res);
   const clientId = typeof req.tokenInfo?.client_id === "string" ? req.tokenInfo.client_id : null;
   const clientName = typeof req.tokenInfo?.client_name === "string" ? req.tokenInfo.client_name : null;
   const actorKind = auditActorKind(req);
@@ -320,9 +329,20 @@ function buildRevokeHandler(
       connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
 
       const stamp = ctx.now ? ctx.now() : new Date().toISOString();
+      const trace = buildAuditTrace(ctx, req, res);
+      const actorType = auditActorKind(req);
+      const actorId = typeof req.tokenInfo?.client_id === "string" ? req.tokenInfo.client_id : ownerSubjectId;
       const revoked = await Promise.resolve(
         ctx.updateConnectorInstanceStatus(namespace.connectorInstanceId, {
+          credentialStateChange: {
+            actorId,
+            actorType,
+            cause: "owner_revoked",
+            requestId: trace.request_id,
+            traceId: trace.trace_id,
+          },
           revokedAt: stamp,
+          sourceBindingPatch: { revocation_reason: "owner_revoked" },
           status: "revoked",
           updatedAt: stamp,
         })
@@ -338,6 +358,7 @@ function buildRevokeHandler(
         outcome: "succeeded",
         ownerSubjectId,
         selector,
+        trace,
       });
       res.status(200).json({
         connection_id: connectionId,

@@ -23,6 +23,7 @@ const OWNER_VERDICT_ACTION_TESTID_RE = /data-testid="sources-owner-verdict-actio
 const OWNER_VERDICT_ACTION_HREF_RE = /href=\{instance\.detailHref\}/;
 const OWNER_VERDICT_ACTION_TITLE_RE = /Open source details to complete this owner action/;
 const SOURCE_ROW_MARKER_RE = /data-pdpp-source-row=\{instance\.connectionId \?\? instance\.id\}/g;
+const SOURCE_SCOPE_MARKER_RE = /data-pdpp-source-scope=\{instance\.sourceScope\}/g;
 const STREAM_ROW_MARKER_RE =
   /data-connection-id=\{connectionId\}[\s\S]*data-pdpp-stream-row="true"[\s\S]*data-stream-name=\{stream\.name\}/;
 
@@ -67,6 +68,11 @@ test("SourcesView renders non-run owner actions as subject-scoped detail links, 
 test("SourcesView emits stable source and stream row markers for acceptance evidence", async () => {
   const src = await readFile(SOURCES_VIEW_FILE, "utf8");
   assert.equal(src.match(SOURCE_ROW_MARKER_RE)?.length, 2, "mobile and desktop source rows must both be marked");
+  assert.equal(
+    src.match(SOURCE_SCOPE_MARKER_RE)?.length,
+    2,
+    "mobile and desktop source rows must declare lifecycle scope"
+  );
   assert.match(src, STREAM_ROW_MARKER_RE);
 });
 

@@ -8,6 +8,10 @@ import test from "node:test";
 
 const REFERENCE_ROOT = resolve(import.meta.dirname, "../..");
 
+const POSTGRES_TEST_OPTIONS = {
+  skip: process.env.PDPP_TEST_POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+};
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -102,13 +106,16 @@ test("terminal decisions: SQLite approval and denial arbitrate without contradic
   );
 });
 
-test("terminal decisions: live PostgreSQL approval and denial arbitrate atomically", async () => {
-  assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
-  await assertFocusedTestsPass("test/auth-consent-device-postgres-path.test.ts", [
-    "owner device authorization: approve and deny arbitrate one terminal decision on postgres",
-    "pending consent: approve and deny arbitrate atomically with rollback on postgres",
-  ]);
-});
+test(
+  "terminal decisions: live PostgreSQL approval and denial arbitrate atomically",
+  POSTGRES_TEST_OPTIONS,
+  async () => {
+    await assertFocusedTestsPass("test/auth-consent-device-postgres-path.test.ts", [
+      "owner device authorization: approve and deny arbitrate one terminal decision on postgres",
+      "pending consent: approve and deny arbitrate atomically with rollback on postgres",
+    ]);
+  }
+);
 
 test("agent-cli: crash recovery from committed pending approval", async () => {
   await assertFocusedTestsPass("test/agent-cli.test.ts", [
@@ -134,12 +141,15 @@ test("agent-connect: denial is durable across approval_id and completion failure
   ]);
 });
 
-test("agent-connect: live PostgreSQL denial is durable across approval_id and restart", async () => {
-  assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
-  await assertFocusedTestsPass("test/agent-cli.test.ts", [
-    "agent-connect: live Postgres denial projects and recovers after completion failure",
-  ]);
-});
+test(
+  "agent-connect: live PostgreSQL denial is durable across approval_id and restart",
+  POSTGRES_TEST_OPTIONS,
+  async () => {
+    await assertFocusedTestsPass("test/agent-cli.test.ts", [
+      "agent-connect: live Postgres denial projects and recovers after completion failure",
+    ]);
+  }
+);
 
 test("agent-cli: crash-completed expiry and prune revoke committed approvals", async () => {
   await assertFocusedTestsPass("test/agent-cli.test.ts", [
@@ -181,15 +191,17 @@ test("agent-cli: cache headers reject invalid bearer without token disclosure", 
   ]);
 });
 
-test("agent-cli: live PostgreSQL approved expiry and revocation fail closed before delivery", async () => {
-  assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
-  await assertFocusedTestsPass("test/agent-cli.test.ts", [
-    "agent-connect: live Postgres approved expiry and revocation fail closed before delivery",
-  ]);
-});
+test(
+  "agent-cli: live PostgreSQL approved expiry and revocation fail closed before delivery",
+  POSTGRES_TEST_OPTIONS,
+  async () => {
+    await assertFocusedTestsPass("test/agent-cli.test.ts", [
+      "agent-connect: live Postgres approved expiry and revocation fail closed before delivery",
+    ]);
+  }
+);
 
-test("agent-cli: live PostgreSQL crash expiry/prune and response-loss replay", async () => {
-  assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
+test("agent-cli: live PostgreSQL crash expiry/prune and response-loss replay", POSTGRES_TEST_OPTIONS, async () => {
   await assertFocusedTestsPass("test/agent-cli.test.ts", [
     "agent-connect: live Postgres response-loss retry survives unrelated registration",
     "agent-connect: live Postgres crash-completed expiry and prune revoke committed tokens",
@@ -218,10 +230,13 @@ test("batch consent: package handoff and revocation are durable", async () => {
   ]);
 });
 
-test("auth consent device PostgreSQL: concurrent redemption and package revocation", async () => {
-  assert.ok(process.env.PDPP_TEST_POSTGRES_URL, "live PostgreSQL is required");
-  await assertFocusedTestsPass("test/auth-consent-device-postgres-path.test.ts", [
-    "consent handoff: concurrent Postgres redemption converges on one persisted token",
-    "consent handoff: Postgres package delivery works and revocation fails closed",
-  ]);
-});
+test(
+  "auth consent device PostgreSQL: concurrent redemption and package revocation",
+  POSTGRES_TEST_OPTIONS,
+  async () => {
+    await assertFocusedTestsPass("test/auth-consent-device-postgres-path.test.ts", [
+      "consent handoff: concurrent Postgres redemption converges on one persisted token",
+      "consent handoff: Postgres package delivery works and revocation fails closed",
+    ]);
+  }
+);

@@ -17,50 +17,27 @@ import {
   synthesizeRenderedVerdict,
 } from "../runtime/rendered-verdict.ts";
 import { composeFleetHealthVerdict, type FleetSummary } from "../server/fleet-health.ts";
+import {
+  BASELINE_ACTIVE_SCHEDULE,
+  BASELINE_AUTOMATIC_REFRESH,
+  BASELINE_MANUAL_REFRESH,
+  BASELINE_OBSERVED_AT,
+  BASELINE_RETRY_AT,
+  BASELINE_SUCCESS_AT,
+  healthyConnectionInput,
+} from "./fixtures/connection-health-baseline.ts";
 
-const OBSERVED_AT = "2026-08-12T12:00:00.000Z";
-const SUCCESS_AT = "2026-08-12T11:55:00.000Z";
-const RETRY_AT = "2026-08-12T12:30:00.000Z";
+const OBSERVED_AT = BASELINE_OBSERVED_AT;
+const SUCCESS_AT = BASELINE_SUCCESS_AT;
 const REFRESH_TO_UPDATE_RE = /refresh to update/i;
 
-const AUTOMATIC_REFRESH = {
-  backgroundSafe: true,
-  interactionPosture: "none" as const,
-  recommendedMode: "automatic" as const,
-};
+const AUTOMATIC_REFRESH = BASELINE_AUTOMATIC_REFRESH;
+const MANUAL_REFRESH = BASELINE_MANUAL_REFRESH;
+const ACTIVE_SCHEDULE = BASELINE_ACTIVE_SCHEDULE;
 
-const MANUAL_REFRESH = {
-  backgroundSafe: false,
-  interactionPosture: "none" as const,
-  recommendedMode: "manual" as const,
-};
-
-const ACTIVE_SCHEDULE = { hasPriorSuccess: true, mode: "scheduled-active" as const };
-
+/** Delegates to the shared known-green baseline; semantics unchanged. */
 function input(overrides: Partial<ComputeConnectionHealthInput> = {}): ComputeConnectionHealthInput {
-  return {
-    activity: { active: false },
-    attention: null,
-    backoff: {
-      backoffApplied: true,
-      consecutiveFailures: 1,
-      nextRunAt: RETRY_AT,
-      reasonClass: "failure:network_timeout",
-    },
-    coverage: { axis: "complete" },
-    freshness: { axis: "fresh" },
-    outbox: { axis: "idle" },
-    projection: { unreliableSources: [] },
-    refresh: AUTOMATIC_REFRESH,
-    run: {
-      hasDegradingGaps: false,
-      lastSuccessAt: SUCCESS_AT,
-      latestStatus: "succeeded",
-      reasonCode: null,
-    },
-    schedule: { enabled: true },
-    ...overrides,
-  };
+  return healthyConnectionInput(overrides);
 }
 
 function stream(overrides: Partial<StreamRollup> = {}): StreamRollup {
@@ -170,7 +147,20 @@ test("one health authority discriminates failure, passive cooling, owner action,
     ["failed-backoff"]
   );
 
-  const passive = project(input());
+  // Passive cooling is THIS case's subject, so it states the backoff facts
+  // explicitly rather than inheriting them: the shared baseline is neutral
+  // (no backoff) by design, because a baseline that silently carries an
+  // active retry is not a healthy starting point for anyone else.
+  const passive = project(
+    input({
+      backoff: {
+        backoffApplied: true,
+        consecutiveFailures: 1,
+        nextRunAt: BASELINE_RETRY_AT,
+        reasonClass: "failure:network_timeout",
+      },
+    })
+  );
   assert.equal(passive.snapshot.state, "cooling_off");
   assert.equal(passive.verdict.pill.tone, "amber");
   assert.equal(passive.verdict.pill.label, "Needs refresh");
@@ -189,7 +179,11 @@ test("one health authority discriminates failure, passive cooling, owner action,
     })
   );
   assert.equal(stale.snapshot.state, "degraded");
-  assert.equal(stale.verdict.pill.label, "Missing data");
+  // "Needs refresh", not "Missing data": nothing is missing — coverage is
+  // complete and the run succeeded; the data has simply aged. The previous
+  // expectation was an artifact of the old fixture default, which layered an
+  // active retry backoff onto every case and inflated the label.
+  assert.equal(stale.verdict.pill.label, "Needs refresh");
   assert.equal(stale.ownerState.resolver, "system_degraded");
   assert.equal(sourceWorkGroupFromOwnerState(stale.ownerState.resolver), "system_issue");
   const staleFleet = fleetFor("stale-backoff", stale);
@@ -314,6 +308,34 @@ test("optional terminal stream downgrades the pill to Missing optional data with
     fleet.dimensions.attention.needs_owner,
     [],
     "but the owner is never asked to fix a stream that cannot be recovered"
+  );
+});
+
+// A required stream's terminal gap must dominate to red even when the
+// connection-level coverage axis is otherwise `complete` and there was a
+// same-day success — same-day success only softens a terminal disposition
+// when the connection's OWN coverage axis independently shows the gap
+// (`softensTerminalCoverageToDegraded`, rendered-verdict.ts); a per-stream
+// rollup carrying an independent required-stream loss is not that.
+test("required terminal stream stays Can't collect across every surface, even with a same-day success", () => {
+  const projected = project(
+    input({ coverage: { axis: "complete" }, refresh: MANUAL_REFRESH, schedule: null }),
+    [stream({ coverage: "terminal_gap", priority: "required", stream_id: "required_stream" })],
+    MANUAL_REFRESH,
+    null
+  );
+
+  assert.equal(projected.snapshot.state, "healthy");
+  assert.equal(projected.snapshot.axes.coverage, "complete");
+  assert.equal(projected.verdict.pill.label, "Can't collect");
+  assert.equal(projected.verdict.pill.tone, "red");
+  assert.equal(projected.ownerState.resolver, "blocked_maintainer");
+
+  const fleet = fleetFor("required-stream", projected);
+  assert.equal(fleet.state, "unhealthy");
+  assert.deepEqual(
+    fleet.dimensions.system.degraded_or_broken.map((entry) => entry.connection_id),
+    ["required-stream"]
   );
 });
 

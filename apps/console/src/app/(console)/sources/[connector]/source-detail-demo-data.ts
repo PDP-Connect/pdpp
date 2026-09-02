@@ -264,9 +264,11 @@ export function buildRecoveryDemoModel(): ConnectorPageModel {
     connectionRenderedVerdict: renderedVerdict,
     connectorId: "claude_code",
     connectorInstanceId: connectionId,
+    coverageHorizons: [],
     deviceLabels: ["workstation"],
     displayName: "Claude Code workstation",
     headerCount: "464 records, 2 streams",
+    latestKnownGaps: [],
     manifest: {
       connector_id: "claude_code",
       display_name: "Claude Code",

@@ -205,18 +205,16 @@ test(
 function readEvidence(connectorInstanceId: string): {
   dirty: number;
   streamLatestFactsJson: string | null;
-  listSummaryProjectionState: string | null;
   state: string | null;
 } | null {
   const row = getDb()
     .prepare(
-      `SELECT dirty, stream_latest_facts_json, list_summary_projection_state, state
+      `SELECT dirty, stream_latest_facts_json, state
          FROM connector_summary_evidence WHERE connector_instance_id = ?`
     )
     .get<{
       dirty: number;
       stream_latest_facts_json: string | null;
-      list_summary_projection_state: string | null;
       state: string | null;
     }>(connectorInstanceId);
   if (!row) {
@@ -224,7 +222,6 @@ function readEvidence(connectorInstanceId: string): {
   }
   return {
     dirty: Number(row.dirty ?? 0),
-    listSummaryProjectionState: row.list_summary_projection_state,
     state: row.state,
     streamLatestFactsJson: row.stream_latest_facts_json,
   };

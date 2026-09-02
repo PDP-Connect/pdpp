@@ -54,6 +54,8 @@ import { registerConnector as registerConnectorUntyped } from "../server/auth.ts
 import { closeDb, initDb } from "../server/db.ts";
 import { reconcilePolyfillManifests } from "../server/polyfill-manifest-reconcile.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { createAlreadyAdmittedTestDatabaseChildAttachment } from "../server/postgres-test-database-guard.ts";
+import { snapshotContentAddressedSourceDeclarationFromLegacyConnectorManifest } from "../server/source-declaration-legacy-collection.ts";
 import { ingestRecord as ingestRecordUntyped } from "../server/records.ts";
 import { createPostgresConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
@@ -82,11 +84,24 @@ const ingestRecordForInstance = ingestRecordUntyped as (
 if (POSTGRES_URL) {
   const databaseUrl: string = POSTGRES_URL;
   const CONNECTOR_ID = "generation-fixture-pg";
+  const MANIFEST_URI = "https://registry.pdpp.dev/connectors/generation-fixture-pg";
+
+  function withSourceDeclaration(manifest: Manifest): Manifest {
+    return {
+      ...manifest,
+      source_declaration: snapshotContentAddressedSourceDeclarationFromLegacyConnectorManifest(manifest, {
+        connectorImplementationId: MANIFEST_URI,
+        publisherId: "https://pdpp.dev/reference-implementation",
+        sourceId: MANIFEST_URI,
+      }),
+    };
+  }
 
   function generationManifestV1(overrides: Partial<Manifest> = {}): Manifest {
-    return {
+    return withSourceDeclaration({
       connector_id: CONNECTOR_ID,
       connector_key: CONNECTOR_ID,
+      manifest_uri: MANIFEST_URI,
       display_name: "Generation fixture connector (Postgres)",
       protocol_version: "0.1.0",
       runtime_requirements: { bindings: { filesystem: { required: true } } },
@@ -105,11 +120,12 @@ if (POSTGRES_URL) {
       ],
       version: "0.1.0",
       ...overrides,
-    };
+    });
   }
 
   function generationManifestV2(overrides: Partial<Manifest> = {}): Manifest {
-    return generationManifestV1({
+    return withSourceDeclaration({
+      ...generationManifestV1(),
       capabilities: { record_identity: { generation: 1 } },
       version: "0.2.0",
       ...overrides,
@@ -534,6 +550,8 @@ if (POSTGRES_URL) {
   test(
     "[postgres] two genuine OS processes running reconcileRecordIdentityGeneration concurrently for the SAME connector/instance converge on the identical checkpoint with no record loss for a sibling instance",
     withPostgresFixture(async ({ dir }) => {
+      const childAttachmentA = await createAlreadyAdmittedTestDatabaseChildAttachment(POSTGRES_URL);
+      const childAttachmentB = await createAlreadyAdmittedTestDatabaseChildAttachment(POSTGRES_URL);
       await registerConnector(generationManifestV1());
       await seedGenerationInstance("cin_gen_pg_race_target", "race-target@example.com");
       await ingestOldGenerationItems("cin_gen_pg_race_target");
@@ -571,8 +589,8 @@ if (POSTGRES_URL) {
         RACE_MANIFESTS_DIR: manifestsDir,
         RACE_REFERENCE_FIXTURES_DIR: referenceFixturesDir,
       };
-      const childA = spawnFixture(childEnv);
-      const childB = spawnFixture(childEnv);
+      const childA = spawnFixture({ ...childEnv, RACE_CHILD_ATTACHMENT: childAttachmentA });
+      const childB = spawnFixture({ ...childEnv, RACE_CHILD_ATTACHMENT: childAttachmentB });
 
       const readyA = JSON.parse(await childA.nextLine());
       const readyB = JSON.parse(await childB.nextLine());

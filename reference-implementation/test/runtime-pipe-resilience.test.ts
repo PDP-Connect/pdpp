@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { test } from "node:test";
 import type { RuntimeRunConnectorResult } from "../runtime/index.ts";
-import { runConnector } from "../runtime/index.ts";
+import { createJsonlLineDispatcher, runConnector } from "../runtime/index.ts";
 import { isClosedPipeWriteError } from "../runtime/pipe-errors.ts";
 import { type DeriveTerminalReasonInput, deriveTerminalReason } from "../runtime/terminal-reason.ts";
 
@@ -58,6 +58,18 @@ function fakeAdmitRunConnection(): (input: {
     return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
   };
 }
+
+test("createJsonlLineDispatcher replays complete lines emitted before the runtime installs its listener", () => {
+  const dispatcher = createJsonlLineDispatcher();
+  const received: string[] = [];
+
+  dispatcher.dispatch('{"type":"RECORD"}\r');
+  dispatcher.dispatch('{"type":"DONE"}');
+  dispatcher.onLine((line) => received.push(line));
+  dispatcher.dispatch('{"type":"STATE"}');
+
+  assert.deepEqual(received, ['{"type":"RECORD"}', '{"type":"DONE"}', '{"type":"STATE"}']);
+});
 
 // Regression coverage for
 //   openspec/changes/harden-reference-runtime-reliability/
@@ -520,4 +532,109 @@ main().catch(err => {
     `expected succeeded, got ${result.status}${result.terminal_reason ? ` (${result.terminal_reason})` : ""}${result.failure_message ? `: ${result.failure_message}` : ""}`
   );
   assert.equal(result.records_emitted, RECORD_COUNT, "all records counted");
+});
+
+// ─── 5. START/listener ordering regression ─────────────────────────────────
+
+test("runConnector: preserves a connector's first RECORD when it writes immediately after START", async () => {
+  // The live GitHub failure had this exact shape: the child received START,
+  // emitted its first stream, and reported a count that included it before
+  // the runtime installed its JSONL listener. The child is deliberately
+  // faster than the runtime here — no timer, no I/O between START and RECORD.
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      const recordsAccepted = body.split("\n").filter(Boolean).length;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          records_accepted: recordsAccepted,
+          records_attempted: recordsAccepted,
+          records_rejected: 0,
+          rejections: [],
+        })
+      );
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object", "expected an AddressInfo from an ephemeral listen(0)");
+
+  const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-start-listener-order-"));
+  const connectorPath = join(tmpDir, "immediate-first-record.mjs");
+  writeFileSync(
+    connectorPath,
+    `
+import { createInterface } from "node:readline";
+
+const reader = createInterface({ input: process.stdin, terminal: false });
+reader.once("line", () => {
+  const emittedAt = new Date().toISOString();
+  process.stdout.write(JSON.stringify({ type: "RECORD", stream: "items", key: "first", data: { id: "first" }, emitted_at: emittedAt }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "STATE", stream: "items", cursor: { seen: "first" } }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+  process.stdin.once("end", () => process.exit(0));
+  setTimeout(() => process.exit(0), 500).unref();
+});
+`,
+    "utf8"
+  );
+  chmodSync(connectorPath, 0o755);
+
+  const manifest = {
+    connector_id: "https://registry.pdpp.dev/connectors/test-start-listener-order",
+    runtime_requirements: {},
+    streams: [
+      {
+        name: "items",
+        primary_key: "id",
+        schema: { properties: { id: { type: "string" } }, required: ["id"], type: "object" },
+      },
+    ],
+    version: "0.1.0",
+  };
+
+  let outcome: RuntimeRunConnectorResult | null = null;
+  let outcomeError: unknown = null;
+  try {
+    outcome = await runConnector({
+      admitRunConnection: fakeAdmitRunConnection(),
+      collectionMode: "full_refresh",
+      connectorId: manifest.connector_id,
+      connectorPath,
+      detailGapStore: {
+        // biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing
+        async listPendingGaps() {
+          return [];
+        },
+        // biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing
+        async markGapStatus() {
+          return null;
+        },
+        // biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing
+        async upsertPendingGap() {
+          return null;
+        },
+      },
+      manifest,
+      onInteraction: () => ({ status: "cancelled", type: "INTERACTION_RESPONSE" }),
+      // biome-ignore lint/suspicious/noEmptyBlockStatements: this regression asserts only the returned protocol outcome
+      onProgress: () => {},
+      ownerToken: "test-owner-token",
+      rsUrl: `http://127.0.0.1:${address.port}`,
+      state: null,
+    });
+  } catch (err) {
+    outcomeError = err;
+  } finally {
+    server.close();
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+
+  const result = asStructuredOutcome(outcome ?? outcomeError);
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.records_emitted, 1, "the runtime must observe the first RECORD before validating DONE");
 });

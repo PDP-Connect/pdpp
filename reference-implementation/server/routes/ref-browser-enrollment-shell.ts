@@ -38,6 +38,7 @@ import {
   displayNameForConnector,
   isBrowserBoundConnector,
 } from "../connection-setup-plan.ts";
+import type { CredentialStateChange } from "../stores/connector-instance-credential-store.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // TTL applied to every new browser-enrollment shell: 2 hours. This is long
@@ -118,6 +119,7 @@ interface ConnectorInstanceStore {
       updatedAt: string;
       revokedAt?: string | null;
       sourceBindingPatch?: Record<string, unknown> | null;
+      credentialStateChange?: CredentialStateChange;
     }
   ) => Promise<ConnectorInstance | null> | ConnectorInstance | null;
   upsert: (record: {
@@ -170,9 +172,10 @@ async function emitShellAudit(
     operation: string;
     outcome: "succeeded" | "failed";
     ownerSubjectId?: string | null;
+    trace?: TraceContext;
   }
 ): Promise<void> {
-  const trace = buildAuditTrace(ctx, res);
+  const trace = args.trace ?? buildAuditTrace(ctx, res);
   const ownerSubjectId = args.ownerSubjectId ?? req.ownerSession?.sub ?? null;
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
@@ -423,7 +426,15 @@ export function mountRefBrowserEnrollmentShell(app: AppLike, ctx: MountRefBrowse
         }
 
         const now = ctx.now ? ctx.now() : new Date().toISOString();
+        const trace = buildAuditTrace(ctx, res);
         await store.updateStatus(connectorInstanceId, {
+          credentialStateChange: {
+            actorId: ownerSubjectId,
+            actorType: "owner_session",
+            cause: "owner_abandoned",
+            requestId: trace.request_id,
+            traceId: trace.trace_id,
+          },
           revokedAt: now,
           // Distinguishes an owner's explicit dismissal from the TTL sweep's
           // `ttl_expired` (browser-enrollment-shell-retirement.ts) — an owner
@@ -441,6 +452,7 @@ export function mountRefBrowserEnrollmentShell(app: AppLike, ctx: MountRefBrowse
           operation: "abandon",
           outcome: "succeeded",
           ownerSubjectId,
+          trace,
         });
 
         res.status(200).json({

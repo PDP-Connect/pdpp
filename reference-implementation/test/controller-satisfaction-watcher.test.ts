@@ -80,6 +80,7 @@ function snapshot(overrides: SnapshotOverrides = {}): ConnectionHealthSnapshot {
     badges: { stale: false, syncing: false, ...(overrides.badges ?? {}) },
     collection_rate: null,
     conditions: overrides.conditions ?? [],
+    coverage_horizons: [],
     detail_gap_backlog: overrides.detail_gap_backlog ?? null,
     dominant_condition_id: overrides.dominant_condition_id ?? null,
     ephemeral_browser_runtime: null,

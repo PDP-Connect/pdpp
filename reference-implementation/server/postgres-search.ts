@@ -14,6 +14,7 @@
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
 import type { PostgresTransactionClient } from "./postgres-storage.ts";
 import {
+  isPostgresSemanticGlobalHnswUsable,
   isPostgresSemanticIterativeScanSupported,
   isPostgresSemanticVectorEmbedding,
   postgresBulkQuery,
@@ -170,9 +171,52 @@ export async function postgresLexicalIndexPublishWithClient(
     fields,
   }: RecordScope & { fields: Record<string, unknown> }
 ): Promise<void> {
-  await postgresLexicalIndexDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
   const entries = lexicalTextEntries(fields);
-  await upsertLexicalEntries(entries, 0, { connectorId, connectorInstanceId, recordKey, stream }, client);
+  // Re-collecting a record whose indexed text did not change is the common
+  // case, not the exception: a connector re-reads its window every run and
+  // most rows come back byte-identical. The old body deleted this record's
+  // index rows and re-inserted them unconditionally, so every such re-collect
+  // burned a dead tuple per field even though the resulting rows were the
+  // same. Measured in production 2026-08-30: 195.8M inserts and 192.2M
+  // deletes to hold ~8M live rows, ~22.8M inserts/hour against a ~7M-row
+  // corpus. The resulting autovacuum load starved the connector-maintenance
+  // sweep, which sat at 47 consecutive no-progress passes while a source's
+  // record count stayed visibly stale for hours.
+  //
+  // So read the current rows first and write only what genuinely differs.
+  // This is a WRITE-ELISION optimization only — the post-state is identical
+  // either way, which is what makes it safe.
+  //
+  // There is deliberately NO `if (nothingChanged) return` fast path. Field
+  // granularity below already reduces an all-identical record to zero
+  // statements, so such a branch would be unreachable-by-effect: removing it
+  // leaves every test in lexical-index-skip-unchanged-postgres.test.ts green,
+  // which is exactly the evidence that it earns nothing.
+  const current = await client.query<{ field: string; value: string }>(
+    "SELECT field, value FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3",
+    [connectorInstanceId, stream, recordKey]
+  );
+  const currentByField = new Map(current.rows.map((row) => [row.field, row.value]));
+  // Touch only what actually differs, at field granularity:
+  //
+  //   - delete ONLY fields that are genuinely gone;
+  //   - upsert ONLY fields whose value differs (or that are new).
+  //
+  // Both halves matter. Deleting the survivors would recreate the churn this
+  // guard exists to remove, and re-upserting an identical value is not free
+  // either: `ON CONFLICT ... DO UPDATE` writes a new tuple even when the value
+  // is unchanged, so a record that gains one field would otherwise rewrite
+  // every other field's row alongside it.
+  const nextFields = new Set(entries.map((entry) => entry.field));
+  const removedFields = current.rows.map((row) => row.field).filter((field) => !nextFields.has(field));
+  if (removedFields.length > 0) {
+    await client.query(
+      "DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND field = ANY($4)",
+      [connectorInstanceId, stream, recordKey, removedFields]
+    );
+  }
+  const changedEntries = entries.filter((entry) => currentByField.get(entry.field) !== entry.value);
+  await upsertLexicalEntries(changedEntries, 0, { connectorId, connectorInstanceId, recordKey, stream }, client);
 }
 
 /** Postgres client-scoped lexical delete — see `postgresLexicalIndexPublishWithClient`'s header. */
@@ -567,19 +611,51 @@ export async function postgresCountSemanticIndexByScope({
   return Number(result.rows[0]?.n || 0);
 }
 
-export async function postgresListExistingSemanticKeys({
+/**
+ * Existing semantic keys for a BOUNDED set of record keys — one rebuild page.
+ *
+ * The whole-stream sibling below reads every key a stream has ever indexed.
+ * That is O(stream size) held live in one Set, and on 2026-08-27 it killed
+ * production: 1,515,064 rows for a single claude-code stream materialized as
+ * ~1.5M JSON strings, ~200 MB per pass, heap ceiling reached in ~20 minutes,
+ * repeat forever because the read happens at boot.
+ *
+ * This asks the same question of only the page about to be processed, so peak
+ * retention is O(page) — 500 rows — regardless of how large the stream grows.
+ * The answer is identical: `buildSemanticIndexEntries` only ever tests keys
+ * belonging to rows in its own page, so keys outside it could never be hit.
+ */
+export async function postgresListExistingSemanticKeysForRecords({
   connectorId,
   connectorInstanceId,
-  stream,
-}: Required<ConnectorStreamScope>) {
-  const scopePrefix = `[${JSON.stringify(stream)},`;
+  recordKeys,
+  scopeKeys,
+}: Omit<Required<ConnectorStreamScope>, "stream"> & {
+  recordKeys: readonly string[];
+  scopeKeys: readonly string[];
+}) {
+  if (recordKeys.length === 0 || scopeKeys.length === 0) {
+    return new Set<string>();
+  }
+  // EXACT scope keys, never a prefix match. The primary key is
+  // (connector_instance_id, scope_key, record_key), so a `LIKE 'prefix%'` on
+  // the MIDDLE column cannot serve as an index condition — Postgres drops it
+  // to a filter and index-scans every row belonging to the instance.
+  //
+  // Measured against the live 1,820,100-row table, single-record lookup:
+  //   scope_key LIKE '["messages",%'   -> 5924.509 ms
+  //   scope_key = ANY(exact keys)      ->    0.069 ms
+  // The backfill issues this once per page at boot for every connector, so the
+  // prefix form saturated Postgres and starved concurrent ingest, which
+  // surfaced to connectors as `fetch failed`.
   const result = await postgresQuery(
     `SELECT scope_key, record_key
      FROM semantic_search_blob
      WHERE connector_id = $1
        AND connector_instance_id = $2
-       AND scope_key LIKE $3`,
-    [connectorId, connectorInstanceId, `${scopePrefix}%`]
+       AND scope_key = ANY($3)
+       AND record_key = ANY($4)`,
+    [connectorId, connectorInstanceId, [...scopeKeys], [...recordKeys]]
   );
   return new Set(
     result.rows.map((row) => JSON.stringify([row.scope_key, `${connectorInstanceId}\u0000${row.record_key}`]))
@@ -1127,13 +1203,37 @@ async function postgresSemanticSearchVector({
   const retainedEstimate = broadProductionSearch
     ? await postgresSemanticRetainedRowEstimate({ connectorInstanceId, scopeKeys })
     : null;
+  // The candidate window takes a connector-wide ANN `LIMIT` before the grant
+  // scope filter, so it approximates the scoped ranking. Completeness is
+  // guaranteed downstream by the truncation probe, which falls back to the
+  // exact scoped scan whenever the pre-scope cut could have discarded an
+  // authorized row — that probe, not this condition, is what makes the path
+  // safe.
+  //
+  // This condition is the cost guard. The window is only worth attempting
+  // over a verified-canonical HNSW index; while that index is absent, still
+  // building, failed, or wrong-shaped, the windowed query degrades to a full
+  // sequential scan whose result the probe would then discard, so the search
+  // would pay for two scans to answer with the second. Go exact directly.
   const useCandidateWindow =
-    broadProductionSearch && retainedEstimate !== null && retainedEstimate > postgresSemanticExactMaxRows();
+    broadProductionSearch &&
+    retainedEstimate !== null &&
+    retainedEstimate > postgresSemanticExactMaxRows() &&
+    (await isPostgresSemanticGlobalHnswUsable());
   const candidateLimit = useCandidateWindow ? postgresSemanticCandidateLimit(boundedLimit) : boundedLimit;
   // The HNSW default ef_search (40) would silently cap a larger overscan;
   // clamp to pgvector's [1, 1000] GUC range. Integer-validated above via
   // candidateLimit/boundedLimit (Number(...) || 200, Math.max 1).
   const efSearch = Math.min(Math.max(Math.trunc(candidateLimit), 40), 1000);
+  const exactScopedQuery = `SELECT connector_id, connector_instance_id, scope_key, record_key,
+              (embedding::vector(${dims}) <=> $3::vector(${dims}))::float8 AS distance
+       FROM semantic_search_blob
+       WHERE connector_instance_id = $1
+         AND scope_key = ANY($2::text[])
+         AND vector_dims(embedding) = ${dims}
+         ${recordClause}
+       ORDER BY embedding::vector(${dims}) <=> $3::vector(${dims})
+       LIMIT $4`;
   const result = await withPostgresTransaction(async (client) => {
     await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
     if (isPostgresSemanticIterativeScanSupported()) {
@@ -1147,7 +1247,12 @@ async function postgresSemanticSearchVector({
       // scans. Keep the ANN boundary at the connector, then apply the grant
       // scope filter to that bounded candidate set. Scope keys are still
       // enforced before rows leave the database.
-      return client.query(
+      // `candidates_scanned` rides on a UNION-ed probe row rather than on the
+      // result rows: the case that matters most is the one where scope
+      // filtering leaves NO rows at all, and a per-row column would then have
+      // nowhere to live and would read as "nothing was truncated" — exactly
+      // backwards. The probe row is tagged and stripped below.
+      const windowed = await client.query(
         `WITH ann AS MATERIALIZED (
            SELECT connector_id, connector_instance_id, scope_key, record_key,
                   (embedding::vector(${dims}) <=> $3::vector(${dims}))::float8 AS distance
@@ -1156,30 +1261,37 @@ async function postgresSemanticSearchVector({
               AND vector_dims(embedding) = ${dims}
             ORDER BY embedding::vector(${dims}) <=> $3::vector(${dims})
             LIMIT $4
+         ), scoped AS (
+           SELECT connector_id, connector_instance_id, scope_key, record_key, distance
+             FROM ann
+            WHERE scope_key = ANY($2::text[])
+            ORDER BY distance ASC, connector_id ASC, scope_key ASC, record_key ASC
+            LIMIT $5
          )
-         SELECT connector_id, connector_instance_id, scope_key, record_key, distance
-           FROM ann
-          WHERE scope_key = ANY($2::text[])
-          ORDER BY distance ASC, connector_id ASC, scope_key ASC, record_key ASC
-          LIMIT $5`,
+         SELECT FALSE AS is_probe, connector_id, connector_instance_id, scope_key, record_key, distance,
+                NULL::bigint AS candidates_scanned
+           FROM scoped
+          UNION ALL
+         SELECT TRUE AS is_probe, NULL, NULL, NULL, NULL, NULL,
+                (SELECT COUNT(*) FROM ann)::bigint`,
         [connectorInstanceId, scopeKeys, params[2], candidateLimit, boundedLimit]
       );
+      const probeRow = windowed.rows.find((row) => row.is_probe === true);
+      const scopedRows = windowed.rows.filter((row) => row.is_probe !== true);
+      // The window answers the request only when it did not have to truncate,
+      // or when it still filled the requested limit after scope filtering.
+      // Otherwise the caller's scope is rare enough inside this connector that
+      // the pre-scope cut discarded authorized rows, so re-run exactly.
+      const candidatesScanned = Number(probeRow?.candidates_scanned ?? 0);
+      const truncated = candidatesScanned >= candidateLimit;
+      if (!truncated || scopedRows.length >= boundedLimit) {
+        return { ...windowed, rowCount: scopedRows.length, rows: scopedRows };
+      }
     }
     // Secondary tie-break keys stay out of ORDER BY (they would disqualify
     // the ANN index); the <= LIMIT rows are re-sorted below under the same
     // total order the JSONB brute-force path used.
-    return client.query(
-      `SELECT connector_id, connector_instance_id, scope_key, record_key,
-              (embedding::vector(${dims}) <=> $3::vector(${dims}))::float8 AS distance
-       FROM semantic_search_blob
-       WHERE connector_instance_id = $1
-         AND scope_key = ANY($2::text[])
-         AND vector_dims(embedding) = ${dims}
-         ${recordClause}
-       ORDER BY embedding::vector(${dims}) <=> $3::vector(${dims})
-       LIMIT $4`,
-      params
-    );
+    return client.query(exactScopedQuery, params);
   });
   return result.rows
     .map((row) => ({

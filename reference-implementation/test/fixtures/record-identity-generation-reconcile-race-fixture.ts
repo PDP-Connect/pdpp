@@ -30,6 +30,7 @@ import { closePostgresStorage, initPostgresStorage } from "../../server/postgres
 const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
 const manifestsDir = process.env.RACE_MANIFESTS_DIR;
 const referenceFixturesDir = process.env.RACE_REFERENCE_FIXTURES_DIR;
+const childAttachment = process.env.RACE_CHILD_ATTACHMENT;
 
 if (!databaseUrl) {
   throw new Error("record-identity-generation reconcile race fixture requires PDPP_TEST_POSTGRES_URL");
@@ -41,7 +42,10 @@ if (!(manifestsDir && referenceFixturesDir)) {
 }
 
 initDb(":memory:");
-await initPostgresStorage({ backend: "postgres", databaseUrl });
+await initPostgresStorage(
+  { backend: "postgres", databaseUrl },
+  childAttachment === undefined ? {} : { testOnlyAlreadyAdmittedChildAttachment: childAttachment }
+);
 process.stdout.write(`${JSON.stringify({ pid: process.pid, ready: true })}\n`);
 
 try {

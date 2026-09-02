@@ -368,17 +368,34 @@ function countSqliteWrites<T>(fn: () => Promise<T>): Promise<{ readonly writeCal
   return countSqliteStatementCalls(fn, ["run"]).then(({ calls, result }) => ({ result, writeCalls: calls }));
 }
 
-async function countPostgresQueries<T>(fn: () => Promise<T>): Promise<{ readonly calls: number; readonly result: T }> {
+function postgresQueryFamily(value: unknown): string {
+  const sql = typeof value === "string" ? value : ((value as { text?: string }).text ?? "");
+  return sql.replaceAll(/\s+/g, " ").trim().slice(0, 180);
+}
+
+function formatPostgresQueryTrace(trace: ReadonlyMap<string, number>): string {
+  return [...trace.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([query, calls]) => `${calls}x ${query}`)
+    .join("\n");
+}
+
+async function countPostgresQueries<T>(
+  fn: () => Promise<T>
+): Promise<{ readonly calls: number; readonly result: T; readonly trace: ReadonlyMap<string, number> }> {
   const pool = getPostgresPool();
   const original = pool.query.bind(pool);
   let calls = 0;
+  const trace = new Map<string, number>();
   pool.query = ((...args: Parameters<typeof original>) => {
     calls += 1;
+    const family = postgresQueryFamily(args[0]);
+    trace.set(family, (trace.get(family) ?? 0) + 1);
     return original(...args);
   }) as typeof pool.query;
   try {
     const result = await fn();
-    return { calls, result };
+    return { calls, result, trace };
   } finally {
     pool.query = original as typeof pool.query;
   }
@@ -442,10 +459,7 @@ async function assertBoundedListIsPageBoundedAndWriteFree(asUrl: string): Promis
     "a terminal connector-filtered page must omit fleet health"
   );
   const measureQueries = isPostgresStorageBackend()
-    ? async (fn: () => Promise<ListEnvelope>) => {
-        const { calls, result } = await countPostgresQueries(fn);
-        return { calls, result };
-      }
+    ? async (fn: () => Promise<ListEnvelope>) => await countPostgresQueries(fn)
     : async (fn: () => Promise<ListEnvelope>) => {
         const { executionCalls, result } = await countSqliteCalls(fn);
         return { calls: executionCalls, result };
@@ -487,7 +501,8 @@ async function assertBoundedListIsPageBoundedAndWriteFree(asUrl: string): Promis
   assert.equal("fleet_health" in continuationWithHealth, false, "a terminal continuation page must omit fleet health");
   assert.ok(
     twoHundred.calls <= fifty.calls + 12,
-    `50-to-200 page SQL calls must stay bounded (N=50:${fifty.calls}, N=200:${twoHundred.calls})`
+    `50-to-200 page SQL calls must stay bounded (N=50:${fifty.calls}, N=200:${twoHundred.calls})\n` +
+      ("trace" in twoHundred ? formatPostgresQueryTrace(twoHundred.trace) : "")
   );
 
   await seedOwner(200, LARGE_OWNER_COUNT - 200);

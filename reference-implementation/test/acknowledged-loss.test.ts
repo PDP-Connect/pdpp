@@ -188,6 +188,26 @@ test("acknowledged-loss: an acknowledged purge replaces the generic forward stat
   assert.equal(after.forward_statement, "Provider deleted this data upstream — owner-confirmed 2026-08-21.");
 });
 
+test("acknowledged-loss: owner detail carries the durable structured record, not presentation text", () => {
+  const verdict = verdictFor(
+    "failed",
+    "terminal_gap",
+    {
+      ...HEB_PURGE,
+      note: "Provider support confirmed the deletion.",
+    },
+    91
+  );
+
+  assert.deepEqual(verdict.detail.acknowledged_loss, {
+    ...HEB_PURGE,
+    note: "Provider support confirmed the deletion.",
+  });
+  assert.equal(verdict.detail.acknowledged_loss?.cause, "provider_deleted_upstream");
+  assert.equal(verdict.detail.acknowledged_loss?.acknowledgedBy, "Tim Nunamaker");
+  assert.equal(verdict.detail.acknowledged_loss?.acknowledgedAt, "2026-08-21T00:00:00.000Z");
+});
+
 test("acknowledged-loss: an acknowledged loss never renders green", () => {
   const after = verdictFor("failed", "terminal_gap", HEB_PURGE, 91);
   assert.notEqual(after.pill.tone, "green");

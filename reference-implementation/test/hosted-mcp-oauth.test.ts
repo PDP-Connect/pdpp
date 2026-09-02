@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import {
   buildPendingConsentRequestUri,
+  countGrantPackagesForOwner,
   getGrantPackageAccess,
   revokeGrant,
   revokeGrantPackage,
@@ -1560,7 +1561,7 @@ test("hosted MCP source selection uses hosted-ui option styles", async () => {
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    await registerSpotify(asUrl);
+    await registerAuthorizedSpotify(asUrl);
     const client = await registerAuthCodeClient(asUrl);
     const verifier = randomBytes(32).toString("base64url");
     const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
@@ -2720,8 +2721,8 @@ test("hosted MCP picker renders collapsed source summaries with per-stream contr
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
     const verifier = randomBytes(32).toString("base64url");
 
@@ -2770,7 +2771,7 @@ test("hosted MCP picker renders collapsed source summaries with per-stream contr
     // selected for grant while every stream is clear.
     for (const stream of spotify.streams) {
       const streamFormValue = encodeHostedMcpStreamSelection({
-        connectionId: null,
+        connectionId: defaultHostedInstanceId(spotify.connector_id),
         connectorId: spotify.connector_id,
         streamName: stream.name,
       });
@@ -2781,7 +2782,7 @@ test("hosted MCP picker renders collapsed source summaries with per-stream contr
     }
     for (const stream of github.streams) {
       const streamFormValue = encodeHostedMcpStreamSelection({
-        connectionId: null,
+        connectionId: defaultHostedInstanceId(github.connector_id),
         connectorId: github.connector_id,
         streamName: stream.name,
       });
@@ -2842,7 +2843,7 @@ test("hosted MCP picker pre-selects nothing: zero checked sources and zero check
 
   try {
     await registerAuthorizedSpotify(asUrl);
-    await registerGithub(asUrl);
+    await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
     const verifier = randomBytes(32).toString("base64url");
 
@@ -3038,8 +3039,8 @@ test("POST /oauth/authorize/mcp-package renders picker error when a selected sou
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -3077,8 +3078,8 @@ test("POST /oauth/authorize/mcp-package renders picker error when every selected
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -3111,20 +3112,29 @@ test("POST /oauth/authorize/mcp-package renders picker error when every selected
   }
 });
 
-test("POST /oauth/authorize/mcp-package returns an actionable 4xx (never 500) when a stream has zero eligible instances", async () => {
-  // Production regression (owner-reported 2026-08-23): approving a source
-  // whose declared stream has no installed connector instance detonated the
-  // whole authorize flow with `statusCode: 500` — Fastify's default error
-  // handler, meaning `CoreSourceAuthorizationError` escaped every route-level
-  // catch. Root cause: `resolveCoreEligibleInstanceIds` in
-  // core-source-authorization.ts treats a stream with zero eligible instances
-  // as fatal (`fail()` throws `CoreSourceAuthorizationError`), identically to
-  // the genuinely-ambiguous case, and that throw was not being turned into a
-  // typed 4xx envelope on this path.
+test("POST /oauth/authorize/mcp-package reports declared zero-eligible streams and creates no package", async () => {
+  // Production regression (owner-reported 2026-08-23, and again 2026-08-30 as
+  // "the consent picker shows streams the owner does not have"): approving a
+  // source whose declared stream has no installed connector instance
+  // detonated the whole authorize flow with `statusCode: 500` — Fastify's
+  // default error handler, meaning `CoreSourceAuthorizationError` escaped
+  // every route-level catch. The 2026-08-30 root cause went one layer
+  // shallower: the picker itself rendered a selectable row for a connector
+  // the owner never connected (`buildConnectorPickerRows` iterated the whole
+  // registered-connector catalog, not owner holdings), so a legitimate
+  // "select all" over what the picker offered could submit a source with zero
+  // eligible instances. `accumulateSourceEntry` now rejects any selection
+  // naming a connector with zero active bindings before it ever reaches the
+  // grant engine, so this either can't happen from the real picker anymore,
+  // or — for a stale/forged submission — fails fast with a plain 4xx instead
+  // of the grant engine's `source.authorization_details_invalid` blowing up
+  // the whole multi-source package.
   //
   // `registerSpotify` (unlike `registerAuthorizedSpotify`) registers the
   // connector manifest WITHOUT seeding any connector instance — this is the
-  // "zero eligible instance" condition exactly as production hit it.
+  // "zero eligible instance" condition exactly as production hit it, now
+  // exercised as a stale/forged picker submission rather than the picker's
+  // own offering.
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -3136,10 +3146,11 @@ test("POST /oauth/authorize/mcp-package returns an actionable 4xx (never 500) wh
     const state = "zero-eligible-instances";
     const challenge = pkceChallenge(verifier);
 
+    const packageCountBefore = await countGrantPackagesForOwner();
     const params = buildHostedMcpPickerForm({
       challenge,
       client,
-      sourceSelections: [{ connectorId: spotify.connector_id, streamNames: ["saved_tracks"] }],
+      sourceSelections: [{ connectorId: spotify.connector_id, streamNames: ["saved_tracks", "archive_jobs"] }],
       state,
     });
 
@@ -3158,17 +3169,21 @@ test("POST /oauth/authorize/mcp-package returns an actionable 4xx (never 500) wh
       assert.fail(`expected a structured JSON error envelope, got: ${bodyText}`);
     }
 
-    // The stream must be named in STRUCTURED form — a dedicated `streams`
-    // array field, not only prose buried in `error_description` — so a
-    // client can act on it programmatically without parsing a sentence.
-    assert.ok(
-      Array.isArray(body.streams),
-      `error envelope must carry a structured 'streams' array, got: ${JSON.stringify(body)}`
+    assert.equal(body.error, "invalid_request");
+    assert.match(
+      String(body.error_description),
+      /no active connection/i,
+      `error must name the connector as having no active connection, got: ${JSON.stringify(body)}`
     );
     assert.deepEqual(
       body.streams,
       ["saved_tracks"],
-      `structured 'streams' field must name exactly the affected stream: ${JSON.stringify(body)}`
+      "the structured envelope names the declared zero-eligible stream, not a submitted undeclared stream"
+    );
+    assert.equal(
+      await countGrantPackagesForOwner(),
+      packageCountBefore,
+      "a rejected zero-eligible submission must not create a package"
     );
   } finally {
     await closeServer(server);
@@ -3237,8 +3252,8 @@ test("POST /oauth/authorize/mcp-package renders picker error when streams are su
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const spotify = await registerSpotify(asUrl);
-    const github = await registerGithub(asUrl);
+    const spotify = await registerAuthorizedSpotify(asUrl);
+    const github = await registerAuthorizedGithub(asUrl);
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString("base64url");
@@ -3393,7 +3408,7 @@ test("hosted MCP picker renders an access-mode radio with continuous default and
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    await registerSpotify(asUrl);
+    await registerAuthorizedSpotify(asUrl);
     const client = await registerAuthCodeClient(asUrl);
     const verifier = randomBytes(32).toString("base64url");
 
@@ -3937,7 +3952,7 @@ test("hosted MCP picker excludes internal/test/stub connectors", async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
   try {
-    await registerSpotify(asUrl);
+    await registerAuthorizedSpotify(asUrl);
 
     // Register a stub connector with a marker id. The AS accepts arbitrary
     // connector manifests; the picker is the surface that must filter it out.
@@ -3975,6 +3990,10 @@ test("hosted MCP picker excludes internal/test/stub connectors", async () => {
       regResp.status === 201 || regResp.status === 200,
       `stub connector registration returned unexpected status ${regResp.status}: ${JSON.stringify(regResp.body)}`
     );
+    // Seed a connection for the stub connector too, so this test proves the
+    // internal-id filter itself excludes it — not merely that it has no
+    // connection (which would also exclude a real, non-stub connector).
+    await seedDefaultHostedInstance(stubManifest as unknown as ConnectorManifest);
 
     const client = await registerAuthCodeClient(asUrl);
     const verifier = randomBytes(32).toString("base64url");

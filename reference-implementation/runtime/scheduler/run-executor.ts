@@ -23,6 +23,11 @@
  * guard → preRunGate → launchRun), pre-run gate, or dispatch governor.
  */
 
+import { randomUUID } from "node:crypto";
+import {
+  BROWSER_SURFACE_LEASE_STATUSES,
+  // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
+} from "@opendatalabs/remote-surface/leases";
 import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../../lib/spine.ts";
 import type { SchedulerRunHistoryRecord } from "../../server/stores/scheduler-store.ts";
 import type { ConnectorEnvironmentBinding } from "../connector-child-environment.ts";
@@ -155,6 +160,7 @@ function describeFailedRunResult(result: RunConnectorResult): RunConnectorError 
     records_emitted: result.records_emitted ?? 0,
     reported_records_emitted: result.reported_records_emitted ?? null,
     run_id: result.run_id || null,
+    runtime_retryable: result.runtime_retryable ?? null,
     terminal_reason: result.terminal_reason || null,
     trace_id: result.trace_id || null,
   };
@@ -679,12 +685,36 @@ function buildBrowserSurfaceUnavailableSkip(
   };
 }
 
-const BROWSER_SURFACE_UNAVAILABLE_STATUSES = new Set([
-  "run_browser_surface_queued",
-  "browser_surface_probe_failed",
-  "browser_surface_lost",
-  "surface_failed",
-]);
+/**
+ * A managed connector's `runNow` early-returns with a raw
+ * `BrowserSurfaceLeaseStatus` (`run-coordinator.ts`'s `buildBrowserSurfaceEarlyReturn`)
+ * whenever the run never reached the connector at all — no browser surface
+ * was available, one was still starting, or an already-waiting lease's grace
+ * period expired. None of that is a connector execution outcome: nothing was
+ * dispatched, so there is no collection evidence to report and no failure to
+ * retry. `"cancelled"` is excluded: an owner-initiated cancel is already
+ * handled as its own distinct `RunRecord.status` (see
+ * `schedulerStatusFromRuntimeResult`), not a surface-unavailable skip.
+ * `"leased"` is excluded: a leased surface is exactly the one status where
+ * the connector goes on to actually run.
+ *
+ * Generic and connector-agnostic by construction: sourced directly from the
+ * remote-surface package's own status vocabulary
+ * (`BROWSER_SURFACE_LEASE_STATUSES`) rather than a hand-maintained string
+ * list, so it can never drift out of sync with the lease statuses
+ * `run-coordinator.ts` can actually return. The previous hand-maintained set
+ * both mis-cased one entry (`"run_browser_surface_queued"`, which is never
+ * a value `runNowResult.status` can hold — the real value is
+ * `"waiting_for_browser_surface"`) and omitted `"deferred"`/
+ * `"waiting_for_browser_surface"`/`"expired"`/`"released"` outright, so any
+ * of those early-exit statuses fell through to
+ * `buildManagedRunTerminalRecord` and were misclassified `"failed"` —
+ * corrupting the connection's coverage axis (worst-wins degrade) for a run
+ * that never touched the provider.
+ */
+const BROWSER_SURFACE_UNAVAILABLE_STATUSES: ReadonlySet<string> = new Set<string>(
+  BROWSER_SURFACE_LEASE_STATUSES.filter((status) => status !== "cancelled" && status !== "leased")
+);
 
 function messageIndicatesRunAlreadyActive(normalizedMessage: string): boolean {
   return normalizedMessage.includes("run_already_active") || normalizedMessage.includes("already has an active run");
@@ -1013,7 +1043,13 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     const originalOnProgress = call.onProgress;
     const activeRunStore = selectActiveRunStore();
     const watchdog = createAttemptWatchdog(maxRunWallClockMs);
-    const runId = call.runId || `run_${Date.now()}`;
+    // A cryptographically strong UUID keeps this fallback globally
+    // collision-resistant: run_id is the sole uniqueness key for the durable
+    // STREAM_EVIDENCE claim registry, and a millisecond-granularity fallback
+    // can collide across unrelated concurrent runs. In practice
+    // buildAttemptCall always populates call.runId before this is reached,
+    // so this is a defensive fallback for direct callers of this function.
+    const runId = call.runId || `run_${randomUUID()}`;
     const traceContext = call.traceContext ?? createTraceContext();
     const admitted = await reserveActiveRunRow(
       activeRunStore,
@@ -1104,6 +1140,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         connector_error: result.connector_error || null,
         failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
         known_gaps: result.known_gaps || null,
+        runtime_retryable: result.runtime_retryable ?? null,
         terminal_reason: result.terminal_reason || null,
       };
 
@@ -1133,7 +1170,12 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     return {
       ...call,
       automationMode: attemptPolicy.automation_mode,
-      runId: call.runId ?? `run_${Date.now()}_${attempt}`,
+      // A cryptographically strong UUID keeps this fallback globally
+      // collision-resistant across concurrently dispatched schedules (two
+      // connectors triggered in the same scheduler tick, both on their first
+      // attempt, previously produced an identical run_<ms>_1 id). The
+      // `_${attempt}` suffix is kept for attempt-number diagnostics.
+      runId: call.runId ?? `run_${randomUUID()}_${attempt}`,
       traceContext: call.traceContext ?? createTraceContext(),
       triggerKind: attemptPolicy.trigger_kind,
     };

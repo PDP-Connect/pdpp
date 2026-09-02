@@ -61,6 +61,7 @@
  * untouched and never consults it.
  */
 
+import { createHash, randomBytes } from "node:crypto";
 import { Client } from "pg";
 
 /**
@@ -81,6 +82,14 @@ export const TEST_DATABASE_SENTINEL_TABLE = "pdpp_test_database_sentinel";
 
 /** Fully-qualified sentinel table, safe against a `DROP SCHEMA public CASCADE`. */
 const SENTINEL_RELATION = `${TEST_DATABASE_SENTINEL_SCHEMA}.${TEST_DATABASE_SENTINEL_TABLE}`;
+
+/**
+ * One-use capabilities for a real child process that must share a parent
+ * test's already-admitted database. They live beside the sentinel so the
+ * capability is bound to one database, not to an inherited environment URL.
+ */
+const CHILD_ATTACHMENT_RELATION = `${TEST_DATABASE_SENTINEL_SCHEMA}.pdpp_test_database_child_attachments`;
+const CHILD_ATTACHMENT_TTL_SECONDS = 60;
 
 /** The marker value written into the sentinel table. */
 export const TEST_DATABASE_SENTINEL_MARKER = "pdpp-ephemeral-test-database";
@@ -136,6 +145,40 @@ async function relationExists(client: Client, qualifiedRelation: string): Promis
   return result.rows[0]?.exists === true;
 }
 
+function childAttachmentDigest(attachment: string): string {
+  return createHash("sha256").update(attachment).digest("hex");
+}
+
+async function assertProvisionedTestDatabase(client: Client, target: string): Promise<void> {
+  if (!(await relationExists(client, SENTINEL_RELATION))) {
+    throw new ProductionDatabaseRefusedError(
+      `REFUSING to run tests against ${target}: it carries no "${SENTINEL_RELATION}" table, so it is NOT a provisioned test database and may be PRODUCTION. Tests must run against a database provisioned by provisionTestDatabase() (the RI test runner does this per file). This is fail-closed by design: an unmarked database is always refused.`
+    );
+  }
+  const marker = await client.query<{ marker: string }>(`SELECT marker FROM ${SENTINEL_RELATION} WHERE marker = $1`, [
+    TEST_DATABASE_SENTINEL_MARKER,
+  ]);
+  if (marker.rows.length === 0) {
+    throw new ProductionDatabaseRefusedError(
+      `REFUSING to run tests against ${target}: "${SENTINEL_RELATION}" exists but carries no "${TEST_DATABASE_SENTINEL_MARKER}" marker row, so this database was not provisioned as a PDPP test database.`
+    );
+  }
+}
+
+async function assertNoOwnerDataAtAdmission(client: Client, target: string): Promise<void> {
+  if (await relationExists(client, `public.${OWNER_DATA_TABLE}`)) {
+    const preexisting = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM public.${OWNER_DATA_TABLE}`
+    );
+    const rowCount = Number(preexisting.rows[0]?.count ?? "0");
+    if (rowCount > 0) {
+      throw new ProductionDatabaseRefusedError(
+        `REFUSING to run tests against ${target}: it carries a test sentinel BUT already holds ${rowCount} row(s) in "${OWNER_DATA_TABLE}" at admission time. This is pre-existing data in a database marked as scratch -- refusing rather than writing into it.`
+      );
+    }
+  }
+}
+
 /**
  * Stamp a database as an ephemeral test database.
  *
@@ -181,20 +224,6 @@ export async function provisionTestDatabase(databaseUrl: string): Promise<void> 
 export async function assertTestDatabase(databaseUrl: string): Promise<void> {
   const target = describeTarget(databaseUrl);
   await withClient(databaseUrl, async (client) => {
-    if (!(await relationExists(client, SENTINEL_RELATION))) {
-      throw new ProductionDatabaseRefusedError(
-        `REFUSING to run tests against ${target}: it carries no "${SENTINEL_RELATION}" table, so it is NOT a provisioned test database and may be PRODUCTION. Tests must run against a database provisioned by provisionTestDatabase() (the RI test runner does this per file). This is fail-closed by design: an unmarked database is always refused.`
-      );
-    }
-    const marker = await client.query<{ marker: string }>(`SELECT marker FROM ${SENTINEL_RELATION} WHERE marker = $1`, [
-      TEST_DATABASE_SENTINEL_MARKER,
-    ]);
-    if (marker.rows.length === 0) {
-      throw new ProductionDatabaseRefusedError(
-        `REFUSING to run tests against ${target}: "${SENTINEL_RELATION}" exists but carries no "${TEST_DATABASE_SENTINEL_MARKER}" marker row, so this database was not provisioned as a PDPP test database.`
-      );
-    }
-
     // Defense in depth: a sentinel alone is not enough. `provisionTestDatabase`
     // only stamps an empty database, so at stamping time `records` held zero
     // rows. Any row present here that this run did not create therefore means
@@ -207,16 +236,74 @@ export async function assertTestDatabase(databaseUrl: string): Promise<void> {
     // Note: `records` deliberately has no created_at/ingested-at column to key
     // a time comparison off, so "predates this run" is expressed as "present
     // at admission time" -- which is the stricter and simpler test.
-    if (await relationExists(client, `public.${OWNER_DATA_TABLE}`)) {
-      const preexisting = await client.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM public.${OWNER_DATA_TABLE}`
+    await assertProvisionedTestDatabase(client, target);
+    await assertNoOwnerDataAtAdmission(client, target);
+  });
+}
+
+/**
+ * Mint a short-lived, single-use child capability after ordinary empty
+ * admission. This exists only for deterministic parent/child race fixtures:
+ * the parent admits the empty database, then writes the state the child must
+ * observe. The capability is stored in that same database and cannot admit a
+ * different target.
+ */
+export async function createAlreadyAdmittedTestDatabaseChildAttachment(databaseUrl: string): Promise<string> {
+  const target = describeTarget(databaseUrl);
+  const attachment = randomBytes(32).toString("base64url");
+  await withClient(databaseUrl, async (client) => {
+    await assertProvisionedTestDatabase(client, target);
+    await assertNoOwnerDataAtAdmission(client, target);
+    await client.query(
+      `CREATE TABLE IF NOT EXISTS ${CHILD_ATTACHMENT_RELATION} (
+         attachment_digest text PRIMARY KEY,
+         expires_at timestamptz NOT NULL
+       )`
+    );
+    await client.query(`DELETE FROM ${CHILD_ATTACHMENT_RELATION} WHERE expires_at <= now()`);
+    await client.query(
+      `INSERT INTO ${CHILD_ATTACHMENT_RELATION} (attachment_digest, expires_at)
+       VALUES ($1, now() + ($2 * interval '1 second'))`,
+      [childAttachmentDigest(attachment), CHILD_ATTACHMENT_TTL_SECONDS]
+    );
+  });
+  return attachment;
+}
+
+/**
+ * Consume a parent-minted child capability. This deliberately does not rerun
+ * the empty-row check: the parent proved emptiness before minting it, and the
+ * child is attaching specifically to observe the rows its parent then wrote.
+ * Sentinel validation and an atomic, database-local, one-use claim keep this
+ * test-only seam from authorizing arbitrary populated databases.
+ */
+export async function claimAlreadyAdmittedTestDatabaseChildAttachment(
+  databaseUrl: string,
+  attachment: string | undefined
+): Promise<void> {
+  const target = describeTarget(databaseUrl);
+  if (!attachment) {
+    throw new ProductionDatabaseRefusedError(
+      `REFUSING to run tests against ${target}: a child attaching to an already-admitted test database requires a parent-minted attachment capability.`
+    );
+  }
+  await withClient(databaseUrl, async (client) => {
+    await assertProvisionedTestDatabase(client, target);
+    if (!(await relationExists(client, CHILD_ATTACHMENT_RELATION))) {
+      throw new ProductionDatabaseRefusedError(
+        `REFUSING to run tests against ${target}: it has no parent-minted child attachment capability.`
       );
-      const rowCount = Number(preexisting.rows[0]?.count ?? "0");
-      if (rowCount > 0) {
-        throw new ProductionDatabaseRefusedError(
-          `REFUSING to run tests against ${target}: it carries a test sentinel BUT already holds ${rowCount} row(s) in "${OWNER_DATA_TABLE}" at admission time. This is pre-existing data in a database marked as scratch -- refusing rather than writing into it.`
-        );
-      }
+    }
+    const claimed = await client.query<{ attachment_digest: string }>(
+      `DELETE FROM ${CHILD_ATTACHMENT_RELATION}
+        WHERE attachment_digest = $1 AND expires_at > now()
+        RETURNING attachment_digest`,
+      [childAttachmentDigest(attachment)]
+    );
+    if (claimed.rows.length === 0) {
+      throw new ProductionDatabaseRefusedError(
+        `REFUSING to run tests against ${target}: the child attachment capability is missing, expired, or already consumed.`
+      );
     }
   });
 }

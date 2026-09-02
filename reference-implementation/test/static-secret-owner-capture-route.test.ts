@@ -214,6 +214,40 @@ async function registerOptionalSingleSecretConnector(asUrl: string, connectorKey
   assert.equal(resp.status, 201, `register ${connectorKey} failed: ${resp.status}`);
 }
 
+/**
+ * F1's fixture, decoupled from any shipped connector's posture.
+ *
+ * F1 governs BEHAVIOR — a blank submission on an OPTIONAL capture proceeds to
+ * manual sign-in rather than storing an empty credential, and a blank
+ * re-submission never silently clears a stored one. That behavior is general:
+ * `ref-static-secret-credentials.ts` keys it on `contract.required === false`,
+ * never on a connector id.
+ *
+ * These tests used to borrow the real venmo manifest for that shape. On
+ * 2026-08-26 venmo's capture became REQUIRED so its collection could run
+ * unattended (a server-side browser has no hand to sign in with), which left
+ * F1's branch with no shipped manifest to exercise — every static-secret
+ * connector is now a required capture. Cloning venmo's multi-field bundle and
+ * flipping ONLY the block-level flag keeps the branch covered permanently,
+ * regardless of what any real connector later does with its posture. Same
+ * technique as {@link registerOptionalSingleSecretConnector} (F4), applied to
+ * a multi-field bundle instead of a single secret.
+ */
+async function registerOptionalBundleConnector(asUrl: string, connectorKey: string): Promise<void> {
+  const manifest = structuredClone(loadManifest("venmo"));
+  manifest.connector_key = connectorKey;
+  manifest.connector_id = connectorKey;
+  manifest.manifest_uri = `https://registry.pdpp.dev/connectors/${connectorKey}`;
+  const setup = manifest.setup as { credential_capture: { required?: boolean } };
+  setup.credential_capture.required = false;
+  const resp = await fetch(`${asUrl}/connectors`, {
+    body: JSON.stringify(manifest),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  assert.equal(resp.status, 201, `register ${connectorKey} failed: ${resp.status}`);
+}
+
 async function registerRequiredOnePathBundleConnector(asUrl: string, connectorKey: string): Promise<void> {
   const manifest = structuredClone(loadManifest("jellyfin"));
   manifest.connector_key = connectorKey;
@@ -567,26 +601,37 @@ test("capture accepts an at-least-one-path manifest when exactly one credential 
   });
 });
 
-// Venmo's manifest declares the BLOCK-level credential_capture.required as
-// false, while username/password stay required:true at the FIELD level
-// (BOTH-OR-NONE) — Venmo authenticates through an owner-driven browser
-// session that works with zero saved credentials. validateBundledSecret's
-// `contract.required === false` branch (not isAtLeastOnePathContract, which
-// only ever applies to a REQUIRED capture like Jellyfin's) is what
-// classifies this shape; a fully blank submission is the correct, honest
-// "sign in by hand every time" choice, not an error.
+// The shape under test: a BLOCK-level credential_capture.required of false,
+// while the bundle's own fields stay required:true at the FIELD level
+// (BOTH-OR-NONE). validateBundledSecret's `contract.required === false` branch
+// (not isAtLeastOnePathContract, which only ever applies to a REQUIRED capture
+// like Jellyfin's) is what classifies it; a fully blank submission is the
+// correct, honest "sign in by hand every time" choice, not an error.
+//
+// Exercised through a SYNTHETIC contract (see
+// `registerOptionalBundleConnector`) rather than a shipped manifest: venmo
+// carried this shape until 2026-08-26, when its capture became required so
+// collection could run unattended. F1 governs the branch, not any one
+// connector's posture, so the fixture must not move when a product decision
+// does.
 // F1 ruling: a blank submission on an optional capture means "proceed with
 // manual browser sign-in", NOT "store an empty credential". Nothing is
 // written to the credential store, the response is 200 (not 201 — nothing
 // was created), and `credential.present` is honestly `false`.
-test("capture accepts a fully empty credential bundle for an all-optional, no-fallback-required manifest (Venmo) WITHOUT storing anything", async () => {
+test("capture accepts a fully empty credential bundle for an all-optional, no-fallback-required manifest WITHOUT storing anything", async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
-      await registerConnector(asUrl, "venmo");
-      await seedInstance({ connectorId: "venmo", connectorInstanceId: "cin_venmo_personal" });
+      await registerOptionalBundleConnector(asUrl, "optional_bundle_f1");
+      await seedInstance({ connectorId: "optional_bundle_f1", connectorInstanceId: "cin_optional_bundle_f1" });
       const cookie = await login(asUrl);
 
-      const { status, body } = await captureCredential(asUrl, cookie, "cin_venmo_personal", "{}", "username_password");
+      const { status, body } = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_optional_bundle_f1",
+        "{}",
+        "username_password"
+      );
       assert.equal(status, 200, "a blank optional submission is a valid choice, but creates nothing (200, not 201)");
       assert.equal(credentialOf(body).present, false, "an empty bundle must never project as a present credential");
       assert.equal(
@@ -599,7 +644,7 @@ test("capture accepts a fully empty credential bundle for an all-optional, no-fa
         env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
       });
       assert.equal(
-        await store.getMetadata("cin_venmo_personal"),
+        await store.getMetadata("cin_optional_bundle_f1"),
         null,
         "no credential row must exist after a blank optional submission"
       );
@@ -610,19 +655,25 @@ test("capture accepts a fully empty credential bundle for an all-optional, no-fa
 // F1 ruling, second half: a blank re-submission must never silently clear an
 // EXISTING stored credential. Capture a real credential first, then submit
 // blank again — the original credential must survive untouched.
-test("capture on an existing Venmo credential followed by a blank re-submission never clears the stored credential", async () => {
+test("capture on an existing optional-capture credential followed by a blank re-submission never clears the stored credential", async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
-      await registerConnector(asUrl, "venmo");
-      await seedInstance({ connectorId: "venmo", connectorInstanceId: "cin_venmo_preserved" });
+      await registerOptionalBundleConnector(asUrl, "optional_bundle_f1");
+      await seedInstance({ connectorId: "optional_bundle_f1", connectorInstanceId: "cin_optional_bundle_preserved" });
       const cookie = await login(asUrl);
 
       const complete = JSON.stringify({ password: "synthetic-password", username: "owner@example.com" });
-      const first = await captureCredential(asUrl, cookie, "cin_venmo_preserved", complete, "username_password");
+      const first = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_optional_bundle_preserved",
+        complete,
+        "username_password"
+      );
       assert.equal(first.status, 201);
       assert.equal(credentialOf(first.body).present, true);
 
-      const second = await captureCredential(asUrl, cookie, "cin_venmo_preserved", "{}", "username_password");
+      const second = await captureCredential(asUrl, cookie, "cin_optional_bundle_preserved", "{}", "username_password");
       assert.equal(second.status, 200, "a blank re-submission is accepted as a no-op, not a rejection");
       assert.equal(
         credentialOf(second.body).present,
@@ -634,7 +685,7 @@ test("capture on an existing Venmo credential followed by a blank re-submission 
         env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
       });
       const recovered = await store.recoverSecret({
-        connectorInstanceId: "cin_venmo_preserved",
+        connectorInstanceId: "cin_optional_bundle_preserved",
         ownerSubjectId: OWNER_SUBJECT_ID,
       });
       assert.equal(recovered.secret, complete, "the ORIGINAL stored credential must survive a later blank submission");

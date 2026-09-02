@@ -92,6 +92,14 @@ const KNOWN_FORWARD_DISPOSITIONS = new Set([
 const KNOWN_PILL_TONES = new Set(["amber", "green", "grey", "red"]);
 const KNOWN_RUN_STATUSES = new Set([
   "abandoned",
+  // The pre-run gate emits `skipped` when an automatic run is withheld
+  // (`runtime/scheduler/pre-run-gate.ts`). KNOWN means "the audit recognises
+  // this value", NOT "this value is green" — `SUCCESSFUL_RUN_STATUSES` is a
+  // separate three-value allowlist (`completed`/`succeeded`/`success`) and
+  // `skipped` is deliberately absent from it. Leaving it unknown made the
+  // audit fail closed on a value the runtime intentionally produces, which
+  // reads as a defect in the connection rather than a gap in the vocabulary.
+  "skipped",
   "active",
   "cancelled",
   "completed",
@@ -106,6 +114,7 @@ const KNOWN_RUN_STATUSES = new Set([
   "started",
   "starting_surface",
   "surface_failed",
+  "skipped",
   "succeeded",
   "succeeded_with_gaps",
   "success",
@@ -154,6 +163,19 @@ const FAILED_RUN_STATUSES = new Set([
 const OWNER_CANCEL_TERMINAL_REASONS = new Set(["owner_cancel_forced", "owner_cancelled"]);
 const ACTIVE_RUN_STATUSES = new Set(["active", "in_progress", "leased", "started", "starting_surface"]);
 const ACCEPTED_ABSENCE_POLICIES = new Set(["deferred", "inventory_only", "unavailable", "unsupported"]);
+/**
+ * Deliberately narrower than {@link ACCEPTED_ABSENCE_POLICIES}: the only two
+ * `axes.coverage` values `projectionAgreement` treats as a non-degrading,
+ * accepted terminal label rather than a real disagreement against an
+ * all-complete required report. `unsupported`/`unavailable` are excluded even
+ * though they are accepted-absence *manifest* policies, because
+ * `hasOutstandingGap` (runtime/connection-health.ts) treats them as
+ * outstanding gaps at the connection-health axis level — excusing them here
+ * would put this predicate in disagreement with that in-tree authority.
+ * `inventory_only`/`deferred` are the only two values proven to agree with
+ * `hasOutstandingGap` (absent from its list).
+ */
+const NON_DEGRADING_ACCEPTED_AXES = new Set(["deferred", "inventory_only"]);
 const KNOWN_CONDITION_TYPES = new Set([
   "AttentionClear",
   "BacklogClear",
@@ -197,26 +219,74 @@ const KNOWN_EVIDENCE_REASON_CODES = new Set([
 ]);
 const KNOWN_CONDITION_REASONS = new Set([
   "attention_expired",
+  // `ref-control.ts:5280` emits this on `AttentionClear` when the controller's
+  // needs-human gate is set with no durable attention record behind it. It is
+  // a real runtime value, so the audit must recognise it rather than fail
+  // closed on unknown vocabulary. Recognising a reason says nothing about
+  // health: `AttentionClear` with this reason is still `status: false`, which
+  // is what keeps the row non-green.
+  "needs_human_attention",
   "attention_required",
   "backoff_expired",
   "browser_runtime_not_configured",
   "collection_failed",
   "collection_not_observed",
   "collection_succeeded",
+  "collection_succeeded_import_complete",
   "collection_succeeded_local_device",
+  "coverage_complete_unfillable_accounted",
   "coverage_unknown",
+  "coverage_unknown_stale_collector",
   "credential_continuity_not_applicable",
   "credential_continuity_proven",
   "credential_continuity_unproven",
   "credential_rejected",
   "credential_required",
   "credentials_accepted",
+  "credentials_not_applicable_file_import",
   "credentials_not_probed",
   "external_tool_unavailable",
+  // Four reasons the runtime genuinely emits that this vocabulary never
+  // learned, so every one of them scored as unknown_vocabulary against a
+  // healthy connection (measured on the deployed projection, 2026-08-28: four
+  // of six live reason codes were absent). Three are proven from in-repo
+  // source; the fourth is retained on deployed-projection observation alone
+  // (no in-repo producer exists for it yet):
+  //
+  //   history_ended_before_provider_count  SOURCE-PROVEN: groupme/index.ts:2189
+  //     SKIP_RESULT — the walk reached the oldest message GroupMe will serve
+  //     while its lifetime total still counted more.
+  //   statement_unreconciled                SOURCE-PROVEN: usaa/index.ts:2732
+  //     SKIP_RESULT — a statement period does not reconcile against its own
+  //     printed balances.
+  //   connector_child_failure                RUNTIME-PROVEN: validated as one
+  //     of exactly two accepted reason values at the route validator,
+  //     ref-device-exporters.ts:3096-3101 ("policy_budget" | "connector_child_failure").
+  //   interaction_cancelled                  DEPLOYED-PROJECTION-PROVEN ONLY:
+  //     observed as a live `connection_health.reason_code` on the deployed
+  //     projection (venmo, 2026-08-28). No in-repo producer emits this string
+  //     today — it is retained because it is a real fact on the running
+  //     system, not because the source proves it. The vocabulary already had
+  //     `interaction_timeout`; cancelled is a DIFFERENT fact and was simply
+  //     never added.
+  //
+  // VOCABULARY ONLY. This changes what the audit RECOGNISES, never what any
+  // reason MEANS: severity stays wherever the health model already puts it, and
+  // `owner-action-gate.ts`'s AUTOMATION_BLOCKING_OWNER_ACTION_KINDS
+  // ({add_info, reauth}) remains the sole arbiter of owner-blocking. Of these
+  // four, only connector_child_failure carries add_info and so stays
+  // owner-blocking; the other three carry wait/code_fix/retry_gap and are
+  // already correctly non-blocking.
+  "connector_child_failure",
+  "history_ended_before_provider_count",
+  "interaction_cancelled",
   "interaction_timeout",
+  "statement_unreconciled",
+  "needs_human_attention",
   "connector_reported_failed",
   "credentials_required",
   "fresh",
+  "freshness_not_applicable_complete",
   "freshness_unknown",
   "local_exporter_active",
   "local_exporter_dead_letter_backlog",
@@ -242,6 +312,7 @@ const KNOWN_CONDITION_REASONS = new Set([
   "outbox_transient_upload_failure",
   "outbox_unknown",
   "projection_current",
+  "projection_superseded_by_definition_change",
   "projection_unreliable",
   "remote_surface_available",
   "remote_surface_failed",
@@ -304,14 +375,18 @@ const KNOWN_REQUIRED_ACTION_KINDS = new Set([
 const KNOWN_ACTION_AUDIENCES = new Set(["maintainer", "none", "owner"]);
 const KNOWN_ACTION_URGENCIES = new Set(["now", "overdue", "soon", "verifying"]);
 const KNOWN_VERDICT_LABELS = new Set([
+  "Archived",
   "Can't collect",
   "Checking",
+  "Expired while waiting for you",
   "Healthy",
   "Import complete",
   "Missing data",
   "Missing optional data",
   "Needs refresh",
   "Not measured",
+  "Setup never completed",
+  "Some records stuck",
   "Syncing",
 ]);
 const KNOWN_SATISFACTION_KINDS = new Set([
@@ -359,6 +434,7 @@ const NON_RENDERED_HTML_PATTERN =
 const ATTRIBUTE_PATTERN = /(?:^|\s)([A-Za-z_:][A-Za-z0-9_.:-]*)(?:\s*=\s*(?:(["'])(.*?)\2|([^\s>]+)))?/g;
 const ROW_ATTRIBUTE_NAMES = new Set([
   "data-pdpp-source-row",
+  "data-pdpp-source-scope",
   "data-pdpp-selected-source",
   "data-pdpp-stream-row",
   "data-connection-id",
@@ -376,6 +452,7 @@ export interface OwnerSourcesDomEvidence {
   resolved: boolean;
   revision?: string | null;
   selectedConnectionId?: string | null;
+  sourceScopes: readonly { connectionId: string; scope: string }[];
   streamKeys: readonly { connectionId: string; stream: string }[];
   suspense: boolean;
 }
@@ -421,8 +498,11 @@ export interface StreamHealthAuthorityResult {
     extraConnectionIds: string[];
     extraStreamKeys: string[];
     invalidStreamKeys: string[];
+    invalidSourceScopes: string[];
     missingConnectionIds: string[];
+    missingSourceScopes: string[];
     observedConnectionIds: string[];
+    observedSourceScopes: string[];
     observedStreamKeys: string[];
     resolved: boolean;
     status: "agree" | "disagree" | "inconclusive";
@@ -1033,7 +1113,9 @@ function checkConnectionVocabulary(connection: JsonObject): string[] {
   return unknown;
 }
 
-function lifecycle(connection: JsonObject): "active" | "draft" | "paused" | "rejected" | "revoked" | "unknown" {
+type LifecycleScope = "active" | "draft" | "paused" | "rejected" | "revoked" | "unknown";
+
+function lifecycle(connection: JsonObject): LifecycleScope {
   if (connection.status === "revoked" || (connection.revoked_at !== null && connection.revoked_at !== undefined)) {
     return "revoked";
   }
@@ -1255,7 +1337,22 @@ function projectionAgreement(connection: JsonObject, manifest: ResolvedManifest 
     typeof axes?.coverage === "string" &&
     axes.coverage !== "complete" &&
     reportConditions.length > 0 &&
-    reportConditions.every((condition) => condition === "complete")
+    reportConditions.every((condition) => condition === "complete") &&
+    // A narrow accepted-absence axis (`inventory_only`/`deferred` only — NOT
+    // `unavailable`/`unsupported`) is a manifest-declared, honest terminal
+    // label for the WHOLE connection's accepted policy — e.g. a required
+    // diagnostics-only stream that only ever proves inventory, never full
+    // detail. It is not a degrading condition, so a per-stream report that
+    // independently proves every required stream `complete` does not
+    // disagree with it; the two evidence pipelines are answering different
+    // questions (what the connector accepts collecting vs. what each
+    // stream's own facts show). Deliberately narrower than
+    // `ACCEPTED_ABSENCE_POLICIES`: `hasOutstandingGap`
+    // (runtime/connection-health.ts) treats `unsupported`/`unavailable` as
+    // outstanding gaps, so excusing those two here would put this predicate
+    // in disagreement with that in-tree authority. Only the two values this
+    // predicate can prove agree with `hasOutstandingGap` are excused.
+    !NON_DEGRADING_ACCEPTED_AXES.has(axes.coverage)
   ) {
     return "health coverage disagrees with an entirely complete collection report";
   }
@@ -1304,29 +1401,52 @@ function needsOwnerInteraction(connection: JsonObject): boolean {
   );
 }
 
-function isProviderConfigBlocked(connection: JsonObject): boolean {
+function isProviderConfigBlocked(connection: JsonObject, report: JsonObject | undefined): boolean {
   const health = nestedObject(connection, "connection_health");
   const axes = nestedObject(health, "axes");
   const ownerState = nestedObject(connection, "owner_state");
-  return (
-    health?.state === "blocked" ||
-    ownerState?.resolver === "blocked_maintainer" ||
-    ownerState?.resolver === "system_degraded" ||
-    axes?.coverage === "unavailable" ||
-    axes?.coverage === "unsupported"
-  );
+  // A hard block (an explicit blocked health state, or a maintainer-audience
+  // defect) applies uniformly to every stream on the connection — e.g. revoked
+  // credentials or a maintainer code-fix stop the whole connector, so a
+  // seemingly-complete sibling report cannot be trusted to still be current.
+  if (health?.state === "blocked" || ownerState?.resolver === "blocked_maintainer") {
+    return true;
+  }
+  // `system_degraded` and a blocked coverage axis are connection-wide rollups,
+  // not per-stream facts — one stream's genuine provider/deployment block must
+  // not launder onto a sibling stream whose own collection_report entry
+  // already proves committed, complete coverage independent of that rollup.
+  const softDegraded =
+    ownerState?.resolver === "system_degraded" || axes?.coverage === "unavailable" || axes?.coverage === "unsupported";
+  if (!softDegraded) {
+    return false;
+  }
+  return !(report && committedCoverageProof(report));
 }
 
-function isFailed(connection: JsonObject): boolean {
+function isFailed(connection: JsonObject, report: JsonObject | undefined): boolean {
   const health = nestedObject(connection, "connection_health");
   const axes = nestedObject(health, "axes");
   const pill = nestedObject(nestedObject(connection, "rendered_verdict"), "pill");
-  return (
+  // A failed latest run, a terminal forward disposition, or a red pill (while
+  // not already hard-blocked) are connection-wide facts about the run/render
+  // itself, so they apply uniformly to every stream.
+  if (
     latestRunFailed(connection) ||
-    axes?.coverage === "terminal_gap" ||
     health?.forward_disposition === "terminal" ||
     (pill?.tone === "red" && health?.state !== "blocked")
-  );
+  ) {
+    return true;
+  }
+  // `connection_health.axes.coverage === "terminal_gap"` is a connection-wide
+  // rollup of whichever stream has the worst coverage — it is not a per-stream
+  // fact. A sibling stream whose own collection_report entry already proves
+  // committed, complete coverage must not inherit another stream's terminal
+  // gap.
+  if (axes?.coverage !== "terminal_gap") {
+    return false;
+  }
+  return !(report && committedCoverageProof(report));
 }
 
 function isStale(connection: JsonObject, record: JsonObject | undefined): boolean {
@@ -1352,6 +1472,15 @@ function isOwnerStateUnobserved(connection: JsonObject): boolean {
   );
 }
 
+/** Epoch ms for a non-empty, parseable ISO-ish timestamp string, else null. */
+function parseTimeMs(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function successfulRuntimeEvidence(connection: JsonObject, report: JsonObject): boolean {
   const lastSuccess = asObject(connection.last_successful_run);
   const lastRun = asObject(connection.last_run);
@@ -1366,20 +1495,42 @@ function successfulRuntimeEvidence(connection: JsonObject, report: JsonObject): 
   const lastSuccessId = asNonEmptyString(lastSuccess.run_id);
   const lastRunId = asNonEmptyString(lastRun.run_id);
   const latestIsSuccess = SUCCESSFUL_RUN_STATUSES.has(lastRun.status);
-  const latestIsNeutralCancellation = isOwnerCancelledRun(lastRun);
-  if (!(lastSuccessId && ((latestIsSuccess && lastRunId === lastSuccessId) || latestIsNeutralCancellation))) {
+  const latestIsNeutralTerminal = isOwnerCancelledRun(lastRun) || lastRun.status === "skipped";
+  if (!(lastSuccessId && ((latestIsSuccess && lastRunId === lastSuccessId) || latestIsNeutralTerminal))) {
     return false;
   }
   const evidenceAsOf = asNonEmptyString(report.evidence_as_of) ?? asNonEmptyString(report.as_of);
   if (!evidenceAsOf) {
     return false;
   }
-  const successfulTimes = [
+  // The current run's own proof: an exact match to a timestamp the latest
+  // successful run itself stamped. This is not carried-forward evidence, so
+  // it is accepted without an ordering check.
+  const currentTimes = [
     asNonEmptyString(lastSuccess.finished_at),
     asNonEmptyString(lastSuccess.last_at),
     ...(latestIsSuccess ? [asNonEmptyString(lastRun.finished_at), asNonEmptyString(lastRun.last_at)] : []),
   ].filter((value): value is string => value !== null);
-  return successfulTimes.includes(evidenceAsOf);
+  if (currentTimes.includes(evidenceAsOf)) {
+    return true;
+  }
+  // Carried-forward proof: a stream's fact can predate the connection's
+  // latest terminal success (e.g. an owner-cancelled run leaves an earlier
+  // stream fact untouched). That is only trustworthy when the carried
+  // timestamp parses, is not in the future, and is strictly older than the
+  // latest terminal success it is riding on — never equal to it (an exact
+  // match belongs to the current-proof branch above and reaching here means
+  // it did not match, so treat it as unproven rather than accepted) and never
+  // newer.
+  const evidenceAtMs = parseTimeMs(evidenceAsOf);
+  if (evidenceAtMs === null || evidenceAtMs > Date.now()) {
+    return false;
+  }
+  const latestSuccessAtMs = [asNonEmptyString(lastSuccess.finished_at), asNonEmptyString(lastSuccess.last_at)]
+    .map(parseTimeMs)
+    .filter((value): value is number => value !== null)
+    .reduce((oldest, candidate) => (oldest === null || candidate < oldest ? candidate : oldest), null as number | null);
+  return latestSuccessAtMs !== null && evidenceAtMs < latestSuccessAtMs;
 }
 
 function successfulLocalDeviceEvidence(connection: JsonObject, report: JsonObject): boolean {
@@ -1604,6 +1755,7 @@ function missingDomEvidence(reason = "owner Sources evidence was not supplied"):
   return {
     authenticated: false,
     connectionIds: [],
+    sourceScopes: [],
     nextPageHrefs: [],
     paginationComplete: false,
     renderedRows: false,
@@ -1635,10 +1787,12 @@ function htmlAttributes(tag: string): Map<string, string> {
 
 interface RenderedRowEvidence {
   connectionIds: Set<string>;
+  malformedSourceScope: boolean;
   malformedStreamRow: boolean;
   orphanedStreamRow: boolean;
   renderedRows: boolean;
   selectedConnectionId: string | null;
+  sourceScopes: Map<string, string>;
   streamKeys: { connectionId: string; stream: string }[];
 }
 
@@ -1673,8 +1827,11 @@ function parseRenderedStreamRow(
   return { key: { connectionId: rowConnectionId, stream }, malformed: false };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: source-row parsing validates identity and lifecycle scope together so contradictory duplicate rows fail closed.
 function parseRenderedRows(source: string): RenderedRowEvidence {
   const connectionIds = new Set<string>();
+  const sourceScopes = new Map<string, string>();
+  let malformedSourceScope = false;
   const streamKeys: { connectionId: string; stream: string }[] = [];
   let malformedStreamRow = false;
   let orphanedStreamRow = false;
@@ -1686,7 +1843,22 @@ function parseRenderedRows(source: string): RenderedRowEvidence {
     const sourceRow = attributes.get("data-pdpp-source-row");
     if (sourceRow) {
       renderedRows = true;
-      connectionIds.add(sourceRow);
+      const rowConnectionId = sourceRow.trim();
+      const scope = attributes.get("data-pdpp-source-scope")?.trim() ?? "";
+      if (rowConnectionId) {
+        connectionIds.add(rowConnectionId);
+      }
+      if (rowConnectionId && scope) {
+        const previousScope = sourceScopes.get(rowConnectionId);
+        if (previousScope && previousScope !== scope) {
+          malformedSourceScope = true;
+          sourceScopes.set(rowConnectionId, "<contradictory>");
+        } else {
+          sourceScopes.set(rowConnectionId, scope);
+        }
+      } else {
+        malformedSourceScope = true;
+      }
     }
     const streamRow = parseRenderedStreamRow(attributes);
     if (!streamRow) {
@@ -1704,7 +1876,16 @@ function parseRenderedRows(source: string): RenderedRowEvidence {
       orphanedStreamRow = true;
     }
   }
-  return { connectionIds, malformedStreamRow, orphanedStreamRow, renderedRows, streamKeys, selectedConnectionId };
+  return {
+    connectionIds,
+    malformedSourceScope,
+    malformedStreamRow,
+    orphanedStreamRow,
+    renderedRows,
+    selectedConnectionId,
+    sourceScopes,
+    streamKeys,
+  };
 }
 
 function parsePageHrefs(source: string): string[] {
@@ -1740,12 +1921,20 @@ export function parseOwnerSourcesDom(html: string): OwnerSourcesDomEvidence {
   const renderedRows = rendered.renderedRows || explicitEmpty;
   const revision = DOM_REVISION_PATTERN.exec(renderedSource)?.[2]?.trim() || null;
   const resolved =
-    !(authFailure || suspense || rendered.malformedStreamRow || rendered.orphanedStreamRow) && renderedRows;
+    !(
+      authFailure ||
+      suspense ||
+      rendered.malformedSourceScope ||
+      rendered.malformedStreamRow ||
+      rendered.orphanedStreamRow
+    ) && renderedRows;
   let reason: string | null = null;
   if (authFailure) {
     reason = "owner authentication was not resolved";
   } else if (suspense) {
     reason = "owner page is still suspended/loading";
+  } else if (rendered.malformedSourceScope) {
+    reason = "a rendered source row did not declare one consistent lifecycle scope";
   } else if (rendered.malformedStreamRow) {
     reason = "a rendered stream row did not bind to its source and Explore route";
   } else if (rendered.orphanedStreamRow) {
@@ -1762,6 +1951,10 @@ export function parseOwnerSourcesDom(html: string): OwnerSourcesDomEvidence {
     revision,
     resolved,
     selectedConnectionId: rendered.selectedConnectionId,
+    sourceScopes: [...rendered.sourceScopes].map(([rowConnectionId, scope]) => ({
+      connectionId: rowConnectionId,
+      scope,
+    })),
     streamKeys: [
       ...new Map(
         rendered.streamKeys.map((key) => [key.connectionId + String.fromCharCode(0) + key.stream, key])
@@ -1885,14 +2078,14 @@ function classForStream(
   if (hasActiveBoundedWork(connection)) {
     return { class: "active_bounded_work", denominator, reason: "bounded runtime work is still active" };
   }
-  if (isProviderConfigBlocked(connection)) {
+  if (isProviderConfigBlocked(connection, report)) {
     return {
       class: "provider_config_blocked",
       denominator,
       reason: "provider or deployment configuration blocks collection",
     };
   }
-  if (latestRunFailed(connection) || isFailed(connection)) {
+  if (latestRunFailed(connection) || isFailed(connection, report)) {
     return { class: "failed", denominator, reason: "latest runtime evidence reports failure" };
   }
   if (isStale(connection, record)) {
@@ -1917,14 +2110,39 @@ function compareDom(
   counts: Record<StreamHealthClass, number>
 ): StreamHealthAuthorityResult["domAgreement"] {
   const observed = [...new Set(dom.connectionIds.map((id) => id.trim()).filter(Boolean))].sort();
-  const expected = [
-    ...new Set(
-      connections
-        .filter((connection) => !connectionIsSynthetic(connection, resolveManifest(connection, input)))
-        .map(connectionId)
-        .filter((id): id is string => id !== null)
-    ),
-  ].sort();
+  const expectedScopes = new Map<string, LifecycleScope>();
+  const contradictoryExpectedScopes = new Set<string>();
+  for (const connection of connections) {
+    if (connectionIsSynthetic(connection, resolveManifest(connection, input))) {
+      continue;
+    }
+    const id = connectionId(connection);
+    if (!id) {
+      continue;
+    }
+    const scope = lifecycle(connection);
+    const previousScope = expectedScopes.get(id);
+    if (previousScope && previousScope !== scope) {
+      contradictoryExpectedScopes.add(id);
+    }
+    expectedScopes.set(id, scope);
+  }
+  const expected = [...expectedScopes.keys()].sort();
+  const activeExpected = [...expectedScopes]
+    .filter(([, scope]) => scope === "active")
+    .map(([id]) => id)
+    .sort((a, b) => a.localeCompare(b));
+  const observedScopeValues = new Map<string, string>();
+  for (const entry of Array.isArray(dom.sourceScopes) ? dom.sourceScopes : []) {
+    const id = asNonEmptyString(entry?.connectionId);
+    const scope = asNonEmptyString(entry?.scope);
+    if (id && scope) {
+      observedScopeValues.set(id, scope);
+    }
+  }
+  const observedSourceScopes = [...observedScopeValues]
+    .map(([id, scope]) => `${id}:${scope}`)
+    .sort((a, b) => a.localeCompare(b));
   const streamValues = Array.isArray(dom.streamKeys)
     ? [
         ...new Map(
@@ -1958,6 +2176,18 @@ function compareDom(
   const extraStreamKeys: string[] = [];
   const invalidStreamKeys: string[] = [];
   const expectedSet = new Set(expected);
+  const missingSourceScopes = observed
+    .filter((id) => expectedScopes.has(id) && !observedScopeValues.has(id))
+    .sort((a, b) => a.localeCompare(b));
+  const invalidSourceScopes = [...observedScopeValues]
+    .filter(([id, scope]) => contradictoryExpectedScopes.has(id) || expectedScopes.get(id) !== scope)
+    .map(([id, scope]) => `${id}:${scope}`)
+    .concat(
+      [...contradictoryExpectedScopes]
+        .filter((id) => !observedScopeValues.has(id))
+        .map((id) => `${id}:<contradictory-authority>`)
+    )
+    .sort((a, b) => a.localeCompare(b));
   let streamManifestUnavailable = false;
   for (const key of streamValues) {
     const label = `${key.connectionId}:${key.stream}`;
@@ -1974,18 +2204,24 @@ function compareDom(
   }
   const structuralResolved = dom.resolved && dom.renderedRows && Array.isArray(dom.streamKeys);
   const observedSet = new Set(observed);
-  const missingConnectionIds = expected.filter((id) => !observedSet.has(id));
+  const missingConnectionIds = activeExpected.filter((id) => !observedSet.has(id));
   const extraConnectionIds = observed.filter((id) => !expectedSet.has(id));
   if (expected.length === 0 && structuralResolved && dom.authenticated === true && dom.suspense === false) {
     return {
       extraConnectionIds: observed,
       extraStreamKeys,
       invalidStreamKeys,
+      invalidSourceScopes,
       missingConnectionIds: [],
+      missingSourceScopes: [],
       observedConnectionIds: observed,
+      observedSourceScopes,
       observedStreamKeys,
       resolved: true,
-      status: extraConnectionIds.length || extraStreamKeys.length || invalidStreamKeys.length ? "disagree" : "agree",
+      status:
+        extraConnectionIds.length || extraStreamKeys.length || invalidStreamKeys.length || invalidSourceScopes.length
+          ? "disagree"
+          : "agree",
     };
   }
   if (
@@ -1994,18 +2230,24 @@ function compareDom(
     dom.suspense === true ||
     !structuralResolved ||
     (selectedConnectionId === null &&
+      activeExpected.length > 0 &&
       missingConnectionIds.length === 0 &&
       extraConnectionIds.length === 0 &&
       extraStreamKeys.length === 0 &&
-      invalidStreamKeys.length === 0) ||
+      invalidStreamKeys.length === 0 &&
+      missingSourceScopes.length === 0 &&
+      invalidSourceScopes.length === 0) ||
     (selectedConnectionId !== null && expectedSelectedStreams === undefined)
   ) {
     return {
       extraConnectionIds: [],
       extraStreamKeys,
       invalidStreamKeys,
-      missingConnectionIds: expected,
+      invalidSourceScopes,
+      missingConnectionIds: activeExpected,
+      missingSourceScopes,
       observedConnectionIds: observed,
+      observedSourceScopes,
       observedStreamKeys,
       resolved: false,
       status: "inconclusive",
@@ -2013,7 +2255,9 @@ function compareDom(
   }
   if (
     missingConnectionIds.length > 0 ||
+    missingSourceScopes.length > 0 ||
     extraConnectionIds.length > 0 ||
+    invalidSourceScopes.length > 0 ||
     extraStreamKeys.length > 0 ||
     invalidStreamKeys.length > 0 ||
     missingStreamKeys.length > 0 ||
@@ -2024,15 +2268,18 @@ function compareDom(
       connection_id: null,
       connector_id: null,
       denominator: false,
-      reason: `authenticated owner DOM differs from owner inventory (missing=${missingConnectionIds.length}, missing_selected_streams=${missingStreamKeys.length}, extra=${extraConnectionIds.length}, extra_streams=${extraStreamKeys.length}, invalid_streams=${invalidStreamKeys.length})`,
+      reason: `authenticated owner DOM differs from owner inventory (missing=${missingConnectionIds.length}, missing_source_scopes=${missingSourceScopes.length}, invalid_source_scopes=${invalidSourceScopes.length}, missing_selected_streams=${missingStreamKeys.length}, extra=${extraConnectionIds.length}, extra_streams=${extraStreamKeys.length}, invalid_streams=${invalidStreamKeys.length})`,
       stream: "<owner-dom>",
     });
     return {
       extraConnectionIds,
       extraStreamKeys,
       invalidStreamKeys,
+      invalidSourceScopes,
       missingConnectionIds,
+      missingSourceScopes,
       observedConnectionIds: observed,
+      observedSourceScopes,
       observedStreamKeys,
       resolved: true,
       status: "disagree",
@@ -2043,8 +2290,11 @@ function compareDom(
       extraConnectionIds,
       extraStreamKeys,
       invalidStreamKeys,
+      invalidSourceScopes,
       missingConnectionIds,
+      missingSourceScopes,
       observedConnectionIds: observed,
+      observedSourceScopes,
       observedStreamKeys,
       resolved: true,
       status: "inconclusive",
@@ -2054,8 +2304,11 @@ function compareDom(
     extraConnectionIds,
     extraStreamKeys,
     invalidStreamKeys,
+    invalidSourceScopes,
     missingConnectionIds,
+    missingSourceScopes,
     observedConnectionIds: observed,
+    observedSourceScopes,
     observedStreamKeys,
     resolved: true,
     status: "agree",

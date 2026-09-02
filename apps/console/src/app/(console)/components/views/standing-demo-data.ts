@@ -217,6 +217,7 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
       ],
       failedRuns: FAILED_RUNS,
       fleetHealth: {
+        banner_warranted: true,
         state: "unhealthy",
         fully_healthy: false,
         scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },

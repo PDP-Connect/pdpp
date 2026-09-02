@@ -168,9 +168,22 @@ test("a systemic ingest failure's real cause is written to the server log even t
     }
   });
 
+  // ingestFailureLogLevel (server/records.ts, pinned by
+  // ingest-failure-log-level.test.ts) routes retryable classifications to
+  // console.warn and only non-retryable ones to console.error. The fault
+  // above throws a plain Error with no `.code`, which classifyIngestFailure
+  // defaults to retryable — the common, unknown-code path — so the line this
+  // test proves lands on console.warn, not console.error. Capturing both
+  // keeps this test about "is the real cause logged at all", the same
+  // question its title asks, independent of which of the two levels that
+  // classification resolves to.
   const capturedErrorLogs: string[] = [];
   const originalConsoleError = console.error;
+  const originalConsoleWarn = console.warn;
   console.error = (...args: unknown[]) => {
+    capturedErrorLogs.push(args.map((a) => String(a)).join(" "));
+  };
+  console.warn = (...args: unknown[]) => {
     capturedErrorLogs.push(args.map((a) => String(a)).join(" "));
   };
 
@@ -208,6 +221,7 @@ test("a systemic ingest failure's real cause is written to the server log even t
     );
   } finally {
     console.error = originalConsoleError;
+    console.warn = originalConsoleWarn;
     __setIngestFaultHookForTest(null);
     await closeServer(server);
   }

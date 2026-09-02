@@ -206,6 +206,65 @@ test("falsifiability (P1 fix): new URL(...) sibling load is caught", () => {
   );
 });
 
+test("falsifiability (Windows-safe dynamic import fix): pathToFileURL(join(__dirname, ...)).href resolving to a legitimate .ts code module is NOT flagged", () => {
+  // The exact live shape from `fix: use pathToFileURL for dynamic imports of
+  // filesystem paths` (e5a0c5cd8): wrapping an absolute filesystem path in
+  // pathToFileURL(...).href before passing it to dynamic import() so Node's
+  // ESM loader accepts it on Windows (a bare "C:\..." path parses as a URL
+  // with scheme "c:" there; POSIX absolute paths already look like
+  // root-relative URLs, so the fault is invisible outside Windows). This is
+  // ordinary code loading (a .ts sibling), not a data-resource load, and
+  // must resolve exactly as it did before the wrapper was added.
+  withSyntheticProductionFile(
+    "synthetic-path-to-file-url-code-load.ts",
+    [
+      'import { dirname, join } from "node:path";',
+      'import { fileURLToPath, pathToFileURL } from "node:url";',
+      "const __dirname = dirname(fileURLToPath(import.meta.url));",
+      "async function loadRuntime() {",
+      '  return await import(pathToFileURL(join(__dirname, "runtime-helper.ts")).href);',
+      "}",
+      "export { loadRuntime };",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
+      assert.deepEqual(
+        violations,
+        [],
+        `a pathToFileURL(...)-wrapped dynamic import of a .ts code module must resolve statically to a non-data extension and stay out of rule (5)'s scope, got: ${JSON.stringify(violations)}`
+      );
+    }
+  );
+});
+
+test("falsifiability (Windows-safe dynamic import counterweight): pathToFileURL(...).href reaching an unsanctioned sibling JSON data file is still caught", () => {
+  // Proves the pathToFileURL fix above is transparent resolution, not a
+  // blanket exemption for anything wrapped in pathToFileURL(...): the exact
+  // same wrapper reaching a sibling JSON policy file (JSON.parse-consumed)
+  // must still be flagged as unsanctioned, exactly like the plain new
+  // URL(...) and join(__dirname, ...) shapes already covered above.
+  withSyntheticProductionFile(
+    "synthetic-path-to-file-url-data-load.ts",
+    [
+      'import { readFileSync } from "node:fs";',
+      'import { dirname, join } from "node:path";',
+      'import { fileURLToPath, pathToFileURL } from "node:url";',
+      "const __dirname = dirname(fileURLToPath(import.meta.url));",
+      'const POLICY_PATH = pathToFileURL(join(__dirname, "gmail-policy.json")).href;',
+      'const POLICY = JSON.parse(readFileSync(POLICY_PATH, "utf8"));',
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
+      assert.ok(
+        violations.some((v) => v.rule === "unsanctioned-policy-resource-path"),
+        `pathToFileURL(...) must resolve transparently, not exempt an unsanctioned sibling JSON load reached through it, got: ${JSON.stringify(violations)}`
+      );
+    }
+  );
+});
+
 test("falsifiability (P1 fix): readFileSync(join(__dirname, ...)) reaching the identical sibling file is caught", () => {
   // This is the exact live mutation from the red-team review: the same
   // sibling-JSON evasion, reached via join(__dirname, ...) instead of new
@@ -598,6 +657,33 @@ test("falsifiability: a genuinely unresolvable JSON.parse(readFileSync(...)) cal
   );
 });
 
+test("falsifiability (Windows-safe dynamic import counterweight): pathToFileURL(...).href wrapping a genuinely unresolvable, runtime-derived path still fails closed", () => {
+  // Proves the pathToFileURL transparent-resolution fix does not widen what
+  // counts as "resolvable": wrapping a runtime-derived (env-sourced) path in
+  // pathToFileURL(...).href before a dynamic import() must still resolve to
+  // "unresolvable" and be flagged, exactly like the bare readFileSync(path)
+  // case above -- the wrapper changes nothing about whether the underlying
+  // argument is statically provable.
+  withSyntheticProductionFile(
+    "synthetic-path-to-file-url-unresolvable-load.ts",
+    [
+      'import { pathToFileURL } from "node:url";',
+      "export async function loadFromEnv(env: NodeJS.ProcessEnv) {",
+      '  const modulePath = env.SOME_MODULE_PATH ?? "";',
+      "  return await import(pathToFileURL(modulePath).href);",
+      "}",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
+      assert.ok(
+        violations.some((v) => v.rule === "unresolvable-data-resource-load"),
+        `a pathToFileURL(...)-wrapped dynamic import of a runtime-derived, statically-unresolvable path must still fail closed, got: ${JSON.stringify(violations)}`
+      );
+    }
+  );
+});
+
 test("falsifiability: a non-JSON-consuming read of an unresolvable path is correctly out of rule (5)'s scope", () => {
   // e.g. reading an operator-supplied secret-key-file as raw text, never
   // JSON.parse'd and never resolved to a .json/.yaml-shaped literal path —
@@ -644,6 +730,49 @@ test("falsifiability: a dynamic manifest-root selection (the legitimate 'pick a 
       );
     }
   );
+
+  const readAtLine = (line: number, readCall: string, jsonFlow: string) =>
+    withSyntheticProductionFile(
+      `synthetic-exact-generic-read-${line}.ts`,
+      [
+        'import { readFile } from "node:fs/promises";',
+        ...Array.from({ length: line - 3 }, (_, index) => `// line ${index + 2}`),
+        "async function readManifestJson(path: string) {",
+        `  const raw = ${readCall};`,
+        `  ${jsonFlow}`,
+        "}",
+        "",
+      ].join("\n"),
+      (relPath) =>
+        scanFileDataLoads(
+          join(repoRoot, relPath),
+          "reference-implementation/server/polyfill-manifest-reconcile.ts",
+          repoRoot
+        )
+    );
+
+  assert.deepEqual(
+    readAtLine(98, 'await readFile(path, "utf8")', "return JSON.parse(raw);"),
+    [],
+    "the reviewed polyfill manifest call site must match its exact current line pin and call shape"
+  );
+  assert.ok(
+    readAtLine(99, 'await readFile(path, "utf8")', "return JSON.parse(raw);").some(
+      (violation) => violation.rule === "unresolvable-data-resource-load"
+    ),
+    "moving the identical call one line must invalidate the exemption and fail closed"
+  );
+  for (const [mutation, readCall, jsonFlow] of [
+    ["callee", 'await readFileSync(path, "utf8")', "return JSON.parse(raw);"],
+    ["encoding/options", 'await readFile(path, { encoding: "utf8" })', "return JSON.parse(raw);"],
+    ["path source", 'await readFile(manifestPath, "utf8")', "return JSON.parse(raw);"],
+    ["missing JSON consumption", 'await readFile(path, "utf8")', "return raw;"],
+  ] as const) {
+    assert.ok(
+      readAtLine(98, readCall, jsonFlow).length > 0,
+      `${mutation} mutation at the approved line must fail closed`
+    );
+  }
 });
 
 test("falsifiability (P3 fix): EXEMPT_DIR_SEGMENTS no longer exempts a nested directory sharing a name at any depth", () => {

@@ -48,7 +48,7 @@ export function filterRunGapsProvenCompleteByReport(
     (gap) =>
       !(
         knownGapMatchesCompleteContinuation(gap, completeByStream) ||
-        (allRequiredComplete && isUnscopedCheckpointCommitGap(gap))
+        (allRequiredComplete && (isUnscopedCheckpointCommitGap(gap) || isUnscopedSupersededInteractionGap(gap, run)))
       )
   );
   return knownGaps.length === run.known_gaps.length ? run : { ...run, known_gaps: knownGaps };
@@ -64,6 +64,35 @@ export function filterRunGapsProvenCompleteByReport(
 function isUnscopedCheckpointCommitGap(gap: unknown): boolean {
   const candidate = new Object(gap) as { kind?: unknown; stream?: unknown };
   return candidate.kind === "checkpoint_commit" && (candidate.stream === null || candidate.stream === undefined);
+}
+
+const RUN_SUCCEEDED_STATUSES: ReadonlySet<string> = new Set(["succeeded", "success"]);
+
+/**
+ * An `interaction_required` gap with no `stream` records a credential/login
+ * prompt raised at the connection level, not against any one stream. When the
+ * SAME run went on to a proven-successful terminal status AND every required
+ * stream reached `complete`, the interaction the gap describes was resolved
+ * (or made moot) before the run finished — the gap is a leftover trace of
+ * that interaction, not evidence this run's coverage is incomplete.
+ *
+ * Reusing this run's OWN terminal status and per-stream completeness (never a
+ * subsequent run's) keeps the same "proof from the SAME evidence, never
+ * inferred forward" discipline as `knownGapMatchesCompleteContinuation`: a
+ * run that did NOT reach a successful status, or that left any required
+ * stream short of `complete`, leaves this gap untouched, so it continues to
+ * surface as `terminal_gap` and the next login request is still asked for
+ * exactly when the evidence says it is needed — never softened
+ * preemptively. A run cannot both fail overall and have every required
+ * stream proven complete, so this can never mask a run the caller would
+ * otherwise treat as a failure.
+ */
+function isUnscopedSupersededInteractionGap(gap: unknown, run: ConnectorRunSummary): boolean {
+  if (!RUN_SUCCEEDED_STATUSES.has(run.status)) {
+    return false;
+  }
+  const candidate = new Object(gap) as { kind?: unknown; stream?: unknown };
+  return candidate.kind === "interaction_required" && (candidate.stream === null || candidate.stream === undefined);
 }
 
 function knownGapMatchesCompleteContinuation(

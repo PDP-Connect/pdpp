@@ -73,11 +73,11 @@ function withCallerOptionKindClaim(
 
 const OWNER_PROVENANCE = withCallerOptionKindClaim(
   {
-    origin: "owner",
     isExplicit: true,
-    sourceOfChange: "console: owner clicked 'archive all channels'",
-    setBy: "owner",
+    origin: "owner",
     setAt: NOW,
+    setBy: "owner",
+    sourceOfChange: "console: owner clicked 'archive all channels'",
   },
   "collection_scope"
 );
@@ -90,11 +90,11 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     const revision = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { CHANNEL_ALLOWLIST: ["C01", "C02"] },
-      provenance: OWNER_PROVENANCE,
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: ["C01", "C02"] },
+      connectorInstanceId: "cin_slack_1",
+      provenance: OWNER_PROVENANCE,
     });
 
     // Origin records who supplied the value; it is not authorization. A
@@ -116,11 +116,11 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     const revision = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { CHANNEL_ALLOWLIST: ["C01"] },
-      provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE }, "transport"),
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: ["C01"] },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE }, "transport"),
     });
 
     assert.equal(revision.optionKind, "collection_scope", "CHANNEL_ALLOWLIST is platform-classified collection scope");
@@ -135,11 +135,11 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     const revision = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { CHANNEL_ALLOWLIST: ["C01"], SKIP_FILES: true },
-      provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE }, "transport"),
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: ["C01"], SKIP_FILES: true },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE }, "transport"),
     });
 
     assert.equal(revision.optionKind, "collection_scope");
@@ -153,18 +153,21 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     const proposed = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { CHANNEL_ALLOWLIST: AGENT_239_IDS },
-      provenance: withCallerOptionKindClaim({
-        origin: "agent",
-        isExplicit: true,
-        sourceOfChange:
-          "bounded Slack archive run requested 2026-08-22; agent computed archived-and-not-a-member set",
-        setBy: "agent-18",
-        setAt: NOW,
-      }, "collection_scope"),
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: AGENT_239_IDS },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim(
+        {
+          isExplicit: true,
+          origin: "agent",
+          setAt: NOW,
+          setBy: "agent-18",
+          sourceOfChange:
+            "bounded Slack archive run requested 2026-08-22; agent computed archived-and-not-a-member set",
+        },
+        "collection_scope"
+      ),
     });
 
     assert.equal(proposed.status, "proposed", "a collection_scope write must never self-activate");
@@ -184,25 +187,28 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     const proposed = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { CHANNEL_ALLOWLIST: AGENT_239_IDS },
-      provenance: withCallerOptionKindClaim({
-        origin: "agent",
-        isExplicit: true,
-        sourceOfChange: "bounded Slack archive run requested 2026-08-22",
-        setBy: "agent-18",
-        setAt: NOW,
-      }, "collection_scope"),
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: AGENT_239_IDS },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim(
+        {
+          isExplicit: true,
+          origin: "agent",
+          setAt: NOW,
+          setBy: "agent-18",
+          sourceOfChange: "bounded Slack archive run requested 2026-08-22",
+        },
+        "collection_scope"
+      ),
     });
     assert.equal(await store.getActiveRevision("cin_slack_1"), null);
 
     const confirmed = await store.confirm({
+      authenticatedOwnerSubjectId: "owner-1",
+      confirmedAt: LATER,
       connectorInstanceId: "cin_slack_1",
       revision: proposed.revision,
-      confirmedAt: LATER,
-      authenticatedOwnerSubjectId: "owner-1",
     });
     assert.equal(confirmed.status, "active");
     assert.equal(confirmed.confirmedBy, "owner-1");
@@ -222,17 +228,20 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     const revision = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { SKIP_FILES: true },
-      provenance: withCallerOptionKindClaim({
-        origin: "agent",
-        isExplicit: true,
-        sourceOfChange: "agent tuned pagination for throughput",
-        setBy: "agent-18",
-        setAt: NOW,
-      }, "transport"),
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { SKIP_FILES: true },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim(
+        {
+          isExplicit: true,
+          origin: "agent",
+          setAt: NOW,
+          setBy: "agent-18",
+          sourceOfChange: "agent tuned pagination for throughput",
+        },
+        "transport"
+      ),
     });
     assert.equal(revision.status, "active", "transport tuning cannot change what is collected, so it self-activates");
   })
@@ -244,20 +253,20 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     const proposed = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { CHANNEL_ALLOWLIST: ["C01"] },
-      provenance: OWNER_PROVENANCE,
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: ["C01"] },
+      connectorInstanceId: "cin_slack_1",
+      provenance: OWNER_PROVENANCE,
     });
 
     await assert.rejects(
       () =>
         store.confirm({
+          confirmedAt: LATER,
+          confirmedBy: "owner",
           connectorInstanceId: "cin_slack_1",
           revision: proposed.revision,
-          confirmedBy: "owner",
-          confirmedAt: LATER,
         } as unknown as Parameters<typeof store.confirm>[0]),
       /authenticated owner subject/i
     );
@@ -270,20 +279,20 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     const proposed = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { CHANNEL_ALLOWLIST: ["C01"] },
-      provenance: OWNER_PROVENANCE,
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: ["C01"] },
+      connectorInstanceId: "cin_slack_1",
+      provenance: OWNER_PROVENANCE,
     });
 
     await assert.rejects(
       () =>
         store.confirm({
+          authenticatedOwnerSubjectId: "owner-2",
+          confirmedAt: LATER,
           connectorInstanceId: "cin_slack_1",
           revision: proposed.revision,
-          confirmedAt: LATER,
-          authenticatedOwnerSubjectId: "owner-2",
         }),
       /authenticated owner subject does not own/
     );
@@ -297,11 +306,11 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     const proposed = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { CHANNEL_ALLOWLIST: ["C01"] },
-      provenance: OWNER_PROVENANCE,
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: ["C01"] },
+      connectorInstanceId: "cin_slack_1",
+      provenance: OWNER_PROVENANCE,
     });
     getDb()
       .prepare(
@@ -322,11 +331,11 @@ test(
     await assert.rejects(
       () =>
         store.propose({
-          connectorInstanceId: "cin_slack_1",
-          config: { CHANNEL_ALLOWLIST: ["C01"] },
-          provenance: { ...OWNER_PROVENANCE, setBy: "" },
-          baseRevision: 0,
           baseEpoch: 1,
+          baseRevision: 0,
+          config: { CHANNEL_ALLOWLIST: ["C01"] },
+          connectorInstanceId: "cin_slack_1",
+          provenance: { ...OWNER_PROVENANCE, setBy: "" },
         }),
       /setBy must not be empty/
     );
@@ -334,11 +343,11 @@ test(
     await assert.rejects(
       () =>
         store.propose({
-          connectorInstanceId: "cin_slack_1",
-          config: { CHANNEL_ALLOWLIST: ["C01"] },
-          provenance: { ...OWNER_PROVENANCE, sourceOfChange: "" },
-          baseRevision: 0,
           baseEpoch: 1,
+          baseRevision: 0,
+          config: { CHANNEL_ALLOWLIST: ["C01"] },
+          connectorInstanceId: "cin_slack_1",
+          provenance: { ...OWNER_PROVENANCE, sourceOfChange: "" },
         }),
       /sourceOfChange must not be empty/
     );
@@ -363,7 +372,20 @@ test(
                option_kind, origin, is_explicit, status, source_of_change, set_by, set_at
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
-          .run("cin_slack_1", 1, "{}", "pdpp.connector_config.v1", 1, "collection_scope", "unknown", 1, "active", "x", "x", NOW),
+          .run(
+            "cin_slack_1",
+            1,
+            "{}",
+            "pdpp.connector_config.v1",
+            1,
+            "collection_scope",
+            "unknown",
+            1,
+            "active",
+            "x",
+            "x",
+            NOW
+          ),
       /CHECK constraint failed/,
       "origin='unknown' must violate the CHECK constraint even via raw SQL"
     );
@@ -377,51 +399,57 @@ test(
     const store = createSqliteConnectorInstanceConfigStore();
 
     const inherited = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { MEMBER_ONLY: true },
-      provenance: withCallerOptionKindClaim({
-        origin: "default",
-        isExplicit: false,
-        sourceOfChange: "manifest-declared default applied at connection creation (no explicit choice made)",
-        setBy: "system:manifest-default",
-        setAt: NOW,
-      }, "collection_scope"),
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { MEMBER_ONLY: true },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim(
+        {
+          isExplicit: false,
+          origin: "default",
+          setAt: NOW,
+          setBy: "system:manifest-default",
+          sourceOfChange: "manifest-declared default applied at connection creation (no explicit choice made)",
+        },
+        "collection_scope"
+      ),
     });
     assert.equal(inherited.isExplicit, false);
     assert.equal(inherited.status, "proposed", "a collection default must not activate without owner confirmation");
     assert.equal(await store.getActiveRevision("cin_slack_1"), null);
 
     const activatedDefault = await store.confirm({
+      authenticatedOwnerSubjectId: "owner-1",
+      confirmedAt: LATER,
       connectorInstanceId: "cin_slack_1",
       revision: inherited.revision,
-      confirmedAt: LATER,
-      authenticatedOwnerSubjectId: "owner-1",
     });
 
     const explicit = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { MEMBER_ONLY: false },
-      provenance: withCallerOptionKindClaim({
-        origin: "owner",
-        isExplicit: true,
-        sourceOfChange: "console: owner unchecked 'members only'",
-        setBy: "owner",
-        setAt: LATER,
-      }, "collection_scope"),
-      baseRevision: activatedDefault.revision,
       baseEpoch: 1,
+      baseRevision: activatedDefault.revision,
+      config: { MEMBER_ONLY: false },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim(
+        {
+          isExplicit: true,
+          origin: "owner",
+          setAt: LATER,
+          setBy: "owner",
+          sourceOfChange: "console: owner unchecked 'members only'",
+        },
+        "collection_scope"
+      ),
     });
     assert.equal(explicit.isExplicit, true, "must be distinguishable from the prior inherited default");
     assert.equal(explicit.origin, "owner");
     assert.deepEqual(explicit.config, { MEMBER_ONLY: false });
 
     const activatedExplicit = await store.confirm({
+      authenticatedOwnerSubjectId: "owner-1",
+      confirmedAt: LATER,
       connectorInstanceId: "cin_slack_1",
       revision: explicit.revision,
-      confirmedAt: LATER,
-      authenticatedOwnerSubjectId: "owner-1",
     });
 
     const active = await store.getActiveRevision("cin_slack_1");
@@ -435,28 +463,32 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { SKIP_FILES: true },
-      provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE }, "transport"),
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { SKIP_FILES: true },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE }, "transport"),
     });
 
     // Both writers believe revision 0 (no config yet) is current.
     await assert.rejects(
       () =>
         store.propose({
-          connectorInstanceId: "cin_slack_1",
-          config: { SKIP_FILES: false },
-          provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE, setBy: "owner-device-2" }, "transport"),
-          baseRevision: 0,
           baseEpoch: 1,
+          baseRevision: 0,
+          config: { SKIP_FILES: false },
+          connectorInstanceId: "cin_slack_1",
+          provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE, setBy: "owner-device-2" }, "transport"),
         }),
       ConfigStaleWriteError
     );
 
     const active = await store.getActiveRevision("cin_slack_1");
-    assert.deepEqual(active?.config, { SKIP_FILES: true }, "the first writer's value must not be overwritten by the rejected second write");
+    assert.deepEqual(
+      active?.config,
+      { SKIP_FILES: true },
+      "the first writer's value must not be overwritten by the rejected second write"
+    );
   })
 );
 
@@ -466,18 +498,18 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     const first = await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { SKIP_FILES: true },
-      provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE }, "transport"),
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { SKIP_FILES: true },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE }, "transport"),
     });
     await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { SKIP_FILES: false },
-      provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE, setAt: LATER }, "transport"),
-      baseRevision: first.revision,
       baseEpoch: 1,
+      baseRevision: first.revision,
+      config: { SKIP_FILES: false },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim({ ...OWNER_PROVENANCE, setAt: LATER }, "transport"),
     });
 
     const revisions = await store.listRevisions("cin_slack_1");
@@ -486,7 +518,11 @@ test(
       [2, 1]
     );
     assert.equal(revisions[0]?.status, "active");
-    assert.equal(revisions[1]?.status, "superseded", "the prior active revision must be marked superseded, not deleted");
+    assert.equal(
+      revisions[1]?.status,
+      "superseded",
+      "the prior active revision must be marked superseded, not deleted"
+    );
   })
 );
 
@@ -496,11 +532,11 @@ test(
     seedConnectorInstance("cin_slack_1");
     const store = createSqliteConnectorInstanceConfigStore();
     await store.propose({
-      connectorInstanceId: "cin_slack_1",
-      config: { CHANNEL_ALLOWLIST: ["C01"] },
-      provenance: OWNER_PROVENANCE,
-      baseRevision: 0,
       baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: ["C01"] },
+      connectorInstanceId: "cin_slack_1",
+      provenance: OWNER_PROVENANCE,
     });
 
     getDb().prepare("DELETE FROM connector_instances WHERE connector_instance_id = ?").run("cin_slack_1");
@@ -509,5 +545,187 @@ test(
     assert.equal(pointer, null);
     const revisions = await store.listRevisions("cin_slack_1");
     assert.deepEqual(revisions, []);
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Owner refusal. Added 2026-08-26 after the owner hit the gap live: the exact
+// 239-channel Slack allowlist above sat `proposed` in his UI and he had no way
+// to say no. Accepting or ignoring were the only options, and ignoring is not
+// deciding.
+// ---------------------------------------------------------------------------
+
+test(
+  "the owner can REJECT the 239-channel agent proposal, and it stops asking",
+  withDb(async () => {
+    seedConnectorInstance("cin_slack_1");
+    const store = createSqliteConnectorInstanceConfigStore();
+    const proposed = await store.propose({
+      baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: AGENT_239_IDS },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim(
+        {
+          isExplicit: true,
+          origin: "agent",
+          setAt: NOW,
+          setBy: "agent-18",
+          sourceOfChange: "bounded Slack archive run requested 2026-08-22",
+        },
+        "collection_scope"
+      ),
+    });
+
+    const rejected = await store.reject({
+      authenticatedOwnerSubjectId: "owner-1",
+      connectorInstanceId: "cin_slack_1",
+      rejectedAt: LATER,
+      revision: proposed.revision,
+    });
+
+    assert.equal(rejected.status, "rejected");
+    // A refusal is as attributable as an acceptance: who decided, and when.
+    assert.equal(rejected.confirmedBy, "owner-1");
+    assert.equal(rejected.confirmedAt, LATER);
+    // Refusing must not rewrite who proposed it — the history stays honest.
+    assert.equal(rejected.origin, "agent");
+  })
+);
+
+test(
+  "rejecting activates nothing — refusing a proposal cannot change what a run collects",
+  withDb(async () => {
+    seedConnectorInstance("cin_slack_1");
+    const store = createSqliteConnectorInstanceConfigStore();
+    const proposed = await store.propose({
+      baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: AGENT_239_IDS },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim(
+        { isExplicit: true, origin: "agent", setAt: NOW, setBy: "agent-18", sourceOfChange: "x" },
+        "collection_scope"
+      ),
+    });
+    await store.reject({
+      authenticatedOwnerSubjectId: "owner-1",
+      connectorInstanceId: "cin_slack_1",
+      rejectedAt: LATER,
+      revision: proposed.revision,
+    });
+
+    // THE load-bearing assertion: the run resolver still sees nothing. The
+    // owner's "no" leaves collection exactly where it was — on the default.
+    assert.equal(
+      await store.getActiveRevision("cin_slack_1"),
+      null,
+      "a rejected proposal must never become the active config"
+    );
+    assert.equal(await store.getCurrentPointer("cin_slack_1"), null, "reject must not write a pointer");
+  })
+);
+
+test(
+  "a rejected revision is terminal — it cannot be confirmed afterwards",
+  withDb(async () => {
+    seedConnectorInstance("cin_slack_1");
+    const store = createSqliteConnectorInstanceConfigStore();
+    const proposed = await store.propose({
+      baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: AGENT_239_IDS },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim(
+        { isExplicit: true, origin: "agent", setAt: NOW, setBy: "agent-18", sourceOfChange: "x" },
+        "collection_scope"
+      ),
+    });
+    await store.reject({
+      authenticatedOwnerSubjectId: "owner-1",
+      connectorInstanceId: "cin_slack_1",
+      rejectedAt: LATER,
+      revision: proposed.revision,
+    });
+
+    // Without this, a refusal could be quietly undone by a later confirm call
+    // and the owner's decision would not hold.
+    await assert.rejects(
+      () =>
+        store.confirm({
+          authenticatedOwnerSubjectId: "owner-1",
+          confirmedAt: "2026-08-22T15:00:00.000Z",
+          connectorInstanceId: "cin_slack_1",
+          revision: proposed.revision,
+        }),
+      /not 'proposed'/
+    );
+  })
+);
+
+test(
+  "only the connection's own owner may reject",
+  withDb(async () => {
+    seedConnectorInstance("cin_slack_1");
+    const store = createSqliteConnectorInstanceConfigStore();
+    const proposed = await store.propose({
+      baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: AGENT_239_IDS },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim(
+        { isExplicit: true, origin: "agent", setAt: NOW, setBy: "agent-18", sourceOfChange: "x" },
+        "collection_scope"
+      ),
+    });
+
+    // Refusal is an owner decision, so it needs the same authority as
+    // acceptance — an agent must not be able to reject on his behalf either.
+    await assert.rejects(() =>
+      store.reject({
+        authenticatedOwnerSubjectId: "someone-else",
+        connectorInstanceId: "cin_slack_1",
+        rejectedAt: LATER,
+        revision: proposed.revision,
+      })
+    );
+  })
+);
+
+test(
+  "a rejected revision cannot be rejected again — the proposed-only guard holds both ways",
+  withDb(async () => {
+    seedConnectorInstance("cin_slack_1");
+    const store = createSqliteConnectorInstanceConfigStore();
+    const proposed = await store.propose({
+      baseEpoch: 1,
+      baseRevision: 0,
+      config: { CHANNEL_ALLOWLIST: AGENT_239_IDS },
+      connectorInstanceId: "cin_slack_1",
+      provenance: withCallerOptionKindClaim(
+        { isExplicit: true, origin: "agent", setAt: NOW, setBy: "agent-18", sourceOfChange: "x" },
+        "collection_scope"
+      ),
+    });
+    await store.reject({
+      authenticatedOwnerSubjectId: "owner-1",
+      connectorInstanceId: "cin_slack_1",
+      rejectedAt: LATER,
+      revision: proposed.revision,
+    });
+
+    // Covers the `status !== 'proposed'` guard inside reject() itself. Without
+    // this case a mutation deleting that guard survives: the confirm-after-
+    // reject test only exercises confirm's copy of it.
+    await assert.rejects(
+      () =>
+        store.reject({
+          authenticatedOwnerSubjectId: "owner-1",
+          connectorInstanceId: "cin_slack_1",
+          rejectedAt: "2026-08-22T15:00:00.000Z",
+          revision: proposed.revision,
+        }),
+      /not 'proposed'/
+    );
   })
 );

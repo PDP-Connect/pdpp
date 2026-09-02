@@ -74,7 +74,12 @@ import { resolve } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
-import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../../server/postgres-storage.ts";
+import {
+  closePostgresStorage,
+  initExistingPostgresRepairStorage,
+  POSTGRES_DETAIL_GAP_REPAIR_REQUIRED_TABLES,
+  postgresQuery,
+} from "../../server/postgres-storage.ts";
 import {
   createPostgresConnectorDetailGapStore,
   TERMINAL_REQUEUE_REASON_ALLOWLIST,
@@ -260,7 +265,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  await initPostgresStorage({ backend: "postgres", databaseUrl });
+  // Repair tools target an already-migrated live database. Opening through the
+  // existing-schema path is essential: full runtime bootstrap performs DDL in
+  // one transaction and can deadlock with normal records writes.
+  await initExistingPostgresRepairStorage(
+    { backend: "postgres", databaseUrl },
+    { requiredTables: POSTGRES_DETAIL_GAP_REPAIR_REQUIRED_TABLES }
+  );
   try {
     const matched = await countQuarantined({
       connectorId,

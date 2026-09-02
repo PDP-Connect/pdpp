@@ -211,7 +211,13 @@ async function withPostgresHarness(
         process.env.PDPP_STORAGE_BACKEND = "postgres";
         process.env.PDPP_SOURCE_WEBHOOK_SECRETS = `spotify:${secret}:${sourceId}`;
         const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "fixtures/seed-manifests/spotify.json"), "utf8"));
-        const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+        const server = await startServer({
+          asPort: 0,
+          connectionScopedRunEnvResolver: resolveCredentialFreeFixtureRunEnv,
+          dbPath: ":memory:",
+          quiet: true,
+          rsPort: 0,
+        });
         try {
           const asUrl = `http://localhost:${server.asPort}`;
           const rsUrl = `http://localhost:${server.rsPort}`;

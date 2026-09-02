@@ -752,12 +752,8 @@ test(
       manifestsDir,
       referenceFixturesDir,
     });
-    // Persisted rows now carry the generated SourceDeclaration snapshot, so
-    // byte comparison with the shipped legacy fixture remains an update even
-    // when the operational manifest content is unchanged. The update must
-    // still preserve records; a future storage-normalization fix can tighten
-    // this back to `unchanged` without changing the data-safety assertion.
-    assert.equal(summary.updated, 1, "reconciliation refreshes the derived declaration snapshot");
+    assert.equal(summary.unchanged, 1, "storage-normalized byte-identical manifests are unchanged");
+    assert.equal(summary.updated, 0, "an unchanged manifest does not re-register or backfill records");
     assert.equal(summary.invalidatedConnectors, 0, "no invalidation when fingerprints match");
     assert.equal(summary.invalidatedRecords, 0, "no records counted as invalidated");
     assert.equal(recordCount(CONNECTOR_ID), 1, "records survive a no-op reconciliation");

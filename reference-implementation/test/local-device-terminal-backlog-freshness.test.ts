@@ -5,9 +5,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  type ConnectorSummaryEvidenceRow,
   hasTerminalOnlyOutboxBacklog,
   type LocalDeviceProgress,
   localDeviceFreshnessHeartbeatAt,
+  requiredCoverageEvidenceIsAuthoritative,
 } from "../server/ref-control.ts";
 
 // A local-device source whose outbox holds ONLY dead-lettered rows still has a
@@ -154,4 +156,87 @@ test("pre-existing idle/active freshness paths are unchanged", () => {
     ),
     FRESH_HEARTBEAT
   );
+});
+
+// ── requiredCoverageEvidenceIsAuthoritative: outbox gate ────────────────────
+//
+// Live production evidence (2026-08-28, connection cin_2de5ede05c8cc8d45935c414,
+// connector claude-code, the SAME source this file's dead-letter-carve-out
+// fixture models): axes.coverage = "retryable_gap", axes.outbox = "stalled"
+// (dead_letter: 1, backlog_open: 1 -- still unresolved from the 2026-08-22
+// incident above), yet every required stream's collection_report entry read
+// coverage_condition: "complete" -- the exact "health coverage disagrees with
+// an entirely complete collection report" shape scripts/stream-health-audit
+// flags. That disagreement is REAL, not a projection bug: the report's
+// `complete` proof predates the stall and a genuinely open outbox
+// (openspec/changes/define-stream-coverage-freshness-evidence/design.md:344-345,
+// "no ... open outbox work") must withhold it, exactly like a dirty or
+// non-current evidence row already does.
+
+function evidenceRow(overrides: Partial<ConnectorSummaryEvidenceRow> = {}): ConnectorSummaryEvidenceRow {
+  const currentComponent = { as_of: NOW, reason_code: null, state: "current" as const };
+  return {
+    canonical_evidence_revision: "rev-1",
+    dirty: false,
+    last_error: null,
+    manifest_declaration: currentComponent,
+    record_checkpoint: null,
+    record_snapshot: currentComponent,
+    retained_bytes: null,
+    retained_bytes_evidence: currentComponent,
+    state: "fresh",
+    stream_count: 1,
+    stream_latest_facts: null,
+    stream_records: [],
+    terminal_facts: { as_of: NOW, event_seq: 1, reason_code: null, state: "current" },
+    total_records: 0,
+    total_retained_bytes: null,
+    ...overrides,
+  };
+}
+
+test("a stalled outbox on a local-device connection withholds required-coverage authority", () => {
+  assert.equal(
+    requiredCoverageEvidenceIsAuthoritative(evidenceRow(), { axis: "stalled", localDeviceBacked: true }),
+    false,
+    "an otherwise-clean evidence row must not be authoritative while the outbox is stalled"
+  );
+});
+
+test("a stalled outbox on a NON-local-device connection does not affect authority", () => {
+  // Scheduler-managed connections have no local push-mode outbox at all; the
+  // gate must not fire generically off the axis value alone, or it would
+  // silently start degrading provider-authenticated connectors that were
+  // never in scope. No connector ID is read anywhere -- only the transport
+  // model flag already threaded through this call for every connection kind.
+  assert.equal(
+    requiredCoverageEvidenceIsAuthoritative(evidenceRow(), { axis: "stalled", localDeviceBacked: false }),
+    true,
+    "a non-local-device connection's outbox axis must not gate coverage authority"
+  );
+});
+
+test("an idle or active local-device outbox does not withhold required-coverage authority", () => {
+  for (const axis of ["idle", "active", "unknown"] as const) {
+    assert.equal(
+      requiredCoverageEvidenceIsAuthoritative(evidenceRow(), { axis, localDeviceBacked: true }),
+      true,
+      `axis ${axis} must not withhold authority -- only "stalled" represents open outbox work`
+    );
+  }
+});
+
+test("a stalled outbox does not override an already-non-authoritative evidence row", () => {
+  // Counterweight: the pre-existing dirty/non-current checks must keep firing
+  // independently of the new outbox clause -- this is an AND, not a
+  // replacement.
+  assert.equal(
+    requiredCoverageEvidenceIsAuthoritative(evidenceRow({ dirty: true }), { axis: "idle", localDeviceBacked: true }),
+    false,
+    "a dirty evidence row must stay non-authoritative regardless of outbox state"
+  );
+});
+
+test("requiredCoverageEvidenceIsAuthoritative rejects a null evidence row regardless of outbox state", () => {
+  assert.equal(requiredCoverageEvidenceIsAuthoritative(null, { axis: "idle", localDeviceBacked: true }), false);
 });

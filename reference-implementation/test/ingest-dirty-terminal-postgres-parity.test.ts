@@ -39,13 +39,17 @@ function manifestFor(connectorId: string) {
   return {
     capabilities: { human_interaction: [] },
     connector_id: connectorId,
+    manifest_uri: `https://registry.pdpp.dev/connectors/${connectorId}`,
     display_name: connectorId,
     protocol_version: "0.1.0",
+    version: "1.0.0",
     streams: [
       {
         name: "items",
         primary_key: ["id"],
         query: { search: { lexical_fields: ["subject"] } },
+        semantics: "append_only",
+        selection: { fields: true, resources: true },
         schema: {
           properties: { id: { type: "string" }, subject: { type: "string" } },
           required: ["id", "subject"],

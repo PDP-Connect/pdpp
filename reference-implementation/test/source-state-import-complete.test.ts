@@ -37,7 +37,7 @@ const NOW = "2026-08-18T12:00:00.000Z";
 /** A finished manual import: complete coverage, no schedule, no run history — the real shape of both production rows. */
 function completedImportInput(overrides: Partial<ComputeConnectionHealthInput> = {}): ComputeConnectionHealthInput {
   return {
-    acquisition: { complete: true },
+    acquisition: { complete: true, freshnessNotApplicable: true },
     activity: null,
     attention: null,
     backoff: null,
@@ -132,5 +132,42 @@ test("ANTI-FALSE-GREEN: a recurring source that is genuinely stale is never resc
   );
   assert.notEqual(verdict.pill.label, "Import complete");
   assert.notEqual(verdict.pill.tone, "green");
+  assert.notEqual(ownerState.resolver, "healthy");
+});
+
+test("ANTI-FALSE-GREEN: a never-run manual connector (source-kind alone, no receipt) does not reach Import complete", () => {
+  // Byte-identical to the completed-import fixture except `complete` is false:
+  // this is a manual connection that exists but has never had a successful
+  // terminal run. `freshnessNotApplicable: true` is still correct (freshness
+  // genuinely does not apply to this connection KIND), but `complete: false`
+  // means no receipt has ever proven an import finished. The owner-facing
+  // "Import complete" claim SHALL require the receipt, not the source kind.
+  const { verdict, ownerState, snap } = fullChain(
+    completedImportInput({ acquisition: { complete: false, freshnessNotApplicable: true } })
+  );
+
+  const collectionSucceeded = snap.conditions.find((c) => c.type === "CollectionSucceeded");
+  assert.notEqual(collectionSucceeded?.status, "true", "no receipt exists to prove collection succeeded");
+
+  // The raw `Fresh` condition message is a THIRD surface (alongside the pill
+  // label and owner-state resolver) that can leak a completion claim: it must
+  // say only that recurring freshness does not apply, never that the data
+  // (or "its data") IS complete — that claim belongs solely to the
+  // receipt-gated `CollectionSucceeded`/`importCompletionProven` path.
+  const fresh = snap.conditions.find((c) => c.type === "Fresh");
+  assert.equal(fresh?.status, "not_applicable", "freshness inapplicability is still a durable source-kind fact");
+  assert.doesNotMatch(
+    fresh?.message ?? "",
+    /is complete|its data is complete/i,
+    "the Fresh condition message must not claim completion without a receipt"
+  );
+
+  // Tone stays green: a never-run connector with no prior success is the
+  // ordinary "freshly set up, nothing wrong yet" `idle` state, and that has
+  // always toned green (see `baseStateTone`) — this test is not about tone.
+  // It is specifically about the LABEL: "Import complete" is a completion
+  // claim that must never be reachable without a receipt, no matter the tone.
+  assert.notEqual(verdict.pill.label, "Import complete", "source-kind alone must not claim completion");
+  assert.equal(snap.state, "idle", "a never-run connection is idle, not healthy, without a receipt");
   assert.notEqual(ownerState.resolver, "healthy");
 });
