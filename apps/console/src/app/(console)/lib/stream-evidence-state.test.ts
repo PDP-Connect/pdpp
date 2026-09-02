@@ -13,6 +13,16 @@ test("known count_state renders the exact count, matching the legacy binary chec
   assert.equal(label.tone, "neutral");
 });
 
+test("known count_state renders singular for exactly 1 record", () => {
+  const label = streamCountLabel({ count_state: "known", record_count: 1 });
+  assert.equal(label.text, "1 record");
+});
+
+test("a reference predating count_state also renders singular for exactly 1 record", () => {
+  const label = streamCountLabel({ count_state: undefined, record_count: 1 });
+  assert.equal(label.text, "1 record");
+});
+
 test("known_zero renders an explicit 0, distinct from count unavailable", () => {
   const label = streamCountLabel({ count_state: "known_zero", record_count: null });
   assert.equal(label.text, "0 records");

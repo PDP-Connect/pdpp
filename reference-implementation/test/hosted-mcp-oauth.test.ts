@@ -1818,6 +1818,75 @@ test("/mcp rejects missing and owner bearers", async () => {
   }
 });
 
+// Reproduces a real GDC-demo discrepancy: the Core Docker image used to bake
+// PDPP_REFERENCE_ORIGIN=http://localhost:3000 (Dockerfile core-browser
+// stage), and deploy/docker/docker-compose.yml repeated the same stale
+// default. An operator who only overrides the published port
+// (PDPP_WEB_PORT) — not PDPP_REFERENCE_ORIGIN too — ended up with a
+// composed-mode `explicitResource` fixed at boot to the wrong port, because
+// `resolveReferenceTopology`'s placeholder browser-origin fallback
+// (DEFAULT_REFERENCE_BROWSER_ORIGIN, itself a fixed :3002/:3000-shaped
+// value) leaked into the AS/RS's own protocol-critical `rsPublicUrl`/
+// `asPublicUrl`, not just the advisory owner-agent-onboarding hint it was
+// meant for. Fixed by no longer baking a default origin into the deploy
+// artifacts, and by making `resolveReferenceTopology` only let an
+// EXPLICITLY configured origin feed `rsPublicUrl`/`asPublicUrl` — an unset
+// origin now correctly falls through to `resolvePublicUrl`'s per-request
+// Host-header derivation. This test simulates that "operator never
+// configured an origin, composed mode, live port differs from any
+// placeholder default" shape directly (no explicit `rsPublicUrl`/
+// `referenceOrigin`, `PDPP_REFERENCE_MODE=composed`), and proves a direct,
+// unproxied client (a raw MCP client, no `x-forwarded-host`) gets the live
+// port back on every unauthenticated/failed-auth 401 challenge — not just
+// after some warm-up request.
+test("/mcp 401 challenge uses the live request port when no origin is configured (composed mode)", async () => {
+  const server = await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    ignoreAmbientPublicUrls: false,
+    ownerAuthPassword: "",
+    quiet: true,
+    referenceMode: "composed",
+    rsPort: 0,
+    ...TEST_INTROSPECTION_SERVER_OPTS,
+  });
+
+  try {
+    assert.notEqual(server.rsPort, 3000, "test is only meaningful when the live port differs from any placeholder");
+    assert.notEqual(server.rsPort, 3002, "test is only meaningful when the live port differs from any placeholder");
+
+    const first = await postMcpWithHostHeader({
+      host: `localhost:${server.rsPort}`,
+      message: { id: 1, jsonrpc: "2.0", method: "tools/list", params: {} },
+      rsPort: server.rsPort,
+      token: "not-a-real-token",
+    });
+    const second = await postMcpWithHostHeader({
+      host: `localhost:${server.rsPort}`,
+      message: { id: 2, jsonrpc: "2.0", method: "tools/list", params: {} },
+      rsPort: server.rsPort,
+      token: "not-a-real-token",
+    });
+
+    assert.equal(first.status, 401);
+    assert.equal(second.status, 401);
+    const firstError = errorOf({ body: JSON.parse(first.body), resp: new Response(), status: first.status ?? 0 });
+    const secondError = errorOf({ body: JSON.parse(second.body), resp: new Response(), status: second.status ?? 0 });
+    assert.equal(
+      firstError.resource_metadata,
+      `http://localhost:${server.rsPort}/.well-known/oauth-protected-resource/mcp`,
+      "the very first 401 challenge must point at this instance's real port, not a placeholder default"
+    );
+    assert.equal(
+      secondError.resource_metadata,
+      `http://localhost:${server.rsPort}/.well-known/oauth-protected-resource/mcp`,
+      "later challenges must keep pointing at the real port"
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("dynamic registration accepts only public authorization-code, refresh-token, and device-code metadata", async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;

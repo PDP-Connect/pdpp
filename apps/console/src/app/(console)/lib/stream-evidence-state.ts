@@ -27,12 +27,16 @@ export interface StreamCountLabel {
   tone: EvidenceTone;
 }
 
+function formatRecordCount(count: number): string {
+  return `${count.toLocaleString()} record${count === 1 ? "" : "s"}`;
+}
+
 const COUNT_STATE_LABELS: Record<
   NonNullable<RefConnectorStreamRecord["count_state"]>,
   (count: number | null) => StreamCountLabel
 > = {
   known: (count) => ({
-    text: count === null ? "count unavailable" : `${count.toLocaleString()} records`,
+    text: count === null ? "count unavailable" : formatRecordCount(count),
     title: "The canonical stable-records snapshot for this stream is current.",
     tone: "neutral",
   }),
@@ -72,7 +76,7 @@ export function streamCountLabel(record: {
     return COUNT_STATE_LABELS[record.count_state](record.record_count);
   }
   return {
-    text: record.record_count === null ? "count unavailable" : `${record.record_count.toLocaleString()} records`,
+    text: record.record_count === null ? "count unavailable" : formatRecordCount(record.record_count),
     title: "",
     tone: "neutral",
   };
