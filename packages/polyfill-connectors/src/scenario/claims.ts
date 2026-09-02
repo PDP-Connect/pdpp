@@ -256,27 +256,6 @@ export interface ClaimEligibilityInput {
    *  print the unqualified `recorded_replay: PASS` claim. */
   observedUnsupportedEvidenceSurface: boolean;
   /**
-   * REPOSITORY-UDS EXCEPTION, RECONCILED (P1, external review of ab415be6c):
-   * a `ro` bind (e.g. `REPO_ROOT`) blocks WRITES, not reads/dials — a Unix
-   * domain socket file that already existed under a `ro` bind at spawn time
-   * stays dialable from inside the isolated child regardless of recursive
-   * read-only, confirmed empirically (a `curl --unix-socket` against a real
-   * `REPO_ROOT`-internal socket succeeds with both the trusted-launcher and
-   * recursive-ro fixes applied). Recursive read-only DOES close the other
-   * half: a connector cannot CREATE a new socket under a `ro` bind once
-   * every submount is genuinely read-only, so the only sockets reachable
-   * this way are ones that existed BEFORE the spawn — a finite, checkable
-   * precondition, not an open-ended gap. `bin/scenario-verify.ts` populates
-   * this from `isolation.ts`'s `findPreexistingSocketsUnderReadOnlyBinds()`,
-   * run immediately before spawning. An EMPTY array means the scan found
-   * nothing — combined with `isolationEvidenceBoundaryProven`, this is what
-   * justifies `recorded_replay`'s OS-isolation claim being airtight for this
-   * specific run; a NON-EMPTY array withholds the strong claim and names
-   * every path found (see `buildPreexistingSocketLimitation`), rather than
-   * silently accepting the old, undocumented, open-ended exception.
-   */
-  preexistingSocketsUnderReadOnlyBinds: readonly string[];
-  /**
    * SCAN COMPLETENESS (P1-2, external review of ced8300be): `false` whenever
    * `findPreexistingSocketsUnderReadOnlyBinds()`'s scan could not fully
    * enumerate one or more subtrees (an unreadable directory — `readdirSync`
@@ -297,6 +276,27 @@ export interface ClaimEligibilityInput {
    *  discipline for every other socket-scan-derived limitation. Non-empty
    *  only when `preexistingSocketScanIncomplete` is true. */
   preexistingSocketScanUnreadablePaths: readonly string[];
+  /**
+   * REPOSITORY-UDS EXCEPTION, RECONCILED (P1, external review of ab415be6c):
+   * a `ro` bind (e.g. `REPO_ROOT`) blocks WRITES, not reads/dials — a Unix
+   * domain socket file that already existed under a `ro` bind at spawn time
+   * stays dialable from inside the isolated child regardless of recursive
+   * read-only, confirmed empirically (a `curl --unix-socket` against a real
+   * `REPO_ROOT`-internal socket succeeds with both the trusted-launcher and
+   * recursive-ro fixes applied). Recursive read-only DOES close the other
+   * half: a connector cannot CREATE a new socket under a `ro` bind once
+   * every submount is genuinely read-only, so the only sockets reachable
+   * this way are ones that existed BEFORE the spawn — a finite, checkable
+   * precondition, not an open-ended gap. `bin/scenario-verify.ts` populates
+   * this from `isolation.ts`'s `findPreexistingSocketsUnderReadOnlyBinds()`,
+   * run immediately before spawning. An EMPTY array means the scan found
+   * nothing — combined with `isolationEvidenceBoundaryProven`, this is what
+   * justifies `recorded_replay`'s OS-isolation claim being airtight for this
+   * specific run; a NON-EMPTY array withholds the strong claim and names
+   * every path found (see `buildPreexistingSocketLimitation`), rather than
+   * silently accepting the old, undocumented, open-ended exception.
+   */
+  preexistingSocketsUnderReadOnlyBinds: readonly string[];
   scenario: ConnectorScenario;
 }
 

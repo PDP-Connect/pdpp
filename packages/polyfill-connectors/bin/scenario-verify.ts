@@ -96,8 +96,8 @@ import {
   type IsolationMechanism,
   isNamespaceIsolationAvailable,
   type NamespaceIsolationCapability,
-  sandboxScratchEnv,
   type SocketScanResult,
+  sandboxScratchEnv,
   spawnWithNetworkIsolation,
 } from "../src/scenario/isolation.ts";
 import {
