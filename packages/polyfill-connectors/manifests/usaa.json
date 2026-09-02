@@ -58,7 +58,7 @@
       "rationale": "USAA requires interactive login, may request a one-time code, and uses short sessions; refresh manually so the owner is present."
     },
     "public_listing": {
-      "tier": "supported"
+      "tier": "preview"
     }
   },
   "streams": [

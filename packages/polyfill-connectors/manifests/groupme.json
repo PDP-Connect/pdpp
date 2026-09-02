@@ -52,7 +52,7 @@
       "rationale": "GroupMe API rate limits are undocumented; conservative pacing (10s+ between requests) keeps well below observed abuse thresholds. Static access token is reused across runs; no refresh authorization needed."
     },
     "public_listing": {
-      "tier": "preview"
+      "tier": "development"
     }
   },
   "streams": [
