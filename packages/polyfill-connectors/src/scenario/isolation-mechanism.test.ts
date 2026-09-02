@@ -2375,10 +2375,37 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
 // on (see the `evaluateClaimEligibility` tests in bin/scenario-verify-strict.test.ts
 // for the claim-text side of this same reconciliation).
 
-test("findPreexistingSocketsUnderReadOnlyBinds: finds a real socket nested under REPO_ROOT, and stops finding it once removed", async () => {
-  const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-scan-probe-${String(process.pid)}`);
+// `AF_UNIX` socket paths are capped at `sizeof(sockaddr_un.sun_path)` — 108
+// bytes on Linux, a hard kernel limit enforced by `bind(2)`/`listen(2)`
+// (EINVAL/ENAMETOOLONG for anything longer), independent of filesystem path
+// length limits (usually 4096) that apply everywhere else. `TEST_REPO_ROOT`
+// itself is a real, unpredictable absolute path (the checkout location of
+// whoever/whatever is running this suite — a CI runner, a colleague's home
+// directory, a deeply nested worktree path), so a socket test that builds
+// its path from `TEST_REPO_ROOT` plus even a modest suffix can silently
+// exceed this limit in a long-path checkout while staying comfortably under
+// it in a short one — confirmed: a test in this file failed with `EINVAL`
+// in a worktree whose checkout path alone was long enough to push the total
+// past 108 bytes, deterministically, not flakily, for every run from that
+// location. Every test below that creates a REAL socket (not just a
+// directory/symlink) keeps its own path components short and guards with
+// this constant.
+const UNIX_SOCKET_PATH_MAX_BYTES = 108;
+
+test("findPreexistingSocketsUnderReadOnlyBinds: finds a real socket nested under REPO_ROOT, and stops finding it once removed", async (t) => {
+  // Short name (`.psp-<pid>/l.sock`, not `.pdpp-socket-scan-probe-<pid>/leftover.sock`)
+  // — see `UNIX_SOCKET_PATH_MAX_BYTES`'s doc comment.
+  const nestedDir = join(TEST_REPO_ROOT, `.psp-${String(process.pid)}`);
+  const socketPath = join(nestedDir, "l.sock");
+  if (Buffer.byteLength(socketPath, "utf8") > UNIX_SOCKET_PATH_MAX_BYTES - 8) {
+    t.skip(
+      `TEST_REPO_ROOT (${TEST_REPO_ROOT}) is too long for an AF_UNIX socket path in this test — ` +
+        `${String(Buffer.byteLength(socketPath, "utf8"))} bytes computed, kernel limit is ${String(UNIX_SOCKET_PATH_MAX_BYTES)}; ` +
+        "this environment cannot exercise this specific test, not a defect in the scan itself"
+    );
+    return;
+  }
   mkdirSync(nestedDir, { recursive: true });
-  const socketPath = join(nestedDir, "leftover.sock");
   const server = createServer();
   try {
     await new Promise<void>((resolveListen, rejectListen) => {
@@ -2463,7 +2490,7 @@ test("findPreexistingSocketsUnderReadOnlyBinds: fails CLOSED (complete: false) o
   }
 });
 
-test("findPreexistingSocketsUnderReadOnlyBinds: fails CLOSED on a chmod 311 (searchable, not listable) subtree hiding a real socket", async () => {
+test("findPreexistingSocketsUnderReadOnlyBinds: fails CLOSED on a chmod 311 (searchable, not listable) subtree hiding a real socket", async (t) => {
   // Directory read vs search are SEPARATE permissions: 311 grants
   // search/execute (traverse into a KNOWN child path) but not read (LIST
   // the directory's contents). readdirSync needs the read bit and throws
@@ -2472,10 +2499,35 @@ test("findPreexistingSocketsUnderReadOnlyBinds: fails CLOSED on a chmod 311 (sea
   // in this same test, not just asserted): this is the specific gap a
   // naive "just check if I can list it" mental model misses, and why this
   // scan must fail closed on EITHER permission shape identically.
-  const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-scan-311-probe-${String(process.pid)}`);
-  const searchOnlyDir = join(nestedDir, "search-only");
+  //
+  // Names kept deliberately SHORT (`.pss311-<pid>/s/h.sock`, not a
+  // descriptive `.pdpp-socket-scan-311-probe-<pid>/search-only/hidden.sock`)
+  // to leave as much of the 108-byte budget as possible for
+  // `TEST_REPO_ROOT` itself, which this test does not control — see
+  // `UNIX_SOCKET_PATH_MAX_BYTES`'s doc comment above. This alone does not
+  // ELIMINATE the dependency on checkout path length, only pushes the
+  // threshold further out; the explicit skip below is the actual backstop
+  // for a checkout path long enough to exceed even this.
+  const nestedDir = join(TEST_REPO_ROOT, `.pss311-${String(process.pid)}`);
+  const searchOnlyDir = join(nestedDir, "s");
+  const socketPath = join(searchOnlyDir, "h.sock");
+  if (Buffer.byteLength(socketPath, "utf8") > UNIX_SOCKET_PATH_MAX_BYTES - 8) {
+    // Loud, explicit, reasoned skip — never a silent pass. This environment
+    // (specifically, this checkout's absolute path) cannot run this test at
+    // all: any socket path built from `TEST_REPO_ROOT` here would risk
+    // exceeding the kernel's own 108-byte `AF_UNIX` path limit before this
+    // test's own logic is even exercised, which would be a false failure
+    // about path length, not a finding about the scan's fail-closed
+    // behavior. The 8-byte margin covers this test's own short suffix
+    // headroom, not a guarantee for every possible caller.
+    t.skip(
+      `TEST_REPO_ROOT (${TEST_REPO_ROOT}) is too long for an AF_UNIX socket path in this test — ` +
+        `${String(Buffer.byteLength(socketPath, "utf8"))} bytes computed, kernel limit is ${String(UNIX_SOCKET_PATH_MAX_BYTES)}; ` +
+        "this environment cannot exercise this specific test, not a defect in the scan itself"
+    );
+    return;
+  }
   mkdirSync(searchOnlyDir, { recursive: true });
-  const socketPath = join(searchOnlyDir, "hidden.sock");
   const server = createServer();
   try {
     await new Promise<void>((resolveListen, rejectListen) => {
@@ -2535,10 +2587,23 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
 
   test(`[${mechanism}] a socket planted under REPO_ROOT AFTER the host-side pre-flight scan is still caught by the in-namespace scan — the target never runs`, {
     skip: !usable,
-  }, async () => {
-    const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-toctou-probe-${mechanism}-${String(process.pid)}`);
+  }, async (t) => {
+    // Short names (`.pt-<mech>-<pid>/t.sock`, not a descriptive
+    // `.pdpp-socket-toctou-probe-<mechanism>-<pid>/toctou.sock`) — see
+    // `UNIX_SOCKET_PATH_MAX_BYTES`'s doc comment: `TEST_REPO_ROOT` itself is
+    // an unpredictable, uncontrolled prefix this test doesn't own, and the
+    // 108-byte AF_UNIX path cap is a hard kernel limit, not a style choice.
+    const nestedDir = join(TEST_REPO_ROOT, `.pt-${mechanism}-${String(process.pid)}`);
+    const socketPath = join(nestedDir, "t.sock");
+    if (Buffer.byteLength(socketPath, "utf8") > UNIX_SOCKET_PATH_MAX_BYTES - 8) {
+      t.skip(
+        `TEST_REPO_ROOT (${TEST_REPO_ROOT}) is too long for an AF_UNIX socket path in this test — ` +
+          `${String(Buffer.byteLength(socketPath, "utf8"))} bytes computed, kernel limit is ${String(UNIX_SOCKET_PATH_MAX_BYTES)}; ` +
+          "this environment cannot exercise this specific test, not a defect in the scan itself"
+      );
+      return;
+    }
     mkdirSync(nestedDir, { recursive: true });
-    const socketPath = join(nestedDir, "toctou.sock");
     const markerPath = join(tmpdir(), `pdpp-isolation-toctou-marker-${mechanism}-${String(process.pid)}`);
     rmSync(markerPath, { force: true });
     const server = createServer();
@@ -2598,10 +2663,19 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
 
   test(`[${mechanism}] a socket deleted and RECREATED at the same path is still caught (not a stale "seen clean once" verdict)`, {
     skip: !usable,
-  }, async () => {
-    const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-orphan-probe-${mechanism}-${String(process.pid)}`);
+  }, async (t) => {
+    // Short names — see `UNIX_SOCKET_PATH_MAX_BYTES`'s doc comment.
+    const nestedDir = join(TEST_REPO_ROOT, `.po-${mechanism}-${String(process.pid)}`);
+    const socketPath = join(nestedDir, "o.sock");
+    if (Buffer.byteLength(socketPath, "utf8") > UNIX_SOCKET_PATH_MAX_BYTES - 8) {
+      t.skip(
+        `TEST_REPO_ROOT (${TEST_REPO_ROOT}) is too long for an AF_UNIX socket path in this test — ` +
+          `${String(Buffer.byteLength(socketPath, "utf8"))} bytes computed, kernel limit is ${String(UNIX_SOCKET_PATH_MAX_BYTES)}; ` +
+          "this environment cannot exercise this specific test, not a defect in the scan itself"
+      );
+      return;
+    }
     mkdirSync(nestedDir, { recursive: true });
-    const socketPath = join(nestedDir, "orphan.sock");
     const markerPath = join(tmpdir(), `pdpp-isolation-orphan-marker-${mechanism}-${String(process.pid)}`);
     rmSync(markerPath, { force: true });
     let firstServer = createServer();
