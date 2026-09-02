@@ -1,7 +1,7 @@
 # PDPP Source Declaration Discovery and Trust v0.1.0
 
-Status: Companion specification draft
-Date: 2026-08-14
+Status: Informative. Implementation guidance. Normative requirements moved to Core §5 Declaration acceptance on 2026-09-02.
+Date: 2026-09-02
 
 ---
 
@@ -15,11 +15,6 @@ semantics. This specification does not redefine those contracts.
 Discovery is an onboarding concern. It is not a resource server authorization
 dependency. A resource server enforces a resolved grant without retrieving a
 current declaration.
-
-The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT,
-RECOMMENDED, NOT RECOMMENDED, MAY, and OPTIONAL in this document are to be
-interpreted as described in BCP 14 [RFC 2119] [RFC 8174] when, and only when,
-they appear in all capitals.
 
 ## 2. Provider-native discovery
 
