@@ -12,6 +12,7 @@ import {
   deriveEffectiveCommand,
   MIGRATION_ORACLE_ADAPTER_ID,
   MIGRATION_ORACLE_ADAPTER_VERSION,
+  MIGRATION_ORACLE_CASES_V1,
   parseStructuredOutput,
   runMigrationOracleAttempt,
   UnregisteredAdapterError,
@@ -201,19 +202,28 @@ test("parseStructuredOutput: throws when the structured output is missing its ro
 // `ok`/`holes` disagree with what `mutations`/`positiveControl`/`rollback`
 // actually say.
 
+/**
+ * Builds a report carrying EXACTLY the required seven-case inventory (see
+ * MIGRATION_ORACLE_CASES_V1), all caught, each with its policy-authorized
+ * caughtBy. This is the ONLY shape `parseStructuredOutput` accepts as
+ * well-formed as of P1-1 — a one-entry `{name:"x",...}` report (the
+ * previously-accepted shape) is deliberately never exercised as a "good"
+ * report anywhere in this file anymore.
+ */
 function wellFormedGoodReport() {
   return {
     ok: true,
     holes: [] as string[],
-    mutations: [{ name: "x", caught: true, caughtBy: "y", detail: "z" }],
+    mutations: MIGRATION_ORACLE_CASES_V1.map((c) => ({ name: c.name, caught: true, caughtBy: c.caughtBy, detail: "" })),
     positiveControl: { ok: true, detail: "" },
     rollback: { ok: true, detail: "" },
   };
 }
 
-test("parseStructuredOutput: accepts a genuinely well-formed structured report", () => {
+test("parseStructuredOutput: accepts a genuinely well-formed structured report carrying the full seven-case inventory", () => {
   const parsed = parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(wellFormedGoodReport())}\n`);
   assert.equal(parsed.ok, true);
+  assert.equal(parsed.mutations.length, MIGRATION_ORACLE_CASES_V1.length);
 });
 
 test("parseStructuredOutput: rejects ok: true when the positive control actually failed (well-formed, internally inconsistent)", () => {
@@ -227,10 +237,11 @@ test("parseStructuredOutput: rejects ok: true when rollback actually failed", ()
 });
 
 test("parseStructuredOutput: rejects ok: true when a mutation was actually uncaught (a real hole)", () => {
+  const good = wellFormedGoodReport();
   const report = {
-    ...wellFormedGoodReport(),
-    mutations: [{ name: "x", caught: false, caughtBy: "intendedCheck", detail: "not caught" }],
-    holes: ["x"],
+    ...good,
+    mutations: good.mutations.map((m, i) => (i === 0 ? { ...m, caught: false } : m)),
+    holes: good.mutations.slice(0, 1).map((m) => m.name),
     // ok left at true — the report itself claims success despite an
     // uncaught mutation, i.e. exactly "success = exit 0 + structured.ok"
     // trusted without recomputation would have missed this.
@@ -239,13 +250,11 @@ test("parseStructuredOutput: rejects ok: true when a mutation was actually uncau
 });
 
 test("parseStructuredOutput: rejects when holes disagrees with the mutations actually reported as uncaught", () => {
+  const good = wellFormedGoodReport();
   const report = {
-    ...wellFormedGoodReport(),
-    mutations: [
-      { name: "a", caught: false, caughtBy: "intendedCheck", detail: "not caught" },
-      { name: "b", caught: true, caughtBy: "check", detail: "" },
-    ],
-    holes: [], // Should be ["a"] — disagrees with the mutations list.
+    ...good,
+    mutations: good.mutations.map((m, i) => (i === 0 ? { ...m, caught: false } : m)),
+    holes: [], // Should be [good.mutations[0].name] — disagrees with the mutations list.
     ok: false,
   };
   assert.throws(
@@ -255,12 +264,23 @@ test("parseStructuredOutput: rejects when holes disagrees with the mutations act
 });
 
 test("parseStructuredOutput: rejects a malformed/absent nested mutation entry (caught is a string, not boolean)", () => {
-  const report = { ...wellFormedGoodReport(), mutations: [{ name: "x", caught: "true", caughtBy: "y", detail: "z" }] };
+  const good = wellFormedGoodReport();
+  const report = { ...good, mutations: good.mutations.map((m, i) => (i === 0 ? { ...m, caught: "true" } : m)) };
   assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`), /caught.*must be a boolean/);
 });
 
 test("parseStructuredOutput: rejects a mutation entry missing caughtBy entirely", () => {
-  const report = { ...wellFormedGoodReport(), mutations: [{ name: "x", caught: true, detail: "z" }] };
+  const good = wellFormedGoodReport();
+  const report = {
+    ...good,
+    mutations: good.mutations.map((m, i) => {
+      if (i !== 0) {
+        return m;
+      }
+      const { caughtBy: _drop, ...rest } = m;
+      return rest;
+    }),
+  };
   assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`), /caughtBy.*must be a non-empty string/);
 });
 
@@ -281,6 +301,104 @@ test("parseStructuredOutput: rejects holes containing a non-string entry", () =>
 
 test("parseStructuredOutput: rejects a top-level array instead of an object", () => {
   assert.throws(() => parseStructuredOutput("MUTATION_ORACLE_STRUCTURED_JSON []\n"), /top-level structured output must be an object/);
+});
+
+// ── P1-1: MIGRATION_ORACLE_CASES_V1 inventory enforcement — mutation controls ──
+//
+// Each control below starts from `wellFormedGoodReport()` (the full,
+// correct seven-case inventory) and applies exactly one of the reviewer's
+// named mutations to it. Every variant must fail — a bug that returns a
+// partial or tampered case list must never yield exit 0 / structured.ok /
+// focused: ok.
+
+function reportWithMutations(mutations: Array<{ caught: boolean; caughtBy: string; detail: string; name: string }>) {
+  const holes = mutations.filter((m) => !m.caught).map((m) => m.name);
+  return {
+    mutations,
+    holes,
+    positiveControl: { ok: true, detail: "" },
+    rollback: { ok: true, detail: "" },
+    ok: holes.length === 0,
+  };
+}
+
+test("parseStructuredOutput: mutation control — removing each of the seven required cases is individually rejected", () => {
+  const good = wellFormedGoodReport();
+  for (const [index, removed] of MIGRATION_ORACLE_CASES_V1.entries()) {
+    const mutations = good.mutations.filter((_, i) => i !== index);
+    const report = reportWithMutations(mutations);
+    assert.throws(
+      () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`),
+      /does not match the required MIGRATION_ORACLE_CASES_V1 inventory/,
+      `expected removing case ${JSON.stringify(removed.name)} to be rejected`
+    );
+  }
+});
+
+test("parseStructuredOutput: mutation control — duplicating one case (still 7 names, one repeated, one missing) is rejected", () => {
+  const good = wellFormedGoodReport();
+  const mutations = [...good.mutations.slice(1), ...good.mutations.slice(1, 2)]; // duplicate case[1], drop case[0]
+  const report = reportWithMutations(mutations);
+  assert.throws(
+    () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`),
+    /does not match the required MIGRATION_ORACLE_CASES_V1 inventory/
+  );
+});
+
+test('parseStructuredOutput: mutation control — replacing one case with arbitrary "x" is rejected', () => {
+  const good = wellFormedGoodReport();
+  const mutations = good.mutations.map((m, i) => (i === 0 ? { name: "x", caught: true, caughtBy: "y", detail: "z" } : m));
+  const report = reportWithMutations(mutations);
+  assert.throws(
+    () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`),
+    /does not match the required MIGRATION_ORACLE_CASES_V1 inventory/
+  );
+});
+
+test("parseStructuredOutput: mutation control — relabeling one case's name is rejected", () => {
+  const good = wellFormedGoodReport();
+  const mutations = good.mutations.map((m, i) => (i === 0 ? { ...m, name: `${m.name} (relabeled)` } : m));
+  const report = reportWithMutations(mutations);
+  assert.throws(
+    () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`),
+    /does not match the required MIGRATION_ORACLE_CASES_V1 inventory/
+  );
+});
+
+test("parseStructuredOutput: mutation control — changing one case's caughtBy to an unauthorized value is rejected", () => {
+  const good = wellFormedGoodReport();
+  const mutations = good.mutations.map((m, i) => (i === 0 ? { ...m, caughtBy: "someUnauthorizedCheck" } : m));
+  const report = reportWithMutations(mutations);
+  assert.throws(
+    () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`),
+    /does not match the required MIGRATION_ORACLE_CASES_V1 inventory/
+  );
+});
+
+test("parseStructuredOutput: mutation control — appending an extra case beyond the required seven is rejected", () => {
+  const good = wellFormedGoodReport();
+  const mutations = [...good.mutations, { name: "an extra unrequired case", caught: true, caughtBy: "someCheck", detail: "" }];
+  const report = reportWithMutations(mutations);
+  assert.throws(
+    () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`),
+    /does not match the required MIGRATION_ORACLE_CASES_V1 inventory/
+  );
+});
+
+test("parseStructuredOutput: mutation control — a one-entry report (the historically-accepted shape) is rejected", () => {
+  const report = reportWithMutations([{ name: "x", caught: true, caughtBy: "y", detail: "z" }]);
+  assert.throws(
+    () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`),
+    /does not match the required MIGRATION_ORACLE_CASES_V1 inventory/
+  );
+});
+
+test("parseStructuredOutput: rejects multiple structured-output lines rather than taking the first", () => {
+  const good = wellFormedGoodReport();
+  const stdout =
+    `MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(good)}\n` +
+    `MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(good)}\n`;
+  assert.throws(() => parseStructuredOutput(stdout), /expected exactly one structured-output line/);
 });
 
 test("evidence root ends up with exactly one issued marker and one completed receipt for a successful attempt", async () => {

@@ -40,6 +40,34 @@ export const MIGRATION_ORACLE_ADAPTER_ID = "test-migration-oracle/v1" as const;
 export const MIGRATION_ORACLE_ADAPTER_VERSION = "1" as const;
 const STRUCTURED_LINE_PREFIX = "MUTATION_ORACLE_STRUCTURED_JSON ";
 
+/**
+ * The oracle's fixed seven-case inventory, defined HERE independently of
+ * whatever a runtime report claims — mirrors the exact `name` literals and
+ * policy-authorized `caughtBy` checks hardcoded in
+ * scripts/test-migration/mutation-oracle.ts's `runMutationScenarios` (never
+ * imported from there: this adapter must reject a report even if that
+ * script itself were mutated/broken, not merely echo whatever it emits).
+ * `parseStructuredOutput` requires the runtime `mutations` array to contain
+ * EXACTLY one entry per case below — no missing, no extra, no duplicate
+ * names — each with exactly its authorized `caughtBy`. This closes the gap
+ * where a one-entry report was previously accepted as "well-formed".
+ */
+export const MIGRATION_ORACLE_CASES_V1 = [
+  { name: "dropped test file", caughtBy: "executedSetEquivalence.missingAfter" },
+  { name: "silently-skipped test", caughtBy: "skipReasonEquivalence.changed" },
+  { name: "reduced assertion count", caughtBy: "assertionCountEquivalence.decreased" },
+  { name: "changed skip reason (dynamic expression text)", caughtBy: "skipReasonEquivalence.changed" },
+  { name: 'off-by-one "../" import specifier', caughtBy: "verifyFileImportsResolve" },
+  { name: "stale literal source path referencing a renamed file", caughtBy: "scanFileForStaleLiteralPaths" },
+  { name: "de-classifying rename (foo.test.ts -> foo-helper.ts)", caughtBy: "executedSetEquivalence.declassified" },
+] as const;
+
+/** Versioned digest of the case-set identity, folded into this adapter's judgeIdentity so a receipt is bound to the exact inventory it was validated against. */
+export const MIGRATION_ORACLE_CASE_SET_DIGEST = digestOf({
+  version: "MIGRATION_ORACLE_CASES_V1",
+  cases: MIGRATION_ORACLE_CASES_V1,
+});
+
 export interface StructuredOracleReportShape {
   holes: string[];
   mutations: Array<{ caught: boolean; caughtBy: string; detail: string; name: string }>;
@@ -273,7 +301,7 @@ export async function runMigrationOracleAttempt(options: MigrationOracleAttemptO
     policyVersion: options.policyVersion,
     baseCommitSha: options.intent.baseCommitSha,
     mutantIdentity: null,
-    judgeIdentity: digestOf({ script: migrationOracleScriptPath(), command }),
+    judgeIdentity: digestOf({ script: migrationOracleScriptPath(), command, caseSetDigest: MIGRATION_ORACLE_CASE_SET_DIGEST }),
     environmentProfile: Object.keys(process.env),
     evidenceArtifacts: [],
     axes: {
@@ -315,7 +343,11 @@ function buildFailureReceipt(
     policyVersion: options.policyVersion,
     baseCommitSha: options.intent.baseCommitSha,
     mutantIdentity: null,
-    judgeIdentity: digestOf({ script: migrationOracleScriptPath(), command: deriveEffectiveCommand() }),
+    judgeIdentity: digestOf({
+      script: migrationOracleScriptPath(),
+      command: deriveEffectiveCommand(),
+      caseSetDigest: MIGRATION_ORACLE_CASE_SET_DIGEST,
+    }),
     environmentProfile: Object.keys(process.env),
     evidenceArtifacts: [],
     axes: {
@@ -391,6 +423,49 @@ function requireMutationCase(
 }
 
 /**
+ * Enforces MIGRATION_ORACLE_CASES_V1 against the runtime `mutations` array:
+ * exactly one result per expected case name (no missing, no extra, no
+ * duplicate), and each entry's `caughtBy` must equal the policy-authorized
+ * value for that name. A report claiming only one of the seven cases (e.g.
+ * the historically-accepted `{name:"x",...}` single-entry report) fails
+ * here on both a missing-case and an unrecognized-name basis.
+ */
+function requireExactCaseInventory(
+  mutations: Array<{ caught: boolean; caughtBy: string; detail: string; name: string }>
+): void {
+  const expectedByName = new Map(MIGRATION_ORACLE_CASES_V1.map((c) => [c.name as string, c.caughtBy as string]));
+  const seenNames = new Set<string>();
+  const duplicates: string[] = [];
+  const unrecognized: string[] = [];
+  const wrongCaughtBy: string[] = [];
+  for (const mutation of mutations) {
+    if (!expectedByName.has(mutation.name)) {
+      unrecognized.push(mutation.name);
+      continue;
+    }
+    if (seenNames.has(mutation.name)) {
+      duplicates.push(mutation.name);
+      continue;
+    }
+    seenNames.add(mutation.name);
+    const authorizedCaughtBy = expectedByName.get(mutation.name);
+    if (mutation.caughtBy !== authorizedCaughtBy) {
+      wrongCaughtBy.push(
+        `${mutation.name}: expected caughtBy ${JSON.stringify(authorizedCaughtBy)}, got ${JSON.stringify(mutation.caughtBy)}`
+      );
+    }
+  }
+  const missing = MIGRATION_ORACLE_CASES_V1.map((c) => c.name as string).filter((name) => !seenNames.has(name));
+  if (missing.length > 0 || unrecognized.length > 0 || duplicates.length > 0 || wrongCaughtBy.length > 0) {
+    fail(
+      "mutations does not match the required MIGRATION_ORACLE_CASES_V1 inventory — " +
+        `missing: ${JSON.stringify(missing)}, unrecognized/extra: ${JSON.stringify(unrecognized)}, ` +
+        `duplicate: ${JSON.stringify(duplicates)}, wrong caughtBy: ${JSON.stringify(wrongCaughtBy)}`
+    );
+  }
+}
+
+/**
  * Throws on missing/malformed structured output — never returns a partial
  * or inferred report. This does the FULL schema validation the earlier
  * implementation skipped: every mutation-case entry's shape (not just
@@ -407,7 +482,16 @@ function requireMutationCase(
  * rejected here rather than trusted at face value.
  */
 export function parseStructuredOutput(stdout: string): StructuredOracleReportShape {
-  const line = stdout.split("\n").find((entry) => entry.startsWith(STRUCTURED_LINE_PREFIX));
+  const matchingLines = stdout.split("\n").filter((entry) => entry.startsWith(STRUCTURED_LINE_PREFIX));
+  if (matchingLines.length === 0) {
+    throw new Error("migration-oracle-adapter: no structured-output line found in stdout (partial or missing output)");
+  }
+  if (matchingLines.length > 1) {
+    throw new Error(
+      `migration-oracle-adapter: expected exactly one structured-output line, found ${matchingLines.length} — never take the first and ignore the rest`
+    );
+  }
+  const [line] = matchingLines;
   if (!line) {
     throw new Error("migration-oracle-adapter: no structured-output line found in stdout (partial or missing output)");
   }
@@ -432,6 +516,7 @@ export function parseStructuredOutput(stdout: string): StructuredOracleReportSha
   }
   const holes = record.holes as string[];
   const ok = requireBoolean(record.ok, "ok");
+  requireExactCaseInventory(mutations);
 
   // Independently recompute the derived invariants — never trust the
   // caller's own `holes`/`ok` fields at face value.
