@@ -27,6 +27,7 @@ import { collectChildProcessOutput } from "./child-process-output.ts";
 import { deriveDedicatedPostgresDbNameForFile } from "./dedicated-postgres-db-name.ts";
 import { startFileProcessWatchdog } from "./file-process-watchdog.ts";
 import { assertPostgresProfilePreflight } from "./postgres-profile-preflight.ts";
+import { isPostgresTemplateEligibleFilePath } from "./postgres-template-eligibility.ts";
 import { dropPostgresTestTemplate, ensurePostgresTestTemplate } from "./postgres-test-template.ts";
 import { discoverSelectedTestFiles } from "./run-tests-discovery.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
@@ -267,6 +268,14 @@ function armSignalCleanup(): void {
 async function allocateTestDb(filePath: string, baseUrl: string): Promise<TestDbAllocation | undefined> {
   const dbName = deriveDbName(filePath);
   const adminUrl = adminUrlFromBase(baseUrl);
+  // DEFAULT IS COLD: a template is used for this file's own per-file
+  // database only when the file appears on the explicit allowlist in
+  // postgres-template-eligibility.ts. Every other file -- including one this
+  // registry has never heard of -- gets a real, from-scratch bootstrap for
+  // its own database, regardless of whether a template happens to exist for
+  // this run. See that file's header for why this is a fail-closed default,
+  // not an opt-out.
+  const useTemplate = postgresTestTemplateName !== null && isPostgresTemplateEligibleFilePath(filePath);
   const client = new pg.Client({ connectionString: adminUrl });
   try {
     await client.connect();
@@ -276,9 +285,7 @@ async function allocateTestDb(filePath: string, baseUrl: string): Promise<TestDb
     // output of deriveDedicatedPostgresTemplateName, which is
     // "pdpp_test_template_" + an 8-hex-char runnerId (no user input).
     await client.query(
-      postgresTestTemplateName
-        ? `CREATE DATABASE "${dbName}" TEMPLATE "${postgresTestTemplateName}"`
-        : `CREATE DATABASE "${dbName}"`
+      useTemplate ? `CREATE DATABASE "${dbName}" TEMPLATE "${postgresTestTemplateName}"` : `CREATE DATABASE "${dbName}"`
     );
     await client.end();
   } catch (err) {
@@ -385,10 +392,12 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
     ? {
         ...baseEnv,
         PDPP_TEST_POSTGRES_URL: allocation.url,
-        // Lets withTemporaryPostgresDatabase (test/helpers/postgres-temp-database.ts)
-        // clone its own per-test() scratch database from the same template
-        // this file's own database was cloned from, instead of bootstrapping
-        // schema from scratch a second (or third...) time inside the child.
+        // Passed to every child unconditionally (harmless): withTemporaryPostgresDatabase
+        // (test/helpers/postgres-temp-database.ts) only resolves this default
+        // when the CHILD's own file path is on the explicit allowlist in
+        // postgres-template-eligibility.ts, independent of whether THIS
+        // file's own per-file database above was templated. A cold-required
+        // file receiving this env var still bootstraps from scratch.
         // Unset entirely (not set to "") when no template was built, so a
         // Postgres run without templating is byte-identical to today.
         ...(postgresTestTemplateName ? { PDPP_TEST_POSTGRES_TEMPLATE: postgresTestTemplateName } : {}),

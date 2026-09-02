@@ -3,6 +3,7 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: localized test assertion preserves its explicit contract.
 import pg from "pg";
+import { currentTestFileIsPostgresTemplateEligible } from "../../scripts/postgres-template-eligibility.ts";
 import { assertPostgresTestTemplateUsable } from "../../scripts/postgres-test-template.ts";
 import { provisionTestDatabase } from "../../server/postgres-test-database-guard.ts";
 
@@ -55,18 +56,29 @@ export async function withTemporaryPostgresDatabase(
     connectionString,
     databaseName,
     closeConnections,
-    templateName = process.env.PDPP_TEST_POSTGRES_TEMPLATE,
+    templateName = currentTestFileIsPostgresTemplateEligible() ? process.env.PDPP_TEST_POSTGRES_TEMPLATE : null,
   }: {
     connectionString: string;
     databaseName: string;
     closeConnections?: () => Promise<void>;
     /**
      * Clone from this Postgres TEMPLATE database instead of bootstrapping
-     * schema from scratch inside the callback. Defaults to
-     * PDPP_TEST_POSTGRES_TEMPLATE, set by scripts/run-tests.ts when it built
-     * a per-run template -- so callers need no changes to opt in. Pass `null`
-     * explicitly to force a from-scratch database regardless of the env var
-     * (e.g. a test that specifically wants to exercise cold bootstrap).
+     * schema from scratch inside the callback.
+     *
+     * DEFAULT IS COLD. The default resolves PDPP_TEST_POSTGRES_TEMPLATE (set
+     * by scripts/run-tests.ts when it built a per-run template) only when
+     * the CURRENTLY RUNNING test file appears on the explicit allowlist in
+     * scripts/postgres-template-eligibility.ts; every other file -- and any
+     * file that registry has never heard of -- defaults to `null` (a real,
+     * from-scratch bootstrap), regardless of whether a template happens to
+     * exist for this run. This is deliberate: cold-bootstrap, migration,
+     * recovery, receipt, and deadlock authority tests must never be able to
+     * silently start passing against an already-migrated clone because a
+     * template happened to be built for some *other* file in the same run.
+     * Pass an explicit `string` to opt a specific call site into templating
+     * regardless of file eligibility, or explicit `null` to force cold
+     * regardless of eligibility (e.g. a test that specifically wants to
+     * exercise cold bootstrap from inside an otherwise-eligible file).
      */
     templateName?: string | null;
   },
