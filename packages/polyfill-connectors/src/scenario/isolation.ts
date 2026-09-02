@@ -1364,42 +1364,140 @@ function reqStatement(label: string, command: string): string {
  */
 
 /**
- * Builds a shell command that finds every mount point strictly UNDER
- * `stagedPathShQuoted` (the already-quoted staged path of a `ro` bind whose
- * OWN top mount was just remounted read-only) by walking
- * `/proc/self/mountinfo`, and remounts EACH ONE, individually,
- * `ro,bind` — closing the gap `--rbind` (recursive bind) plus a single
- * top-level `remount,ro,bind` leaves open: Linux does not propagate a
- * `remount` operation to submounts the way `--rbind`/`--rprivate` propagate
- * at BIND/PROPAGATION time, so any mount point that existed under a `ro`
- * bind's source directory at bind time (e.g. Docker's own
- * `/etc/resolv.conf`-style injected submounts under `/etc`, or any other
- * nested mount a future derived bind might carry) stays writable unless
- * remounted on its own.
+ * POSIX-awk function DEFINITION (not a full program) that decodes
+ * `/proc/self/mountinfo`'s octal path escapes (`\040`=space, `\011`=tab,
+ * `\012`=newline, `\134`=backslash — the four bytes `proc(5)` documents the
+ * kernel escaping in a mountinfo path field, confirmed empirically against
+ * a real `\040`-space bind mount on this host) back to their literal bytes.
+ * Embedded via string concatenation into every awk INVOCATION below
+ * (`MOUNTINFO_DECODE_AWK_PROGRAM`) rather than kept as a separate `-f` file
+ * this module would need to ship and locate on disk — awk programs compose
+ * by string concatenation exactly like SQL or shell fragments do elsewhere
+ * in this file, and keeping it inline avoids a new filesystem dependency.
+ * Written and tested standalone (see this fix's own commit message for the
+ * live proof: a `\040`-escaped mountinfo field for a real space-containing
+ * bind mount was correctly decoded back to a literal space) before being
+ * embedded, matching this module's `REQ_FUNCTION_DEFINITION` discipline.
+ */
+const MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION = [
+  "function pdpp_decode_mountinfo_path(s,    result, i, n, c1, c2, code, j) {",
+  '  result = "";',
+  "  n = length(s);",
+  "  i = 1;",
+  "  while (i <= n) {",
+  '    c1 = substr(s, i, 1);',
+  '    if (c1 == "\\\\" && i + 3 <= n) {',
+  "      c2 = substr(s, i + 1, 3);",
+  '      if (c2 ~ /^[0-7][0-7][0-7]$/) {',
+  "        code = 0;",
+  "        for (j = 1; j <= 3; j++) { code = code * 8 + (substr(c2, j, 1) + 0) }",
+  '        result = result sprintf("%c", code);',
+  "        i += 4;",
+  "        continue;",
+  "      }",
+  "    }",
+  "    result = result c1;",
+  "    i += 1;",
+  "  }",
+  "  return result;",
+  "}",
+].join(" ");
+
+/**
+ * Builds a shell fragment (a `for`-loop-free, `while read`-based pipeline,
+ * NOT a bare `for x in $(...)` — see below for why) that prints, one per
+ * line, the DECODED absolute path of every mount point strictly UNDER
+ * `stagedPathShQuoted` (the already-quoted staged path of a `ro` bind),
+ * reading `/proc/self/mountinfo`. Shared by BOTH `recursiveReadOnlyRemountCommand`
+ * (the setup-time remount) and `postPivotVerificationStatements`'s submount
+ * check (the post-pivot verification) — the same parsing logic, used by two
+ * different callers for two different purposes, previously duplicated with
+ * the SAME bug in both places.
  *
- * `/proc/self/mountinfo` FIELD FORMAT: whitespace-separated, field 5 (1
- * -indexed) is the mount point — `awk` splits on runs of whitespace by
- * default, matching the format's own separator, so no custom field
- * separator is needed. The kernel encodes literal space/tab/backslash/
- * newline bytes IN a mount point path as octal escapes (`\040` for space,
- * etc.) specifically so single-whitespace-separated parsing like this stays
- * unambiguous — every path this module's own derived bind set can ever
- * contain (`REPO_ROOT`, `/usr`, `/etc`, the Node binary's directory, the
- * Playwright cache, `filesystemBindPath`, which is always a `mkdtemp`
- * result) is a plain filesystem path with no such bytes, so this function
- * does not attempt to decode those escapes — a submount path that DID
- * contain one would fail the subsequent `mount -o remount,ro,bind` step
- * with a diagnosable "not mounted" error (caught by `req`, fail-closed) as
- * an unescaped octal sequence, rather than silently matching or missing.
+ * MOUNTINFO PARSING FIX (P1-3, external review of ced8300be) — TWO
+ * independent defects in the prior version, both closed here:
+ *
+ * (1) UNDECODED FIELD COMPARISON: the prior version compared awk's raw
+ * field-5 token directly against a plain (unescaped) `staged`/`stagedslash`
+ * string — but `/proc/self/mountinfo` octal-escapes space/tab/newline/
+ * backslash bytes IN the mount-point field (`\040` for a literal space,
+ * etc. — see `MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION`'s doc comment for the
+ * full escape set, confirmed against `proc(5)` and a real space-containing
+ * bind mount on this host), so a raw field like `/tmp/mnt\040test\040space`
+ * NEVER equals or string-prefixes the plain `/tmp/mnt test space` this
+ * module's own JS-side `stagedPathShQuoted` provides — confirmed empirically
+ * (see this fix's commit message): the OLD awk program produced ZERO output
+ * for a real space-containing submount, silently omitting it from BOTH the
+ * remount loop and the post-pivot verification, exactly the "escaped paths
+ * can be omitted" finding. This function decodes field 5 via
+ * `pdpp_decode_mountinfo_path()` BEFORE comparing, so the comparison is
+ * decoded-vs-plain, which is the only pairing that can ever match.
+ *
+ * (2) FIELD EXTRACTION ITSELF was actually safe as a raw whitespace split —
+ * confirmed by decoding AFTER field extraction, not before: since the
+ * escaping exists specifically so a mount-point field can never CONTAIN an
+ * unescaped whitespace byte, awk's default field splitting on field 5 always
+ * isolates the correct (still-escaped) token regardless of what any other
+ * field contains. The real defect was entirely in defect (1) above — this
+ * function keeps the field-5 extraction unchanged and only adds the decode
+ * step, rather than rewriting extraction that was never actually broken.
+ *
+ * NEWLINE-SAFE OUTPUT, NOT `for x in $(...)` (P1-3, the review's
+ * "word-splitting" half of the finding, which applies independently of
+ * decoding): the prior version's CALLERS (`recursiveReadOnlyRemountCommand`'s
+ * `for __submount in $(...)`, `postPivotVerificationStatements`'s
+ * `for __sm in $(...)`) both iterated over this awk program's OUTPUT using
+ * unquoted command substitution inside a `for`-in loop — even with the
+ * decode fix above making a DECODED path (containing a real, literal space)
+ * come out of awk correctly, handing that decoded output to `for x in
+ * $(cmd)` would still split it on the shell's own `IFS` whitespace,
+ * corrupting it right back into two separate, wrong loop iterations. This
+ * function instead prints one NEWLINE-terminated path per line (a mount
+ * point can never contain a literal newline byte — `proc(5)`'s own escaping
+ * exists specifically to guarantee that), and its two callers consume it via
+ * `while IFS= read -r line; do ... done`, which preserves embedded spaces
+ * correctly (confirmed empirically against a real space-containing
+ * submount) — the standard POSIX-safe way to iterate arbitrary paths
+ * line-by-line without word-splitting.
+ *
+ * SUBSHELL EXIT-CODE PROPAGATION: a `cmd | while read ...; done` pipeline
+ * runs the loop body in a SUBSHELL under dash (this module's target shell —
+ * `sh -c` resolves to dash on every host this module targets), but the
+ * PIPELINE's own exit status still equals the LAST command's exit status —
+ * confirmed empirically: an `exit N` inside the while-loop's subshell
+ * correctly becomes the whole pipeline's `$?` — so callers wrapping this in
+ * `req`/an explicit `$?` check still fail closed exactly as before, no
+ * behavior change from the caller's perspective beyond correctness.
  *
  * ORDER: newest mounts appear later in `/proc/self/mountinfo`, so a mount
- * nested two levels deep (a submount of a submount) is naturally remounted
+ * nested two levels deep (a submount of a submount) is naturally processed
  * AFTER its own parent submount, in the same top-to-bottom order the file
- * already lists them — `mount -o remount,ro,bind` on a path does not
- * require any particular order relative to a SEPARATE mount point beneath
- * it (each remount only affects its own mount, never cascades to a child
- * the way the original bind/rbind did), so no explicit sort is needed
- * beyond the file's own natural order.
+ * already lists them — unchanged from the prior version's own reasoning,
+ * still holds regardless of the decode/iteration fixes.
+ */
+function findDecodedSubmountsShellFragment(stagedPathShQuoted: string): string {
+  const awkProgram =
+    `${MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION} ` +
+    `{ mp = pdpp_decode_mountinfo_path($5); if (mp == staged) next; if (index(mp, stagedslash) == 1) print mp }`;
+  return (
+    `awk -v staged=${stagedPathShQuoted} -v stagedslash=${stagedPathShQuoted}"/" ` +
+    `${shQuote(awkProgram)} /proc/self/mountinfo`
+  );
+}
+
+/**
+ * Builds a shell command that finds every mount point strictly UNDER
+ * `stagedPathShQuoted` (the already-quoted staged path of a `ro` bind whose
+ * OWN top mount was just remounted read-only) via `findDecodedSubmountsShellFragment`
+ * (see that function's doc comment for the mountinfo-parsing fix this round
+ * closes), and remounts EACH ONE, individually, `ro,bind` — closing the gap
+ * `--rbind` (recursive bind) plus a single top-level `remount,ro,bind`
+ * leaves open: Linux does not propagate a `remount` operation to submounts
+ * the way `--rbind`/`--rprivate` propagate at BIND/PROPAGATION time, so any
+ * mount point that existed under a `ro` bind's source directory at bind time
+ * (e.g. Docker's own `/etc/resolv.conf`-style injected submounts under
+ * `/etc`, or any other nested mount a future derived bind might carry) stays
+ * writable unless remounted on its own.
  *
  * FAILS CLOSED: the caller wraps this in `reqStatement`, so if EVEN ONE
  * submount refuses `remount,ro,bind` (a filesystem type that genuinely
@@ -1409,13 +1507,12 @@ function reqStatement(label: string, command: string): string {
  * writable and proceeds.
  */
 function recursiveReadOnlyRemountCommand(stagedPathShQuoted: string): string {
-  const findSubmounts =
-    `awk -v staged=${stagedPathShQuoted} -v stagedslash=${stagedPathShQuoted}"/" ` +
-    `'{ mp = $5; if (mp == staged) next; if (index(mp, stagedslash) == 1) print mp }' /proc/self/mountinfo`;
-  const loop = `for __submount in $(${findSubmounts}); do mount -o remount,ro,bind "$__submount" || exit 1; done`;
+  const findSubmounts = findDecodedSubmountsShellFragment(stagedPathShQuoted);
+  const loop =
+    `${findSubmounts} | while IFS= read -r __submount; do mount -o remount,ro,bind "$__submount" || exit 1; done`;
   // `req` (see REQ_FUNCTION_DEFINITION's doc comment) executes its wrapped
   // command as `"$@"` — a single command name plus argv entries, not a
-  // shell snippet — so a compound statement like this `for` loop must be
+  // shell snippet — so a compound statement like this pipeline must be
   // handed to `req` as ONE argv entry, itself run via `sh -c`, rather than
   // being split on whitespace the way a plain `mount ...` command is.
   return `sh -c ${shQuote(loop)}`;
@@ -1437,6 +1534,13 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
     // `$?` after the substitution still reflects the wrapped command's own
     // exit status (command substitution does not reset it).
     REQ_FUNCTION_DEFINITION,
+    // `probe_ro` is NOT defined here — `postPivotVerificationStatements`
+    // (appended at the end of this prelude, post-pivot) defines it as its
+    // OWN first returned statement, keeping that function's output
+    // self-contained for its other real caller (isolation-mechanism.test.ts's
+    // standalone sandbox harness, which builds a script from ONLY that
+    // function's return value, no prelude). See that function's own doc
+    // comment.
     reqStatement("create staging tmpfs directory", `mkdir -p ${shQuote(newroot)}`),
     reqStatement("mount staging tmpfs", `mount -t tmpfs tmpfs ${shQuote(newroot)}`),
     reqStatement("create oldroot directory", `mkdir -p ${shQuote(oldroot)}`),
@@ -1713,18 +1817,76 @@ function inNamespaceSocketScanStatement(roBindPaths: readonly string[]): string 
  * gate (97) — the diagnostic names exactly which of the three properties
  * failed.
  */
+/**
+ * The `probe_ro` shell function definition (P1-3, external review of
+ * ced8300be) — a single write-probe usable against EITHER a directory OR a
+ * FILE bind mount, echoing the path if it's still writable (the false-
+ * success shape every caller of this function checks for) and nothing if
+ * genuinely read-only.
+ *
+ * FILE SUBMOUNTS COULD NOT BE VERIFIED (P1-3, the review's second half of
+ * this finding): the prior probe was `touch <path>/.pdpp-isolation-ro-probe`
+ * — creating a NEW file INSIDE the probed path, which only makes sense for
+ * a DIRECTORY target. Confirmed empirically against a real file bind mount
+ * (e.g. the shape Docker's own `/etc/resolv.conf` injection produces — a
+ * single FILE bind-mounted onto another single file, not a directory):
+ * `touch <file-mount>/.probe` fails with `ENOTDIR` ("Not a directory")
+ * REGARDLESS of whether the file mount is actually read-only or not — so
+ * the old probe reported EVERY file submount as "confirmed read-only" even
+ * when a separate, direct write proved it was still genuinely writable
+ * (reproduced live: `echo x > <file-mount>` succeeded while the old
+ * `touch <file-mount>/.probe` probe simultaneously reported "read-only" for
+ * the exact same still-writable target) — a false negative, the "confirmed
+ * clean when it is not" shape this whole verification exists to prevent.
+ *
+ * FIX: branch on `[ -d "$path" ]`. For a directory, keep the original
+ * create-a-file-inside probe (a file bind mount has no "inside" to probe
+ * this way, but a directory's own write permission is exactly what creating
+ * an entry inside it tests). For anything else (a file, confirmed via `-d`
+ * being false rather than asserting `-f` — matches this module's existing
+ * "test the property that matters, not a narrower assumption about what
+ * else the path could be" discipline elsewhere), open the path itself
+ * `O_WRONLY` via shell redirection (`exec 3>"$path"`) — confirmed
+ * empirically to correctly fail with `EROFS`/a shell-level "Read-only file
+ * system" error for a genuinely read-only file bind mount, and to correctly
+ * SUCCEED (proving writability, the false-success case) for a writable one
+ * — unlike the old `ENOTDIR`-always probe, this actually depends on the
+ * mount's real read-only state rather than failing unconditionally for the
+ * wrong reason.
+ */
+const PROBE_RO_FUNCTION_DEFINITION =
+  'probe_ro() { __p="$1"; if [ -d "$__p" ]; then ' +
+  '__probe="$__p/.pdpp-isolation-ro-probe-$$"; ' +
+  'if touch "$__probe" 2>/dev/null; then rm -f "$__probe" 2>/dev/null; echo "$__p"; fi; ' +
+  'else if sh -c "exec 3>\\"\\$1\\"" _ "$__p" 2>/dev/null; then echo "$__p"; fi; fi; }';
+
 export function postPivotVerificationStatements(binds: readonly FilesystemBind[]): string[] {
-  const statements: string[] = [];
+  // `probe_ro` is defined HERE, as this function's own first returned
+  // statement, rather than relying on a caller to have already defined it
+  // (P1-3, external review of ced8300be) — `filesystemClosureShellPrelude`
+  // defines it again, earlier, before calling this function, which is
+  // harmless (dash allows redefining a shell function), but this function's
+  // OWN output must be self-contained: it is called directly, standalone,
+  // by `isolation-mechanism.test.ts`'s own sandbox test harness (a script
+  // built from ONLY this function's returned statements, no prelude), and
+  // that is a legitimate, real calling shape this function's own contract
+  // must support without a caller needing to know its internal
+  // implementation detail of using a shell function.
+  const statements: string[] = [PROBE_RO_FUNCTION_DEFINITION];
   const roBindPaths = binds.filter((b) => b.mode === "ro").map((b) => b.path);
   // Property 3 checks the TOP of each ro bind, at its real, post-pivot path
   // (`/usr`, `/etc`, ... — the new root's OWN view, not the pre-pivot
   // staging prefix `postPivotVerificationStatements`'s caller uses).
-  const topLevelRoCheck = roBindPaths
-    .map((path) => {
-      const probe = shQuote(`${path}/.pdpp-isolation-ro-probe-$$`);
-      return `if touch ${probe} 2>/dev/null; then rm -f ${probe} 2>/dev/null; echo ${shQuote(path)}; fi`;
-    })
-    .join("; ");
+  // FILE-VS-DIRECTORY (P1-3, external review of ced8300be): uses the shared
+  // `probe_ro` function (see `PROBE_RO_FUNCTION_DEFINITION`'s doc comment)
+  // rather than the old directory-only touch-inside probe, so a top-level
+  // `ro` bind that happens to be a FILE (not currently produced by
+  // `requiredFilesystemBinds()`, which only declares directories today, but
+  // not guaranteed to stay that way, and the review's finding applies to
+  // the verification LOGIC, not just today's concrete bind set) is
+  // correctly verifiable too, not silently mis-probed the way the old
+  // ENOTDIR-always shape would.
+  const topLevelRoCheck = roBindPaths.map((path) => `probe_ro ${shQuote(path)}`).join("; ");
   // RECURSIVE READ-ONLY, property 3 EXTENDED (P1, external review of
   // ab415be6c): the top-level check above only proves the PARENT mount of
   // each ro bind is read-only — it says nothing about a nested submount
@@ -1739,20 +1901,19 @@ export function postPivotVerificationStatements(binds: readonly FilesystemBind[]
   // `/proc/self/mountinfo` (POST-pivot, so it reflects the NEW root's own
   // mount table — the real, live view the isolated child actually has, not
   // the pre-pivot staging tree) for every mount point strictly under each ro
-  // bind's real path, and probes each one with the SAME touch-then-remove
-  // technique as the top-level check.
+  // bind's real path, via `findDecodedSubmountsShellFragment` (P1-3,
+  // external review of ced8300be — see that function's doc comment for the
+  // mountinfo-decode and newline-safe-iteration fixes shared with the
+  // setup-time remount), and probes each one with the SAME `probe_ro`
+  // function as the top-level check, now also handling FILE submounts
+  // correctly (see `PROBE_RO_FUNCTION_DEFINITION`'s doc comment) — the exact
+  // Docker-injected `/etc/resolv.conf`-style shape this module's own doc
+  // comments elsewhere already cite as the concrete, real-world case this
+  // must catch.
   const submountRoCheck = roBindPaths
     .map((path) => {
-      const quotedPath = shQuote(path);
-      const findSubmounts =
-        `awk -v staged=${quotedPath} -v stagedslash=${quotedPath}"/" ` +
-        `'{ mp = $5; if (mp == staged) next; if (index(mp, stagedslash) == 1) print mp }' /proc/self/mountinfo`;
-      return (
-        `for __sm in $(${findSubmounts}); do ` +
-        `__smprobe="$__sm/.pdpp-isolation-ro-probe-$$"; ` +
-        `if touch "$__smprobe" 2>/dev/null; then rm -f "$__smprobe" 2>/dev/null; echo "$__sm"; fi; ` +
-        "done"
-      );
+      const findSubmounts = findDecodedSubmountsShellFragment(shQuote(path));
+      return `${findSubmounts} | while IFS= read -r __sm; do probe_ro "$__sm"; done`;
     })
     .join("; ");
   const roCheck = [topLevelRoCheck, submountRoCheck].filter(Boolean).join("; ");

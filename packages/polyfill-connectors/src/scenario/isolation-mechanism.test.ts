@@ -1226,6 +1226,247 @@ test("[bwrap sandbox] postPivotVerificationStatements FAILS when a NESTED submou
   }
 });
 
+// ─── Mountinfo parsing fix (P1-3, external review of ced8300be) ───────────
+//
+// /proc/self/mountinfo octal-escapes space/tab/newline/backslash bytes IN a
+// mount point path (e.g. `\040` for a literal space). The prior submount
+// walk compared awk's RAW (still-escaped) field-5 token directly against a
+// PLAIN (unescaped) staged path — a raw `/tmp/x\040y` token never equals or
+// prefix-matches the plain string `/tmp/x y`, so a real, space-containing
+// submount was silently OMITTED from both the setup-time remount and this
+// post-pivot verification. Separately, the old verification probed a
+// submount by `touch <path>/.probe` — creating a file INSIDE it — which is
+// meaningless for a FILE bind mount (no "inside" to touch); confirmed
+// empirically this makes `touch` fail with ENOTDIR regardless of the file
+// mount's actual read-only state, a false negative that reports a still-
+// writable file submount as "confirmed read-only."
+
+test("[bwrap sandbox] postPivotVerificationStatements FAILS when a nested submount at a SPACE-containing path is writable — the fixed mountinfo decode finds it", {
+  skip: !(bwrapUsable && bindMountCapable),
+}, () => {
+  const roDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-ro-space-parent-"));
+  const nestedSource = mkdtempSync(join(tmpdir(), "pdpp-isolation-nested-space-source-"));
+  // The space in the mount point's basename is the load-bearing part of
+  // this test — mountinfo encodes it as `\040` in the raw field the old
+  // code compared unescaped, causing it to never match and silently skip
+  // this submount entirely.
+  const nestedMountPoint = join(roDir, "nested with space");
+  try {
+    mkdirSync(nestedMountPoint, { recursive: true });
+    const mountResult = spawnSync("mount", ["--bind", nestedSource, nestedMountPoint], { stdio: "inherit" });
+    assert.equal(mountResult.status, 0, "sanity check: creating the real nested mount point must itself succeed");
+    try {
+      const setup = ["touch /pdpp-isolation-canary", "mkdir -p /oldroot"].join("; ");
+      const script = `${setup}; ${postPivotVerificationStatements([{ path: "/ro-parent", mode: "ro" }]).join("; ")}; echo PDPP_VERIFY_PASSED`;
+      const result = spawnSync(
+        "bwrap",
+        [
+          "--unshare-net",
+          "--tmpfs",
+          "/",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--ro-bind",
+          "/usr",
+          "/usr",
+          "--ro-bind",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          roDir,
+          "/ro-parent",
+          "--bind",
+          nestedMountPoint,
+          "/ro-parent/nested with space",
+          "--symlink",
+          "usr/bin",
+          "/bin",
+          "--symlink",
+          "usr/sbin",
+          "/sbin",
+          "--symlink",
+          "usr/lib",
+          "/lib",
+          "--symlink",
+          "usr/lib64",
+          "/lib64",
+          "--",
+          "sh",
+          "-c",
+          script,
+        ],
+        { encoding: "utf8" }
+      );
+      assert.equal(
+        result.status,
+        91,
+        `expected POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE (91) — the space-containing submount must be found and reported writable, not silently skipped; stderr: ${result.stderr}`
+      );
+      assert.ok(
+        /writable-ro-binds=\[[\s\S]*\/ro-parent\/nested with space[\s\S]*\]/.test(result.stderr),
+        `expected the diagnostic to name the specific writable space-containing path; got ${JSON.stringify(result.stderr)}`
+      );
+    } finally {
+      spawnSync("umount", ["-l", nestedMountPoint], { stdio: "ignore" });
+    }
+  } finally {
+    rmSync(roDir, { recursive: true, force: true });
+    rmSync(nestedSource, { recursive: true, force: true });
+  }
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements FAILS when a nested FILE submount is genuinely writable (the old touch-inside-a-directory probe always false-negatived on a file)", {
+  skip: !(bwrapUsable && bindMountCapable),
+}, () => {
+  const roDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-ro-file-parent-"));
+  const nestedSourceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-nested-file-source-"));
+  const nestedSourceFile = join(nestedSourceDir, "source-file");
+  writeFileSync(nestedSourceFile, "original content");
+  const nestedMountPoint = join(roDir, "nested-file");
+  writeFileSync(nestedMountPoint, "");
+  try {
+    const mountResult = spawnSync("mount", ["--bind", nestedSourceFile, nestedMountPoint], { stdio: "inherit" });
+    assert.equal(mountResult.status, 0, "sanity check: creating the real nested FILE mount point must itself succeed");
+    try {
+      // Deliberately left WITHOUT a read-only remount — this file submount
+      // stays genuinely writable, the false-negative case the old
+      // touch-inside probe could never detect.
+      const setup = ["touch /pdpp-isolation-canary", "mkdir -p /oldroot"].join("; ");
+      const script = `${setup}; ${postPivotVerificationStatements([{ path: "/ro-parent", mode: "ro" }]).join("; ")}; echo PDPP_VERIFY_PASSED`;
+      const result = spawnSync(
+        "bwrap",
+        [
+          "--unshare-net",
+          "--tmpfs",
+          "/",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--ro-bind",
+          "/usr",
+          "/usr",
+          "--ro-bind",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          roDir,
+          "/ro-parent",
+          "--bind",
+          nestedMountPoint,
+          "/ro-parent/nested-file",
+          "--symlink",
+          "usr/bin",
+          "/bin",
+          "--symlink",
+          "usr/sbin",
+          "/sbin",
+          "--symlink",
+          "usr/lib",
+          "/lib",
+          "--symlink",
+          "usr/lib64",
+          "/lib64",
+          "--",
+          "sh",
+          "-c",
+          script,
+        ],
+        { encoding: "utf8" }
+      );
+      assert.equal(
+        result.status,
+        91,
+        `expected POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE (91) — a genuinely writable FILE submount must be detected via O_WRONLY-open, not silently reported clean via a meaningless touch-inside-a-file attempt; stderr: ${result.stderr}`
+      );
+      assert.ok(
+        /writable-ro-binds=\[[\s\S]*\/ro-parent\/nested-file[\s\S]*\]/.test(result.stderr),
+        `expected the diagnostic to name the specific writable file submount path; got ${JSON.stringify(result.stderr)}`
+      );
+    } finally {
+      spawnSync("umount", ["-l", nestedMountPoint], { stdio: "ignore" });
+    }
+  } finally {
+    rmSync(roDir, { recursive: true, force: true });
+    rmSync(nestedSourceDir, { recursive: true, force: true });
+  }
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements PASSES a genuinely read-only FILE submount (negative control — the O_WRONLY probe isn't vacuously always failing)", {
+  skip: !(bwrapUsable && bindMountCapable),
+}, () => {
+  const roDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-ro-file-clean-parent-"));
+  const nestedSourceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-nested-file-clean-source-"));
+  const nestedSourceFile = join(nestedSourceDir, "source-file");
+  writeFileSync(nestedSourceFile, "original content");
+  const nestedMountPoint = join(roDir, "nested-file");
+  writeFileSync(nestedMountPoint, "");
+  try {
+    const mountResult = spawnSync("mount", ["--bind", nestedSourceFile, nestedMountPoint], { stdio: "inherit" });
+    assert.equal(mountResult.status, 0, "sanity check: creating the real nested FILE mount point must itself succeed");
+    const remountResult = spawnSync("mount", ["-o", "remount,ro,bind", nestedMountPoint], { stdio: "inherit" });
+    assert.equal(remountResult.status, 0, "sanity check: remounting the file submount read-only must itself succeed");
+    try {
+      const setup = ["touch /pdpp-isolation-canary", "mkdir -p /oldroot"].join("; ");
+      const script = `${setup}; ${postPivotVerificationStatements([{ path: "/ro-parent", mode: "ro" }]).join("; ")}; echo PDPP_VERIFY_PASSED`;
+      const result = spawnSync(
+        "bwrap",
+        [
+          "--unshare-net",
+          "--tmpfs",
+          "/",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--ro-bind",
+          "/usr",
+          "/usr",
+          "--ro-bind",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          roDir,
+          "/ro-parent",
+          "--ro-bind",
+          nestedMountPoint,
+          "/ro-parent/nested-file",
+          "--symlink",
+          "usr/bin",
+          "/bin",
+          "--symlink",
+          "usr/sbin",
+          "/sbin",
+          "--symlink",
+          "usr/lib",
+          "/lib",
+          "--symlink",
+          "usr/lib64",
+          "/lib64",
+          "--",
+          "sh",
+          "-c",
+          script,
+        ],
+        { encoding: "utf8" }
+      );
+      assert.equal(
+        result.stdout.trim(),
+        "PDPP_VERIFY_PASSED",
+        `expected verification to PASS for a genuinely read-only file submount; stderr: ${result.stderr}`
+      );
+      assert.equal(result.status, 0, `expected exit 0; stderr: ${result.stderr}`);
+    } finally {
+      spawnSync("umount", ["-l", nestedMountPoint], { stdio: "ignore" });
+    }
+  } finally {
+    rmSync(roDir, { recursive: true, force: true });
+    rmSync(nestedSourceDir, { recursive: true, force: true });
+  }
+});
+
 test("[unshare] a genuinely successful filesystem closure passes post-pivot verification and the target command DOES run", {
   skip: !unshareUsable,
 }, async () => {
