@@ -332,7 +332,80 @@ function buildFailureReceipt(
   };
 }
 
-/** Throws on missing/malformed structured output — never returns a partial or inferred report. Exported for direct fault-injection tests. */
+function fail(detail: string): never {
+  throw new Error(`migration-oracle-adapter: structured output failed validation — ${detail}`);
+}
+
+function requireBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") {
+    fail(`${label} must be a boolean, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+function requireNonEmptyString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    fail(`${label} must be a non-empty string, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+/** `detail` may legitimately be empty (some oracle checks record no detail text); every other string field must be non-empty. */
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    fail(`${label} must be a string, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+interface OkDetailPair {
+  detail: string;
+  ok: boolean;
+}
+function requireOkDetailPair(value: unknown, label: string): OkDetailPair {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail(`${label} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  return { ok: requireBoolean(record.ok, `${label}.ok`), detail: requireString(record.detail, `${label}.detail`) };
+}
+
+/**
+ * Validates ONE mutation-case entry's full shape (never just presence of
+ * the array). A well-formed-but-wrong oracle — e.g. `caught: "true"`
+ * (string, not boolean), a missing `caughtBy`, or a non-string `name` —
+ * must fail here, not slip through as a cast.
+ */
+function requireMutationCase(
+  value: unknown,
+  index: number
+): { caught: boolean; caughtBy: string; detail: string; name: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail(`mutations[${index}] must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    name: requireNonEmptyString(record.name, `mutations[${index}].name`),
+    caught: requireBoolean(record.caught, `mutations[${index}].caught`),
+    caughtBy: requireNonEmptyString(record.caughtBy, `mutations[${index}].caughtBy`),
+    detail: requireString(record.detail, `mutations[${index}].detail`),
+  };
+}
+
+/**
+ * Throws on missing/malformed structured output — never returns a partial
+ * or inferred report. This does the FULL schema validation the earlier
+ * implementation skipped: every mutation-case entry's shape (not just
+ * `Array.isArray`), the nested `positiveControl`/`rollback` objects' own
+ * `ok`/`detail` fields (not just truthiness of the parent object), enum-
+ * shaped fields, AND independently recomputes the derived invariants the
+ * oracle itself claims to guarantee — `holes` must be EXACTLY the set of
+ * mutation names with `caught: false` (in order), and `ok` must be exactly
+ * `positiveControl.ok && holes.length === 0 && rollback.ok` (see
+ * scripts/test-migration/mutation-oracle.ts's own `buildStructuredReport`,
+ * which this recomputation mirrors). A report that is well-formed JSON but
+ * internally inconsistent with its own claimed invariants (e.g. `ok: true`
+ * despite a failed positive control, or a hole/caught-set disagreement) is
+ * rejected here rather than trusted at face value.
+ */
 export function parseStructuredOutput(stdout: string): StructuredOracleReportShape {
   const line = stdout.split("\n").find((entry) => entry.startsWith(STRUCTURED_LINE_PREFIX));
   if (!line) {
@@ -344,19 +417,38 @@ export function parseStructuredOutput(stdout: string): StructuredOracleReportSha
   } catch (error) {
     throw new Error(`migration-oracle-adapter: structured-output line is not valid JSON: ${(error as Error).message}`);
   }
-  const record = parsed as Partial<StructuredOracleReportShape> | null;
-  if (
-    !record ||
-    typeof record !== "object" ||
-    !Array.isArray(record.mutations) ||
-    !Array.isArray(record.holes) ||
-    typeof record.ok !== "boolean" ||
-    !record.positiveControl ||
-    !record.rollback
-  ) {
-    throw new Error("migration-oracle-adapter: structured output is missing a required field (case/control/rollback)");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    fail("top-level structured output must be an object");
   }
-  return record as StructuredOracleReportShape;
+  const record = parsed as Record<string, unknown>;
+  if (!Array.isArray(record.mutations)) {
+    fail("mutations must be an array");
+  }
+  const mutations = record.mutations.map((entry, index) => requireMutationCase(entry, index));
+  const positiveControl = requireOkDetailPair(record.positiveControl, "positiveControl");
+  const rollback = requireOkDetailPair(record.rollback, "rollback");
+  if (!Array.isArray(record.holes) || !record.holes.every((entry) => typeof entry === "string")) {
+    fail("holes must be an array of strings");
+  }
+  const holes = record.holes as string[];
+  const ok = requireBoolean(record.ok, "ok");
+
+  // Independently recompute the derived invariants — never trust the
+  // caller's own `holes`/`ok` fields at face value.
+  const expectedHoles = mutations.filter((m) => !m.caught).map((m) => m.name);
+  if (holes.length !== expectedHoles.length || holes.some((name, i) => name !== expectedHoles[i])) {
+    fail(
+      `holes ${JSON.stringify(holes)} does not match the mutations actually reported as uncaught ${JSON.stringify(expectedHoles)}`
+    );
+  }
+  const expectedOk = positiveControl.ok && holes.length === 0 && rollback.ok;
+  if (ok !== expectedOk) {
+    fail(
+      `ok=${ok} is inconsistent with its own reported inputs (positiveControl.ok=${positiveControl.ok}, holes.length=${holes.length}, rollback.ok=${rollback.ok} => expected ok=${expectedOk})`
+    );
+  }
+
+  return { mutations, holes, ok, positiveControl, rollback };
 }
 
 export { recordRecoveryReceipt };

@@ -179,38 +179,108 @@ test("parseStructuredOutput: throws when the structured-output line is corrupt (
 
 test("parseStructuredOutput: throws when the structured output is missing its mutations case list", () => {
   const partial = JSON.stringify({ ok: true, holes: [], positiveControl: { ok: true, detail: "" }, rollback: { ok: true, detail: "" } });
-  assert.throws(
-    () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${partial}\n`),
-    /missing a required field/
-  );
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${partial}\n`), /mutations must be an array/);
 });
 
 test("parseStructuredOutput: throws when the structured output is missing its positive-control result", () => {
   const partial = JSON.stringify({ ok: true, holes: [], mutations: [], rollback: { ok: true, detail: "" } });
-  assert.throws(
-    () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${partial}\n`),
-    /missing a required field/
-  );
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${partial}\n`), /positiveControl must be an object/);
 });
 
 test("parseStructuredOutput: throws when the structured output is missing its rollback result", () => {
   const partial = JSON.stringify({ ok: true, holes: [], mutations: [], positiveControl: { ok: true, detail: "" } });
-  assert.throws(
-    () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${partial}\n`),
-    /missing a required field/
-  );
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${partial}\n`), /rollback must be an object/);
 });
 
-test("parseStructuredOutput: accepts a genuinely well-formed structured report", () => {
-  const good = JSON.stringify({
+// ── P1-4: full-shape validation + independent recomputation of derived invariants ──
+//
+// The reviewer's exact scenario: a well-formed-but-wrong oracle. Every one
+// of these is valid JSON with every top-level field present (so the OLD
+// presence-only check would have accepted all of them) — each is rejected
+// here because it either has a malformed nested shape, or its claimed
+// `ok`/`holes` disagree with what `mutations`/`positiveControl`/`rollback`
+// actually say.
+
+function wellFormedGoodReport() {
+  return {
     ok: true,
-    holes: [],
+    holes: [] as string[],
     mutations: [{ name: "x", caught: true, caughtBy: "y", detail: "z" }],
     positiveControl: { ok: true, detail: "" },
     rollback: { ok: true, detail: "" },
-  });
-  const parsed = parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${good}\n`);
+  };
+}
+
+test("parseStructuredOutput: accepts a genuinely well-formed structured report", () => {
+  const parsed = parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(wellFormedGoodReport())}\n`);
   assert.equal(parsed.ok, true);
+});
+
+test("parseStructuredOutput: rejects ok: true when the positive control actually failed (well-formed, internally inconsistent)", () => {
+  const report = { ...wellFormedGoodReport(), positiveControl: { ok: false, detail: "false positive observed" } };
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`), /inconsistent with its own reported inputs/);
+});
+
+test("parseStructuredOutput: rejects ok: true when rollback actually failed", () => {
+  const report = { ...wellFormedGoodReport(), rollback: { ok: false, detail: "rollback diverged" } };
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`), /inconsistent with its own reported inputs/);
+});
+
+test("parseStructuredOutput: rejects ok: true when a mutation was actually uncaught (a real hole)", () => {
+  const report = {
+    ...wellFormedGoodReport(),
+    mutations: [{ name: "x", caught: false, caughtBy: "intendedCheck", detail: "not caught" }],
+    holes: ["x"],
+    // ok left at true — the report itself claims success despite an
+    // uncaught mutation, i.e. exactly "success = exit 0 + structured.ok"
+    // trusted without recomputation would have missed this.
+  };
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`), /inconsistent with its own reported inputs/);
+});
+
+test("parseStructuredOutput: rejects when holes disagrees with the mutations actually reported as uncaught", () => {
+  const report = {
+    ...wellFormedGoodReport(),
+    mutations: [
+      { name: "a", caught: false, caughtBy: "intendedCheck", detail: "not caught" },
+      { name: "b", caught: true, caughtBy: "check", detail: "" },
+    ],
+    holes: [], // Should be ["a"] — disagrees with the mutations list.
+    ok: false,
+  };
+  assert.throws(
+    () => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`),
+    /does not match the mutations actually reported as uncaught/
+  );
+});
+
+test("parseStructuredOutput: rejects a malformed/absent nested mutation entry (caught is a string, not boolean)", () => {
+  const report = { ...wellFormedGoodReport(), mutations: [{ name: "x", caught: "true", caughtBy: "y", detail: "z" }] };
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`), /caught.*must be a boolean/);
+});
+
+test("parseStructuredOutput: rejects a mutation entry missing caughtBy entirely", () => {
+  const report = { ...wellFormedGoodReport(), mutations: [{ name: "x", caught: true, detail: "z" }] };
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`), /caughtBy.*must be a non-empty string/);
+});
+
+test("parseStructuredOutput: rejects positiveControl missing its own ok field (nested shape, not just parent truthiness)", () => {
+  const report = { ...wellFormedGoodReport(), positiveControl: { detail: "no ok field at all" } };
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`), /positiveControl\.ok must be a boolean/);
+});
+
+test("parseStructuredOutput: rejects rollback missing its own detail field", () => {
+  const report = { ...wellFormedGoodReport(), rollback: { ok: true } };
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`), /rollback\.detail must be a string/);
+});
+
+test("parseStructuredOutput: rejects holes containing a non-string entry", () => {
+  const report = { ...wellFormedGoodReport(), holes: [123] };
+  assert.throws(() => parseStructuredOutput(`MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(report)}\n`), /holes must be an array of strings/);
+});
+
+test("parseStructuredOutput: rejects a top-level array instead of an object", () => {
+  assert.throws(() => parseStructuredOutput("MUTATION_ORACLE_STRUCTURED_JSON []\n"), /top-level structured output must be an object/);
 });
 
 test("evidence root ends up with exactly one issued marker and one completed receipt for a successful attempt", async () => {
