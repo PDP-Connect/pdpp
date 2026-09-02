@@ -1427,6 +1427,12 @@ async function runConcurrentIdentityOracle(driver: Driver): Promise<void> {
     assert.deepEqual([first.status, second.status].sort(), [201, 201]);
     assert.deepEqual(first.body, second.body, "both requests return the one stored accepted response");
     assert.equal(driver.embeddingCalls(), 1, "same identity performs one semantic execution");
+    // Index maintenance is fire-and-forget: drain it before reading
+    // lexical/semantic content directly so this assertion isolates the
+    // single-flight claim from still-in-flight background publish work
+    // (same contract every other assertAcceptedFinalState call site in this
+    // file already drains for).
+    await within(waitForDeferredIndexWorkToDrain(), "concurrent-identity deferred index work to finish");
     await assertAcceptedFinalState(driver, {
       batchId: request.batch_id,
       changes: 1,
