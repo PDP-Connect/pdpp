@@ -111,6 +111,28 @@ function isHeaderOnlyOrWhitespaceHunk(hunkLines: string[]): boolean {
   return true;
 }
 
+// A reflow moves line breaks without touching a word: rejoining a
+// hard-wrapped paragraph onto one line rewrites several lines that all carry
+// real content, so `isHeaderOnlyOrWhitespaceHunk` correctly calls each one
+// non-blank and the hunk reads as a revision. Comparing the two sides as a
+// whole tells them apart -- if the removed and added text are identical once
+// every whitespace run collapses, only the wrapping changed, and the spec says
+// the same thing it said before. Stamping `Date:` for that would assert a
+// revision that did not happen.
+function isWhitespaceOnlyRewrite(hunkLines: string[]): boolean {
+  const side = (marker: string) =>
+    hunkLines
+      .filter((l) => l.startsWith(marker))
+      .map((l) => l.slice(1))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const removed = side("-");
+  const added = side("+");
+  // An empty comparison would call a pure insertion or deletion a reflow.
+  return removed !== "" && removed === added;
+}
+
 const COMMIT_SPLIT_PATTERN = /^COMMIT /m;
 
 // Parses `git log -p` output for one file into per-commit substantive-ness,
@@ -194,6 +216,9 @@ function commitIsSubstantive(diffText: string): boolean {
       }
     }
     if (isHeaderOnlyOrWhitespaceHunk(lines)) {
+      continue;
+    }
+    if (isWhitespaceOnlyRewrite(lines)) {
       continue;
     }
     return true; // a real, non-header, non-whitespace change

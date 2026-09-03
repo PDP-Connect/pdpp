@@ -522,19 +522,9 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `streams[].query` | Stream-specific query capability declaration. `range_filters` declares range-queryable fields and operators. `expand` declares expandable relations and per-relation limits. `search` and `aggregations` preserve source-neutral capability declarations used by companion query profiles; their operation semantics and conformance are not defined by Core. |
 | `extensions` | Optional object keyed by absolute profile URI. Core preserves or ignores an unknown extension value and does not parse it. An operation that explicitly invokes an unsupported profile is rejected. An extension cannot redefine or weaken Core semantics. |
 
-The public SourceDeclaration JSON Schema declares JSON Schema 2020-12. Each
-`streams[].schema` uses that dialect when `$schema` is absent. If `$schema` is
-present, it MUST equal `https://json-schema.org/draft/2020-12/schema`. This
-dialect choice does not by itself guarantee identical validator behavior. The
-AS MUST meta-validate each embedded stream schema before accepting the
-declaration. Embedded `$ref` and `$dynamicRef` values MUST be local fragment
-references. A declaration MUST NOT make consent interpretation depend on a
-mutable remote schema.
+The public SourceDeclaration JSON Schema declares JSON Schema 2020-12. Each `streams[].schema` uses that dialect when `$schema` is absent. If `$schema` is present, it MUST equal `https://json-schema.org/draft/2020-12/schema`. This dialect choice does not by itself guarantee identical validator behavior. The AS MUST meta-validate each embedded stream schema before accepting the declaration. Embedded `$ref` and `$dynamicRef` values MUST be local fragment references. A declaration MUST NOT make consent interpretation depend on a mutable remote schema.
 
-`source.id` is the authorization identity. In a retained declaration or grant,
-`source.kind` records the provenance class that the AS accepted from its
-declaration authority. It is not authorization equality, a runtime type, or a
-Collection Profile claim, and it never selects serving or acquisition runtime.
+`source.id` is the authorization identity. In a retained declaration or grant, `source.kind` records the provenance class that the AS accepted from its declaration authority. It is not authorization equality, a runtime type, or a Collection Profile claim, and it never selects serving or acquisition runtime.
 A connector declaration with no Collection extension remains valid Core input.
 The declaration never contains owner-specific account or instance handles.
 Those appear on each stream in the selection request and resolved grant.
@@ -615,23 +605,11 @@ Declaration publishers MAY suggest views. These suggestions are advisory. The au
 
 ### Versioning and snapshots
 
-`declaration_version` is an opaque exact revision identifier. Core does not
-assign semantic-version ordering or compatibility meaning to it. A connector
-software release can leave the declaration unchanged, and a declaration can
-change without a connector release.
+`declaration_version` is an opaque exact revision identifier. Core does not assign semantic-version ordering or compatibility meaning to it. A connector software release can leave the declaration unchanged, and a declaration can change without a connector release.
 
-The authorization server retains the exact declaration snapshot used to
-validate the request and render consent. It uses that same snapshot for
-narrowing, issuance, and retained consent evidence. The issued grant records
-the declaration revision and every resolved authorization fact. A version
-label alone is not a snapshot.
+The authorization server retains the exact declaration snapshot used to validate the request and render consent. It uses that same snapshot for narrowing, issuance, and retained consent evidence. The issued grant records the declaration revision and every resolved authorization fact. A version label alone is not a snapshot.
 
-Adding a field, view, stream, or capability to a later declaration never
-widens an existing grant. Removing or changing a currently served capability
-may make a request technically unsupported, but it does not reinterpret what
-the user approved. The Resource Server enforces the resolved grant without a
-current declaration lookup. Current serving metadata may only route, describe
-current capabilities, narrow, or reject.
+Adding a field, view, stream, or capability to a later declaration never widens an existing grant. Removing or changing a currently served capability may make a request technically unsupported, but it does not reinterpret what the user approved. The Resource Server enforces the resolved grant without a current declaration lookup. Current serving metadata may only route, describe current capabilities, narrow, or reject.
 
 ### Declaration acceptance {#declaration-acceptance}
 
@@ -749,12 +727,7 @@ The optional `client_claims` object within each `authorization_details` entry ca
 
 **Trust boundary:** Client claims are self-asserted and unverifiable by the server. The AS MUST render `client_claims` content separately from protocol-enforced grant terms and MUST attribute it to the client (e.g., "[client name] says:"). The AS MUST NOT render client claims in the same visual register as protocol-enforced grant terms, structured policy declarations, or declaration-authored data descriptions.
 
-If rendered on the final owner review surface, `client_claims` MUST be
-normalized and bound exactly, with client attribution, into the immutable final
-approval artifact and review revision. Retained consent evidence MUST preserve
-that binding. They are material consent context, not grant rights. They remain
-outside authorization equality, the resolved grant, introspection rights, and
-RS enforcement.
+If rendered on the final owner review surface, `client_claims` MUST be normalized and bound exactly, with client attribution, into the immutable final approval artifact and review revision. Retained consent evidence MUST preserve that binding. They are material consent context, not grant rights. They remain outside authorization equality, the resolved grant, introspection rights, and RS enforcement.
 
 **Relationship to `purpose_description`:** `purpose_description` is a first-class request field describing what the authorization is for. It is part of the authorization semantics the user reviews. `client_claims.commitments` are supplementary promises that are not reducible to structured protocol fields. Both are client-authored, but `purpose_description` is the primary purpose statement while `commitments` are additional assurances.
 
@@ -821,8 +794,7 @@ Per-stream, within the `streams` array. All are optional except `name`.
 
 **Note on wildcards:** `"streams": [{ "name": "*" }]` requests all streams declared by the source. This is resolved against the retained snapshot and frozen as an explicit list in the grant. If the wildcard request includes `instance_ids`, the AS applies the requested handles to every expanded stream and verifies that each handle is eligible for that stream. If it omits `instance_ids`, the usual exactly-one eligible instance rule applies to every expanded stream.
 
-A wildcard entry MUST be the only entry in `streams`. Otherwise stream names
-MUST be unique within the request.
+A wildcard entry MUST be the only entry in `streams`. Otherwise stream names MUST be unique within the request.
 
 **Note on `streams` vs `selection_preset`:** Exactly one is required. Source validation fails if both or neither are present. The OAuth/RAR binding maps this failure to RFC 9396 `invalid_authorization_details`.
 
@@ -842,11 +814,9 @@ Source declarations may define selection presets. A client can reference a prese
 }
 ```
 
-The authorization server expands the preset from the retained snapshot into
-explicit streams and fields before final owner review and issuance.
+The authorization server expands the preset from the retained snapshot into explicit streams and fields before final owner review and issuance.
 Each selection preset MUST NOT contain the same stream name more than once.
-Duplicate stream names make the declaration invalid. They are not deferred to
-grant issuance.
+Duplicate stream names make the declaration invalid. They are not deferred to grant issuance.
 
 Every field in the issued grant is derived from either the selection request, client registration, or authorization server policy. The grant never contains values whose source is ambiguous.
 
@@ -924,19 +894,7 @@ The authorization server issues an access token bound to the grant. The client u
 
 Request-only conveniences such as wildcard names, `view`, omitted fields, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
 
-Before the final approval surface is shown, the AS MUST resolve omitted
-`instance_ids` to exact eligible instance handles or require an explicit owner
-choice. The final approval artifact MUST include the exact resolved
-`instance_ids`, stream names, fields, resources, temporal field, `since`,
-`until`, purpose, retention, client identity, and grant expiry. If
-`client_claims` are rendered during final review, the final approval artifact
-and review revision MUST also bind the normalized exact claims with client
-attribution. Retained consent evidence MUST preserve that binding. The approval
-mutation MUST bind to an immutable review revision or digest over the
-authorization decision fields. `client_claims` MUST remain outside the
-resolved grant and RS enforcement. If instance eligibility or the reviewed
-revision becomes stale before approval, the AS MUST reject approval and require
-a new review.
+Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since`, `until`, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
 
 ### Time concepts
 
@@ -960,12 +918,7 @@ Three independent version axes exist in PDPP. They MUST NOT be conflated:
 | Source declaration revision | `grant.source_declaration.version` | Identifies the exact retained declaration snapshot used for consent and issuance. It is opaque evidence metadata. The RS enforces the resolved grant and does not fetch that revision for authorization. |
 | HTTP API contract version | `PDPP-Version` request header | Version of the RS HTTP API contract. RS returns 400 `unsupported_version` if the requested version is not supported. If the header is absent, the RS uses the current stable version and returns the selected version in the response header (see [Section 8](#resource-server-interface)). |
 
-The current persisted-authorization-state reader MUST reject any persisted
-authorization state whose version or shape it cannot validate against a
-supported contract before its caller continues introspection or route
-handling. The reader MUST NOT reconstruct missing authorization or binding
-facts from current configuration. A deployment that cannot support or
-explicitly migrate such state MUST require fresh consent.
+The current persisted-authorization-state reader MUST reject any persisted authorization state whose version or shape it cannot validate against a supported contract before its caller continues introspection or route handling. The reader MUST NOT reconstruct missing authorization or binding facts from current configuration. A deployment that cannot support or explicitly migrate such state MUST require fresh consent.
 
 ### Access modes {#access-modes}
 
@@ -976,9 +929,7 @@ explicitly migrate such state MUST require fresh consent.
 
 ### Time constraint semantics
 
-The selection request's `time_range` is resolved against the retained stream
-`consent_time_field` into the grant's `time_constraint`. The grant freezes that
-field with the bounds. The filter is:
+The selection request's `time_range` is resolved against the retained stream `consent_time_field` into the grant's `time_constraint`. The grant freezes that field with the bounds. The filter is:
 
 ```
 record[time_constraint.field] >= time_constraint.since  (if since is present)
@@ -1119,15 +1070,9 @@ On every request, the resource server:
 3. If all checks pass, returns records filtered accordingly.
 4. If any check fails, returns a structured error (see Errors below).
 
-For owner-token current-capability reads, the effective filter is the permitted
-owner request filter alone: an owner token carries no grant, so there is no grant
-filter to intersect. Request filters can only narrow the current owner read and
-cannot widen it.
+For owner-token current-capability reads, the effective filter is the permitted owner request filter alone: an owner token carries no grant, so there is no grant filter to intersect. Request filters can only narrow the current owner read and cannot widen it.
 
-In v0.1, client-token reads do not have request-time predicate filters (see List
-records below); the resource server enforces the frozen grant constraints and
-rejects a client request-time predicate filter rather than evaluating it. A
-future client-filter capability may define intersection semantics.
+In v0.1, client-token reads do not have request-time predicate filters (see List records below); the resource server enforces the frozen grant constraints and rejects a client request-time predicate filter rather than evaluating it. A future client-filter capability may define intersection semantics.
 
 The RS MUST NOT re-validate authorization against the current SourceDeclaration. All enforcement constraints are in the resolved grant. Current serving metadata MAY route a granted instance, describe current schemas or query capabilities, or reject a request that cannot currently be served. It MUST NOT widen or reinterpret a stream, instance, field, time field, bound, or resource key.
 
@@ -1135,9 +1080,7 @@ The RS MUST NOT re-validate authorization against the current SourceDeclaration.
 
 ### Token introspection
 
-For separated AS/RS deployments, the RS MUST authenticate to the AS
-introspection endpoint as required by RFC 7662. The introspection response
-combines standard RFC 7662 fields with PDPP-defined extensions:
+For separated AS/RS deployments, the RS MUST authenticate to the AS introspection endpoint as required by RFC 7662. The introspection response combines standard RFC 7662 fields with PDPP-defined extensions:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -1149,10 +1092,7 @@ combines standard RFC 7662 fields with PDPP-defined extensions:
 | `exp` | integer | Optional expiry timestamp (Unix epoch). Omitted when the token has no expiration. |
 | `authorization_details` | array | The approved RFC 9396 detail for a client token. It carries the resolved grant enforcement constraints defined in Section 7. |
 
-The introspection response MUST contain the complete context needed to enforce
-the request. The separated RS MUST enforce only from that response and MUST
-NOT make a second AS lookup while handling the request. A co-located AS and RS
-MAY resolve the same context through a local equivalent.
+The introspection response MUST contain the complete context needed to enforce the request. The separated RS MUST enforce only from that response and MUST NOT make a second AS lookup while handling the request. A co-located AS and RS MAY resolve the same context through a local equivalent.
 
 **Token kind extensibility:** This specification defines `owner` and `client`. Deployments MAY introduce additional token kinds in companion profiles. A resource server that receives a `pdpp_token_kind` value it does not recognize MUST treat the token as unauthorized for all operations defined in this specification.
 
@@ -1347,44 +1287,22 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `expand_limit[{relation}]` | integer | Owner-token current-capability limit for an expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. Client-token requests MUST reject this parameter in v0.1. |
 | `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`). Returns only records whose grant-authorized projection changed since that cursor, plus tombstones for deletions. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the cursor has expired. |
 
-The durable client-token base query surface in v0.1 is: `limit`, `cursor`,
-`order`, `fields`, `changes_since`, and blob fetch. Exact and range
-`filter[...]`, `expand[]`, and `expand_limit[...]` parameters are not part of
-the client-token surface. Owner-token current-capability reads MAY support
-exact and declared range filters, `view`, and declared expansion; those reads
-consult current serving metadata. Advanced stream-specific query power MUST be
-declared in stream metadata under `query`.
+The durable client-token base query surface in v0.1 is: `limit`, `cursor`, `order`, `fields`, `changes_since`, and blob fetch. Exact and range `filter[...]`, `expand[]`, and `expand_limit[...]` parameters are not part of the client-token surface. Owner-token current-capability reads MAY support exact and declared range filters, `view`, and declared expansion; those reads consult current serving metadata. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
 
 Unknown query parameters and unsupported query shapes MUST be rejected with HTTP 400 and MUST NOT be silently ignored.
 
 **Non-fatal warnings:** A list response MAY carry a `meta.warnings[]` array reporting non-fatal lossiness that the server resolved without failing the request. Each entry has a stable `code` and a human-readable `message`; clients SHOULD branch on `code`, not on message text. A `limit` above the maximum is the canonical case: the RS returns the bounded page and a `limit_clamped` warning rather than silently dropping the excess or returning an error. Clients page forward with the returned cursor instead of expecting a larger page. Warnings are not errors and MUST NOT change the HTTP status.
 
-Client-token requests that contain any exact or range `filter[...]` parameter
-MUST be rejected with HTTP 400 `invalid_request` before the RS consults current
-SourceDeclaration or serving metadata. This rejection applies regardless of
-whether the field or operator would otherwise be declared. Owner-token
-current-capability reads MAY accept exact filters on declared top-level scalar
-fields and range filters explicitly declared by current serving metadata.
+Client-token requests that contain any exact or range `filter[...]` parameter MUST be rejected with HTTP 400 `invalid_request` before the RS consults current SourceDeclaration or serving metadata. This rejection applies regardless of whether the field or operator would otherwise be declared. Owner-token current-capability reads MAY accept exact filters on declared top-level scalar fields and range filters explicitly declared by current serving metadata.
 Unknown fields, non-scalar fields, and unsupported range shapes return HTTP
 400. Owner subject, source, and connection scope are enforced independently. An
 owner token has no client grant field projection.
 
-Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be
-rejected with HTTP 400 `invalid_request` before the RS consults current
-SourceDeclaration or serving metadata. A v0.1 resolved grant does not freeze
-relationship identity, target stream, foreign-key join semantics, cardinality,
-or expansion limits. Current relationship metadata therefore cannot interpret
-client grant rights. Owner-token current-capability reads MAY use declared
-expansion against current serving metadata.
+Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be rejected with HTTP 400 `invalid_request` before the RS consults current SourceDeclaration or serving metadata. A v0.1 resolved grant does not freeze relationship identity, target stream, foreign-key join semantics, cardinality, or expansion limits. Current relationship metadata therefore cannot interpret client grant rights. Owner-token current-capability reads MAY use declared expansion against current serving metadata.
 
-For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`,
-`lt`) apply only to fields declared in `query.range_filters`. Nested paths,
-arrays, OR grammar, and full-text search are not part of v0.1.
+For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
 
-For owner-token current-capability reads, expansion is declaration-driven. A
-relation is structurally present if listed under `relationships`, but it is
-only expandable if declared under `query.expand`. `expand_limit[{relation}]`
-is only valid for declared `has_many` relations.
+For owner-token current-capability reads, expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations.
 
 **Stable sort:** Records are sorted by `(cursor_field, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values.
 
@@ -1396,15 +1314,9 @@ Eligibility for `changes_since` MUST be computed on the grant-authorized project
 
 If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`.
 
-**Invalid owner filter:** An owner-token current-capability filter on an
-unknown, non-scalar, or unsupported field/operator returns HTTP 400
-`invalid_request` or `unknown_field`, as applicable. Client-token predicate
-filters are rejected earlier under the v0.1 client-filter rule.
+**Invalid owner filter:** An owner-token current-capability filter on an unknown, non-scalar, or unsupported field/operator returns HTTP 400 `invalid_request` or `unknown_field`, as applicable. Client-token predicate filters are rejected earlier under the v0.1 client-filter rule.
 
-**Expansion:** A client-token expansion request is rejected with 400
-`invalid_request` before declaration lookup. For an owner-token
-current-capability read, requesting an undeclared relation returns 400
-`invalid_expand`. Expansion never widens the current owner read scope.
+**Expansion:** A client-token expansion request is rejected with 400 `invalid_request` before declaration lookup. For an owner-token current-capability read, requesting an undeclared relation returns 400 `invalid_expand`. Expansion never widens the current owner read scope.
 
 **Response:**
 ```json
@@ -1444,10 +1356,7 @@ GET /v1/streams/{stream}/records/{id}
 Authorization: Bearer <access_token>
 ```
 
-Returns a single record by primary key. The `{id}` path parameter is the
-percent-encoded canonical key string. Owner-token current-capability reads
-support `expand[]`; client-token requests reject it in v0.1 before declaration
-lookup.
+Returns a single record by primary key. The `{id}` path parameter is the percent-encoded canonical key string. Owner-token current-capability reads support `expand[]`; client-token requests reject it in v0.1 before declaration lookup.
 
 #### Delete a record (owner-authenticated)
 
@@ -1600,8 +1509,7 @@ A conformant Core RS:
 7. Supports incremental sync via `changes_since` for `mutable_state` streams, including tombstone entries, omission of records whose grant-authorized projection did not change, and HTTP 410 with error code `cursor_expired` on cursor expiry.
 8. Returns `next_changes_since` on the terminal page of every `changes_since` response.
 9. Rejects client-token exact and range `filter[...]` parameters with 400
-   `invalid_request` before consulting current declaration metadata; owner-token
-   current-capability reads MAY retain declared filter behavior.
+   `invalid_request` before consulting current declaration metadata; owner-token current-capability reads MAY retain declared filter behavior.
 10. Rejects unknown query parameters and unsupported query shapes with 400 instead of silently ignoring them.
 11. Implements the `PDPP-Version` header negotiation.
 12. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response.
@@ -1647,36 +1555,14 @@ For separated AS/RS deployments, the RS MUST authenticate to the AS introspectio
 
 Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. This bounds the propagation window for revocation.
 
-An access token issued with or from a refresh-token family MUST be linked to
-that family and MUST have a short, token-specific expiration no later than the
-family or grant expiration. A token response MUST derive `expires_in` from the
-access token's persisted expiration. It MUST omit `expires_in` when the access
-token has no expiration. An RFC 7662 response MUST likewise omit `exp` when no
-expiration exists.
+An access token issued with or from a refresh-token family MUST be linked to that family and MUST have a short, token-specific expiration no later than the family or grant expiration. A token response MUST derive `expires_in` from the access token's persisted expiration. It MUST omit `expires_in` when the access token has no expiration. An RFC 7662 response MUST likewise omit `exp` when no expiration exists.
 
-Every successful OAuth token response that contains an access token or refresh
-token MUST include `Cache-Control: no-store` and `Pragma: no-cache` before the
-response is serialized. This applies to authorization-code, refresh-token, and
-device-code exchanges, including package-scoped variants.
+Every successful OAuth token response that contains an access token or refresh token MUST include `Cache-Control: no-store` and `Pragma: no-cache` before the response is serialized. This applies to authorization-code, refresh-token, and device-code exchanges, including package-scoped variants.
 
-An authorization code MUST be consumed atomically on its first successful
-redemption. A later redemption, including one with the same valid PKCE
-verifier, MUST return `invalid_grant` and MUST NOT issue another token.
+An authorization code MUST be consumed atomically on its first successful redemption. A later redemption, including one with the same valid PKCE verifier, MUST return `invalid_grant` and MUST NOT issue another token.
 
-When an authorization server issues refresh tokens for a `continuous` grant,
-each token MUST belong to a family and MUST rotate after successful use. The
-AS MUST atomically supersede the presented token and issue one active
-successor. Reuse of any superseded token, including a retry after a lost
-successful response, MUST revoke the token family and every access token linked
-to that family, return `invalid_grant`, and require fresh authorization.
-Introspection MUST report every family-linked access token inactive after the
-replay is detected. An AS MUST NOT issue refresh tokens for a `single_use`
-grant. It MUST NOT issue one for a grant package unless every child grant is
-`continuous`. On upgrade, an implementation MUST NOT infer family linkage for
-an existing bearer. Any live refresh family without persisted bearer linkage
-MUST be revoked together with its grant- or package-bound bearer tokens and
-MUST require fresh authorization. This behavior follows
-[RFC 9700](https://www.rfc-editor.org/rfc/rfc9700), Section 4.14.2.
+When an authorization server issues refresh tokens for a `continuous` grant, each token MUST belong to a family and MUST rotate after successful use. The AS MUST atomically supersede the presented token and issue one active successor. Reuse of any superseded token, including a retry after a lost successful response, MUST revoke the token family and every access token linked to that family, return `invalid_grant`, and require fresh authorization.
+Introspection MUST report every family-linked access token inactive after the replay is detected. An AS MUST NOT issue refresh tokens for a `single_use` grant. It MUST NOT issue one for a grant package unless every child grant is `continuous`. On upgrade, an implementation MUST NOT infer family linkage for an existing bearer. Any live refresh family without persisted bearer linkage MUST be revoked together with its grant- or package-bound bearer tokens and MUST require fresh authorization. This behavior follows [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700), Section 4.14.2.
 
 **Sender-constrained tokens (non-normative):** Bearer tokens (RFC 6750) are the v0.1 baseline. Deployments handling sensitive standing access SHOULD consider sender-constrained tokens, which bind a token to a client-held key so that possession of the token alone is not sufficient to use it. DPoP (RFC 9449) and mutual-TLS certificate binding (RFC 8705) are both compatible with PDPP's introspection-based design. A formal optional hardening profile is a candidate for a future version.
 
@@ -1706,9 +1592,7 @@ In the Collection Profile, connectors receive credentials via the INTERACTION ch
 
 There is no push revocation channel in v0.1. Revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds). The AS MUST reflect revocation immediately in introspection responses (`active: false`). A client will receive a 403 `grant_revoked` response no later than 60 seconds after revocation.
 
-Upon receiving any 403 `grant_revoked` response, the client MUST stop further
-requests against that grant. Companion profiles define how their active work is
-terminated.
+Upon receiving any 403 `grant_revoked` response, the client MUST stop further requests against that grant. Companion profiles define how their active work is terminated.
 
 Revocation stops future access only. Data already delivered to the client before revocation is governed by the grant's `retention` policy and applicable legal obligations.
 
@@ -1782,11 +1666,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 
 v0.1 grants narrow access only by stream selection, named view or field projection, time range, and explicit resource identifiers. Generic predicate expressions (e.g., `filter[sender_domain]=amazon.com` as a grant parameter) are not supported.
 
-**Request-time filters are not grant scope.** Owner-token current-capability
-reads MAY use `filter[...]` to narrow a result set, but those filters do not
-narrow any client grant. Client-token requests do not support request-time
-filters in v0.1; a client that needs a semantically bounded subset requests a
-named stream declared by the SourceDeclaration.
+**Request-time filters are not grant scope.** Owner-token current-capability reads MAY use `filter[...]` to narrow a result set, but those filters do not narrow any client grant. Client-token requests do not support request-time filters in v0.1; a client that needs a semantically bounded subset requests a named stream declared by the SourceDeclaration.
 
 **Derived subset streams (non-normative).** A stream MAY represent either a source-native collection or a derived subset, provided its semantics are stable, versioned through the SourceDeclaration, and human-reviewable in consent UI. Implementations that need semantically bounded consent in v0.1 SHOULD prefer named streams with human-readable semantics (e.g., a source that exposes `amazon_messages` as a distinct stream) over ad hoc technical predicates. Stream names MUST NOT encode predicate logic or synthesize per-request subsets; derived streams MUST be statically declared in the SourceDeclaration.
 

@@ -1,15 +1,14 @@
 # PDPP Reference Implementation Examples
 
 Status: Illustrative
-Date: 2026-08-29
+Date: 2026-09-02
 
 These examples are illustrative sequences built from the current draft. They are not the normative source for wire shapes or role responsibilities. When an example and the live draft differ, the normative documents win:
 
 - [spec-core.md](spec-core.md)
 - [spec-collection-profile.md](spec-collection-profile.md)
 
-(`spec-data-query-api.md` is superseded; its surviving normative content lives in
-[spec-core.md](spec-core.md) — see the authority map in the README.)
+(`spec-data-query-api.md` is superseded; its surviving normative content lives in [spec-core.md](spec-core.md) — see the authority map in the README.)
 
 Two explicit limits apply in this file:
 

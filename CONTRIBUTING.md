@@ -42,6 +42,31 @@ contract changes, test expectations, and pull-request conventions.
   [`docs/reference/voice-and-framing.md`](docs/reference/voice-and-framing.md). It keeps
   PDPP-as-protocol above OAuth/RAR, separates Core from Collection Profile from
   reference implementation from operator console, and lists phrasings to avoid.
+- **Run the spec prose gate.** Edits to a root `spec-*.md` are checked in two
+  passes. `pnpm spec:prose` runs `scripts/spec-prose-lint.mjs`, which fails on
+  six mechanical faults: prose hard-wrapped mid-sentence, a lowercase RFC 2119
+  key word governing a protocol role (RFC 8174 gives those no normative force),
+  a capitalized key word inside a note (notes are informative, so the
+  requirement would be unenforceable), a sentence over 40 words, filler and
+  meta-commentary, and a paragraph duplicated within the file. `pnpm
+  spec:prose:fix` rejoins hard-wrapped prose and changes nothing else; the other
+  five faults need a decision about meaning, so the tool will not guess. The
+  `spec-prose-gate` GitHub Actions job runs the same linter on the spec files a
+  pull request touches, **as a ratchet**: `hard-wrap` always fails, because
+  `spec:prose:fix` repairs it mechanically and changes no word, but the five
+  judgment rules fail only on a finding your pull request introduced. The job
+  lints the same files as of the merge-base to build a baseline, and prints a
+  finding already in that baseline as a warning. So `pnpm spec:prose` run by
+  hand reports more than the job fails on — the specs carry pre-existing
+  findings of every judgment kind, and clearing one means rewriting a normative
+  sentence, which is a spec editor's decision that needs its own review rather
+  than a blocker on unrelated work. Fix what you introduce; leave the backlog to
+  a dedicated editorial pass. The second pass is a judged read against
+  [`docs/reference/spec-writing-rubric.md`](docs/reference/spec-writing-rubric.md),
+  ten criteria — each with a one-line test and the standard it comes from —
+  covering what a regex cannot decide, such as whether an obligation names the
+  role that bears it and whether a registry section documents its registration
+  policy.
 
 ## AI assistance
 

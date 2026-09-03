@@ -230,3 +230,47 @@ test("a body-only whitespace edit (blank-line reflow) is not substantive", () =>
     assert.match(result.stdout, /passed \(1 spec checked\)/);
   });
 });
+
+// Both reflow tests below establish a hard-wrapped body whose `Date:` header
+// already matches that commit, so the only question the run can be answering is
+// whether the *reflow* counted as a revision. Without the matching stamp the
+// earlier wrap commit is itself substantive and would report stale on its own.
+const WRAPPED_BODY_STAMPED = ["# Fixture", "", "Status: Draft", "Date: 2026-01-02", "", "The resource server enforces", "the grant on every request", "it serves.", ""].join("\n");
+
+test("rejoining a hard-wrapped paragraph is not substantive: same words, moved line breaks", () => {
+  withFixture((repo) => {
+    repo.writeSpec(WRAPPED_BODY_STAMPED);
+    repo.commit("hard-wrap the body", "2026-01-02");
+    const afterWrap = git(repo.root, ["rev-parse", "HEAD"]);
+    assert.equal(run(repo.root, ["--base", afterWrap]).status, 0, "baseline: the stamped wrap is not stale");
+
+    // Every line in this hunk carries real content on both sides, so
+    // isHeaderOnlyOrWhitespaceHunk correctly calls none of them blank. Only
+    // comparing the two sides as a whole shows the words are identical and
+    // just the wrapping moved, which must not stamp Date:.
+    repo.writeSpec("# Fixture\n\nStatus: Draft\nDate: 2026-01-02\n\nThe resource server enforces the grant on every request it serves.\n");
+    repo.commit("reflow onto one line", "2026-01-03");
+
+    const result = run(repo.root, ["--base", afterWrap]);
+    assert.equal(result.status, 0, result.stdout || result.stderr);
+    assert.match(result.stdout, /passed \(1 spec checked\)/);
+  });
+});
+
+test("a reflow that also edits a word is still substantive", () => {
+  withFixture((repo) => {
+    repo.writeSpec(WRAPPED_BODY_STAMPED);
+    repo.commit("hard-wrap the body", "2026-01-02");
+    const afterWrap = git(repo.root, ["rev-parse", "HEAD"]);
+
+    // The guard must compare the whole hunk, not merely notice that the line
+    // count changed: rejoining the lines while changing "every" to "each"
+    // alters what the spec requires and has to stamp Date:.
+    repo.writeSpec("# Fixture\n\nStatus: Draft\nDate: 2026-01-02\n\nThe resource server enforces the grant on each request it serves.\n");
+    repo.commit("reflow and reword", "2026-01-03");
+
+    const result = run(repo.root, ["--base", afterWrap]);
+    assert.equal(result.status, 1, "a reworded reflow is a revision");
+    assert.match(`${result.stdout}${result.stderr}`, /is stale/);
+  });
+});

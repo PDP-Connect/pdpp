@@ -102,6 +102,20 @@
       "probe": "pnpm --dir packages/polyfill-connectors test -- connectors/twitter_archive/parsers.test.ts",
       "sha256": "bcacc4e5ea1b71bf1826266836f6a0d72e8e0dbc3289255637f6ed828bee54a6",
       "review": "Replace only when a newly captured provider archive format and its parser conformance fixtures supersede it."
+    },
+    {
+      "path": "scripts/spec-prose-lint.mjs",
+      "owner": "Specification editors",
+      "runtimeReason": "The spec prose gate runs on a bare checkout before any dependency is installed, so it must not need the tsx loader the repository's TypeScript entrypoints load through. It also runs inside a detached git worktree of the merge-base to build its warning baseline, where node_modules is absent by construction.",
+      "probe": "pnpm spec:prose:test && pnpm spec:prose",
+      "review": "Re-evaluate when the repository can run a TypeScript entrypoint with no installed loader, which would remove the only reason this file is not .ts."
+    },
+    {
+      "path": "scripts/spec-prose-lint.test.mjs",
+      "owner": "Specification editors",
+      "runtimeReason": "Unit tests for scripts/spec-prose-lint.mjs. They import the module under test directly, so they share its no-loader constraint.",
+      "probe": "pnpm spec:prose:test",
+      "review": "Re-evaluate together with scripts/spec-prose-lint.mjs."
     }
   ]
 }
