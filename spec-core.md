@@ -34,7 +34,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | [Section 5: Source Declaration](#source-declaration) | Common source identity, consent, record, selection, and query capabilities used by connector-backed and provider-native sources, and the conditions under which an authorization server accepts a declaration. | Connector acquisition and execution mechanics. |
 | [Section 6: Selection Request](#selection-request) | What a client asks an authorization server to approve, plus declaration-backed validation and consent rendering before a grant is issued. | Product-specific consent flows, screen layouts, and hosted authorization-server deployments. |
 | [Section 7: Grant](#grant) | The immutable consent artifact and the constraints a resource server enforces for a token-bound client. | Grant database schema, signed-token format, hosted registries, and deployment topology. |
-| [Section 8: Resource Server Interface](#resource-server-interface) | The interoperable record-query and blob-fetch interface under grant enforcement. | Authorization-server deployment, storage backend, collection runtime, operator dashboard, and hosted service choices. |
+| [Section 8: Resource Server Interface](#resource-server-interface) | The interoperable record-query and blob-fetch interface under grant enforcement, and the protected resource metadata a resource server publishes about itself. | Authorization-server deployment, storage backend, collection runtime, operator dashboard, and hosted service choices. |
 
 ### Relationship to existing standards
 
@@ -44,6 +44,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396) (RAR) | PDPP uses the `authorization_details` envelope for selection requests. The `type` URI is `https://pdpp.dev/data-access`. |
 | [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (Bearer Token) | PDPP transports both owner tokens and client tokens as RFC 6750 Bearer Tokens on the wire. The resource server distinguishes token kind via `pdpp_token_kind` in the introspection response, not by token syntax. |
 | [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (Token Introspection) | PDPP uses authenticated RFC 7662 token introspection where the authorization server and resource server are separated, so the resource server can resolve grant-bound tokens. Co-located deployments may use a local equivalent. |
+| [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) (Protected Resource Metadata) | PDPP resource servers publish RFC 9728 protected resource metadata, so a client discovers the authorization server, the query base, and the supported token kinds from the resource itself rather than from prior configuration. Core defines four `pdpp_`-prefixed additional members (Section 8); the extension profiles define `capabilities`. |
 | [OAuth 2.0 Dynamic Client Registration](https://www.rfc-editor.org/rfc/rfc7591) (RFC 7591) | PDPP reuses the RFC 7591 client metadata vocabulary (`client_name`, `logo_uri`, `policy_uri`, and similar fields) for the consent display. A dynamic client registration endpoint is a deployment choice and is required only where deployments need it; Core functions without it. |
 | [Client ID Metadata Documents](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/) (CIMD, IETF OAuth WG draft) | A client identifier that is itself an `https` URL the authorization server fetches to obtain RFC 7591-shaped client metadata, with no prior registration handshake. Control of the URL's domain is the trust root. CIMD is how deployed MCP clients present themselves: the MCP authorization specification revision 2025-11-25 states that authorization servers and clients SHOULD support CIMD and MAY support RFC 7591 dynamic client registration, which is retained for backward compatibility. Core treats a validated CIMD document as one source of validated binding metadata (Section 6) and its verified domain as a trust signal; the fetch and validation obligations belong to the OAuth binding rather than to Core. |
 | [SMART on FHIR](https://hl7.org/fhir/smart-app-launch/) | Follows the domain-profile-over-OAuth pattern PDPP adopts: OAuth handles authorization, and the profile adds a domain data model, consent semantics, and a conformance regime. SMART on FHIR reached ubiquity through regulatory adoption of SMART-on-FHIR-patterned API requirements (the ONC Cures Act rule). |
@@ -1167,6 +1168,25 @@ Two authentication boundaries exist:
 
 **Self-export:** An owner holding a valid owner token MAY query their own data using the standard client query endpoints without a client grant. This is the v0.1 self-export mechanism and does not require a separate grant. Conformant Core RS implementations SHOULD support this capability (see Section 9 conformance item 13).
 
+### Protected resource metadata {#protected-resource-metadata}
+
+A resource server MUST publish OAuth 2.0 Protected Resource Metadata as defined in RFC 9728. RFC 9728 Section 3 fixes the document's location: the well-known URI string `/.well-known/oauth-protected-resource` is inserted into the resource identifier between the host component and any path or query component. A client that reaches the resource server without a usable access token learns that location from the response itself, because RFC 9728 Section 5.1 defines the `resource_metadata` parameter carried on the `WWW-Authenticate` challenge of a 401.
+
+The `resource` member is the resource server's own identifier, as RFC 9728 Section 2 requires. For a `provider_native` source it is the same identifier as the declaration's `source.id`, which is the binding Section 5 already requires an authorization server to check before consent. A resource server that serves several sources publishes one metadata document per resource identifier rather than one document listing them.
+
+PDPP defines four additional members. RFC 9728 Section 2 permits additional parameters and RFC 9728 Section 3.2 requires a reader to ignore any parameter it does not understand, so a generic OAuth client is unaffected by their presence. Each name carries the `pdpp_` prefix to keep it distinct from a future registered parameter; RFC 9728 does not itself prescribe a naming convention.
+
+| Member | Meaning |
+| --- | --- |
+| `pdpp_core_query_base` | The base path the Section 8 endpoint paths extend, so a client composes a record query without assuming a version segment. |
+| `pdpp_token_kinds_supported` | The `pdpp_token_kind` values this resource server accepts, drawn from the kinds Section 8 defines. |
+| `pdpp_self_export_supported` | Whether an owner token may read the owner's own data through the client query endpoints without a client grant. |
+| `pdpp_provider_connect_version` | The PDPP version this resource server's interface implements, which a client would otherwise learn only from the `PDPP-Version` negotiation on a first request. |
+
+`resource_name` is RFC 9728's own member for a human-readable resource name, not a PDPP extension; a resource server SHOULD publish it because a consent surface has no other name to display for the resource.
+
+The `capabilities` member is defined by the extension profiles that advertise into it, not by Core. Core neither requires it nor constrains its contents, and a resource server that implements no extension omits it.
+
 ### Endpoints
 
 #### List streams
@@ -1584,6 +1604,7 @@ A conformant Core RS:
 13. SHOULD support owner-authenticated access to the `/v1/streams/{stream}/records` query endpoints without a client grant, allowing the data subject to export their own data directly (self-export).
 14. For owner-token stream-metadata reads, returns the full current stream metadata within the owner's subject/source/connection scope, including current query, view, and relationship capabilities.
 15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
+16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource` and the four `pdpp_`-prefixed members defined in Section 8.
 
 Collection Resource Server, runtime, and connector conformance are separate
 claims defined in the [PDPP Collection Profile](spec-collection-profile).
