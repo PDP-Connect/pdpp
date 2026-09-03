@@ -215,7 +215,7 @@ _Newly deferred (2026-09-03); written in response to the question of whether PDP
 
 **Do not route agreements through `purpose_code`:** A rostered agreement URI is a syntactically valid `purpose_code`, so this route is legal today and still wrong. Purpose and agreement are separate objects in every standard surveyed. The `ai_training` consent rule switches on the purpose code's value, and an agreement URI in that field would defeat it.
 
-**v0.1 posture:** Informative. No Core change. Nothing in v0.1 forecloses the design above, and Section 1 records the relationship to IEEE 7012, DPV, ISO/IEC TS 27560, and ISO/IEC 29184.
+**v0.1 posture:** Informative. No Core change. Nothing in v0.1 forecloses the design above, and Section 1 records the relationship to IEEE 7012, ISO/IEC TS 27560, and ISO/IEC 29184.
 
 ### Bulk export as a distinct access path
 
