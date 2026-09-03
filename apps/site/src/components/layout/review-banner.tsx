@@ -67,7 +67,7 @@ export function PdppReviewBanner() {
       data-slot="pdpp-review-banner"
       href="/review"
     >
-      <div className="flex w-max animate-[pdpp-ticker_55s_linear_infinite] items-center py-2 font-sans text-[13px] tracking-[0.01em] whitespace-nowrap motion-reduce:animate-none">
+      <div className="flex w-max animate-[pdpp-ticker_55s_linear_infinite] items-center whitespace-nowrap py-2 font-sans text-[13px] tracking-[0.01em] motion-reduce:animate-none">
         <TickerTrack />
         <TickerTrack ariaHidden />
       </div>

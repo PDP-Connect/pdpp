@@ -44,10 +44,10 @@
    See scripts/site-surface-ownership.test.ts for the pinned two-build
    architecture this preserves. */
 @source not "../app/(concept)";
-@source not "../app/governance";
-@source not "../app/principles";
 @source not "../app/not-found.tsx";
 @source not "../app/specification";
+@source not "../components/layout/review-banner.tsx";
+@source not "../components/site";
 @source not "../components/layout/concept-page.tsx";
 @source not "../components/layout/concept-shell.tsx";
 @source not "../components/layout/footer.tsx";

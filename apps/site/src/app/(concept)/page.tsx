@@ -14,8 +14,7 @@ import { cn } from "@/lib/utils.ts";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/" },
-  description:
-    "Lets personal data move freely, with consent. Decide what an app can see, for what, and for how long.",
+  description: "Lets personal data move freely, with consent. Decide what an app can see, for what, and for how long.",
   openGraph: { url: "/" },
   title: "PDPP: Personal Data Portability Protocol",
 };

@@ -1,10 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import {
-  executeRecordsList,
-  RecordsListVisibilityError,
-} from "@pdpp/reference-operations-sandbox/rs-records-list";
+import { executeRecordsList, RecordsListVisibilityError } from "@pdpp/reference-operations-sandbox/rs-records-list";
 import { createSandboxRecordsListDependencies } from "../../../../_demo/operations-fixtures.ts";
 import { jsonResponse, notFound, readListParams } from "../../../_helpers.ts";
 

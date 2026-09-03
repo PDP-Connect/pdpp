@@ -21,12 +21,12 @@ import { cn } from "@/lib/utils.ts";
 // reads. See docs/registers.md.
 
 export interface PublicSupporter {
+  country: string;
+  principlesVersion: string;
   /** First name and last initial for individuals, organisation name otherwise. */
   publicName: string;
-  type: string;
-  country: string;
   signedOn: string;
-  principlesVersion: string;
+  type: string;
 }
 
 // Read at build time from the public JSON. A fetch at request time would put a
@@ -74,7 +74,10 @@ export function PdppSupportersTable({ supporters }: { supporters: readonly Publi
         </thead>
         <tbody>
           {supporters.map((supporter) => (
-            <tr className="border-border/60 border-b last:border-b-0" key={`${supporter.publicName}-${supporter.signedOn}`}>
+            <tr
+              className="border-border/60 border-b last:border-b-0"
+              key={`${supporter.publicName}-${supporter.signedOn}`}
+            >
               <td className={CELL}>
                 <Text as="span" inline size="small">
                   {supporter.publicName}

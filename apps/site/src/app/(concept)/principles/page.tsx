@@ -87,7 +87,12 @@ export default async function Page() {
 
         <div className="mt-10">
           <Text as="p" color="subtle" size="small">
-            <a className="hover:text-primary" href={repoBlobUrl("PRINCIPLES.md")} rel="noopener noreferrer" target="_blank">
+            <a
+              className="hover:text-primary"
+              href={repoBlobUrl("PRINCIPLES.md")}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
               Read the signed document
             </a>
           </Text>

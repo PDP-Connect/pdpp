@@ -247,7 +247,7 @@ export function PdppConceptMasthead() {
               }
 
               return (
-                <span className="relative md:group" key={item.link}>
+                <span className="md:group relative" key={item.link}>
                   {label}
                   <span
                     className={cn(

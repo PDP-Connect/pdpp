@@ -25,10 +25,10 @@ const CELL = "px-3 py-2.5 text-left align-top";
 interface RegisterEntry {
   organisation: string;
   role: string;
-  status: string;
-  specVersion: string;
   since: string;
+  specVersion: string;
   state: string;
+  status: string;
 }
 
 interface TrustRegistry {
@@ -296,7 +296,10 @@ export default async function Page() {
                   </tr>
                 ) : (
                   register.map((entry) => (
-                    <tr className="border-border/60 border-b last:border-b-0" key={`${entry.organisation}-${entry.status}`}>
+                    <tr
+                      className="border-border/60 border-b last:border-b-0"
+                      key={`${entry.organisation}-${entry.status}`}
+                    >
                       <td className={CELL}>
                         <Text as="span" inline size="small">
                           {entry.organisation}
@@ -316,7 +319,11 @@ export default async function Page() {
             </table>
           </div>
           <Text as="p" className="mt-3" color="subtle" family="mono" size="stamp">
-            Kept on GitHub · machine readable at <a className="hover:text-primary" href="/register/index.json">/register/index.json</a> · Supporters are listed separately on the Principles page
+            Kept on GitHub · machine readable at{" "}
+            <a className="hover:text-primary" href="/register/index.json">
+              /register/index.json
+            </a>{" "}
+            · Supporters are listed separately on the Principles page
           </Text>
 
           <Text as="h3" className="mt-12" size="lede" weight="semi">

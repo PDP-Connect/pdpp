@@ -55,7 +55,10 @@ export function PdppGovernanceStages({ className }: { className?: string }) {
     <div className={className}>
       <ol className="m-0 grid list-none grid-cols-1 gap-px p-0 md:grid-cols-2 xl:grid-cols-4">
         {STAGES.map((stage) => (
-          <li className={cn("flex flex-col gap-2 bg-background p-5", "shadow-[0_0_0_1px_var(--border)]")} key={stage.name}>
+          <li
+            className={cn("flex flex-col gap-2 bg-background p-5", "shadow-[0_0_0_1px_var(--border)]")}
+            key={stage.name}
+          >
             <Text as="p" color="primary" family="mono" size="stamp">
               {stage.when}
             </Text>

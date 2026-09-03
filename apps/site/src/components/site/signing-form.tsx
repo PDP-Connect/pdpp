@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 import { Text } from "@/components/typography/text.tsx";
-import { siteConfig, siteFlags, signingDisclosure } from "@/lib/site-config.ts";
+import { signingDisclosure, siteConfig, siteFlags } from "@/lib/site-config.ts";
 import { cn } from "@/lib/utils.ts";
 
 // The Supporter signing form.
@@ -25,14 +25,7 @@ import { cn } from "@/lib/utils.ts";
 // and will grow; a free-text country field would make the public register
 // unsortable and invite an address.
 
-const COUNTRIES = [
-  "Australia",
-  "Germany",
-  "Netherlands",
-  "Switzerland",
-  "United Kingdom",
-  "United States",
-] as const;
+const COUNTRIES = ["Australia", "Germany", "Netherlands", "Switzerland", "United Kingdom", "United States"] as const;
 
 const ORGANISATION_TYPES = ["Company", "Platform", "Research institute", "Civil society", "Public body"] as const;
 
@@ -44,15 +37,7 @@ const fieldClassName = cn(
   "focus-visible:border-primary focus-visible:outline-none"
 );
 
-function Field({
-  children,
-  htmlFor,
-  label,
-}: {
-  children: React.ReactNode;
-  htmlFor: string;
-  label: string;
-}) {
+function Field({ children, htmlFor, label }: { children: React.ReactNode; htmlFor: string; label: string }) {
   return (
     <div className="flex flex-col gap-1.5">
       <Text as="label" color="subtle" htmlFor={htmlFor} size="stamp">
@@ -96,7 +81,7 @@ export function PdppSigningForm() {
 
       {/* Two buttons rather than a select: the choice changes which fields and
           which consents are shown, so it is a mode, not a value. */}
-      <div className="flex gap-px" role="group">
+      <fieldset className="m-0 flex gap-px border-0 p-0">
         {(["individual", "organisation"] as const).map((option) => (
           <button
             aria-pressed={kind === option}
@@ -113,7 +98,7 @@ export function PdppSigningForm() {
             {option}
           </button>
         ))}
-      </div>
+      </fieldset>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field htmlFor="sign-name" label="Name">

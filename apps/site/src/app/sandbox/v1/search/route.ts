@@ -1,10 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import {
-  executeSearchLexical,
-  SearchLexicalRequestError,
-} from "@pdpp/reference-operations-sandbox/rs-search-lexical";
+import { executeSearchLexical, SearchLexicalRequestError } from "@pdpp/reference-operations-sandbox/rs-search-lexical";
 import { createSandboxSearchLexicalDependencies } from "../../_demo/operations-fixtures.ts";
 import { jsonResponse } from "../_helpers.ts";
 

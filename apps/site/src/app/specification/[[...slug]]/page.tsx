@@ -9,10 +9,10 @@ import { notFound } from "next/navigation";
 import { LLMCopyButton, ViewOptions } from "@/components/ai/page-actions.tsx";
 import { getMDXComponents } from "@/components/mdx/mdx.tsx";
 import { ResponsiveSpecTable } from "@/components/mdx/responsive-table.tsx";
+import { PdppGovernanceStages } from "@/components/site/governance-stages.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
 import { repoBlobUrl } from "@/lib/site-facts.ts";
-import { PdppGovernanceStages } from "@/components/site/governance-stages.tsx";
 import { getGovernanceFrontMatter } from "@/lib/spec-front-matter.ts";
 import { GOVERNANCE_SLUG, MAINTAINER_DOC_SLUGS, specDocExtension } from "@/lib/spec-nav-slugs.ts";
 

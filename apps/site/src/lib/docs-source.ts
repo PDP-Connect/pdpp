@@ -5,7 +5,7 @@ import type * as PageTree from "fumadocs-core/page-tree";
 import { type InferPageType, loader } from "fumadocs-core/source";
 import { lucideIconsPlugin } from "fumadocs-core/source/plugins/lucide-icons";
 import { docs } from "../../.source/dynamic.ts";
-import { docsRoute, GUIDANCE_SLUGS, PRIMARY_SLUGS } from "./spec-nav-slugs.ts";
+import { docsRoute, GUIDANCE_SLUGS } from "./spec-nav-slugs.ts";
 
 export const source = loader({
   baseUrl: docsRoute,

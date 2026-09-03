@@ -22,6 +22,7 @@ import {
   type AsAuthorizationServerMetadataDependencies,
   executeAsAuthorizationServerMetadata,
 } from "@pdpp/reference-operations-sandbox/as-authorization-server-metadata";
+import { createPdppCliCommand, getPdppCliPackageInfo } from "@pdpp/reference-operations-sandbox/package-info";
 import type { RefDatasetSummaryDependencies } from "@pdpp/reference-operations-sandbox/ref-dataset-summary";
 import type {
   RefSpineCorrelationFilters,
@@ -80,7 +81,6 @@ import type {
   StreamsListDependencies,
   StreamsListSourceDescriptor,
 } from "@pdpp/reference-operations-sandbox/rs-streams-list";
-import { createPdppCliCommand, getPdppCliPackageInfo } from "@pdpp/reference-operations-sandbox/package-info";
 import { buildLiveStreamMetadata } from "./builders.ts";
 import { DEMO_CONNECTORS, DEMO_GRANTS, DEMO_RECORDS, DEMO_RUNS, DEMO_STREAMS, DEMO_TRACES } from "./dataset.ts";
 import type { DemoGrantDef, DemoRecord, DemoRunDef, DemoTimelineEvent, DemoTraceDef } from "./types.ts";
