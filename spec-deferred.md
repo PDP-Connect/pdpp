@@ -195,9 +195,23 @@ _Newly deferred (2026-09-02; raised in the 2026-08-19 working session)._
 
 **Why it is open:** The protocol has no representation of who the client is as a legal entity, and no event by which a change of control could reach an issued grant. One suggestion from the session was to require clients to declare ownership type. Whether that belongs in the protocol, in the conformance programme, or nowhere is undecided, as is whether a change of control should force revocation, force re-consent, or merely be disclosed.
 
-**Related:** ISO MyTerms was raised in the same discussion as prior art for owner-specified terms under which a first party holds data. It has not been evaluated for fit, and whether owner-specified terms belong in Core, in a companion RFC with the authorization server holding templates, or outside PDPP entirely is itself open.
+**Related:** MyTerms was raised in the same discussion as prior art for owner-specified terms under which a first party holds data. It is IEEE P7012, published as IEEE 7012-2025 "Standard for Machine Readable Personal Privacy Terms"; earlier notes in this repository called it "ISO MyTerms," which is wrong. Whether owner-specified terms belong in Core, in a companion RFC with the authorization server holding templates, or outside PDPP entirely is still open. See [MyTerms (IEEE P7012) compatibility](#myterms-ieee-p7012-compatibility) for how a PDPP grant relates to that model.
 
 **v0.1 posture:** Out of scope. `client_claims` carries client-authored, explicitly non-enforceable statements about a specific request; it is not an ownership record and must not be read as one.
+
+### MyTerms (IEEE P7012) compatibility
+
+_Newly deferred (2026-09-03); written in response to the question of whether PDPP risks drifting from MyTerms._
+
+**Description:** IEEE 7012-2025 "Standard for Machine Readable Personal Privacy Terms," known as MyTerms, inverts the usual direction of online agreement: the individual is the first party and proffers privacy terms, and the service provider is the second party that accepts one of them. The terms are not invented per relationship. They are chosen from a roster kept by a neutral non-business entity, which today is Customer Commons, and each rostered term is a versioned dereferenceable URL such as `https://customercommons.org/agreements/p2b1/0-9/`. Agreements are recorded and kept by both sides.
+
+**How a PDPP grant relates:** A PDPP grant is already the recorded agreement on the owner's side. It is immutable, it names the second party (`client`), and it carries the recipient-side commitments as structured fields rather than prose: `purpose_code` and `purpose_description` are what the data may be used for, `retention` is how long it may be kept and what happens at expiry, and `access_mode` bounds whether the access is one-shot or ongoing. `client_claims` is not part of this analogy: it is explicitly client-authored and non-enforceable, which is the one-sided privacy-policy posture MyTerms exists to displace, so it must not be read as an agreed term. Two structural gaps remain. MyTerms expects both sides to hold a record, and PDPP defines only the authorization server's copy. MyTerms allows the second party to counter-offer before agreement, and a PDPP grant is issued after consent rather than negotiated within the protocol.
+
+**What would create incompatibility:** Inventing a PDPP-specific vocabulary for terms that a roster already names. If PDPP grows a closed enum or a bespoke free-text scheme for purpose and retention semantics, then two grants expressing the same real-world terms become machine-incomparable across deployments, which is the exact failure the roster model exists to prevent. PDPP does not have that problem today because `purpose_code` is an absolute URI the AS MUST accept without recognizing it, so an external identifier is already expressible.
+
+**Positive path:** A grant MAY carry a rostered MyTerms agreement identifier as its `purpose_code`, or alongside it, without any schema change, because a rostered term is already a dereferenceable URI and `purpose_code` already accepts one. The W3C Data Privacy Vocabulary community group publishes an "Extension for IEEE P7012" that models the same objects PDPP would need to bridge — `Agreement`, `AgreementRegistry`, and `AgreementInteractionRecord` — and recommends ODRL for expressing term content, so a mapping has somewhere to land rather than needing to be invented. The cheap hedge is therefore to reference rostered terms rather than mint our own vocabulary, and to keep `purpose_code` open to unrecognized URIs.
+
+**v0.1 posture:** Informative. No Core change. Nothing in v0.1 forecloses a later `terms_ref` field or a MyTerms profile, and the roster is currently too small and the second-party record format too unsettled to depend on.
 
 ### Bulk export as a distinct access path
 
