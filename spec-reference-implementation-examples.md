@@ -1,7 +1,7 @@
 # PDPP Reference Implementation Examples
 
 Status: Illustrative
-Date: 2026-08-29
+Date: 2026-09-02
 
 These examples are illustrative sequences built from the current draft. They are not the normative source for wire shapes or role responsibilities. When an example and the live draft differ, the normative documents win:
 
