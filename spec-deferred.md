@@ -1,7 +1,7 @@
 # Spec v2: Deferred Concerns
 
 Status: Informative
-Date: 2026-09-02 (revised)
+Date: 2026-09-03 (revised)
 
 Issues identified during design and review that are intentionally out of scope for v0.1. Each item is named precisely so it can be referenced from the core spec and tracked for future versions.
 

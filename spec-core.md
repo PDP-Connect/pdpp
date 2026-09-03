@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-02
+Date: 2026-09-03
 
 ---
 
