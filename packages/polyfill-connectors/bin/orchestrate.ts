@@ -7,6 +7,22 @@
  * requested connector's manifest, issues an owner token, runs the connector,
  * and prints a verification summary (records per stream landed in the RS).
  *
+ * BROKEN as of the reference implementation's move to PDP-Connect/data-connect
+ * (Move B): "the personal server (embedded)" above means this tool spawns
+ * reference-implementation/runtime/index.ts, postgres-storage.ts, and
+ * stores/connector-instance-store.ts directly from a local checkout of that
+ * directory, which no longer exists in this repo. The `run` command below
+ * will throw a real, immediate module-not-found error the first time it
+ * tries to load any of those three modules — it is not silently broken,
+ * it fails loudly, but it cannot currently succeed. Fixing this for real
+ * needs either a network-facing rewrite (talk to a data-connect-hosted
+ * server over HTTP instead of spawning one in-process) or a published
+ * package data-connect exposes these three modules through — both are
+ * real design decisions, not made here. Use `bin/connector-dev.ts` for
+ * local connector development in the meantime (see that file's own doc
+ * comment for why it was already the recommended day-to-day tool before
+ * this broke).
+ *
  * Usage:
  *   node bin/orchestrate.js run <connector>    (e.g. "ynab")
  *   node bin/orchestrate.js query <stream>     (requires already-running server)
@@ -15,12 +31,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { config as dotenvConfig } from "dotenv";
-import { isPostgresStorageBackend } from "../../../reference-implementation/server/postgres-storage.ts";
-import {
-  admitOwnerRunConnection,
-  createPostgresConnectorInstanceStore,
-  createSqliteConnectorInstanceStore,
-} from "../../../reference-implementation/server/stores/connector-instance-store.ts";
 import { handleInteraction } from "../src/interaction-handler.ts";
 import {
   DEFAULT_AS_URL,
@@ -88,6 +98,34 @@ interface RuntimeModule {
   runConnector: (opts: RunConnectorOpts) => Promise<RunResult>;
 }
 
+interface ConnectorInstanceNamespace {
+  connectorId: string;
+  connectorInstanceId: string;
+  ownerSubjectId: string;
+}
+
+// reference-implementation/server/postgres-storage.ts and
+// stores/connector-instance-store.ts moved to PDP-Connect/data-connect
+// (Move B); this repo can no longer statically import them. Loaded
+// dynamically (like `runtime` above) so `tsc` doesn't need the module to
+// exist locally — this throws a clear, real error at the `import()` call
+// below rather than lying about a capability this tool no longer has. This
+// tool's embedded-server flow is broken until it's ported to talk to a
+// data-connect-hosted server instead of a local checkout; use
+// `bin/connector-dev.ts` for local connector development in the meantime
+// (see that file's own doc comment).
+interface StorageModule {
+  admitOwnerRunConnection: (args: {
+    connectorId: string;
+    connectorInstanceId: string | null;
+    connectorInstanceStore: unknown;
+    ownerSubjectId: string;
+  }) => Promise<ConnectorInstanceNamespace>;
+  createPostgresConnectorInstanceStore: () => unknown;
+  createSqliteConnectorInstanceStore: () => unknown;
+  isPostgresStorageBackend: () => boolean;
+}
+
 interface StreamManifest {
   name: string;
 }
@@ -116,6 +154,14 @@ async function cmdRun(name: string): Promise<{ ok: boolean; result: RunResult }>
     console.error("[orchestrate] loading prior sync state...");
     const runtime = (await import(pathToFileURL(join(REFERENCE_IMPL_DIR, "runtime/index.ts")).href)) as RuntimeModule;
     const { runConnector, loadSyncState } = runtime;
+    const { isPostgresStorageBackend } = (await import(
+      pathToFileURL(join(REFERENCE_IMPL_DIR, "server/postgres-storage.ts")).href
+    )) as Pick<StorageModule, "isPostgresStorageBackend">;
+    const { admitOwnerRunConnection, createPostgresConnectorInstanceStore, createSqliteConnectorInstanceStore } =
+      (await import(pathToFileURL(join(REFERENCE_IMPL_DIR, "server/stores/connector-instance-store.ts")).href)) as Omit<
+        StorageModule,
+        "isPostgresStorageBackend"
+      >;
     const connectorInstanceStore = isPostgresStorageBackend()
       ? createPostgresConnectorInstanceStore()
       : createSqliteConnectorInstanceStore();

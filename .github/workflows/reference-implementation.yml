@@ -1,25 +1,21 @@
 name: reference-implementation
 
-# Path-scoped CI for the reference AS/RS, runtime, CLI, and contract boundary.
-# This catches regressions before release/docker-image workflows and keeps the
-# load-bearing reference implementation under the same review discipline as the
-# connector and package workspaces.
+# Move B (2026-09-02): reference-implementation/, apps/console/, and three
+# companion packages exclusive to that server/dashboard (cli, mcp-server,
+# read-core) moved to their canonical home, PDP-Connect/data-connect
+# (data-connect#42, #43, #44, #46), and were deleted from this repo in the
+# same PR that added this file's replacement content. This workflow used to
+# run the full reference-implementation/console CI suite; now it exists only
+# to fail loudly if any of those paths reappear here, preventing a second,
+# drifting copy from creeping back in.
 #
-# The apps/console/** trigger is here because two integration tests in the
-# reference suite (composed-origin.test.ts, dashboard-proxy-redirect.test.ts)
-# build apps/console and spawn its standalone server to exercise the
-# dashboard/BFF/proxy. The apps/site/** trigger is here because the RS/dataset
-# import-boundary tests read the public sandbox source from apps/site/src/app/
-# sandbox/**. Both were retargeted from the legacy apps/web app by the
-# split-public-site-and-operator-console migration; the triggers moved with them.
+# packages/display, packages/pdpp-brand, packages/pdpp-brand-react,
+# packages/operator-ui, and packages/list-envelope are deliberately NOT in
+# this guard's path list -- they were kept in this repo (apps/site imports
+# them directly), so their reappearance is not an error.
 
 on:
-  # PR-only (no push-to-main trigger). This is now a REQUIRED check on the main
-  # ruleset, so it must emit a terminal status on every PR. The path decision
-  # lives inside the job instead of in `pull_request.paths`; otherwise docs-only
-  # PRs can be blocked by a required context that never appears.
   pull_request: {}
-  # Supports GitHub merge queue without changing the required check context.
   merge_group: {}
   workflow_dispatch: {}
 
@@ -27,24 +23,9 @@ concurrency:
   group: reference-implementation-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
-  write-freeze-guard:
-    # Move B cutover: the reference implementation now begins in
-    # PDP-Connect/data-connect (PR data-connect#42). This repo's copy keeps
-    # running the product until a follow-up PR deletes it, but is frozen for
-    # direct edits under reference-implementation/. Fails a PR that touches
-    # that path unless it carries the
-    # `reference-implementation-write-freeze-override` label.
-    # Mirrors packages/polyfill-connectors' write-freeze-guard job
-    # (.github/workflows/polyfill-connectors.yml) exactly: same
-    # override-label mechanism, same fail-red behavior. Reporting-only for
-    # now — not yet added to the main ruleset's required checks — until the
-    # owner flips that switch once this has a short proving period.
-    name: write-freeze guard
-    if: github.event_name == 'pull_request'
+  no-reappearance-guard:
+    name: reference implementation must not reappear here
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -53,351 +34,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check for frozen-path reference-implementation edits
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          HAS_OVERRIDE: ${{ contains(github.event.pull_request.labels.*.name, 'reference-implementation-write-freeze-override') }}
+      - name: Fail if any moved path exists in the working tree
         run: |
           set -euo pipefail
-          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'reference-implementation/**')
-          if [ -z "$CHANGED" ]; then
-            echo "No frozen reference-implementation paths touched."
-            exit 0
-          fi
-          echo "Frozen reference-implementation paths touched:"
-          echo "$CHANGED"
-          if [ "$HAS_OVERRIDE" = "true" ]; then
-            echo "reference-implementation-write-freeze-override label present — allowing."
-            exit 0
-          fi
-          echo ""
-          echo "reference-implementation/ is frozen for direct edits."
-          echo "Reference implementation work now begins in PDP-Connect/data-connect."
-          echo "Add the 'reference-implementation-write-freeze-override' label if this PR is an intentional exception."
-          exit 1
-
-  classify:
-    name: classify reference-impacting changes
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      reference_impacting: ${{ steps.changes.outputs.reference_impacting }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Classify reference-impacting changes
-        id: changes
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "${BASE_SHA}" ]]; then
-            echo "reference_impacting=true" >> "$GITHUB_OUTPUT"
-            echo "workflow_dispatch has no PR base; running full reference suite."
-            exit 0
-          fi
-
-          git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" > "$RUNNER_TEMP/reference-changed-files.txt"
-
-          reference_impacting=false
-          while IFS= read -r path; do
-            case "$path" in
-              .github/workflows/reference-implementation.yml|\
-              package.json|\
-              pnpm-lock.yaml|\
-              pnpm-workspace.yaml|\
-              apps/console/*|apps/console/**|\
-              apps/site/*|apps/site/**|\
-              packages/mcp-server/*|packages/mcp-server/**|\
-              packages/read-core/*|packages/read-core/**|\
-              packages/polyfill-connectors/*|packages/polyfill-connectors/**|\
-              packages/reference-contract/*|packages/reference-contract/**|\
-              openspec/changes/complete-mcp-slvp-surface/*|openspec/changes/complete-mcp-slvp-surface/**|\
-              reference-implementation/*|reference-implementation/**|\
-              scripts/check-console-health-surfaces.ts|\
-              scripts/check-console-health-surfaces.test.ts|\
-              scripts/check-owner-journey-acceptance.ts|\
-              scripts/check-owner-journey-acceptance.test.ts|\
-              scripts/owner-journey-acceptance/*|scripts/owner-journey-acceptance/**|\
-              scripts/stream-evidence-inventory.ts|\
-              scripts/stream-health-audit/*|scripts/stream-health-audit/**|\
-              scripts/check-stream-health-audit.ts|\
-              docs/reference/stream-evidence-inventory.md|\
-              .releaserc.yaml|\
-              scripts/check-package-release-policy.ts|\
-              scripts/check-package-release-policy.test.ts|\
-              packages/*/package.json)
-                reference_impacting=true
-                break
-                ;;
-            esac
-          done < "$RUNNER_TEMP/reference-changed-files.txt"
-
-          echo "reference_impacting=${reference_impacting}" >> "$GITHUB_OUTPUT"
-          if [[ "${reference_impacting}" == "true" ]]; then
-            echo "Reference-impacting changes detected; running full reference suite."
-          else
-            echo "No reference-impacting changes detected; required context will pass without heavy reference tests."
-          fi
-
-  drift-check:
-    name: check generated artifacts
-    needs: classify
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-
-      - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: "pnpm"
-
-      # --ignore-scripts is deliberate here: a normal `pnpm install` runs
-      # every workspace package's `prepare` script, and packages/cli's
-      # `prepare` runs `pnpm build`, which REGENERATES packages/cli/src/ref/
-      # list-envelope.ts from packages/list-envelope/src/index.ts before any
-      # later drift check would ever see the tracked file's real committed
-      # state — checking after a scripted install would silently normalize
-      # (and thus never catch) exactly the drift this check exists to find.
-      # node_modules from this pass is sufficient for
-      # generated-artifacts:check (tsx + tsc, no package builds needed).
-      - name: Install dependencies (no lifecycle scripts, for drift check)
-        env:
-          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-        run: pnpm install --frozen-lockfile --ignore-scripts
-
-      # Unconditional (not gated by reference_impacting): this check covers
-      # generated artifacts outside that classifier's path list (the
-      # design-system docs scripts, packages/cli's generated list-envelope
-      # copy) and is cheap enough to always run on every PR rather than risk
-      # a drifted tracked file slipping through on a PR the classifier skips.
-      - name: Check generated artifacts are not drifted (before any build/prepack normalizes them)
-        run: pnpm generated-artifacts:check
-
-  typecheck-reference:
-    name: typecheck reference implementation
-    needs: classify
-    if: needs.classify.outputs.reference_impacting == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-
-      - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: "pnpm"
-
-      - name: Install dependencies
-        env:
-          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-        run: pnpm install --frozen-lockfile
-
-      - name: Typecheck reference implementation
-        run: pnpm --dir reference-implementation run typecheck
-
-  typecheck-console:
-    name: typecheck console (RI transitive sources included)
-    needs: classify
-    if: needs.classify.outputs.reference_impacting == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-
-      - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: "pnpm"
-
-      - name: Install dependencies
-        env:
-          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-        run: pnpm install --frozen-lockfile
-
-      # reference-implementation's own typecheck (typecheck-reference job) checks
-      # it under ITS OWN tsconfig (target ES2023). apps/console consumes RI as TS
-      # source via transpilePackages, so Next's build type-checks any RI file
-      # reachable from console under console's tsconfig (target ES2017) in
-      # a single tsc program — a stricter, different check that RI's own
-      # typecheck cannot substitute for (e.g. TS2737 on a BigInt literal
-      # that is valid under RI's own target but not console's).
-      - name: Typecheck console (RI transitive sources included)
-        run: pnpm --dir apps/console run types:check
-
-  test-console:
-    name: test console full suite
-    needs: classify
-    if: needs.classify.outputs.reference_impacting == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-
-      - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: "pnpm"
-
-      - name: Install dependencies
-        env:
-          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-        run: pnpm install --frozen-lockfile
-
-      - name: Test console full suite
-        run: pnpm --dir apps/console run test
-
-  owner-journey-and-stream-audit:
-    name: owner journey + stream audit checks
-    needs: classify
-    if: needs.classify.outputs.reference_impacting == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-
-      - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: "pnpm"
-
-      - name: Install dependencies
-        env:
-          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-        run: pnpm install --frozen-lockfile
-
-      - name: Test owner journey acceptance harness
-        run: pnpm owner-journey:acceptance:test
-
-      - name: Check stream evidence inventory is current
-        run: pnpm stream-evidence:check
-
-      - name: Test stream health audit
-        run: pnpm test:scratch -- node --test --import tsx scripts/stream-health-audit/authority.test.ts
-
-      - name: Test console health surface gate
-        run: pnpm console:health-surface-gate:test
-
-  test-reference-implementation:
-    name: test reference implementation
-    needs: classify
-    if: needs.classify.outputs.reference_impacting == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-
-      - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: "pnpm"
-
-      - name: Install dependencies
-        env:
-          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-        run: pnpm install --frozen-lockfile
-
-      - name: Test reference implementation
-        env:
-          PDPP_TEST_CONCURRENCY: "2"
-          PDPP_TEST_FILE_HARD_TIMEOUT_MS: "900000"
-          PDPP_TEST_FILE_TIMEOUT_MS: "120000"
-          PDPP_TEST_PROFILE: "memory-default"
-        run: pnpm --dir reference-implementation run test
-
-  verify:
-    name: typecheck + full test suite
-    needs:
-      - classify
-      - drift-check
-      - typecheck-reference
-      - typecheck-console
-      - test-console
-      - owner-journey-and-stream-audit
-      - test-reference-implementation
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Aggregate required sub-job results
-        run: |
-          set -euo pipefail
-
-          fail=0
-          for job_result in \
-            "drift-check:${{ needs.drift-check.result }}" \
-            "typecheck-reference:${{ needs.typecheck-reference.result }}" \
-            "typecheck-console:${{ needs.typecheck-console.result }}" \
-            "test-console:${{ needs.test-console.result }}" \
-            "owner-journey-and-stream-audit:${{ needs.owner-journey-and-stream-audit.result }}" \
-            "test-reference-implementation:${{ needs.test-reference-implementation.result }}"
+          FOUND=0
+          for p in \
+            reference-implementation \
+            apps/console \
+            packages/cli \
+            packages/mcp-server \
+            packages/read-core
           do
-            name="${job_result%%:*}"
-            result="${job_result##*:}"
-            if [[ "${result}" != "success" && "${result}" != "skipped" ]]; then
-              echo "::error::${name} reported ${result}"
-              fail=1
+            if [ -e "$p" ]; then
+              echo "::error::$p has reappeared -- this code's canonical home is PDP-Connect/data-connect. Do not re-add it here."
+              FOUND=1
             fi
           done
-
-          if [[ "${{ needs.classify.result }}" != "success" ]]; then
-            echo "::error::classify reported ${{ needs.classify.result }}"
-            fail=1
-          fi
-
-          exit "${fail}"
+          exit "$FOUND"

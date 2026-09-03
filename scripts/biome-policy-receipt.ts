@@ -74,9 +74,6 @@ function trackedFiles(): string[] {
 }
 
 function ownerFor(path: string): string {
-  if (path.startsWith("reference-implementation/")) {
-    return "PDPP reference implementation maintainers";
-  }
   if (path.startsWith("apps/")) {
     return "PDPP app maintainers";
   }
@@ -90,9 +87,6 @@ function ownerFor(path: string): string {
 }
 
 function probeFor(path: string): string {
-  if (path.startsWith("reference-implementation/")) {
-    return "pnpm --dir reference-implementation run typecheck && pnpm test-accounting:check";
-  }
   if (path.startsWith("docs/design-system/")) {
     return "pnpm generated-artifacts:check && pnpm exec biome check docs/design-system/ink-carbon/project";
   }

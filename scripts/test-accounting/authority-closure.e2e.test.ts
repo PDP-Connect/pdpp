@@ -27,7 +27,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -37,6 +37,7 @@ import { type Manifest, planFor, readManifest, selectedRuns, trackedFiles } from
 const MULTI_GLOB_PARTIAL_RENAME_PATTERN = /unaccounted executable tests/;
 const EMPTY_INCLUDE_LIST_PATTERN = /include list matches no tracked file/;
 const HELPER_OR_FIXTURE_MATCH_PATTERN = /non-executable-classified file/;
+const RECEIPT_BINDING_FIXTURE_DID_NOT_PASS_PATTERN = /receipt-binding-fixture\/default did not pass/;
 
 function repoRoot(): string {
   return execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
@@ -88,34 +89,36 @@ function writeManifestFile(root: string, manifestValue: Manifest): void {
   writeFileSync(join(root, "test-accounting.manifest.json"), `${JSON.stringify(manifestValue, null, 2)}\n`);
 }
 
-test("e2e: a real mcp-server .test.ts renamed to .test.js (N->N-1, sibling glob still matches) fails closed on the runAuthority path", async () => {
+test("e2e: a real reference-contract .test.ts renamed to .test.js (N->N-1, sibling glob still matches) fails closed on the runAuthority path", async () => {
   await withRealWorktree(async (root) => {
-    const before = trackedFiles(root).filter((path) => path.startsWith("packages/mcp-server/test/"));
-    assert.equal(before.length, 23, "expected the real mcp-server suite to start at 23 tracked files");
+    const before = trackedFiles(root).filter((path) => path.startsWith("packages/reference-contract/test/"));
+    assert.equal(before.length, 15, "expected the real reference-contract suite to start at 15 tracked files");
 
-    execFileSync("git", ["mv", "packages/mcp-server/test/bin.test.ts", "packages/mcp-server/test/bin.test.js"], {
-      cwd: root,
-    });
-    commitAll(root, "fixture: rename one mcp-server test off its executable suffix");
+    execFileSync(
+      "git",
+      ["mv", "packages/reference-contract/test/builders.test.ts", "packages/reference-contract/test/builders.test.js"],
+      { cwd: root }
+    );
+    commitAll(root, "fixture: rename one reference-contract test off its executable suffix");
 
     const files = trackedFiles(root);
     assert.ok(
-      files.includes("packages/mcp-server/test/bin.test.js"),
+      files.includes("packages/reference-contract/test/builders.test.js"),
       "the renamed path must be a real tracked file after the commit"
     );
 
     // Lower-level confirmation of the exact pre-wiring gap R1 found: with the
     // real mutated manifest/files, `selectedRuns`/`planFor` alone — what
-    // `runAuthority` called BEFORE this fix — silently drop the plan from 23
-    // to 22 files and do not throw. This is not the assertion under test; it
+    // `runAuthority` called BEFORE this fix — silently drop the plan from 15
+    // to 14 files and do not throw. This is not the assertion under test; it
     // documents why a bare `selectedRuns` call is not a sufficient gate.
     const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
-    const silentPlan = planFor(manifestValue, files, ["mcp-server"]);
-    assert.equal(silentPlan.plans.get("mcp-server")?.length, 22);
-    assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["mcp-server"] }));
+    const silentPlan = planFor(manifestValue, files, ["reference-contract"]);
+    assert.equal(silentPlan.plans.get("reference-contract")?.length, 14);
+    assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["reference-contract"] }));
 
     // The actual assertion: the real authority entry point now fails closed.
-    await assert.rejects(runAuthority({ root, suites: ["mcp-server"] }), MULTI_GLOB_PARTIAL_RENAME_PATTERN);
+    await assert.rejects(runAuthority({ root, suites: ["reference-contract"] }), MULTI_GLOB_PARTIAL_RENAME_PATTERN);
   });
 });
 
@@ -135,24 +138,73 @@ test("e2e: a suite's entire include list emptied fails closed on the runAuthorit
 test("e2e: an include-matched file that classifies helper-or-fixture fails closed on the runAuthority path", async () => {
   await withRealWorktree(async (root) => {
     const manifestValue = readManifestFile(root);
-    const suite = manifestValue.suites.find((entry) => entry.id === "read-core");
-    assert.ok(suite, "read-core must exist in the real manifest");
+    const suite = manifestValue.suites.find((entry) => entry.id === "reference-contract");
+    assert.ok(suite, "reference-contract must exist in the real manifest");
     // Reproduces the exact real defect shape mcp-server's smoke-stdio.ts
-    // originally hit: a probe file under a test/ directory with no
-    // .test./.spec. suffix, matched by a widened include glob.
-    writeFileSync(join(root, "packages/read-core/test/smoke-probe.ts"), "export const probe = true;\n");
-    suite.include = [...suite.include, "packages/read-core/test/smoke-probe.ts"];
+    // originally hit (before that package moved to data-connect): a probe
+    // file under a test/ directory with no .test./.spec. suffix, matched by
+    // a widened include glob.
+    writeFileSync(join(root, "packages/reference-contract/test/smoke-probe.ts"), "export const probe = true;\n");
+    suite.include = [...suite.include, "packages/reference-contract/test/smoke-probe.ts"];
     writeManifestFile(root, manifestValue);
-    commitAll(root, "fixture: widen read-core's include glob onto a helper-or-fixture file");
+    commitAll(root, "fixture: widen reference-contract's include glob onto a helper-or-fixture file");
 
     const files = trackedFiles(root);
-    assert.ok(files.includes("packages/read-core/test/smoke-probe.ts"));
+    assert.ok(files.includes("packages/reference-contract/test/smoke-probe.ts"));
 
-    await assert.rejects(runAuthority({ root, suites: ["read-core"] }), HELPER_OR_FIXTURE_MATCH_PATTERN);
+    await assert.rejects(runAuthority({ root, suites: ["reference-contract"] }), HELPER_OR_FIXTURE_MATCH_PATTERN);
   });
 });
 
-test("e2e: reverting the closure-check wiring makes the mcp-server rename mutation pass silently again (both-ways proof)", async () => {
+test("e2e: a suite that exits 0 but emits no structured node-test events no longer produces a receipt/transcript exit_code split", async () => {
+  // Reproduces the exact defect the 0902 gate-speed report flagged:
+  // `polyfill-connectors transcript does not bind the receipt`, identical on
+  // both a cap=2 and cap=8 pristine origin/main run of the required-all leg
+  // — a genuine pre-existing bug in the accounting harness, not a
+  // concurrency artifact. Root cause: `runAuthority` wrote the transcript's
+  // `end` event from `observed.exit_code` BEFORE `observedCounts` ran its
+  // protocol-error coercion (`observed.exit_code ||= 1`), so a leaf process
+  // that exits 0 but produces output `structuredNodeSummary` cannot parse
+  // (e.g. no `PDPP_TEST_ACCOUNTING_EVENT` lines at all) left the transcript
+  // recording exit_code:0 while the receipt built after the coercion
+  // recorded exit_code:1 — an unrecoverable split once the transcript is
+  // digest-verified and closed. This fixture reproduces that exact shape
+  // without any privileged sandbox capability: a `node -e "process.exit(0)"`
+  // leaf that always exits 0 and always emits zero structured events.
+  await withRealWorktree(async (root) => {
+    const manifestValue = readManifestFile(root);
+    manifestValue.suites.push({
+      id: "receipt-binding-fixture",
+      cwd: ".",
+      loader: "node-test",
+      authority_argument: null,
+      execution: "direct",
+      profiles: [{ id: "default", required: true, skip_reasons: {} }],
+      command: ["node", "-e", "process.exit(0)"],
+      include: ["scripts/test-accounting/fixtures/receipt-binding-fixture/*.test.ts"],
+    });
+    writeManifestFile(root, manifestValue);
+    mkdirSync(join(root, "scripts/test-accounting/fixtures/receipt-binding-fixture"), { recursive: true });
+    writeFileSync(
+      join(root, "scripts/test-accounting/fixtures/receipt-binding-fixture/noop.test.ts"),
+      "// fixture: never actually executed by node-test; the manifest command exits 0 without running it.\n"
+    );
+    commitAll(root, "fixture: add a suite whose leaf exits 0 with no structured node-test events");
+
+    // Before the fix, this rejected with `receipt-binding-fixture/default
+    // transcript does not bind the receipt` because the transcript recorded
+    // exit_code:0 while the receipt (built after the protocol-error
+    // coercion) recorded exit_code:1. After the fix, both agree, so
+    // `verifyTranscript` passes and the run instead fails on the real,
+    // downstream problem — the coerced exit_code is genuinely non-zero.
+    await assert.rejects(
+      runAuthority({ root, suites: ["receipt-binding-fixture"] }),
+      RECEIPT_BINDING_FIXTURE_DID_NOT_PASS_PATTERN
+    );
+  });
+});
+
+test("e2e: reverting the closure-check wiring makes the reference-contract rename mutation pass silently again (both-ways proof)", async () => {
   // This test does not touch authority.ts's wiring itself (that would defeat
   // the point of an independent regression test). Instead it proves the
   // CONTRAPOSITIVE directly against the real data: the exact call sequence
@@ -163,18 +215,20 @@ test("e2e: reverting the closure-check wiring makes the mcp-server rename mutati
   // `runAuthority` export), this shows the assertion is load-bearing on
   // item 1's wiring specifically, not on some other unrelated guard.
   await withRealWorktree(async (root) => {
-    execFileSync("git", ["mv", "packages/mcp-server/test/bin.test.ts", "packages/mcp-server/test/bin.test.js"], {
-      cwd: root,
-    });
-    commitAll(root, "fixture: rename one mcp-server test off its executable suffix");
+    execFileSync(
+      "git",
+      ["mv", "packages/reference-contract/test/builders.test.ts", "packages/reference-contract/test/builders.test.js"],
+      { cwd: root }
+    );
+    commitAll(root, "fixture: rename one reference-contract test off its executable suffix");
 
     const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
     const files = trackedFiles(root);
 
     // Pre-fix behavior (no closure check): selection alone silently succeeds.
-    assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["mcp-server"] }));
+    assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["reference-contract"] }));
 
     // Post-fix behavior (this lane's change): the real runAuthority throws.
-    await assert.rejects(runAuthority({ root, suites: ["mcp-server"] }), MULTI_GLOB_PARTIAL_RENAME_PATTERN);
+    await assert.rejects(runAuthority({ root, suites: ["reference-contract"] }), MULTI_GLOB_PARTIAL_RENAME_PATTERN);
   });
 });

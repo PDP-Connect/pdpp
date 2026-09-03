@@ -340,7 +340,6 @@ function isRootFrontDoor(name: string, command: string): boolean {
     return false;
   }
   if (
-    name === "reference-implementation:test" ||
     name.endsWith(":test") ||
     (name.startsWith("test-accounting:") && name !== "test-accounting:inventory") ||
     isRawTestCommand(command)
@@ -354,14 +353,6 @@ function isRootFrontDoor(name: string, command: string): boolean {
 
 function isOwnerRouted(command: string): boolean {
   return hasOwnerInvocation(command) && !hasUnroutedRawTest(command);
-}
-
-function isReviewedRootDelegate(path: string, name: string, command: string): boolean {
-  return (
-    path === PACKAGE_NAME &&
-    name === "reference-implementation:test" &&
-    command === "pnpm --dir reference-implementation run test"
-  );
 }
 
 async function packageFindings(root: string, files: readonly string[]): Promise<RatchetFinding[]> {
@@ -378,8 +369,7 @@ async function packageFindings(root: string, files: readonly string[]): Promise<
             const frontDoor = isRoot ? isRootFrontDoor(name, command) : isPackageFrontDoor(name, command);
             const verifyDelegatesToTest =
               !isRoot && (name === "verify" || name.startsWith("verify:")) && referencesTestScript(command);
-            const allowed =
-              isOwnerRouted(command) || isReviewedRootDelegate(path, name, command) || verifyDelegatesToTest;
+            const allowed = isOwnerRouted(command) || verifyDelegatesToTest;
             return frontDoor && !allowed ? [{ path, reason: `package script ${name} bypasses the scratch owner` }] : [];
           });
         })
