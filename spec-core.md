@@ -166,42 +166,15 @@ flowchart TB
     Source -.->|collected by| Runtime
 ```
 
-**Core defines no ingest path.** Core specifies the authorization server, the
-resource server, and what passes between them and a client. It does not specify
-how records reach the resource server, and conformance to Core does not depend
-on any particular answer. Examples A and B are illustrations, not a
-classification: a resource server holding data placed there by regulatory
-export, manual import, a provider's own write path, or a mechanism not yet
-described is equally within Core. The [PDPP Collection Profile](spec-collection-profile)
-describes one such mechanism, connector collection, and describes it for
-builders rather than as a conformance requirement.
+**Core defines no ingest path.** Core specifies the authorization server, the resource server, and what passes between them and a client. It does not specify how records reach the resource server, and conformance to Core does not depend on any particular answer. Examples A and B are illustrations, not a classification: a resource server holding data placed there by regulatory export, manual import, a provider's own write path, or a mechanism not yet described is equally within Core. The [PDPP Collection Profile](spec-collection-profile) describes one such mechanism, connector collection, and describes it for builders rather than as a conformance requirement.
 
-**On-behalf-of access is two ordinary grants, not one delegated grant.** At the
-upstream platform, the owner authorizes the personal server to read the
-owner's data. At the personal server, the owner separately authorizes a
-downstream client to read owner-held data. These are independent grants, each
-issued and revocable by the owner. A personal server MAY disclose owner-held
-data under the fresh downstream grant; it does not pass the platform grant or a
-downstream PDPP token to the other relationship.
+**On-behalf-of access is two ordinary grants, not one delegated grant.** At the upstream platform, the owner authorizes the personal server to read the owner's data. At the personal server, the owner separately authorizes a downstream client to read owner-held data. These are independent grants, each issued and revocable by the owner. A personal server MAY disclose owner-held data under the fresh downstream grant; it does not pass the platform grant or a downstream PDPP token to the other relationship.
 
-PDPP therefore defines no delegated-grant, sub-grant, or grant-chaining
-construct, and none is needed to build this. The same shape is already how
-account aggregation works in deployed systems: an open banking aggregator holds
-the user's consent at each bank and its own consent from the user, rather than
-subdividing one authorization. Where a binding needs to exchange one credential
-for another across the two relationships, OAuth Token Exchange (RFC 8693) is the
-existing mechanism, and it is a concern of the binding rather than of Core.
+PDPP therefore defines no delegated-grant, sub-grant, or grant-chaining construct, and none is needed to build this. The same shape is already how account aggregation works in deployed systems: an open banking aggregator holds the user's consent at each bank and its own consent from the user, rather than subdividing one authorization. Where a binding needs to exchange one credential for another across the two relationships, OAuth Token Exchange (RFC 8693) is the existing mechanism, and it is a concern of the binding rather than of Core.
 
-Only live passthrough is bounded by the upstream grant: when the personal server
-does not hold a copy and reads from the platform to fulfill a downstream request,
-it MUST stay within the upstream grant. This limit does not constrain a fresh
-grant for owner-held data. A downstream PDPP token is never forwarded upstream.
+Only live passthrough is bounded by the upstream grant: when the personal server does not hold a copy and reads from the platform to fulfill a downstream request, it MUST stay within the upstream grant. This limit does not constrain a fresh grant for owner-held data. A downstream PDPP token is never forwarded upstream.
 
-A different topology — the owner running their own authorization server in front
-of a platform's data, so that the platform holds the data but the owner's server
-decides who may read it — is not introduced by this specification. It is the
-arrangement UMA describes, it is not the arrangement above, and it is recorded
-as deferred rather than left ambiguous.
+A different topology — the owner running their own authorization server in front of a platform's data, so that the platform holds the data but the owner's server decides who may read it — is not introduced by this specification. It is the arrangement UMA describes, it is not the arrangement above, and it is recorded as deferred rather than left ambiguous.
 
 ### Protocol layering
 
