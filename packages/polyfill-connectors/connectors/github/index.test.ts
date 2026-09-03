@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { after, before, type TestContext, test } from "node:test";
+import { before, type TestContext, test } from "node:test";
 import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
-import { closeDb, getDb, initDb } from "../../../../reference-implementation/server/db.ts";
-import { drainConnectorInstanceIndexWork, ingestRecord } from "../../../../reference-implementation/server/records.ts";
 import { buildPacingStateFields, readPersistedPacingInterval } from "../../src/connector-http-governor.ts";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import {
@@ -49,12 +47,6 @@ before(() => {
       return handle;
     },
   });
-  initDb(":memory:");
-});
-
-after(async () => {
-  await drainConnectorInstanceIndexWork();
-  closeDb();
 });
 
 type GithubFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -349,54 +341,7 @@ function installPrFetch(
   });
 }
 
-const REPLAY_CONNECTOR_ID = "github";
 const REPLAY_STREAM = "pull_requests";
-
-async function ingestPullRequestRecords(
-  connectorInstanceId: string,
-  records: Array<{ stream: string; data: Record<string, unknown> }>
-): Promise<void> {
-  await records.reduce(
-    (previous, { stream, data }) =>
-      previous
-        .then(() =>
-          ingestRecord(
-            {
-              connector_id: REPLAY_CONNECTOR_ID,
-              connector_instance_id: connectorInstanceId,
-            },
-            {
-              data,
-              emitted_at: "2026-08-11T00:00:00.000Z",
-              key: String(data.id),
-              op: "upsert",
-              stream,
-            }
-          )
-        )
-        .then(() => undefined),
-    Promise.resolve()
-  );
-}
-
-function readDurablePullRequestRows(connectorInstanceId: string): Array<{
-  connector_instance_id: string;
-  record_key: string;
-  stream: string;
-}> {
-  return getDb()
-    .prepare(
-      `SELECT connector_instance_id, stream, record_key
-       FROM records
-       WHERE connector_id = ? AND connector_instance_id = ? AND stream = ? AND deleted = 0
-       ORDER BY record_key`
-    )
-    .all(REPLAY_CONNECTOR_ID, connectorInstanceId, REPLAY_STREAM) as Array<{
-    connector_instance_id: string;
-    record_key: string;
-    stream: string;
-  }>;
-}
 
 test("collectPullRequests: detail-fetch failures emit one bounded degradation SKIP_RESULT, records still emitted", async (t: TestContext) => {
   const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b"), prSearchItem(3, "owner/c")];
@@ -1329,7 +1274,6 @@ test("collectPullRequests: shared Retry-After retry recovers a transient search 
 
 for (const failure of ["429", "transport"] as const) {
   test(`collectPullRequests: ${failure} on a later detail retains only the valid prefix and withholds completion`, async (t: TestContext) => {
-    const connectorInstanceId = `cin_github_api_green_replay_${failure}`;
     const items = [prSearchItem(1, "owner/a"), prSearchItem(2, "owner/b")];
     let detailCalls = 0;
     mockFetch(t, (input: string | URL | Request) => {
@@ -1362,16 +1306,6 @@ for (const failure of ["429", "transport"] as const) {
     assert.equal(coverages.length, 0, "fatal later detail failure withholds coverage");
     assert.equal(states.length, 0, "fatal later detail failure withholds STATE");
 
-    // Persist the retained prefix first. The replay uses the same durable
-    // connector instance, so the storage oracle can distinguish an upsert
-    // from a capture that merely echoed one matching id.
-    await ingestPullRequestRecords(connectorInstanceId, records);
-    assert.deepEqual(
-      readDurablePullRequestRows(connectorInstanceId).map((row) => row.record_key),
-      ["1"],
-      "the fatal run's retained prefix is durably present before replay"
-    );
-
     installPrFetch(t, items, new Set());
     const replay = makeCtx(["pull_requests"]);
     await collectPullRequests(replay.ctx);
@@ -1396,17 +1330,6 @@ for (const failure of ["429", "transport"] as const) {
       [{ cursor: { last_updated_at: "2026-05-02T00:00:00Z" }, stream: REPLAY_STREAM }],
       "successful replay emits STATE only after the complete collection"
     );
-
-    await ingestPullRequestRecords(connectorInstanceId, replay.records);
-    const durableRows = readDurablePullRequestRows(connectorInstanceId);
-    assert.deepEqual(
-      durableRows.map((row) => row.record_key),
-      ["1", "2"],
-      "same-instance durable upsert leaves one logical row per replay key"
-    );
-    assert.equal(new Set(durableRows.map((row) => row.record_key)).size, 2);
-    assert.ok(durableRows.every((row) => row.connector_instance_id === connectorInstanceId));
-    assert.ok(durableRows.every((row) => row.stream === REPLAY_STREAM));
   });
 }
 

@@ -2,27 +2,6 @@
   "description": "Tracked JavaScript/MJS boundaries retained by an owning host, generator, or provider-data contract. Canonical authored implementation files are TypeScript.",
   "entries": [
     {
-      "path": "apps/console/next.config.mjs",
-      "owner": "Console application maintainers",
-      "runtimeReason": "Next loads this ESM configuration before its application TypeScript pipeline is available.",
-      "probe": "pnpm --dir apps/console run build",
-      "review": "Re-evaluate when the repository-supported Next configuration loader accepts TypeScript without a bootstrap wrapper."
-    },
-    {
-      "path": "apps/console/postcss.config.mjs",
-      "owner": "Console application maintainers",
-      "runtimeReason": "PostCSS discovers this ESM configuration through its host loader.",
-      "probe": "pnpm --dir apps/console run build",
-      "review": "Re-evaluate when the repository-supported PostCSS loader accepts TypeScript configuration directly."
-    },
-    {
-      "path": "apps/console/public/pdpp-dashboard-sw.js",
-      "owner": "Console application maintainers",
-      "runtimeReason": "Browser service-worker artifact emitted from pdpp-dashboard-sw.ts; browsers execute JavaScript, not source TypeScript.",
-      "probe": "pnpm generated-artifacts:check",
-      "review": "Regenerate and review whenever pdpp-dashboard-sw.ts or the TypeScript emitter changes."
-    },
-    {
       "path": "apps/site/.source/source.config.mjs",
       "owner": "Site application maintainers",
       "runtimeReason": "Fumadocs emits this generated ESM source index for the Next build from apps/site/source.config.ts.",
@@ -123,62 +102,6 @@
       "probe": "pnpm --dir packages/polyfill-connectors test -- connectors/twitter_archive/parsers.test.ts",
       "sha256": "bcacc4e5ea1b71bf1826266836f6a0d72e8e0dbc3289255637f6ed828bee54a6",
       "review": "Replace only when a newly captured provider archive format and its parser conformance fixtures supersede it."
-    },
-    {
-      "path": "reference-implementation/scripts/quality-ratchet/check-mass-ratchet.test.mjs",
-      "owner": "Reference-implementation maintainers",
-      "runtimeReason": "Generated MJS discovery wrapper imports the canonical check-mass-ratchet.source.ts test source.",
-      "probe": "node --test --import tsx reference-implementation/scripts/quality-ratchet/check-mass-ratchet.test.mjs",
-      "review": "Regenerate and review whenever the source test path or Node test-discovery contract changes."
-    },
-    {
-      "path": "reference-implementation/scripts/quality-ratchet/measure-mass.test.mjs",
-      "owner": "Reference-implementation maintainers",
-      "runtimeReason": "Generated MJS discovery wrapper imports the canonical measure-mass.source.ts test source.",
-      "probe": "node --test --import tsx reference-implementation/scripts/quality-ratchet/measure-mass.test.mjs",
-      "review": "Regenerate and review whenever the source test path or Node test-discovery contract changes."
-    },
-    {
-      "path": "reference-implementation/scripts/quality-ratchet/regenerate-mass-baseline.test.mjs",
-      "owner": "Reference-implementation maintainers",
-      "runtimeReason": "Generated MJS discovery wrapper imports the canonical regenerate-mass-baseline.source.ts test source.",
-      "probe": "node --test --import tsx reference-implementation/scripts/quality-ratchet/regenerate-mass-baseline.test.mjs",
-      "review": "Regenerate and review whenever the source test path or Node test-discovery contract changes."
-    },
-    {
-      "path": "reference-implementation/scripts/requeue-quarantined-detail-gaps.test.mjs",
-      "owner": "Reference-implementation maintainers",
-      "runtimeReason": "Generated MJS discovery wrapper imports the canonical requeue-quarantined-detail-gaps.source.ts test source.",
-      "probe": "node --test --import tsx reference-implementation/scripts/requeue-quarantined-detail-gaps.test.mjs",
-      "review": "Regenerate and review whenever the source test path or Node test-discovery contract changes."
-    },
-    {
-      "path": "reference-implementation/test/fixtures/connector-instance-two-process-race-fixture.mjs",
-      "owner": "Reference-implementation maintainers",
-      "runtimeReason": "Generated executable MJS subprocess wrapper imports the canonical TypeScript race fixture.",
-      "probe": "node --test --import tsx reference-implementation/test/connector-instance-delete-upsert-two-process-race.test.ts",
-      "review": "Regenerate and review whenever the subprocess fixture source or Node loader contract changes."
-    },
-    {
-      "path": "reference-implementation/test/fixtures/device-ingest-failstop-server.mjs",
-      "owner": "Reference-implementation maintainers",
-      "runtimeReason": "Generated executable MJS subprocess wrapper imports the canonical TypeScript fail-stop fixture.",
-      "probe": "PDPP_TEST_POSTGRES=1 PDPP_TEST_POSTGRES_URL=<isolated-pgvector-url> node --test --import tsx reference-implementation/test/device-exporter-postgres-proof.test.ts",
-      "review": "Regenerate and review whenever the subprocess fixture source or Node loader contract changes."
-    },
-    {
-      "path": "reference-implementation/test/fixtures/summary-evidence-two-process-repair-fixture.mjs",
-      "owner": "Reference-implementation maintainers",
-      "runtimeReason": "Generated executable MJS subprocess wrapper imports the canonical TypeScript repair fixture.",
-      "probe": "node --test --import tsx reference-implementation/test/connector-summary-evidence-engine-two-process-interleaving.test.ts",
-      "review": "Regenerate and review whenever the subprocess fixture source or Node loader contract changes."
-    },
-    {
-      "path": "scripts/ri-suite/fixtures/fake-run-tests.mjs",
-      "owner": "Test-accounting maintainers",
-      "runtimeReason": "Generated executable MJS fixture wrapper imports the canonical fake-run-tests.ts completion-oracle source.",
-      "probe": "node --test --import tsx scripts/ri-suite/completion-oracle.test.ts",
-      "review": "Regenerate and review whenever the completion-oracle fixture source or Node loader contract changes."
     }
   ]
 }

@@ -261,11 +261,11 @@ const nextConfig = {
       },
     ];
   },
-  // Transpile the reference-implementation workspace package so Next can
-  // consume its TypeScript sources directly once shim pairs (.js + .d.ts)
+  // Transpile the shared design-system workspace packages so Next can
+  // consume their TypeScript sources directly once shim pairs (.js + .d.ts)
   // collapse into single .ts exports. Without this, Next's bundler would
   // reject .ts entries from a node_modules-resolved workspace package.
-  transpilePackages: ["pdpp-reference-implementation", "@pdpp/brand", "@pdpp/brand-react", "@pdpp/operator-ui"],
+  transpilePackages: ["@pdpp/brand", "@pdpp/brand-react", "@pdpp/operator-ui"],
   webpack(config) {
     config.resolve.alias = {
       ...config.resolve.alias,

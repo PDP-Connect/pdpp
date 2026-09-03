@@ -56,8 +56,9 @@ function RailItem({ item }: { item: PageTree.Item }) {
   );
 }
 
-// The rail carries exactly two labels: "Specification" and "Programme". The
-// tree it renders holds the specification set and the programme documents (see
+// The rail carries exactly three labels: "Specification", "Implementer
+// guidance" and "Programme". The tree it renders holds the specification set,
+// the informative guidance documents and the programme documents (see
 // getSpecNavTree); any OTHER separator is still an empty divider — rendered as
 // a bare rule rather than a title, which keeps a stray tree entry from ever
 // reading as a rival section heading.

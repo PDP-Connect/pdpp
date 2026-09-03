@@ -32,13 +32,12 @@
     "skipLibCheck": true,
     "types": ["node"],
     "allowImportingTsExtensions": true,
-    // Several scripts/**/*.test.ts files still import not-yet-migrated JS
-    // (e.g. reference-implementation/**/*.js, out of this tsconfig's own
-    // scope). allowJs lets those resolve structurally, same as RI's own
-    // tsconfig.json does for its own not-yet-migrated JS.
+    // Several scripts/**/*.test.ts files still import not-yet-migrated JS,
+    // out of this tsconfig's own scope. allowJs lets those resolve
+    // structurally.
     "allowJs": true,
     "checkJs": false
   },
-  "include": ["scripts/**/*.ts", "deploy/**/*.ts", "docs/explorer/uat/**/*.ts"],
+  "include": ["scripts/**/*.ts", "docs/explorer/uat/**/*.ts"],
   "exclude": ["node_modules"]
 }

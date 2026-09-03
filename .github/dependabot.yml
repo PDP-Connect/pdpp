@@ -34,10 +34,7 @@ updates:
 
   - package-ecosystem: docker
     directories:
-      - /
       - /apps/site
-      - /apps/console
-      - /docker/neko
     schedule:
       interval: weekly
     groups:

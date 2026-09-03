@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,14 +13,18 @@
 // version immediately preceding the current 1.0.0 pin) — not just the one
 // version this repo happened to move from most recently.
 
-import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { EXPECTED_PACKAGE_VERSION, EXPECTED_PACKAGES, verifyPdppVendoredPackagePins } from "./check-pdpp-vendored-package-pins.ts";
+import {
+  EXPECTED_PACKAGE_VERSION,
+  EXPECTED_PACKAGES,
+  verifyPdppVendoredPackagePins,
+} from "./check-pdpp-vendored-package-pins.ts";
 
 function packFixtureTarball(archivePath: string, manifest: Record<string, unknown>): void {
   const stageDir = mkdtempSync(join(tmpdir(), "pdpp-pin-fixture-stage-"));
@@ -46,7 +51,6 @@ function sha512IntegrityBase64(path: string): string {
 function buildValidFixtureRepo(): { root: string } {
   const root = mkdtempSync(join(tmpdir(), "pdpp-pin-fixture-repo-"));
   mkdirSync(join(root, "vendor"), { recursive: true });
-  mkdirSync(join(root, "reference-implementation"), { recursive: true });
   mkdirSync(join(root, "packages/polyfill-connectors"), { recursive: true });
 
   const runtimeArchive = EXPECTED_PACKAGES[0].archive;
@@ -66,7 +70,10 @@ function buildValidFixtureRepo(): { root: string } {
 
   const runtimeSha256 = sha256Sum(runtimePath);
   const protocolSha256 = sha256Sum(protocolPath);
-  writeFileSync(join(root, "vendor/SHA256SUMS"), `${runtimeSha256}  ${runtimeArchive}\n${protocolSha256}  ${protocolArchive}\n`);
+  writeFileSync(
+    join(root, "vendor/SHA256SUMS"),
+    `${runtimeSha256}  ${runtimeArchive}\n${protocolSha256}  ${protocolArchive}\n`
+  );
 
   const runtimeIntegrity = sha512IntegrityBase64(runtimePath);
   const protocolIntegrity = sha512IntegrityBase64(protocolPath);
@@ -81,19 +88,6 @@ function buildValidFixtureRepo(): { root: string } {
     ].join("\n")
   );
 
-  writeFileSync(
-    join(root, "reference-implementation/package.json"),
-    JSON.stringify(
-      {
-        dependencies: {
-          "@pdpp/collector-runtime": `file:../${runtimeArchive}`,
-          "@pdpp/connector-protocol": `file:../${protocolArchive}`,
-        },
-      },
-      null,
-      2
-    )
-  );
   writeFileSync(
     join(root, "packages/polyfill-connectors/package.json"),
     JSON.stringify(
@@ -159,7 +153,10 @@ test("rejects a collector-runtime tarball whose packed dependency is not pinned 
     const runtimeSha256 = sha256Sum(runtimePath);
     const protocolArchive = EXPECTED_PACKAGES[1].archive;
     const protocolSha256 = sha256Sum(join(root, protocolArchive));
-    writeFileSync(join(root, "vendor/SHA256SUMS"), `${runtimeSha256}  ${runtimeArchive}\n${protocolSha256}  ${protocolArchive}\n`);
+    writeFileSync(
+      join(root, "vendor/SHA256SUMS"),
+      `${runtimeSha256}  ${runtimeArchive}\n${protocolSha256}  ${protocolArchive}\n`
+    );
     const runtimeIntegrity = sha512IntegrityBase64(runtimePath);
     const protocolIntegrity = sha512IntegrityBase64(join(root, protocolArchive));
     writeFileSync(

@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-08-29
+Date: 2026-09-03
 
 ---
 
@@ -20,7 +20,7 @@ The protocol specifies:
 
 **Design axiom:** Source declarations define what can be requested. Grants define what was approved. These are separate concerns and must not be conflated.
 
-Most source platforms do not yet expose a PDPP interface natively. Collection is the bridge for those sources: it brings their data into a resource server so the protocol's consent and enforcement layers can govern access to it. The companion [PDPP Collection Profile](spec-collection-profile) standardizes that bridge. The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved, and data may also reach it via regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5-8) are agnostic to the collection method.
+Most source platforms do not yet expose a PDPP interface natively. Collection is the bridge for those sources: it brings their data into a resource server so the protocol's consent and enforcement layers can govern access to it. The informative [PDPP Collection Profile](spec-collection-profile) describes that bridge as builder guidance; it is not a conformance requirement. A connector conforms to PDPP by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. No particular collection method is required. The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved, and data may also reach it via regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5-8) are agnostic to the collection method.
 
 Any implementation satisfying the role conformance criteria in Section 9 is PDPP-compliant. This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. URI identifiers name sources, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the resolved grant and the exact source declaration snapshot retained by the authorization server.
 
@@ -31,10 +31,10 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | Section | Governs | Other layers |
 | --- | --- | --- |
 | [Section 4: Record Model](#record-model) | Portable record envelopes, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. | Source collection, connector execution, and storage-engine choices. |
-| [Section 5: Source Declaration](#source-declaration) | Common source identity, consent, record, selection, and query capabilities used by connector-backed and provider-native sources. | Declaration discovery and trust; connector acquisition and execution mechanics. |
+| [Section 5: Source Declaration](#source-declaration) | Common source identity, consent, record, selection, and query capabilities used by connector-backed and provider-native sources, and the conditions under which an authorization server accepts a declaration. | Connector acquisition and execution mechanics. |
 | [Section 6: Selection Request](#selection-request) | What a client asks an authorization server to approve, plus declaration-backed validation and consent rendering before a grant is issued. | Product-specific consent flows, screen layouts, and hosted authorization-server deployments. |
 | [Section 7: Grant](#grant) | The immutable consent artifact and the constraints a resource server enforces for a token-bound client. | Grant database schema, signed-token format, hosted registries, and deployment topology. |
-| [Section 8: Resource Server Interface](#resource-server-interface) | The interoperable record-query and blob-fetch interface under grant enforcement. | Authorization-server deployment, storage backend, collection runtime, operator dashboard, and hosted service choices. |
+| [Section 8: Resource Server Interface](#resource-server-interface) | The interoperable record-query and blob-fetch interface under grant enforcement, and the protected resource metadata a resource server publishes about itself. | Authorization-server deployment, storage backend, collection runtime, operator dashboard, and hosted service choices. |
 
 ### Relationship to existing standards
 
@@ -44,7 +44,9 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396) (RAR) | PDPP uses the `authorization_details` envelope for selection requests. The `type` URI is `https://pdpp.dev/data-access`. |
 | [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (Bearer Token) | PDPP transports both owner tokens and client tokens as RFC 6750 Bearer Tokens on the wire. The resource server distinguishes token kind via `pdpp_token_kind` in the introspection response, not by token syntax. |
 | [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (Token Introspection) | PDPP uses authenticated RFC 7662 token introspection where the authorization server and resource server are separated, so the resource server can resolve grant-bound tokens. Co-located deployments may use a local equivalent. |
+| [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) (Protected Resource Metadata) | PDPP resource servers publish RFC 9728 protected resource metadata, so a client discovers the authorization server, the query base, and the supported token kinds from the resource itself rather than from prior configuration. Core defines four `pdpp_`-prefixed additional members (Section 8); the extension profiles define `capabilities`. |
 | [OAuth 2.0 Dynamic Client Registration](https://www.rfc-editor.org/rfc/rfc7591) (RFC 7591) | PDPP reuses the RFC 7591 client metadata vocabulary (`client_name`, `logo_uri`, `policy_uri`, and similar fields) for the consent display. A dynamic client registration endpoint is a deployment choice and is required only where deployments need it; Core functions without it. |
+| [Client ID Metadata Documents](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/) (CIMD, IETF OAuth WG draft) | A client identifier that is itself an `https` URL the authorization server fetches to obtain RFC 7591-shaped client metadata, with no prior registration handshake. Control of the URL's domain is the trust root. CIMD is how deployed MCP clients present themselves: the MCP authorization specification revision 2025-11-25 states that authorization servers and clients SHOULD support CIMD and MAY support RFC 7591 dynamic client registration, which is retained for backward compatibility. Core treats a validated CIMD document as one source of validated binding metadata (Section 6) and its verified domain as a trust signal; the fetch and validation obligations belong to the OAuth binding rather than to Core. |
 | [SMART on FHIR](https://hl7.org/fhir/smart-app-launch/) | Follows the domain-profile-over-OAuth pattern PDPP adopts: OAuth handles authorization, and the profile adds a domain data model, consent semantics, and a conformance regime. SMART on FHIR reached ubiquity through regulatory adoption of SMART-on-FHIR-patterned API requirements (the ONC Cures Act rule). |
 | [UK Open Banking](https://www.openbanking.org.uk/standards/) | Also follows the domain-profile-over-OAuth pattern PDPP adopts: OAuth handles authorization, and the profile adds a domain data model, consent semantics, and a conformance regime. UK Open Banking reached ubiquity through the CMA's Open Banking mandate for the largest UK banks. |
 | [UMA 2.0](https://docs.kantarainitiative.org/uma/wg/rec-oauth-uma-grant-2.0.html) (Kantara) | UMA is important prior art for PDPP's user-managed, standing, revocable access model, particularly where an outside party seeks access to user-controlled resources. PDPP's authorization protocol derives directly from OAuth 2.0 and RFC 9396. |
@@ -57,6 +59,14 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | [EU Data Act](https://eur-lex.europa.eu/eli/reg/2023/2854/oj) (Regulation 2023/2854) | The Data Act's Article 5(1) flow, where a user directs a data holder to make data available to a third party, is the same triangle as PDPP's owner, source, and client. Article 2(12) defines the user as a natural or legal person, matching PDPP's subject-neutral owner. It applies from 12 September 2025, requires access by design for connected products placed on the market after 12 September 2026, and names no protocol. |
 
 **Note:** The PDPP Collection Profile is one fulfillment mechanism. A conformance test suite for this specification is planned but is not defined in v0.1 (see Section 9).
+
+#### Why a profile rather than a new authorization framework {#profile-not-framework}
+
+PDPP is a data-portability profile, not a general authorization framework. It rides OAuth 2.0 and RFC 9396 because that is what is deployed. On top of those it adds what neither UMA nor GNAP defines: a portable record model, purpose-bound durable grants, a declared collection and source layer, and a query surface with grant enforcement. UMA is prior art for the user-managed standing access model and GNAP is a candidate future foundation; the table above records both. A GNAP transport binding remains possible later without changing the record model, the grant, or the resource server interface, because none of those depend on the authorization protocol that produced the grant.
+
+#### Relationship to sector-specific consent regimes {#sector-regimes}
+
+**Note (non-normative).** PDPP is a floor, not a ceiling. A source already operating under a stricter or more specific consent regime — open banking, or a health regime built on FHIR — does not lose or weaken any obligation of that regime by also being reachable through PDPP. Where the two differ, the stricter requirement governs that source. Nothing in this specification authorizes a disclosure that the source's own regime forbids, and a PDPP grant is not a substitute for a consent that regime requires. This is a scoping statement rather than a conformance criterion: PDPP defines no test for which of two regimes is stricter, and conformance to this specification is assessed against this specification alone. Compatibility profiles that map a sector regime's consent vocabulary onto PDPP's are a possible future addition and are not defined in v0.1.
 
 ---
 
@@ -93,6 +103,16 @@ In many deployments, a single **personal server** fills all three roles. The spe
 
 **Token resolution:** User-facing authorization flows are deployment-specific and are not normatively specified in v0.1. However, when the AS and RS are deployed separately, the AS-to-RS token-resolution contract is normative: the RS MUST authenticate to the RFC 7662 introspection endpoint and resolve the complete grant enforcement context from its response. The RS MUST enforce the request from that response and MUST NOT make a second AS lookup. For co-located deployments, a local equivalent (shared database or function call) is acceptable. Self-contained JWTs may be used as an optimization but MUST NOT be the sole revocation mechanism (see Section 10).
 
+### Trust registry queries {#trust-registry-queries}
+
+Core refers to a trust registry as a source of requester identity metadata and a positive trust signal at consent, as an external mechanism supporting retention accountability, and as a deferred concern. Core relies on two abstract queries: whether a client identifier is recognized and authorized, and whether a source declaration authority is accepted. Neither query is a wire protocol; an authorization server MAY answer locally or through a remote service.
+
+A registry answer is an assertion that local authorization-server policy evaluates; it is not itself a decision. A conveyed answer identifies six things. It names the subject it concerns and the role, action, or scope the status qualifies. It carries the status itself, the governance framework under which the named issuer conferred it by URI, and the issuer or trust-anchor identifier. It bounds the answer with a validity window, as `valid_from` and `valid_until`. Without the subject and the issuer, an answer cannot be attributed or replayed against the right party; without the role or scope, a status does not say what the subject is authorized to do.
+
+An authorization server records the trust signal it relied on — subject, role or scope, status, governance-framework URI, issuer or trust-anchor identifier, `valid_from`, `valid_until`, and the time of lookup — on its acceptance record or resulting grant. The lookup time matters because a status may be withdrawn later, and the record has to show what was true when the server relied on it.
+
+Core does not define the registry, transport, recognition mechanism, or withdrawal propagation. A server that consults no registry remains conformant because registry answers inform local policy and never replace the owner's grant. ToIP's Trust Registry Query Protocol is an intended future profile binding, not a Core requirement.
+
 ### Data concepts
 
 | Term | Definition |
@@ -111,7 +131,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 This document is normative except where content is explicitly marked as an example, a note, or otherwise non-normative.
 
-The companion [PDPP Collection Profile](spec-collection-profile) uses the same requirements language.
+This is the only normative document for PDPP Core v0.1 conformance. A profile defines no Core requirement; a future profile may define a separate named conformance claim only if its own status says so. The [PDPP Collection Profile](spec-collection-profile) and [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) are informative and define no conformance requirements of their own.
 
 ---
 
@@ -164,6 +184,18 @@ flowchart TB
     Runtime -- RECORD / STATE --> RS
     Source -.->|collected by| Runtime
 ```
+
+**Core defines no ingest path.** Core specifies the authorization server, the resource server, and what passes between them and a client. It does not specify how records reach the resource server, and conformance to Core does not depend on any particular answer. Examples A and B are illustrations, not a classification: a resource server holding data placed there by regulatory export, manual import, a provider's own write path, or a mechanism not yet described is equally within Core. The [PDPP Collection Profile](spec-collection-profile) describes one such mechanism, connector collection, and describes it for builders rather than as a conformance requirement.
+
+**On-behalf-of access is two ordinary grants, not one delegated grant.** At the upstream platform, the owner authorizes the personal server to read the owner's data. At the personal server, the owner separately authorizes a downstream client to read owner-held data. These are independent grants, each issued and revocable by the owner. A personal server MAY disclose owner-held data under the fresh downstream grant; it does not pass the platform grant or a downstream PDPP token to the other relationship.
+
+PDPP therefore defines no delegated-grant, sub-grant, or grant-chaining construct, and none is needed to build this. The same shape is already how account aggregation works in deployed systems: an open banking aggregator holds the user's consent at each bank and its own consent from the user, rather than subdividing one authorization. Where a binding needs to exchange one credential for another across the two relationships, OAuth Token Exchange (RFC 8693) is the existing mechanism, and it is a concern of the binding rather than of Core.
+
+Only live passthrough is bounded by the upstream grant: when the personal server does not hold a copy and reads from the platform to fulfill a downstream request, it MUST stay within the upstream grant. This limit does not constrain a fresh grant for owner-held data. A downstream PDPP token is never forwarded upstream.
+
+**Onward transfer is prohibited.** A recipient MUST NOT transfer its token or let an ungranted party exercise it.
+
+A different topology — the owner running their own authorization server in front of a platform's data, so that the platform holds the data but the owner's server decides who may read it — is not introduced by this specification. It is the arrangement UMA describes, it is not the arrangement above, and it is recorded as deferred rather than left ambiguous.
 
 ### Protocol layering
 
@@ -362,7 +394,7 @@ When a record references a record in a different stream on the same resource ser
 
 ## 5. Source Declaration {#source-declaration}
 
-**Note:** This section defines the common source surface used by Core. Connector acquisition and execution behavior, including runtime bindings, setup, interaction, refresh, and collection state, is defined by the optional [PDPP Collection Profile](spec-collection-profile).
+**Note:** This section defines the common source surface used by Core, and the conditions under which an authorization server accepts a source declaration. Connector acquisition and execution behavior, including runtime bindings, setup, interaction, refresh, and collection state, is defined by the optional [PDPP Collection Profile](spec-collection-profile). The mechanics of discovering and retrieving a declaration are described in the informative [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) document, which defines no requirements of its own.
 
 Each source publishes a `SourceDeclaration` describing its identity, publisher, consent surface, record semantics, selection capabilities, and Resource Server query capabilities. Connector-backed and provider-native sources use the same Core shape. The declaration defines what can be consented to. The resolved grant defines what was approved.
 
@@ -473,7 +505,7 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `protocol_version` | Version of the PDPP SourceDeclaration schema. This contract requires exactly `0.1.0`. |
 | `source` | Exactly `{ kind, id }`. `kind` is `connector` or `provider_native`; `id` is the absolute URI authorization identity for the source's data surface. |
 | `declaration_version` | Opaque, non-empty revision identifier for this source declaration. It is not the connector software version and has no implied ordering. |
-| `publisher.id` | Absolute URI identifying the declaration publisher. Discovery and trust policy determine how this attribution is authenticated. |
+| `publisher.id` | Absolute URI identifying the declaration publisher. It is an attribution claim, not an authenticated identity. The authorization server MUST treat `publisher.id` as authenticated only where an accepted channel or configured mapping binds that publisher to the declaration; absent that binding it MUST NOT support source acceptance, redirect policy, attribution, or any other trust decision. |
 | `display.name` | Human-readable source name for consent UIs. It is display metadata, not source identity. |
 | `selection_presets` | Optional preset selections. The authorization server expands a selected preset into explicit stream terms before issuing a grant. |
 | `streams[].name` | Unique non-empty stream name, source-local. `*` is request-only and is not a declaration stream name. |
@@ -516,7 +548,7 @@ Streams MAY include a `display` object with human-readable metadata for the cons
 | `display.label` | string | Short human-readable name shown in the consent card (e.g., "Who you follow"). If absent, the AS SHOULD display `streams[].description` or fall back to the stream name. |
 | `display.detail` | string | Consent-oriented description of what data is included and, where relevant, what is excluded (e.g., "Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists."). If absent, the AS MAY generate a description from the stream schema, or display no detail. |
 
-**Authorship principle:** `display.label` and `display.detail` describe the data itself, not the requester's purpose. They are attributed to the accepted declaration publisher. The requesting client MUST NOT override or supplement these descriptions in the selection request. The authorization server's discovery and trust policy determines whether publisher attribution is authenticated.
+**Authorship principle:** `display.label` and `display.detail` describe the data itself, not the requester's purpose. They are attributed to the accepted declaration publisher. The requesting client MUST NOT override or supplement these descriptions in the selection request. Publisher attribution is authenticated only under the conditions in [SourceDeclaration fields](#source-declaration).
 
 ```json
 {
@@ -601,6 +633,22 @@ the user approved. The Resource Server enforces the resolved grant without a
 current declaration lookup. Current serving metadata may only route, describe
 current capabilities, narrow, or reject.
 
+### Declaration acceptance {#declaration-acceptance}
+
+An authorization server accepts a source declaration only through explicit owner or operator onboarding, an installed catalog, an accepted registry entry, or explicit local provisioning. A client MUST NOT introduce a new source authority or declaration URI during authorization.
+
+For a `provider_native` source, `source.id` MUST be identical to the protected-resource identifier the authorization server has already accepted for that resource. The authorization server MUST reject any mismatch before consent or grant issuance.
+
+`publisher.id` is an unauthenticated claim unless an accepted channel or configured mapping binds that publisher to the declaration. Without such a binding, the authorization server MUST NOT rely on `publisher.id` for source acceptance, attribution, redirect policy, or any other trust decision.
+
+An accepted revision is keyed by its accepted authority binding, `source.id`, and `declaration_version`. Different parsed content under an accepted key is equivocation: the authorization server MUST reject it and retain the previously accepted content, and MUST NOT infer ordering or freshness from `declaration_version`.
+
+When retrieving a declaration, the authorization server MUST use HTTPS without ambient credentials. It MUST validate every redirect target and the final URL against its accepted declaration pointer and network policy. It MUST reject a declaration that requires automatic retrieval of a remote schema, and MUST fail closed when any check fails.
+
+The address check is bound to the connection, not to the URL. The authorization server MUST validate the destination address against its network policy immediately before each connection attempt, including each redirect hop. It MUST connect only to an address from that validated result. An address accepted for an earlier attempt does not authorize a later resolution. The declaration location is not the source identity. Section 10 states the retrieval limits an authorization server sets by local judgment.
+
+Declaration display values are untrusted input. An authorization server MUST render declaration display values safely for the output context, by context-appropriate escaping, by sanitization, or by any construction that guarantees the value cannot be interpreted as markup, script, or a control sequence in that context. The requirement is on the outcome; this specification does not mandate one technique. Current declaration capabilities MUST NOT widen an issued grant.
+
 ---
 
 ## 6. Selection Request {#selection-request}
@@ -625,7 +673,7 @@ A client requests specific personal data by including `authorization_details` in
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+      "source": { "id": "https://registry.pdpp.dev/connectors/spotify" },
       "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
@@ -665,16 +713,25 @@ Inside `client_display`, PDPP drops the `client_` prefix from `client_name` and 
 
 `client_display` is entity-scoped: it describes the client, not a specific authorization request. It appears at the top level of the authorization request, outside `authorization_details`.
 
-`client_display` is an inline carrier, not necessarily the AS's final rendered identity record. The AS MAY replace or augment inline values with locally registered metadata, validated software-statement metadata, or trust-registry metadata.
+`client_display` is an inline carrier, not necessarily the AS's final rendered identity record. The AS MAY replace or augment inline values with locally registered metadata, validated binding metadata, validated software-statement metadata, or trust-registry metadata.
+
+**Validated binding metadata** is client metadata the AS obtained and verified through the mechanism that binds the client to the authorization protocol in use, rather than metadata the client asserted inline in this request. Under the OAuth binding it is the metadata a client ID metadata document or a dynamic registration record supplies, after the binding's own validation succeeded. Core does not define how a binding validates it; Core defines only that validated binding metadata outranks inline `client_display`, because the AS checked it and the client did not merely assert it.
+
+**URL-hosted client identity.** A client ID metadata document is *valid* for this rule when three conditions hold. It is syntactically valid per the client ID metadata document specification the OAuth binding names. The authorization server retrieved it over HTTPS from the `client_id` URL itself. And the `client_id` inside the document is identical to the URL it was retrieved from — the check that stops a document from claiming to be a different client.
+
+Two obligations follow, and they are separate. The *interoperability* obligation: a conforming authorization server MUST NOT reject a valid client ID metadata document solely because the client is not preregistered. The *local-authority* obligation, which the first does not weaken: the server MAY still deny authorization, rate-limit the client, or require a registry-derived trust or admission result, under local policy and for any reason other than the absence of preregistration. A conformance test therefore exercises two distinct outcomes — an unregistered valid document that is accepted as an identity, and a policy denial that is not a rejection of the identity form.
+
+For PDPP Core v0.1 interoperability, a conforming authorization server MUST accept a valid URL-hosted client identity unless local policy denies authorization.
 
 **Metadata resolution and rendering obligations:**
 
-1. The AS MUST resolve requester identity metadata from the best available source. Source precedence is local registration or trust-registry metadata, then validated software-statement metadata if supported, then inline `client_display`, then `client_id` fallback.
+1. The AS MUST resolve requester identity metadata from the best available source. Source precedence is local registration or trust-registry metadata, then validated software-statement metadata if supported, then validated binding metadata, then inline `client_display`, then `client_id` fallback.
 2. If the resolved metadata contains a display name, the AS MUST display it to the user during consent. If no display name is available, the AS MUST display `client_id` as the requester identity.
 3. If the resolved metadata contains `policy_uri` or `tos_uri`, the AS MAY display them as secondary links or disclosures.
-4. If the server has a positive trust signal for the client (e.g., domain verification, trust registry membership), it MUST render that status distinctly (e.g., a "verified" badge). If it has no positive trust signal, it MUST treat the client as unverified and SHOULD display an "unverified app" indicator.
-5. The AS MUST treat `logo_uri` as untrusted content until it has been accepted under local policy. It MUST NOT fetch and render a client-supplied remote logo in the consent UI unless the client is verified or the asset has been proxied, cached, and approved under local policy. For unverified clients, the AS SHOULD generate a monogram from the resolved display name.
-6. If neither resolved metadata nor inline `client_display` provides a display name, the consent UI SHOULD clearly indicate that the client has not provided display metadata.
+4. If the server has a positive trust signal for the client (e.g., verified domain control, trust registry membership), it MUST render that status distinctly (e.g., a "verified" badge). If it has no positive trust signal, it MUST treat the client as unverified and SHOULD display an "unverified app" indicator.
+5. **Domain control as a trust signal.** The binding may identify a client by a URL that client controls. Where the AS both retrieved that client's metadata from that URL over HTTPS and confirmed the retrieved document identifies the same client, the AS has verified that the client controls that domain. The AS MAY treat verified domain control as a positive trust signal under obligation 4, and when it does it MUST name the verified domain rather than assert an unqualified verification (for example "Verified domain: example.com", not "Verified app"). Domain control establishes only that the operator of that domain published this client's metadata. It is not an assertion about the client's conduct, its data practices, or any review by the AS operator, and the AS MUST NOT present it as one.
+6. The AS MUST treat `logo_uri` as untrusted content until it has been accepted under local policy. It MUST NOT fetch and render a client-supplied remote logo in the consent UI unless the client is verified or the asset has been proxied, cached, and approved under local policy. For unverified clients, the AS SHOULD generate a monogram from the resolved display name.
+7. If neither resolved metadata nor inline `client_display` provides a display name, the consent UI SHOULD clearly indicate that the client has not provided display metadata.
 
 ### Pre-registered public client discovery {#pre-registered-public-clients}
 
@@ -719,7 +776,7 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 
 | Parameter | Type | Required | Status | Description |
 |-----------|------|----------|--------|-------------|
-| `source` | object | yes | Protocol-enforced | Source binding. `id` is required and is the stable absolute URI authorization identity for the data surface. `kind` is optional. When present, it is a client trust expectation that the accepted declaration's provenance class is `connector` or `provider_native`. It is not authorization equality and never selects runtime. |
+| `source` | object | yes | Protocol-enforced | Source binding. `id` is required and is the stable absolute URI authorization identity for the data surface. A request carries `id` alone: provenance is derived by the authorization server from the accepted declaration, not asserted by the client. |
 | `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced, with the exception of `https://pdpp.dev/purpose/ai_training` (see below). |
 | `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. |
 | `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. See [Section 7](#grant). |
@@ -730,17 +787,14 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 
 #### Source kinds {#source-kinds}
 
+These are the two provenance classes an authorization server derives and carries forward. They are defined here because this is where a reader meets the source binding, not because a client sends one.
+
 | `source.kind` | Meaning |
 |---|---|
 | `"connector"` | The declaration authority represents a connector-backed source. `source.id` is its public source URI, not a local package name, connector key, storage namespace, account identifier, or runtime binding. A connector declaration remains Core-valid without Collection Profile data. |
 | `"provider_native"` | The declaration authority represents the provider's own PDPP data surface. `source.id` is normally the OAuth protected-resource identifier for that surface, not merely the provider's legal-entity URI. |
 
-If the request includes `source.kind`, an unrecognized value or a mismatch
-with the AS-accepted declaration provenance produces a Source validation
-failure before consent. If the request omits `source.kind`, the AS derives
-provenance from the accepted declaration and records it in consent evidence
-and any issued grant. The OAuth/RAR binding returns RFC 9396
-`invalid_authorization_details` for invalid authorization details.
+A selection request does not carry `source.kind`. The authorization server derives the provenance class from the declaration it accepted for `source.id`, and records it in consent evidence and any issued grant, where a client reads it back through introspection. A client whose policy depends on provenance therefore reads it from the issued grant rather than asserting an expectation in the request; Section 9 states that as a client requirement. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details` for invalid authorization details.
 
 #### AI training consent {#ai-training-consent}
 
@@ -781,7 +835,7 @@ Source declarations may define selection presets. A client can reference a prese
 ```json
 {
   "type": "https://pdpp.dev/data-access",
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/instagram" },
+  "source": { "id": "https://registry.pdpp.dev/connectors/instagram" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "access_mode": "single_use",
   "selection_preset": "social_summary"
@@ -856,7 +910,7 @@ The authorization server issues an access token bound to the grant. The client u
 | `streams` | StreamGrant[] | yes | Protocol-enforced | Granted streams. Always expanded; no wildcards. See StreamGrant fields table below. |
 | `selection_preset` | string | no | Informational | Which SourceDeclaration preset was selected. The resolved streams and fields remain authoritative. |
 | `retention` | object | no | Structured policy declaration | Policy commitment by the data recipient (see below). |
-| `expires_at` | ISO 8601 or null | no | Protocol-enforced | Grant expiry. null means no expiry. |
+| `expires_at` | ISO 8601 | no | Protocol-enforced | Grant expiry. Absent means no expiry. |
 
 ### StreamGrant fields
 
@@ -949,7 +1003,7 @@ Revocation stops future access only. Records already delivered to the client bef
 
 ### Retention
 
-Retention is a structured policy declaration and policy commitment by the data recipient (the client). PDPP does not technically enforce retention. Enforcement is through legal agreements, contractual obligations, or trust registry mechanisms. This is consistent with how OAuth 2.0 treats scope compliance: the protocol makes the commitment legible and machine-readable; external mechanisms enforce it.
+Retention is a structured policy declaration and policy commitment by the data recipient (the client). PDPP does not technically enforce retention. Enforcement is through legal agreements or contractual obligations; a trust registry supports admission and accountability for a retention commitment rather than enforcing it, because Core defines no compliance-evidence query a registry could answer. This is consistent with how OAuth 2.0 treats scope compliance: the protocol makes the commitment legible and machine-readable; external mechanisms enforce it.
 
 ```json
 {
@@ -1014,8 +1068,7 @@ Retention is a structured policy declaration and policy commitment by the data r
       "instance_ids": ["openai-account-a"],
       "fields": ["id", "conversation_id", "role", "content", "source_created_at"]
     }
-  ],
-  "expires_at": null
+  ]
 }
 ```
 
@@ -1060,11 +1113,11 @@ The resource server stores records and serves them to clients filtered by grants
 On every request, the resource server:
 
 1. Resolves the access token through authenticated RFC 7662 introspection or a local equivalent for co-located deployments. Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`.
-2. Verifies that the grant is active (`active: true` in the introspection response).
-3. Verifies that the requested stream appears in the grant's `streams` list.
-4. Selects records only from the explicitly granted `instance_ids` and verifies that the request falls within the grant's `time_constraint`, `fields`, and `resources` constraints.
-5. If all checks pass, returns records filtered accordingly.
-6. If any check fails, returns a structured error (see Errors below).
+2. Determines `pdpp_token_kind` from the introspection response, then branches:
+   - **Client:** requires an active resolved authorization context (`active: true`, a resolved grant). Verifies that the requested stream appears in the grant's `streams` list. Selects records only from the explicitly granted `instance_ids` and enforces the grant's `time_constraint`, `fields`, and `resources` constraints.
+   - **Owner:** enforces subject, source, connection, and operation scope derived from the introspection response. Does not require or synthesize a client grant — an owner token carries none.
+3. If all checks pass, returns records filtered accordingly.
+4. If any check fails, returns a structured error (see Errors below).
 
 For owner-token current-capability reads, the effective filter is the permitted
 owner request filter alone: an owner token carries no grant, so there is no grant
@@ -1115,6 +1168,29 @@ Two authentication boundaries exist:
 
 **Self-export:** An owner holding a valid owner token MAY query their own data using the standard client query endpoints without a client grant. This is the v0.1 self-export mechanism and does not require a separate grant. Conformant Core RS implementations SHOULD support this capability (see Section 9 conformance item 13).
 
+### Protected resource metadata {#protected-resource-metadata}
+
+A resource server MUST publish OAuth 2.0 Protected Resource Metadata as defined in RFC 9728. RFC 9728 Section 3 fixes the document's location: the well-known URI string `/.well-known/oauth-protected-resource` is inserted into the resource identifier between the host component and any path or query component.
+
+A client that reaches the resource server without a usable access token learns that location from the response itself. On a 401, the resource server MUST include a `WWW-Authenticate: Bearer` challenge, as RFC 6750 Section 3 requires. It MUST set `error="invalid_token"` when a token was presented and rejected. And it MUST include the `resource_metadata` parameter RFC 9728 Section 5.1 defines, carrying the URL of this document. This is the bootstrap path: without it a client holding no token has no specified way to discover where to authenticate.
+
+The `resource` member is the resource server's own identifier, as RFC 9728 Section 2 requires. For a `provider_native` source it is the same identifier as the declaration's `source.id`, which is the binding Section 5 already requires an authorization server to check before consent. A resource server that serves several sources publishes one metadata document per resource identifier rather than one document listing them.
+
+PDPP defines four additional members. RFC 9728 Section 2 permits additional parameters and RFC 9728 Section 3.2 requires a reader to ignore any parameter it does not understand, so a generic OAuth client is unaffected by their presence. Each name carries the `pdpp_` prefix to keep it distinct from a future registered parameter; RFC 9728 does not itself prescribe a naming convention.
+
+| Member | Meaning |
+| --- | --- |
+| `pdpp_core_query_base` | The base path the Section 8 endpoint paths extend, so a client composes a record query without assuming a version segment. |
+| `pdpp_token_kinds_supported` | The `pdpp_token_kind` values this resource server accepts, drawn from the kinds Section 8 defines. |
+| `pdpp_self_export_supported` | Whether an owner token may read the owner's own data through the client query endpoints without a client grant. |
+| `pdpp_provider_connect_version` | The PDPP version this resource server's interface implements, which a client would otherwise learn only from the `PDPP-Version` negotiation on a first request. |
+
+`resource_name` is RFC 9728's own member for a human-readable resource name, not a PDPP extension; a resource server SHOULD publish it because a consent surface has no other name to display for the resource.
+
+RFC 9728 Section 2 makes `authorization_servers` OPTIONAL, and notes that in some deployments the set of authorization servers is not enumerable. A PDPP resource server MUST publish `authorization_servers` when that set is enumerable, so a client can reach the issuer without prior configuration. When the set is not enumerable, the resource server MUST omit the member rather than publish a partial list. The client then obtains the issuer from the grant it already holds, or from the deployment's own onboarding. Core defines no other discovery path for that case.
+
+The `capabilities` member is defined by the extension profiles that advertise into it, not by Core. Core neither requires it nor constrains its contents, and a resource server that implements no extension omits it.
+
 ### Endpoints
 
 #### List streams
@@ -1124,7 +1200,7 @@ GET /v1/streams
 Authorization: Bearer <access_token>
 ```
 
-Returns the streams available under the current grant with record counts.
+Returns streams with record counts, scoped by token kind: for a client token, the streams present in the resolved authorization context; for an owner token, the streams in the subject-scoped data store the owner token is scoped to.
 
 **Response:**
 ```json
@@ -1164,7 +1240,12 @@ GET /v1/streams/{stream}
 Authorization: Bearer <access_token>
 ```
 
-Returns full source stream metadata. A client-token caller may fetch metadata only for a stream present in its resolved authorization context. An owner-token caller may fetch metadata for streams in the subject's data store the owner token is scoped to. Once access is authorized, the metadata document is returned whole rather than field-projected by the grant. Response:
+A client-token caller may fetch metadata only for a stream present in its resolved authorization context. An owner-token caller may fetch metadata for streams in the subject's data store the owner token is scoped to. Once access is authorized, the response body is actor-specific:
+
+- **Owner token:** the metadata document is returned whole — full current schema, query capabilities, views, and relationships — rather than field-projected by any grant. An owner token carries no grant, so there is nothing to project against.
+- **Client token:** the response is a closed projection derived from the resolved authorization context: only the granted stream's explicitly granted fields, and only immutable/frozen grant facts. Current query, view, relationship, filter, expansion, and aggregation capabilities MUST NOT appear unless that capability is explicitly part of a future frozen grant vocabulary. Current metadata MAY report availability/freshness or reject an unavailable operation, but MUST NOT make the grant appear broader or semantically different than what was issued. A source declaration change made after the grant was issued (e.g., a new field) MUST NOT become visible through this endpoint for that grant.
+
+**Owner-token response** (full current metadata):
 
 ```json
 {
@@ -1197,6 +1278,37 @@ Returns full source stream metadata. A client-token caller may fetch metadata on
   "relationships": [
     { "name": "messages", "stream": "messages", "foreign_key": "conversation_id", "cardinality": "has_many" }
   ]
+}
+```
+
+**Client-token response** (closed projection of a grant frozen to fields `id`, `name`, `source_updated_at`; no range filters, views, or relationships were granted):
+
+```json
+{
+  "object": "stream_metadata",
+  "name": "top_artists",
+  "schema": {
+    "properties": {
+      "id": { },
+      "name": { },
+      "source_updated_at": { }
+    }
+  },
+  "primary_key": ["id"],
+  "cursor_field": "source_updated_at",
+  "consent_time_field": "source_updated_at",
+  "selection": {
+    "fields": true,
+    "resources": false
+  },
+  "query": { },
+  "freshness": {
+    "captured_at": "2026-04-06T15:01:00Z",
+    "status": "current",
+    "last_attempted_at": "2026-04-06T15:01:00Z"
+  },
+  "views": [],
+  "relationships": []
 }
 ```
 
@@ -1391,6 +1503,19 @@ Every non-2xx response returns a structured error:
 }
 ```
 
+Clients MUST treat unrecognized error codes as opaque and fall back to the actual HTTP status code and applicable response headers.
+
+**Authority and forward compatibility.**
+
+1. The actual HTTP status code and applicable response headers are authoritative for generic HTTP semantics, including success or failure, authentication challenges, redirection, and retry timing.
+2. A recognized `error.type` or `error.code` MAY refine PDPP-specific category, presentation, or recovery behavior only when its defined semantics are compatible with the actual status code and headers.
+3. An absent, unknown, malformed, or status-incompatible `type` or `code` is opaque and MUST NOT override the actual status code or relevant headers.
+4. Unknown identifiers MUST NOT cause parse failure.
+
+Clients MAY retain unknown identifiers for diagnostics, subject to local size limits, safe rendering/escaping, and privacy policy.
+
+This makes a future error code safe to introduce: an older client keeps handling the response by status and headers, whatever the new `code` or `type` says.
+
 | Code | HTTP Status | Type | Meaning |
 |------|------------|------|---------|
 | `invalid_cursor` | 400 | `invalid_request_error` | Cursor token is malformed or unrecognized. |
@@ -1481,9 +1606,11 @@ A conformant Core RS:
 11. Implements the `PDPP-Version` header negotiation.
 12. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response.
 13. SHOULD support owner-authenticated access to the `/v1/streams/{stream}/records` query endpoints without a client grant, allowing the data subject to export their own data directly (self-export).
+14. For owner-token stream-metadata reads, returns the full current stream metadata within the owner's subject/source/connection scope, including current query, view, and relationship capabilities.
+15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
+16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource`, the four `pdpp_`-prefixed members defined in Section 8, and `authorization_servers` when its issuer set is enumerable. Returns a `WWW-Authenticate: Bearer` challenge on 401 per RFC 6750 Section 3, carrying the RFC 9728 `resource_metadata` parameter.
 
-Collection Resource Server, runtime, and connector conformance are separate
-claims defined in the [PDPP Collection Profile](spec-collection-profile).
+Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
 ### Client conformance
 
@@ -1495,6 +1622,8 @@ A conformant client:
 4. Stores `next_changes_since` from the terminal page of a `changes_since` response for use in the next sync session.
 5. Respects HTTP 410 `cursor_expired` responses by performing a full re-sync rather than retrying with the expired cursor.
 6. Honors retention commitments declared in the grant.
+7. Treats unrecognized error codes as opaque, falling back to the exact HTTP status code and applicable response headers rather than failing on an unknown code. Takes the actual status code and headers as the authoritative outcome. Uses a recognized `error.type` only to refine category or presentation, and only when compatible with that outcome. Ignores an absent, unrecognized, or status-incompatible `type` for control flow, and never fails to parse on an unknown `code` or `type`.
+8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant. A client with no provenance-dependent policy has nothing to check.
 
 ### Conformance test suite
 
@@ -1503,6 +1632,12 @@ A formal conformance test suite is planned but is not defined in v0.1. This is o
 ---
 
 ## 10. Security Considerations {#security}
+
+### Declaration retrieval hygiene
+
+An authorization server SHOULD enforce configured response-size, time, and redirect-depth limits when retrieving a declaration, and SHOULD resolve DNS freshly for each connection attempt. These limits are set by local judgment: they do not alter the declaration or grant semantics that peers must share, and a peer cannot observe which values a server chose.
+
+Two related properties are not tuning choices and are stated in Section 5 as requirements. The safety of what a server renders is a shared invariant. So is the timing of the address check. A stale validation is what a rebinding attack exploits, so Section 5 requires the destination address be validated immediately before each connection attempt. The freshness of the DNS result above is a hygiene preference; the timing of the address check is not.
 
 ### Token security
 
@@ -1564,7 +1699,7 @@ In the Collection Profile, connectors receive credentials via the INTERACTION ch
 | Role | Responsibilities |
 |------|----------------|
 | **Authorization Server** | Validates purpose-code syntax and local policy; authenticates user; preserves semantic distinctions on the consent surface; validates stream/field/view/resource-id shape at grant issuance; resolves views to field lists; issues access tokens; maintains grant lifecycle. |
-| **Resource Server** | Validates token via introspection; enforces stream, instance, fields, frozen time constraints, and resources on every request; never reinterprets authorization from a current declaration; scopes owner access to one subject. |
+| **Resource Server** | Validates token via introspection; for client requests, enforces stream, instance, fields, frozen time constraints, and resources against the resolved grant; for owner requests, enforces subject/source/connection/operation scope without requiring a grant; never reinterprets authorization from a current declaration. |
 | **Client** | Submits well-formed selection requests; uses access tokens; terminates on revocation; honors retention commitments. |
 
 ### Revocation {#revocation}
@@ -1601,7 +1736,7 @@ If interoperable audit or transparency events are standardized in the future, th
 
 ### Retention
 
-The `retention` field is a structured policy declaration and policy commitment by the data recipient. PDPP does not technically enforce retention. Enforcement is through legal agreements, contractual obligations, or trust registry mechanisms. This is an intentional design choice, consistent with how OAuth 2.0 treats scope compliance.
+The `retention` field is a structured policy declaration and policy commitment by the data recipient. PDPP does not technically enforce retention. Enforcement is through legal agreements or contractual obligations, with a trust registry supporting admission and accountability rather than enforcement. This is an intentional design choice, consistent with how OAuth 2.0 treats scope compliance.
 
 ---
 
@@ -1639,6 +1774,8 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Point-in-time reconstruction | Deferred (reconstructing full state at a past timestamp) |
 | Canonical view naming vocabulary | Deferred; will be informed by implementation experience |
 | Predicate-based grant scoping | Deferred; see spec-deferred for subset template design direction |
+| Derivative data | Deferred and unresolved; v0.1 authorizes reads of declared streams and states no default for the output of compute over them. See spec-deferred |
+| Cross-source category grants | Deferred; grants bind to a single `source.id` in v0.1. See spec-deferred |
 | Real-time streaming | Different spec needed |
 
 ### Predicate-based grant scoping {#predicate-based-grant-scoping}
@@ -1720,7 +1857,7 @@ interface SourceObject {
 
 interface SourceRequestObject {
   id: string;              // Stable absolute URI for the authorization and data surface
-  kind?: 'connector' | 'provider_native'; // Optional client trust expectation
+  // No `kind`: the AS derives provenance from the accepted declaration
 }
 
 type SelectionRequest = {
@@ -1770,7 +1907,7 @@ interface DataGrant {
     max_duration: string;  // ISO 8601 duration
     on_expiry: 'delete' | 'anonymize';
   };
-  expires_at?: string | null;
+  expires_at?: string;  // ISO 8601; absent means no expiry
 }
 
 // --- Source Declaration ---

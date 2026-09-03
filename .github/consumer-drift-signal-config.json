@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema",
   "consumer_pin_required": true,
+  "_pin_history_note": "2026-09-02: PDP-Connect/data-connectors#61 repinned pdpp to this PR's (#284) head branch and dropped the reference-implementation-stand-in comparison, since #284 deletes reference-implementation/ from pdpp entirely. Editing this file to re-trigger this workflow's PR-path filter against the current head after that repin landed.",
   "_comment": "Flip-at-cutover switch for .github/workflows/consumer-drift-signal.yml (Gate B finding 'Producer signals remain permanently fail-open unless activation is modeled', 2026-08-18 final-v2 red-team). While false (pre-cutover, current state): a non-200 pin fetch, a missing pin entry, a malformed pin file, or an invalid SHA all leave the signal inactive and PASS, per that workflow's own inline comments. Flip to true only once PDP-Connect/data-connectors' cutover PR has merged .github/cross-repo-pins.json to its default branch with a pdpp entry, i.e. once the consumer pin record is a real, permanent part of the cutover contract, not a not-yet-created file. After flipping to true, the same four conditions instead FAIL: a GitHub/raw outage, a deleted pin file, a malformed file, a renamed branch, or an accidentally removed entry must stop reporting green."
 }
