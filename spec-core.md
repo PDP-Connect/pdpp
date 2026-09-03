@@ -182,7 +182,7 @@ PDPP therefore defines no delegated-grant, sub-grant, or grant-chaining construc
 
 Only live passthrough is bounded by the upstream grant: when the personal server does not hold a copy and reads from the platform to fulfill a downstream request, it MUST stay within the upstream grant. This limit does not constrain a fresh grant for owner-held data. A downstream PDPP token is never forwarded upstream.
 
-**Onward transfer is prohibited.** A recipient MUST NOT transfer its token or let an ungranted party exercise it. A personal server MAY disclose owner-held data under a fresh owner-issued downstream grant. Only live passthrough is bounded by the upstream grant, and a downstream PDPP token is never forwarded upstream.
+**Onward transfer is prohibited.** A recipient MUST NOT transfer its token or let an ungranted party exercise it.
 
 A different topology — the owner running their own authorization server in front of a platform's data, so that the platform holds the data but the owner's server decides who may read it — is not introduced by this specification. It is the arrangement UMA describes, it is not the arrangement above, and it is recorded as deferred rather than left ambiguous.
 
