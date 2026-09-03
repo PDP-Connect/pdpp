@@ -15,6 +15,8 @@ Discovery is an onboarding concern. It is not a resource server authorization de
 
 An authorization server that onboards a provider-native source starts from an already accepted protected-resource identifier. That identifier is an HTTPS URI carrying neither a fragment nor user information, and normally no query component either.
 
+Core Section 8 defines the protected resource metadata document and the `pdpp_`-prefixed members a resource server publishes in it. This section covers only what an authorization server does with that document while onboarding a provider-native source.
+
 The authorization server derives the protected-resource metadata URL as specified by RFC 9728 Section 3.1. It inserts `/.well-known/oauth-protected-resource` between the authority and any path or query component. It removes the terminating slash after the authority before insertion. For example:
 
 | Protected-resource identifier | Metadata URL |
