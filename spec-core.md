@@ -775,7 +775,7 @@ These are the two provenance classes an authorization server derives and carries
 | `"connector"` | The declaration authority represents a connector-backed source. `source.id` is its public source URI, not a local package name, connector key, storage namespace, account identifier, or runtime binding. A connector declaration remains Core-valid without Collection Profile data. |
 | `"provider_native"` | The declaration authority represents the provider's own PDPP data surface. `source.id` is normally the OAuth protected-resource identifier for that surface, not merely the provider's legal-entity URI. |
 
-A selection request does not carry `source.kind`. The authorization server derives the provenance class from the declaration it accepted for `source.id`, and records it in consent evidence and any issued grant, where a client reads it back through introspection. A client that needs provenance before use therefore checks the issued grant rather than asserting an expectation in the request. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details` for invalid authorization details.
+A selection request does not carry `source.kind`. The authorization server derives the provenance class from the declaration it accepted for `source.id`, and records it in consent evidence and any issued grant, where a client reads it back through introspection. A client whose policy depends on provenance therefore reads it from the issued grant rather than asserting an expectation in the request; Section 9 states that as a client requirement. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details` for invalid authorization details.
 
 #### AI training consent {#ai-training-consent}
 
@@ -1581,6 +1581,7 @@ A conformant client:
 5. Respects HTTP 410 `cursor_expired` responses by performing a full re-sync rather than retrying with the expired cursor.
 6. Honors retention commitments declared in the grant.
 7. Treats unrecognized error codes as opaque, falling back to the exact HTTP status code and applicable response headers rather than failing on an unknown code. Takes the actual status code and headers as the authoritative outcome; uses a recognized `error.type` only to refine category or presentation when compatible with that outcome; ignores an absent, unrecognized, or status-incompatible `type` for control flow; and never fails to parse on an unknown `code` or `type`.
+8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant. A client with no provenance-dependent policy has nothing to check.
 
 ### Conformance test suite
 
