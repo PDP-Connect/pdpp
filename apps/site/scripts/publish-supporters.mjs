@@ -45,12 +45,15 @@ export async function readSignatories(sourceDirectory) {
 }
 
 export async function publishSupporters(sourceDirectory, outputPath) {
-  const published = (await readSignatories(sourceDirectory))
-    .filter((record) => record?.consent?.register === true)
-    .map(toPublicEntry)
-    .sort(
-      (left, right) => left.signedOn.localeCompare(right.signedOn) || left.publicName.localeCompare(right.publicName)
-    );
+  const published = [];
+  for (const record of await readSignatories(sourceDirectory)) {
+    if (record?.consent?.register === true) {
+      published.push(toPublicEntry(record));
+    }
+  }
+  published.sort(
+    (left, right) => left.signedOn.localeCompare(right.signedOn) || left.publicName.localeCompare(right.publicName)
+  );
   const output = `${JSON.stringify(published, null, 2)}\n`;
 
   await mkdir(path.dirname(outputPath), { recursive: true });
