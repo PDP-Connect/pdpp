@@ -642,9 +642,9 @@ For a `provider_native` source, `source.id` MUST be identical to the protected-r
 
 An accepted revision is keyed by its accepted authority binding, `source.id`, and `declaration_version`. Different parsed content under an accepted key is equivocation: the authorization server MUST reject it and retain the previously accepted content, and MUST NOT infer ordering or freshness from `declaration_version`.
 
-When retrieving a declaration, the authorization server MUST use HTTPS without ambient credentials, MUST validate every redirect target and the final URL against its accepted declaration pointer and network policy, MUST reject a declaration that requires automatic retrieval of a remote schema, and MUST fail closed when any check fails. The declaration location is not the source identity. Section 10 states the retrieval limits an authorization server sets by local judgment.
+When retrieving a declaration, the authorization server MUST use HTTPS without ambient credentials, MUST validate every redirect target and the final URL against its accepted declaration pointer and network policy, MUST reject a declaration that requires automatic retrieval of a remote schema, and MUST fail closed when any check fails. It MUST validate the destination address against its network policy immediately before each connection attempt, including each redirect hop, and MUST connect only to an address from that validated result; an address accepted for an earlier attempt does not authorize a later resolution. The declaration location is not the source identity. Section 10 states the retrieval limits an authorization server sets by local judgment.
 
-Declaration display values are untrusted input. An authorization server MUST render declaration display values safely for the output context; context-appropriate escaping or sanitization SHOULD be used. Current declaration capabilities MUST NOT widen an issued grant.
+Declaration display values are untrusted input. An authorization server MUST render declaration display values safely for the output context, by context-appropriate escaping, by sanitization, or by any construction that guarantees the value cannot be interpreted as markup, script, or a control sequence in that context. The requirement is on the outcome; this specification does not mandate one technique. Current declaration capabilities MUST NOT widen an issued grant.
 
 ---
 
@@ -1609,7 +1609,9 @@ A formal conformance test suite is planned but is not defined in v0.1. This is o
 
 ### Declaration retrieval hygiene
 
-An authorization server SHOULD enforce configured response-size, time, and redirect-depth limits when retrieving a declaration, and SHOULD resolve DNS freshly for each connection attempt. These limits are set by local judgment: they do not alter the declaration or grant semantics that peers must share, and a peer cannot observe which values a server chose. The safety of what a server renders is a shared invariant rather than a tuning choice, so it stays in Section 5 as a requirement on the outcome.
+An authorization server SHOULD enforce configured response-size, time, and redirect-depth limits when retrieving a declaration, and SHOULD resolve DNS freshly for each connection attempt. These limits are set by local judgment: they do not alter the declaration or grant semantics that peers must share, and a peer cannot observe which values a server chose.
+
+Two related properties are not tuning choices and are stated in Section 5 as requirements. The safety of what a server renders is a shared invariant. So is validating the destination address against network policy immediately before each connection attempt: a stale validation is what a rebinding attack exploits, so the freshness of the DNS result above is a performance and hygiene preference while the timing of the address check is a security requirement.
 
 ### Token security
 
