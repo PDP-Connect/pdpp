@@ -23,11 +23,19 @@ and no reason.
 
 The site writes these files to the private repository's `signatures` branch.
 `PDPP_PRIVATE_REPO_BRANCH` changes that branch for a deployment; it defaults to
-`signatures`. The public repository's daily `publish-supporters` workflow checks
-out that branch and writes the public register with its own `GITHUB_TOKEN`.
-The private repository's publish workflow is retired. Maintainers review and
-merge `signatures` into the private repository's default branch; the site never
-commits directly to that protected branch.
+`signatures`. The public repository's daily `publish-supporters` workflow runs
+as `github-actions[bot]`. Its `PDPP_PRIVATE_REPO_TOKEN` can read
+`PDP-Connect/supporters-private` only for the checkout pinned to `signatures`;
+it cannot write the private register. The workflow writes the public register
+with this repository's `GITHUB_TOKEN` by opening a PR from
+`publish/supporters`, never by committing to `main`.
+
+The publisher requests squash auto-merge. This repository currently disables
+auto-merge for `GITHUB_TOKEN`, so a maintainer must click **Enable auto-merge**
+and choose squash on that generated PR. The private repository's publish
+workflow is retired. Maintainers review and merge `signatures` into the private
+repository's default branch; the site never commits directly to that protected
+branch.
 
 Reachable by the maintainers listed in [`MAINTAINERS.md`](../MAINTAINERS.md)
 and by one deploy key held as a Vercel secret. Nothing else.
@@ -96,8 +104,8 @@ Three properties hold this together, and each is worth keeping:
 
 | Store | Read | Write |
 | --- | --- | --- |
-| Private signatory repo | Maintainers in `MAINTAINERS.md` | Those maintainers, plus the site's deploy key |
-| Public supporters JSON | Anyone | The publish bot, and maintainers via PR |
+| Private signatory repo | Maintainers in `MAINTAINERS.md`, plus `github-actions[bot]` through `PDPP_PRIVATE_REPO_TOKEN` for the `signatures` checkout only | Those maintainers, plus the site's deploy key |
+| Public supporters JSON | Anyone | `github-actions[bot]` through this repository's `GITHUB_TOKEN`, via `publish/supporters` PRs, and maintainers via PR |
 | Mailing list | LFDT list administrators | LFDT list administrators |
 
 Access to the private repository is reviewed whenever `MAINTAINERS.md` changes.

@@ -3,10 +3,22 @@ name: publish-supporters
 on:
   schedule:
     - cron: "17 3 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      base_branch:
+        default: main
+        description: Branch that receives the generated register.
+        required: false
+        type: string
+      publisher_branch:
+        default: publish/supporters
+        description: Branch used for the generated-register pull request.
+        required: false
+        type: string
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: publish-supporters
@@ -16,10 +28,14 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      PUBLISH_BASE: ${{ inputs.base_branch || 'main' }}
+      PUBLISH_BRANCH: ${{ inputs.publisher_branch || 'publish/supporters' }}
     steps:
       - name: Checkout public repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           path: pdpp
 
       - name: Checkout private register branch
@@ -31,6 +47,13 @@ jobs:
           repository: PDP-Connect/supporters-private
           token: ${{ secrets.PDPP_PRIVATE_REPO_TOKEN }}
 
+      - name: Start the publisher branch from its base
+        working-directory: pdpp
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$PUBLISH_BASE"
+          git checkout --force -B "$PUBLISH_BRANCH" "origin/$PUBLISH_BASE"
+
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -39,11 +62,13 @@ jobs:
       - name: Build public supporters register
         run: node pdpp/apps/site/scripts/publish-supporters.mjs supporters-private pdpp/apps/site/public/principles/supporters.json
 
-      - name: Commit changed register
+      - name: Commit and publish changed register
+        id: publish
         working-directory: pdpp
         run: |
           set -euo pipefail
           if git diff --quiet -- apps/site/public/principles/supporters.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "Supporters register is unchanged."
             exit 0
           fi
@@ -51,4 +76,37 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add apps/site/public/principles/supporters.json
           git commit -s -m "chore(site): publish supporters register"
-          git push
+          git push --force origin "HEAD:refs/heads/$PUBLISH_BRANCH"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update the supporters pull request
+        id: pull-request
+        if: steps.publish.outputs.changed == 'true'
+        working-directory: pdpp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$PUBLISH_BRANCH" --base "$PUBLISH_BASE" --state open --json number --jq '.[0].number')"
+          if [ -z "$number" ]; then
+            gh pr create --repo "$GITHUB_REPOSITORY" --base "$PUBLISH_BASE" --head "$PUBLISH_BRANCH" --title "chore(site): publish supporters register" --body "Automated public-register publication."
+            number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$PUBLISH_BRANCH" --base "$PUBLISH_BASE" --state open --json number --jq '.[0].number')"
+          else
+            gh pr edit "$number" --repo "$GITHUB_REPOSITORY" --title "chore(site): publish supporters register"
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Enable squash auto-merge
+        if: steps.publish.outputs.changed == 'true'
+        working-directory: pdpp
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pull-request.outputs.number }}
+        run: |
+          set -euo pipefail
+          if output="$(gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash 2>&1)"; then
+            printf '%s\n' "$output"
+            exit 0
+          fi
+          printf '%s\n' "$output"
+          echo "::warning::Auto-merge is unavailable. A maintainer must select squash auto-merge for PR #$PR_NUMBER."

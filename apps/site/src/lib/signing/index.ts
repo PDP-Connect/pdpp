@@ -34,7 +34,9 @@ function requireEnv(name: string): string {
 }
 
 /** Thrown when the system is not provisioned. Never leaks to the client body. */
-export class SigningUnavailableError extends Error {}
+export class SigningUnavailableError extends Error {
+  override name = "SigningUnavailableError";
+}
 
 /** Thrown when the submission itself is bad. Its message IS shown. */
 export class SigningRejectedError extends Error {}
