@@ -161,7 +161,7 @@ _Newly deferred (2026-09-02)._
 
 **Why it is open:** Answering it means deciding, at minimum: whether derivative data is in scope for PDPP at all; whether producing it needs its own grant or is implied by the read; whether it is a distinct semantic class or a source in its own right; how revocation of the underlying grant reaches an artifact already derived; and whether the answer differs for a reversible transformation (an index) and an irreversible one (trained weights). `purpose_code`, and the explicit protocol-level consent rule for `ai_training`, are the only places v0.1 touches this, and they constrain declared purpose, not derived artifacts.
 
-**v0.1 posture:** Out of scope. Nothing in v0.1 asserts that derivative data is authorized, and nothing asserts it is not. The specification is silent, and silence should not be read as permission.
+**v0.1 posture:** Out of scope, and unresolved. Nothing in v0.1 asserts that derivative data is authorized, and nothing asserts it is not. The question is open, and this specification states no default either way; a future version answers it as a normative decision rather than as an inference from this silence.
 
 **Design constraint for a future version:** A derivative-data model should be addable without redefining the existing grant, most plausibly as an additional semantic class or an additional grant kind rather than as a change to `StreamGrant`.
 
