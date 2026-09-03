@@ -65,7 +65,7 @@ PDPP is a data-portability profile, not a general authorization framework. It ri
 
 #### Relationship to sector-specific consent regimes {#sector-regimes}
 
-PDPP is a floor, not a ceiling. A source already operating under a stricter or more specific consent regime — open banking, or a health regime built on FHIR — does not lose or weaken any obligation of that regime by also being reachable through PDPP. Where the two differ, the stricter requirement governs that source. Nothing in this specification authorizes a disclosure that the source's own regime forbids, and a PDPP grant is not a substitute for a consent that regime requires. Compatibility profiles that map a sector regime's consent vocabulary onto PDPP's are a possible future addition and are not defined in v0.1.
+**Note (non-normative).** PDPP is a floor, not a ceiling. A source already operating under a stricter or more specific consent regime — open banking, or a health regime built on FHIR — does not lose or weaken any obligation of that regime by also being reachable through PDPP. Where the two differ, the stricter requirement governs that source. Nothing in this specification authorizes a disclosure that the source's own regime forbids, and a PDPP grant is not a substitute for a consent that regime requires. This is a scoping statement rather than a conformance criterion: PDPP defines no test for which of two regimes is stricter, and conformance to this specification is assessed against this specification alone. Compatibility profiles that map a sector regime's consent vocabulary onto PDPP's are a possible future addition and are not defined in v0.1.
 
 ---
 
