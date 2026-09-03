@@ -1,7 +1,7 @@
 # PDPP Source Declaration Discovery and Trust v0.1.0
 
 Status: Informative. Implementation guidance. Normative requirements moved to Core §5 Declaration acceptance on 2026-09-02.
-Date: 2026-09-02
+Date: 2026-09-03
 
 ---
 
