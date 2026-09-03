@@ -59,6 +59,14 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 
 **Note:** The PDPP Collection Profile is one fulfillment mechanism. A conformance test suite for this specification is planned but is not defined in v0.1 (see Section 9).
 
+#### Why a profile rather than a new authorization framework {#profile-not-framework}
+
+PDPP is a data-portability profile, not a general authorization framework. It rides OAuth 2.0 and RFC 9396 because that is what is deployed, and it adds what neither UMA nor GNAP defines: a portable record model, purpose-bound durable grants, a declared collection and source layer, and a query surface with grant enforcement. UMA is prior art for the user-managed standing access model and GNAP is a candidate future foundation; the table above records both. A GNAP transport binding remains possible later without changing the record model, the grant, or the resource server interface, because none of those depend on the authorization protocol that produced the grant.
+
+#### Relationship to sector-specific consent regimes {#sector-regimes}
+
+**Note (non-normative).** PDPP is a floor, not a ceiling. A source already operating under a stricter or more specific consent regime — open banking, or a health regime built on FHIR — does not lose or weaken any obligation of that regime by also being reachable through PDPP. Where the two differ, the stricter requirement governs that source. Nothing in this specification authorizes a disclosure that the source's own regime forbids, and a PDPP grant is not a substitute for a consent that regime requires. This is a scoping statement rather than a conformance criterion: PDPP defines no test for which of two regimes is stricter, and conformance to this specification is assessed against this specification alone. Compatibility profiles that map a sector regime's consent vocabulary onto PDPP's are a possible future addition and are not defined in v0.1.
+
 ---
 
 ## 2. Terminology and Actors
