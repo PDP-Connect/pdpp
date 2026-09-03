@@ -1603,6 +1603,10 @@ A formal conformance test suite is planned but is not defined in v0.1. This is o
 
 ## 10. Security Considerations {#security}
 
+### Declaration retrieval hygiene
+
+An authorization server SHOULD enforce configured response-size, time, and redirect-depth limits when retrieving a declaration, SHOULD resolve DNS freshly for each connection attempt, and SHOULD escape declaration display values for their output context. These are local retrieval and rendering controls; they do not alter the declaration or grant semantics that peers must share.
+
 ### Token security
 
 PDPP defines two token kinds at the resource server boundary: owner tokens and client tokens. Both use RFC 6750 Bearer Token format on the wire. The RS distinguishes them via `pdpp_token_kind` in the introspection response, not by token syntax.
