@@ -1,198 +1,441 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { DiscordIcon, GithubIcon } from "@/components/elements/icons.tsx";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
-import { PdppRail } from "@/components/layout/rail.tsx";
-import { PdppConceptDocHeader } from "@/components/sections/concept-doc-header.tsx";
 import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
 import { Text } from "@/components/typography/text.tsx";
-import { DISCORD_INVITE_URL, GITHUB_MAINTAINERS_URL, GITHUB_NEW_ISSUE_URL, GITHUB_REPO_URL } from "@/lib/site-facts.ts";
-import { SPEC_STATUS } from "@/lib/spec-status.ts";
-
-const PARTICIPATE_TOC = [
-  { href: "#get-involved", label: "Get involved" },
-  { href: "#how-it-changes", label: "How the specification changes" },
-  { href: "#status", label: "Where PDPP is today" },
-] as const;
+import { REPORTS_EMAIL_HREF, siteConfig, siteFlags } from "@/lib/site-config.ts";
+import { GITHUB_REPO_URL } from "@/lib/site-facts.ts";
+import { cn } from "@/lib/utils.ts";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/participate" },
-  description: "Ask a question about the PDPP draft, or propose a change to the protocol.",
+  description: "Follow the work, sign the Principles, or build something and get it verified.",
   openGraph: { url: "/participate" },
   title: "Participate - PDPP",
 };
 
-// This is a PARTICIPATE page: where someone who wants to get involved finds the
-// people, the process, and the places to talk. Not an About page.
-//
-// Went from 6 sections to 3. What was CUT and why:
-//   Maintainers table   — a roster with a Status column of three identical
-//                         "Active" values is About-page furniture. 4 of 6
-//                         comparable projects (MCP, Solid, x402, Kubernetes,
-//                         OpenTelemetry, LFDT) name no individuals on the site
-//                         at all; names live in a version-controlled
-//                         MAINTAINERS.md. Replaced by a pointer to that file,
-//                         which is also the canonical list, so it cannot go
-//                         stale.
-//   License table       — the footer now carries all three licenses, labelled
-//                         and linked. Nothing here was unique to this page.
-//   Implementations     — belongs on /reference, the page about running one.
-//                         It was duplicated across both.
-//
-// The extra horizontal rules between sections are gone (Callum's note: AI has
-// added too many lines).
-const changeSteps = [
+const CARD = cn("flex flex-col gap-3 bg-background p-6", "shadow-[0_0_0_1px_var(--border)]");
+const CELL = "px-3 py-2.5 text-left align-top";
+
+interface RegisterEntry {
+  organisation: string;
+  role: string;
+  status: string;
+  specVersion: string;
+  since: string;
+  state: string;
+}
+
+interface TrustRegistry {
+  basis: string;
+  name: string;
+  operator: string;
+  recognisedFor: readonly string[];
+  recognisedOn: string;
+  url: string;
+}
+
+// Both registers are PR-driven files in this repo and hold no personal data.
+// Read at build time: a fetch at request time would put a network hop in front
+// of a file that ships in the repo and would 500 the page when it failed.
+async function readJson<T>(...segments: string[]): Promise<readonly T[]> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path.join(process.cwd(), "public", ...segments), "utf8"));
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+const LEVELS = [
   {
-    body: "Against the specification files, reviewed in the open. Editorial and non-normative fixes need nothing more than this.",
-    title: "Every change is a public pull request",
+    level: "Level 1",
+    title: "Follow along",
+    // Copy delta 1: working sessions removed from this list.
+    body: "Discord, mailing list, comments. Nothing to sign, so regulators can take part off the record.",
+    cta: "Channels and contacts ↓",
+    href: "#channels",
   },
   {
-    body: "What breaks and what the change impacts, written before the code.",
-    title: "A normative change states its rationale first",
+    level: "Level 2",
+    title: "Become a Supporter",
+    body: "Sign the Principles and go on the public list. Open now.",
+    cta: "Become a Supporter",
+    href: "/principles#who-can-sign",
   },
   {
-    body: "The reference implementation moves in the same release.",
-    title: "New behavior ships with tests",
+    level: "Level 3",
+    title: "Become a Partner",
+    body: "Get an implementation verified. Partners get drafts early, sit in working groups and vote. Organisations only, from 14 November.",
+    cta: "How verification works ↓",
+    href: "#get-verified",
   },
 ] as const;
 
-export default function ParticipatePage() {
+const STEPS = [
+  { step: "Step 1", title: "Build it", body: "A source, accessor or operator that implements Core." },
+  {
+    step: "Step 2",
+    title: "Apply",
+    body: "Open a pull request from the template for your role and attach your evidence. A machine checks it. Pass, and you are Conformant.",
+  },
+  {
+    step: "Step 3",
+    title: "Get reviewed",
+    body: "For Verified, the technical committee reviews in public and votes, and you prove your organisation exists through a recognised trust registry. You get reasons either way, and can resubmit.",
+  },
+  {
+    step: "Step 4",
+    title: "You're on the register",
+    body: "Your status is published with the date and version. Any Verified status makes you a Partner.",
+  },
+] as const;
+
+const STATUSES = [
+  ["Conformant Source", "Source", "Automated", "Declaration parses against the schema", "By 14 Nov 2026", "Not open"],
+  [
+    "Verified Source",
+    "Source",
+    "Reviewed",
+    "Published by the platform that holds the data. Committee review, identity via a recognised trust registry",
+    "By 14 Nov 2026",
+    "Not open",
+  ],
+  [
+    "Conformant Accessor",
+    "Accessor",
+    "Automated",
+    "Registered, submission complete. No assessment",
+    "By 14 Nov 2026",
+    "Not open",
+  ],
+  [
+    "Verified Accessor",
+    "Accessor",
+    "Reviewed",
+    "Legal attestation, liability on a named entity. Committee review, identity via a recognised trust registry",
+    "By 14 Nov 2026",
+    "Not open",
+  ],
+  [
+    "Verified Operator",
+    "Operator",
+    "Reviewed",
+    "Passes the test suite, then full committee review. Identity via a recognised trust registry",
+    "By 1 Jan 2027",
+    "Not open",
+  ],
+] as const;
+
+export default async function Page() {
+  const register = await readJson<RegisterEntry>("register", "index.json");
+  const trustRegistries = await readJson<TrustRegistry>("register", "trust-registries.json");
+
   return (
     <PdppConceptPage>
-      <PdppRail toc={PARTICIPATE_TOC} />
       <PdppConceptDoc>
-        <PdppConceptDocHeader
-          lede="Ask a question about the draft, or propose a change to the protocol."
-          title="Participate"
-        />
-
-        {/* Actionable links FIRST, directly under the lede. The owner's note:
-              landing here, you should be able to open an issue or find Discord
-              immediately. These were previously ruled-list rows — an h3, an
-              explanatory sentence, and a right-aligned link floating away from
-              its own label, which is document prose, not an interface.
-
-              Descriptions dropped entirely: "Open an issue" next to a GitHub
-              mark does not need a sentence explaining that it opens an issue.
-
-              /issues/new, not /issues — the owner said "I want to open an
-              issue", which is the compose action, not the index. */}
-        <PdppConceptSection id="get-involved" sectionIndex="01" title="Get involved">
-          <div className="pdpp-channels">
-            <a className="pdpp-channel" href={GITHUB_NEW_ISSUE_URL} rel="noopener noreferrer" target="_blank">
-              <GithubIcon className="pdpp-icon-github pdpp-channel__icon" />
-              <span className="pdpp-channel__label">Open an issue</span>
-              <span aria-hidden="true" className="pdpp-channel__arrow">
-                →
-              </span>
-            </a>
-            <a className="pdpp-channel" href={GITHUB_REPO_URL} rel="noopener noreferrer" target="_blank">
-              <GithubIcon className="pdpp-icon-github pdpp-channel__icon" />
-              <span className="pdpp-channel__label">PDP-Connect/pdpp</span>
-              <span aria-hidden="true" className="pdpp-channel__arrow">
-                →
-              </span>
-            </a>
-            <a className="pdpp-channel" href={DISCORD_INVITE_URL} rel="noopener noreferrer" target="_blank">
-              <DiscordIcon className="pdpp-icon-discord pdpp-channel__icon" />
-              <span className="pdpp-channel__label">#pdp-connect on Discord</span>
-              <span aria-hidden="true" className="pdpp-channel__arrow">
-                →
-              </span>
-            </a>
-          </div>
-          <Text color="muted" size="body">
-            In an issue, name the part of the specification your question applies to and what the text does not let you
-            decide. A maintainer answers there.
+        <div className="flex flex-col gap-4 pt-10">
+          <Text as="h1" size="display">
+            How to get involved
           </Text>
-        </PdppConceptSection>
-
-        {/* Grounded against the WHATWG Working Mode and the OpenTelemetry OTEP
-              README, which document a change as EVIDENCE REQUIREMENTS rather
-              than a stage pipeline. The previous version invented a four-stage
-              pipeline (proposal / PR / review / consultation) that no comparable
-              project runs and this lab cannot honour. */}
-        <PdppConceptSection id="how-it-changes" sectionIndex="02" title="How the specification changes">
-          <Text size="body">
-            Normative text lives in the root <code>spec-*.md</code> files. Everything else, including the specification
-            pages on this site, is a downstream copy.
+          <Text as="p" className="max-w-[68ch]" size="lede" wrap="pretty">
+            Follow the work, sign the Principles, or build something and get it verified. All of it is voluntary, and
+            none of it is needed to use PDPP.
           </Text>
-          <div className="pdpp-ruled-list pdpp-ruled-list--plain">
-            {changeSteps.map((step) => (
-              <div className="pdpp-ruled-list__item" key={step.title}>
-                <div className="pdpp-ruled-list__body">
-                  <Text as="h3" size="heading">
-                    {step.title}
-                  </Text>
-                  <Text size="body">{step.body}</Text>
-                </div>
+        </div>
+
+        <div className="mt-10 grid grid-cols-1 gap-px lg:grid-cols-3">
+          {LEVELS.map((level) => (
+            <div className={CARD} key={level.level}>
+              <Text as="p" color="primary" family="mono" size="stamp">
+                {level.level}
+              </Text>
+              <Text as="h2" size="lede" weight="semi">
+                {level.title}
+              </Text>
+              <Text as="p" color="muted" size="small" wrap="pretty">
+                {level.body}
+              </Text>
+              <Text as="p" className="mt-auto pt-2" size="small">
+                <Link className="text-primary hover:text-foreground" href={level.href}>
+                  {level.cta}
+                </Link>
+              </Text>
+            </div>
+          ))}
+        </div>
+
+        <PdppConceptSection id="get-verified" title="Get verified">
+          <div className="mt-6 grid grid-cols-1 gap-px md:grid-cols-2 xl:grid-cols-4">
+            {STEPS.map((step) => (
+              <div className={CARD} key={step.step}>
+                <Text as="p" color="primary" family="mono" size="stamp">
+                  {step.step}
+                </Text>
+                <Text as="h3" size="lede" weight="semi">
+                  {step.title}
+                </Text>
+                <Text as="p" color="muted" size="small" wrap="pretty">
+                  {step.body}
+                </Text>
               </div>
             ))}
-            <div className="pdpp-ruled-list__item">
-              <div className="pdpp-ruled-list__body">
-                <Text as="h3" size="heading">
-                  Two maintainers approve before merge
-                </Text>
-                <Text size="body">
-                  Maintainers are the editors of the current draft, listed in{" "}
-                  <a href={GITHUB_MAINTAINERS_URL} rel="noopener noreferrer" target="_blank">
-                    MAINTAINERS.md
-                  </a>
-                  .
-                </Text>
-              </div>
-            </div>
           </div>
-          <Text size="body">
-            Interfaces may still change: {SPEC_STATUS.version} has not been through public consultation, which opens
-            before v1.0 is pinned. Governance and the license split are recorded in{" "}
-            <Link href="/specification#specification-governance">specification governance</Link>.
+
+          <div className="mt-8 flex flex-wrap items-center gap-4">
+            <Text as="p" size="small">
+              <a
+                className="text-primary hover:text-foreground"
+                href={`${GITHUB_REPO_URL}/issues/new?template=apply-source.md`}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                Apply as a Source →
+              </a>
+            </Text>
+            <Text as="p" size="small">
+              <a
+                className="text-primary hover:text-foreground"
+                href={`${GITHUB_REPO_URL}/issues/new?template=apply-accessor.md`}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                Apply as an Accessor →
+              </a>
+            </Text>
+            {/* Disabled with its date until operatorApplications is on. The
+                suite an Operator is assessed against does not exist until then,
+                so a live button would invite an application nobody can act on. */}
+            {siteFlags.operatorApplications ? (
+              <Text as="p" size="small">
+                <a
+                  className="text-primary hover:text-foreground"
+                  href={`${GITHUB_REPO_URL}/issues/new?template=apply-operator.md`}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  Apply as an Operator →
+                </a>
+              </Text>
+            ) : (
+              <Text aria-disabled="true" as="span" color="subtle" size="small">
+                Apply as an Operator, opens 1 Jan 2027
+              </Text>
+            )}
+          </div>
+          <Text as="p" className="mt-4" color="muted" size="small">
+            Not sure which fits, or not on GitHub? Write to {siteConfig.generalContact} and we will sort it with you.
+          </Text>
+
+          <Text as="h3" className="mt-12" size="lede" weight="semi">
+            The statuses
+          </Text>
+          <div className="mt-4 overflow-x-auto border border-border">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-border border-b">
+                  {["Status", "Role", "Level", "How established", "Opens", "State"].map((heading) => (
+                    <th className={cn(CELL, "font-normal")} key={heading} scope="col">
+                      <Text as="span" color="subtle" inline size="stamp">
+                        {heading}
+                      </Text>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {STATUSES.map((row) => (
+                  <tr className="border-border/60 border-b last:border-b-0" key={row[0]}>
+                    {row.map((cell, index) => (
+                      <td className={CELL} key={cell}>
+                        <Text as="span" color={index === 0 ? "inherit" : "muted"} inline size="small">
+                          {cell}
+                        </Text>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Text as="p" className="mt-3" color="muted" size="small" wrap="pretty">
+            Conformant is a machine check. Verified is a human review, and makes you a Partner. No fee at any stage.
           </Text>
         </PdppConceptSection>
 
-        {/* Renamed from "Status of this document". The owner spotted that the
-              content is PDPP-project-wide status, not the status of this page,
-              and the heading was the thing that was wrong. Content kept. */}
-        <PdppConceptSection id="status" sectionIndex="03" title="Where PDPP is today">
-          <Text size="body">
-            {SPEC_STATUS.version} is a {SPEC_STATUS.label.toLowerCase()}.
+        <PdppConceptSection id="register" title="The register">
+          <Text as="p" className="mt-6" color="muted" size="body">
+            Applications open by 14 November.
           </Text>
-          <ul className="pdpp-updates">
-            <li>
-              <Text
-                as="time"
-                className="normal-case tracking-[0.04em]"
-                color="subtle"
-                dateTime="2026-07"
-                numeric="tabular"
-                size="eyebrow"
-              >
-                2026 · Jul
+          <div className="mt-4 overflow-x-auto border border-border">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-border border-b">
+                  {["Organisation", "Role", "Status", "Spec version", "Since", "State"].map((heading) => (
+                    <th className={cn(CELL, "font-normal")} key={heading} scope="col">
+                      <Text as="span" color="subtle" inline size="stamp">
+                        {heading}
+                      </Text>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {register.length === 0 ? (
+                  <tr>
+                    <td className={CELL} colSpan={6}>
+                      <Text as="span" color="muted" inline size="small">
+                        Nothing listed yet.
+                      </Text>
+                    </td>
+                  </tr>
+                ) : (
+                  register.map((entry) => (
+                    <tr className="border-border/60 border-b last:border-b-0" key={`${entry.organisation}-${entry.status}`}>
+                      <td className={CELL}>
+                        <Text as="span" inline size="small">
+                          {entry.organisation}
+                        </Text>
+                      </td>
+                      {[entry.role, entry.status, entry.specVersion, entry.since, entry.state].map((cell) => (
+                        <td className={CELL} key={cell}>
+                          <Text as="span" color="muted" inline size="small">
+                            {cell}
+                          </Text>
+                        </td>
+                      ))}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <Text as="p" className="mt-3" color="subtle" family="mono" size="stamp">
+            Kept on GitHub · machine readable at <a className="hover:text-primary" href="/register/index.json">/register/index.json</a> · Supporters are listed separately on the Principles page
+          </Text>
+
+          <Text as="h3" className="mt-12" size="lede" weight="semi">
+            Recognised trust registries
+          </Text>
+          <Text as="p" className="mt-2 max-w-[68ch]" color="muted" size="small" wrap="pretty">
+            A current entry on one of these stands in place of a KYB-style check when an organisation applies for a
+            Verified status.
+          </Text>
+          <div className="mt-4 grid grid-cols-1 gap-px md:grid-cols-2">
+            {trustRegistries.map((registry) => (
+              <div className={CARD} key={registry.name}>
+                <Text as="h4" size="body" weight="semi">
+                  {registry.name}
+                </Text>
+                <Text as="p" color="subtle" size="stamp">
+                  {registry.operator} · recognised {registry.recognisedOn}
+                </Text>
+                <Text as="p" color="muted" size="small" wrap="pretty">
+                  {registry.basis}
+                </Text>
+                <Text as="p" className="mt-auto pt-2" size="small">
+                  <a
+                    className="text-primary hover:text-foreground"
+                    href={registry.url}
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  >
+                    {registry.name} →
+                  </a>
+                </Text>
+              </div>
+            ))}
+          </div>
+          <Text as="p" className="mt-3" color="subtle" family="mono" size="stamp">
+            <a className="hover:text-primary" href="/register/trust-registries.json">
+              /register/trust-registries.json
+            </a>
+          </Text>
+        </PdppConceptSection>
+
+        <PdppConceptSection id="channels" title="Channels and contacts">
+          <div className="mt-6 grid grid-cols-1 gap-px md:grid-cols-2">
+            <div className={CARD}>
+              <Text as="p" color="subtle" size="stamp">
+                Chat
               </Text>
-              <Text size="body">
-                LFDT Labs proposal accepted; repositories public under the PDP-Connect organization.
+              <Text as="h3" size="lede" weight="semi">
+                #pdp-connect on Discord
               </Text>
-            </li>
-            <li>
-              <Text
-                as="time"
-                className="normal-case tracking-[0.04em]"
-                color="subtle"
-                dateTime="2026-04"
-                numeric="tabular"
-                size="eyebrow"
-              >
-                2026 · Apr
+              <Text as="p" color="muted" size="small">
+                Where things are announced first.
               </Text>
-              <Text size="body">
-                Core protocol {SPEC_STATUS.version} published as a normative draft alongside the forkable reference
-                implementation.
+              <Text as="p" className="mt-auto pt-2" size="small">
+                <a
+                  className="text-primary hover:text-foreground"
+                  href={siteConfig.discordUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  Join →
+                </a>
               </Text>
-            </li>
-          </ul>
+            </div>
+            <div className={CARD}>
+              <Text as="p" color="subtle" size="stamp">
+                Email
+              </Text>
+              <Text as="h3" size="lede" weight="semi">
+                Mailing list
+              </Text>
+              <Text as="p" color="muted" size="small">
+                New versions and comment periods. Low volume.
+              </Text>
+              <Text as="p" className="mt-auto pt-2" size="small">
+                <a
+                  className="text-primary hover:text-foreground"
+                  href={siteConfig.mailingListUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  Subscribe →
+                </a>
+              </Text>
+            </div>
+            <div className={CARD}>
+              <Text as="p" color="subtle" size="stamp">
+                Governments and regulators
+              </Text>
+              <Text as="h3" size="lede" weight="semi">
+                Take part without signing
+              </Text>
+              <Text as="p" color="muted" size="small">
+                Observe anywhere, sign nothing. Ask for a briefing.
+              </Text>
+              <Text as="p" className="mt-auto pt-2" size="small">
+                <a className="text-primary hover:text-foreground" href={`mailto:${siteConfig.generalContact}`}>
+                  Contact →
+                </a>
+              </Text>
+            </div>
+            <div className={CARD}>
+              <Text as="p" color="subtle" size="stamp">
+                Something wrong?
+              </Text>
+              <Text as="h3" size="lede" weight="semi">
+                Report it
+              </Text>
+              <Text as="p" color="muted" size="small" wrap="pretty">
+                A wrong description, a name that should not be listed, anything about a status. Answered within five
+                working days.
+              </Text>
+              <Text as="p" className="mt-auto pt-2" family="mono" size="small">
+                <a className="text-primary hover:text-foreground" href={REPORTS_EMAIL_HREF}>
+                  pdpp-dev-reports@lfdecentralizedtrust.org →
+                </a>
+              </Text>
+            </div>
+          </div>
         </PdppConceptSection>
       </PdppConceptDoc>
     </PdppConceptPage>
