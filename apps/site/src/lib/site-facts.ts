@@ -24,6 +24,15 @@ export function repoBlobUrl(repoRelativePath: string): string {
   return `${GITHUB_REPO_URL}/blob/main/${repoRelativePath}`;
 }
 
+// The reference implementation moved to PDP-Connect/data-connect. Coverage
+// evidence remains there, so its links must not resolve against this repo.
+export const DATA_CONNECT_REPO_URL = "https://github.com/PDP-Connect/data-connect";
+
+/** A `blob/main/<path>` link into the reference implementation's canonical repository. */
+export function dataConnectBlobUrl(repoRelativePath: string): string {
+  return `${DATA_CONNECT_REPO_URL}/blob/main/${repoRelativePath}`;
+}
+
 // The Discord invite moved to site-config.ts, where it is one value the whole
 // site reads. It sat here as a second constant while /participate read its own
 // from config, which is how a site ends up publishing two different invites.

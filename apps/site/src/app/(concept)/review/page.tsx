@@ -5,8 +5,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
 import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
+import { PdppEmailContactCard } from "@/components/site/report-contact-card.tsx";
 import { Text } from "@/components/typography/text.tsx";
-import { REPORTS_EMAIL_HREF } from "@/lib/site-config.ts";
 import { GITHUB_NEW_ISSUE_URL } from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -159,22 +159,11 @@ export default function Page() {
                 </a>
               </Text>
             </div>
-            <div className={CARD}>
-              <Text as="p" color="subtle" size="stamp">
-                By email
-              </Text>
-              <Text as="h3" size="lede" weight="semi">
-                Same log, no account needed
-              </Text>
-              <Text as="p" color="muted" size="small" wrap="pretty">
-                Email your comments and we add them to the same public log, under whatever name you ask for.
-              </Text>
-              <Text as="p" className="mt-auto pt-2" family="mono" size="small">
-                <a className="text-primary hover:text-foreground" href={REPORTS_EMAIL_HREF}>
-                  pdpp-dev-reports@lfdecentralizedtrust.org →
-                </a>
-              </Text>
-            </div>
+            <PdppEmailContactCard
+              body="Email your comments and we add them to the same public log, under whatever name you ask for."
+              heading="By email"
+              title="Same log, no account needed"
+            />
           </div>
         </PdppConceptSection>
 

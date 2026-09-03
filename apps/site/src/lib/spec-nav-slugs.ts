@@ -39,9 +39,6 @@ export const GUIDANCE_SLUGS = [
   "spec-semantic-retrieval-extension",
 ] as const;
 
-// Informative implementer guidance, rendered under its own rail heading. These define no conformance requirements: each states so in its own status header, and the site copies carry an informative callout (see their header sidecars in apps/site/spec-headers/).
-export const GUIDANCE_SLUGS = ["spec-discovery-and-trust", "spec-collection-profile"] as const;
-
 // Slugs sync-spec-docs.mjs generates from a root spec-*.md (that script's own
 // SPECS list). It writes these as .mdx — not .md — so each page's <Callout>
 // status banner parses as JSX instead of being dropped as a raw HTML block by

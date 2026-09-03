@@ -105,7 +105,11 @@ export function signingDisclosure(): string {
 
 /** Config values still on a placeholder, for the launch checklist. */
 export function unsetConfigValues(): readonly string[] {
-  return Object.entries(siteConfig)
-    .filter(([, value]) => isPlaceholder(value))
-    .map(([key]) => key);
+  const placeholders: string[] = [];
+  for (const [key, value] of Object.entries(siteConfig)) {
+    if (isPlaceholder(value)) {
+      placeholders.push(key);
+    }
+  }
+  return placeholders;
 }

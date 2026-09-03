@@ -122,6 +122,10 @@ function organisationSlug(organisation: string): string {
   return organisation.toLowerCase().normalize("NFKD").replace(NON_ALPHANUMERIC, "");
 }
 
+function oneContainsOther(left: string, right: string): boolean {
+  return left.indexOf(right) !== -1 || right.indexOf(left) !== -1;
+}
+
 // An organisation submission must come from an address at the organisation's
 // own domain. This is intentionally a WEAK check that refuses the obvious
 // cases rather than a strong one that would refuse legitimate signatures: a
@@ -138,11 +142,16 @@ export function organisationDomainMatches(submission: Submission): boolean {
     return false;
   }
   const slug = organisationSlug(submission.organisation);
-  const domainLabels = domain.split(".").map((label) => label.replace(HYPHENS, ""));
+  const domainLabels = new Set(domain.split(".").map((label) => label.replace(HYPHENS, "")));
   // The organisation name matches a domain label, or a domain label is
   // contained in the organisation name (so "acme.io" matches "Acme
   // Technologies") — either direction, because both are ordinary.
-  return domainLabels.some((label) => label.length > 2 && (slug.includes(label) || label.includes(slug)));
+  for (const label of domainLabels) {
+    if (label.length > 2 && oneContainsOther(slug, label)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------- public name

@@ -1,9 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { Text } from "@/components/typography/text.tsx";
+import type { PublicSupporter } from "@/lib/public-supporters.ts";
 import { cn } from "@/lib/utils.ts";
 
 // The public register of Supporters.
@@ -14,34 +13,10 @@ import { cn } from "@/lib/utils.ts";
 // signatories is a page that has published a false register. The empty state
 // below is what a reader sees until the first real signature lands.
 //
-// SHAPE: this file is the only consumer of supporters.json, and it reads ONLY
-// the five public fields. The private store holds email, the signatory's name
-// and role, and the consent flags; none of them have a route to this
-// component, because the publish script never writes them into the file this
-// reads. See docs/registers.md.
-
-export interface PublicSupporter {
-  country: string;
-  principlesVersion: string;
-  /** First name and last initial for individuals, organisation name otherwise. */
-  publicName: string;
-  signedOn: string;
-  type: string;
-}
-
-// Read at build time from the public JSON. A fetch at request time would put a
-// network hop in front of a file that ships in the repo, and would 500 the
-// page when it failed; a missing or malformed file here degrades to the empty
-// state, which is the honest rendering when the register cannot be read.
-export async function readPublicSupporters(): Promise<readonly PublicSupporter[]> {
-  try {
-    const file = path.join(process.cwd(), "public", "principles", "supporters.json");
-    const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
-    return Array.isArray(parsed) ? (parsed as PublicSupporter[]) : [];
-  } catch {
-    return [];
-  }
-}
+// SHAPE: the table receives only the five public fields. The private store
+// holds email, the signatory's name and role, and the consent flags; none of
+// them have a route to this component, because the publish script never writes
+// them into the public register. See docs/registers.md.
 
 const CELL = "px-3 py-2.5 text-left align-top";
 

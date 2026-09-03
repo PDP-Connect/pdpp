@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Metadata } from "next";
+import Link from "next/link";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
 import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
 import { PdppPrinciplesList } from "@/components/site/principles-list.tsx";
 import { PdppSigningForm } from "@/components/site/signing-form.tsx";
-import { PdppSupportersTable, readPublicSupporters } from "@/components/site/supporters.tsx";
+import { PdppSupportersTable } from "@/components/site/supporters.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { PRINCIPLES_FRONT_MATTER, PRINCIPLES_PREAMBLE } from "@/generated/spec-front-matter.ts";
+import { readPublicSupporters } from "@/lib/public-supporters.ts";
 import { repoBlobUrl } from "@/lib/site-facts.ts";
 
 export const metadata: Metadata = {
@@ -78,9 +80,9 @@ export default async function Page() {
             <Text as="p" color="subtle" family="mono" size="stamp">
               {/* The published register is one file, and this names it. A
                   reader who wants the list without the page can take it. */}
-              <a className="hover:text-primary" href="/principles/supporters.json">
+              <Link className="hover:text-primary" href="/principles/supporters.json">
                 /principles/supporters.json
-              </a>
+              </Link>
             </Text>
           </div>
         </PdppConceptSection>

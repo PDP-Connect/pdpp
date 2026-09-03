@@ -7,9 +7,10 @@ import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-pag
 import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
 import { PdppHeroWaterStill } from "@/components/sections/hero-water-still.tsx";
 import { PdppPrinciplesList } from "@/components/site/principles-list.tsx";
-import { PdppSupportersTable, readPublicSupporters } from "@/components/site/supporters.tsx";
+import { PdppSupportersTable } from "@/components/site/supporters.tsx";
 import { PdppWhatChanges } from "@/components/site/what-changes.tsx";
 import { Text } from "@/components/typography/text.tsx";
+import { readPublicSupporters } from "@/lib/public-supporters.ts";
 import { cn } from "@/lib/utils.ts";
 
 export const metadata: Metadata = {
