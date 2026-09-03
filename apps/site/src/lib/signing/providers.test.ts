@@ -4,12 +4,14 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { test } from "node:test";
-import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
 const PROVIDERS_URL = pathToFileURL(fileURLToPath(new URL("./providers.ts", import.meta.url))).href;
 const SITE_DIRECTORY = fileURLToPath(new URL("../../..", import.meta.url));
+const DEFAULT_BRANCH_WRITE_ERROR = /private repo branch signatures responded 404/;
+const MISSING_BRANCH_ERROR = /private repo branch missing-branch is unavailable \(404\)/;
 
 interface ProviderCall {
   body?: Record<string, unknown>;
@@ -22,7 +24,11 @@ interface ProviderResult {
   error: { message: string; name: string } | null;
 }
 
-async function runProvider(operation: "write" | "withdraw", statuses: readonly number[], branch?: string): Promise<ProviderResult> {
+async function runProvider(
+  operation: "write" | "withdraw",
+  statuses: readonly number[],
+  branch?: string
+): Promise<ProviderResult> {
   const scenario = JSON.stringify({ branch, operation, statuses });
   const program = `
     const scenario = ${scenario};
@@ -63,11 +69,14 @@ async function runProvider(operation: "write" | "withdraw", statuses: readonly n
 
 test("signatory PUT sends the configured branch and bot DCO trailer", async () => {
   const result = await runProvider("write", [201], "staged-signatures");
-  const request = result.calls[0];
+  const [request] = result.calls;
 
   assert.equal(result.error, null);
   assert.equal(request?.method, "PUT");
-  assert.equal(request?.url, "https://api.github.com/repos/PDP-Connect/supporters-private/contents/signatories/2026/signatory-id.json");
+  assert.equal(
+    request?.url,
+    "https://api.github.com/repos/PDP-Connect/supporters-private/contents/signatories/2026/signatory-id.json"
+  );
   assert.equal(request?.body?.branch, "staged-signatures");
   assert.equal(
     request?.body?.message,
@@ -80,7 +89,7 @@ test("default branch write failures are SigningUnavailableError responses", asyn
 
   assert.equal(result.calls[0]?.body?.branch, "signatures");
   assert.equal(result.error?.name, "SigningUnavailableError");
-  assert.match(result.error?.message ?? "", /private repo branch signatures responded 404/);
+  assert.match(result.error?.message ?? "", DEFAULT_BRANCH_WRITE_ERROR);
 });
 
 test("withdrawal stops before probing files when its branch is unavailable", async () => {
@@ -93,5 +102,5 @@ test("withdrawal stops before probing files when its branch is unavailable", asy
     },
   ]);
   assert.equal(result.error?.name, "SigningUnavailableError");
-  assert.match(result.error?.message ?? "", /private repo branch missing-branch is unavailable \(404\)/);
+  assert.match(result.error?.message ?? "", MISSING_BRANCH_ERROR);
 });

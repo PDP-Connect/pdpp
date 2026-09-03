@@ -24,23 +24,26 @@ and no reason.
 The site writes these files to the private repository's `signatures` branch.
 `PDPP_PRIVATE_REPO_BRANCH` changes that branch for a deployment; it defaults to
 `signatures`. The public repository's daily `publish-supporters` workflow runs
-as `github-actions[bot]`. The workflow uses `PDPP_PRIVATE_REPO_TOKEN` only to
-read `PDP-Connect/supporters-private` through a checkout pinned to `signatures`;
-it has no private-register write step. The workflow writes the public register
-with this repository's `GITHUB_TOKEN` by opening a PR from
-`publish/supporters`, never by committing to `main`.
+as `github-actions[bot]`. Its private checkout uses
+`PDPP_PRIVATE_REPO_TOKEN`, a fine-grained personal access token owned by the
+maintainer account `tnunamak`. The token is scoped to
+`PDP-Connect/supporters-private` with Contents read and write, and is stored as
+the `pdpp` repository's Actions secret. It is neither branch-limited nor
+read-only; the workflow itself checks out only `signatures`, sets
+`persist-credentials: false`, and has no private-register write step. The
+workflow writes the public register with this repository's `GITHUB_TOKEN` by
+opening a PR from the fixed `publish/supporters` branch, never by committing to
+`main`.
 
-The publisher requests squash auto-merge. This repository currently disables
-auto-merge for `GITHUB_TOKEN`, so a maintainer must click **Enable auto-merge**
-and choose squash on that generated PR. The private repository's publish
+The publisher opens the generated PR. After its required checks pass, a
+maintainer merges it with **Squash and merge**. The private repository's publish
 workflow is retired. Maintainers review and merge `signatures` into the private
 repository's default branch; the site never commits directly to that protected
 branch.
 
-Reachable by the maintainers listed in [`MAINTAINERS.md`](../MAINTAINERS.md),
-the site's Vercel deployment credential, and `github-actions[bot]` through
-`PDPP_PRIVATE_REPO_TOKEN`. The GitHub Actions principal can only read the
-`signatures` checkout for publication. Nothing else.
+Reachable by the maintainers listed in [`MAINTAINERS.md`](../MAINTAINERS.md)
+and the site's Vercel deployment credential. The publisher uses the separate
+fine-grained token described above only for its private checkout. Nothing else.
 
 This store exists only because signing opened before LF Decentralized Trust
 hosting was confirmed. It is meant to stop existing.
@@ -106,7 +109,7 @@ Three properties hold this together, and each is worth keeping:
 
 | Store | Read | Write |
 | --- | --- | --- |
-| Private signatory repo | Maintainers in `MAINTAINERS.md`, plus `github-actions[bot]` through `PDPP_PRIVATE_REPO_TOKEN` for the `signatures` checkout only | Those maintainers, plus the site's deploy key |
+| Private signatory repo | Maintainers in `MAINTAINERS.md`, plus `PDPP_PRIVATE_REPO_TOKEN` (the `tnunamak` fine-grained token with Contents read/write; the publisher checks out only `signatures`) | Those maintainers, plus the site's deploy key |
 | Public supporters JSON | Anyone | `github-actions[bot]` through this repository's `GITHUB_TOKEN`, via `publish/supporters` PRs, and maintainers via PR |
 | Mailing list | LFDT list administrators | LFDT list administrators |
 

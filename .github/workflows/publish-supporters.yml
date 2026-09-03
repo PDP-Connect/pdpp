@@ -10,11 +10,6 @@ on:
         description: Branch that receives the generated register.
         required: false
         type: string
-      publisher_branch:
-        default: publish/supporters
-        description: Branch used for the generated-register pull request.
-        required: false
-        type: string
 
 permissions:
   contents: write
@@ -29,8 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       PUBLISH_BASE: ${{ inputs.base_branch || 'main' }}
-      PUBLISH_BRANCH: ${{ inputs.publisher_branch || 'publish/supporters' }}
+      PUBLISH_BRANCH: publish/supporters
     steps:
       - name: Checkout public repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,6 +47,10 @@ jobs:
         working-directory: pdpp
         run: |
           set -euo pipefail
+          if [ "$PUBLISH_BRANCH" = "$DEFAULT_BRANCH" ]; then
+            echo "::error::Publisher branch $PUBLISH_BRANCH must not be the repository default branch $DEFAULT_BRANCH."
+            exit 1
+          fi
           git fetch --no-tags origin "$PUBLISH_BASE"
           git checkout --force -B "$PUBLISH_BRANCH" "origin/$PUBLISH_BASE"
 
@@ -95,18 +95,3 @@ jobs:
             gh pr edit "$number" --repo "$GITHUB_REPOSITORY" --title "chore(site): publish supporters register"
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
-
-      - name: Enable squash auto-merge
-        if: steps.publish.outputs.changed == 'true'
-        working-directory: pdpp
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.pull-request.outputs.number }}
-        run: |
-          set -euo pipefail
-          if output="$(gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash 2>&1)"; then
-            printf '%s\n' "$output"
-            exit 0
-          fi
-          printf '%s\n' "$output"
-          echo "::warning::Auto-merge is unavailable. A maintainer must select squash auto-merge for PR #$PR_NUMBER."
