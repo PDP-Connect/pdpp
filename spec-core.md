@@ -626,7 +626,7 @@ current capabilities, narrow, or reject.
 
 An authorization server accepts a source declaration only through explicit owner or operator onboarding, an installed catalog, an accepted registry entry, or explicit local provisioning. A client MUST NOT introduce a new source authority or declaration URI during authorization.
 
-For a `provider_native` source, `source.id` MUST be identical to the protected-resource identifier the authorization server has already accepted for that resource. The authorization server MUST reject any mismatch, and any `source.kind` that does not match the accepted provenance, before consent or grant issuance.
+For a `provider_native` source, `source.id` MUST be identical to the protected-resource identifier the authorization server has already accepted for that resource. The authorization server MUST reject any mismatch before consent or grant issuance.
 
 `publisher.id` is an unauthenticated claim unless an accepted channel or configured mapping binds that publisher to the declaration. Without such a binding, the authorization server MUST NOT rely on `publisher.id` for source acceptance, attribution, redirect policy, or any other trust decision.
 
