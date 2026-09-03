@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-08-29
+Date: 2026-09-02
 
 ---
 
@@ -856,7 +856,7 @@ The authorization server issues an access token bound to the grant. The client u
 | `streams` | StreamGrant[] | yes | Protocol-enforced | Granted streams. Always expanded; no wildcards. See StreamGrant fields table below. |
 | `selection_preset` | string | no | Informational | Which SourceDeclaration preset was selected. The resolved streams and fields remain authoritative. |
 | `retention` | object | no | Structured policy declaration | Policy commitment by the data recipient (see below). |
-| `expires_at` | ISO 8601 or null | no | Protocol-enforced | Grant expiry. null means no expiry. |
+| `expires_at` | ISO 8601 | no | Protocol-enforced | Grant expiry. Absent means no expiry. |
 
 ### StreamGrant fields
 
@@ -1014,8 +1014,7 @@ Retention is a structured policy declaration and policy commitment by the data r
       "instance_ids": ["openai-account-a"],
       "fields": ["id", "conversation_id", "role", "content", "source_created_at"]
     }
-  ],
-  "expires_at": null
+  ]
 }
 ```
 
@@ -1391,6 +1390,19 @@ Every non-2xx response returns a structured error:
 }
 ```
 
+Clients MUST treat unrecognized error codes as opaque and fall back to the actual HTTP status code and applicable response headers.
+
+**Authority and forward compatibility.**
+
+1. The actual HTTP status code and applicable response headers are authoritative for generic HTTP semantics, including success or failure, authentication challenges, redirection, and retry timing.
+2. A recognized `error.type` or `error.code` MAY refine PDPP-specific category, presentation, or recovery behavior only when its defined semantics are compatible with the actual status code and headers.
+3. An absent, unknown, malformed, or status-incompatible `type` or `code` is opaque and MUST NOT override the actual status code or relevant headers.
+4. Unknown identifiers MUST NOT cause parse failure.
+
+Clients MAY retain unknown identifiers for diagnostics, subject to local size limits, safe rendering/escaping, and privacy policy.
+
+This makes a future error code safe to introduce: an older client keeps handling the response by status and headers, whatever the new `code` or `type` says.
+
 | Code | HTTP Status | Type | Meaning |
 |------|------------|------|---------|
 | `invalid_cursor` | 400 | `invalid_request_error` | Cursor token is malformed or unrecognized. |
@@ -1495,6 +1507,7 @@ A conformant client:
 4. Stores `next_changes_since` from the terminal page of a `changes_since` response for use in the next sync session.
 5. Respects HTTP 410 `cursor_expired` responses by performing a full re-sync rather than retrying with the expired cursor.
 6. Honors retention commitments declared in the grant.
+7. Treats unrecognized error codes as opaque, falling back to the exact HTTP status code and applicable response headers rather than failing on an unknown code. Takes the actual status code and headers as the authoritative outcome; uses a recognized `error.type` only to refine category or presentation when compatible with that outcome; ignores an absent, unrecognized, or status-incompatible `type` for control flow; and never fails to parse on an unknown `code` or `type`.
 
 ### Conformance test suite
 
@@ -1770,7 +1783,7 @@ interface DataGrant {
     max_duration: string;  // ISO 8601 duration
     on_expiry: 'delete' | 'anonymize';
   };
-  expires_at?: string | null;
+  expires_at?: string;  // ISO 8601; absent means no expiry
 }
 
 // --- Source Declaration ---
