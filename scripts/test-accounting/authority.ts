@@ -583,16 +583,17 @@ export async function runAuthority({
       await transcript.close();
       throw error;
     }
-    const endedAt = instant(Date.now());
-    await transcript.write(
-      `${JSON.stringify({ event: "end", run_id: runId, nonce, ended_at: endedAt, exit_code: observed.exit_code, signal: observed.signal })}\n`
-    );
-    await transcript.sync();
-    await transcript.close();
-    assertCleanSourceTree(root);
-    if (sourceTreeDigest(root, head) !== sourceTree) {
-      fail(`${issued.suite}/${issued.profile} changed the full source tree during execution`);
-    }
+    // Resolve the final exit_code (including the protocol-error coercion
+    // below) BEFORE the transcript's `end` event is written. The transcript
+    // is a digest-verified, append-only artifact — once its `end` event is
+    // written and the file is hashed into the receipt, that exit_code can
+    // never change. Writing `end` from `observed.exit_code` before this
+    // coercion ran let the transcript record the child process's literal
+    // exit code (often 0) while the receipt later recorded the coerced code
+    // (1, after a protocol error), so `verifyTranscript`'s equality check
+    // failed on every run where a suite exited 0 but its structured output
+    // failed to parse — a receipt/transcript split, not a concurrency
+    // artifact.
     let counts: Counts;
     try {
       counts = observedCounts(run, observed, issued);
@@ -609,6 +610,16 @@ export async function runAuthority({
         protocol_error: err.message,
       };
       observed.exit_code ||= 1;
+    }
+    const endedAt = instant(Date.now());
+    await transcript.write(
+      `${JSON.stringify({ event: "end", run_id: runId, nonce, ended_at: endedAt, exit_code: observed.exit_code, signal: observed.signal })}\n`
+    );
+    await transcript.sync();
+    await transcript.close();
+    assertCleanSourceTree(root);
+    if (sourceTreeDigest(root, head) !== sourceTree) {
+      fail(`${issued.suite}/${issued.profile} changed the full source tree during execution`);
     }
     const transcriptRelative = relative(directory, transcriptPath);
     const completion = {

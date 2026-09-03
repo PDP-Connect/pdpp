@@ -27,7 +27,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -37,6 +37,7 @@ import { type Manifest, planFor, readManifest, selectedRuns, trackedFiles } from
 const MULTI_GLOB_PARTIAL_RENAME_PATTERN = /unaccounted executable tests/;
 const EMPTY_INCLUDE_LIST_PATTERN = /include list matches no tracked file/;
 const HELPER_OR_FIXTURE_MATCH_PATTERN = /non-executable-classified file/;
+const RECEIPT_BINDING_FIXTURE_DID_NOT_PASS_PATTERN = /receipt-binding-fixture\/default did not pass/;
 
 function repoRoot(): string {
   return execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
@@ -152,6 +153,54 @@ test("e2e: an include-matched file that classifies helper-or-fixture fails close
     assert.ok(files.includes("packages/reference-contract/test/smoke-probe.ts"));
 
     await assert.rejects(runAuthority({ root, suites: ["reference-contract"] }), HELPER_OR_FIXTURE_MATCH_PATTERN);
+  });
+});
+
+test("e2e: a suite that exits 0 but emits no structured node-test events no longer produces a receipt/transcript exit_code split", async () => {
+  // Reproduces the exact defect the 0902 gate-speed report flagged:
+  // `polyfill-connectors transcript does not bind the receipt`, identical on
+  // both a cap=2 and cap=8 pristine origin/main run of the required-all leg
+  // — a genuine pre-existing bug in the accounting harness, not a
+  // concurrency artifact. Root cause: `runAuthority` wrote the transcript's
+  // `end` event from `observed.exit_code` BEFORE `observedCounts` ran its
+  // protocol-error coercion (`observed.exit_code ||= 1`), so a leaf process
+  // that exits 0 but produces output `structuredNodeSummary` cannot parse
+  // (e.g. no `PDPP_TEST_ACCOUNTING_EVENT` lines at all) left the transcript
+  // recording exit_code:0 while the receipt built after the coercion
+  // recorded exit_code:1 — an unrecoverable split once the transcript is
+  // digest-verified and closed. This fixture reproduces that exact shape
+  // without any privileged sandbox capability: a `node -e "process.exit(0)"`
+  // leaf that always exits 0 and always emits zero structured events.
+  await withRealWorktree(async (root) => {
+    const manifestValue = readManifestFile(root);
+    manifestValue.suites.push({
+      id: "receipt-binding-fixture",
+      cwd: ".",
+      loader: "node-test",
+      authority_argument: null,
+      execution: "direct",
+      profiles: [{ id: "default", required: true, skip_reasons: {} }],
+      command: ["node", "-e", "process.exit(0)"],
+      include: ["scripts/test-accounting/fixtures/receipt-binding-fixture/*.test.ts"],
+    });
+    writeManifestFile(root, manifestValue);
+    mkdirSync(join(root, "scripts/test-accounting/fixtures/receipt-binding-fixture"), { recursive: true });
+    writeFileSync(
+      join(root, "scripts/test-accounting/fixtures/receipt-binding-fixture/noop.test.ts"),
+      "// fixture: never actually executed by node-test; the manifest command exits 0 without running it.\n"
+    );
+    commitAll(root, "fixture: add a suite whose leaf exits 0 with no structured node-test events");
+
+    // Before the fix, this rejected with `receipt-binding-fixture/default
+    // transcript does not bind the receipt` because the transcript recorded
+    // exit_code:0 while the receipt (built after the protocol-error
+    // coercion) recorded exit_code:1. After the fix, both agree, so
+    // `verifyTranscript` passes and the run instead fails on the real,
+    // downstream problem — the coerced exit_code is genuinely non-zero.
+    await assert.rejects(
+      runAuthority({ root, suites: ["receipt-binding-fixture"] }),
+      RECEIPT_BINDING_FIXTURE_DID_NOT_PASS_PATTERN
+    );
   });
 });
 
