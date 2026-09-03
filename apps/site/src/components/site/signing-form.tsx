@@ -3,6 +3,7 @@
 
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { Text } from "@/components/typography/text.tsx";
 import { signingDisclosure, siteConfig, siteFlags } from "@/lib/site-config.ts";
@@ -14,6 +15,16 @@ import { cn } from "@/lib/utils.ts";
 // at all — not disabled, not hidden with CSS. A disabled form still ships the
 // field names and the endpoint to every reader, and a hidden one can be
 // re-enabled from devtools and posted to. Off means absent.
+//
+// The section still exists when it is off, carrying the waiting panel below.
+// The rule it enforces: anything that would put personal data in the private
+// repository stays shut until the arrangement for holding it is confirmed. A
+// form that collects an address into a store nobody has agreed the shape of is
+// the one thing here that cannot be undone by a later edit.
+//
+// The panel sends the reader to the specification rather than apologising and
+// stopping. Someone who arrived wanting to support the work can still do the
+// thing that is actually useful this week, which is read it and comment.
 //
 // The form posts to siteConfig.formEndpoint and does nothing else client-side:
 // no validation logic here is load-bearing. Every rule that matters (the
@@ -64,9 +75,24 @@ export function PdppSigningForm() {
 
   if (!siteFlags.signingLive) {
     return (
-      <div className="border border-border p-6" data-slot="pdpp-signing-closed">
-        <Text as="p" size="body">
-          Signing opens once hosting is confirmed with LF Decentralized Trust.
+      <div className="flex flex-col gap-3 border border-border p-6" data-slot="pdpp-signing-closed">
+        <Text as="h3" size="lede" weight="semi">
+          Signatures open shortly
+        </Text>
+        <Text as="p" color="muted" size="body" wrap="pretty">
+          We are not taking signatures yet. A register of Supporters means holding people's details, and we are settling
+          where it will live with LF Decentralized Trust before we ask anyone for theirs.
+        </Text>
+        <Text as="p" size="body" wrap="pretty">
+          The most useful thing you can do meanwhile is read the specification and tell us where it is wrong.
+        </Text>
+        <Text as="p" className="pt-1" size="body">
+          <Link
+            className="text-primary hover:text-foreground"
+            href={siteFlags.reviewOpen ? "/review" : "/specification"}
+          >
+            {siteFlags.reviewOpen ? "Review the specification →" : "Read the specification →"}
+          </Link>
         </Text>
       </div>
     );

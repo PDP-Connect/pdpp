@@ -8,7 +8,7 @@ import Link from "next/link";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
 import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
 import { Text } from "@/components/typography/text.tsx";
-import { REPORTS_EMAIL_HREF, siteConfig, siteFlags } from "@/lib/site-config.ts";
+import { isPlaceholder, REPORTS_EMAIL_HREF, siteConfig, siteFlags } from "@/lib/site-config.ts";
 import { GITHUB_REPO_URL } from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -21,6 +21,31 @@ export const metadata: Metadata = {
 
 const CARD = cn("flex flex-col gap-3 bg-background p-6", "shadow-[0_0_0_1px_var(--border)]");
 const CELL = "px-3 py-2.5 text-left align-top";
+
+/**
+ * A channel link that refuses to be a link until its destination is real.
+ *
+ * An unset config value renders as a bracketed placeholder, which as an `href`
+ * would be a link that looks live and goes nowhere. Worse for the mailing
+ * list than for Discord: a reader who clicks "Subscribe" expects to hand over
+ * an address, and a dead link at that moment reads as the site losing it.
+ */
+function ChannelLink({ href, label }: { href: string; label: string }) {
+  if (isPlaceholder(href)) {
+    return (
+      <Text as="span" color="subtle" size="small">
+        Link to follow
+      </Text>
+    );
+  }
+  return (
+    <Text as="p" size="small">
+      <a className="text-primary hover:text-foreground" href={href} rel="noopener noreferrer" target="_blank">
+        {label}
+      </a>
+    </Text>
+  );
+}
 
 interface RegisterEntry {
   organisation: string;
@@ -64,9 +89,9 @@ const LEVELS = [
   {
     level: "Level 2",
     title: "Become a Supporter",
-    body: "Sign the Principles and go on the public list. Open now.",
-    cta: "Become a Supporter",
-    href: "/principles#who-can-sign",
+    body: "Sign the Principles and go on the public list. Opening shortly, once we have confirmed where the register will live.",
+    cta: "Read the Principles",
+    href: "/principles",
   },
   {
     level: "Level 3",
@@ -377,16 +402,9 @@ export default async function Page() {
               <Text as="p" color="muted" size="small">
                 Where things are announced first.
               </Text>
-              <Text as="p" className="mt-auto pt-2" size="small">
-                <a
-                  className="text-primary hover:text-foreground"
-                  href={siteConfig.discordUrl}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  Join →
-                </a>
-              </Text>
+              <div className="mt-auto pt-2">
+                <ChannelLink href={siteConfig.discordUrl} label="Join →" />
+              </div>
             </div>
             <div className={CARD}>
               <Text as="p" color="subtle" size="stamp">
@@ -396,18 +414,11 @@ export default async function Page() {
                 Mailing list
               </Text>
               <Text as="p" color="muted" size="small">
-                New versions and comment periods. Low volume.
+                New versions and comment periods. Low volume. Opening alongside the register.
               </Text>
-              <Text as="p" className="mt-auto pt-2" size="small">
-                <a
-                  className="text-primary hover:text-foreground"
-                  href={siteConfig.mailingListUrl}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  Subscribe →
-                </a>
-              </Text>
+              <div className="mt-auto pt-2">
+                <ChannelLink href={siteConfig.mailingListUrl} label="Subscribe →" />
+              </div>
             </div>
             <div className={CARD}>
               <Text as="p" color="subtle" size="stamp">

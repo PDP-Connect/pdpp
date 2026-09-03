@@ -28,7 +28,7 @@ const STAGES: readonly Stage[] = [
     when: "Pre · now, to 15 Oct",
     name: "Public comment",
     authority: "The maintainers",
-    body: "The specification and Part A are frozen while people comment, the Principles are published, and you can sign now. This stage ends on 15 October.",
+    body: "The specification and Part A are frozen while people comment, and the Principles are published. Supporter signing opens once the register has a confirmed home. This stage ends on 15 October.",
   },
   {
     when: "Phase 1 · from 15 Oct",
