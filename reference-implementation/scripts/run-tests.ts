@@ -446,7 +446,11 @@ const testFiles = await discoverSelectedTestFiles(repoRoot, testDir, accountingA
 // full core count: measured headroom (local/GATE-SPEED-NEXT-0902.md) shows
 // throughput flattening well before 24 cores, and a hardcoded cap bounds
 // worst-case resource use on a small CI runner regardless of host size.
-const DEFAULT_FILE_CONCURRENCY_CAP = 8;
+// The postgres profile stays at 2: its backup/restore oracle uses one shared
+// restore database (PDPP_TEST_POSTGRES_RESTORE_URL) that is not per-file
+// allocated, and the cap-8 measurement covered memory-default only.
+// PDPP_TEST_CONCURRENCY still overrides either default explicitly.
+const DEFAULT_FILE_CONCURRENCY_CAP = selectedProfile === "postgres" ? 2 : 8;
 const defaultConcurrency = Math.max(
   1,
   Math.min(DEFAULT_FILE_CONCURRENCY_CAP, availableParallelism?.() ?? 1, testFiles.length || 1)
