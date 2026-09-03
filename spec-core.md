@@ -102,6 +102,14 @@ In many deployments, a single **personal server** fills all three roles. The spe
 
 **Token resolution:** User-facing authorization flows are deployment-specific and are not normatively specified in v0.1. However, when the AS and RS are deployed separately, the AS-to-RS token-resolution contract is normative: the RS MUST authenticate to the RFC 7662 introspection endpoint and resolve the complete grant enforcement context from its response. The RS MUST enforce the request from that response and MUST NOT make a second AS lookup. For co-located deployments, a local equivalent (shared database or function call) is acceptable. Self-contained JWTs may be used as an optimization but MUST NOT be the sole revocation mechanism (see Section 10).
 
+### Trust registry queries {#trust-registry-queries}
+
+Core refers to a trust registry as a source of requester identity metadata and a positive trust signal at consent, as an external mechanism supporting retention accountability, and as a deferred concern. Core relies on two abstract queries: whether a client identifier is recognized and authorized, and whether a source declaration authority is accepted. Neither query is a wire protocol; an authorization server MAY answer locally or through a remote service.
+
+A registry answer identifies a status, the governance framework that conferred it by URI, and its validity window. An authorization server records the trust signal it relied on, including that framework URI, status, and validity, on its acceptance record or resulting grant.
+
+Core does not define the registry, transport, recognition mechanism, or withdrawal propagation. A server that consults no registry remains conformant because registry answers inform local policy and never replace the owner's grant. ToIP's Trust Registry Query Protocol is an intended future profile binding, not a Core requirement.
+
 ### Data concepts
 
 | Term | Definition |
@@ -703,6 +711,8 @@ Inside `client_display`, PDPP drops the `client_` prefix from `client_name` and 
 `client_display` is an inline carrier, not necessarily the AS's final rendered identity record. The AS MAY replace or augment inline values with locally registered metadata, validated binding metadata, validated software-statement metadata, or trust-registry metadata.
 
 **Validated binding metadata** is client metadata the AS obtained and verified through the mechanism that binds the client to the authorization protocol in use, rather than metadata the client asserted inline in this request. Under the OAuth binding it is the metadata a client ID metadata document or a dynamic registration record supplies, after the binding's own validation succeeded. Core does not define how a binding validates it; Core defines only that validated binding metadata outranks inline `client_display`, because the AS checked it and the client did not merely assert it.
+
+**URL-hosted client identity.** A conforming authorization server MUST NOT reject an otherwise valid client ID metadata document solely because the client is not preregistered. The server MAY deny authorization, rate-limit the client, or require a registry status under local policy. This is a PDPP interoperability decision, not a claim of standards-wide MUST consensus.
 
 **Metadata resolution and rendering obligations:**
 
