@@ -21,8 +21,29 @@ flags, the Principles version, and the confirmation timestamp.
 Also `withdrawn.log`: dates only, one line per withdrawal, with no identifier
 and no reason.
 
+The site writes these files to the private repository's `signatures` branch.
+`PDPP_PRIVATE_REPO_BRANCH` changes that branch for a deployment; it defaults to
+`signatures`. The public repository's daily `publish-supporters` workflow runs
+as `github-actions[bot]`. Its private checkout uses
+`PDPP_PRIVATE_REPO_TOKEN`, a fine-grained personal access token owned by the
+maintainer account `tnunamak`. The token is scoped to
+`PDP-Connect/supporters-private` with Contents read and write, and is stored as
+the `pdpp` repository's Actions secret. It is neither branch-limited nor
+read-only; the workflow itself checks out only `signatures`, sets
+`persist-credentials: false`, and has no private-register write step. The
+workflow writes the public register with this repository's `GITHUB_TOKEN` by
+opening a PR from the fixed `publish/supporters` branch, never by committing to
+`main`.
+
+The publisher opens the generated PR. After its required checks pass, a
+maintainer merges it with **Squash and merge**. The private repository's publish
+workflow is retired. Maintainers review and merge `signatures` into the private
+repository's default branch; the site never commits directly to that protected
+branch.
+
 Reachable by the maintainers listed in [`MAINTAINERS.md`](../MAINTAINERS.md)
-and by one deploy key held as a Vercel secret. Nothing else.
+and the site's Vercel deployment credential. The publisher uses the separate
+fine-grained token described above only for its private checkout. Nothing else.
 
 This store exists only because signing opened before LF Decentralized Trust
 hosting was confirmed. It is meant to stop existing.
@@ -46,9 +67,9 @@ An LF Decentralized Trust list, outside both repositories.
 
 Nobody is subscribed automatically. The "email me about new versions" checkbox
 stores a flag in the private record and does nothing else.
-`scripts/export-list-optins.mjs` in the private repository prints the opted-in
-addresses for a maintainer to subscribe once, by hand. This repository sends no
-email and holds no list.
+`scripts/export-list-optins.mjs` at the private repository root prints the
+opted-in addresses for a maintainer to subscribe once, by hand. This repository
+sends no email and holds no list.
 
 ## How data moves
 
@@ -63,7 +84,7 @@ email and holds no list.
           v
   PRIVATE repo: signatories/<yyyy>/<id>.json
           |
-          |  scheduled publish, five fields only
+          |  public-repository workflow reads signatures, five fields only
           v
   PUBLIC repo: apps/site/public/principles/supporters.json
           |
@@ -76,9 +97,10 @@ Three properties hold this together, and each is worth keeping:
 - **An unconfirmed submission leaves no residue.** It lives in a store with a
   TTL and is never written anywhere durable until the person who owns the
   address acts.
-- **One direction only.** The site writes to the private repository. The
-  private repository writes to the public one. Nothing reads back the other
-  way, and the public site has no credential that can read the private store.
+- **One direction only.** The site writes to the private repository. The public
+  repository's workflow reads the private register and writes its own public
+  JSON. Nothing reads back the other way, and the public site has no credential
+  that can read the private store.
 - **The publish script is an allowlist.** It names the five public fields one
   at a time rather than deleting the private ones, so a record that grows a
   field does not leak it.
@@ -87,8 +109,8 @@ Three properties hold this together, and each is worth keeping:
 
 | Store | Read | Write |
 | --- | --- | --- |
-| Private signatory repo | Maintainers in `MAINTAINERS.md` | Those maintainers, plus the site's deploy key |
-| Public supporters JSON | Anyone | The publish bot, and maintainers via PR |
+| Private signatory repo | Maintainers in `MAINTAINERS.md`, plus `PDPP_PRIVATE_REPO_TOKEN` (the `tnunamak` fine-grained token with Contents read/write; the publisher checks out only `signatures`) | Those maintainers, plus the site's deploy key |
+| Public supporters JSON | Anyone | `github-actions[bot]` through this repository's `GITHUB_TOKEN`, via `publish/supporters` PRs, and maintainers via PR |
 | Mailing list | LFDT list administrators | LFDT list administrators |
 
 Access to the private repository is reviewed whenever `MAINTAINERS.md` changes.
