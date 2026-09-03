@@ -1170,7 +1170,9 @@ Two authentication boundaries exist:
 
 ### Protected resource metadata {#protected-resource-metadata}
 
-A resource server MUST publish OAuth 2.0 Protected Resource Metadata as defined in RFC 9728. RFC 9728 Section 3 fixes the document's location: the well-known URI string `/.well-known/oauth-protected-resource` is inserted into the resource identifier between the host component and any path or query component. A client that reaches the resource server without a usable access token learns that location from the response itself, because RFC 9728 Section 5.1 defines the `resource_metadata` parameter carried on the `WWW-Authenticate` challenge of a 401.
+A resource server MUST publish OAuth 2.0 Protected Resource Metadata as defined in RFC 9728. RFC 9728 Section 3 fixes the document's location: the well-known URI string `/.well-known/oauth-protected-resource` is inserted into the resource identifier between the host component and any path or query component.
+
+A client that reaches the resource server without a usable access token learns that location from the response itself. On a 401, the resource server MUST include a `WWW-Authenticate: Bearer` challenge as RFC 6750 Section 3 requires, MUST set `error="invalid_token"` when a token was presented and rejected, and MUST include the `resource_metadata` parameter RFC 9728 Section 5.1 defines, carrying the URL of this document. This is the bootstrap path: without it a client holding no token has no specified way to discover where to authenticate.
 
 The `resource` member is the resource server's own identifier, as RFC 9728 Section 2 requires. For a `provider_native` source it is the same identifier as the declaration's `source.id`, which is the binding Section 5 already requires an authorization server to check before consent. A resource server that serves several sources publishes one metadata document per resource identifier rather than one document listing them.
 
@@ -1184,6 +1186,8 @@ PDPP defines four additional members. RFC 9728 Section 2 permits additional para
 | `pdpp_provider_connect_version` | The PDPP version this resource server's interface implements, which a client would otherwise learn only from the `PDPP-Version` negotiation on a first request. |
 
 `resource_name` is RFC 9728's own member for a human-readable resource name, not a PDPP extension; a resource server SHOULD publish it because a consent surface has no other name to display for the resource.
+
+RFC 9728 Section 2 makes `authorization_servers` OPTIONAL, and notes that in some deployments the set of authorization servers is not enumerable. A PDPP resource server MUST publish `authorization_servers` when that set is enumerable, so a client can reach the issuer without prior configuration. When the set is not enumerable, the resource server MUST omit the member rather than publish a partial list, and the client obtains the issuer from the grant it already holds or from the deployment's own onboarding; Core defines no other discovery path for that case.
 
 The `capabilities` member is defined by the extension profiles that advertise into it, not by Core. Core neither requires it nor constrains its contents, and a resource server that implements no extension omits it.
 
@@ -1604,7 +1608,7 @@ A conformant Core RS:
 13. SHOULD support owner-authenticated access to the `/v1/streams/{stream}/records` query endpoints without a client grant, allowing the data subject to export their own data directly (self-export).
 14. For owner-token stream-metadata reads, returns the full current stream metadata within the owner's subject/source/connection scope, including current query, view, and relationship capabilities.
 15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
-16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource` and the four `pdpp_`-prefixed members defined in Section 8.
+16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource`, the four `pdpp_`-prefixed members defined in Section 8, and `authorization_servers` when its issuer set is enumerable. Returns a `WWW-Authenticate: Bearer` challenge on 401 per RFC 6750 Section 3, carrying the RFC 9728 `resource_metadata` parameter.
 
 Collection Resource Server, runtime, and connector conformance are separate
 claims defined in the [PDPP Collection Profile](spec-collection-profile).
