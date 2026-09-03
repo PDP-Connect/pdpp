@@ -8,6 +8,7 @@ import { docs } from "../../.source/dynamic.ts";
 import {
   docsRoute,
   GOVERNANCE_SLUG,
+  GUIDANCE_SLUGS,
   governanceRoute,
   PRIMARY_SLUGS,
   PRINCIPLES_SLUG,
@@ -76,8 +77,14 @@ function programmeItems(byUrl: Map<string, PageTree.Item>): PageTree.Item[] {
 // see MAINTAINER_DOC_SLUGS.
 //
 // The separator names are load-bearing: components/specification/rail.tsx
-// renders "Specification" and "Programme" as the rail's two labels, and any
-// separator it does not recognise degrades to a bare rule.
+// renders "Specification", "Implementer guidance" and "Programme" as the
+// rail's three labels, and any separator it does not recognise degrades to a
+// bare rule.
+//
+// "Implementer guidance" exists so Discovery and Trust and the Collection
+// Profile are not read as part of the normative set. Both were listed beside
+// Core as companion specifications until the requirements for accepting a
+// declaration moved into Core §5; both are now informative.
 //
 // Governance sits under its OWN heading rather than as a seventh document in
 // the specification list. The six above are specifications under CSL-1.0 that
@@ -92,6 +99,8 @@ export function getSpecNavTree(): PageTree.Root {
     children: [
       { $id: "spec-rail-primary", name: "Specification", type: "separator" },
       ...pick(byUrl, PRIMARY_SLUGS),
+      { $id: "spec-rail-guidance", name: "Implementer guidance", type: "separator" },
+      ...pick(byUrl, GUIDANCE_SLUGS),
       { $id: "spec-rail-programme", name: "Programme", type: "separator" },
       ...programmeItems(byUrl),
     ],

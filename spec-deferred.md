@@ -1,7 +1,7 @@
 # Spec v2: Deferred Concerns
 
 Status: Informative
-Date: 2026-08-14 (revised)
+Date: 2026-09-03 (revised)
 
 Issues identified during design and review that are intentionally out of scope for v0.1. Each item is named precisely so it can be referenced from the core spec and tracked for future versions.
 
@@ -152,6 +152,86 @@ The main still-live issue from that pass is not terminology but default posture:
 3. Keep as-is but document the rationale
 
 This is a design philosophy question, not just a technical one.
+
+### Derivative Data
+
+_Newly deferred (2026-09-02)._
+
+**Description:** Data produced by computing over data a grant already covers — an embedding, a summary, a classification, a model fine-tuned on the records, an inference about the owner. PDPP today authorizes reads of declared streams. It says nothing about what a client may do with the output of compute over what it read, and nothing about whether that output is itself owner data requiring its own grant.
+
+**Why it is open:** Answering it means deciding at least five things. Whether derivative data is in scope for PDPP at all. Whether producing it needs its own grant or is implied by the read. Whether it is a distinct semantic class or a source in its own right. How revocation of the underlying grant reaches an artifact already derived. And whether the answer differs for a reversible transformation, such as an index, and an irreversible one, such as trained weights. `purpose_code`, and the explicit protocol-level consent rule for `ai_training`, are the only places v0.1 touches this, and they constrain declared purpose, not derived artifacts.
+
+**v0.1 posture:** Out of scope, and unresolved. Nothing in v0.1 asserts that derivative data is authorized, and nothing asserts it is not. The question is open, and this specification states no default either way; a future version answers it as a normative decision rather than as an inference from this silence.
+
+**Design constraint for a future version:** A derivative-data model should be addable without redefining the existing grant, most plausibly as an additional semantic class or an additional grant kind rather than as a change to `StreamGrant`.
+
+### Cross-Source Category Grants
+
+_Newly deferred (2026-09-02)._
+
+**Description:** Granting by category across sources — "my health data", not five named providers. PDPP has the shape of this within one source: a named view is a source-declared subset a user can consent to by name. The open question is the same idea one level up, spanning sources.
+
+**Why it is open:** It needs a shared category vocabulary that is meaningful across arbitrary sources. It also needs a rule for what happens when a source is added to the owner's server after the grant was issued. Does it join an existing category grant automatically? If so, how did the user consent to something that did not exist yet? That second question is the harder one: it is the same widening problem the specification forbids elsewhere (a field added after a grant is issued MUST NOT become visible to that grant). The related but distinct problem of naming views consistently across connectors is tracked separately as [Canonical View Naming Vocabulary](#canonical-view-naming-vocabulary).
+
+**Candidate prior art, not yet evaluated:** W3C Verifiable Credentials, ODRL, DCAT, schema.org category vocabularies, FHIR resource categories, Solid type indexes, and ToIP's Trust Registry Query Protocol were all named as possibilities. None has been assessed for fit. The evaluation should judge each on whether it supplies a category vocabulary that survives arbitrary sources, not on general standing.
+
+**v0.1 posture:** Out of scope. Grants bind to a single `source.id`. A user wanting a category across five providers issues five grants today.
+
+### Subgrants
+
+_Newly deferred (2026-09-02; raised in the 2026-08-19 working session)._
+
+**Description:** Whether a client holding a grant may pass a narrower piece of that access on to another party, without the owner issuing a second grant directly.
+
+**Why it is open:** A grant is immutable and bound to one `client_id`. A subgrant needs a rule for what the owner sees and approves, whether the subgrantee is visible to the owner at all, how revocation of the parent reaches the child, and whether a subgrant can outlive its parent. Answering it badly produces exactly the re-delegation surface the grant model exists to prevent.
+
+**v0.1 posture:** Out of scope. Access under a grant is not transferable, and a second party needs its own grant.
+
+### Change of client ownership and undisclosed sub-processing
+
+_Newly deferred (2026-09-02; raised in the 2026-08-19 working session)._
+
+**Description:** An owner grants access to a client on assumptions about that specific relationship. If the client is acquired, changes legal structure, or outsources processing to a third party the owner never saw, those assumptions no longer hold, and the grant does not know it.
+
+**Why it is open:** The protocol has no representation of who the client is as a legal entity, and no event by which a change of control could reach an issued grant. One suggestion from the session was to require clients to declare ownership type. Whether that belongs in the protocol, in the conformance programme, or nowhere is undecided, as is whether a change of control should force revocation, force re-consent, or merely be disclosed.
+
+**Related:** ISO MyTerms was raised in the same discussion as prior art for owner-specified terms under which a first party holds data. It has not been evaluated for fit, and whether owner-specified terms belong in Core, in a companion RFC with the authorization server holding templates, or outside PDPP entirely is itself open.
+
+**v0.1 posture:** Out of scope. `client_claims` carries client-authored, explicitly non-enforceable statements about a specific request; it is not an ownership record and must not be read as one.
+
+### Bulk export as a distinct access path
+
+_Newly deferred (2026-09-02; raised in the 2026-08-19 working session)._
+
+**Description:** PDPP has focused on continuous synchronization rather than a Takeout-style bulk export. The question raised was whether export deserves its own defined access path rather than being left as a special case of query.
+
+**Why it is open:** Core already has owner-token self-export as a SHOULD-level resource server conformance item (Section 9), so the primitive exists. What does not exist is a defined export path for a client under a grant, or an answer to whether a bulk export differs from paginating the same query to its end in anything other than convenience.
+
+**v0.1 posture:** Owner self-export is in scope at SHOULD level. Client-side bulk export is not defined and is served, if at all, by ordinary paginated query under the grant.
+
+### Trust Registry Query Protocol (TRQP) as the register interface
+
+_Newly deferred (2026-09-02)._
+
+**Description:** ToIP's Trust Registry Query Protocol is a read-only interface for asking "is X authorized to do Y in this ecosystem", and registries using it can recognize one another. That is the shape of the question an authorization server asks about a source declaration under Section 6, and the shape of what the PDP-Connect register answers.
+
+**Why it is open:** TRQP is in public review and has no test suite, so it cannot be a dated commitment. The design question for the specification is narrower than adoption. Core could describe the register lookup in terms general enough that a TRQP endpoint is one conforming implementation of it. The alternative is a PDP-Connect-specific interface that a TRQP endpoint would then have to be adapted to.
+
+**v0.1 posture:** Core does not define a register interface, so nothing in v0.1 forecloses this. Trust registry and connector certification are already listed as deferred in Core Section 12.
+
+**Design constraint for a future version:** If the register is exposed as a TRQP endpoint from phase 2, recognition of another registry becomes a TRQP query rather than a bilateral arrangement. Withdrawal of recognition then propagates through that same query path. Any interface Core describes in the meantime should not assume a single register.
+
+**Where it would live:** In a profile or binding, not in Core's normative text. Core states what an authorization server establishes about a source declaration before accepting it; it does not name the protocol by which the server asks a third party. Naming TRQP in Core would bind the specification to a document still in public review and without a test suite. Naming it in a binding keeps the commitment real without dating it, and matches how this specification treats other binding-level mechanisms.
+
+### Owner-operated authorization server over a platform's data (UMA-style)
+
+_Newly deferred (2026-09-02)._
+
+**Description:** A topology in which the platform continues to hold the owner's data, but the owner runs their own authorization server in front of it, so that the owner's server — not the platform's — decides who may read what. This is the arrangement UMA describes, and it is distinct from the on-behalf-of chain in Core Section 3, where a personal server holds an ordinary grant against the platform and the two relationships stay separate.
+
+**Why it is open:** It requires the platform's resource server to accept grants issued by an authorization server the platform does not operate and did not choose. That is a trust relationship PDPP does not currently define, and one platforms have no incentive to accept unilaterally. It also needs a rule for what happens when the platform's own policy and the owner's authorization server disagree.
+
+**v0.1 posture:** Not introduced. Core's Section 3 topologies are source-native fulfillment, personal-server fulfillment, and the on-behalf-of chain that follows from them. This is a fourth arrangement, and its absence from Core is deliberate rather than an oversight.
 
 ---
 
