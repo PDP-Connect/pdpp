@@ -1,9 +1,11 @@
 # PDPP Collection Profile v0.1.0
 
-Status: Companion profile draft
-Date: 2026-08-29
+Status: Informative. Builder guidance for connector collection. Not a conformance requirement.
+Date: 2026-09-03
 
 Companion to the Personal Data Portability Protocol (PDPP) core spec.
+
+A connector conforms to PDPP by producing a source declaration valid under Core §5 and serving its data through a resource server conforming to Core §8. No particular collection method is required.
 
 ---
 

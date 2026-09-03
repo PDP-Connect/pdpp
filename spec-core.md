@@ -20,7 +20,7 @@ The protocol specifies:
 
 **Design axiom:** Source declarations define what can be requested. Grants define what was approved. These are separate concerns and must not be conflated.
 
-Most source platforms do not yet expose a PDPP interface natively. Collection is the bridge for those sources: it brings their data into a resource server so the protocol's consent and enforcement layers can govern access to it. The companion [PDPP Collection Profile](spec-collection-profile) standardizes that bridge. The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved, and data may also reach it via regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5-8) are agnostic to the collection method.
+Most source platforms do not yet expose a PDPP interface natively. Collection is the bridge for those sources: it brings their data into a resource server so the protocol's consent and enforcement layers can govern access to it. The informative [PDPP Collection Profile](spec-collection-profile) describes that bridge as builder guidance; it is not a conformance requirement. A connector conforms to PDPP by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. No particular collection method is required. The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved, and data may also reach it via regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5-8) are agnostic to the collection method.
 
 Any implementation satisfying the role conformance criteria in Section 9 is PDPP-compliant. This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. URI identifiers name sources, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the resolved grant and the exact source declaration snapshot retained by the authorization server.
 
@@ -31,7 +31,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | Section | Governs | Other layers |
 | --- | --- | --- |
 | [Section 4: Record Model](#record-model) | Portable record envelopes, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. | Source collection, connector execution, and storage-engine choices. |
-| [Section 5: Source Declaration](#source-declaration) | Common source identity, consent, record, selection, and query capabilities used by connector-backed and provider-native sources. | Declaration discovery and trust; connector acquisition and execution mechanics. |
+| [Section 5: Source Declaration](#source-declaration) | Common source identity, consent, record, selection, and query capabilities used by connector-backed and provider-native sources, and the conditions under which an authorization server accepts a declaration. | Connector acquisition and execution mechanics. |
 | [Section 6: Selection Request](#selection-request) | What a client asks an authorization server to approve, plus declaration-backed validation and consent rendering before a grant is issued. | Product-specific consent flows, screen layouts, and hosted authorization-server deployments. |
 | [Section 7: Grant](#grant) | The immutable consent artifact and the constraints a resource server enforces for a token-bound client. | Grant database schema, signed-token format, hosted registries, and deployment topology. |
 | [Section 8: Resource Server Interface](#resource-server-interface) | The interoperable record-query and blob-fetch interface under grant enforcement. | Authorization-server deployment, storage backend, collection runtime, operator dashboard, and hosted service choices. |
@@ -120,7 +120,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 This document is normative except where content is explicitly marked as an example, a note, or otherwise non-normative.
 
-The companion [PDPP Collection Profile](spec-collection-profile) uses the same requirements language.
+This is the only normative document for PDPP Core v0.1 conformance. A profile defines no Core requirement; a future profile may define a separate named conformance claim only if its own status says so. The [PDPP Collection Profile](spec-collection-profile) and [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) are informative and define no conformance requirements of their own.
 
 ---
 
@@ -383,7 +383,7 @@ When a record references a record in a different stream on the same resource ser
 
 ## 5. Source Declaration {#source-declaration}
 
-**Note:** This section defines the common source surface used by Core. Connector acquisition and execution behavior, including runtime bindings, setup, interaction, refresh, and collection state, is defined by the optional [PDPP Collection Profile](spec-collection-profile).
+**Note:** This section defines the common source surface used by Core, and the conditions under which an authorization server accepts a source declaration. Connector acquisition and execution behavior, including runtime bindings, setup, interaction, refresh, and collection state, is defined by the optional [PDPP Collection Profile](spec-collection-profile). The mechanics of discovering and retrieving a declaration are described in the informative [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) document, which defines no requirements of its own.
 
 Each source publishes a `SourceDeclaration` describing its identity, publisher, consent surface, record semantics, selection capabilities, and Resource Server query capabilities. Connector-backed and provider-native sources use the same Core shape. The declaration defines what can be consented to. The resolved grant defines what was approved.
 
@@ -621,6 +621,20 @@ may make a request technically unsupported, but it does not reinterpret what
 the user approved. The Resource Server enforces the resolved grant without a
 current declaration lookup. Current serving metadata may only route, describe
 current capabilities, narrow, or reject.
+
+### Declaration acceptance {#declaration-acceptance}
+
+An authorization server accepts a source declaration only through explicit owner or operator onboarding, an installed catalog, an accepted registry entry, or explicit local provisioning. A client MUST NOT introduce a new source authority or declaration URI during authorization.
+
+For a `provider_native` source, `source.id` MUST be identical to the protected-resource identifier the authorization server has already accepted for that resource. The authorization server MUST reject any mismatch, and any `source.kind` that does not match the accepted provenance, before consent or grant issuance.
+
+`publisher.id` is an unauthenticated claim unless an accepted channel or configured mapping binds that publisher to the declaration. Without such a binding, the authorization server MUST NOT rely on `publisher.id` for source acceptance, attribution, redirect policy, or any other trust decision.
+
+An accepted revision is keyed by its accepted authority binding, `source.id`, and `declaration_version`. Different parsed content under an accepted key is equivocation: the authorization server MUST reject it and retain the previously accepted content, and MUST NOT infer ordering or freshness from `declaration_version`.
+
+When retrieving a declaration, the authorization server MUST use HTTPS without ambient credentials, MUST enforce configured response-size, time, and redirect-depth limits, MUST validate every redirect target and the final URL against its accepted declaration pointer and network policy, MUST resolve DNS freshly for each connection attempt, MUST reject a declaration that requires automatic retrieval of a remote schema, and MUST fail closed when any check fails. The declaration location is not the source identity.
+
+Declaration display values are untrusted input and MUST be escaped for their output context. Current declaration capabilities MUST NOT widen an issued grant.
 
 ---
 
