@@ -165,6 +165,7 @@ export async function sendConfirmationEmail(options: {
 
 function repoConfig() {
   return {
+    branch: process.env.PDPP_PRIVATE_REPO_BRANCH?.trim() || "signatures",
     owner: env("PDPP_PRIVATE_REPO_OWNER"),
     repo: env("PDPP_PRIVATE_REPO_NAME"),
     token: env("PDPP_PRIVATE_REPO_TOKEN"),
@@ -187,22 +188,37 @@ async function repoRequest(pathname: string, init: RequestInit): Promise<Respons
 
 const BOT = { email: "bot@pdpp.dev", name: "pdpp-supporters-bot" } as const;
 
+function botCommitMessage(subject: string): string {
+  return `${subject}\n\nSigned-off-by: ${BOT.name} <${BOT.email}>`;
+}
+
+async function ensureRepoBranch(branch: string): Promise<void> {
+  const response = await repoRequest(`git/ref/heads/${encodeURIComponent(branch)}`, { method: "GET" });
+  if (!response.ok) {
+    throw new SigningUnavailableError(`private repo branch ${branch} is unavailable (${response.status})`);
+  }
+}
+
 export async function writeSignatory(record: SignatoryRecord, filePath: string): Promise<void> {
+  const { branch } = repoConfig();
   const response = await repoRequest(`contents/${filePath}`, {
     body: JSON.stringify({
+      branch,
       committer: BOT,
       content: Buffer.from(JSON.stringify(record, null, 2)).toString("base64"),
-      message: `Add signatory ${record.id}`,
+      message: botCommitMessage(`Add signatory ${record.id}`),
     }),
     method: "PUT",
   });
   if (!response.ok) {
-    throw new SigningUnavailableError(`private repo responded ${response.status}`);
+    throw new SigningUnavailableError(`private repo branch ${branch} responded ${response.status}`);
   }
 }
 
 /** Deletes a signatory file and appends the date, and only the date, to the log. */
 export async function withdrawSignatory(id: string): Promise<boolean> {
+  const { branch } = repoConfig();
+  await ensureRepoBranch(branch);
   const year = new Date().getUTCFullYear();
   // The file is under the year it was confirmed in, which is not known here.
   // The candidate years are probed CONCURRENTLY rather than in sequence: they
@@ -211,7 +227,7 @@ export async function withdrawSignatory(id: string): Promise<boolean> {
   const candidates = Array.from({ length: 6 }, (_, offset) => `signatories/${year - offset}/${id}.json`);
   const found = await Promise.all(
     candidates.map(async (filePath) => {
-      const existing = await repoRequest(`contents/${filePath}`, { method: "GET" });
+      const existing = await repoRequest(`contents/${filePath}?ref=${encodeURIComponent(branch)}`, { method: "GET" });
       if (!existing.ok) {
         return null;
       }
@@ -226,11 +242,16 @@ export async function withdrawSignatory(id: string): Promise<boolean> {
   }
 
   const deleted = await repoRequest(`contents/${target.filePath}`, {
-    body: JSON.stringify({ committer: BOT, message: `Withdraw signatory ${id}`, sha: target.sha }),
+    body: JSON.stringify({
+      branch,
+      committer: BOT,
+      message: botCommitMessage(`Withdraw signatory ${id}`),
+      sha: target.sha,
+    }),
     method: "DELETE",
   });
   if (!deleted.ok) {
-    throw new SigningUnavailableError(`private repo responded ${deleted.status}`);
+    throw new SigningUnavailableError(`private repo branch ${branch} responded ${deleted.status}`);
   }
   await appendWithdrawal();
   return true;
@@ -240,18 +261,23 @@ export async function withdrawSignatory(id: string): Promise<boolean> {
 // register over time can be accounted for; a reason, an id or an address in it
 // would defeat the deletion it is recording.
 async function appendWithdrawal(): Promise<void> {
-  const existing = await repoRequest("contents/withdrawn.log", { method: "GET" });
+  const { branch } = repoConfig();
+  const existing = await repoRequest(`contents/withdrawn.log?ref=${encodeURIComponent(branch)}`, { method: "GET" });
   const previous = existing.ok ? ((await existing.json()) as { content?: string; sha?: string }) : null;
   const body = previous?.content ? Buffer.from(previous.content, "base64").toString("utf8") : "";
   const next = `${body}${new Date().toISOString().slice(0, 10)}\n`;
 
-  await repoRequest("contents/withdrawn.log", {
+  const appended = await repoRequest("contents/withdrawn.log", {
     body: JSON.stringify({
+      branch,
       committer: BOT,
       content: Buffer.from(next).toString("base64"),
-      message: "Record a withdrawal",
+      message: botCommitMessage("Record a withdrawal"),
       ...(previous?.sha ? { sha: previous.sha } : {}),
     }),
     method: "PUT",
   });
+  if (!appended.ok) {
+    throw new SigningUnavailableError(`private repo branch ${branch} responded ${appended.status}`);
+  }
 }

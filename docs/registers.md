@@ -21,6 +21,12 @@ flags, the Principles version, and the confirmation timestamp.
 Also `withdrawn.log`: dates only, one line per withdrawal, with no identifier
 and no reason.
 
+The site writes these files to the private repository's `signatures` branch.
+`PDPP_PRIVATE_REPO_BRANCH` changes that branch for a deployment; it defaults to
+`signatures`. The publish and export scripts MUST read the same branch.
+Maintainers review and merge `signatures` into the repository's default branch;
+the site never commits directly to that protected branch.
+
 Reachable by the maintainers listed in [`MAINTAINERS.md`](../MAINTAINERS.md)
 and by one deploy key held as a Vercel secret. Nothing else.
 
@@ -63,7 +69,7 @@ email and holds no list.
           v
   PRIVATE repo: signatories/<yyyy>/<id>.json
           |
-          |  scheduled publish, five fields only
+          |  scheduled publish from signatures, five fields only
           v
   PUBLIC repo: apps/site/public/principles/supporters.json
           |
