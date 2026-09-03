@@ -150,12 +150,7 @@ Returns records from a stream, filtered by grant constraints and request paramet
 | `expand[]` | string | Expand a foreign key relation inline (e.g., `expand[]=messages`). |
 | `expand_limit[{relation}]` | integer | Max records per expanded relation. Default 10, max 50. |
 
-**Grant enforcement:** For owner-token current-capability reads, the effective
-filter is the permitted owner request filter alone: an owner token carries no
-grant, so there is no grant filter to intersect. Client-token requests do not
-support request-time `filter[...]` in v0.1 and reject those parameters before
-consulting current source metadata. See Core Section 8, which is authoritative
-for the current query contract.
+**Grant enforcement:** For owner-token current-capability reads, the effective filter is the permitted owner request filter alone: an owner token carries no grant, so there is no grant filter to intersect. Client-token requests do not support request-time `filter[...]` in v0.1 and reject those parameters before consulting current source metadata. See Core Section 8, which is authoritative for the current query contract.
 
 Note: `limit` on this API is **page size** (how many records per response). The grant constrains access through `time_range`, `fields`, and stream selection — not through record count limits. "Top 50 artists" or "recent 100 posts" are modeled as manifest-defined streams or profiles, not as grant-level constraints.
 

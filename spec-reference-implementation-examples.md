@@ -8,8 +8,7 @@ These examples are illustrative sequences built from the current draft. They are
 - [spec-core.md](spec-core.md)
 - [spec-collection-profile.md](spec-collection-profile.md)
 
-(`spec-data-query-api.md` is superseded; its surviving normative content lives in
-[spec-core.md](spec-core.md) — see the authority map in the README.)
+(`spec-data-query-api.md` is superseded; its surviving normative content lives in [spec-core.md](spec-core.md) — see the authority map in the README.)
 
 Two explicit limits apply in this file:
 
