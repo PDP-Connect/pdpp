@@ -721,7 +721,7 @@ Inside `client_display`, PDPP drops the `client_` prefix from `client_name` and 
 
 Two obligations follow, and they are separate. The *interoperability* obligation: a conforming authorization server MUST NOT reject a valid client ID metadata document solely because the client is not preregistered. The *local-authority* obligation, which the first does not weaken: the server MAY still deny authorization, rate-limit the client, or require a registry-derived trust or admission result, under local policy and for any reason other than the absence of preregistration. A conformance test therefore exercises two distinct outcomes — an unregistered valid document that is accepted as an identity, and a policy denial that is not a rejection of the identity form.
 
-This is a PDPP interoperability decision, not a claim of standards-wide MUST consensus. The client ID metadata document draft states no obligation to support dynamic onboarding, and MCP's authorization specification stops at SHOULD; PDPP requires more than either.
+For PDPP Core v0.1 interoperability, a conforming authorization server MUST accept a valid URL-hosted client identity unless local policy denies authorization.
 
 **Metadata resolution and rendering obligations:**
 
@@ -1610,8 +1610,7 @@ A conformant Core RS:
 15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
 16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource`, the four `pdpp_`-prefixed members defined in Section 8, and `authorization_servers` when its issuer set is enumerable. Returns a `WWW-Authenticate: Bearer` challenge on 401 per RFC 6750 Section 3, carrying the RFC 9728 `resource_metadata` parameter.
 
-Collection Resource Server, runtime, and connector conformance are separate
-claims defined in the [PDPP Collection Profile](spec-collection-profile).
+Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
 ### Client conformance
 
