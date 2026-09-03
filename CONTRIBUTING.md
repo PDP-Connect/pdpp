@@ -52,7 +52,16 @@ contract changes, test expectations, and pull-request conventions.
   spec:prose:fix` rejoins hard-wrapped prose and changes nothing else; the other
   five faults need a decision about meaning, so the tool will not guess. The
   `spec-prose-gate` GitHub Actions job runs the same linter on the spec files a
-  pull request touches. The second pass is a judged read against
+  pull request touches, **as a ratchet**: `hard-wrap` always fails, because
+  `spec:prose:fix` repairs it mechanically and changes no word, but the five
+  judgment rules fail only on a finding your pull request introduced. The job
+  lints the same files as of the merge-base to build a baseline, and prints a
+  finding already in that baseline as a warning. So `pnpm spec:prose` run by
+  hand reports more than the job fails on — the specs carry pre-existing
+  findings of every judgment kind, and clearing one means rewriting a normative
+  sentence, which is a spec editor's decision that needs its own review rather
+  than a blocker on unrelated work. Fix what you introduce; leave the backlog to
+  a dedicated editorial pass. The second pass is a judged read against
   [`docs/reference/spec-writing-rubric.md`](docs/reference/spec-writing-rubric.md),
   ten criteria — each with a one-line test and the standard it comes from —
   covering what a regex cannot decide, such as whether an obligation names the

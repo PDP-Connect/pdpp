@@ -23,9 +23,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The gate lints only the spec files this pull request touches, so it
-          # needs the base commit present to diff against. A depth-1 checkout
-          # would have no base and the diff would name every file.
+          # The gate lints only the spec files this pull request touches, and it
+          # builds a warning baseline by linting those same files as of the
+          # merge-base. Both need real history, so a depth-1 checkout will not
+          # do: it has no base commit and the diff would name every file.
           fetch-depth: 0
 
       - name: Install pnpm
@@ -49,22 +50,67 @@ jobs:
       - name: Test the linter
         run: pnpm test:scratch -- node --test scripts/spec-prose-lint.test.mjs
 
-      - name: Lint changed spec files
+      # This job is a ratchet, not an absolute bar. `hard-wrap` always fails,
+      # because `pnpm spec:prose:fix` repairs it mechanically and changes no
+      # word. The five judgment rules fail only on a finding this pull request
+      # introduced: the same rules are run against the merge-base to build a
+      # baseline of fingerprints, and a finding already in that baseline is
+      # printed as a warning instead. The specs carry pre-existing findings of
+      # every judgment kind, and repairing one means rewriting a normative
+      # sentence -- a spec editor's call that needs its own review, not a
+      # blocker on an unrelated pull request. See CONTRIBUTING.md.
+      - name: Lint changed spec files against the merge-base
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+
           if [ -n "${BASE_SHA:-}" ]; then
-            changed="$(git diff --name-only --diff-filter=ACMR "$BASE_SHA"...HEAD -- 'spec-*.md')"
+            merge_base="$(git merge-base "$BASE_SHA" HEAD)"
+            changed="$(git diff --name-only --diff-filter=ACMR "$merge_base" HEAD -- 'spec-*.md')"
           else
+            # workflow_dispatch: no pull request, so there is no base to ratchet
+            # against. Check every spec with no waivers.
+            merge_base=""
             changed="$(ls spec-*.md 2>/dev/null || true)"
           fi
+
           if [ -z "$changed" ]; then
             echo "No spec-*.md changed in this pull request; nothing to check."
             exit 0
           fi
+
           echo "Checking:"
           echo "$changed" | sed 's/^/  /'
-          # Word-split is intended: the linter takes a file list.
+
+          if [ -z "$merge_base" ]; then
+            echo "No merge-base available; every finding blocks."
+            # Word-split is intended: the linter takes a file list.
+            # shellcheck disable=SC2086
+            exec node scripts/spec-prose-lint.mjs $changed
+          fi
+
+          # Build the baseline from the changed files as they were at the
+          # merge-base, in a scratch worktree so HEAD is left alone. A file
+          # added by this pull request does not exist there, which is correct:
+          # it gets no waivers.
+          echo "Baselining against merge-base $merge_base"
+          base_tree="$(mktemp -d)"
+          git worktree add --detach --quiet "$base_tree" "$merge_base"
+          baseline="$(mktemp)"
+          base_files=""
+          for f in $changed; do
+            if [ -f "$base_tree/$f" ]; then base_files="$base_files $f"; fi
+          done
+          if [ -n "$base_files" ]; then
+            # shellcheck disable=SC2086
+            ( cd "$base_tree" && node "$GITHUB_WORKSPACE/scripts/spec-prose-lint.mjs" --write-baseline $base_files ) > "$baseline"
+          else
+            echo '{"fingerprints":[]}' > "$baseline"
+          fi
+          git worktree remove --force "$base_tree"
+          waived_count="$(node -e 'const {readFileSync}=require("node:fs");process.stdout.write(String(JSON.parse(readFileSync(process.argv[1],"utf8")).fingerprints.length))' "$baseline")"
+          echo "Baseline holds $waived_count waivable pre-existing finding(s)."
+
           # shellcheck disable=SC2086
-          node scripts/spec-prose-lint.mjs $changed
+          node scripts/spec-prose-lint.mjs --baseline="$baseline" $changed

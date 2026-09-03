@@ -6,6 +6,12 @@ Audience: anyone editing a root `spec-*.md`, and the grader pass that reviews th
 carries the ten that need a reader. Run the linter first; it is the cheaper half and a
 failing lint usually means the rubric will fail too.
 
+The linter reports every finding, but the `spec-prose-gate` job fails only on `hard-wrap`
+and on judgment findings your change introduced (see CONTRIBUTING.md). A pre-existing
+judgment finding is a warning there, which is precisely a case this rubric exists to
+resolve: clearing one means rewriting a normative sentence, so it needs a grader's read
+rather than a mechanical fix.
+
 Each criterion below has a one-line test you can apply to a diff without loading the whole
 specification into your head, and the published authority the criterion comes from. Where a
 criterion is our own convention rather than a standard, it says so.

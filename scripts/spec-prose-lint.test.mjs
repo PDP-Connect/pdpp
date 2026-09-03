@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixHardWraps, lintFile } from "./spec-prose-lint.mjs";
+import { RATCHETABLE, applyRatchet, fingerprint, fixHardWraps, lintFile } from "./spec-prose-lint.mjs";
 
 const rulesIn = (source, file = "spec-fixture.md") => lintFile(file, source).map((f) => f.rule);
 
@@ -117,4 +117,82 @@ test("duplicate-paragraph fires on a repeated block, not on short repeats", () =
 
   // Short repeated lines (labels, stock phrases) are legitimate.
   assert.deepEqual(rulesIn("# T\n\nSee Section 4.\n\nOther text here.\n\nSee Section 4.\n"), []);
+});
+
+// --- the ratchet ---
+
+test("hard-wrap is the only rule the ratchet will not waive", () => {
+  assert.equal(RATCHETABLE.has("hard-wrap"), false);
+  for (const id of ["lowercase-normative", "long-sentence", "keyword-in-note", "filler", "duplicate-paragraph"]) {
+    assert.ok(RATCHETABLE.has(id), `${id} should be waivable`);
+  }
+});
+
+test("fingerprint ignores position but distinguishes content, rule, and file", () => {
+  const at = (line) => ({ rule: "long-sentence", file: "spec-a.md", line, text: "44 words: the same sentence entirely" });
+  // Moving a finding down the file must not make it look new.
+  assert.equal(fingerprint(at(10)), fingerprint(at(900)));
+
+  // The derived word-count prefix is stripped: an edit that changes only the
+  // count would otherwise read as a new finding.
+  const counted = (n) => ({ rule: "long-sentence", file: "spec-a.md", line: 1, text: `${n} words: the same sentence entirely` });
+  assert.equal(fingerprint(counted(41)), fingerprint(counted(52)));
+
+  // So is the line reference duplicate-paragraph leads with.
+  const dup = (n) => ({ rule: "duplicate-paragraph", file: "spec-a.md", line: 1, text: `duplicate of line ${n}: repeated body text` });
+  assert.equal(fingerprint(dup(5)), fingerprint(dup(77)));
+
+  // Different content, rule, or file are all different findings.
+  assert.notEqual(fingerprint(at(1)), fingerprint({ ...at(1), text: "44 words: a different sentence" }));
+  assert.notEqual(fingerprint(at(1)), fingerprint({ ...at(1), rule: "filler" }));
+  assert.notEqual(fingerprint(at(1)), fingerprint({ ...at(1), file: "spec-b.md" }));
+});
+
+test("applyRatchet waives a baselined judgment finding and blocks a new one", () => {
+  const old = { rule: "filler", file: "spec-a.md", line: 3, text: '"robust" in: a robust design' };
+  const fresh = { rule: "filler", file: "spec-a.md", line: 9, text: '"seamless" in: a seamless design' };
+  const baseline = new Set([fingerprint(old)]);
+
+  const { blocking, waived } = applyRatchet([old, fresh], baseline);
+  assert.deepEqual(waived, [old]);
+  assert.deepEqual(blocking, [fresh]);
+});
+
+test("applyRatchet never waives hard-wrap, even when baselined", () => {
+  const wrap = { rule: "hard-wrap", file: "spec-a.md", line: 3, text: "a line broken mid-sentence" };
+  const { blocking, waived } = applyRatchet([wrap], new Set([fingerprint(wrap)]));
+  assert.deepEqual(waived, []);
+  assert.deepEqual(blocking, [wrap]);
+});
+
+test("applyRatchet with no baseline blocks everything, the pre-ratchet behavior", () => {
+  const fs = [
+    { rule: "filler", file: "spec-a.md", line: 1, text: '"robust" in: x' },
+    { rule: "hard-wrap", file: "spec-a.md", line: 2, text: "y" },
+  ];
+  const { blocking, waived } = applyRatchet(fs, null);
+  assert.deepEqual(waived, []);
+  assert.deepEqual(blocking, fs);
+});
+
+test("a baseline is reflow-invariant, so unwrapping prose introduces no finding", () => {
+  // The same over-long sentence, hard-wrapped and not. Wrapped, the
+  // sentence-length rule sees only single lines and stays quiet; unwrapped it
+  // fires. The fingerprints must still match, or the reflow commit that
+  // exposed the sentence would be blamed for introducing it.
+  const sentence = `${"word ".repeat(45).trim()}.`;
+  const unwrapped = `# T\n\n${sentence}\n`;
+  const wrapped = `# T\n\n${sentence.replace(/((?:\S+\s+){10})/g, "$1\n").replace(/\n$/, "")}\n`;
+
+  assert.deepEqual(rulesIn(wrapped).filter((r) => r === "long-sentence"), [], "wrapped: rule cannot see the whole sentence");
+  assert.ok(rulesIn(unwrapped).includes("long-sentence"), "unwrapped: rule fires");
+
+  // Baselining reflows first, which is what makes the two sides comparable.
+  const baseline = new Set(
+    lintFile("spec-a.md", fixHardWraps(wrapped))
+      .filter((f) => RATCHETABLE.has(f.rule))
+      .map(fingerprint),
+  );
+  const { blocking } = applyRatchet(lintFile("spec-a.md", unwrapped), baseline);
+  assert.deepEqual(blocking, [], "the reflow must introduce nothing");
 });
