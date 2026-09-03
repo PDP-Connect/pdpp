@@ -624,39 +624,17 @@ current capabilities, narrow, or reject.
 
 ### Declaration acceptance {#declaration-acceptance}
 
-An authorization server accepts a source declaration only through explicit
-owner or operator onboarding, an installed catalog, an accepted registry entry,
-or explicit local provisioning. A client MUST NOT introduce a new source
-authority or declaration URI during authorization.
+An authorization server accepts a source declaration only through explicit owner or operator onboarding, an installed catalog, an accepted registry entry, or explicit local provisioning. A client MUST NOT introduce a new source authority or declaration URI during authorization.
 
-For a `provider_native` source, `source.id` MUST be identical to the
-protected-resource identifier the authorization server has already accepted for
-that resource. The authorization server MUST reject any mismatch, and any
-`source.kind` that does not match the accepted provenance, before consent or
-grant issuance.
+For a `provider_native` source, `source.id` MUST be identical to the protected-resource identifier the authorization server has already accepted for that resource. The authorization server MUST reject any mismatch, and any `source.kind` that does not match the accepted provenance, before consent or grant issuance.
 
-`publisher.id` is an unauthenticated claim unless an accepted channel or
-configured mapping binds that publisher to the declaration. Without such a
-binding, the authorization server MUST NOT rely on `publisher.id` for source
-acceptance, attribution, redirect policy, or any other trust decision.
+`publisher.id` is an unauthenticated claim unless an accepted channel or configured mapping binds that publisher to the declaration. Without such a binding, the authorization server MUST NOT rely on `publisher.id` for source acceptance, attribution, redirect policy, or any other trust decision.
 
-An accepted revision is keyed by its accepted authority binding, `source.id`,
-and `declaration_version`. Different parsed content under an accepted key is
-equivocation: the authorization server MUST reject it and retain the previously
-accepted content, and MUST NOT infer ordering or freshness from
-`declaration_version`.
+An accepted revision is keyed by its accepted authority binding, `source.id`, and `declaration_version`. Different parsed content under an accepted key is equivocation: the authorization server MUST reject it and retain the previously accepted content, and MUST NOT infer ordering or freshness from `declaration_version`.
 
-When retrieving a declaration, the authorization server MUST use HTTPS without
-ambient credentials, MUST enforce configured response-size, time, and
-redirect-depth limits, MUST validate every redirect target and the final URL
-against its accepted declaration pointer and network policy, MUST resolve DNS
-freshly for each connection attempt, MUST reject a declaration that requires
-automatic retrieval of a remote schema, and MUST fail closed when any check
-fails. The declaration location is not the source identity.
+When retrieving a declaration, the authorization server MUST use HTTPS without ambient credentials, MUST enforce configured response-size, time, and redirect-depth limits, MUST validate every redirect target and the final URL against its accepted declaration pointer and network policy, MUST resolve DNS freshly for each connection attempt, MUST reject a declaration that requires automatic retrieval of a remote schema, and MUST fail closed when any check fails. The declaration location is not the source identity.
 
-Declaration display values are untrusted input and MUST be escaped for their
-output context. Current declaration capabilities MUST NOT widen an issued
-grant.
+Declaration display values are untrusted input and MUST be escaped for their output context. Current declaration capabilities MUST NOT widen an issued grant.
 
 ---
 
