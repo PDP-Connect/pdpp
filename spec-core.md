@@ -106,7 +106,9 @@ In many deployments, a single **personal server** fills all three roles. The spe
 
 Core refers to a trust registry as a source of requester identity metadata and a positive trust signal at consent, as an external mechanism supporting retention accountability, and as a deferred concern. Core relies on two abstract queries: whether a client identifier is recognized and authorized, and whether a source declaration authority is accepted. Neither query is a wire protocol; an authorization server MAY answer locally or through a remote service.
 
-A registry answer identifies a status, the governance framework that conferred it by URI, and its validity window. An authorization server records the trust signal it relied on, including that framework URI, status, and validity, on its acceptance record or resulting grant.
+A registry answer is an assertion that local authorization-server policy evaluates; it is not itself a decision. A conveyed answer identifies the subject it concerns, the role, action, or scope the status qualifies, the status, the governance framework under which the named issuer conferred it by URI, the issuer or trust-anchor identifier, and the validity window as `valid_from` and `valid_until`. Without the subject and the issuer, an answer cannot be attributed or replayed against the right party; without the role or scope, a status does not say what the subject is authorized to do.
+
+An authorization server records the trust signal it relied on — subject, role or scope, status, governance-framework URI, issuer or trust-anchor identifier, `valid_from`, `valid_until`, and the time of lookup — on its acceptance record or resulting grant. The lookup time matters because a status may be withdrawn later, and the record has to show what was true when the server relied on it.
 
 Core does not define the registry, transport, recognition mechanism, or withdrawal propagation. A server that consults no registry remains conformant because registry answers inform local policy and never replace the owner's grant. ToIP's Trust Registry Query Protocol is an intended future profile binding, not a Core requirement.
 
@@ -712,7 +714,11 @@ Inside `client_display`, PDPP drops the `client_` prefix from `client_name` and 
 
 **Validated binding metadata** is client metadata the AS obtained and verified through the mechanism that binds the client to the authorization protocol in use, rather than metadata the client asserted inline in this request. Under the OAuth binding it is the metadata a client ID metadata document or a dynamic registration record supplies, after the binding's own validation succeeded. Core does not define how a binding validates it; Core defines only that validated binding metadata outranks inline `client_display`, because the AS checked it and the client did not merely assert it.
 
-**URL-hosted client identity.** A conforming authorization server MUST NOT reject an otherwise valid client ID metadata document solely because the client is not preregistered. The server MAY deny authorization, rate-limit the client, or require a registry status under local policy. This is a PDPP interoperability decision, not a claim of standards-wide MUST consensus.
+**URL-hosted client identity.** A client ID metadata document is *valid* for this rule when three conditions hold: it is syntactically valid per the client ID metadata document specification the OAuth binding names; the authorization server retrieved it over HTTPS from the `client_id` URL itself; and the `client_id` inside the document is identical to the URL it was retrieved from. That last check is what stops a document from claiming to be a different client.
+
+Two obligations follow, and they are separate. The *interoperability* obligation: a conforming authorization server MUST NOT reject a valid client ID metadata document solely because the client is not preregistered. The *local-authority* obligation, which the first does not weaken: the server MAY still deny authorization, rate-limit the client, or require a registry-derived trust or admission result, under local policy and for any reason other than the absence of preregistration. A conformance test therefore exercises two distinct outcomes — an unregistered valid document that is accepted as an identity, and a policy denial that is not a rejection of the identity form.
+
+This is a PDPP interoperability decision, not a claim of standards-wide MUST consensus. The client ID metadata document draft states no obligation to support dynamic onboarding, and MCP's authorization specification stops at SHOULD; PDPP requires more than either.
 
 **Metadata resolution and rendering obligations:**
 
@@ -994,7 +1000,7 @@ Revocation stops future access only. Records already delivered to the client bef
 
 ### Retention
 
-Retention is a structured policy declaration and policy commitment by the data recipient (the client). PDPP does not technically enforce retention. Enforcement is through legal agreements, contractual obligations, or trust registry mechanisms. This is consistent with how OAuth 2.0 treats scope compliance: the protocol makes the commitment legible and machine-readable; external mechanisms enforce it.
+Retention is a structured policy declaration and policy commitment by the data recipient (the client). PDPP does not technically enforce retention. Enforcement is through legal agreements or contractual obligations; a trust registry supports admission and accountability for a retention commitment rather than enforcing it, because Core defines no compliance-evidence query a registry could answer. This is consistent with how OAuth 2.0 treats scope compliance: the protocol makes the commitment legible and machine-readable; external mechanisms enforce it.
 
 ```json
 {
@@ -1698,7 +1704,7 @@ If interoperable audit or transparency events are standardized in the future, th
 
 ### Retention
 
-The `retention` field is a structured policy declaration and policy commitment by the data recipient. PDPP does not technically enforce retention. Enforcement is through legal agreements, contractual obligations, or trust registry mechanisms. This is an intentional design choice, consistent with how OAuth 2.0 treats scope compliance.
+The `retention` field is a structured policy declaration and policy commitment by the data recipient. PDPP does not technically enforce retention. Enforcement is through legal agreements or contractual obligations, with a trust registry supporting admission and accountability rather than enforcement. This is an intentional design choice, consistent with how OAuth 2.0 treats scope compliance.
 
 ---
 
