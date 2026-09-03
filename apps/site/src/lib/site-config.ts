@@ -80,7 +80,13 @@ export const siteConfig = {
   /** The transactional provider that sends the one confirmation email. */
   emailProvider: configured(process.env.NEXT_PUBLIC_PDPP_EMAIL_PROVIDER, "email provider not set"),
 
-  discordUrl: configured(process.env.NEXT_PUBLIC_PDPP_DISCORD_URL, "Discord URL not set"),
+  /**
+   * The #pdp-connect invite. One value for the whole site: the footer and
+   * /participate previously held separate constants, which is how a site ends
+   * up offering two different doors to the same room and only noticing when
+   * one of them expires.
+   */
+  discordUrl: settled(process.env.NEXT_PUBLIC_PDPP_DISCORD_URL, "https://discord.gg/JmKcFYE4"),
   mailingListUrl: configured(process.env.NEXT_PUBLIC_PDPP_MAILING_LIST_URL, "mailing list URL not set"),
 } as const;
 

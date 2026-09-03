@@ -24,10 +24,11 @@ export function repoBlobUrl(repoRelativePath: string): string {
   return `${GITHUB_REPO_URL}/blob/main/${repoRelativePath}`;
 }
 
-// The LFDT lab channel invite. discord.gg/hyperledger reaches the whole LFDT
-// server; this one drops the visitor directly into #pdp-connect, which is the
-// invite the owner said to prefer.
-export const DISCORD_INVITE_URL = "https://discord.gg/FV4bkZBdmA";
+// The Discord invite moved to site-config.ts, where it is one value the whole
+// site reads. It sat here as a second constant while /participate read its own
+// from config, which is how a site ends up publishing two different invites.
+// discord.gg/hyperledger reaches the whole LFDT server; the configured invite
+// drops the visitor directly into #pdp-connect.
 
 // Specification text FIRST — explicit owner instruction. Each row states which
 // artifact the license covers and links the license text, because the footer

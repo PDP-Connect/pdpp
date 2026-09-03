@@ -5,13 +5,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { isContributorSurfaceEnabled } from "@/lib/contributor-surface.ts";
 import { REPORTS_EMAIL, REPORTS_EMAIL_HREF, siteConfig } from "@/lib/site-config.ts";
-import {
-  DISCORD_INVITE_URL,
-  GITHUB_REPO_URL,
-  LFDT_COPYRIGHT_NOTICE,
-  LFPROJECTS_URL,
-  SITE_LICENSES,
-} from "@/lib/site-facts.ts";
+import { GITHUB_REPO_URL, LFDT_COPYRIGHT_NOTICE, LFPROJECTS_URL, SITE_LICENSES } from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 import { ColorSchemeMenu } from "../elements/color-scheme-menu.tsx";
 import { DiscordIcon, GithubIcon, WordmarkIcon } from "../elements/icons.tsx";
@@ -139,7 +133,7 @@ export function PdppConceptFooter() {
                 as="a"
                 className={footerLinkClassName}
                 color="onAccent"
-                href={DISCORD_INVITE_URL}
+                href={siteConfig.discordUrl}
                 rel="noopener noreferrer"
                 size="inherit"
                 target="_blank"
