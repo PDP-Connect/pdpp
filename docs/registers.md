@@ -23,9 +23,11 @@ and no reason.
 
 The site writes these files to the private repository's `signatures` branch.
 `PDPP_PRIVATE_REPO_BRANCH` changes that branch for a deployment; it defaults to
-`signatures`. The publish and export scripts MUST read the same branch.
-Maintainers review and merge `signatures` into the repository's default branch;
-the site never commits directly to that protected branch.
+`signatures`. The public repository's daily `publish-supporters` workflow checks
+out that branch and writes the public register with its own `GITHUB_TOKEN`.
+The private repository's publish workflow is retired. Maintainers review and
+merge `signatures` into the private repository's default branch; the site never
+commits directly to that protected branch.
 
 Reachable by the maintainers listed in [`MAINTAINERS.md`](../MAINTAINERS.md)
 and by one deploy key held as a Vercel secret. Nothing else.
@@ -52,9 +54,9 @@ An LF Decentralized Trust list, outside both repositories.
 
 Nobody is subscribed automatically. The "email me about new versions" checkbox
 stores a flag in the private record and does nothing else.
-`scripts/export-list-optins.mjs` in the private repository prints the opted-in
-addresses for a maintainer to subscribe once, by hand. This repository sends no
-email and holds no list.
+`scripts/export-list-optins.mjs` at the private repository root prints the
+opted-in addresses for a maintainer to subscribe once, by hand. This repository
+sends no email and holds no list.
 
 ## How data moves
 
@@ -69,7 +71,7 @@ email and holds no list.
           v
   PRIVATE repo: signatories/<yyyy>/<id>.json
           |
-          |  scheduled publish from signatures, five fields only
+          |  public-repository workflow reads signatures, five fields only
           v
   PUBLIC repo: apps/site/public/principles/supporters.json
           |
@@ -82,9 +84,10 @@ Three properties hold this together, and each is worth keeping:
 - **An unconfirmed submission leaves no residue.** It lives in a store with a
   TTL and is never written anywhere durable until the person who owns the
   address acts.
-- **One direction only.** The site writes to the private repository. The
-  private repository writes to the public one. Nothing reads back the other
-  way, and the public site has no credential that can read the private store.
+- **One direction only.** The site writes to the private repository. The public
+  repository's workflow reads the private register and writes its own public
+  JSON. Nothing reads back the other way, and the public site has no credential
+  that can read the private store.
 - **The publish script is an allowlist.** It names the five public fields one
   at a time rather than deleting the private ones, so a record that grows a
   field does not leak it.
