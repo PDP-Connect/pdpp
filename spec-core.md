@@ -102,14 +102,6 @@ In many deployments, a single **personal server** fills all three roles. The spe
 
 **Token resolution:** User-facing authorization flows are deployment-specific and are not normatively specified in v0.1. However, when the AS and RS are deployed separately, the AS-to-RS token-resolution contract is normative: the RS MUST authenticate to the RFC 7662 introspection endpoint and resolve the complete grant enforcement context from its response. The RS MUST enforce the request from that response and MUST NOT make a second AS lookup. For co-located deployments, a local equivalent (shared database or function call) is acceptable. Self-contained JWTs may be used as an optimization but MUST NOT be the sole revocation mechanism (see Section 10).
 
-### Trust registry queries {#trust-registry-queries}
-
-Core refers to a trust registry as a source of requester identity metadata and a positive trust signal at consent, as an external mechanism supporting retention accountability, and as a deferred concern. Core relies on two abstract queries: whether a client identifier is recognized and authorized, and whether a source declaration authority is accepted. Neither query is a wire protocol; an authorization server MAY answer locally or through a remote service.
-
-A registry answer identifies a status, the governance framework that conferred it by URI, and its validity window. An authorization server records the trust signal it relied on, including that framework URI, status, and validity, on its acceptance record or resulting grant.
-
-Core does not define the registry, transport, recognition mechanism, or withdrawal propagation. A server that consults no registry remains conformant because registry answers inform local policy and never replace the owner's grant. ToIP's Trust Registry Query Protocol is an intended future profile binding, not a Core requirement.
-
 ### Data concepts
 
 | Term | Definition |
@@ -190,7 +182,7 @@ PDPP therefore defines no delegated-grant, sub-grant, or grant-chaining construc
 
 Only live passthrough is bounded by the upstream grant: when the personal server does not hold a copy and reads from the platform to fulfill a downstream request, it MUST stay within the upstream grant. This limit does not constrain a fresh grant for owner-held data. A downstream PDPP token is never forwarded upstream.
 
-**Onward transfer is prohibited.** A recipient MUST NOT transfer its token or let an ungranted party exercise it.
+**Onward transfer is prohibited.** A recipient MUST NOT transfer its token or let an ungranted party exercise it. A personal server MAY disclose owner-held data under a fresh owner-issued downstream grant. Only live passthrough is bounded by the upstream grant, and a downstream PDPP token is never forwarded upstream.
 
 A different topology — the owner running their own authorization server in front of a platform's data, so that the platform holds the data but the owner's server decides who may read it — is not introduced by this specification. It is the arrangement UMA describes, it is not the arrangement above, and it is recorded as deferred rather than left ambiguous.
 
@@ -502,7 +494,7 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `protocol_version` | Version of the PDPP SourceDeclaration schema. This contract requires exactly `0.1.0`. |
 | `source` | Exactly `{ kind, id }`. `kind` is `connector` or `provider_native`; `id` is the absolute URI authorization identity for the source's data surface. |
 | `declaration_version` | Opaque, non-empty revision identifier for this source declaration. It is not the connector software version and has no implied ordering. |
-| `publisher.id` | Absolute URI identifying the declaration publisher. It is an attribution claim, not an authenticated identity. The authorization server MUST treat `publisher.id` as authenticated only where an accepted channel or configured mapping binds that publisher to the declaration; absent that binding it MUST NOT support source acceptance, redirect policy, attribution, or any other trust decision. |
+| `publisher.id` | Absolute URI identifying the declaration publisher. Discovery and trust policy determine how this attribution is authenticated. |
 | `display.name` | Human-readable source name for consent UIs. It is display metadata, not source identity. |
 | `selection_presets` | Optional preset selections. The authorization server expands a selected preset into explicit stream terms before issuing a grant. |
 | `streams[].name` | Unique non-empty stream name, source-local. `*` is request-only and is not a declaration stream name. |
@@ -545,7 +537,7 @@ Streams MAY include a `display` object with human-readable metadata for the cons
 | `display.label` | string | Short human-readable name shown in the consent card (e.g., "Who you follow"). If absent, the AS SHOULD display `streams[].description` or fall back to the stream name. |
 | `display.detail` | string | Consent-oriented description of what data is included and, where relevant, what is excluded (e.g., "Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists."). If absent, the AS MAY generate a description from the stream schema, or display no detail. |
 
-**Authorship principle:** `display.label` and `display.detail` describe the data itself, not the requester's purpose. They are attributed to the accepted declaration publisher. The requesting client MUST NOT override or supplement these descriptions in the selection request. Publisher attribution is authenticated only under the conditions in [SourceDeclaration fields](#source-declaration).
+**Authorship principle:** `display.label` and `display.detail` describe the data itself, not the requester's purpose. They are attributed to the accepted declaration publisher. The requesting client MUST NOT override or supplement these descriptions in the selection request. The authorization server's discovery and trust policy determines whether publisher attribution is authenticated.
 
 ```json
 {
@@ -634,7 +626,7 @@ current capabilities, narrow, or reject.
 
 An authorization server accepts a source declaration only through explicit owner or operator onboarding, an installed catalog, an accepted registry entry, or explicit local provisioning. A client MUST NOT introduce a new source authority or declaration URI during authorization.
 
-For a `provider_native` source, `source.id` MUST be identical to the protected-resource identifier the authorization server has already accepted for that resource. The authorization server MUST reject any mismatch before consent or grant issuance.
+For a `provider_native` source, `source.id` MUST be identical to the protected-resource identifier the authorization server has already accepted for that resource. The authorization server MUST reject any mismatch, and any `source.kind` that does not match the accepted provenance, before consent or grant issuance.
 
 `publisher.id` is an unauthenticated claim unless an accepted channel or configured mapping binds that publisher to the declaration. Without such a binding, the authorization server MUST NOT rely on `publisher.id` for source acceptance, attribution, redirect policy, or any other trust decision.
 
@@ -711,8 +703,6 @@ Inside `client_display`, PDPP drops the `client_` prefix from `client_name` and 
 `client_display` is an inline carrier, not necessarily the AS's final rendered identity record. The AS MAY replace or augment inline values with locally registered metadata, validated binding metadata, validated software-statement metadata, or trust-registry metadata.
 
 **Validated binding metadata** is client metadata the AS obtained and verified through the mechanism that binds the client to the authorization protocol in use, rather than metadata the client asserted inline in this request. Under the OAuth binding it is the metadata a client ID metadata document or a dynamic registration record supplies, after the binding's own validation succeeded. Core does not define how a binding validates it; Core defines only that validated binding metadata outranks inline `client_display`, because the AS checked it and the client did not merely assert it.
-
-**URL-hosted client identity.** A conforming authorization server MUST NOT reject an otherwise valid client ID metadata document solely because the client is not preregistered. The server MAY deny authorization, rate-limit the client, or require a registry status under local policy. This is a PDPP interoperability decision, not a claim of standards-wide MUST consensus.
 
 **Metadata resolution and rendering obligations:**
 
@@ -1602,10 +1592,6 @@ A formal conformance test suite is planned but is not defined in v0.1. This is o
 ---
 
 ## 10. Security Considerations {#security}
-
-### Declaration retrieval hygiene
-
-An authorization server SHOULD enforce configured response-size, time, and redirect-depth limits when retrieving a declaration, SHOULD resolve DNS freshly for each connection attempt, and SHOULD escape declaration display values for their output context. These are local retrieval and rendering controls; they do not alter the declaration or grant semantics that peers must share.
 
 ### Token security
 

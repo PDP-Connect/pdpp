@@ -213,6 +213,8 @@ A source enters the system as a published declaration of what it exposes: fields
 
 **Conformant Source.** The declaration validates against the PDPP schema. Anyone may publish one. The register records it as conformant and names the accountable party.
 
+A connector source conforms by producing a declaration that validates against Core §5 and serving its data through a resource server conforming to Core §8. No particular collection method is required.
+
 **Verified Source.** The declaration is published by the platform whose data it describes. The technical committee reviews the declaration for accuracy and completeness, confirms the publisher's identity against a recognised trust registry or by KYB-style check, and recommends. A Verified Source carries a verified tag and display priority: an authorization server presents it by default, with Conformant declarations for the same source reachable. Verified does not displace anything. Anyone remains free to publish and maintain a Conformant declaration for the same source, including one that exposes more.
 
 Existing grants remain bound to the declaration snapshot they were issued against and continue until expiry or revocation. Core §7 does not support grant narrowing, and no migration is forced.
