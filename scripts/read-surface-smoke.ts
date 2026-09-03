@@ -119,7 +119,13 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const args = argv.slice(2);
   const out: ParsedArgs = {
     json: false,
-    skipCli: false,
+    // packages/cli was removed from this repo (Move B — the CLI now lives
+    // canonically in PDP-Connect/data-connect), so the local
+    // packages/cli/bin/pdpp.ts binary this check spawns no longer exists
+    // here. Default to skipped rather than an unconditional ENOENT crash on
+    // every invocation; --skip-cli is kept only for explicit/documentation
+    // symmetry with --skip-mcp/--skip-rest.
+    skipCli: true,
     skipMcp: false,
     skipRest: false,
     stream: DEFAULT_STREAM,

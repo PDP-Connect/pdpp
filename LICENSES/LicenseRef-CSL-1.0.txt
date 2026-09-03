@@ -32,8 +32,7 @@ specification text under this license.
 This license does **not** cover:
 
 - Code, packaged software, and generated artifacts — those are licensed under
-  Apache-2.0 (see [`LICENSE`](LICENSE) and the per-package `LICENSE` files, e.g.
-  `reference-implementation/LICENSE`).
+  Apache-2.0 (see [`LICENSE`](LICENSE) and any per-package `LICENSE` files).
 - User-facing documentation prose outside the specification — that is licensed
   under CC BY 4.0 (see [`LICENSE-docs`](LICENSE-docs)).
 - Third-party files carrying their own file-local license notice.

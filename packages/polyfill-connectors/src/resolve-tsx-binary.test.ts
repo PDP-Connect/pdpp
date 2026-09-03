@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -68,18 +68,15 @@ test("resolveConnectorCommand passes a non-tsx command through untouched", () =>
   );
 });
 
-test("TSX_MISSING_MESSAGE stays textually in sync with the CLI copy", async () => {
-  // packages/cli cannot import this module: its tsconfig.build.json pins
-  // rootDir to the cli package, so a cross-package import fails with TS6059,
-  // and @pdpp/cli deliberately ships zero runtime dependencies. The two
-  // copies are therefore kept in sync by this assertion rather than by an
-  // import. If this fails, update both copies together.
-  const cliRunner = await readFile(join(PACKAGE_ROOT, "..", "cli", "src", "collector", "runner.ts"), "utf8");
-  assert.ok(
-    cliRunner.includes(TSX_MISSING_MESSAGE.replaceAll('"', '\\"')) || cliRunner.includes("Could not locate tsx"),
-    "the CLI's TSX_MISSING_MESSAGE drifted from the shared copy"
-  );
-  // Assert the meaningful invariant: both name tsx and both give an install fix.
-  assert.match(cliRunner, /Could not locate tsx alongside the collector runner/);
-  assert.match(TSX_MISSING_MESSAGE, /Could not locate tsx alongside the collector runner/);
-});
+// A test used to live here, "TSX_MISSING_MESSAGE stays textually in sync
+// with the CLI copy": packages/cli could not import this module (its
+// tsconfig.build.json pins rootDir to the cli package, and @pdpp/cli
+// deliberately ships zero runtime dependencies), so this test read
+// packages/cli/src/collector/runner.ts directly and asserted its hand-copied
+// TSX_MISSING_MESSAGE string stayed in sync with this file's own copy.
+// packages/cli moved to PDP-Connect/data-connect (Move B); this repo no
+// longer has a local copy to compare against, so the drift check this test
+// existed for can no longer run here. Removed rather than weakened —
+// TSX_MISSING_MESSAGE's own content is still covered by the invariant
+// assertions in the tests above (e.g. "resolveConnectorCommand throws a
+// named error instead of spawning a bare tsx").

@@ -6,7 +6,7 @@ import "server-only";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { specDocExtension } from "@/lib/spec-nav-slugs.ts";
-import { repoBlobUrl } from "@/lib/site-facts.ts";
+import { dataConnectBlobUrl, repoBlobUrl } from "@/lib/site-facts.ts";
 
 export type CoverageCategory =
   | "Protocol flow"
@@ -23,7 +23,11 @@ export type CoverageStatus = "implemented" | "partial" | "deferred" | "planned" 
 export interface CoverageEvidence {
   href: string;
   label: string;
-  sourcePath: string;
+  // Absent for evidence that lives outside this repo (the reference
+  // implementation, now canonical in PDP-Connect/data-connect since Move
+  // B) — there is no local path for validateCoverageRows to existsSync
+  // check, so those entries are trusted from href alone.
+  sourcePath?: string;
 }
 
 export interface CoverageRow {
@@ -51,16 +55,18 @@ const docs = (slug: string, label: string): CoverageEvidence => ({
   sourcePath: `apps/site/content/docs/${slug}.${specDocExtension(slug)}`,
 });
 
+// reference-implementation/ moved to PDP-Connect/data-connect (Move B); it
+// is no longer checked out in this repo, so these two helpers deliberately
+// omit sourcePath rather than pointing existsSync at a path that can never
+// resolve here.
 const referenceTest = (file: string, label: string): CoverageEvidence => ({
   label,
-  href: repoBlobUrl(`reference-implementation/test/${file}`),
-  sourcePath: `reference-implementation/test/${file}`,
+  href: dataConnectBlobUrl(`reference-implementation/test/${file}`),
 });
 
 const referenceSource = (file: string, label: string): CoverageEvidence => ({
   label,
-  href: repoBlobUrl(`reference-implementation/${file}`),
-  sourcePath: `reference-implementation/${file}`,
+  href: dataConnectBlobUrl(`reference-implementation/${file}`),
 });
 
 const siteSource = (sourcePath: string, label: string): CoverageEvidence => ({
@@ -378,12 +384,15 @@ function validateCoverageRows(rows: readonly CoverageRow[]): void {
     }
 
     for (const evidence of row.evidence) {
-      if (!(evidence.href && evidence.label && evidence.sourcePath)) {
-        errors.push(`${row.concept}: evidence entries must include label, href, and sourcePath`);
+      if (!(evidence.href && evidence.label)) {
+        errors.push(`${row.concept}: evidence entries must include label and href`);
         continue;
       }
 
-      if (!existsSync(rootRelative(evidence.sourcePath))) {
+      // sourcePath is absent for evidence outside this repo (e.g. the
+      // reference implementation, now in PDP-Connect/data-connect) — there
+      // is nothing local to existsSync check, so href alone is trusted.
+      if (evidence.sourcePath && !existsSync(rootRelative(evidence.sourcePath))) {
         errors.push(`${row.concept}: evidence path does not exist: ${evidence.sourcePath}`);
       }
     }

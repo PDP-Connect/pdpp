@@ -81,7 +81,7 @@ function readSha256Sums(repoRoot: string): Map<string, string> {
 
 function assertConsumerPin(repoRoot: string, relativePath: string, packageName: string, archive: string): void {
   const manifest = readJson(join(repoRoot, relativePath));
-  const expectedSpecifier = `file:${relativePath.startsWith("reference-implementation/") ? "../" : "../../"}${archive}`;
+  const expectedSpecifier = `file:../../${archive}`;
   const actual = manifest.dependencies?.[packageName];
   if (actual !== expectedSpecifier) {
     fail(`${relativePath} must pin ${packageName} to ${expectedSpecifier}, got ${JSON.stringify(actual)}`);
@@ -91,7 +91,11 @@ function assertConsumerPin(repoRoot: string, relativePath: string, packageName: 
 export function verifyPdppVendoredPackagePins(repoRoot: string): void {
   const sums = readSha256Sums(repoRoot);
   const lockfile = readFileSync(join(repoRoot, "pnpm-lock.yaml"), "utf8");
-  const consumerPaths = ["reference-implementation/package.json", "packages/polyfill-connectors/package.json"];
+  // reference-implementation/package.json was removed (Move B): the reference
+  // implementation now lives canonically in PDP-Connect/data-connect, and its
+  // pin on these vendored tarballs is no longer part of this repo.
+  // packages/polyfill-connectors is the sole remaining consumer here.
+  const consumerPaths = ["packages/polyfill-connectors/package.json"];
 
   for (const expected of EXPECTED_PACKAGES) {
     const archivePath = join(repoRoot, expected.archive);

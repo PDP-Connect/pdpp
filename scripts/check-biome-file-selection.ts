@@ -23,20 +23,13 @@ const authoredExamples = [
   "packages/reference-contract/test/validate-response.test.ts",
   "packages/polyfill-connectors/src/connector-runtime.ts",
   "packages/polyfill-connectors/connectors/apple_health/__fixtures__/record-step-count.ts",
-  "reference-implementation/test/fixtures/device-ingest-failstop-server.mjs",
-  "apps/console/public/pdpp-dashboard-sw.js",
   "scripts/spec-check.ts",
-  "deploy/railway/core-supervisor.ts",
-  "docker/neko/policies.json",
 ];
 
 const excludedExamples = [
   "packages/polyfill-connectors/fixtures/claude_code/scrubbed/pilot-real-shape/records/messages.jsonl",
   "packages/polyfill-connectors/connectors/heb/__fixtures__/sign-in-page.html",
   "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/data/tweets.js",
-  "reference-implementation/test/fixtures/amazon-browser-collector-proof-records.json",
-  "reference-implementation/docs/generated/reference-routes.md",
-  "reference-implementation/openapi/reference-full.openapi.json",
   "packages/local-collector/dist/local-collector/src/runner.js",
   "reports/biome-report.json",
   "node_modules/ultracite/package.json",

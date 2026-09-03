@@ -7,7 +7,6 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { storageProfileEnvironment } from "../../reference-implementation/scripts/test-profile-env.ts";
 import { runAuthority, suiteEnvironment } from "./authority.ts";
 import {
   checkInventory,
@@ -23,7 +22,6 @@ import {
   RUN_COMPLETION_SCHEMA,
   readManifest,
   receiptBinding,
-  selectedRuns,
   TEST_SCRATCH_CAPABILITY_ENVIRONMENT,
   trackedFiles,
   treeDigest,
@@ -63,7 +61,6 @@ const UNEXPLAINED_SKIP_PATTERN = /unexplained skip/;
 const NO_STRUCTURED_NODE_EVENTS_PATTERN = /no structured node events/;
 const OMITTED_A_SKIP_REASON_PATTERN = /omitted a skip reason/;
 const TEST_SCRIPT_NAME_PATTERN = /^test(?::|$)/;
-const OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN = /optional environment predicate/;
 const AUTHORITY_OR_ADAPTER_PATTERN = /authority|adapter/;
 const UNRECOGNIZED_RI_DEFAULT_PROFILE_PATTERN = /unrecognized ri-default profile/;
 const COMPLETE_SCRATCH_CAPABILITY_BOUNDARY_PATTERN =
@@ -807,17 +804,6 @@ test("named skip mapping stays profile-aware AND fail-closed in both directions"
   // returning an empty/permissive configured set.
   assert.throws(() => riConfiguredNamedSkipMappingIdentities("staging"), UNRECOGNIZED_RI_DEFAULT_PROFILE_PATTERN);
 });
-test("does not leak a caller PostgreSQL URL into the RI memory profile", () => {
-  assert.equal(
-    storageProfileEnvironment("memory-default", { PDPP_TEST_POSTGRES_URL: "postgres://caller", KEEP: "yes" })
-      .PDPP_TEST_POSTGRES_URL,
-    undefined
-  );
-  assert.equal(
-    storageProfileEnvironment("postgres", { PDPP_TEST_POSTGRES_URL: "postgres://selected" }).PDPP_TEST_POSTGRES_URL,
-    "postgres://selected"
-  );
-});
 test("parses accounting options exactly and does not accept authority-directory aliases", () => {
   assert.deepEqual(parseInventoryArgs(["--plan", "--suite", "node", "--profile", "default"]).suites, ["node"]);
   assert.throws(() => parseInventoryArgs(["--check", "--check"]), EXACTLY_ONE_MODE_PATTERN);
@@ -909,16 +895,11 @@ test("the checked authority graph contains only direct leaves and no recursive a
     assert.ok(!(suite.command ?? []).some((part) => AUTHORITY_OR_ADAPTER_PATTERN.test(part)));
   }
   const packagePaths = [
-    "packages/cli/package.json",
-    "packages/mcp-server/package.json",
     "packages/operator-ui/package.json",
     "packages/pdpp-brand-react/package.json",
     "packages/polyfill-connectors/package.json",
-    "packages/read-core/package.json",
     "packages/reference-contract/package.json",
-    "apps/console/package.json",
     "apps/site/package.json",
-    "reference-implementation/package.json",
   ];
   for (const path of packagePaths) {
     // biome-ignore lint/performance/noAwaitInLoops: assertion loop over a fixed, small list of package.json files; sequential reads keep failures attributable to one path at a time.
@@ -1024,59 +1005,6 @@ test("the dedicated scratch lifecycle leaf removes every inherited capability va
     "renamed-lifecycle/default",
   ]);
 });
-test("the PostgreSQL profile declares its exact live-gate skip baseline", async () => {
-  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-  const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
-  const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
-  const postgres = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "postgres");
-  assert.deepEqual(typeof postgres === "string" ? undefined : postgres?.skip_reasons, {
-    "PDPP_REAL_LOCAL_TRANSFORMER_POSTGRES_ORACLE unset": 1,
-    "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
-    "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
-    "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
-    "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
-    "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
-    "requires --experimental-test-module-mocks (npm run test:whatsapp-no-whole-file-read)": 4,
-    "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)": 3,
-    "requires --experimental-test-module-mocks (spawns test/fixtures/manual-upload-write-error-server.ts directly)": 1,
-    "requires --experimental-test-module-mocks (npm run test:run-generation-fencing-terminal-write-failure)": 1,
-  });
-});
-// FIFTH-PASS GATE FIX (2026-07-30): this hardcoded literal must track
-// test-accounting.manifest.json's memory-default skip map exactly. Keep this
-// literal complete so a changed PostgreSQL-gated test fails visibly rather
-// than being silently absorbed by a generic skip bucket.
-test("the memory-default profile declares the exact current skip baseline", async () => {
-  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-  const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
-  const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
-  const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
-  assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 248,
-    "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 24,
-    "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 22,
-    "dedicated disposable URL not selected": 1,
-    "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
-    "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
-    "PDPP_TEST_POSTGRES_URL is required for PostgreSQL status-window authority": 1,
-    "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
-    "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
-    "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
-    "requires --experimental-test-module-mocks (npm run test:whatsapp-no-whole-file-read)": 4,
-    "requires --expose-gc (npm run test:whatsapp-no-whole-file-read)": 3,
-    "requires --experimental-test-module-mocks (spawns test/fixtures/manual-upload-write-error-server.ts directly)": 1,
-    "no dedicated PDPP_TEST_POSTGRES_URL": 1,
-    "requires --experimental-test-module-mocks (npm run test:run-generation-fencing-terminal-write-failure)": 1,
-    "PDPP_TEST_POSTGRES_URL must target the dedicated local Postgres test listener": 8,
-    "dedicated PDPP_TEST_POSTGRES_URL unset": 7,
-    "PDPP_TEST_POSTGRES_URL is not set": 7,
-    "PDPP_TEST_POSTGRES_URL is required": 3,
-    "PDPP_TEST_POSTGRES_URL not set": 12,
-    "PDPP_TEST_POSTGRES_URL unset or not a dedicated test URL": 2,
-    "PDPP_TEST_POSTGRES_URL and PDPP_TEST_POSTGRES_RESTORE_URL are not both set": 1,
-    "bootstrap retry: an ordinary, uncontended bootstrap against real Postgres still completes normally": 1,
-  });
-});
 test("the polyfill-connectors default profile declares the exact current skip baseline", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
@@ -1090,37 +1018,6 @@ test("the polyfill-connectors default profile declares the exact current skip ba
     "requires --experimental-test-module-mocks": 1,
     "run with --expose-gc for a reliable memory-growth comparison": 1,
   });
-});
-test("the optional PostgreSQL profile is not selected by the required default and rejects implicit execution", async () => {
-  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-  const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
-  // The outer PostgreSQL authority lane inherits a valid URL and its selection
-  // predicate. This assertion instead needs the counterexample: a usable
-  // inherited URL without the optional profile's declared predicate must still
-  // reject before it can spawn the 1,027-file PostgreSQL profile.
-  const inheritedPostgresEnvironment = {
-    ...process.env,
-    PDPP_TEST_POSTGRES: undefined,
-    PDPP_TEST_POSTGRES_URL: "postgres://postgres@127.0.0.1:5432/pdpp_test",
-  };
-  const inheritedMemoryEnvironment = {
-    ...process.env,
-    PDPP_TEST_POSTGRES: undefined,
-    PDPP_TEST_POSTGRES_URL: undefined,
-  };
-  const { runs } = selectedRuns(manifestValue, trackedFiles(root), { suites: ["ri-default"] });
-  assert.deepEqual(
-    runs.map((run) => (typeof run.profile === "string" ? run.profile : run.profile.id)),
-    ["memory-default", "postgres"]
-  );
-  await assert.rejects(
-    runAuthority({ root, suites: ["ri-default"], profile: "postgres", env: inheritedPostgresEnvironment }),
-    OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN
-  );
-  await assert.rejects(
-    runAuthority({ root, suites: ["ri-default"], profile: "postgres", env: inheritedMemoryEnvironment }),
-    OPTIONAL_ENVIRONMENT_PREDICATE_PATTERN
-  );
 });
 test("default authority selection spawns and completes only required profiles even when an optional predicate is present", async () => {
   const root = await mkdtemp(join(tmpdir(), "pdpp-authority-"));

@@ -89,34 +89,36 @@ function writeManifestFile(root: string, manifestValue: Manifest): void {
   writeFileSync(join(root, "test-accounting.manifest.json"), `${JSON.stringify(manifestValue, null, 2)}\n`);
 }
 
-test("e2e: a real mcp-server .test.ts renamed to .test.js (N->N-1, sibling glob still matches) fails closed on the runAuthority path", async () => {
+test("e2e: a real reference-contract .test.ts renamed to .test.js (N->N-1, sibling glob still matches) fails closed on the runAuthority path", async () => {
   await withRealWorktree(async (root) => {
-    const before = trackedFiles(root).filter((path) => path.startsWith("packages/mcp-server/test/"));
-    assert.equal(before.length, 23, "expected the real mcp-server suite to start at 23 tracked files");
+    const before = trackedFiles(root).filter((path) => path.startsWith("packages/reference-contract/test/"));
+    assert.equal(before.length, 15, "expected the real reference-contract suite to start at 15 tracked files");
 
-    execFileSync("git", ["mv", "packages/mcp-server/test/bin.test.ts", "packages/mcp-server/test/bin.test.js"], {
-      cwd: root,
-    });
-    commitAll(root, "fixture: rename one mcp-server test off its executable suffix");
+    execFileSync(
+      "git",
+      ["mv", "packages/reference-contract/test/builders.test.ts", "packages/reference-contract/test/builders.test.js"],
+      { cwd: root }
+    );
+    commitAll(root, "fixture: rename one reference-contract test off its executable suffix");
 
     const files = trackedFiles(root);
     assert.ok(
-      files.includes("packages/mcp-server/test/bin.test.js"),
+      files.includes("packages/reference-contract/test/builders.test.js"),
       "the renamed path must be a real tracked file after the commit"
     );
 
     // Lower-level confirmation of the exact pre-wiring gap R1 found: with the
     // real mutated manifest/files, `selectedRuns`/`planFor` alone — what
-    // `runAuthority` called BEFORE this fix — silently drop the plan from 23
-    // to 22 files and do not throw. This is not the assertion under test; it
+    // `runAuthority` called BEFORE this fix — silently drop the plan from 15
+    // to 14 files and do not throw. This is not the assertion under test; it
     // documents why a bare `selectedRuns` call is not a sufficient gate.
     const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
-    const silentPlan = planFor(manifestValue, files, ["mcp-server"]);
-    assert.equal(silentPlan.plans.get("mcp-server")?.length, 22);
-    assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["mcp-server"] }));
+    const silentPlan = planFor(manifestValue, files, ["reference-contract"]);
+    assert.equal(silentPlan.plans.get("reference-contract")?.length, 14);
+    assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["reference-contract"] }));
 
     // The actual assertion: the real authority entry point now fails closed.
-    await assert.rejects(runAuthority({ root, suites: ["mcp-server"] }), MULTI_GLOB_PARTIAL_RENAME_PATTERN);
+    await assert.rejects(runAuthority({ root, suites: ["reference-contract"] }), MULTI_GLOB_PARTIAL_RENAME_PATTERN);
   });
 });
 
@@ -136,20 +138,21 @@ test("e2e: a suite's entire include list emptied fails closed on the runAuthorit
 test("e2e: an include-matched file that classifies helper-or-fixture fails closed on the runAuthority path", async () => {
   await withRealWorktree(async (root) => {
     const manifestValue = readManifestFile(root);
-    const suite = manifestValue.suites.find((entry) => entry.id === "read-core");
-    assert.ok(suite, "read-core must exist in the real manifest");
+    const suite = manifestValue.suites.find((entry) => entry.id === "reference-contract");
+    assert.ok(suite, "reference-contract must exist in the real manifest");
     // Reproduces the exact real defect shape mcp-server's smoke-stdio.ts
-    // originally hit: a probe file under a test/ directory with no
-    // .test./.spec. suffix, matched by a widened include glob.
-    writeFileSync(join(root, "packages/read-core/test/smoke-probe.ts"), "export const probe = true;\n");
-    suite.include = [...suite.include, "packages/read-core/test/smoke-probe.ts"];
+    // originally hit (before that package moved to data-connect): a probe
+    // file under a test/ directory with no .test./.spec. suffix, matched by
+    // a widened include glob.
+    writeFileSync(join(root, "packages/reference-contract/test/smoke-probe.ts"), "export const probe = true;\n");
+    suite.include = [...suite.include, "packages/reference-contract/test/smoke-probe.ts"];
     writeManifestFile(root, manifestValue);
-    commitAll(root, "fixture: widen read-core's include glob onto a helper-or-fixture file");
+    commitAll(root, "fixture: widen reference-contract's include glob onto a helper-or-fixture file");
 
     const files = trackedFiles(root);
-    assert.ok(files.includes("packages/read-core/test/smoke-probe.ts"));
+    assert.ok(files.includes("packages/reference-contract/test/smoke-probe.ts"));
 
-    await assert.rejects(runAuthority({ root, suites: ["read-core"] }), HELPER_OR_FIXTURE_MATCH_PATTERN);
+    await assert.rejects(runAuthority({ root, suites: ["reference-contract"] }), HELPER_OR_FIXTURE_MATCH_PATTERN);
   });
 });
 
@@ -201,7 +204,7 @@ test("e2e: a suite that exits 0 but emits no structured node-test events no long
   });
 });
 
-test("e2e: reverting the closure-check wiring makes the mcp-server rename mutation pass silently again (both-ways proof)", async () => {
+test("e2e: reverting the closure-check wiring makes the reference-contract rename mutation pass silently again (both-ways proof)", async () => {
   // This test does not touch authority.ts's wiring itself (that would defeat
   // the point of an independent regression test). Instead it proves the
   // CONTRAPOSITIVE directly against the real data: the exact call sequence
@@ -212,18 +215,20 @@ test("e2e: reverting the closure-check wiring makes the mcp-server rename mutati
   // `runAuthority` export), this shows the assertion is load-bearing on
   // item 1's wiring specifically, not on some other unrelated guard.
   await withRealWorktree(async (root) => {
-    execFileSync("git", ["mv", "packages/mcp-server/test/bin.test.ts", "packages/mcp-server/test/bin.test.js"], {
-      cwd: root,
-    });
-    commitAll(root, "fixture: rename one mcp-server test off its executable suffix");
+    execFileSync(
+      "git",
+      ["mv", "packages/reference-contract/test/builders.test.ts", "packages/reference-contract/test/builders.test.js"],
+      { cwd: root }
+    );
+    commitAll(root, "fixture: rename one reference-contract test off its executable suffix");
 
     const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
     const files = trackedFiles(root);
 
     // Pre-fix behavior (no closure check): selection alone silently succeeds.
-    assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["mcp-server"] }));
+    assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["reference-contract"] }));
 
     // Post-fix behavior (this lane's change): the real runAuthority throws.
-    await assert.rejects(runAuthority({ root, suites: ["mcp-server"] }), MULTI_GLOB_PARTIAL_RENAME_PATTERN);
+    await assert.rejects(runAuthority({ root, suites: ["reference-contract"] }), MULTI_GLOB_PARTIAL_RENAME_PATTERN);
   });
 });
