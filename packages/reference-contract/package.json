@@ -2,7 +2,7 @@
   "name": "@pdpp/reference-contract",
   "version": "0.1.0",
   "private": true,
-  "description": "JSON-Schema-first route manifests, validators, OpenAPI artifacts, and typed helpers for the PDPP reference implementation.",
+  "description": "JSON-Schema-first route manifests, validators, OpenAPI documents, and typed helpers for the PDPP reference implementation.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
@@ -19,11 +19,8 @@
   "main": "./src/index.ts",
   "scripts": {
     "check": "ultracite check",
-    "check:generated": "pnpm run generate:all && node ./scripts/check-generated.ts",
+    "check:generated": "node ./scripts/check-generated.ts",
     "fix": "ultracite fix",
-    "generate:all": "node ./src/openapi/generate.ts && node ./src/docs/generate.ts",
-    "generate:docs": "node ./src/docs/generate.ts",
-    "generate:openapi": "node ./src/openapi/generate.ts",
     "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm check && pnpm test"

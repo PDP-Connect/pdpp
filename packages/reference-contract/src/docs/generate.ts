@@ -2,16 +2,12 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Markdown reference-docs generator.
+// Markdown reference-docs builder.
 //
 // Emits a concise route index and a query cookbook, driven from the same
 // manifests that power the OpenAPI artifacts. Agents can grep this file for
 // supported query shapes without reverse-engineering route code.
 //
-// Output:
-//   - reference-implementation/docs/generated/reference-routes.md
-//   - reference-implementation/docs/generated/query-cookbook.md
-
 import type { JsonSchema, RouteManifest } from "../common/index.ts";
 import { publicManifests as publicManifestsRaw } from "../public/index.ts";
 import { referenceManifests as referenceManifestsRaw } from "../reference/index.ts";
@@ -304,10 +300,6 @@ function queryCookbook(): string {
   ].join("\n");
 }
 
-function withSingleTrailingNewline(markdown: string): string {
-  return `${markdown.trimEnd()}\n`;
-}
-
 export function generateDocs(): { routes: string; referenceRoutes: string; cookbook: string } {
   return {
     cookbook: queryCookbook(),
@@ -323,28 +315,4 @@ export function generateDocs(): { routes: string; referenceRoutes: string; cookb
       { separator: "-" }
     ),
   };
-}
-
-async function main(): Promise<void> {
-  const { writeFile, mkdir } = await import("node:fs/promises");
-  const { dirname, join, resolve } = await import("node:path");
-  const { fileURLToPath } = await import("node:url");
-  const here = dirname(fileURLToPath(import.meta.url));
-  const outDir = resolve(here, "../../../../reference-implementation/docs/generated");
-  await mkdir(outDir, { recursive: true });
-  const { routes, referenceRoutes, cookbook } = generateDocs();
-  await writeFile(join(outDir, "reference-routes.md"), withSingleTrailingNewline(routes));
-  await writeFile(join(outDir, "reference-ref-routes.md"), withSingleTrailingNewline(referenceRoutes));
-  await writeFile(join(outDir, "query-cookbook.md"), withSingleTrailingNewline(cookbook));
-  process.stdout.write(`wrote ${outDir}/reference-routes.md\n`);
-  process.stdout.write(`wrote ${outDir}/reference-ref-routes.md\n`);
-  process.stdout.write(`wrote ${outDir}/query-cookbook.md\n`);
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((err: unknown) => {
-    const e = err as { stack?: string; message?: string };
-    process.stderr.write(`${e.stack || e.message}\n`);
-    process.exit(1);
-  });
 }

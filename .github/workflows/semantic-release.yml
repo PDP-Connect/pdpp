@@ -100,7 +100,7 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: pnpm install --frozen-lockfile
 
-      - name: Verify generated reference contract
+      - name: Verify retired reference-contract artifacts stay absent
         run: pnpm reference-contract:check-generated
 
       - name: Check spec docs drift

@@ -2,13 +2,13 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
-const artifactFiles = [
+const retiredArtifactFiles = [
   "reference-implementation/openapi/reference-public.openapi.json",
   "reference-implementation/openapi/reference-full.openapi.json",
   "reference-implementation/docs/generated/reference-routes.md",
@@ -16,29 +16,14 @@ const artifactFiles = [
   "reference-implementation/docs/generated/query-cookbook.md",
 ];
 
-for (const artifact of artifactFiles) {
-  try {
-    execFileSync("git", ["-C", repoRoot, "ls-files", "--error-unmatch", artifact], {
-      stdio: "ignore",
-    });
-  } catch {
-    process.stderr.write(`Generated reference artifact is not tracked: ${artifact}\n`);
-    process.stderr.write(
-      "Run `pnpm reference-contract:generate` and `git add` the published artifacts before merging.\n"
-    );
-    process.exit(1);
-  }
-}
+const restoredArtifact = retiredArtifactFiles.find((artifact) => existsSync(resolve(repoRoot, artifact)));
 
-const diff = execFileSync("git", ["-C", repoRoot, "diff", "--name-status", "--", ...artifactFiles], {
-  encoding: "utf8",
-}).trim();
-
-if (diff) {
-  process.stderr.write("Generated reference artifacts are out of sync with git state:\n");
-  process.stderr.write(`${diff}\n`);
-  process.stderr.write("Run `pnpm reference-contract:generate` and refresh the published artifacts before merging.\n");
+if (restoredArtifact) {
+  process.stderr.write(`Retired reference artifact is present: ${restoredArtifact}\n`);
+  process.stderr.write(
+    "Reference-implementation artifacts now belong to PDP-Connect/data-connect; remove this stale output before merging.\n"
+  );
   process.exit(1);
 }
 
-process.stdout.write("Generated reference artifacts are current.\n");
+process.stdout.write("Retired reference artifacts are absent.\n");

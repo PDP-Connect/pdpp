@@ -844,8 +844,8 @@ export function buildProtectedResourceMetadata(issuer = DEMO_ISSUER): OAuthProte
 // Live-shaped builders (the fidelity pass).
 //
 // These mirror the live PDPP reference envelopes documented in:
-//   reference-implementation/server/index.js (records.js, search.js, metadata.ts)
-//   reference-implementation/openapi/reference-full.openapi.json
+//   the retired reference implementation's records, search, and metadata routes
+//   and the full OpenAPI document built by @pdpp/reference-contract
 // so an agent can call /sandbox/v1/... and reuse parsing written for the
 // real AS/RS. Sandbox markers are conveyed via the x-pdpp-demo HTTP header
 // rather than payload fields, keeping payload shapes identical.
