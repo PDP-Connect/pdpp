@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { contentDigest } from "../test-accounting/inventory.ts";
+import { digestOf } from "./canonicalize.ts";
 import {
   checkBudget,
   copyAndRevalidateAccountingBundle,
@@ -383,6 +384,75 @@ test("mutation control — a completed receipt mutated after chained publication
   });
 });
 
+test("mutation control — adding an unrecognized top-level receipt field after chained publication blocks BOTH verification paths", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await publishCompleteReceipt(root, receipt);
+
+    // The reviewer's exact scenario: valid published JSON gains a field this
+    // schema version does not own. A chain must never discard that field
+    // before deciding whether the receipt still matches its entry.
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.completed.json`),
+      `${JSON.stringify({ ...receipt, unrecognizedReviewerField: "tampered" }, null, 2)}\n`
+    );
+
+    await assert.rejects(() => verifyCompletionChain(root), /unrecognized field/);
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /divergent_chain_entry/);
+  });
+});
+
+test("mutation control — a receipt whose internal attemptId differs from both filename and recomputed chain entry blocks BOTH verification paths", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await publishCompleteReceipt(root, receipt);
+
+    // The reviewer's exact direct-filesystem scenario: keep the completed
+    // filename and chain entry ID, replace only the receipt's internal ID,
+    // then recompute both digests so checksum verification alone cannot help.
+    const mismatchedReceipt = { ...receipt, attemptId: randomUUID() };
+    const chainPath = resolve(root, "completions.chain.jsonl");
+    const entry = JSON.parse((await readFile(chainPath, "utf8")).trim());
+    entry.receiptDigest = digestOf(mismatchedReceipt);
+    entry.chainDigest = digestOf({
+      attemptId: entry.attemptId,
+      intentDigest: entry.intentDigest,
+      receiptDigest: entry.receiptDigest,
+      prevChainDigest: entry.prevChainDigest,
+    });
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(mismatchedReceipt, null, 2)}\n`);
+    await writeFile(chainPath, `${JSON.stringify(entry)}\n`);
+
+    await assert.rejects(() => verifyCompletionChain(root), /attemptId .* does not match its chain entry/);
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /divergent_chain_entry/);
+  });
+});
+
+test("verifyCompletionChain: rejects a receipt whose intentDigest differs from its recomputed chain entry", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    await publishCompleteReceipt(root, receipt);
+
+    const mismatchedReceipt = { ...receipt, intentDigest: "f".repeat(64) };
+    const chainPath = resolve(root, "completions.chain.jsonl");
+    const entry = JSON.parse((await readFile(chainPath, "utf8")).trim());
+    entry.receiptDigest = digestOf(mismatchedReceipt);
+    entry.chainDigest = digestOf({
+      attemptId: entry.attemptId,
+      intentDigest: entry.intentDigest,
+      receiptDigest: entry.receiptDigest,
+      prevChainDigest: entry.prevChainDigest,
+    });
+    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(mismatchedReceipt, null, 2)}\n`);
+    await writeFile(chainPath, `${JSON.stringify(entry)}\n`);
+
+    await assert.rejects(() => verifyCompletionChain(root), /intentDigest .* does not match its chain entry/);
+  });
+});
+
 test("scanForIncompleteOrCorrupt: detects an orphaned chain entry (chain entry with no completed receipt on disk)", async () => {
   await withTempRoot(async (root) => {
     const receipt = sampleReceipt();
@@ -632,6 +702,23 @@ test("recovery scanner: blocks on a missing/invalid timestamp", async () => {
   await withTempRoot(async (root) => {
     const attemptId = await issuedAttempt(root);
     const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", observations: "y", disposition: "retired_incomplete", retainedEvidence: [], recordedAt: "not-a-timestamp" };
+    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
+    await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
+  });
+});
+
+test("recovery scanner: blocks on a parseable but non-canonical timestamp", async () => {
+  await withTempRoot(async (root) => {
+    const attemptId = await issuedAttempt(root);
+    const bad = {
+      schema: "mutation-falsification.marker.recovery/v1",
+      attemptId,
+      operatorClaim: "x",
+      observations: "y",
+      disposition: "retired_incomplete",
+      retainedEvidence: [],
+      recordedAt: "September 3, 2026",
+    };
     await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
   });

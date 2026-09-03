@@ -34,7 +34,7 @@ import { link, mkdir, open, readdir, readFile, stat, unlink } from "node:fs/prom
 import { basename, resolve } from "node:path";
 import { contentDigest } from "../test-accounting/inventory.ts";
 import { digestOf, isHexDigest, sha256Hex } from "./canonicalize.ts";
-import { type AttemptReceipt, validateAttemptReceipt } from "./schemas.ts";
+import { isCanonicalInstant, type AttemptReceipt, validateAttemptReceipt } from "./schemas.ts";
 
 export interface EvidenceStorePolicy {
   /** Absolute, disk-backed path for the evidence root. Never under /tmp. */
@@ -114,7 +114,7 @@ function validateRecoveryReceipt(value: unknown, expectedAttemptId: string): Rec
   if (typeof record.observations !== "string" || record.observations.length === 0) {
     throw new Error("recovery receipt observations must be a non-empty string");
   }
-  if (typeof record.recordedAt !== "string" || Number.isNaN(new Date(record.recordedAt).valueOf())) {
+  if (!isCanonicalInstant(record.recordedAt)) {
     throw new Error("recovery receipt recordedAt must be an ISO-8601 instant");
   }
   if (
@@ -163,7 +163,7 @@ function validateIssuedMarker(value: unknown, expectedAttemptId?: string): Issue
   if (typeof record.intentDigest !== "string" || !isHexDigest(record.intentDigest)) {
     throw new Error("issued marker intentDigest must be a 64-character lowercase hex digest");
   }
-  if (typeof record.issuedAt !== "string" || Number.isNaN(new Date(record.issuedAt).valueOf())) {
+  if (!isCanonicalInstant(record.issuedAt)) {
     throw new Error("issued marker issuedAt must be an ISO-8601 instant");
   }
   return {
@@ -304,6 +304,12 @@ interface CompletionChainEntry {
   schema: "mutation-falsification.completion-chain-entry/v1";
 }
 
+/** Validates the complete stored receipt shape before deriving the canonical digest shared by publish, verification, reconciliation, and scans. */
+function validateAndDigestAttemptReceipt(value: unknown): { digest: string; receipt: AttemptReceipt } {
+  const receipt = validateAttemptReceipt(value);
+  return { receipt, digest: digestOf(receipt) };
+}
+
 async function readCompletionChain(root: string): Promise<CompletionChainEntry[]> {
   let raw: string;
   try {
@@ -373,7 +379,17 @@ export async function verifyCompletionChain(root: string): Promise<CompletionCha
       }
       throw error;
     }
-    const actualReceiptDigest = digestOf(validateAttemptReceipt(JSON.parse(receiptRaw)));
+    const { receipt, digest: actualReceiptDigest } = validateAndDigestAttemptReceipt(JSON.parse(receiptRaw));
+    if (receipt.attemptId !== entry.attemptId) {
+      throw new Error(
+        `mutation-falsification evidence store: completed receipt attemptId ${receipt.attemptId} does not match its chain entry ${entry.attemptId}`
+      );
+    }
+    if (receipt.intentDigest !== entry.intentDigest) {
+      throw new Error(
+        `mutation-falsification evidence store: completed receipt intentDigest ${receipt.intentDigest} does not match its chain entry ${entry.intentDigest}`
+      );
+    }
     if (actualReceiptDigest !== entry.receiptDigest) {
       throw new Error(
         `mutation-falsification evidence store: completed receipt for attempt ${entry.attemptId} does not match the chain's recorded receiptDigest — the receipt was rewritten after being chained (divergent receipt)`
@@ -476,7 +492,7 @@ async function finalizeTransaction(root: string, attemptId: string): Promise<voi
  * stale marker — see that function's own doc comment.
  */
 export async function publishCompleteReceipt(root: string, receipt: AttemptReceipt): Promise<void> {
-  validateAttemptReceipt(receipt);
+  const { digest: receiptDigest } = validateAndDigestAttemptReceipt(receipt);
   await mkdir(markersDir(root), { recursive: true });
 
   await withLedgerLock(root, async () => {
@@ -507,8 +523,6 @@ export async function publishCompleteReceipt(root: string, receipt: AttemptRecei
         `mutation-falsification evidence store: refusing to publish attempt ${receipt.attemptId} — a completed receipt already exists for it (replay: this attempt was already completed)`
       );
     }
-
-    const receiptDigest = digestOf(receipt);
 
     await writeTransactionMarker(root, {
       schema: TRANSACTION_SCHEMA,
@@ -639,12 +653,24 @@ async function reconcileTransactions(root: string): Promise<IncompleteOrCorruptM
       });
       continue;
     }
-    const completedExists = await fileExists(completedPath(root, attemptId));
-    if (!completedExists) {
+    let completedReceipt: AttemptReceipt;
+    let completedReceiptDigest: string;
+    try {
+      const raw = await readFile(completedPath(root, attemptId), "utf8");
+      ({ receipt: completedReceipt, digest: completedReceiptDigest } = validateAndDigestAttemptReceipt(JSON.parse(raw)));
+    } catch (error) {
       found.push({
         attemptId,
         reason: "half_committed_transaction",
-        detail: `${entry} shows phase "${marker.phase}" but no completed receipt was ever committed for it — half-commit, requires explicit operator recovery`,
+        detail: `${entry} shows phase "${marker.phase}" but its completed receipt is missing or invalid: ${(error as Error).message} — half-commit, requires explicit operator recovery`,
+      });
+      continue;
+    }
+    if (completedReceipt.attemptId !== attemptId || completedReceipt.intentDigest !== marker.intentDigest || completedReceiptDigest !== marker.receiptDigest) {
+      found.push({
+        attemptId,
+        reason: "half_committed_transaction",
+        detail: `${entry}: the completed receipt does not match this transaction's identity or receiptDigest — requires explicit operator recovery`,
       });
       continue;
     }
@@ -864,12 +890,20 @@ async function findIssuedMarkerProblems(root: string, dir: string, issuedEntries
     let completedReceipt: AttemptReceipt;
     try {
       const completedRaw = await readFile(completedPath(root, attemptId), "utf8");
-      completedReceipt = validateAttemptReceipt(JSON.parse(completedRaw));
+      completedReceipt = validateAndDigestAttemptReceipt(JSON.parse(completedRaw)).receipt;
     } catch (error) {
       found.push({
         attemptId,
         reason: "corrupt",
         detail: `completed receipt for ${attemptId} failed to validate: ${(error as Error).message}`,
+      });
+      continue;
+    }
+    if (completedReceipt.attemptId !== attemptId) {
+      found.push({
+        attemptId,
+        reason: "intent_mismatch",
+        detail: `completed receipt attemptId ${completedReceipt.attemptId} does not match its own filename-derived attemptId ${attemptId}`,
       });
       continue;
     }

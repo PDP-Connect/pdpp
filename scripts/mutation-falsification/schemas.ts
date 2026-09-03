@@ -55,12 +55,16 @@ function requireInteger(value: unknown, label: string, { min = 0 }: { min?: numb
   }
   return value;
 }
+export function isCanonicalInstant(value: unknown): value is string {
+  return (
+    typeof value === "string" && !Number.isNaN(new Date(value).valueOf()) && new Date(value).toISOString() === value
+  );
+}
 function requireInstant(value: unknown, label: string): string {
-  const str = requireString(value, label);
-  if (Number.isNaN(new Date(str).valueOf()) || new Date(str).toISOString() !== str) {
+  if (!isCanonicalInstant(value)) {
     fail(`${label} must be an ISO-8601 instant`);
   }
-  return str;
+  return value;
 }
 function requireArray<T>(value: unknown, label: string): T[] {
   if (!Array.isArray(value)) {
@@ -73,6 +77,13 @@ function requireObject(value: unknown, label: string): Record<string, unknown> {
     fail(`${label} must be an object`);
   }
   return value as Record<string, unknown>;
+}
+function requireOnlyKeys(record: Record<string, unknown>, label: string, allowed: readonly string[]): void {
+  const allowedKeys = new Set(allowed);
+  const unexpected = Object.keys(record).filter((key) => !allowedKeys.has(key));
+  if (unexpected.length > 0) {
+    fail(`${label} has unrecognized field(s): ${unexpected.join(", ")}`);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -212,6 +223,7 @@ export interface AttemptReceipt {
 function validateAxisObservation(value: unknown, label: string): AxisObservation {
   const record = requireObject(value, label);
   const status = record.status;
+  requireOnlyKeys(record, label, status === "failed" ? ["status", "failure", "detail"] : ["status"]);
   if (status === "ok" || status === "not_applicable" || status === "not_run_focused_kill") {
     return { status };
   }
@@ -227,12 +239,14 @@ function validateAxisObservation(value: unknown, label: string): AxisObservation
 function validateReachability(value: unknown, label: string): AttemptAxes["reachability"] {
   const record = requireObject(value, label);
   if (record.status === "not_exercised" || record.status === "unknown") {
+    requireOnlyKeys(record, label, ["status"]);
     return { status: record.status };
   }
   return validateAxisObservation(value, label);
 }
 function validateEvidenceArtifact(value: unknown, label: string): EvidenceArtifact {
   const record = requireObject(value, label);
+  requireOnlyKeys(record, label, ["relativePath", "byteSize", "sha256"]);
   return {
     relativePath: requireString(record.relativePath, `${label}.relativePath`),
     byteSize: requireInteger(record.byteSize, `${label}.byteSize`, { min: 0 }),
@@ -242,6 +256,22 @@ function validateEvidenceArtifact(value: unknown, label: string): EvidenceArtifa
 
 export function validateAttemptReceipt(value: unknown): AttemptReceipt {
   const record = requireObject(value, "attempt receipt");
+  requireOnlyKeys(record, "attempt receipt", [
+    "schema",
+    "attemptId",
+    "trialKey",
+    "intentDigest",
+    "policyVersion",
+    "baseCommitSha",
+    "mutantIdentity",
+    "judgeIdentity",
+    "environmentProfile",
+    "evidenceArtifacts",
+    "axes",
+    "runtimeMs",
+    "attemptStatus",
+    "referencedAccountingRunIds",
+  ]);
   if (record.schema !== ATTEMPT_SCHEMA) {
     fail(`attempt receipt has unsupported schema: ${String(record.schema)}`);
   }
@@ -263,6 +293,14 @@ export function validateAttemptReceipt(value: unknown): AttemptReceipt {
     (artifact, index) => validateEvidenceArtifact(artifact, `attempt receipt evidenceArtifacts[${index}]`)
   );
   const axesRecord = requireObject(record.axes, "attempt receipt axes");
+  requireOnlyKeys(axesRecord, "attempt receipt axes", [
+    "baseline",
+    "materialization",
+    "focused",
+    "backstop",
+    "reachability",
+    "cleanup",
+  ]);
   const axes: AttemptAxes = {
     baseline: validateAxisObservation(axesRecord.baseline, "axes.baseline"),
     materialization: validateAxisObservation(axesRecord.materialization, "axes.materialization"),
@@ -273,6 +311,7 @@ export function validateAttemptReceipt(value: unknown): AttemptReceipt {
   };
   const runtimeMs = requireInteger(record.runtimeMs, "attempt receipt runtimeMs", { min: 0 });
   const attemptStatusRecord = requireObject(record.attemptStatus, "attempt receipt attemptStatus");
+  requireOnlyKeys(attemptStatusRecord, "attempt receipt attemptStatus", ["exitCode", "signal"]);
   const exitCode = attemptStatusRecord.exitCode;
   if (exitCode !== null && (typeof exitCode !== "number" || !Number.isInteger(exitCode))) {
     fail("attempt receipt attemptStatus.exitCode must be an integer or null");

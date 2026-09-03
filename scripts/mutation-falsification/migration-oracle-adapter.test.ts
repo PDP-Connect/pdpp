@@ -15,6 +15,7 @@ import {
   MIGRATION_ORACLE_CASES_V1,
   parseStructuredOutput,
   runMigrationOracleAttempt,
+  spawnWithLimits,
   UnregisteredAdapterError,
 } from "./migration-oracle-adapter.ts";
 import { isAttemptCompleted, readCompletedReceipt, scanForIncompleteOrCorrupt } from "./evidence-store.ts";
@@ -44,6 +45,26 @@ test("deriveEffectiveCommand: always derives the same fixed command, never calle
   const command = deriveEffectiveCommand();
   assert.ok(command.includes("--structured"));
   assert.ok(command.some((part) => part.includes("mutation-oracle.ts")));
+});
+
+test("spawnWithLimits: captures a complete structured line from a descendant that keeps stdout open after its direct parent exits", async () => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "mutation-falsification-close-fixture-"));
+  try {
+    const descendantPath = join(fixtureRoot, "descendant.mjs");
+    const parentPath = join(fixtureRoot, "parent.mjs");
+    const structuredLine = "MUTATION_ORACLE_STRUCTURED_JSON {\"complete\":true}";
+    await writeFile(descendantPath, `setTimeout(() => process.stdout.write(${JSON.stringify(`${structuredLine}\n`)}), 25);`);
+    await writeFile(
+      parentPath,
+      `import { spawn } from "node:child_process"; const descendant = spawn(process.execPath, [${JSON.stringify(descendantPath)}], { stdio: "inherit", detached: true }); descendant.unref();`
+    );
+
+    const result = await spawnWithLimits([process.execPath, parentPath], fixtureRoot, 5_000, 10_000);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdoutPrefix, `${structuredLine}\n`);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
 });
 
 test("runMigrationOracleAttempt: rejects an unregistered adapter id before execution", async () => {

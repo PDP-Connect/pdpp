@@ -105,6 +105,23 @@ test("validateAttemptReceipt: rejects a receipt carrying a killed/survived/incon
   assert.throws(() => validateAttemptReceipt(receipt));
 });
 
+test("validateAttemptReceipt: rejects unrecognized fields at every receipt-owned object boundary", () => {
+  const receipt = sampleAttemptReceipt();
+  const variants = [
+    { ...receipt, unrecognizedTopLevel: true },
+    { ...receipt, axes: { ...receipt.axes, unrecognizedAxis: { status: "ok" } } },
+    { ...receipt, axes: { ...receipt.axes, baseline: { ...receipt.axes.baseline, unrecognizedObservation: true } } },
+    {
+      ...receipt,
+      evidenceArtifacts: receipt.evidenceArtifacts.map((artifact) => ({ ...artifact, unrecognizedArtifactField: true })),
+    },
+    { ...receipt, attemptStatus: { ...receipt.attemptStatus, unrecognizedStatusField: true } },
+  ];
+  for (const variant of variants) {
+    assert.throws(() => validateAttemptReceipt(variant), /unrecognized field/);
+  }
+});
+
 test("validateAttemptReceipt: rejects a missing axes object", () => {
   const receipt = sampleAttemptReceipt() as Record<string, unknown>;
   const { axes: _drop, ...rest } = receipt;

@@ -109,7 +109,7 @@ interface SpawnWithLimitsResult {
  * unbounded remainder is never buffered into memory at all. A separate wall
  * deadline kills the group if it fires first.
  */
-function spawnWithLimits(command: string[], cwd: string, wallTimeMs: number, byteCap: number): Promise<SpawnWithLimitsResult> {
+export function spawnWithLimits(command: string[], cwd: string, wallTimeMs: number, byteCap: number): Promise<SpawnWithLimitsResult> {
   return new Promise((resolvePromise, reject) => {
     const [file, ...rest] = command;
     if (!file) {
