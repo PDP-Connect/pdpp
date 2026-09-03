@@ -1038,7 +1038,10 @@ test("[unshare] forced oldroot-unmount failure — the target command never runs
  */
 function runPostPivotVerificationInSandbox(options: {
   binds: readonly { path: string; mode: "ro" | "rw" }[];
+  callerPath?: string;
+  fakeBinTarget?: string;
   leaveOldrootNonempty?: boolean;
+  readOnlyFileTarget?: string;
   skipCanary?: boolean;
   writableBindTarget?: string;
 }): { exitCode: number | null; stderrText: string } {
@@ -1047,7 +1050,8 @@ function runPostPivotVerificationInSandbox(options: {
     "mkdir -p /oldroot",
     options.leaveOldrootNonempty ? "touch /oldroot/leftover-file" : "true",
   ].join("; ");
-  const script = `${setup}; ${postPivotVerificationStatements(options.binds).join("; ")}; echo PDPP_VERIFY_PASSED`;
+  const callerPathAssignment = options.callerPath === undefined ? "" : `PATH=${options.callerPath}; `;
+  const script = `${callerPathAssignment}${setup}; ${postPivotVerificationStatements(options.binds).join("; ")}; echo PDPP_VERIFY_PASSED`;
   const args = [
     "--unshare-net",
     "--tmpfs",
@@ -1078,6 +1082,12 @@ function runPostPivotVerificationInSandbox(options: {
   if (options.writableBindTarget !== undefined) {
     args.push("--bind", options.writableBindTarget, "/writable-fake-bind");
   }
+  if (options.readOnlyFileTarget !== undefined) {
+    args.push("--ro-bind", options.readOnlyFileTarget, "/ro-file");
+  }
+  if (options.fakeBinTarget !== undefined) {
+    args.push("--bind", options.fakeBinTarget, "/fake-bin");
+  }
   args.push("--", "sh", "-c", script);
   const result = spawnSync("bwrap", args, { encoding: "utf8" });
   return { exitCode: result.status, stderrText: result.stderr };
@@ -1089,6 +1099,34 @@ test("[bwrap sandbox] postPivotVerificationStatements PASSES a genuinely-closed 
   const { exitCode, stderrText } = runPostPivotVerificationInSandbox({ binds: [{ path: "/etc", mode: "ro" }] });
   assert.equal(exitCode, 0, `expected the happy-path shape to pass verification; stderr: ${stderrText}`);
   assert.equal(stderrText, "", "a passing verification must not print a diagnostic");
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements establishes its own trusted PATH when called standalone", {
+  skip: !bwrapUsable,
+}, () => {
+  const fakeBin = mkdtempSync(join(tmpdir(), "pdpp-isolation-standalone-path-fake-bin-"));
+  const readOnlyFile = join(fakeBin, "read-only-file");
+  const fakeShellMarker = join(fakeBin, "fake-sh-ran");
+  writeFileSync(readOnlyFile, "probe target");
+  writeFileSync(join(fakeBin, "sh"), ["#!/bin/sh", "touch /fake-bin/fake-sh-ran", "exit 0"].join("\n"), {
+    mode: 0o755,
+  });
+  try {
+    const { exitCode, stderrText } = runPostPivotVerificationInSandbox({
+      binds: [{ path: "/ro-file", mode: "ro" }],
+      callerPath: "/fake-bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      fakeBinTarget: fakeBin,
+      readOnlyFileTarget: readOnlyFile,
+    });
+    assert.equal(
+      exitCode,
+      0,
+      `standalone verification must reset a caller-poisoned PATH before probe_ro invokes sh; stderr: ${stderrText}`
+    );
+    assert.ok(!existsSync(fakeShellMarker), "a fake sh placed first on the standalone caller PATH must not run");
+  } finally {
+    rmSync(fakeBin, { recursive: true, force: true });
+  }
 });
 
 test("[bwrap sandbox] postPivotVerificationStatements FAILS when a declared ro bind is actually writable (P1-1 scenario (b))", {
@@ -2655,6 +2693,70 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
     }
   });
 }
+
+test("[bwrap] a caller-planted fake find cannot hide a pre-existing socket from the in-namespace scan", {
+  skip: !bwrapUsable,
+}, async (t) => {
+  const nestedDir = join(TEST_REPO_ROOT, `.pf-${String(process.pid)}`);
+  const socketPath = join(nestedDir, "f.sock");
+  if (Buffer.byteLength(socketPath, "utf8") > UNIX_SOCKET_PATH_MAX_BYTES - 8) {
+    t.skip(
+      `TEST_REPO_ROOT (${TEST_REPO_ROOT}) is too long for an AF_UNIX socket path in this test — ` +
+        `${String(Buffer.byteLength(socketPath, "utf8"))} bytes computed, kernel limit is ${String(UNIX_SOCKET_PATH_MAX_BYTES)}`
+    );
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-find-workspace-"));
+  const markerPath = join(workspace, "target-ran");
+  const realPath = process.env.PATH;
+  const server = createServer();
+  const run = async (): Promise<number | null> =>
+    new Promise((resolveExit) => {
+      const child = spawnWithNetworkIsolation(
+        process.execPath,
+        ["-e", `require("fs").writeFileSync(${JSON.stringify(markerPath)}, "ran")`],
+        { isolate: "bwrap", stdio: "ignore", filesystemBindPath: workspace }
+      );
+      child.on("close", resolveExit);
+    });
+  mkdirSync(nestedDir, { recursive: true });
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+
+    // Control 1: a real socket with an unpoisoned PATH is refused.
+    const cleanSocketExitCode = await run();
+    assert.equal(cleanSocketExitCode, 92, "a real pre-existing socket must fail the bwrap in-namespace scan closed");
+    assert.ok(!existsSync(markerPath), "the target must not run while the socket is present");
+
+    // Control 2: the same socket remains visible when a caller-controlled,
+    // silent fake find is both in the rw workspace and first on PATH.
+    writeFileSync(join(workspace, "find"), ["#!/bin/sh", "exit 0"].join("\n"), { mode: 0o755 });
+    process.env.PATH = `${workspace}:${realPath ?? ""}`;
+    const poisonedSocketExitCode = await run();
+    assert.equal(
+      poisonedSocketExitCode,
+      92,
+      "the bwrap script must ignore a caller-planted fake find and still fail closed on the socket"
+    );
+    assert.ok(!existsSync(markerPath), "the target must not run when the poisoned-path scan finds the socket");
+
+    // Control 3: after removing the socket, the unpoisoned baseline runs.
+    process.env.PATH = realPath;
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    rmSync(socketPath, { force: true });
+    const cleanExitCode = await run();
+    assert.equal(cleanExitCode, 0, "the clean no-socket baseline must still run normally");
+    assert.ok(existsSync(markerPath), "the target must run once no socket is present");
+  } finally {
+    process.env.PATH = realPath;
+    server.close();
+    rmSync(nestedDir, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
 
 // ─── Orphaned / replaced socket between scan and dial (P1-2, external
 // review of ced8300be) ──────────────────────────────────────────────────

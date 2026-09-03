@@ -1534,8 +1534,8 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
     // exit status (command substitution does not reset it).
     REQ_FUNCTION_DEFINITION,
     // `probe_ro` is NOT defined here — `postPivotVerificationStatements`
-    // (appended at the end of this prelude, post-pivot) defines it as its
-    // OWN first returned statement, keeping that function's output
+    // (appended at the end of this prelude, post-pivot) initializes its own
+    // trusted PATH and defines it, keeping that function's output
     // self-contained for its other real caller (isolation-mechanism.test.ts's
     // standalone sandbox harness, which builds a script from ONLY that
     // function's return value, no prelude). See that function's own doc
@@ -1888,8 +1888,8 @@ const PROBE_RO_FUNCTION_DEFINITION =
   'else if sh -c "exec 3>>\\"\\$1\\"" _ "$__p" 2>/dev/null; then echo "$__p"; fi; fi; }';
 
 export function postPivotVerificationStatements(binds: readonly FilesystemBind[]): string[] {
-  // `probe_ro` is defined HERE, as this function's own first returned
-  // statement, rather than relying on a caller to have already defined it
+  // `probe_ro` is defined HERE, after this function initializes its own
+  // trusted PATH, rather than relying on a caller to have already defined it
   // (P1-3, external review of ced8300be) — `filesystemClosureShellPrelude`
   // defines it again, earlier, before calling this function, which is
   // harmless (dash allows redefining a shell function), but this function's
@@ -1899,7 +1899,7 @@ export function postPivotVerificationStatements(binds: readonly FilesystemBind[]
   // that is a legitimate, real calling shape this function's own contract
   // must support without a caller needing to know its internal
   // implementation detail of using a shell function.
-  const statements: string[] = [PROBE_RO_FUNCTION_DEFINITION];
+  const statements: string[] = [`PATH=${TRUSTED_SETUP_PATH}`, PROBE_RO_FUNCTION_DEFINITION];
   const roBindPaths = binds.filter((b) => b.mode === "ro").map((b) => b.path);
   // Property 3 checks the TOP of each ro bind, at its real, post-pivot path
   // (`/usr`, `/etc`, ... — the new root's OWN view, not the pre-pivot
@@ -2057,7 +2057,7 @@ export function bwrapArgvForFilesystemClosure(
     "--",
     resolveTrustedLauncherPath("sh"),
     "-c",
-    `${socketScan}; exec ${innerCommand}`,
+    `PATH=${TRUSTED_SETUP_PATH}; ${socketScan}; exec ${innerCommand}`,
   ];
 }
 
