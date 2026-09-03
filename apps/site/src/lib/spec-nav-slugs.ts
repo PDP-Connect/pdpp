@@ -19,15 +19,9 @@ export const docsRoute = "/specification";
 // MAINTAINER_DOC_SLUGS.
 export const maintainersRoute = "/maintainers";
 
-// The specification IS the page. The rail lists the normative core and the
-// three extension profiles — what the protocol defines, and nothing else.
+// The specification IS the page. The rail lists the normative core and the three extension profiles — what the protocol defines, and nothing else.
 //
-// Discovery and Trust and the Collection Profile are NOT here. They were
-// listed as companion specifications until the normative requirements for
-// accepting a declaration moved into Core §5 Declaration acceptance; both are
-// now informative and sit under GUIDANCE_SLUGS below. Grouping an informative
-// document beside the normative core is the specific thing that made a reader
-// treat its SHALLs as conformance requirements.
+// Discovery and Trust and the Collection Profile are NOT here. They were listed as companion specifications until the normative requirements for accepting a declaration moved into Core §5 Declaration acceptance; both are now informative and sit under GUIDANCE_SLUGS below. Grouping an informative document beside the normative core is the specific thing that made a reader treat its SHALLs as conformance requirements.
 //
 // Order is the reading order of the specification set, not alphabetical.
 export const PRIMARY_SLUGS = [
@@ -37,10 +31,7 @@ export const PRIMARY_SLUGS = [
   "spec-semantic-retrieval-extension",
 ] as const;
 
-// Informative implementer guidance, rendered under its own rail heading. These
-// define no conformance requirements: each states so in its own status header,
-// and the site copies carry an informative callout (see their header sidecars
-// in apps/site/spec-headers/).
+// Informative implementer guidance, rendered under its own rail heading. These define no conformance requirements: each states so in its own status header, and the site copies carry an informative callout (see their header sidecars in apps/site/spec-headers/).
 export const GUIDANCE_SLUGS = ["spec-discovery-and-trust", "spec-collection-profile"] as const;
 
 // Slugs sync-spec-docs.mjs generates from a root spec-*.md (that script's own
