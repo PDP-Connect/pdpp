@@ -10,6 +10,7 @@ packages:
 # version, and collector-runtime's packed package.json pins its
 # connector-protocol dependency to that exact version (never "*").
 overrides:
+  conventional-changelog-writer: 9.2.1
   # collector-runtime's own dependencies map already pins connector-protocol
   # to an exact version (see above), but pnpm needs the override below so a
   # transitive resolution of connector-protocol from anywhere else in this
