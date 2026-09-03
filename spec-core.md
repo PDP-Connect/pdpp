@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-02
+Date: 2026-09-03
 
 ---
 
@@ -1694,6 +1694,8 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Point-in-time reconstruction | Deferred (reconstructing full state at a past timestamp) |
 | Canonical view naming vocabulary | Deferred; will be informed by implementation experience |
 | Predicate-based grant scoping | Deferred; see spec-deferred for subset template design direction |
+| Derivative data | Deferred and unresolved; v0.1 authorizes reads of declared streams and states no default for the output of compute over them. See spec-deferred |
+| Cross-source category grants | Deferred; grants bind to a single `source.id` in v0.1. See spec-deferred |
 | Real-time streaming | Different spec needed |
 
 ### Predicate-based grant scoping {#predicate-based-grant-scoping}
