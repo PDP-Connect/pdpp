@@ -1172,7 +1172,7 @@ Two authentication boundaries exist:
 
 A resource server MUST publish OAuth 2.0 Protected Resource Metadata as defined in RFC 9728. RFC 9728 Section 3 fixes the document's location: the well-known URI string `/.well-known/oauth-protected-resource` is inserted into the resource identifier between the host component and any path or query component.
 
-A client that reaches the resource server without a usable access token learns that location from the response itself. On a 401, the resource server MUST include a `WWW-Authenticate: Bearer` challenge as RFC 6750 Section 3 requires, MUST set `error="invalid_token"` when a token was presented and rejected, and MUST include the `resource_metadata` parameter RFC 9728 Section 5.1 defines, carrying the URL of this document. This is the bootstrap path: without it a client holding no token has no specified way to discover where to authenticate.
+A client that reaches the resource server without a usable access token learns that location from the response itself. On a 401, the resource server MUST include a `WWW-Authenticate: Bearer` challenge, as RFC 6750 Section 3 requires. It MUST set `error="invalid_token"` when a token was presented and rejected. And it MUST include the `resource_metadata` parameter RFC 9728 Section 5.1 defines, carrying the URL of this document. This is the bootstrap path: without it a client holding no token has no specified way to discover where to authenticate.
 
 The `resource` member is the resource server's own identifier, as RFC 9728 Section 2 requires. For a `provider_native` source it is the same identifier as the declaration's `source.id`, which is the binding Section 5 already requires an authorization server to check before consent. A resource server that serves several sources publishes one metadata document per resource identifier rather than one document listing them.
 
@@ -1187,7 +1187,7 @@ PDPP defines four additional members. RFC 9728 Section 2 permits additional para
 
 `resource_name` is RFC 9728's own member for a human-readable resource name, not a PDPP extension; a resource server SHOULD publish it because a consent surface has no other name to display for the resource.
 
-RFC 9728 Section 2 makes `authorization_servers` OPTIONAL, and notes that in some deployments the set of authorization servers is not enumerable. A PDPP resource server MUST publish `authorization_servers` when that set is enumerable, so a client can reach the issuer without prior configuration. When the set is not enumerable, the resource server MUST omit the member rather than publish a partial list, and the client obtains the issuer from the grant it already holds or from the deployment's own onboarding; Core defines no other discovery path for that case.
+RFC 9728 Section 2 makes `authorization_servers` OPTIONAL, and notes that in some deployments the set of authorization servers is not enumerable. A PDPP resource server MUST publish `authorization_servers` when that set is enumerable, so a client can reach the issuer without prior configuration. When the set is not enumerable, the resource server MUST omit the member rather than publish a partial list. The client then obtains the issuer from the grant it already holds, or from the deployment's own onboarding. Core defines no other discovery path for that case.
 
 The `capabilities` member is defined by the extension profiles that advertise into it, not by Core. Core neither requires it nor constrains its contents, and a resource server that implements no extension omits it.
 
