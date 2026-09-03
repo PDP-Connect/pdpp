@@ -37,8 +37,10 @@ workflow is retired. Maintainers review and merge `signatures` into the private
 repository's default branch; the site never commits directly to that protected
 branch.
 
-Reachable by the maintainers listed in [`MAINTAINERS.md`](../MAINTAINERS.md)
-and by one deploy key held as a Vercel secret. Nothing else.
+Reachable by the maintainers listed in [`MAINTAINERS.md`](../MAINTAINERS.md),
+the site's Vercel deployment credential, and `github-actions[bot]` through
+`PDPP_PRIVATE_REPO_TOKEN`. The GitHub Actions principal can only read the
+`signatures` checkout for publication. Nothing else.
 
 This store exists only because signing opened before LF Decentralized Trust
 hosting was confirmed. It is meant to stop existing.
