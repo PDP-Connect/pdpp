@@ -24,8 +24,14 @@ export const maintainersRoute = "/maintainers";
 // the protocol normatively defines, and nothing else.
 //
 // Order is the reading order of the specification set, not alphabetical.
-export const PRIMARY_SLUGS = [
-  "spec-core",
+export const PRIMARY_SLUGS = ["spec-core"] as const;
+
+// The three informative documents, listed under their own rail heading so a
+// reader cannot mistake them for part of the normative set. Discovery and
+// Trust and the Collection Profile state in their own headers that they define
+// no conformance requirements; the extension profiles add surfaces on top of
+// Core without changing what Core means.
+export const GUIDANCE_SLUGS = [
   "spec-discovery-and-trust",
   "spec-collection-profile",
   "spec-ext-lexical-search",

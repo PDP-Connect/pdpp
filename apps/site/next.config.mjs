@@ -111,8 +111,16 @@ const nextConfig = {
       // document, not a specification, so it is served at /governance. fumadocs
       // still routes the page under /specification; that URL redirects to the
       // canonical one rather than serving the same document at two addresses.
+      // /governance keeps working and lands on the governance anchor of
+      // /specification, which now renders GOVERNANCE.md inline. Permanent:
+      // the standalone route is gone, not moved temporarily.
       {
-        destination: "/governance",
+        destination: "/specification#governance",
+        permanent: true,
+        source: "/governance",
+      },
+      {
+        destination: "/specification#governance",
         permanent: true,
         source: "/specification/governance",
       },

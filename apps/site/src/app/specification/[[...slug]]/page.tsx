@@ -12,7 +12,9 @@ import { ResponsiveSpecTable } from "@/components/mdx/responsive-table.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
 import { repoBlobUrl } from "@/lib/site-facts.ts";
-import { MAINTAINER_DOC_SLUGS, specDocExtension } from "@/lib/spec-nav-slugs.ts";
+import { PdppGovernanceStages } from "@/components/site/governance-stages.tsx";
+import { getGovernanceFrontMatter } from "@/lib/spec-front-matter.ts";
+import { GOVERNANCE_SLUG, MAINTAINER_DOC_SLUGS, specDocExtension } from "@/lib/spec-nav-slugs.ts";
 
 interface DocsPageProps {
   params: Promise<{
@@ -88,8 +90,55 @@ export default async function Page({ params }: DocsPageProps) {
             table: ResponsiveSpecTable,
           })}
         />
+        {/* The governance document is rendered INTO this page, at #governance,
+            rather than at a standalone route: /governance now redirects here.
+            One page carries the protocol and the programme that stewards it,
+            which is the relationship the four-intent structure is asserting.
+            Only the root slug gets it — a reader on an extension profile is
+            not asking about governance. */}
+        {isRootSlug && <GovernanceSection />}
       </DocsBody>
     </DocsPage>
+  );
+}
+
+// GOVERNANCE.md, rendered from the same generated fumadocs collection the spec
+// body comes from, so it keeps the repo-root file as its single source.
+async function GovernanceSection() {
+  const governancePage = source.getPage([GOVERNANCE_SLUG]);
+
+  if (!governancePage) {
+    return null;
+  }
+
+  const { body: GovernanceMDX } = await governancePage.data.load();
+
+  return (
+    <section className="mt-24 border-border border-t pt-16" id="governance">
+      <div className="flex flex-col gap-3">
+        <Text as="p" color="subtle" family="mono" size="stamp">
+          Governance · {getGovernanceFrontMatter().status} · {getGovernanceFrontMatter().circulated}
+        </Text>
+        <Text as="h2" size="title">
+          Who runs this, and who decides
+        </Text>
+        <Text as="p" className="max-w-[68ch]" size="lede" wrap="pretty">
+          Two parts. Part A is how it runs from 15 October. Part B is how we propose it runs once there is an elected
+          committee.
+        </Text>
+      </div>
+
+      <PdppGovernanceStages className="mt-10" />
+
+      <div className="mt-16">
+        <GovernanceMDX
+          components={getMDXComponents({
+            a: createRelativeLink(source, governancePage),
+            table: ResponsiveSpecTable,
+          })}
+        />
+      </div>
+    </section>
   );
 }
 

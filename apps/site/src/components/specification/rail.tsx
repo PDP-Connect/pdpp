@@ -66,7 +66,7 @@ function RailItem({ item }: { item: PageTree.Item }) {
 // the two groups change by different routes: the specifications under the
 // Community Specification process, governance and the Principles by a vote of
 // Partners.
-const RAIL_SECTION_LABELS = new Set(["Specification", "Programme"]);
+const RAIL_SECTION_LABELS = new Set(["Core protocol", "Implementer guidance, informative", "Appendices"]);
 
 function RailSeparator({ item }: { item: PageTree.Separator }) {
   const label = typeof item.name === "string" ? item.name : "";
