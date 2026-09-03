@@ -1394,21 +1394,14 @@ Clients MUST treat unrecognized error codes as opaque and fall back to the actua
 
 **Authority and forward compatibility.**
 
-1. The actual HTTP status code and applicable response headers are
-   authoritative for generic HTTP semantics, including success or failure,
-   authentication challenges, redirection, and retry timing.
-2. A recognized `error.type` or `error.code` MAY refine PDPP-specific category,
-   presentation, or recovery behavior only when its defined semantics are
-   compatible with the actual status code and headers.
-3. An absent, unknown, malformed, or status-incompatible `type` or `code` is
-   opaque and MUST NOT override the actual status code or relevant headers.
+1. The actual HTTP status code and applicable response headers are authoritative for generic HTTP semantics, including success or failure, authentication challenges, redirection, and retry timing.
+2. A recognized `error.type` or `error.code` MAY refine PDPP-specific category, presentation, or recovery behavior only when its defined semantics are compatible with the actual status code and headers.
+3. An absent, unknown, malformed, or status-incompatible `type` or `code` is opaque and MUST NOT override the actual status code or relevant headers.
 4. Unknown identifiers MUST NOT cause parse failure.
 
-Clients MAY retain unknown identifiers for diagnostics, subject to local size
-limits, safe rendering/escaping, and privacy policy.
+Clients MAY retain unknown identifiers for diagnostics, subject to local size limits, safe rendering/escaping, and privacy policy.
 
-This makes a future error code safe to introduce: an older client keeps handling
-the response by status and headers, whatever the new `code` or `type` says.
+This makes a future error code safe to introduce: an older client keeps handling the response by status and headers, whatever the new `code` or `type` says.
 
 | Code | HTTP Status | Type | Meaning |
 |------|------------|------|---------|
