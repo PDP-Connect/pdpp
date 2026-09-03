@@ -1,0 +1,59 @@
+name: spec-prose-gate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/spec-prose-gate.yml"
+      - "scripts/spec-prose-lint.mjs"
+      - "scripts/spec-prose-lint.test.mjs"
+      - "spec-*.md"
+  workflow_dispatch: {}
+
+concurrency:
+  group: spec-prose-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spec-prose-gate:
+    name: spec prose rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The gate lints only the spec files this pull request touches, so it
+          # needs the base commit present to diff against. A depth-1 checkout
+          # would have no base and the diff would name every file.
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      # The linter has no dependencies, so there is no install step. Adding one
+      # would make a prose check wait on the whole workspace.
+      - name: Test the linter
+        run: node --test scripts/spec-prose-lint.test.mjs
+
+      - name: Lint changed spec files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BASE_SHA:-}" ]; then
+            changed="$(git diff --name-only --diff-filter=ACMR "$BASE_SHA"...HEAD -- 'spec-*.md')"
+          else
+            changed="$(ls spec-*.md 2>/dev/null || true)"
+          fi
+          if [ -z "$changed" ]; then
+            echo "No spec-*.md changed in this pull request; nothing to check."
+            exit 0
+          fi
+          echo "Checking:"
+          echo "$changed" | sed 's/^/  /'
+          # Word-split is intended: the linter takes a file list.
+          # shellcheck disable=SC2086
+          node scripts/spec-prose-lint.mjs $changed
