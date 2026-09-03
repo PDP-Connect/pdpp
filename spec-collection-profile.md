@@ -72,10 +72,10 @@ A stream declaration must not set both `state_stream` and `parent_streams`. A st
 
 Some streams do not carry their own cursor. A stream that rides another stream's checkpoint (for example, a reactions or attachment-metadata stream co-emitted alongside the messages that reference it) declares that relationship in the manifest so the runtime can compute which staged `STATE` commits are safe to persist when a run ends in a certified stream-scoped failure (see [DONE](#done)) or reports incomplete detail coverage (see [DETAIL_COVERAGE](#detail_coverage)).
 
-There are two declaration shapes, and a stream must use at most one. Each shape REQUIRES a specific `coverage_strategy` value on the same stream; a runtime must reject a manifest declaring `state_stream` or `parent_streams` with any other (or absent) `coverage_strategy` value on that stream (see [Validation](#validation) rule 7 below):
+There are two declaration shapes, and a stream must use at most one. Each shape requires a specific `coverage_strategy` value on the same stream; a runtime must reject a manifest declaring `state_stream` or `parent_streams` with any other (or absent) `coverage_strategy` value on that stream (see [Validation](#validation) rule 7 below):
 
-- **`state_stream` (single parent).** `streams[].state_stream` is a string naming exactly one other declared stream, and REQUIRES `coverage_strategy: "checkpoint_window"` on the declaring stream. It declares a static one-to-one mapping: this stream is always covered by that one parent's checkpoint, and the connector never emits `DETAIL_COVERAGE` for it — the runtime projects its checkpoint status from the parent's commit outcome directly, with no run-time override. A runtime must reject any `DETAIL_COVERAGE` message naming a `state_stream`-declared stream as its `stream` field, as a protocol violation (fail closed), regardless of what `state_stream` value that message reports. Use this shape for a stream that has no independent hydration lane of its own.
-- **`parent_streams` (one or many parents).** `streams[].parent_streams` is a non-empty array naming one or more other declared streams, and REQUIRES `coverage_strategy: "parent_detail_accounting"` on the declaring stream. It declares that this stream runs its own list+detail hydration lane and emits one `DETAIL_COVERAGE` message per parent boundary per run (see [DETAIL_COVERAGE](#detail_coverage)); each declared parent's checkpoint is gated independently by its own coverage report and gap accounting, and a runtime must reject any `DETAIL_COVERAGE` message whose `state_stream` value is not a member of this declared set, as a protocol violation (see [Precedence between manifest and run-time evidence](#precedence-between-manifest-and-run-time-evidence)). Use this shape for a detail stream that can be fed by more than one independently checkpointed list stream in the same run, or that proves its own coverage rather than inheriting a parent's outcome unconditionally.
+- **`state_stream` (single parent).** `streams[].state_stream` is a string naming exactly one other declared stream, and requires `coverage_strategy: "checkpoint_window"` on the declaring stream. It declares a static one-to-one mapping: this stream is always covered by that one parent's checkpoint, and the connector never emits `DETAIL_COVERAGE` for it — the runtime projects its checkpoint status from the parent's commit outcome directly, with no run-time override. A runtime must reject any `DETAIL_COVERAGE` message naming a `state_stream`-declared stream as its `stream` field, as a protocol violation (fail closed), regardless of what `state_stream` value that message reports. Use this shape for a stream that has no independent hydration lane of its own.
+- **`parent_streams` (one or many parents).** `streams[].parent_streams` is a non-empty array naming one or more other declared streams, and requires `coverage_strategy: "parent_detail_accounting"` on the declaring stream. It declares that this stream runs its own list+detail hydration lane and emits one `DETAIL_COVERAGE` message per parent boundary per run (see [DETAIL_COVERAGE](#detail_coverage)); each declared parent's checkpoint is gated independently by its own coverage report and gap accounting, and a runtime must reject any `DETAIL_COVERAGE` message whose `state_stream` value is not a member of this declared set, as a protocol violation (see [Precedence between manifest and run-time evidence](#precedence-between-manifest-and-run-time-evidence)). Use this shape for a detail stream that can be fed by more than one independently checkpointed list stream in the same run, or that proves its own coverage rather than inheriting a parent's outcome unconditionally.
 
 #### Validation
 
@@ -380,7 +380,7 @@ Reports how completely a connector hydrated per-record detail for one checkpoint
 
 | Field | Type | Description |
 |-------|------|--------------|
-| `reference_only` | `true` | must be present and `true`. Marks this message as evidence about a run, not itself durable data. |
+| `reference_only` | `true` | Must be present and `true`. Marks this message as evidence about a run, not itself durable data. |
 | `stream` | string | The detail stream this report covers. must be present in `scope.streams`. |
 | `state_stream` | string | The checkpoint-parent stream this report's evidence gates. must be present in `scope.streams`. |
 | `required_keys` | (string \| number)[] | The full set of record keys considered for detail under this parent boundary in this run. |
@@ -456,7 +456,7 @@ cause a state transition and never gates any checkpoint commit.
 
 | Field | Type | Description |
 |-------|------|--------------|
-| `reference_only` | `true` | must be present and `true`. Same epistemic marker as `DETAIL_COVERAGE.reference_only`: evidence about a run, not itself durable data. |
+| `reference_only` | `true` | Must be present and `true`. Same epistemic marker as `DETAIL_COVERAGE.reference_only`: evidence about a run, not itself durable data. |
 | `stream` | string | The `state_stream`-declared stream this fact describes. must be present in `scope.streams`. must name a stream whose manifest declaration has `state_stream` set (i.e. is itself a `state_stream` child), not `parent_streams` or a self-mapped stream. |
 | `considered` | integer, `0 <= n <= 9007199254740991` | The full count of keys the connector's own hydration lane considered for this stream in this run, measured at that stream's own hydration site, after the connector's own reconciliation of hydrated vs. gapped vs. unaccounted keys settles. must not be derived from a different stream's enumeration/emitted-record count, and must not be derived as a function of this run's own successful-emission or gap counts. |
 | `outcomes.emitted` | integer, `0 <= n <= 9007199254740991` | The count of `considered` keys the connector successfully hydrated and emitted as `RECORD` in this run. |
@@ -804,7 +804,7 @@ type CollectionScope = {
 type ManifestStream = {
   name: string;
   incremental?: boolean;
-  // A stream MUST declare at most one of state_stream / parent_streams.
+  // A stream must declare at most one of state_stream / parent_streams.
   // Neither present means the stream is its own checkpoint (self-mapped).
   state_stream?: string;
   parent_streams?: string[]; // non-empty when present
