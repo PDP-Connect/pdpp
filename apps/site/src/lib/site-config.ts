@@ -24,6 +24,16 @@ function configured(value: string | undefined, placeholder: string): string {
   return trimmed ? trimmed : `[${placeholder}]`;
 }
 
+/**
+ * A value that IS settled, with an env override for a deployment that needs a
+ * different one. Distinct from `configured` on purpose: a real default here is
+ * a fact somebody decided, and it should render as itself rather than as a
+ * placeholder nobody has to fill in.
+ */
+function settled(value: string | undefined, agreed: string): string {
+  return value?.trim() || agreed;
+}
+
 /** True when a value is still an unfilled placeholder. */
 export function isPlaceholder(value: string): boolean {
   return PLACEHOLDER_PATTERN.test(value);
@@ -48,14 +58,24 @@ export const siteConfig = {
   /** Where the Supporter form posts. Same-origin by default. */
   formEndpoint: configured(process.env.NEXT_PUBLIC_PDPP_FORM_ENDPOINT, "form endpoint not set"),
 
-  /** Named on /privacy and under the form. The interim data controller. */
-  controllerName: configured(process.env.NEXT_PUBLIC_PDPP_CONTROLLER_NAME, "controller name not set"),
+  /**
+   * The interim data controller, named on /privacy and under the signing form.
+   * The Vana Foundation holds the register until LF Decentralized Trust
+   * hosting is confirmed, at which point it transfers and this changes once.
+   */
+  controllerName: settled(process.env.NEXT_PUBLIC_PDPP_CONTROLLER_NAME, "the Vana Foundation"),
 
   /** The footer's General contact. Deliberately NOT the reports mailbox. */
-  generalContact: configured(process.env.NEXT_PUBLIC_PDPP_GENERAL_CONTACT, "general contact address not set"),
+  generalContact: settled(process.env.NEXT_PUBLIC_PDPP_GENERAL_CONTACT, "support@vanafoundation.org"),
 
-  /** Named on /privacy as the address for a data question. */
-  privacyContact: configured(process.env.NEXT_PUBLIC_PDPP_PRIVACY_CONTACT, "privacy contact address not set"),
+  /**
+   * Named on /privacy as the address for a data question. Defaults to the
+   * general contact rather than to a placeholder: a privacy page that cannot
+   * name an address to write to is worse than one that names the same address
+   * as everything else. Split them by setting this when a dedicated mailbox
+   * exists.
+   */
+  privacyContact: settled(process.env.NEXT_PUBLIC_PDPP_PRIVACY_CONTACT, "support@vanafoundation.org"),
 
   /** The transactional provider that sends the one confirmation email. */
   emailProvider: configured(process.env.NEXT_PUBLIC_PDPP_EMAIL_PROVIDER, "email provider not set"),
