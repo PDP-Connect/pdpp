@@ -57,10 +57,23 @@ export async function withTemporaryPostgresDatabase(
     databaseName,
     closeConnections,
     templateName = currentTestFileIsPostgresTemplateEligible() ? process.env.PDPP_TEST_POSTGRES_TEMPLATE : null,
+    templateIdentity = templateName && templateName === process.env.PDPP_TEST_POSTGRES_TEMPLATE
+      ? process.env.PDPP_TEST_POSTGRES_TEMPLATE_IDENTITY
+      : undefined,
   }: {
     connectionString: string;
     databaseName: string;
     closeConnections?: () => Promise<void>;
+    /**
+     * Identity token the run that built `templateName` handed this process
+     * (PDPP_TEST_POSTGRES_TEMPLATE_IDENTITY, set by scripts/run-tests.ts
+     * beside PDPP_TEST_POSTGRES_TEMPLATE). When present, the clone-time
+     * check refuses any template whose recorded identity differs, so a
+     * same-named template from another run or an altered metadata row is
+     * never cloned. Defaults from the environment whenever `templateName`
+     * is the run's own template.
+     */
+    templateIdentity?: string;
     /**
      * Clone from this Postgres TEMPLATE database instead of bootstrapping
      * schema from scratch inside the callback.
@@ -99,7 +112,7 @@ export async function withTemporaryPostgresDatabase(
       // Fail loudly if the template is missing/stale rather than silently
       // falling back to a from-scratch CREATE DATABASE -- a quiet fallback
       // would hide a broken template behind a normal-looking (slow) pass.
-      await assertPostgresTestTemplateUsable(connectionString, templateName);
+      await assertPostgresTestTemplateUsable(connectionString, templateName, { expectedIdentity: templateIdentity });
     }
     await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
     // Identifier is safe: quotedIdentifier() already escaped databaseName;

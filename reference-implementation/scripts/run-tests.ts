@@ -28,7 +28,11 @@ import { deriveDedicatedPostgresDbNameForFile } from "./dedicated-postgres-db-na
 import { startFileProcessWatchdog } from "./file-process-watchdog.ts";
 import { assertPostgresProfilePreflight } from "./postgres-profile-preflight.ts";
 import { isPostgresTemplateEligibleFilePath } from "./postgres-template-eligibility.ts";
-import { dropPostgresTestTemplate, ensurePostgresTestTemplate } from "./postgres-test-template.ts";
+import {
+  dropPostgresTestTemplate,
+  ensurePostgresTestTemplate,
+  readPostgresTestTemplateIdentity,
+} from "./postgres-test-template.ts";
 import { discoverSelectedTestFiles } from "./run-tests-discovery.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
 import { buildScrubbedTestEnv } from "./test-env.ts";
@@ -197,6 +201,11 @@ const runnerId = randomBytes(4).toString("hex");
 // from scratch -- see scripts/postgres-test-template.ts for the fail-closed
 // contract (a missing/unusable template throws, it is never silently skipped).
 let postgresTestTemplateName: string | null = null;
+// Identity token of the template THIS run built (scripts/postgres-test-template.ts,
+// `identityDigest`): handed to every child as PDPP_TEST_POSTGRES_TEMPLATE_IDENTITY so a
+// child's clone-time check accepts only this exact build, not any template that
+// happens to carry the same name.
+let postgresTestTemplateIdentity: string | null = null;
 
 /**
  * Derive the admin connection URL from a per-test URL by replacing the
@@ -400,7 +409,12 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
         // file receiving this env var still bootstraps from scratch.
         // Unset entirely (not set to "") when no template was built, so a
         // Postgres run without templating is byte-identical to today.
-        ...(postgresTestTemplateName ? { PDPP_TEST_POSTGRES_TEMPLATE: postgresTestTemplateName } : {}),
+        ...(postgresTestTemplateName && postgresTestTemplateIdentity
+          ? {
+              PDPP_TEST_POSTGRES_TEMPLATE: postgresTestTemplateName,
+              PDPP_TEST_POSTGRES_TEMPLATE_IDENTITY: postgresTestTemplateIdentity,
+            }
+          : {}),
       }
     : baseEnv;
   // Turn the preload (appended to effectiveArgs above) live in the child. Left
@@ -493,6 +507,10 @@ const results: NodeTestResult[] = [];
 // this exists for explicitly rules out.
 if (dedicatedBasePostgresTestUrl && testFiles.length > 0) {
   postgresTestTemplateName = await ensurePostgresTestTemplate(dedicatedBasePostgresTestUrl, runnerId);
+  postgresTestTemplateIdentity = await readPostgresTestTemplateIdentity(
+    dedicatedBasePostgresTestUrl,
+    postgresTestTemplateName
+  );
 }
 
 async function worker(): Promise<void> {

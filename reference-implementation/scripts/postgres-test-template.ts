@@ -65,10 +65,32 @@ async function currentPostgresStorageSourceDigest(): Promise<string> {
  */
 const TEMPLATE_METADATA_TABLE = "pdpp_test_template_metadata";
 
-interface TemplateMetadata {
+/**
+ * Everything a clone call site verifies before trusting a template. Each
+ * field is one of the four identity elements the P2 review asked to bind:
+ *
+ *   - `runnerId`            -- the run that built it (also encoded in the
+ *                              template name; the two must agree)
+ *   - `schemaVersion`       -- digest of the catalog (tables, columns,
+ *                              indexes) the built template actually carries
+ *   - `schemaSourceDigest`  -- digest of the `postgres-storage.ts` that
+ *                              built it (must equal this process's own)
+ *   - `builtAt`             -- creation instant, as the metadata table
+ *                              returns it (`built_at::text`)
+ *
+ * `identityDigest` is a digest over all of the above plus the template
+ * name. It is stored beside them so that altering any single field after
+ * the build (a tampered or partially rewritten row) is detected even when
+ * the altered field has no independent expectation at clone time, and it
+ * is the token `scripts/run-tests.ts` hands each child so the child can
+ * insist on the exact build its own run produced.
+ */
+export interface PostgresTestTemplateMetadata {
   builtAt: string;
+  identityDigest: string;
   runnerId: string;
   schemaSourceDigest: string;
+  schemaVersion: string;
 }
 
 async function ensureTemplateMetadataTable(admin: InstanceType<typeof Client>): Promise<void> {
@@ -80,34 +102,108 @@ async function ensureTemplateMetadataTable(admin: InstanceType<typeof Client>): 
        built_at timestamptz NOT NULL DEFAULT now()
      )`
   );
+  // Rows written by the earlier three-column builder have NULL here and are
+  // refused by the identity check below (they carry no schema version and
+  // no identity digest), which is the correct outcome for a template built
+  // by older code.
+  await admin.query(
+    `ALTER TABLE ${TEMPLATE_METADATA_TABLE}
+       ADD COLUMN IF NOT EXISTS schema_version text,
+       ADD COLUMN IF NOT EXISTS identity_digest text`
+  );
+}
+
+function templateIdentityDigest(
+  templateName: string,
+  metadata: Omit<PostgresTestTemplateMetadata, "identityDigest">
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        templateName,
+        metadata.runnerId,
+        metadata.schemaVersion,
+        metadata.schemaSourceDigest,
+        metadata.builtAt,
+      ])
+    )
+    .digest("hex");
+}
+
+/**
+ * Digest of the schema a database actually carries: every column of every
+ * table and every index definition in `public`, in catalog order. Computed
+ * on the template while it still accepts connections (before
+ * `ALLOW_CONNECTIONS false`) and recorded as its `schema_version`.
+ */
+export async function computePostgresSchemaCatalogDigest(connectionString: string): Promise<string> {
+  const client = new Client({ connectionString });
+  await client.connect();
+  try {
+    const { rows: columns } = await client.query(
+      `SELECT table_name, column_name, data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+        ORDER BY table_name, ordinal_position`
+    );
+    const { rows: indexes } = await client.query(
+      `SELECT tablename, indexname, indexdef
+         FROM pg_indexes
+        WHERE schemaname = 'public'
+        ORDER BY tablename, indexname`
+    );
+    return createHash("sha256").update(JSON.stringify({ columns, indexes })).digest("hex");
+  } finally {
+    await client.end();
+  }
 }
 
 async function writeTemplateMetadata(
   admin: InstanceType<typeof Client>,
   templateName: string,
-  metadata: TemplateMetadata
+  metadata: { runnerId: string; schemaSourceDigest: string; schemaVersion: string }
 ): Promise<void> {
   await ensureTemplateMetadataTable(admin);
   await admin.query(
-    `INSERT INTO ${TEMPLATE_METADATA_TABLE} (template_name, runner_id, schema_source_digest)
-       VALUES ($1, $2, $3)
+    `INSERT INTO ${TEMPLATE_METADATA_TABLE} (template_name, runner_id, schema_source_digest, schema_version, identity_digest)
+       VALUES ($1, $2, $3, $4, NULL)
      ON CONFLICT (template_name) DO UPDATE
        SET runner_id = EXCLUDED.runner_id,
            schema_source_digest = EXCLUDED.schema_source_digest,
+           schema_version = EXCLUDED.schema_version,
+           identity_digest = NULL,
            built_at = now()`,
-    [templateName, metadata.runnerId, metadata.schemaSourceDigest]
+    [templateName, metadata.runnerId, metadata.schemaSourceDigest, metadata.schemaVersion]
   );
+  // The identity digest covers `built_at` exactly as the table returns it,
+  // so it is computed from the stored row rather than from the values just
+  // inserted: that keeps the clone-time recomputation byte-identical to the
+  // build-time one regardless of how the server renders the timestamp.
+  const stored = await readTemplateMetadata(admin, templateName);
+  if (!stored) {
+    throw new Error(`template metadata row for "${templateName}" vanished between insert and read-back`);
+  }
+  await admin.query(`UPDATE ${TEMPLATE_METADATA_TABLE} SET identity_digest = $2 WHERE template_name = $1`, [
+    templateName,
+    templateIdentityDigest(templateName, stored),
+  ]);
 }
 
 async function readTemplateMetadata(
   admin: InstanceType<typeof Client>,
   templateName: string
-): Promise<TemplateMetadata | null> {
+): Promise<PostgresTestTemplateMetadata | null> {
   await ensureTemplateMetadataTable(admin);
   const {
     rows: [row],
-  } = await admin.query<{ runner_id: string; schema_source_digest: string; built_at: string }>(
-    `SELECT runner_id, schema_source_digest, built_at::text AS built_at
+  } = await admin.query<{
+    runner_id: string;
+    schema_source_digest: string;
+    schema_version: string | null;
+    identity_digest: string | null;
+    built_at: string;
+  }>(
+    `SELECT runner_id, schema_source_digest, schema_version, identity_digest, built_at::text AS built_at
        FROM ${TEMPLATE_METADATA_TABLE}
       WHERE template_name = $1`,
     [templateName]
@@ -115,7 +211,13 @@ async function readTemplateMetadata(
   if (!row) {
     return null;
   }
-  return { builtAt: row.built_at, runnerId: row.runner_id, schemaSourceDigest: row.schema_source_digest };
+  return {
+    builtAt: row.built_at,
+    identityDigest: row.identity_digest ?? "",
+    runnerId: row.runner_id,
+    schemaSourceDigest: row.schema_source_digest,
+    schemaVersion: row.schema_version ?? "",
+  };
 }
 
 /**
@@ -143,9 +245,15 @@ function quotedIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
 
+const TEMPLATE_NAME_PREFIX = "pdpp_test_template_";
+
 /** Derive the per-run template database name from the same runnerId used for per-file names, so concurrent runs on a shared cluster never collide. */
 export function deriveDedicatedPostgresTemplateName(runnerId: string): string {
-  return `pdpp_test_template_${runnerId}`;
+  return `${TEMPLATE_NAME_PREFIX}${runnerId}`;
+}
+
+function runnerIdFromTemplateName(templateName: string): string | null {
+  return templateName.startsWith(TEMPLATE_NAME_PREFIX) ? templateName.slice(TEMPLATE_NAME_PREFIX.length) : null;
 }
 
 async function withAdminClient<T>(
@@ -176,24 +284,44 @@ async function templateIsUsable(client: InstanceType<typeof Client>, templateNam
 }
 
 /**
- * Identity check beyond `templateIsUsable`'s pg_database flags (P2 fix): the
- * template's metadata row's `schema_source_digest` must match the digest of
- * THIS process's own `postgres-storage.ts`. A clone call site that receives
- * a template name via env var (a different process than the one that built
- * it) cannot otherwise tell a template built from the current migration
- * source apart from one built by stale worker state or an unrelated prior
- * run that happened to reuse a colliding name.
+ * Identity check beyond `templateIsUsable`'s pg_database flags (P2 fix). A
+ * clone call site that receives a template name via env var (a different
+ * process than the one that built it) cannot otherwise tell a template
+ * built by its own run from the current migration source apart from one
+ * built by stale worker state, an unrelated prior run that reused a
+ * colliding name, or a metadata row altered after the build. Every element
+ * of `PostgresTestTemplateMetadata` is verified, and any single mismatch
+ * refuses the template:
+ *
+ *   1. runner id in the row must equal the runner id the template name
+ *      encodes;
+ *   2. schema source digest must equal this process's own
+ *      `postgres-storage.ts`;
+ *   3. schema version and identity digest must be present (rows from the
+ *      older builder have neither), and the identity digest must equal a
+ *      recomputation over the row -- this is what catches an altered build
+ *      time or schema version, which have no independent expectation here;
+ *   4. when the caller was handed an identity token by the run that built
+ *      the template, the row's identity digest must equal that token.
  */
-async function templateMatchesCurrentSchemaSource(
+async function templateIdentityMatches(
   admin: InstanceType<typeof Client>,
-  templateName: string
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+  templateName: string,
+  expectedIdentity: string | undefined
+): Promise<{ ok: true; metadata: PostgresTestTemplateMetadata } | { ok: false; reason: string }> {
   const metadata = await readTemplateMetadata(admin, templateName);
   if (!metadata) {
     return {
       ok: false,
       reason:
         "no metadata row found (template was not built by this codebase's own template builder, or its metadata row was lost)",
+    };
+  }
+  const runnerIdFromName = runnerIdFromTemplateName(templateName);
+  if (runnerIdFromName === null || metadata.runnerId !== runnerIdFromName) {
+    return {
+      ok: false,
+      reason: `runner id mismatch: metadata row records runner ${JSON.stringify(metadata.runnerId)} but the template name encodes ${JSON.stringify(runnerIdFromName)} -- the row does not describe the run that built this template`,
     };
   }
   const expectedDigest = await currentPostgresStorageSourceDigest();
@@ -203,7 +331,27 @@ async function templateMatchesCurrentSchemaSource(
       reason: `schema source digest mismatch: template was built from postgres-storage.ts digest ${metadata.schemaSourceDigest.slice(0, 12)}..., this process's postgres-storage.ts digests to ${expectedDigest.slice(0, 12)}... -- the migration/bootstrap code has changed since this template was built`,
     };
   }
-  return { ok: true };
+  if (!(metadata.schemaVersion && metadata.identityDigest)) {
+    return {
+      ok: false,
+      reason:
+        "metadata row carries no schema version or identity digest (template was built by an older template builder that did not bind them)",
+    };
+  }
+  if (templateIdentityDigest(templateName, metadata) !== metadata.identityDigest) {
+    return {
+      ok: false,
+      reason:
+        "identity digest mismatch: the metadata row's runner id, schema version, source digest, or build time was altered after the template was built",
+    };
+  }
+  if (expectedIdentity !== undefined && expectedIdentity !== metadata.identityDigest) {
+    return {
+      ok: false,
+      reason: `identity token mismatch: this run expected template identity ${expectedIdentity.slice(0, 12)}... but the row records ${metadata.identityDigest.slice(0, 12)}... -- the template is not the build this run produced`,
+    };
+  }
+  return { metadata, ok: true };
 }
 
 /**
@@ -254,6 +402,11 @@ export async function ensurePostgresTestTemplate(baseConnectionString: string, r
       // while the pool's own connections are still open against it).
       await closePostgresStorage();
 
+      // Record the schema the template actually carries while it still
+      // accepts connections; once ALLOW_CONNECTIONS is false nothing can
+      // read its catalog again.
+      const schemaVersion = await computePostgresSchemaCatalogDigest(templateUrl);
+
       await admin.query(
         `ALTER DATABASE ${quotedIdentifier(templateName)} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false`
       );
@@ -270,9 +423,9 @@ export async function ensurePostgresTestTemplate(baseConnectionString: string, r
       // ordering, which could leave a metadata row pointing at a template
       // build that failed partway through marking.
       await writeTemplateMetadata(admin, templateName, {
-        builtAt: new Date().toISOString(),
         runnerId,
         schemaSourceDigest: await currentPostgresStorageSourceDigest(),
+        schemaVersion,
       });
     } finally {
       await admin.query("SELECT pg_advisory_unlock($1, $2)", TEMPLATE_BUILD_SERIALIZATION_LOCK);
@@ -291,21 +444,37 @@ export async function ensurePostgresTestTemplate(baseConnectionString: string, r
  */
 export async function assertPostgresTestTemplateUsable(
   baseConnectionString: string,
-  templateName: string
-): Promise<void> {
-  await withAdminClient(baseConnectionString, async (admin) => {
+  templateName: string,
+  { expectedIdentity }: { expectedIdentity?: string | undefined } = {}
+): Promise<PostgresTestTemplateMetadata> {
+  return await withAdminClient(baseConnectionString, async (admin) => {
     if (!(await templateIsUsable(admin, templateName))) {
       throw new Error(
         `Postgres test template "${templateName}" is missing or not usable (expected datistemplate=true, datallowconn=false). Refusing to fall back to a from-scratch bootstrap silently -- if the template was supposed to exist, this is the bug; if templating is not wanted, unset PDPP_TEST_POSTGRES_TEMPLATE instead.`
       );
     }
-    const identity = await templateMatchesCurrentSchemaSource(admin, templateName);
+    const identity = await templateIdentityMatches(admin, templateName, expectedIdentity);
     if (!identity.ok) {
       throw new Error(
-        `Postgres test template "${templateName}" failed identity verification: ${identity.reason}. Refusing to clone from a template that cannot be proven to match this process's own migration code -- a stale or foreign template could otherwise mask a real migration defect.`
+        `Postgres test template "${templateName}" failed identity verification: ${identity.reason}. Refusing to clone from a template that cannot be proven to be the one this run built from this process's own migration code -- a stale, foreign, or altered template could otherwise mask a real migration defect.`
       );
     }
+    return identity.metadata;
   });
+}
+
+/**
+ * The identity token of a template this process just built (or verified).
+ * `scripts/run-tests.ts` passes it to every child as
+ * PDPP_TEST_POSTGRES_TEMPLATE_IDENTITY so the child's clone-time check can
+ * insist on exactly this build rather than any template of the same name.
+ */
+export async function readPostgresTestTemplateIdentity(
+  baseConnectionString: string,
+  templateName: string
+): Promise<string> {
+  const metadata = await assertPostgresTestTemplateUsable(baseConnectionString, templateName);
+  return metadata.identityDigest;
 }
 
 /** Drop the per-run template database and its metadata row. Best-effort: called during gate teardown, after which nothing else needs the template. */
