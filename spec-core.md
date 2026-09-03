@@ -705,7 +705,7 @@ For PDPP Core v0.1 interoperability, a conforming authorization server MUST acce
 
 1. The AS MUST resolve requester identity metadata from the best available source. Source precedence is local registration or trust-registry metadata, then validated software-statement metadata if supported, then validated binding metadata, then inline `client_display`, then `client_id` fallback.
 2. If the resolved metadata contains a display name, the AS MUST display it to the user during consent. If no display name is available, the AS MUST display `client_id` as the requester identity.
-3. If the resolved metadata contains `policy_uri` or `tos_uri`, the AS MAY display them as secondary links or disclosures.
+3. If the resolved metadata contains `policy_uri` or `tos_uri`, the AS SHOULD display them during consent, and MUST record the exact values it displayed in the issued grant's `client.client_display`. A value the AS resolved but did not display MUST NOT be recorded as displayed. RFC 7591 Section 2 already states the authorization server SHOULD display each of these URLs to the end user when provided, so the display obligation here is that of the metadata vocabulary PDPP reuses, not an additional one. A recorded URI establishes which policy and terms documents the owner was pointed at, not what those documents said: the target is under the client's control and can change after issuance. Deployments that need the stronger evidence SHOULD retain a snapshot or content digest of the documents alongside the grant, which is what ISO/IEC 29184:2020 Section 5.2.8 requires when it says the organization "shall keep and make available the version of the notice presented when the PII principal gave consent." Core does not mandate that retention in v0.1 because it obliges the AS to fetch and store third-party documents, which is a deployment cost and a new fetch surface rather than an authorization semantic.
 4. If the server has a positive trust signal for the client (e.g., verified domain control, trust registry membership), it MUST render that status distinctly (e.g., a "verified" badge). If it has no positive trust signal, it MUST treat the client as unverified and SHOULD display an "unverified app" indicator.
 5. **Domain control as a trust signal.** The binding may identify a client by a URL that client controls. Where the AS both retrieved that client's metadata from that URL over HTTPS and confirmed the retrieved document identifies the same client, the AS has verified that the client controls that domain. The AS MAY treat verified domain control as a positive trust signal under obligation 4, and when it does it MUST name the verified domain rather than assert an unqualified verification (for example "Verified domain: example.com", not "Verified app"). Domain control establishes only that the operator of that domain published this client's metadata. It is not an assertion about the client's conduct, its data practices, or any review by the AS operator, and the AS MUST NOT present it as one.
 6. The AS MUST treat `logo_uri` as untrusted content until it has been accepted under local policy. It MUST NOT fetch and render a client-supplied remote logo in the consent UI unless the client is verified or the asset has been proxied, cached, and approved under local policy. For unverified clients, the AS SHOULD generate a monogram from the resolved display name.
@@ -772,6 +772,8 @@ A selection request does not carry `source.kind`. The authorization server deriv
 #### AI training consent {#ai-training-consent}
 
 The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.dev/purpose/ai_training`. This is the sole purpose code with a mandatory consent requirement at the protocol level.
+
+Resolved requester identity metadata for such a request MUST contain `policy_uri`, and the AS MUST reject the request when it does not. Consent to training on personal data cannot be informed without somewhere to read how the recipient handles that data, and this is the one purpose where Core already treats consent as protocol-enforced rather than advisory. The obligation is on the resolved metadata, not on inline `client_display`, so a client whose `policy_uri` is already known to the AS through registration or a validated binding does not have to repeat it in the request.
 
 ### Stream selection parameters
 
@@ -871,7 +873,7 @@ The authorization server issues an access token bound to the grant. The client u
 | `grant_id` | string | yes | Protocol metadata | Unique identifier. |
 | `issued_at` | ISO 8601 | yes | Protocol metadata | When the grant was issued. |
 | `subject` | object | yes | Identity binding | Exactly `{ id }`. The `subject.id` is an opaque string, unique within the issuing AS's namespace. No format constraint is imposed. |
-| `client` | object | yes | Identity binding | Exactly `{ client_id }` or `{ client_id, client_display }`. `client_display`, when retained, is the requester identity metadata resolved by the AS, not unverified inline input. |
+| `client` | object | yes | Identity binding | Exactly `{ client_id }` or `{ client_id, client_display }`. `client_display`, when retained, is the requester identity metadata resolved by the AS, not unverified inline input. Where the AS displayed `policy_uri` or `tos_uri` during consent, `client_display` MUST carry the exact displayed values (see [Client display metadata](#client-display), obligation 3). |
 | `source` | object | yes | Protocol-enforced | Exact `{ kind, id }` retained from the accepted SourceDeclaration. `id` is authorization identity; `kind` is provenance metadata. |
 | `source_declaration` | object | yes | Protocol evidence | `{ version }` records the opaque revision of the exact declaration snapshot used for consent and issuance. It is evidence metadata, not a live lookup authority. |
 | `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (see Appendix A). |
@@ -1477,14 +1479,14 @@ A conformant authorization server:
 4. Expands wildcards and selection presets into explicit stream names, fields, per-stream instance handles, resources, and frozen time constraints before issuing the grant.
 5. Produces a binding-neutral Source validation failure when a request contains both or neither of `streams` and `selection_preset`. The OAuth/RAR binding maps it to RFC 9396 `invalid_authorization_details`.
 6. MUST NOT reject a `purpose_code` solely because it is not in the PDPP registry. For unrecognized codes, displays `purpose_description` if present, or the raw URI. MAY reject a `purpose_code` based on local policy.
-7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms. If `client_claims` are rendered during final review, binds the normalized exact claims into the immutable final approval artifact and review revision, and preserves that binding in retained consent evidence, without adding them to the resolved grant or RS enforcement.
+7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms. If `client_claims` are rendered during final review, binds the normalized exact claims into the immutable final approval artifact and review revision, and preserves that binding in retained consent evidence, without adding them to the resolved grant or RS enforcement. Records in the issued grant's `client.client_display` the exact `policy_uri` and `tos_uri` values it displayed during consent.
 8. Tracks grant lifecycle (active, expired, revoked). Reflects revocation immediately in introspection responses (`active: false`).
 9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
 10. For `single_use` grants, consumes the grant atomically with first client-token issuance and rejects subsequent attempts to issue new client access tokens against that grant.
 11. Validates stream/field/view/resource-id shape at grant issuance.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
 13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
-14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.dev/purpose/ai_training"`.
+14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.dev/purpose/ai_training"`, and rejects such a request when the resolved requester identity metadata has no `policy_uri`.
 15. Resolves omitted instance IDs before the final approval surface. Binds
     exact resolved instances and all final decision fields to an immutable
     review revision or digest. Rejects stale approval if eligibility or the
@@ -1902,7 +1904,7 @@ Purpose codes are URIs. The following codes are defined by PDPP. Implementers ma
 | `https://pdpp.dev/purpose/analytics` | Analyzing user data to produce insights for the user. |
 | `https://pdpp.dev/purpose/export` | Exporting data for the user's own use. |
 | `https://pdpp.dev/purpose/agent_context` | Providing context to a personal AI agent. |
-| `https://pdpp.dev/purpose/ai_training` | Using data to train AI models. The AS MUST obtain explicit affirmative user consent before issuing any grant with this purpose code. This is a protocol-level requirement, not merely advisory. |
+| `https://pdpp.dev/purpose/ai_training` | Using data to train AI models. The AS MUST obtain explicit affirmative user consent before issuing any grant with this purpose code, and the resolved requester identity metadata MUST contain `policy_uri`. These are protocol-level requirements, not merely advisory. See [AI training consent](#ai-training-consent). |
 | `https://pdpp.dev/purpose/research` | Academic or market research. |
 
 ---
