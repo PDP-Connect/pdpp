@@ -24,20 +24,20 @@ export function repoBlobUrl(repoRelativePath: string): string {
   return `${GITHUB_REPO_URL}/blob/main/${repoRelativePath}`;
 }
 
-// The reference implementation (reference-implementation/) moved to
-// PDP-Connect/data-connect (Move B); it is no longer part of this repo.
-// Evidence links into that tree must point at its new home, not pdpp.
+// The reference implementation moved to PDP-Connect/data-connect. Coverage
+// evidence remains there, so its links must not resolve against this repo.
 export const DATA_CONNECT_REPO_URL = "https://github.com/PDP-Connect/data-connect";
 
-/** A `blob/main/<path>` link into PDP-Connect/data-connect, the reference implementation's canonical home post-Move-B. */
+/** A `blob/main/<path>` link into the reference implementation's canonical repository. */
 export function dataConnectBlobUrl(repoRelativePath: string): string {
   return `${DATA_CONNECT_REPO_URL}/blob/main/${repoRelativePath}`;
 }
 
-// The LFDT lab channel invite. discord.gg/hyperledger reaches the whole LFDT
-// server; this one drops the visitor directly into #pdp-connect, which is the
-// invite the owner said to prefer.
-export const DISCORD_INVITE_URL = "https://discord.gg/FV4bkZBdmA";
+// The Discord invite moved to site-config.ts, where it is one value the whole
+// site reads. It sat here as a second constant while /participate read its own
+// from config, which is how a site ends up publishing two different invites.
+// discord.gg/hyperledger reaches the whole LFDT server; the configured invite
+// drops the visitor directly into #pdp-connect.
 
 // Specification text FIRST — explicit owner instruction. Each row states which
 // artifact the license covers and links the license text, because the footer

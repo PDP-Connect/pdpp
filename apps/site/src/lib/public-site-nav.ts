@@ -1,37 +1,44 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-export interface PublicSiteNavLink {
+import { siteFlags } from "./site-config.ts";
+
+export interface PublicSiteNavChild {
   readonly link: string;
   readonly text: string;
 }
 
-// Public-site nav: the spec, how the programme around it is governed, what it
-// is for, how to run it, and how the standard changes. Specification /
-// Governance / Principles / Self-Host / Participate. Sandbox remains reachable
-// from /self-host but is not a top-level nav item.
+export interface PublicSiteNavLink {
+  /** Present only on Specification, which opens a dropdown on hover/focus. */
+  readonly children?: readonly PublicSiteNavChild[];
+  readonly link: string;
+  readonly text: string;
+}
+
+// Four intents, in the order a reader meets them: why the protocol exists,
+// what it says, how to build on it, how to take part. Everything else on the
+// site is reachable from inside one of those four.
 //
-// Governance sits directly after Specification because it is the document that
-// says what the specification's status means; it is a programme document, not
-// part of the normative protocol. Principles follows it for the same reason —
-// the two are the programme's own documents, and the Principles are the
-// document a reader is asked to sign, so it sits next to the one that says
-// what signing does. The owner console lives on its own deployed origin and uses
-// clean top-level routes; public-site navigation does not carry an
-// operator-console prefix.
+// Specification carries a dropdown rather than a fifth nav item because the
+// review period is temporary: "Review, until 1 Oct" is a door into the same
+// document, not a separate destination, and it disappears with reviewOpen
+// without leaving a gap in the nav.
 //
-// "Self-Host" rather than "Implementations": /self-host is a product page whose
-// job is to get someone running, and the front-door CTA reads "Self-host it".
-// The nav label and the CTA have to be the same noun or the route looks like two
-// different destinations. "Other implementations" survives as a section on that
-// page, which is the part that genuinely is an inventory.
-// Each label matches its own URL. A reader who sees "Self-Host" and lands on
-// /reference has been told the page is two different things; the old paths
-// redirect permanently rather than 404.
-export const publicSiteNav: readonly PublicSiteNavLink[] = [
-  { text: "Specification", link: "/specification" },
-  { text: "Governance", link: "/governance" },
-  { text: "Principles", link: "/principles" },
-  { text: "Self-Host", link: "/self-host" },
-  { text: "Participate", link: "/participate" },
-];
+// The review entry is the ONLY place outside /review and the reader's own
+// version strip that the review period is named. That is deliberate: a
+// deadline repeated across a site has to be unwound from every one of those
+// places when it passes.
+export function publicSiteNav(): readonly PublicSiteNavLink[] {
+  const specificationChildren: PublicSiteNavChild[] = [{ link: "/specification", text: "The specification" }];
+
+  if (siteFlags.reviewOpen) {
+    specificationChildren.push({ link: "/review", text: "Review, until 1 Oct" });
+  }
+
+  return [
+    { link: "/principles", text: "Principles" },
+    { children: specificationChildren, link: "/specification", text: "Specification" },
+    { link: "/build", text: "Build" },
+    { link: "/participate", text: "Participate" },
+  ];
+}

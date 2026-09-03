@@ -5,15 +5,7 @@ import type * as PageTree from "fumadocs-core/page-tree";
 import { type InferPageType, loader } from "fumadocs-core/source";
 import { lucideIconsPlugin } from "fumadocs-core/source/plugins/lucide-icons";
 import { docs } from "../../.source/dynamic.ts";
-import {
-  docsRoute,
-  GOVERNANCE_SLUG,
-  GUIDANCE_SLUGS,
-  governanceRoute,
-  PRIMARY_SLUGS,
-  PRINCIPLES_SLUG,
-  principlesRoute,
-} from "./spec-nav-slugs.ts";
+import { docsRoute, GUIDANCE_SLUGS } from "./spec-nav-slugs.ts";
 
 export const source = loader({
   baseUrl: docsRoute,
@@ -53,56 +45,54 @@ function pick(byUrl: Map<string, PageTree.Item>, slugs: readonly string[]): Page
     .filter((item): item is PageTree.Item => item !== undefined);
 }
 
-// The programme documents are authored inside the fumadocs collection (so they
-// are indexed and carry the same page furniture as a spec page) but are SERVED
-// at their own top-level routes. Each tree item therefore keeps the name
-// fumadocs resolved for it while pointing at the canonical URL — without this
-// the rail would link to /specification/governance and
-// /specification/principles, which only 308-redirect there.
+// The contents rail: Core's own nine sections, then the informative documents,
+// then the appendix.
 //
-// Governance first: it is the document that says what a status means, and the
-// Principles are one thing it governs.
-const PROGRAMME_DOCS = [
-  { route: governanceRoute, slug: GOVERNANCE_SLUG },
-  { route: principlesRoute, slug: PRINCIPLES_SLUG },
-] as const;
-
-function programmeItems(byUrl: Map<string, PageTree.Item>): PageTree.Item[] {
-  return PROGRAMME_DOCS.flatMap(({ route, slug }) => pick(byUrl, [slug]).map((item) => ({ ...item, url: route })));
-}
-
-// The tree the rail renders: the specification set, then the programme
-// documents. Every non-normative document (guides, rationale, deferred
-// concerns, open questions) keeps its URL but is listed only on /maintainers —
-// see MAINTAINER_DOC_SLUGS.
+// Core's sections are IN-PAGE anchors, not sibling documents. /specification
+// renders spec-core in full, so a reader clicking "5. Source declaration"
+// should move down the page they are already on rather than load another one.
+// They are therefore hand-declared here rather than picked out of the fumadocs
+// tree, which only knows about documents.
 //
 // The separator names are load-bearing: components/specification/rail.tsx
-// renders "Specification", "Implementer guidance" and "Programme" as the
-// rail's three labels, and any separator it does not recognise degrades to a
-// bare rule.
-//
-// "Implementer guidance" exists so Discovery and Trust and the Collection
-// Profile are not read as part of the normative set. Both were listed beside
-// Core as companion specifications until the requirements for accepting a
-// declaration moved into Core §5; both are now informative.
-//
-// Governance sits under its OWN heading rather than as a seventh document in
-// the specification list. The six above are specifications under CSL-1.0 that
-// change through the Community Specification process; governance is a
-// programme document amended by a vote of Partners. One list would imply one
-// amendment route where there are two.
+// renders them as the rail's headings, and any separator it does not recognise
+// degrades to a bare rule.
+const CORE_SECTIONS: readonly (readonly [string, string])[] = [
+  ["#introduction", "1. Introduction"],
+  ["#terminology", "2. Terminology and actors"],
+  ["#system-architecture", "3. System architecture"],
+  ["#record-model", "4. Record model"],
+  ["#source-declaration", "5. Source declaration"],
+  ["#selection-request", "6. Selection request"],
+  ["#grant", "7. Grant"],
+  ["#resource-server-interface", "8. Resource server interface"],
+  ["#conformance", "9. Conformance"],
+];
+
 export function getSpecNavTree(): PageTree.Root {
   const full = source.getPageTree();
   const byUrl = itemsByUrl(full);
+  const coreItems: PageTree.Item[] = CORE_SECTIONS.map(([anchor, name]) => ({
+    $id: `spec-rail-core-${anchor}`,
+    name,
+    type: "page",
+    url: `${docsRoute}${anchor}`,
+  }));
+
   return {
     ...full,
     children: [
-      { $id: "spec-rail-primary", name: "Specification", type: "separator" },
-      ...pick(byUrl, PRIMARY_SLUGS),
-      { $id: "spec-rail-guidance", name: "Implementer guidance", type: "separator" },
+      { $id: "spec-rail-primary", name: "Core protocol", type: "separator" },
+      ...coreItems,
+      { $id: "spec-rail-guidance", name: "Implementer guidance, informative", type: "separator" },
       ...pick(byUrl, GUIDANCE_SLUGS),
-      { $id: "spec-rail-programme", name: "Programme", type: "separator" },
-      ...programmeItems(byUrl),
+      { $id: "spec-rail-appendices", name: "Appendices", type: "separator" },
+      {
+        $id: "spec-rail-appendix-a",
+        name: "A. Purpose registry",
+        type: "page",
+        url: `${docsRoute}#purpose-registry`,
+      },
     ],
   };
 }

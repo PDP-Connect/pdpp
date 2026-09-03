@@ -24,15 +24,20 @@ export const maintainersRoute = "/maintainers";
 // Discovery and Trust and the Collection Profile are NOT here. They were listed as companion specifications until the normative requirements for accepting a declaration moved into Core §5 Declaration acceptance; both are now informative and sit under GUIDANCE_SLUGS below. Grouping an informative document beside the normative core is the specific thing that made a reader treat its SHALLs as conformance requirements.
 //
 // Order is the reading order of the specification set, not alphabetical.
-export const PRIMARY_SLUGS = [
-  "spec-core",
+export const PRIMARY_SLUGS = ["spec-core"] as const;
+
+// The three informative documents, listed under their own rail heading so a
+// reader cannot mistake them for part of the normative set. Discovery and
+// Trust and the Collection Profile state in their own headers that they define
+// no conformance requirements; the extension profiles add surfaces on top of
+// Core without changing what Core means.
+export const GUIDANCE_SLUGS = [
+  "spec-discovery-and-trust",
+  "spec-collection-profile",
   "spec-ext-lexical-search",
   "spec-ext-aggregation",
   "spec-semantic-retrieval-extension",
 ] as const;
-
-// Informative implementer guidance, rendered under its own rail heading. These define no conformance requirements: each states so in its own status header, and the site copies carry an informative callout (see their header sidecars in apps/site/spec-headers/).
-export const GUIDANCE_SLUGS = ["spec-discovery-and-trust", "spec-collection-profile"] as const;
 
 // Slugs sync-spec-docs.mjs generates from a root spec-*.md (that script's own
 // SPECS list). It writes these as .mdx — not .md — so each page's <Callout>

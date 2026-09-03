@@ -1,0 +1,1343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Clickable prototype of the proposed pdpp.dev structure">
+<title>pdpp.dev Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&display=swap">
+<style>
+  :root {
+    --paper:     #f4f5f6;
+    --surface:   #ffffff;
+    --surface-2: #eaecee;
+    --ink:       #131c25;
+    --muted:     #5a6875;
+    --faint:     #8a959f;
+    --rule:      #dde1e5;
+    --rule-soft: #e9ecef;
+    --navy:      #1e3a52;
+    --navy-deep: #16293a;
+    --navy-text: #dbe5ee;
+    --navy-soft: #e2e9ef;
+    --green:     #1f6b4d;
+    --green-soft:#dfeae5;
+    --anno:      #7c4a12;
+    --anno-soft: #f6ecdd;
+    --anno-rule: #d9b985;
+
+    --f-display: "Newsreader", Georgia, "Times New Roman", serif;
+    --f-body:    "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --f-mono:    "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #101820;
+      --surface:   #172029;
+      --surface-2: #202b35;
+      --ink:       #dfe5ea;
+      --muted:     #9aa6b1;
+      --faint:     #75818c;
+      --rule:      #2a3540;
+      --rule-soft: #212b34;
+      --navy:      #86aecf;
+      --navy-deep: #0d151d;
+      --navy-text: #cddced;
+      --navy-soft: #1a2733;
+      --green:     #6fb797;
+      --green-soft:#17251f;
+      --anno:      #d9a962;
+      --anno-soft: #241c10;
+      --anno-rule: #5c4522;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:     #101820;
+    --surface:   #172029;
+    --surface-2: #202b35;
+    --ink:       #dfe5ea;
+    --muted:     #9aa6b1;
+    --faint:     #75818c;
+    --rule:      #2a3540;
+    --rule-soft: #212b34;
+    --navy:      #86aecf;
+    --navy-deep: #0d151d;
+    --navy-text: #cddced;
+    --navy-soft: #1a2733;
+    --green:     #6fb797;
+    --green-soft:#17251f;
+    --anno:      #d9a962;
+    --anno-soft: #241c10;
+    --anno-rule: #5c4522;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 26px; }
+  .narrow { max-width: 700px; }
+
+  /* ============ prototype chrome ============ */
+
+  .protobar {
+    background: var(--anno-soft);
+    border-bottom: 1px solid var(--anno-rule);
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.05em;
+    color: var(--anno);
+  }
+  .protobar .wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 20px;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+  .protobar strong { font-weight: 600; text-transform: uppercase; letter-spacing: 0.11em; }
+  .toggle {
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.05em;
+    border: 1px solid var(--anno-rule);
+    background: transparent;
+    color: var(--anno);
+    padding: 4px 11px;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .toggle[aria-pressed="true"] { background: var(--anno); color: var(--anno-soft); border-color: var(--anno); }
+  .toggle:focus-visible { outline: 2px solid var(--anno); outline-offset: 2px; }
+
+  .anno { display: none; }
+  body.show-anno .anno { display: block; }
+  .anno {
+    border-left: 2px solid var(--anno-rule);
+    background: var(--anno-soft);
+    color: var(--anno);
+    font-family: var(--f-mono);
+    font-size: 12px;
+    line-height: 1.55;
+    padding: 10px 14px;
+    margin: 16px 0;
+  }
+  .anno b { font-weight: 600; }
+
+  /* ============ site header ============ */
+
+  header.site {
+    background: var(--surface);
+    border-bottom: 1px solid var(--rule);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+  header.site .wrap {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding-top: 14px;
+    padding-bottom: 14px;
+    flex-wrap: wrap;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    color: inherit;
+    font: inherit;
+  }
+  .mark {
+    width: 26px; height: 26px;
+    background: var(--navy);
+    color: #f4f5f6;
+    font-family: var(--f-display);
+    font-size: 17px;
+    font-weight: 600;
+    display: grid;
+    place-items: center;
+    border-radius: 2px;
+    flex: none;
+  }
+  :root[data-theme="dark"] .mark, :root:not([data-theme="light"]) .mark { color: #101820; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .mark { color: #f4f5f6; } }
+  .lockup { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.15; }
+  .brand .wordmark { font-family: var(--f-mono); font-weight: 600; font-size: 14px; letter-spacing: 0.02em; }
+  .brand .expansion {
+    font-family: var(--f-mono); font-size: 9px; letter-spacing: 0.085em;
+    text-transform: uppercase; color: var(--faint); margin-top: 2px;
+  }
+  @media (max-width: 700px) { .brand .expansion { display: none; } }
+
+  nav.main { display: flex; flex-wrap: wrap; gap: 1px; align-items: center; margin-left: auto; justify-content: flex-end; }
+  nav.main button {
+    font-family: var(--f-body);
+    font-size: 14px;
+    font-weight: 450;
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    padding: 5px 9px 4px;
+    cursor: pointer;
+  }
+  nav.main button:hover { color: var(--ink); }
+  nav.main button[aria-current="page"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--navy); }
+  nav.main button:focus-visible { outline: 2px solid var(--navy); outline-offset: 1px; }
+  nav.main button.upcoming { color: var(--faint); }
+  nav.main button.upcoming:hover { color: var(--navy); }
+  .ph2 {
+    font-family: var(--f-mono); font-size: 8.5px; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--faint); border: 1px solid var(--rule); border-radius: 2px;
+    padding: 0 4px; margin-left: 6px; vertical-align: 2px;
+  }
+  .statusdot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:8px; vertical-align:middle; }
+  .sd-current { background: var(--green); }
+  .sd-lapsed { background: var(--faint); }
+  .sd-withdrawn { background: #9c4221; }
+  .sd-disputed { background: #b8860b; }
+  nav.main .sep { width: 1px; height: 18px; background: var(--rule); margin: 0 8px; }
+  nav.main a.util {
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    text-decoration: none;
+    padding: 5px 7px;
+  }
+  nav.main a.util:hover { color: var(--navy); }
+
+  header.site .wrap.navorder {
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--faint);
+    display: none;
+    padding-bottom: 8px;
+  }
+  body.show-anno header.site .wrap.navorder { display: block; }
+
+  /* ============ review band ============ */
+
+  .reviewband { background: var(--navy-deep); color: var(--navy-text); }
+  .reviewband .wrap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 22px;
+    padding-top: 13px;
+    padding-bottom: 13px;
+  }
+  .reviewband .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #6fb797;
+    display: inline-block;
+    margin-right: 9px;
+    vertical-align: middle;
+  }
+  .reviewband .lbl { font-family: var(--f-mono); font-size: 11.5px; letter-spacing: 0.11em; text-transform: uppercase; opacity: 0.72; }
+  .reviewband .msg { font-size: 15px; }
+  .reviewband .msg strong { font-weight: 600; }
+  .reviewband a { color: #ffffff; text-underline-offset: 3px; font-size: 14px; }
+
+  /* ============ sections ============ */
+
+  .band { padding: 62px 0; border-bottom: 1px solid var(--rule); }
+  .band.alt { background: var(--surface); }
+  .band.tight { padding: 44px 0; }
+
+  h1 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: clamp(2.3rem, 5.6vw, 3.6rem);
+    line-height: 1.05;
+    letter-spacing: -0.017em;
+    margin: 0 0 20px;
+    text-wrap: balance;
+    max-width: 17ch;
+  }
+  h2 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: clamp(1.5rem, 3vw, 1.95rem);
+    line-height: 1.16;
+    letter-spacing: -0.012em;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+  h3 { font-size: 1rem; font-weight: 600; margin: 0 0 6px; }
+
+  .kicker {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 16px;
+  }
+  .sub { font-size: 1.12rem; line-height: 1.55; color: var(--muted); max-width: 56ch; margin: 0 0 30px; }
+  p { margin: 0 0 14px; max-width: 62ch; }
+  .muted { color: var(--muted); }
+
+  .btnrow { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .btn {
+    font-family: var(--f-body);
+    font-size: 15px;
+    font-weight: 500;
+    padding: 11px 22px;
+    border-radius: 3px;
+    border: 1px solid var(--navy);
+    background: var(--navy);
+    color: var(--surface);
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+  }
+  :root[data-theme="dark"] .btn:not(.ghost), :root:not([data-theme="light"]) .btn:not(.ghost) { color: #101820; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .btn:not(.ghost) { color: #ffffff; } }
+  .btn.ghost { background: transparent; color: var(--navy); border-color: var(--rule); }
+  .btn.ghost:hover { border-color: var(--navy); }
+  .btn:focus-visible { outline: 2px solid var(--navy); outline-offset: 3px; }
+
+  /* ============ hero demo ============ */
+
+  .herogrid { display: grid; gap: 44px; grid-template-columns: 1fr; align-items: start; }
+  @media (min-width: 900px) { .herogrid { grid-template-columns: 1.15fr 0.85fr; gap: 56px; } }
+
+  .grantcard {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    overflow: hidden;
+    font-family: var(--f-mono);
+    font-size: 12.5px;
+  }
+  .band.alt .grantcard { background: var(--paper); }
+  .grantcard .gc-head {
+    background: var(--navy-deep);
+    color: var(--navy-text);
+    padding: 10px 15px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 11px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+  .grantcard .gc-row {
+    display: grid;
+    grid-template-columns: 78px minmax(0, 1fr);
+    gap: 12px;
+    padding: 10px 15px;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .grantcard .gc-row:last-child { border-bottom: 0; }
+  .grantcard .k { color: var(--faint); }
+  .grantcard .v { color: var(--ink); word-break: break-word; }
+  .grantcard .v .hl { color: var(--green); font-weight: 600; }
+  .grantcard .gc-foot {
+    background: var(--surface-2);
+    padding: 9px 15px;
+    font-size: 11px;
+    color: var(--muted);
+    border-top: 1px solid var(--rule);
+  }
+
+  /* ============ three beats ============ */
+
+  .beats { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin-top: 28px; }
+  @media (min-width: 760px) { .beats { grid-template-columns: repeat(3, 1fr); } }
+  .beat { background: var(--paper); padding: 22px 20px 24px; display: flex; flex-direction: column; gap: 8px; }
+  .band.alt .beat { background: var(--surface); }
+  .beat .n { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.12em; color: var(--faint); }
+  .beat h3 { margin: 0; }
+  .beat p { margin: 0; color: var(--muted); font-size: 0.95rem; max-width: none; }
+
+  /* ============ principles list ============ */
+
+  .prins { list-style: none; margin: 26px 0 0; padding: 0; border-top: 1px solid var(--rule); }
+  .prins li {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 18px;
+    padding: 17px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    align-items: baseline;
+  }
+  .prins .n { font-family: var(--f-mono); font-size: 11.5px; color: var(--navy); font-weight: 600; }
+  .prins .t { font-weight: 600; }
+  .prins .d { color: var(--muted); display: block; margin-top: 2px; }
+
+  /* ============ sign form ============ */
+
+  .signbox {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 26px 26px 28px;
+    margin: 30px 0;
+    max-width: 620px;
+  }
+  .band.alt .signbox { background: var(--paper); }
+  .segmented { display: inline-flex; border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; margin-bottom: 20px; }
+  .segmented button {
+    font-family: var(--f-mono); font-size: 11.5px; letter-spacing: 0.07em; text-transform: uppercase;
+    background: transparent; border: 0; padding: 8px 16px; cursor: pointer; color: var(--muted);
+  }
+  .segmented button[aria-pressed="true"] { background: var(--navy); color: var(--surface); }
+  :root[data-theme="dark"] .segmented button[aria-pressed="true"], :root:not([data-theme="light"]) .segmented button[aria-pressed="true"] { color: #101820; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .segmented button[aria-pressed="true"] { color: #ffffff; } }
+  .segmented button:focus-visible { outline: 2px solid var(--navy); outline-offset: -2px; }
+
+  .fields { display: grid; gap: 14px; grid-template-columns: 1fr; }
+  @media (min-width: 560px) { .fields.two { grid-template-columns: 1fr 1fr; } }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+  .field input, .field select {
+    font-family: var(--f-body); font-size: 15px;
+    padding: 9px 11px;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .band.alt .field input, .band.alt .field select { background: var(--surface); }
+  .field input:focus-visible, .field select:focus-visible { outline: 2px solid var(--navy); outline-offset: 0; border-color: var(--navy); }
+  .finetext { font-size: 13px; color: var(--muted); margin: 18px 0 0; max-width: none; }
+
+  /* ============ register ============ */
+
+  .tablewrap { overflow-x: auto; border: 1px solid var(--rule); margin: 22px 0 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; background: var(--surface); font-size: 14px; }
+  .band.alt table { background: var(--paper); }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  thead th {
+    font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.11em; text-transform: uppercase;
+    color: var(--faint); font-weight: 600; background: var(--surface-2); border-bottom: 1px solid var(--rule); white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.mono, th.mono { font-family: var(--f-mono); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .placeholder-note {
+    font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.06em;
+    color: var(--anno); background: var(--anno-soft); border: 1px solid var(--anno-rule);
+    border-bottom: 0; padding: 7px 14px;
+  }
+  .counter { font-family: var(--f-mono); font-size: 12.5px; color: var(--muted); margin-top: 12px; }
+
+  /* ============ phases / timeline ============ */
+
+  .phases { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 26px 0; }
+  @media (min-width: 800px) { .phases { grid-template-columns: repeat(3, 1fr); } }
+  .phase { background: var(--surface); padding: 20px; display: flex; flex-direction: column; gap: 7px; }
+  .band.alt .phase { background: var(--paper); }
+  .phase.current { background: var(--navy-soft); }
+  .phase .ph { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.11em; text-transform: uppercase; color: var(--faint); }
+  .phase.current .ph { color: var(--navy); font-weight: 600; }
+  .phase h3 { margin: 0; }
+  .phase p { margin: 0; font-size: 0.93rem; color: var(--muted); max-width: none; }
+
+  .tl { list-style: none; padding: 0; margin: 24px 0 0; border-top: 1px solid var(--rule); }
+  .tl li {
+    display: grid; grid-template-columns: 132px minmax(0, 1fr) 74px; gap: 16px;
+    padding: 12px 0; border-bottom: 1px solid var(--rule-soft); align-items: baseline;
+  }
+  @media (max-width: 620px) { .tl li { grid-template-columns: 110px minmax(0,1fr); } .tl li .st { grid-column: 2; } }
+  .tl .dt { font-family: var(--f-mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tl .st { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; text-align: right; }
+  .tl .st.done { color: var(--green); }
+  .tl .st.now { color: var(--navy); font-weight: 600; }
+  .tl .st.next { color: var(--faint); }
+
+  /* ============ cards / links ============ */
+
+  .cards { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 26px 0 0; }
+  @media (min-width: 700px) { .cards.two { grid-template-columns: 1fr 1fr; } .cards.three { grid-template-columns: repeat(3, 1fr); } .cards.four { grid-template-columns: repeat(4, 1fr); } }
+  @media (min-width: 700px) and (max-width: 1000px) { .cards.four { grid-template-columns: 1fr 1fr; } }
+  .card { background: var(--surface); padding: 20px; display: flex; flex-direction: column; gap: 7px; }
+  .band.alt .card { background: var(--paper); }
+  
+
+  .vs { display:grid; grid-template-columns:1fr; gap:22px; }
+  @media (min-width:820px){ .vs { grid-template-columns:1fr 1fr; } }
+  .vs-col { display:flex; flex-direction:column; gap:14px; }
+  .vs-col .grantcard { margin:0; max-width:none; }
+  .vs-note { margin:0; color:var(--muted); font-size:0.95rem; line-height:1.55; }
+  .oauth { border:1px solid var(--rule); border-radius:12px; overflow:hidden; background:var(--surface); font-size:14px; }
+  .band.alt .oauth { background:var(--paper); }
+  .oa-head { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--rule-soft); color:var(--muted); font-size:13px; }
+  .oa-logo { width:22px; height:22px; border-radius:6px; background:var(--rule); color:var(--ink); display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; }
+  .oa-body { padding:18px 16px 16px; }
+  .oa-title { margin:0 0 12px; color:var(--ink); }
+  .oa-scopes { margin:0 0 18px; padding-left:18px; color:var(--muted); line-height:1.6; }
+  .oa-btns { display:flex; gap:10px; }
+  .oa-btn { flex:1; text-align:center; padding:10px; border-radius:8px; border:1px solid var(--rule); color:var(--muted); }
+  .oa-btn.primary { background:var(--navy); border-color:var(--navy); color:#fff; font-weight:600; }
+  .vs-tag { display:inline-block; font-family: var(--f-sans); font-size: 13px; font-weight: 700; letter-spacing: 0.02em; padding: 5px 10px; border-radius: 4px; margin-bottom: 10px; }
+  .vs-before .vs-tag { background: rgba(255,255,255,0.10); color: var(--muted); }
+  .vs-after  .vs-tag { background: var(--navy); color: #fff; }
+  .vs-before { border-left: 3px solid rgba(255,255,255,0.18); }
+  .vs-after  { border-left: 3px solid var(--navy); }
+  .vs-before h3 { color: var(--muted); }
+  .card .lbl { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.11em; text-transform: uppercase; color: var(--faint); }
+  .card h3 { margin: 0; }
+  .card p { margin: 0; font-size: 0.93rem; color: var(--muted); max-width: none; }
+  .card a { font-size: 0.9rem; color: var(--navy); margin-top: auto; padding-top: 6px; }
+
+  /* ============ spec toc ============ */
+
+  .toc { list-style: none; padding: 0; margin: 22px 0 0; border-top: 1px solid var(--rule); }
+  .toc li { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; gap: 16px; padding: 13px 0; border-bottom: 1px solid var(--rule-soft); align-items: baseline; }
+  .toc .n { font-family: var(--f-mono); font-size: 11.5px; color: var(--faint); }
+  .toc .t { font-weight: 500; }
+  .toc .t small { display: block; font-weight: 400; color: var(--muted); font-size: 0.88rem; margin-top: 2px; }
+  .toc .cta { font-family: var(--f-mono); font-size: 11px; color: var(--navy); white-space: nowrap; }
+
+  /* ============ updates ============ */
+
+  .posts { list-style: none; padding: 0; margin: 24px 0 0; border-top: 1px solid var(--rule); }
+  .posts li { padding: 18px 0; border-bottom: 1px solid var(--rule-soft); display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 18px; }
+  @media (max-width: 620px) { .posts li { grid-template-columns: 1fr; gap: 5px; } }
+  .posts .dt { font-family: var(--f-mono); font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .posts h3 { margin: 0 0 4px; }
+  .posts p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  .tag { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--navy); background: var(--navy-soft); padding: 1px 7px; border-radius: 2px; margin-left: 8px; }
+
+  /* ============ footer ============ */
+
+  footer.site { background: var(--navy-deep); color: var(--navy-text); padding: 46px 0 40px; }
+  footer.site .cols { display: grid; gap: 30px; grid-template-columns: 1fr; }
+  @media (min-width: 760px) { footer.site .cols { grid-template-columns: repeat(4, 1fr); } }
+  footer.site h4 { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.6; margin: 0 0 10px; font-weight: 600; }
+  footer.site ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+  footer.site a { color: var(--navy-text); text-decoration: none; }
+  footer.site a:hover { text-decoration: underline; }
+  footer.site .legal { margin-top: 34px; padding-top: 18px; border-top: 1px solid rgba(255,255,255,0.13); font-family: var(--f-mono); font-size: 11px; opacity: 0.6; display: flex; flex-wrap: wrap; gap: 6px 20px; }
+
+
+  /* ---------- spec reader ---------- */
+  .spectool {
+    display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center;
+    border: 1px solid var(--rule); background: var(--surface-2);
+    padding: 10px 14px; font-family: var(--f-mono); font-size: 11.5px;
+    margin: 0 0 0;
+  }
+  .band.alt .spectool { background: var(--paper); }
+  .spectool .grow { flex: 1 1 auto; }
+  .spectool .pill {
+    border: 1px solid var(--rule); background: var(--surface); border-radius: 3px;
+    padding: 3px 9px; color: var(--muted); text-decoration: none; white-space: nowrap;
+  }
+  .spectool .pill:hover { border-color: var(--navy); color: var(--navy); }
+  .spectool .ver { color: var(--ink); font-weight: 600; }
+  .spectool .locked { color: var(--green); }
+
+  .readerwrap { display: grid; grid-template-columns: 1fr; gap: 0; border: 1px solid var(--rule); border-top: 0; background: var(--surface); }
+  .band.alt .readerwrap { background: var(--paper); }
+  @media (min-width: 900px) { .readerwrap { grid-template-columns: 218px minmax(0,1fr); } }
+
+  .spec-toc { border-bottom: 1px solid var(--rule); padding: 18px 16px; font-family: var(--f-mono); font-size: 11.5px; }
+  @media (min-width: 900px) {
+    .spec-toc { border-bottom: 0; border-right: 1px solid var(--rule); position: sticky; top: 64px; align-self: start; max-height: calc(100vh - 80px); overflow-y: auto; }
+  }
+  .spec-toc .grp { color: var(--faint); letter-spacing: 0.11em; text-transform: uppercase; font-size: 10px; margin: 14px 0 7px; }
+  .spec-toc .grp:first-child { margin-top: 0; }
+  .spec-toc a { display: block; color: var(--muted); text-decoration: none; padding: 3px 0 3px 9px; border-left: 2px solid transparent; }
+  .spec-toc a:hover { color: var(--ink); }
+  .spec-toc a.on { color: var(--navy); font-weight: 600; border-left-color: var(--navy); }
+
+  .spec-body { padding: 26px 26px 30px; min-width: 0; }
+  .spec-body h3.sech {
+    font-family: var(--f-display); font-size: 1.32rem; font-weight: 600; letter-spacing: -0.01em;
+    margin: 0 0 4px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  }
+  .spec-body h3.sech .num { font-family: var(--f-mono); font-size: 0.72em; color: var(--faint); font-weight: 400; }
+  .spec-body h4.subh { font-family: var(--f-body); font-size: 0.97rem; font-weight: 600; color: var(--ink); text-transform: none; letter-spacing: 0; margin: 26px 0 8px; }
+  .spec-body p { max-width: 70ch; font-size: 15.2px; }
+  .spec-body p.norm { border-left: 2px solid var(--navy-soft); padding-left: 14px; }
+
+  .kw { font-family: var(--f-mono); font-size: 0.86em; font-weight: 600; color: var(--navy); letter-spacing: 0.04em; }
+
+  .actionrow { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+  .actionrow a {
+    font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.05em;
+    color: var(--muted); text-decoration: none; border: 1px solid var(--rule);
+    border-radius: 3px; padding: 2px 8px; background: transparent;
+  }
+  .actionrow a:hover { color: var(--navy); border-color: var(--navy); }
+  .actionrow a.primary { color: var(--navy); border-color: var(--navy-soft); background: var(--navy-soft); }
+
+  pre.code {
+    font-family: var(--f-mono); font-size: 12.5px; line-height: 1.65;
+    background: var(--navy-deep); color: var(--navy-text);
+    padding: 16px 18px; border-radius: 3px; overflow-x: auto; margin: 14px 0 18px;
+  }
+  pre.code .k { color: #8fc7f0; }
+  pre.code .s { color: #a9dfae; }
+  pre.code .n { color: #e2b878; }
+  pre.code .c { color: #7f8c99; }
+
+  .fieldtable { margin: 14px 0 18px; }
+
+  .formats { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 24px 0 0; }
+  @media (min-width: 620px) { .formats { grid-template-columns: repeat(2, 1fr); } }
+  @media (min-width: 940px) { .formats { grid-template-columns: repeat(4, 1fr); } }
+  .fmt { background: var(--surface); padding: 16px 17px 18px; display: flex; flex-direction: column; gap: 5px; text-decoration: none; color: inherit; }
+  .band.alt .fmt { background: var(--paper); }
+  .fmt:hover { background: var(--navy-soft); }
+  .fmt .ic { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.11em; text-transform: uppercase; color: var(--faint); }
+  .fmt .nm { font-weight: 600; font-size: 0.97rem; }
+  .fmt .ds { font-size: 0.88rem; color: var(--muted); }
+
+  .routes { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 24px 0 0; }
+  @media (min-width: 780px) { .routes { grid-template-columns: repeat(3, 1fr); } }
+  .route { background: var(--surface); padding: 20px; display: flex; flex-direction: column; gap: 9px; }
+  .band.alt .route { background: var(--paper); }
+  .route .who { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.11em; text-transform: uppercase; color: var(--navy); font-weight: 600; }
+  .route .tm { font-family: var(--f-mono); font-size: 11px; color: var(--faint); }
+  .route ol { margin: 0; padding-left: 17px; font-size: 0.92rem; color: var(--muted); }
+  .route ol li { margin-bottom: 4px; }
+
+  /* ---------- end spec reader ---------- */
+
+  [hidden] { display: none !important; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+<style>img{max-width:100%;height:auto}[hidden]{display:none!important}</style>
+</head>
+<body>
+<!-- ============ prototype bar ============ -->
+<div class="protobar">
+  <div class="wrap">
+    <span><strong>Prototype v3</strong> &nbsp;pdpp.dev, four-intent structure, 2 Sep 2026. Principles, Specification, Build, Community, plus a temporary Review page. Not the live site.</span>
+  </div>
+</div>
+
+<!-- ============ header ============ -->
+<style>
+.icon{font-size:0.85rem;color:var(--muted);text-decoration:none;padding:6px 8px}
+.cta{margin-left:6px}
+.navgrp{position:relative;display:inline-block}
+.navsub{display:none;position:absolute;top:100%;left:0;min-width:190px;background:var(--bg-2, #101722);border:1px solid var(--rule);border-radius:8px;padding:6px;z-index:20;flex-direction:column}
+.navgrp:hover .navsub,.navgrp:focus-within .navsub{display:flex}
+.navsub button{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:6px}
+.navsub button:hover{background:rgba(255,255,255,0.06)}
+.notice{background:var(--ink);color:#fff;font-size:0.9rem}.notice .wrap{padding:9px 0}.notice a{color:#fff;text-decoration:underline}
+</style>
+<header class="site">
+  <div class="wrap bar">
+    <button class="brand" data-go="home"><span class="mark">PDPP</span><span class="sub">Personal Data Portability Protocol</span></button>
+    <nav class="main" aria-label="Main">
+      <button data-go="principles">Principles</button>
+      <span class="navgrp"><button data-go="spec">Specification</button><span class="navsub"><button data-go="spec">The specification</button><button data-go="review">Review, until 1 Oct</button></span></span>
+      <button data-go="build">Build</button>
+      <button data-go="community">Participate</button>
+      <a class="icon" href="#" onclick="return false;" title="GitHub">GitHub</a>
+      <a class="icon" href="#" onclick="return false;" title="Discord">Discord</a>
+      <button class="btn small cta" data-go="principles">Become a Supporter</button>
+    </nav>
+  </div>
+</header>
+<div class="notice" id="reviewBanner"><div class="wrap">The specification is open for comment until 1 October. <a href="#" data-go="review">Review it now &rarr;</a></div></div>
+<div class="view" id="v-home">
+  <section class="band">
+    <div class="wrap">
+      <div class="herogrid">
+        <div>
+          <p class="kicker" style="margin-bottom:14px">The Personal Data Portability Protocol</p>
+          <h1>The open standard for personal data.</h1>
+          <p class="sub">Lets personal data move freely, with consent. Decide what an app can see, for what, and for how long.</p>
+          <div class="btnrow">
+            <button class="btn" data-go="principles">Become a Supporter</button>
+            
+          </div>
+        </div>
+        <div>
+          <div class="grantcard">
+            <div class="gc-head"><span>Grant</span><span>Active</span></div>
+            <div class="gc-row"><span class="k">app</span><span class="v">Habit coach</span></div>
+            <div class="gc-row"><span class="k">source</span><span class="v">Sleep tracker</span></div>
+            <div class="gc-row"><span class="k">fields</span><span class="v"><span class="hl">sleep_score</span>, <span class="hl">duration_min</span><br><span style="color:var(--faint)">not heart_rate, not location</span></span></div>
+            <div class="gc-row"><span class="k">range</span><span class="v">1 Jun 2026 to 1 Sep 2026</span></div>
+            <div class="gc-row"><span class="k">purpose</span><span class="v">personalisation</span></div>
+            <div class="gc-row"><span class="k">expires</span><span class="v">1 Dec 2026</span></div>
+            <div class="gc-foot">Every later request is checked against this record. Anything outside it is refused.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+    <section class="band alt">
+    <div class="wrap">
+      <h2>What changes</h2>
+      <div class="vs">
+        <div class="vs-col vs-before">
+          <span class="vs-tag">Today</span>
+          <div class="oauth">
+            <div class="oa-head"><span class="oa-logo">S</span><span>Sleep Tracker</span></div>
+            <div class="oa-body">
+              <p class="oa-title"><strong>Habit Coach</strong> wants to access your account</p>
+              <ul class="oa-scopes">
+                <li>Read all your sleep, activity and health data</li>
+                <li>Read your profile, contacts and location history</li>
+                <li>Keep access until you revoke it</li>
+              </ul>
+              <div class="oa-btns"><span class="oa-btn primary">Allow</span><span class="oa-btn">Deny</span></div>
+            </div>
+          </div>
+          <p class="vs-note">One button, everything the platform holds, for as long as the app wants. Nothing records what you agreed to, and turning it off means finding a settings page on someone else's site.</p>
+        </div>
+        <div class="vs-col vs-after">
+          <span class="vs-tag">With PDPP</span>
+          <div class="grantcard">
+            <div class="gc-head"><span>Grant</span><span>Active</span></div>
+            <div class="gc-row"><span class="k">app</span><span class="v">Habit Coach</span></div>
+            <div class="gc-row"><span class="k">source</span><span class="v">Sleep Tracker</span></div>
+            <div class="gc-row"><span class="k">fields</span><span class="v"><span class="hl">sleep_score</span>, <span class="hl">duration_min</span><br><span style="color:var(--faint)">not heart_rate, not location</span></span></div>
+            <div class="gc-row"><span class="k">range</span><span class="v">1 Jun 2026 to 1 Sep 2026</span></div>
+            <div class="gc-row"><span class="k">purpose</span><span class="v">personalisation</span></div>
+            <div class="gc-row"><span class="k">expires</span><span class="v">1 Dec 2026</span></div>
+          </div>
+          <p class="vs-note">Two fields, one purpose, three months, until a date you chose. It is recorded where you and the app can both see it, every request is checked against it, and ending it is one click. Ask for a third field, or a date outside the range, and the request is refused.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <h2>The Principles</h2>
+      <ol class="prins">
+        <li><span class="n">01</span><span><span class="t">Primacy of the individual.</span><span class="d">Decisions about how information concerning a person is shared and used should rest with that person.</span></span></li>
+        <li><span class="n">02</span><span><span class="t">Specificity of access.</span><span class="d">Access should be defined in terms of what is shared, for what purpose, and for how long, rather than granted in general terms.</span></span></li>
+        <li><span class="n">03</span><span><span class="t">A durable record.</span><span class="d">What has been agreed should be recorded in a form that can be examined afterwards.</span></span></li>
+        <li><span class="n">04</span><span><span class="t">Enforcement by design.</span><span class="d">Agreed limits should be applied automatically to each request, rather than depending on continuing good conduct.</span></span></li>
+        <li><span class="n">05</span><span><span class="t">Reversibility.</span><span class="d">Ending an arrangement should be as straightforward as entering into one.</span></span></li>
+        <li><span class="n">06</span><span><span class="t">Openness.</span><span class="d">The specification should be published openly, implementable by any party, and operable without dependence on any particular provider.</span></span></li>
+      </ol>
+      <div class="btnrow" style="margin-top:26px">
+        <button class="btn" data-go="principles">Become a Supporter</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="band alt">
+    <div class="wrap">
+      <h2>Supporters</h2>
+      <p class="muted">[ 247 ] signatories since 3 September</p>
+      <div class="placeholder-note">Example entries for layout only; no real signatories are shown.</div>
+      <div class="tablewrap" style="margin-top:0">
+        <table>
+          <thead><tr><th>Signatory</th><th>Type</th><th>Country</th><th class="mono">Version</th><th class="mono">Signed</th></tr></thead>
+          <tbody>
+            <tr><td>[ Organisation name ]</td><td>Implementer</td><td>Netherlands</td><td class="mono">1.0</td><td class="mono">2026-09-05</td></tr>
+            <tr><td>[ Organisation name ]</td><td>Research institute</td><td>Germany</td><td class="mono">1.0</td><td class="mono">2026-09-04</td></tr>
+            <tr><td>[ First name L. ]</td><td>Individual</td><td>Australia</td><td class="mono">1.0</td><td class="mono">2026-09-04</td></tr>
+            <tr><td>[ Organisation name ]</td><td>Civil society</td><td>United Kingdom</td><td class="mono">1.0</td><td class="mono">2026-09-03</td></tr>
+            <tr><td>[ First name L. ]</td><td>Individual</td><td>United States</td><td class="mono">1.0</td><td class="mono">2026-09-03</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="counter"><a href="#" data-go="principles">All Supporters &rarr;</a></p>
+    </div>
+  </section>
+
+    <section class="band">
+    <div class="wrap">
+      <h2>Build on PDPP</h2>
+      <p class="muted" style="max-width:60ch">One specification, a reference server you can run today, and three roles to build for. Pick yours.</p>
+      <div class="btnrow"><button class="btn" data-go="build">Start building &rarr;</button></div>
+    </div>
+  </section>
+
+</div>
+<div class="view" id="v-principles" hidden>
+  <section class="band">
+    <div class="wrap narrow">
+      <p class="kicker">PDPP Principles &nbsp;·&nbsp; v1.0 &nbsp;·&nbsp; Published 3 September 2026</p>
+      <h1 style="max-width:22ch">The principles guiding PDPP</h1>
+      <p class="sub">When an individual permits a service to use information held about them by another, the permission is commonly granted in general terms and recorded nowhere the individual can examine.</p>
+      <p>The choice is often between all of the information and none of it, and once given, the permission is rarely visible, rarely verifiable, and rarely reversible in practice. The party relying on the information carries the same uncertainty, since it holds no reliable record of what was consented to, for what purpose, or by whom. As more of daily life is mediated by systems that act on personal information, and as artificial intelligence increases what can be done with it, the absence of a specific, durable and enforceable account of what has been agreed has become a matter of general concern.</p>
+      <ol class="prins">
+        <li><span class="n">01</span><span><span class="t">Primacy of the individual.</span><span class="d">Decisions about how information concerning a person is shared and used should rest with that person.</span></span></li>
+        <li><span class="n">02</span><span><span class="t">Specificity of access.</span><span class="d">Access to personal data should be defined in terms of what is shared, for what purpose, and for how long, rather than granted in general terms.</span></span></li>
+        <li><span class="n">03</span><span><span class="t">A durable record.</span><span class="d">What has been agreed should be recorded in a form that can be examined afterwards by the individual concerned and by the parties relying on it.</span></span></li>
+        <li><span class="n">04</span><span><span class="t">Enforcement by design.</span><span class="d">Agreed limits should be applied automatically to each request, rather than depending on the continuing good conduct of the parties.</span></span></li>
+        <li><span class="n">05</span><span><span class="t">Reversibility.</span><span class="d">Ending an arrangement should be as straightforward as entering into one.</span></span></li>
+        <li><span class="n">06</span><span><span class="t">Openness.</span><span class="d">The specification should be published openly, implementable by any party, and operable without dependence on any particular provider.</span></span></li>
+      </ol>
+    </div>
+  </section>
+
+    <section class="band alt">
+    <div class="wrap">
+      <h2>Who can sign</h2>
+      <p class="lede" style="max-width:62ch">Anyone. Individuals, companies, universities, civil society groups, and public bodies are all welcome. Individuals appear as first name and last initial; organisations by name. Your email is never shown.</p>
+      <p class="muted" style="max-width:62ch">Individuals sign for themselves rather than their employer. Signing is not a commitment to build anything or a sign-off on every line of the specification, and you can withdraw by email at any time.</p>
+      <div class="signbox" style="margin-top:26px">
+        <div class="segmented" role="group" aria-label="Signing as">
+          <button id="segInd" aria-pressed="true">Individual</button>
+          <button id="segOrg" aria-pressed="false">Organisation</button>
+        </div>
+        <div class="fields two">
+          <div class="field"><label for="f1">Name</label><input id="f1" type="text" placeholder="Your full name"></div>
+          <div class="field"><label for="f2">Email</label><input id="f2" type="email" placeholder="you@example.org"></div>
+        </div>
+        <div class="fields two" style="margin-top:14px">
+          <div class="field" id="orgField" hidden><label for="f3">Organisation</label><input id="f3" type="text" placeholder="Legal entity name"></div>
+          <div class="field"><label for="f4">Country</label><select id="f4"><option>Select a country</option><option>Australia</option><option>Germany</option><option>Netherlands</option><option>Switzerland</option><option>United Kingdom</option><option>United States</option></select></div>
+          <div class="field" id="typeField" hidden><label for="f5">Type</label><select id="f5"><option>Company</option><option>Platform</option><option>Research institute</option><option>Civil society</option><option>Public body</option></select></div>
+          <div class="field" id="affField"><label for="f6">Affiliation, optional</label><input id="f6" type="text" placeholder="For identification only"></div>
+        </div>
+        <p class="finetext" id="privacyNote" style="margin-top:12px">We show your first name and last initial, your country, and the date. We never show your email.</p>
+        <div style="margin-top:14px;font-size:13px;line-height:1.5">
+          <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px"><input type="checkbox" style="margin-top:3px"><span>I support the PDPP Principles v1.0.</span></label>
+          <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px"><input type="checkbox" style="margin-top:3px"><span>List me on the public register.</span></label>
+          <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px"><input type="checkbox" style="margin-top:3px"><span>Email me about new versions and comment periods.</span></label>
+          <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px" id="ageRow"><input type="checkbox" style="margin-top:3px"><span>I am 18 or over.</span></label>
+          <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px" id="authRow" hidden><input type="checkbox" style="margin-top:3px"><span>I am authorised to sign on behalf of this organisation.</span></label>
+        </div>
+        <div class="btnrow" style="margin-top:18px">
+          <button class="btn" onclick="alert('Prototype only. No data is captured or sent.'); return false;">Become a Supporter</button>
+        </div>
+        <p class="finetext">We email you to confirm. Organisations sign from an address at their own domain.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <h2>Supporters</h2>
+      <p class="muted">[ 247 ] signatories since 3 September</p>
+      <div class="placeholder-note">Example entries for layout only; no real signatories are shown.</div>
+      <div class="tablewrap" style="margin-top:0">
+        <table>
+          <thead><tr><th>Signatory</th><th>Type</th><th>Country</th><th class="mono">Version</th><th class="mono">Signed</th></tr></thead>
+          <tbody>
+            <tr><td>[ Organisation name ]</td><td>Implementer</td><td>Netherlands</td><td class="mono">1.0</td><td class="mono">2026-09-05</td></tr>
+            <tr><td>[ Organisation name ]</td><td>Research institute</td><td>Germany</td><td class="mono">1.0</td><td class="mono">2026-09-04</td></tr>
+            <tr><td>[ First name L. ]</td><td>Individual</td><td>Australia</td><td class="mono">1.0</td><td class="mono">2026-09-04</td></tr>
+            <tr><td>[ Organisation name ]</td><td>Civil society</td><td>United Kingdom</td><td class="mono">1.0</td><td class="mono">2026-09-03</td></tr>
+            <tr><td>[ First name L. ]</td><td>Individual</td><td>United States</td><td class="mono">1.0</td><td class="mono">2026-09-03</td></tr>
+            <tr><td>[ Organisation name ]</td><td>Platform</td><td>United States</td><td class="mono">1.0</td><td class="mono">2026-09-03</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="counter"><span style="font-family:var(--f-mono)">/principles/supporters.json</span></p>
+    </div>
+  </section>
+</div>
+
+<!-- ==================== SPECIFICATION ==================== -->
+</div>
+<div class="view" id="v-spec" hidden>
+  <section class="band">
+    <div class="wrap narrow">
+      <p class="kicker">Specification &nbsp;·&nbsp; v0.1.0 &nbsp;·&nbsp; Normative draft, 2026-08-14</p>
+      <h1 style="max-width:22ch">The Personal Data Portability Protocol</h1>
+      <p class="sub">The specification defines three things: what an app may ask for, what the user approved, and how the server enforces the difference.</p>
+      <p>It is built on OAuth 2.0 and RFC 9396.</p>
+    </div>
+  </section>
+
+  <section class="band alt">
+    <div class="wrap">
+      <h2>Formats</h2>
+      <div class="formats">
+        <a class="fmt" href="#" onclick="return false;"><span class="ic">Web</span><span class="nm">Read in the browser</span><span class="ds">Permalinks and comment links on every section.</span></a>
+        <a class="fmt" href="#" onclick="return false;"><span class="ic">Markdown</span><span class="nm">Download spec-core.md</span><span class="ds">The source file. Use this to diff or search locally.</span></a>
+        <a class="fmt" href="#" onclick="return false;"><span class="ic">GitHub</span><span class="nm">Open the repository</span><span class="ds">File an issue or a pull request. Full history on every line.</span></a>
+        <a class="fmt" href="#" onclick="return false;"><span class="ic">PDF</span><span class="nm">Download the PDF</span><span class="ds">Numbered sections, for printing and annotating.</span></a>
+      </div>
+      <p class="counter" style="margin-top:14px">Machine readable at <span style="font-family:var(--f-mono)">/llms.txt</span> and <span style="font-family:var(--f-mono)">/specification/index.json</span> &nbsp;·&nbsp; purpose codes resolve under <span style="font-family:var(--f-mono)">/purpose/</span></p>
+    </div>
+  </section>
+
+  
+
+  <section class="band alt">
+    <div class="wrap">
+      <h2>The specification</h2>
+
+      <div class="spectool">
+        <span class="ver">v0.1.0</span>
+        <span class="locked">&#9679; Locked for review until 1 Oct</span>
+        <span class="grow"></span>
+        <a class="pill" href="#" onclick="return false;">Diff against v0.0.9</a>
+        <a class="pill" href="#" onclick="return false;">Raw markdown</a>
+        <a class="pill" href="#" onclick="return false;">Edit on GitHub</a>
+      </div>
+
+      <div class="readerwrap">
+        <aside class="spec-toc">
+          <div class="grp">Core protocol</div>
+          <a href="#" onclick="return false;">1. Introduction</a>
+          <a href="#" onclick="return false;">2. Terminology and actors</a>
+          <a href="#" onclick="return false;">3. System architecture</a>
+          <a href="#" onclick="return false;">4. Record model</a>
+          <a href="#" onclick="return false;">5. Source declaration</a>
+          <a href="#" onclick="return false;">6. Selection request</a>
+          <a class="on" href="#" onclick="return false;">7. Grant</a>
+          <a href="#" onclick="return false;">8. Resource server interface</a>
+          <a href="#" onclick="return false;">9. Conformance</a>
+          <div class="grp">Implementer guidance, informative</div>
+          <a href="#" onclick="return false;">Discovery and Trust</a>
+          <a href="#" onclick="return false;">Collection Profile</a>
+          <a href="#" onclick="return false;">Extension profiles</a>
+          <div class="grp">Appendices</div>
+          <a href="#" onclick="return false;">A. Purpose registry</a>
+        </aside>
+
+        <div class="spec-body">
+          <div class="placeholder-note" style="border-bottom:1px solid var(--anno-rule); margin-bottom:20px">Illustrative rendering. The clause text below is abridged and paraphrased to show the layout, not quoted from the specification.</div>
+
+          <h3 class="sech"><span class="num">§7</span> Grant</h3>
+          <div class="actionrow">
+            <a class="primary" href="#" onclick="return false;">Comment on §7</a>
+            <a href="#" onclick="return false;">Permalink</a>
+            <a href="#" onclick="return false;">View source</a>
+            <a href="#" onclick="return false;">History</a>
+            <a href="#" onclick="return false;">3 open issues</a>
+          </div>
+
+          <p>A grant is the immutable record of what the user approved. It is issued by the authorization server after the user has acted on a selection request, and it is the only artifact a resource server consults when deciding whether to answer a query.</p>
+
+          <h4 class="subh">7.1 Immutability</h4>
+          <p class="norm">A grant <span class="kw">MUST NOT</span> be modified after issuance. Where the user wishes to change what an accessor may see, the authorization server <span class="kw">MUST</span> issue a new grant, and <span class="kw">MUST NOT</span> narrow or widen an existing one.</p>
+          <p class="norm">A grant <span class="kw">MUST</span> record the source declaration snapshot against which it was issued. A resource server <span class="kw">MUST</span> evaluate every request against that snapshot, not against the current declaration.</p>
+
+          <h4 class="subh">7.2 Access modes</h4>
+          <p class="norm">Where <code>access_mode</code> is <code>single_use</code>, the resource server <span class="kw">MUST</span> refuse any request made after the first successful retrieval. Where it is <code>continuous</code>, the resource server <span class="kw">MUST</span> answer requests until the grant expires or is revoked, and <span class="kw">SHOULD</span> support incremental sync as described in §4.</p>
+
+          <h4 class="subh">7.3 Representation</h4>
+          <p>A grant is represented as a JSON object. The example below is non-normative.</p>
+<pre class="code"><span class="c">// non-normative example</span>
+{
+  <span class="k">"grant_id"</span>: <span class="s">"grn_8f2c1a04"</span>,
+  <span class="k">"client_id"</span>: <span class="s">"https://habitcoach.example/app"</span>,
+  <span class="k">"source"</span>: { <span class="k">"id"</span>: <span class="s">"https://sleeptracker.example"</span>, <span class="k">"official"</span>: <span class="n">true</span> },
+  <span class="k">"purpose"</span>: <span class="s">"https://pdpp.dev/purpose/personalisation"</span>,
+  <span class="k">"access_mode"</span>: <span class="s">"continuous"</span>,
+  <span class="k">"streams"</span>: [
+    {
+      <span class="k">"stream"</span>: <span class="s">"sleep_sessions"</span>,
+      <span class="k">"fields"</span>: [<span class="s">"sleep_score"</span>, <span class="s">"duration_min"</span>],
+      <span class="k">"range"</span>: { <span class="k">"from"</span>: <span class="s">"2026-06-01"</span>, <span class="k">"to"</span>: <span class="s">"2026-09-01"</span> }
+    }
+  ],
+  <span class="k">"declaration_snapshot"</span>: <span class="s">"sha256:4c1f...9ab2"</span>,
+  <span class="k">"retention"</span>: { <span class="k">"max_days"</span>: <span class="n">90</span>, <span class="k">"on_expiry"</span>: <span class="s">"delete"</span> },
+  <span class="k">"issued_at"</span>: <span class="s">"2026-09-02T09:14:00Z"</span>,
+  <span class="k">"expires_at"</span>: <span class="s">"2026-12-01T00:00:00Z"</span>
+}</pre>
+
+          <h4 class="subh">7.4 Fields</h4>
+          <div class="tablewrap fieldtable">
+            <table>
+              <thead><tr><th class="mono">Field</th><th>Required</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">grant_id</td><td>Yes</td><td>Stable identifier, unique to the authorization server</td></tr>
+                <tr><td class="mono">purpose</td><td>Yes</td><td>A URI from the purpose registry in Appendix A</td></tr>
+                <tr><td class="mono">access_mode</td><td>Yes</td><td><code>single_use</code> or <code>continuous</code></td></tr>
+                <tr><td class="mono">declaration_snapshot</td><td>Yes</td><td>Digest of the source declaration the grant was issued against</td></tr>
+                <tr><td class="mono">retention</td><td>Yes</td><td>Maximum retention and the action on expiry</td></tr>
+                <tr><td class="mono">expires_at</td><td>No</td><td>Absent means the grant runs until revoked</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="actionrow" style="margin-top:24px; margin-bottom:0">
+            <a class="primary" href="#" onclick="return false;">Comment on §7</a>
+            <a href="#" onclick="return false;">Next: §8 Resource server interface &rarr;</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="governance">
+    <div class="wrap">
+      <p class="kicker">Governance &nbsp;·&nbsp; Consultation draft &nbsp;·&nbsp; Revised 2 September 2026</p>
+      <h2>Who runs this, and who decides</h2>
+      <p class="muted" style="max-width:720px">Two parts. Part A is how it runs from 15 October. Part B is how we propose it runs once there is an elected committee. Both are open for comment until 1 October: <a href="#" data-go="review">how to comment</a>.</p>
+    </div>
+  </section>
+  <section class="band alt">
+    <div class="wrap">
+      <h2>Four stages</h2>
+      <div class="phases">
+        <div class="phase current">
+          <span class="ph">Pre &nbsp;·&nbsp; now, to 15 Oct</span>
+          <h3>Public comment</h3>
+          <p>The specification and Part A are frozen while people comment, the Principles are published, and you can sign now. This stage ends on 15 October.</p>
+        </div>
+        <div class="phase">
+          <span class="ph">Phase 1 &nbsp;·&nbsp; from 15 Oct</span>
+          <h3>Launch</h3>
+          <p>The maintainers run things. Supporters can sign, but nobody can be verified until the review committee is named.</p>
+        </div>
+        <div class="phase">
+          <span class="ph">Phase 2 &nbsp;·&nbsp; from Nov 2026</span>
+          <h3>Interim</h3>
+          <p>Five people, at least three with no connection to Vana or Open Data Labs, chosen on published criteria and not removable by the maintainers. They review every application for verified status in public and give a decision with reasons, which the maintainers act on. Verification opens at this point.</p>
+        </div>
+        <div class="phase">
+          <span class="ph">Phase 3 &nbsp;·&nbsp; from 2027</span>
+          <h3>Full</h3>
+          <p>Partners elect a five-seat steering committee, one organisation one vote, with the Chair elected directly. The steering committee is the only body that can change the specification or grant a status, and it does both by majority vote. It appoints a technical committee, which reviews every application and every proposed change in public and recommends. The Chair records the vote and merges. This starts at 100 Partners or on 15 October 2027, whichever comes first, and not before 15 April 2027. Full detail is in Part B of the governance document.</p>
+        </div>
+      </div>
+      <h3 style="margin-top:38px">How decisions are made once the steering committee exists</h3>
+      <div style="overflow-x:auto;margin-top:14px">
+      <svg viewBox="0 0 960 420" width="100%" style="max-width:960px;display:block" xmlns="http://www.w3.org/2000/svg" font-family="var(--f-body)" font-size="14">
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--muted)"/></marker></defs>
+        <!-- Partners -->
+        <rect x="20" y="160" width="200" height="100" rx="8" fill="var(--surface)" stroke="var(--rule)"/>
+        <text x="120" y="192" text-anchor="middle" font-weight="600" fill="var(--ink)">Partners</text>
+        <text x="120" y="214" text-anchor="middle" fill="var(--muted)" font-size="12.5">Organisations holding a</text>
+        <text x="120" y="231" text-anchor="middle" fill="var(--muted)" font-size="12.5">Verified status</text>
+        <!-- Steering committee -->
+        <rect x="300" y="60" width="240" height="120" rx="8" fill="var(--navy)" stroke="var(--navy)"/>
+        <text x="420" y="92" text-anchor="middle" font-weight="600" fill="#fff">Steering committee</text>
+        <text x="420" y="114" text-anchor="middle" fill="#fff" opacity="0.85" font-size="12.5">Five seats, Chair elected directly</text>
+        <text x="420" y="136" text-anchor="middle" fill="#fff" opacity="0.85" font-size="12.5">Changes the specification</text>
+        <text x="420" y="153" text-anchor="middle" fill="#fff" opacity="0.85" font-size="12.5">Grants status, by majority vote</text>
+        <!-- Technical committee -->
+        <rect x="300" y="250" width="240" height="110" rx="8" fill="var(--surface)" stroke="var(--rule)"/>
+        <text x="420" y="282" text-anchor="middle" font-weight="600" fill="var(--ink)">Technical committee</text>
+        <text x="420" y="304" text-anchor="middle" fill="var(--muted)" font-size="12.5">Appointed by the steering committee</text>
+        <text x="420" y="321" text-anchor="middle" fill="var(--muted)" font-size="12.5">Reviews in public and recommends</text>
+        <text x="420" y="338" text-anchor="middle" fill="var(--muted)" font-size="12.5">Never merges</text>
+        <!-- Register -->
+        <rect x="700" y="130" width="240" height="100" rx="8" fill="var(--surface)" stroke="var(--rule)"/>
+        <text x="820" y="162" text-anchor="middle" font-weight="600" fill="var(--ink)">The register</text>
+        <text x="820" y="184" text-anchor="middle" fill="var(--muted)" font-size="12.5">Specification versions and</text>
+        <text x="820" y="201" text-anchor="middle" fill="var(--muted)" font-size="12.5">who holds which status</text>
+        <!-- Applicants -->
+        <rect x="20" y="290" width="200" height="90" rx="8" fill="var(--surface)" stroke="var(--rule)" stroke-dasharray="4 3"/>
+        <text x="120" y="322" text-anchor="middle" font-weight="600" fill="var(--ink)">Applications and proposals</text>
+        <text x="120" y="344" text-anchor="middle" fill="var(--muted)" font-size="12.5">Pull requests from anyone</text>
+        <!-- arrows -->
+        <path d="M220 190 L300 125" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ah)"/>
+        <text x="236" y="146" fill="var(--muted)" font-size="12" font-family="var(--f-mono)">elect</text>
+        <path d="M420 180 L420 250" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ah)"/>
+        <text x="430" y="220" fill="var(--muted)" font-size="12" font-family="var(--f-mono)">appoints</text>
+        <path d="M220 335 L300 320" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ah)"/>
+        <path d="M540 290 C620 290 620 175 600 150 L540 130" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ah)"/>
+        <text x="600" y="240" fill="var(--muted)" font-size="12" font-family="var(--f-mono)">recommends</text>
+        <path d="M540 110 L700 165" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#ah)"/>
+        <text x="585" y="118" fill="var(--muted)" font-size="12" font-family="var(--f-mono)">votes, Chair merges</text>
+      </svg>
+      </div>
+      <p class="muted" style="margin-top:14px;max-width:720px">Before the steering committee exists, the interim technical committee recommends and the maintainers merge on that recommendation with no discretion. The shape is the same; only the body that votes is missing.</p>
+    </div>
+  </section>
+
+  
+
+</div>
+<div class="view" id="v-build" hidden>
+  <section class="band">
+    <div class="wrap">
+      <h1>Build with PDPP</h1>
+      <p class="lede">Everything you need to build on PDPP is here: the specification, a reference server you can run today, and guidance for the parts people tend to get stuck on.</p>
+      <div class="btnrow"><button class="btn" data-go="spec">Open Core</button><a class="btn ghost" href="#" onclick="return false;">Clone the reference implementation</a></div>
+    </div>
+  </section>
+
+  <section class="band alt">
+    <div class="wrap">
+      <h2>What are you building?</h2>
+      <div class="cards three">
+        <div class="card"><span class="lbl">I hold data</span><h3>Make a source</h3><p>You have data, on a platform or in a connector, and you want apps to be able to ask for it with consent. You need to write a source declaration that validates against Core §5, then serve records through a Core §8 resource server.</p><p class="muted" style="font-size:0.88rem">Start with Core §4 and §5, then the declaration schema and the validator.</p><a href="#" data-go="spec">Core §5 &rarr;</a></div>
+        <div class="card"><span class="lbl">I want data</span><h3>Make an accessor</h3><p>You are building an app or agent that needs someone's data. You ask for exactly what you need with a Core §6 selection request, receive a grant, and query within it. If you have done OAuth, this is OAuth with a stricter scope.</p><p class="muted" style="font-size:0.88rem">Start with Core §6 and §7, then the client example in the reference implementation.</p><a href="#" data-go="spec">Core §6 &rarr;</a></div>
+        <div class="card"><span class="lbl">I run the server</span><h3>Make an operator</h3><p>You run the authorization server, the resource server, or both. Yours is the code that records the grant and refuses anything outside it. Core §8 is your interface contract and §9 is what the test suite will check.</p><p class="muted" style="font-size:0.88rem">Start by running the reference implementation, then read Core §8 against it.</p><a href="#" onclick="return false;">Deploy the reference server &rarr;</a></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <h2>Run it in under an hour</h2>
+      <div class="cards two">
+        <div class="card"><span class="lbl">Reference implementation</span><h3>Deploy on Docker, Railway or Fly.io</h3><p>A complete authorization and resource server with scoped access, revocation, and an MCP endpoint so you can point an assistant at it and watch grants get enforced. Use it to see the protocol behave before you write your own.</p><a href="#" onclick="return false;">Deploy guide &rarr;</a></div>
+        <div class="card"><span class="lbl">Try a real source</span><h3>Connect GitHub or ChatGPT to it</h3><p>DataConnect ships signed connectors for both. Install it, grant an app one stream for one week, then revoke it, and you have seen the whole protocol.</p><a href="#" onclick="return false;">DataConnect releases &rarr;</a></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band alt">
+    <div class="wrap">
+      <h2>Community FAQs</h2>
+      <div class="cards two">
+        <div class="card"><span class="lbl">Building a source</span><h3>How do I get data out of a platform and into a declaration?</h3><p>The Collection Profile is one worked approach to collection, scheduling and refresh for connector-backed sources. Use it if you do not already have a pipeline. If you do, you conform as long as your declaration validates and your server answers §8 queries.</p><a href="#" onclick="return false;">Collection Profile &rarr;</a></div>
+        <div class="card"><span class="lbl">Building an operator</span><h3>How does my server find a platform's declaration, and know it is real?</h3><p>Discovery and Trust walks through locating a provider-native declaration under RFC 9728 and what to check before accepting it. The requirements themselves are in Core §5, Declaration acceptance, and this document is the how-to.</p><a href="#" onclick="return false;">Discovery and Trust &rarr;</a></div>
+        <div class="card"><span class="lbl">Building an accessor</span><h3>Which purpose code do I put in my request?</h3><p>Every grant names a purpose from the registry. Most requests fit an existing code, and <span style="font-family:var(--f-mono);font-size:0.85em">ai_training</span> is the one that triggers a protocol-level consent step. If nothing fits you can propose one, and proposals are considered on a published cycle.</p><a href="#" onclick="return false;">Purpose registry &rarr;</a></div>
+        <div class="card"><span class="lbl">Any role</span><h3>Core can't express the query I need. Now what?</h3><p>Extension profiles add lexical search, aggregation and semantic query on top of Core without changing what Core means. Check whether one already covers your case before writing your own; an extension that weakens Core semantics is rejected.</p><a href="#" onclick="return false;">Extension profiles &rarr;</a></div>
+      </div>
+    </div>
+  </section>
+  <section class="band">
+    <div class="wrap">
+      <div class="btnrow"><button class="btn" data-go="community">Built on PDPP? Get it verified &rarr;</button></div>
+    </div>
+  </section>
+</div>
+
+<div class="view" id="v-community" hidden>
+  <section class="band">
+    <div class="wrap">
+      <h1>How to get involved</h1>
+      <p class="lede">Follow the work, sign the Principles, or build something and get it verified. All of it is voluntary, and none of it is needed to use PDPP.</p>
+      <div class="cards three">
+        <div class="card"><span class="lbl">Level 1</span><h3>Follow along</h3><p>Discord, mailing list, working sessions, comments. Nothing to sign, so regulators can take part off the record.</p><a href="#follow" onclick="document.getElementById('follow').scrollIntoView();return false;">Channels and sessions &darr;</a></div>
+        <div class="card"><span class="lbl">Level 2</span><h3>Become a Supporter</h3><p>Sign the Principles and go on the public list. Open now.</p><button class="btn" data-go="principles">Become a Supporter</button></div>
+        <div class="card"><span class="lbl">Level 3</span><h3>Become a Partner</h3><p>Get an implementation verified. Partners get drafts early, sit in working groups and vote. Organisations only, from 14 November.</p><a href="#verify" onclick="document.getElementById('verify').scrollIntoView();return false;">How verification works &darr;</a></div>
+      </div>
+    </div>
+  </section>
+
+  <div id="verify"></div>
+  <section class="band alt">
+    <div class="wrap">
+      <h2>Get verified</h2>
+      <div class="cards four">
+        <div class="card"><span class="lbl">Step 1</span><h3>Build it</h3><p>A source, accessor or operator that implements Core.</p><a href="#" data-go="build">Build page &rarr;</a></div>
+        <div class="card"><span class="lbl">Step 2</span><h3>Apply</h3><p>Open a pull request from the template for your role and attach your evidence. A machine checks it. Pass, and you are Conformant.</p></div>
+        <div class="card"><span class="lbl">Step 3</span><h3>Get reviewed</h3><p>For Verified, the technical committee reviews in public and votes, and you prove your organisation exists through a recognised trust registry. You get reasons either way, and can resubmit.</p></div>
+        <div class="card"><span class="lbl">Step 4</span><h3>You're on the register</h3><p>Your status is published with the date and version. Any Verified status makes you a Partner.</p></div>
+      </div>
+      <div class="btnrow" style="margin-top:22px;flex-wrap:wrap">
+        <a class="btn" href="#" onclick="return false;">Apply as a Source &rarr;</a>
+        <a class="btn" href="#" onclick="return false;">Apply as an Accessor &rarr;</a>
+        <a class="btn ghost" href="#" onclick="return false;">Apply as an Operator, opens 1 Jan 2027</a>
+      </div>
+      <p class="muted" style="margin-top:12px">Not sure which fits, or not on GitHub? <a href="#" onclick="return false;">Get in touch</a> and we will sort it with you.</p>
+      <h3 style="margin-top:34px">The statuses</h3>
+      <table>
+          <thead><tr><th>Status</th><th>Role</th><th>Level</th><th>How established</th><th>Opens</th><th>State</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Conformant Source</strong></td><td>Source</td><td>Automated</td><td>Declaration validates against the schema</td><td>By 14 Nov 2026</td><td><span class="statusdot sd-lapsed"></span>Not open</td></tr>
+            <tr><td><strong>Verified Source</strong></td><td>Source</td><td>Reviewed</td><td>Published by the platform that holds the data. Committee review, identity via a recognised trust registry</td><td>By 14 Nov 2026</td><td><span class="statusdot sd-lapsed"></span>Not open</td></tr>
+            <tr><td><strong>Conformant Accessor</strong></td><td>Accessor</td><td>Automated</td><td>Registered, submission complete. No assessment</td><td>By 14 Nov 2026</td><td><span class="statusdot sd-lapsed"></span>Not open</td></tr>
+            <tr><td><strong>Verified Accessor</strong></td><td>Accessor</td><td>Reviewed</td><td>Legal attestation, liability on a named entity. Committee review, identity via a recognised trust registry</td><td>By 14 Nov 2026</td><td><span class="statusdot sd-lapsed"></span>Not open</td></tr>
+            <tr><td><strong>Verified Operator</strong></td><td>Operator</td><td>Reviewed</td><td>Passes the test suite, then full committee review. Identity via a recognised trust registry</td><td>By 1 Jan 2027</td><td><span class="statusdot sd-lapsed"></span>Not open</td></tr>
+          </tbody>
+        </table>
+      <p class="muted" style="max-width:64ch;margin-top:16px">Conformant is a machine check. Verified is a human review, and makes you a Partner. No fee at any stage.</p>
+    </div>
+  </section>
+
+  
+
+  <section class="band alt">
+    <div class="wrap">
+      <h2>The register</h2>
+      <p class="muted" style="max-width:720px">Applications open by 14 November.</p>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Organisation</th><th>Role</th><th>Status</th><th>Spec version</th><th>Since</th><th>State</th></tr></thead>
+          <tbody>
+            <tr><td colspan="6" style="color:var(--faint);text-align:center;padding:26px 0">Nothing listed yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="counter" style="margin-top:14px">Kept on GitHub: <a href="#" onclick="return false;">github.com/PDP-Connect/pdpp/register</a> &nbsp;·&nbsp; machine readable at <span style="font-family:var(--f-mono)">/register/index.json</span> &nbsp;·&nbsp; Supporters are listed separately on the <a href="#" data-go="principles">Principles page</a></p>
+    </div>
+  </section>
+
+  <div id="follow"></div>
+  <section class="band">
+    <div class="wrap">
+      <h2>Channels and contacts</h2>
+      <div class="cards two">
+        <div class="card"><span class="lbl">Chat</span><h3>#pdp-connect on Discord</h3><p>Where things are announced first.</p><a href="#" onclick="return false;">Join &rarr;</a></div>
+        <div class="card"><span class="lbl">Email</span><h3>Mailing list</h3><p>New versions and comment periods. Low volume.</p><a href="#" onclick="return false;">Subscribe &rarr;</a></div>
+        <div class="card"><span class="lbl">Governments and regulators</span><h3>Take part without signing</h3><p>Observe anywhere, sign nothing. Ask for a briefing.</p><a href="#" onclick="return false;">Contact &rarr;</a></div>
+        <div class="card"><span class="lbl">Something wrong?</span><h3>Report it</h3><p>A wrong description, a name that should not be listed, anything about a status. Answered within five working days.</p><a href="#" onclick="return false;">pdpp-dev-reports@lfdecentralizedtrust.org &rarr;</a></div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div class="view" id="v-review" hidden>
+  <section class="band">
+    <div class="wrap">
+      <p class="kicker">Formal review &nbsp;·&nbsp; open until 1 October 2026</p>
+      <h1>Review the specification</h1>
+      <p class="lede">The Personal Data Portability Protocol v0.1.0 and its governance are open for public comment until 1 October. It is one document of nine sections, about an hour to read, and every comment gets a published answer.</p>
+      <div class="btnrow"><button class="btn" data-go="spec">Open the specification</button><button class="btn ghost" data-go="spec">Open governance</button></div>
+    </div>
+  </section>
+
+  <section class="band alt">
+    <div class="wrap">
+      <p class="kicker">Step 1</p>
+      <h2>What to read</h2>
+      <div class="cards two">
+        <div class="card"><span class="lbl">Specification &nbsp;·&nbsp; about 45 minutes</span><h3>Four sections carry most of the weight</h3><p>If you only have twenty minutes, read §7.</p>
+          <ol style="margin:10px 0 0 18px;padding:0;line-height:1.7">
+            <li>§5 Source declaration, including Declaration acceptance</li>
+            <li>§7 Grant</li>
+            <li>§8 Resource server interface</li>
+            <li>§9 Conformance</li>
+          </ol>
+          <a href="#" data-go="spec">Open the specification &rarr;</a></div>
+        <div class="card"><span class="lbl">Governance &nbsp;·&nbsp; about 20 minutes</span><h3>Two parts, one of them still open</h3><p>Part A is how PDP-Connect runs from 15 October and is frozen during review. Part B is the proposed long-term structure and is where your comment will change the most. Two open questions: five steering committee seats or three, and whether one organisation one vote puts off large companies.</p><a href="#" data-go="spec">Open governance &rarr;</a></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <p class="kicker">Step 2</p>
+      <h2>How to comment</h2>
+      <div class="cards three">
+        <div class="card"><span class="lbl">On GitHub</span><h3>One issue per point</h3><p>Every section of the specification has a comment link that opens an issue with the section pre-filled. Say what is wrong, what you would change, and why.</p><a href="#" onclick="return false;">Open an issue &rarr;</a></div>
+        <div class="card"><span class="lbl">By email</span><h3>Same log, no account needed</h3><p>Email your comments and we add them to the same public log, under whatever name you ask for.</p><a href="#" onclick="return false;">pdpp-dev-reports@lfdecentralizedtrust.org &rarr;</a></div>
+        <div class="card"><span class="lbl">In person</span><h3>Working sessions</h3><p>They are public and recorded, scheduled through the review period, and anything raised live is logged the same way.</p><a href="#" data-go="community">Session dates &rarr;</a></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band alt">
+    <div class="wrap">
+      <p class="kicker">Step 3</p>
+      <h2>What happens to your comment</h2>
+      <p class="muted" style="max-width:720px">Every comment is logged and answered: accepted, declined with a reason, or parked. All answers are published in one log. If a comment changes something substantial, the new text goes out for another 15 days before it is final. During that period we may hold further sessions or one-to-one conversations with commenters.</p>
+      <ul class="tl">
+        <li><span class="dt">3 September</span><span>The specification and Part A are frozen, the Principles are published, and Supporter signing opens.</span></li>
+        <li><span class="dt">1 October</span><span>The comment period closes, and answers are published after.</span></li>
+        <li><span class="dt">15 October</span><span>The programme opens.</span></li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<footer class="site">
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h4>Specification</h4>
+        <ul>
+          <li><a href="#" data-go="spec">Specification v0.1.0</a></li>
+          <li><a href="#" data-go="review">Review, until 1 October</a></li>
+          <li><a href="#" data-go="spec">Governance</a></li>
+          <li><a href="#" data-go="spec">Purpose registry, Appendix A</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Participate</h4>
+        <ul>
+          <li><a href="#" data-go="principles">PDPP Principles</a></li>
+          <li><a href="#" data-go="principles">Supporters</a></li>
+          <li><a href="#" data-go="community">Verification and the register</a></li>
+          <li><a href="#" onclick="return false;">#pdp-connect on LFDT Discord</a></li>
+          <li><a href="#" onclick="return false;">Mailing list</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Contact</h4>
+        <ul>
+          <li><a href="#" onclick="return false;">github.com/PDP-Connect/pdpp</a></li>
+          <li>Reports: <a href="#" onclick="return false;">pdpp-dev-reports@lfdecentralizedtrust.org</a></li>
+          <li>General: <a href="#" onclick="return false;">[ address to be confirmed with LFDT ]</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Licence</h4>
+        <ul>
+          <li>Specification text: <a href="#" onclick="return false;">CSL-1.0</a></li>
+          <li>Reference implementation: <a href="#" onclick="return false;">Apache-2.0</a></li>
+          <li>Documentation: <a href="#" onclick="return false;">CC-BY-4.0</a></li>
+        </ul>
+        <p style="margin:12px 0 0;font-size:13px">PDP-Connect is an <a href="#" onclick="return false;">LF Decentralized Trust</a> Lab.</p>
+      </div>
+    </div>
+    <div class="legal">
+      <span>Copyright &copy; LF Decentralized Trust Labs a Series of LF Projects, LLC. For web site terms of use, trademark policy and other project policies please see <a href="#" onclick="return false;">lfprojects.org</a>.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var views = ['home', 'principles', 'spec', 'build', 'community', 'review'];
+
+  function go(name) {
+    if (views.indexOf(name) === -1) name = 'home';
+    views.forEach(function (v) {
+      var el = document.getElementById('v-' + v);
+      if (el) el.hidden = (v !== name);
+    });
+    document.querySelectorAll('nav.main button[data-go]').forEach(function (b) {
+      if (b.getAttribute('data-go') === name) { b.setAttribute('aria-current', 'page'); }
+      else { b.removeAttribute('aria-current'); }
+    });
+    window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-go]');
+    if (!t) return;
+    e.preventDefault();
+    go(t.getAttribute('data-go'));
+  });
+
+  // annotations
+  var btn = document.getElementById('annoBtn');
+  if (btn) btn.addEventListener('click', function () {
+    var on = btn.getAttribute('aria-pressed') === 'true';
+    btn.setAttribute('aria-pressed', on ? 'false' : 'true');
+    document.body.classList.toggle('show-anno', !on);
+    btn.textContent = on ? 'Show structure notes' : 'Hide structure notes';
+  });
+
+  // signing form individual / organisation
+  var segInd = document.getElementById('segInd');
+  var segOrg = document.getElementById('segOrg');
+  var orgField = document.getElementById('orgField');
+  var typeField = document.getElementById('typeField');
+  var affField = document.getElementById('affField');
+
+  function setMode(isOrg) {
+    segOrg.setAttribute('aria-pressed', isOrg ? 'true' : 'false');
+    segInd.setAttribute('aria-pressed', isOrg ? 'false' : 'true');
+    orgField.hidden = !isOrg;
+    typeField.hidden = !isOrg;
+    affField.hidden = isOrg;
+    document.getElementById('ageRow').hidden = isOrg;
+    document.getElementById('authRow').hidden = !isOrg;
+    document.getElementById('privacyNote').textContent = isOrg ? 'We show the organisation name, type, country and the date. We never show the signatory or their email.' : 'We show your first name and last initial, your country, and the date. We never show your email.';
+  }
+  segInd.addEventListener('click', function () { setMode(false); });
+  segOrg.addEventListener('click', function () { setMode(true); });
+  setMode(false);
+
+  go('home');
+})();
+</script>
+</body>
+</html>

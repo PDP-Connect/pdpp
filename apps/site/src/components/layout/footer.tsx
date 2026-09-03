@@ -4,13 +4,8 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { isContributorSurfaceEnabled } from "@/lib/contributor-surface.ts";
-import {
-  DISCORD_INVITE_URL,
-  GITHUB_REPO_URL,
-  LFDT_COPYRIGHT_NOTICE,
-  LFPROJECTS_URL,
-  SITE_LICENSES,
-} from "@/lib/site-facts.ts";
+import { REPORTS_EMAIL, REPORTS_EMAIL_HREF, siteConfig } from "@/lib/site-config.ts";
+import { GITHUB_REPO_URL, LFDT_COPYRIGHT_NOTICE, LFPROJECTS_URL, SITE_LICENSES } from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 import { ColorSchemeMenu } from "../elements/color-scheme-menu.tsx";
 import { DiscordIcon, GithubIcon, WordmarkIcon } from "../elements/icons.tsx";
@@ -117,7 +112,7 @@ export function PdppConceptFooter() {
               {/* Internal routes, so next/link rather than the bare <a> the
                   LFDT attribution above uses (that one leaves the site). */}
               <Text color="onAccentSoft" size="inherit">
-                <Link className={footerLinkClassName} href="/governance">
+                <Link className={footerLinkClassName} href="/specification#governance">
                   Governance, membership and conformance
                 </Link>
               </Text>
@@ -138,7 +133,7 @@ export function PdppConceptFooter() {
                 as="a"
                 className={footerLinkClassName}
                 color="onAccent"
-                href={DISCORD_INVITE_URL}
+                href={siteConfig.discordUrl}
                 rel="noopener noreferrer"
                 size="inherit"
                 target="_blank"
@@ -164,6 +159,30 @@ export function PdppConceptFooter() {
               >
                 <GithubIcon />
                 {githubDisplayText}
+              </Text>
+            </div>
+            {/* Two addresses, and they are never the same one. Reports is an
+                LF Decentralized Trust mailbox fixed by GOVERNANCE.md's own
+                header and is where a conduct or conformance report goes;
+                General is the project's own address for everything else.
+                Routing a report to the general mailbox, or general mail to
+                the reports one, is the failure this separation exists to
+                prevent. */}
+            <div className="flex flex-col gap-1.5">
+              <Text color="onAccentLabel" size="stamp" weight="normal">
+                Contact
+              </Text>
+              <Text color="onAccentSoft" size="inherit">
+                Reports:{" "}
+                <a className={footerLinkClassName} href={REPORTS_EMAIL_HREF}>
+                  {REPORTS_EMAIL}
+                </a>
+              </Text>
+              <Text color="onAccentSoft" size="inherit">
+                General:{" "}
+                <a className={footerLinkClassName} href={`mailto:${siteConfig.generalContact}`}>
+                  {siteConfig.generalContact}
+                </a>
               </Text>
             </div>
           </div>

@@ -66,10 +66,8 @@ function RailItem({ item }: { item: PageTree.Item }) {
 // "Programme" is a heading rather than more rows under "Specification" because
 // the two groups change by different routes: the specifications under the
 // Community Specification process, governance and the Principles by a vote of
-// Partners. "Implementer guidance" is separate for a different reason: those
-// documents define no conformance requirements, and listing them beside the
-// normative core is what made readers treat their SHALLs as binding.
-const RAIL_SECTION_LABELS = new Set(["Specification", "Implementer guidance", "Programme"]);
+// Partners.
+const RAIL_SECTION_LABELS = new Set(["Core protocol", "Implementer guidance, informative", "Appendices"]);
 
 function RailSeparator({ item }: { item: PageTree.Separator }) {
   const label = typeof item.name === "string" ? item.name : "";

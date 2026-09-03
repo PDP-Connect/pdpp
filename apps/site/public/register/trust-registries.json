@@ -1,0 +1,15 @@
+[
+  {
+    "id": "dti-data-trust-registry",
+    "name": "Data Trust Registry",
+    "operator": "Data Transfer Initiative",
+    "url": "https://dtinit.org/",
+    "recognisedFor": [
+      "Verified Source",
+      "Verified Accessor",
+      "Verified Operator"
+    ],
+    "basis": "Corporate identity. A current entry stands in place of a KYB-style check when a Verified status is applied for.",
+    "recognisedOn": "2026-09-03"
+  }
+]

@@ -1,10 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import {
-  executeStreamDetail,
-  StreamDetailVisibilityError,
-} from "@pdpp/reference-operations-sandbox/rs-streams-detail";
+import { executeStreamDetail, StreamDetailVisibilityError } from "@pdpp/reference-operations-sandbox/rs-streams-detail";
 import { createSandboxStreamDetailDependencies } from "../../../_demo/operations-fixtures.ts";
 import { jsonResponse, notFound } from "../../_helpers.ts";
 
