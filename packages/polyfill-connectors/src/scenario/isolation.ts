@@ -1872,19 +1872,20 @@ function inNamespaceSocketScanStatement(roBindPaths: readonly string[]): string 
  * being false rather than asserting `-f` — matches this module's existing
  * "test the property that matters, not a narrower assumption about what
  * else the path could be" discipline elsewhere), open the path itself
- * `O_WRONLY` via shell redirection (`exec 3>"$path"`) — confirmed
- * empirically to correctly fail with `EROFS`/a shell-level "Read-only file
- * system" error for a genuinely read-only file bind mount, and to correctly
- * SUCCEED (proving writability, the false-success case) for a writable one
- * — unlike the old `ENOTDIR`-always probe, this actually depends on the
- * mount's real read-only state rather than failing unconditionally for the
- * wrong reason.
+ * for write in append mode via shell redirection (`exec 3>>"$path"`). This
+ * asks the kernel for write access without `O_TRUNC` and performs no write,
+ * so a host-backed file submount keeps its exact bytes. It correctly fails
+ * with `EROFS`/a shell-level "Read-only file system" error for a genuinely
+ * read-only file bind mount, and correctly SUCCEEDS (proving writability,
+ * the false-success case) for a writable one — unlike the old
+ * `ENOTDIR`-always probe, this actually depends on the mount's real
+ * read-only state rather than failing unconditionally for the wrong reason.
  */
 const PROBE_RO_FUNCTION_DEFINITION =
   'probe_ro() { __p="$1"; if [ -d "$__p" ]; then ' +
   '__probe="$__p/.pdpp-isolation-ro-probe-$$"; ' +
   'if touch "$__probe" 2>/dev/null; then rm -f "$__probe" 2>/dev/null; echo "$__p"; fi; ' +
-  'else if sh -c "exec 3>\\"\\$1\\"" _ "$__p" 2>/dev/null; then echo "$__p"; fi; fi; }';
+  'else if sh -c "exec 3>>\\"\\$1\\"" _ "$__p" 2>/dev/null; then echo "$__p"; fi; fi; }';
 
 export function postPivotVerificationStatements(binds: readonly FilesystemBind[]): string[] {
   // `probe_ro` is defined HERE, as this function's own first returned

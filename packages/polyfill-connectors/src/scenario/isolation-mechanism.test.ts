@@ -1315,13 +1315,17 @@ test("[bwrap sandbox] postPivotVerificationStatements FAILS when a nested submou
   }
 });
 
-test("[bwrap sandbox] postPivotVerificationStatements FAILS when a nested FILE submount is genuinely writable (the old touch-inside-a-directory probe always false-negatived on a file)", {
+test("[bwrap sandbox] postPivotVerificationStatements detects a writable nested FILE submount without changing its host-backed bytes", {
   skip: !(bwrapUsable && bindMountCapable),
 }, () => {
   const roDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-ro-file-parent-"));
   const nestedSourceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-nested-file-source-"));
   const nestedSourceFile = join(nestedSourceDir, "source-file");
-  writeFileSync(nestedSourceFile, "original content");
+  // This is the real host file whose bind-mounted sandbox view `probe_ro`
+  // opens. The regression oracle reads it after that probe: `>` used to
+  // truncate it merely to establish writability.
+  const originalContents = Buffer.from([0x00, 0x70, 0x64, 0x70, 0xff, 0x0a]);
+  writeFileSync(nestedSourceFile, originalContents);
   const nestedMountPoint = join(roDir, "nested-file");
   writeFileSync(nestedMountPoint, "");
   try {
@@ -1377,7 +1381,12 @@ test("[bwrap sandbox] postPivotVerificationStatements FAILS when a nested FILE s
       assert.equal(
         result.status,
         91,
-        `expected POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE (91) — a genuinely writable FILE submount must be detected via O_WRONLY-open, not silently reported clean via a meaningless touch-inside-a-file attempt; stderr: ${result.stderr}`
+        `expected POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE (91) — a genuinely writable FILE submount must be detected via a non-truncating append-mode open, not silently reported clean via a meaningless touch-inside-a-file attempt; stderr: ${result.stderr}`
+      );
+      assert.deepEqual(
+        readFileSync(nestedSourceFile),
+        originalContents,
+        "probing a writable file submount must not change any bytes in its host-backed source file"
       );
       assert.ok(
         /writable-ro-binds=\[[\s\S]*\/ro-parent\/nested-file[\s\S]*\]/.test(result.stderr),
@@ -1392,7 +1401,7 @@ test("[bwrap sandbox] postPivotVerificationStatements FAILS when a nested FILE s
   }
 });
 
-test("[bwrap sandbox] postPivotVerificationStatements PASSES a genuinely read-only FILE submount (negative control — the O_WRONLY probe isn't vacuously always failing)", {
+test("[bwrap sandbox] postPivotVerificationStatements PASSES a genuinely read-only FILE submount (negative control — the append-mode probe isn't vacuously always failing)", {
   skip: !(bwrapUsable && bindMountCapable),
 }, () => {
   const roDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-ro-file-clean-parent-"));
