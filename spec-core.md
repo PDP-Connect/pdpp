@@ -176,15 +176,13 @@ described is equally within Core. The [PDPP Collection Profile](spec-collection-
 describes one such mechanism, connector collection, and describes it for
 builders rather than as a conformance requirement.
 
-**On-behalf-of access is two ordinary grants, not one delegated grant.** A
-third arrangement neither example draws follows from the two above rather than
-extending them: a personal server that fetches from an upstream platform on the
-owner's behalf is an ordinary PDPP client of that platform, holding an ordinary
-grant the owner issued there. It is then an ordinary resource server to the
-apps the owner authorizes against it. The chain is two independent grants — the
-owner to the platform, and the owner to the personal server — each issued by the
-owner, each revocable by the owner on its own, and each an ordinary grant under
-this specification.
+**On-behalf-of access is two ordinary grants, not one delegated grant.** At the
+upstream platform, the owner authorizes the personal server to read the
+owner's data. At the personal server, the owner separately authorizes a
+downstream client to read owner-held data. These are independent grants, each
+issued and revocable by the owner. A personal server MAY disclose owner-held
+data under the fresh downstream grant; it does not pass the platform grant or a
+downstream PDPP token to the other relationship.
 
 PDPP therefore defines no delegated-grant, sub-grant, or grant-chaining
 construct, and none is needed to build this. The same shape is already how
@@ -194,11 +192,10 @@ subdividing one authorization. Where a binding needs to exchange one credential
 for another across the two relationships, OAuth Token Exchange (RFC 8693) is the
 existing mechanism, and it is a concern of the binding rather than of Core.
 
-What Core does not yet state is what the second grant may say about the first:
-whether the onward grant can outlive, or exceed the scope of, the grant the
-records arrived under. Until that is settled, an implementation SHOULD NOT issue
-an onward grant broader in scope or longer in duration than the grant under
-which it obtained the records.
+Only live passthrough is bounded by the upstream grant: when the personal server
+does not hold a copy and reads from the platform to fulfill a downstream request,
+it MUST stay within the upstream grant. This limit does not constrain a fresh
+grant for owner-held data. A downstream PDPP token is never forwarded upstream.
 
 A different topology — the owner running their own authorization server in front
 of a platform's data, so that the platform holds the data but the owner's server
