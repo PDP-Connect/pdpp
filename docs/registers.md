@@ -24,9 +24,9 @@ and no reason.
 The site writes these files to the private repository's `signatures` branch.
 `PDPP_PRIVATE_REPO_BRANCH` changes that branch for a deployment; it defaults to
 `signatures`. The public repository's daily `publish-supporters` workflow runs
-as `github-actions[bot]`. Its `PDPP_PRIVATE_REPO_TOKEN` can read
-`PDP-Connect/supporters-private` only for the checkout pinned to `signatures`;
-it cannot write the private register. The workflow writes the public register
+as `github-actions[bot]`. The workflow uses `PDPP_PRIVATE_REPO_TOKEN` only to
+read `PDP-Connect/supporters-private` through a checkout pinned to `signatures`;
+it has no private-register write step. The workflow writes the public register
 with this repository's `GITHUB_TOKEN` by opening a PR from
 `publish/supporters`, never by committing to `main`.
 
