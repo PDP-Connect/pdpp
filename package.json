@@ -31,7 +31,6 @@
     "public-tree:hygiene-check": "node --import tsx scripts/check-public-tree-hygiene.ts",
     "public-tree:hygiene-check:test": "pnpm test:scratch -- node --test --import tsx scripts/check-public-tree-hygiene.test.ts",
     "stream-debug:summary": "node --import tsx scripts/stream-debug-summary.ts",
-    "reference-contract:generate": "pnpm --filter @pdpp/reference-contract run generate:all",
     "reference-contract:check-generated": "pnpm --filter @pdpp/reference-contract run check:generated",
     "release": "semantic-release",
     "release:dry-run": "semantic-release --dry-run --no-ci",

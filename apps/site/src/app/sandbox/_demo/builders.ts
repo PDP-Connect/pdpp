@@ -122,19 +122,28 @@ export interface SchemaResponse {
 
 export function buildSchemaResponse(issuer = DEMO_ISSUER): SchemaResponse {
   return {
-    connectors: DEMO_CONNECTORS.map((connector) => ({
-      connector_id: connector.connector_id,
-      display_name: connector.display_name,
-      streams: DEMO_STREAMS.filter((stream) => stream.connector_id === connector.connector_id).map((stream) => ({
-        fields: stream.fields.map((field) => ({
-          name: field.name,
-          semantic_class: field.semantic_class,
-          type: field.type,
-        })),
-        label: stream.label,
-        stream: stream.key,
-      })),
-    })),
+    connectors: DEMO_CONNECTORS.map((connector) => {
+      const streams: SchemaResponse["connectors"][number]["streams"] = [];
+      for (const stream of DEMO_STREAMS) {
+        if (stream.connector_id !== connector.connector_id) {
+          continue;
+        }
+        streams.push({
+          fields: stream.fields.map((field) => ({
+            name: field.name,
+            semantic_class: field.semantic_class,
+            type: field.type,
+          })),
+          label: stream.label,
+          stream: stream.key,
+        });
+      }
+      return {
+        connector_id: connector.connector_id,
+        display_name: connector.display_name,
+        streams,
+      };
+    }),
     is_demo: true,
     issuer,
     notice: DEMO_NOTICE.notice,
@@ -844,8 +853,8 @@ export function buildProtectedResourceMetadata(issuer = DEMO_ISSUER): OAuthProte
 // Live-shaped builders (the fidelity pass).
 //
 // These mirror the live PDPP reference envelopes documented in:
-//   reference-implementation/server/index.js (records.js, search.js, metadata.ts)
-//   reference-implementation/openapi/reference-full.openapi.json
+//   the retired reference implementation's records, search, and metadata routes
+//   and the full OpenAPI document built by @pdpp/reference-contract
 // so an agent can call /sandbox/v1/... and reuse parsing written for the
 // real AS/RS. Sandbox markers are conveyed via the x-pdpp-demo HTTP header
 // rather than payload fields, keeping payload shapes identical.
@@ -973,12 +982,13 @@ function cursorFieldFor(stream: DemoStreamDef): string | null {
 }
 
 function latestRecordTimeForStream(streamKey: string): string | null {
-  const matching = DEMO_RECORDS.filter((r) => r.stream === streamKey).map((r) => r.record_time);
-  if (matching.length === 0) {
-    return null;
+  let latest: string | null = null;
+  for (const record of DEMO_RECORDS) {
+    if (record.stream === streamKey && (latest === null || record.record_time > latest)) {
+      latest = record.record_time;
+    }
   }
-  matching.sort();
-  return matching.at(-1) ?? null;
+  return latest;
 }
 
 // Streams list: live shape is `{ object: "list", data: [{ object: "stream",

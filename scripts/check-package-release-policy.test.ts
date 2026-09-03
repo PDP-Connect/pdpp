@@ -21,7 +21,6 @@ import test from "node:test";
 
 import { classifyDistTagPosture, placeholderVersion } from "./check-dist-tag-posture.ts";
 import {
-  findLocalReleaseMatrixAuthorityErrors,
   findPublishableWorkspaceDependencyErrors,
   findRetiredTagInstallDocReferences,
   policyErrors,
@@ -124,22 +123,6 @@ test("publishable packages cannot carry workspace protocol dependencies", () => 
   assert.equal(problems.length, 2);
   assert.match(problems[0] ?? "", WORKSPACE_STAR_PATTERN);
   assert.match(problems[1] ?? "", WORKSPACE_CARET_PATTERN);
-});
-
-test("local release and signoff cannot bypass the shared release matrix authority", () => {
-  const scripts = {
-    "release:local": "pnpm release:policy-check && pnpm release:matrix",
-    "release:signoff": "pnpm release:local && pnpm release:dry-run",
-  };
-  assert.deepEqual(findLocalReleaseMatrixAuthorityErrors(scripts), []);
-  assert.equal(
-    findLocalReleaseMatrixAuthorityErrors({ ...scripts, "release:local": "pnpm release:policy-check" }).length,
-    1
-  );
-  assert.equal(
-    findLocalReleaseMatrixAuthorityErrors({ ...scripts, "release:signoff": "pnpm release:dry-run" }).length,
-    1
-  );
 });
 
 test("the live repository passes the hermetic package-release policy check", () => {

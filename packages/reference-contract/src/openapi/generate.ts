@@ -2,11 +2,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// OpenAPI 3.1 artifact generator driven from route manifests.
-//
-// Emits:
-//   - reference-public.openapi.json  (public routes only)
-//   - reference-full.openapi.json    (public + /_ref routes)
+// OpenAPI 3.1 document builder driven from route manifests.
 
 import type { JsonSchema, RouteManifest } from "../common/index.ts";
 import { publicManifests as publicManifestsRaw } from "../public/index.ts";
@@ -186,27 +182,4 @@ export function generateOpenApi({ includeReference = false }: { includeReference
     pathItem[method] = operationFromManifest(manifest);
   }
   return document;
-}
-
-async function main(): Promise<void> {
-  const { writeFile, mkdir } = await import("node:fs/promises");
-  const { dirname, join, resolve } = await import("node:path");
-  const { fileURLToPath } = await import("node:url");
-  const here = dirname(fileURLToPath(import.meta.url));
-  const outDir = resolve(here, "../../../../reference-implementation/openapi");
-  await mkdir(outDir, { recursive: true });
-  const pub = generateOpenApi({ includeReference: false });
-  const full = generateOpenApi({ includeReference: true });
-  await writeFile(join(outDir, "reference-public.openapi.json"), `${JSON.stringify(pub, null, 2)}\n`);
-  await writeFile(join(outDir, "reference-full.openapi.json"), `${JSON.stringify(full, null, 2)}\n`);
-  process.stdout.write(`wrote ${outDir}/reference-public.openapi.json\n`);
-  process.stdout.write(`wrote ${outDir}/reference-full.openapi.json\n`);
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((err: unknown) => {
-    const e = err as { stack?: string; message?: string };
-    process.stderr.write(`${e.stack || e.message}\n`);
-    process.exit(1);
-  });
 }
