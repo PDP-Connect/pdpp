@@ -660,7 +660,7 @@ A client requests specific personal data by including `authorization_details` in
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+      "source": { "id": "https://registry.pdpp.dev/connectors/spotify" },
       "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
@@ -757,7 +757,7 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 
 | Parameter | Type | Required | Status | Description |
 |-----------|------|----------|--------|-------------|
-| `source` | object | yes | Protocol-enforced | Source binding. `id` is required and is the stable absolute URI authorization identity for the data surface. `kind` is optional. When present, it is a client trust expectation that the accepted declaration's provenance class is `connector` or `provider_native`. It is not authorization equality and never selects runtime. |
+| `source` | object | yes | Protocol-enforced | Source binding. `id` is required and is the stable absolute URI authorization identity for the data surface. A request carries `id` alone: provenance is derived by the authorization server from the accepted declaration, not asserted by the client. |
 | `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced, with the exception of `https://pdpp.dev/purpose/ai_training` (see below). |
 | `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. |
 | `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. See [Section 7](#grant). |
@@ -768,17 +768,14 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 
 #### Source kinds {#source-kinds}
 
+These are the two provenance classes an authorization server derives and carries forward. They are defined here because this is where a reader meets the source binding, not because a client sends one.
+
 | `source.kind` | Meaning |
 |---|---|
 | `"connector"` | The declaration authority represents a connector-backed source. `source.id` is its public source URI, not a local package name, connector key, storage namespace, account identifier, or runtime binding. A connector declaration remains Core-valid without Collection Profile data. |
 | `"provider_native"` | The declaration authority represents the provider's own PDPP data surface. `source.id` is normally the OAuth protected-resource identifier for that surface, not merely the provider's legal-entity URI. |
 
-If the request includes `source.kind`, an unrecognized value or a mismatch
-with the AS-accepted declaration provenance produces a Source validation
-failure before consent. If the request omits `source.kind`, the AS derives
-provenance from the accepted declaration and records it in consent evidence
-and any issued grant. The OAuth/RAR binding returns RFC 9396
-`invalid_authorization_details` for invalid authorization details.
+A selection request does not carry `source.kind`. The authorization server derives the provenance class from the declaration it accepted for `source.id`, and records it in consent evidence and any issued grant, where a client reads it back through introspection. A client that needs provenance before use therefore checks the issued grant rather than asserting an expectation in the request. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details` for invalid authorization details.
 
 #### AI training consent {#ai-training-consent}
 
@@ -819,7 +816,7 @@ Source declarations may define selection presets. A client can reference a prese
 ```json
 {
   "type": "https://pdpp.dev/data-access",
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/instagram" },
+  "source": { "id": "https://registry.pdpp.dev/connectors/instagram" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "access_mode": "single_use",
   "selection_preset": "social_summary"
@@ -1811,7 +1808,7 @@ interface SourceObject {
 
 interface SourceRequestObject {
   id: string;              // Stable absolute URI for the authorization and data surface
-  kind?: 'connector' | 'provider_native'; // Optional client trust expectation
+  // No `kind`: the AS derives provenance from the accepted declaration
 }
 
 type SelectionRequest = {
