@@ -158,12 +158,7 @@ test("createReceipt keeps every documented key present when the run is misconfig
   // A missing SIGNING_BASE_URL now writes a receipt rather than exiting 2, so
   // this shape is the one a reader most needs to parse. `JSON.stringify` drops
   // undefined keys, so absent config has to become null, not vanish.
-  const receipt = createReceipt({
-    branch: "signatures",
-    keep: false,
-    owner: "PDP-Connect",
-    repo: "supporters-private",
-  });
+  const receipt = createReceipt({ branch: "signatures", keep: false, owner: "PDP-Connect", repo: "supporters-private" });
   const round = JSON.parse(JSON.stringify(receipt));
 
   assert.ok("baseUrl" in round, "baseUrl must survive JSON round-trip");
@@ -326,7 +321,7 @@ test("redactLink returns null rather than throwing on a non-URL", () => {
 
 test("describeCommandError names the program and the exit status, never the arguments", () => {
   const error = Object.assign(
-    new Error("Command failed: my-reader --password hunter2 --query to:a@b.com\nauth failed for hunter2\n"),
+    new Error('Command failed: my-reader --password hunter2 --query to:a@b.com\nauth failed for hunter2\n'),
     { code: 2 }
   );
   const described = describeCommandError(["my-reader", "--password", "hunter2", "--query", "to:a@b.com"], error);
