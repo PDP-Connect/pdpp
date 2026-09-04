@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { contentDigest } from "../test-accounting/inventory.ts";
 import { digestOf } from "./canonicalize.ts";
 import {
+  beginAttempt,
   checkBudget,
   copyAndRevalidateAccountingBundle,
   type EvidenceStorePolicy,
@@ -19,6 +22,7 @@ import {
   readCompletedReceipt,
   recordRecoveryReceipt,
   scanForIncompleteOrCorrupt,
+  setTransactionMarkerWriteFaultForTest,
   verifyCompletionChain,
 } from "./evidence-store.ts";
 import { ATTEMPT_SCHEMA, type AttemptReceipt } from "./schemas.ts";
@@ -39,6 +43,8 @@ async function withTempRoot(fn: (root: string) => Promise<void>): Promise<void> 
 
 /** Matches the `intentDigest: "d".repeat(64)` this file's tests consistently pass to `issueAttemptMarker`, so publishCompleteReceipt's issued/receipt intent-binding check passes by default. */
 const SAMPLE_INTENT_DIGEST = "d".repeat(64);
+const BLOCKED_ADMISSION_PATTERN = /incomplete or corrupt marker/;
+const INVALID_CHAIN_ENTRY_PATTERN = /completion chain entry|chainDigest|recordedAt|schema|unrecognized/i;
 
 function sampleReceipt(overrides: Partial<AttemptReceipt> = {}): AttemptReceipt {
   return {
@@ -66,6 +72,82 @@ function sampleReceipt(overrides: Partial<AttemptReceipt> = {}): AttemptReceipt 
     ...overrides,
   };
 }
+
+async function waitForPath(path: string, deadline: number): Promise<void> {
+  try {
+    await stat(path);
+  } catch {
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for ${path}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitForPath(path, deadline);
+  }
+}
+
+async function runAdmissionAdapter(
+  root: string,
+  attemptId: string,
+  startPath: string
+): Promise<{ code: number | null; output: string }> {
+  const moduleUrl = pathToFileURL(resolve(fileURLToPath(new URL(".", import.meta.url)), "evidence-store.ts")).href;
+  const driver = `
+    import { access, writeFile } from "node:fs/promises";
+    import { beginAttempt } from ${JSON.stringify(moduleUrl)};
+    const [root, adapterId, startPath] = process.argv.slice(1);
+    await writeFile(startPath + ".ready-" + adapterId, "ready");
+    while (true) {
+      try { await access(startPath); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+    }
+    try {
+      const attemptId = await beginAttempt(root, { intentDigest: ${JSON.stringify(SAMPLE_INTENT_DIGEST)} });
+      process.stdout.write(JSON.stringify({ adapterId, outcome: "admitted", attemptId }));
+    } catch (error) {
+      process.stdout.write(JSON.stringify({ adapterId, outcome: "blocked", message: error.message }));
+      process.exitCode = 1;
+    }
+  `;
+  return await new Promise((resolveResult, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", driver, root, attemptId, startPath],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+    let output = "";
+    let errorOutput = "";
+    child.stdout.on("data", (chunk: Buffer) => (output += chunk));
+    child.stderr.on("data", (chunk: Buffer) => (errorOutput += chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (errorOutput.length > 0 && output.length === 0) {
+        reject(new Error(errorOutput));
+        return;
+      }
+      resolveResult({ code, output });
+    });
+  });
+}
+
+test("beginAttempt admission race: two real adapter processes contend; one is admitted and one is blocked", async () => {
+  await withTempRoot(async (root) => {
+    const startPath = resolve(root, "start-admission");
+    const first = runAdmissionAdapter(root, "adapter-a", startPath);
+    const second = runAdmissionAdapter(root, "adapter-b", startPath);
+    const deadline = Date.now() + 5000;
+    await Promise.all([
+      waitForPath(`${startPath}.ready-adapter-a`, deadline),
+      waitForPath(`${startPath}.ready-adapter-b`, deadline),
+    ]);
+    await writeFile(startPath, "go");
+    const results = await Promise.all([first, second]);
+    const outcomes = results.map(({ output }) => JSON.parse(output) as { outcome: string; message?: string });
+    assert.equal(outcomes.filter(({ outcome }) => outcome === "admitted").length, 1);
+    assert.equal(outcomes.filter(({ outcome }) => outcome === "blocked").length, 1);
+    assert.match(outcomes.find(({ outcome }) => outcome === "blocked")?.message ?? "", BLOCKED_ADMISSION_PATTERN);
+  });
+});
 
 test("issueAttemptMarker then scanForIncompleteOrCorrupt: an issued-but-not-completed marker blocks execution", async () => {
   await withTempRoot(async (root) => {
@@ -121,7 +203,10 @@ test("publishCompleteReceipt: rejects a completion whose intentDigest does not m
   await withTempRoot(async (root) => {
     const receipt = sampleReceipt({ intentDigest: "f".repeat(64) });
     await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST }); // "d".repeat(64) != "f".repeat(64)
-    await assert.rejects(() => publishCompleteReceipt(root, receipt), /does not match the issued marker's intentDigest/);
+    await assert.rejects(
+      () => publishCompleteReceipt(root, receipt),
+      /does not match the issued marker's intentDigest/
+    );
     // The rejected publish must never have left a completed receipt behind.
     assert.equal(await isAttemptCompleted(root, receipt.attemptId), false);
   });
@@ -176,7 +261,10 @@ test("scanForIncompleteOrCorrupt: detects an orphan completion (a completed rece
     // Written directly, bypassing publishCompleteReceipt entirely — this is
     // exactly the scenario the reviewer flagged: a completion that exists
     // without ever having gone through the intent-binding check.
-    await writeFile(resolve(root, "markers", `${orphanAttemptId}.completed.json`), `${JSON.stringify(orphanReceipt, null, 2)}\n`);
+    await writeFile(
+      resolve(root, "markers", `${orphanAttemptId}.completed.json`),
+      `${JSON.stringify(orphanReceipt, null, 2)}\n`
+    );
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /orphan_completion/);
   });
 });
@@ -210,7 +298,10 @@ test("scanForIncompleteOrCorrupt: detects a completed receipt whose intentDigest
     // simulate a completed receipt that was somehow bound to a different
     // intent than the one it was issued under.
     const divergentReceipt = sampleReceipt({ attemptId, intentDigest: "f".repeat(64) });
-    await writeFile(resolve(root, "markers", `${attemptId}.completed.json`), `${JSON.stringify(divergentReceipt, null, 2)}\n`);
+    await writeFile(
+      resolve(root, "markers", `${attemptId}.completed.json`),
+      `${JSON.stringify(divergentReceipt, null, 2)}\n`
+    );
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /intent_mismatch/);
   });
 });
@@ -251,6 +342,45 @@ test("verifyCompletionChain: throws if an earlier entry's bytes are tampered (ch
   });
 });
 
+for (const mutation of [
+  {
+    name: "missing schema",
+    apply: (entry: Record<string, unknown>) => (entry.schema = undefined),
+  },
+  {
+    name: "unknown schema",
+    apply: (entry: Record<string, unknown>) => (entry.schema = "mutation-falsification.completion-chain-entry/v0"),
+  },
+  {
+    name: "non-canonical recordedAt",
+    apply: (entry: Record<string, unknown>) => (entry.recordedAt = "2026-09-03T00:00:00+00:00"),
+  },
+  {
+    name: "rewritten canonical recordedAt",
+    apply: (entry: Record<string, unknown>) => (entry.recordedAt = "2026-09-04T00:00:00.000Z"),
+  },
+  {
+    name: "unknown field",
+    apply: (entry: Record<string, unknown>) => (entry.unrecognizedReviewerField = "tampered"),
+  },
+]) {
+  test(`verifyCompletionChain: rejects a chain entry with ${mutation.name}`, async () => {
+    await withTempRoot(async (root) => {
+      const receipt = sampleReceipt();
+      await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+      await publishCompleteReceipt(root, receipt);
+      const chainPath = resolve(root, "completions.chain.jsonl");
+      const entry = JSON.parse((await readFile(chainPath, "utf8")).trim()) as Record<string, unknown>;
+      mutation.apply(entry);
+      await writeFile(chainPath, `${JSON.stringify(entry)}\n`);
+      await assert.rejects(
+        () => verifyCompletionChain(root),
+        INVALID_CHAIN_ENTRY_PATTERN
+      );
+    });
+  });
+}
+
 // ── P1-2: crash-honest transaction — receipt publication and chain append are ONE commit ──
 //
 // Each test below simulates a crash at exactly one of the reviewer's five
@@ -263,7 +393,12 @@ test("verifyCompletionChain: throws if an earlier entry's bytes are tampered (ch
 
 const TRANSACTION_SCHEMA = "mutation-falsification.completion-transaction/v1";
 
-function transactionMarkerFor(attemptId: string, intentDigest: string, receiptDigest: string, phase: "started" | "receipt_committed") {
+function transactionMarkerFor(
+  attemptId: string,
+  intentDigest: string,
+  receiptDigest: string,
+  phase: "started" | "receipt_committed"
+) {
   return {
     schema: TRANSACTION_SCHEMA,
     attemptId,
@@ -280,7 +415,10 @@ test("fault injection — boundary 1: crash before receipt commit (transaction m
     await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
     await mkdir(resolve(root, "markers"), { recursive: true });
     const marker = transactionMarkerFor(receipt.attemptId, receipt.intentDigest, "irrelevant-digest", "started");
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), `${JSON.stringify(marker, null, 2)}\n`);
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.transaction.json`),
+      `${JSON.stringify(marker, null, 2)}\n`
+    );
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /half_committed_transaction/);
     assert.equal(await isAttemptCompleted(root, receipt.attemptId), false);
   });
@@ -291,10 +429,21 @@ test("fault injection — boundary 2: crash after receipt commit, before chain a
     const receipt = sampleReceipt();
     await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
     await mkdir(resolve(root, "markers"), { recursive: true });
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.completed.json`),
+      `${JSON.stringify(receipt, null, 2)}\n`
+    );
     const { digestOf } = await import("./canonicalize.ts");
-    const marker = transactionMarkerFor(receipt.attemptId, receipt.intentDigest, digestOf(receipt), "receipt_committed");
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), `${JSON.stringify(marker, null, 2)}\n`);
+    const marker = transactionMarkerFor(
+      receipt.attemptId,
+      receipt.intentDigest,
+      digestOf(receipt),
+      "receipt_committed"
+    );
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.transaction.json`),
+      `${JSON.stringify(marker, null, 2)}\n`
+    );
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /half_committed_transaction/);
   });
 });
@@ -304,13 +453,24 @@ test("fault injection — boundary 3: crash mid chain-append (receipt exists, ma
     const receipt = sampleReceipt();
     await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
     await mkdir(resolve(root, "markers"), { recursive: true });
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.completed.json`),
+      `${JSON.stringify(receipt, null, 2)}\n`
+    );
     const { digestOf } = await import("./canonicalize.ts");
     // Marker records the correct digest, but the chain entry that was
     // partially written before the crash carries a DIFFERENT one (e.g. a
     // torn/partial write) — reconciliation must not treat this as a match.
-    const marker = transactionMarkerFor(receipt.attemptId, receipt.intentDigest, digestOf(receipt), "receipt_committed");
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), `${JSON.stringify(marker, null, 2)}\n`);
+    const marker = transactionMarkerFor(
+      receipt.attemptId,
+      receipt.intentDigest,
+      digestOf(receipt),
+      "receipt_committed"
+    );
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.transaction.json`),
+      `${JSON.stringify(marker, null, 2)}\n`
+    );
     const chainEntry = {
       schema: "mutation-falsification.completion-chain-entry/v1",
       attemptId: receipt.attemptId,
@@ -335,10 +495,21 @@ test("fault injection — boundary 4: crash after chain append, before its own f
     const receipt = sampleReceipt();
     await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
     await mkdir(resolve(root, "markers"), { recursive: true });
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.completed.json`),
+      `${JSON.stringify(receipt, null, 2)}\n`
+    );
     const { digestOf } = await import("./canonicalize.ts");
-    const marker = transactionMarkerFor(receipt.attemptId, receipt.intentDigest, digestOf(receipt), "receipt_committed");
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), `${JSON.stringify(marker, null, 2)}\n`);
+    const marker = transactionMarkerFor(
+      receipt.attemptId,
+      receipt.intentDigest,
+      digestOf(receipt),
+      "receipt_committed"
+    );
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.transaction.json`),
+      `${JSON.stringify(marker, null, 2)}\n`
+    );
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /half_committed_transaction/);
   });
 });
@@ -353,8 +524,16 @@ test("fault injection — boundary 5: crash after full durable commit, before th
     // durable) — this is exactly what a crash between step 5 and step 6
     // would leave behind.
     const { digestOf } = await import("./canonicalize.ts");
-    const marker = transactionMarkerFor(receipt.attemptId, receipt.intentDigest, digestOf(receipt), "receipt_committed");
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), `${JSON.stringify(marker, null, 2)}\n`);
+    const marker = transactionMarkerFor(
+      receipt.attemptId,
+      receipt.intentDigest,
+      digestOf(receipt),
+      "receipt_committed"
+    );
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.transaction.json`),
+      `${JSON.stringify(marker, null, 2)}\n`
+    );
 
     // Reconciliation must resolve this automatically: scan must NOT block.
     const found = await scanForIncompleteOrCorrupt(root);
@@ -363,6 +542,31 @@ test("fault injection — boundary 5: crash after full durable commit, before th
     const { readdir } = await import("node:fs/promises");
     const entries = await readdir(resolve(root, "markers"));
     assert.ok(!entries.includes(`${receipt.attemptId}.transaction.json`));
+  });
+});
+
+test("fault injection — crash after transaction-marker replacement temp fsync preserves the prior marker and blocks admission", async () => {
+  await withTempRoot(async (root) => {
+    const receipt = sampleReceipt();
+    await issueAttemptMarker(root, receipt.attemptId, { intentDigest: SAMPLE_INTENT_DIGEST });
+    setTransactionMarkerWriteFaultForTest((phase) => {
+      if (phase === "receipt_committed") {
+        throw new Error("injected crash after transaction marker temp fsync");
+      }
+    });
+    try {
+      await assert.rejects(() => publishCompleteReceipt(root, receipt), /injected crash/);
+    } finally {
+      setTransactionMarkerWriteFaultForTest(undefined);
+    }
+    const marker = JSON.parse(
+      await readFile(resolve(root, "markers", `${receipt.attemptId}.transaction.json`), "utf8")
+    );
+    assert.equal(marker.phase, "started");
+    await assert.rejects(
+      () => beginAttempt(root, { intentDigest: SAMPLE_INTENT_DIGEST }),
+      BLOCKED_ADMISSION_PATTERN
+    );
   });
 });
 
@@ -377,7 +581,10 @@ test("mutation control — a completed receipt mutated after chained publication
     // checks (issued-marker binding) still pass; only the receipt's own
     // bytes (and therefore its digest) have changed since it was chained.
     const mutated: AttemptReceipt = { ...receipt, runtimeMs: receipt.runtimeMs + 999 };
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(mutated, null, 2)}\n`);
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.completed.json`),
+      `${JSON.stringify(mutated, null, 2)}\n`
+    );
 
     await assert.rejects(() => verifyCompletionChain(root), /divergent receipt/);
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /divergent_chain_entry/);
@@ -416,13 +623,12 @@ test("mutation control — a receipt whose internal attemptId differs from both 
     const chainPath = resolve(root, "completions.chain.jsonl");
     const entry = JSON.parse((await readFile(chainPath, "utf8")).trim());
     entry.receiptDigest = digestOf(mismatchedReceipt);
-    entry.chainDigest = digestOf({
-      attemptId: entry.attemptId,
-      intentDigest: entry.intentDigest,
-      receiptDigest: entry.receiptDigest,
-      prevChainDigest: entry.prevChainDigest,
-    });
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(mismatchedReceipt, null, 2)}\n`);
+    const { chainDigest: _chainDigest, ...entryWithoutDigest } = entry;
+    entry.chainDigest = digestOf(entryWithoutDigest);
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.completed.json`),
+      `${JSON.stringify(mismatchedReceipt, null, 2)}\n`
+    );
     await writeFile(chainPath, `${JSON.stringify(entry)}\n`);
 
     await assert.rejects(() => verifyCompletionChain(root), /attemptId .* does not match its chain entry/);
@@ -440,13 +646,12 @@ test("verifyCompletionChain: rejects a receipt whose intentDigest differs from i
     const chainPath = resolve(root, "completions.chain.jsonl");
     const entry = JSON.parse((await readFile(chainPath, "utf8")).trim());
     entry.receiptDigest = digestOf(mismatchedReceipt);
-    entry.chainDigest = digestOf({
-      attemptId: entry.attemptId,
-      intentDigest: entry.intentDigest,
-      receiptDigest: entry.receiptDigest,
-      prevChainDigest: entry.prevChainDigest,
-    });
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(mismatchedReceipt, null, 2)}\n`);
+    const { chainDigest: _chainDigest, ...entryWithoutDigest } = entry;
+    entry.chainDigest = digestOf(entryWithoutDigest);
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.completed.json`),
+      `${JSON.stringify(mismatchedReceipt, null, 2)}\n`
+    );
     await writeFile(chainPath, `${JSON.stringify(entry)}\n`);
 
     await assert.rejects(() => verifyCompletionChain(root), /intentDigest .* does not match its chain entry/);
@@ -476,7 +681,10 @@ test("scanForIncompleteOrCorrupt: detects a completed receipt with no chain entr
     await mkdir(resolve(root, "markers"), { recursive: true });
     // Write a completed receipt directly, bypassing publishCompleteReceipt
     // entirely — no transaction marker, no chain entry at all.
-    await writeFile(resolve(root, "markers", `${receipt.attemptId}.completed.json`), `${JSON.stringify(receipt, null, 2)}\n`);
+    await writeFile(
+      resolve(root, "markers", `${receipt.attemptId}.completed.json`),
+      `${JSON.stringify(receipt, null, 2)}\n`
+    );
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /missing_chain_entry/);
   });
 });
@@ -546,6 +754,24 @@ test("recordRecoveryReceipt does NOT flip an incomplete attempt's disposition to
   });
 });
 
+for (const invalidInput of [
+  ["", "operator", "observed"],
+  ["not-a-uuid", "operator", "observed"],
+  [randomUUID(), "", "observed"],
+  [randomUUID(), "operator", ""],
+] as const) {
+  test("recordRecoveryReceipt validates every input with the reader validator before deriving a path or staging bytes", async () => {
+    await withTempRoot(async (root) => {
+      const [attemptId, operatorClaim, observations] = invalidInput;
+      await assert.rejects(
+        () => recordRecoveryReceipt(root, attemptId, operatorClaim, observations),
+        /recovery receipt|attemptId|operatorClaim|observations/
+      );
+      await assert.rejects(() => stat(resolve(root, "markers", `${attemptId}.recovery.json`)));
+    });
+  });
+}
+
 // ── P1-3: strict RecoveryReceipt validation — the scanner must block every one of these ──
 //
 // Each test writes exactly the bytes the reviewer names directly to
@@ -572,7 +798,10 @@ test("recovery scanner: blocks on a zero-byte recovery file", async () => {
 test("recovery scanner: blocks on a truncated-JSON recovery file", async () => {
   await withTempRoot(async (root) => {
     const attemptId = await issuedAttempt(root);
-    await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), '{"schema":"mutation-falsification.marker.recov');
+    await writeFile(
+      resolve(root, "markers", `${attemptId}.recovery.json`),
+      '{"schema":"mutation-falsification.marker.recov'
+    );
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
   });
 });
@@ -580,7 +809,15 @@ test("recovery scanner: blocks on a truncated-JSON recovery file", async () => {
 test("recovery scanner: blocks on a wrong-schema recovery file", async () => {
   await withTempRoot(async (root) => {
     const attemptId = await issuedAttempt(root);
-    const bad = { schema: "wrong/v0", attemptId, operatorClaim: "x", observations: "y", disposition: "retired_incomplete", retainedEvidence: [], recordedAt: new Date().toISOString() };
+    const bad = {
+      schema: "wrong/v0",
+      attemptId,
+      operatorClaim: "x",
+      observations: "y",
+      disposition: "retired_incomplete",
+      retainedEvidence: [],
+      recordedAt: new Date().toISOString(),
+    };
     await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
   });
@@ -665,7 +902,14 @@ test("recovery scanner: blocks on a leftover recovery temp file from an interrup
 test("recovery scanner: blocks on missing observations field", async () => {
   await withTempRoot(async (root) => {
     const attemptId = await issuedAttempt(root);
-    const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", disposition: "retired_incomplete", retainedEvidence: [], recordedAt: new Date().toISOString() };
+    const bad = {
+      schema: "mutation-falsification.marker.recovery/v1",
+      attemptId,
+      operatorClaim: "x",
+      disposition: "retired_incomplete",
+      retainedEvidence: [],
+      recordedAt: new Date().toISOString(),
+    };
     await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
   });
@@ -674,7 +918,15 @@ test("recovery scanner: blocks on missing observations field", async () => {
 test("recovery scanner: blocks on an empty-string observations field (present but invalid)", async () => {
   await withTempRoot(async (root) => {
     const attemptId = await issuedAttempt(root);
-    const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", observations: "", disposition: "retired_incomplete", retainedEvidence: [], recordedAt: new Date().toISOString() };
+    const bad = {
+      schema: "mutation-falsification.marker.recovery/v1",
+      attemptId,
+      operatorClaim: "x",
+      observations: "",
+      disposition: "retired_incomplete",
+      retainedEvidence: [],
+      recordedAt: new Date().toISOString(),
+    };
     await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
   });
@@ -683,7 +935,15 @@ test("recovery scanner: blocks on an empty-string observations field (present bu
 test("recovery scanner: blocks on a non-array retainedEvidence field", async () => {
   await withTempRoot(async (root) => {
     const attemptId = await issuedAttempt(root);
-    const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", observations: "y", disposition: "retired_incomplete", retainedEvidence: "not-an-array", recordedAt: new Date().toISOString() };
+    const bad = {
+      schema: "mutation-falsification.marker.recovery/v1",
+      attemptId,
+      operatorClaim: "x",
+      observations: "y",
+      disposition: "retired_incomplete",
+      retainedEvidence: "not-an-array",
+      recordedAt: new Date().toISOString(),
+    };
     await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
   });
@@ -692,7 +952,15 @@ test("recovery scanner: blocks on a non-array retainedEvidence field", async () 
 test("recovery scanner: blocks on an invalid disposition value", async () => {
   await withTempRoot(async (root) => {
     const attemptId = await issuedAttempt(root);
-    const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", observations: "y", disposition: "something_else", retainedEvidence: [], recordedAt: new Date().toISOString() };
+    const bad = {
+      schema: "mutation-falsification.marker.recovery/v1",
+      attemptId,
+      operatorClaim: "x",
+      observations: "y",
+      disposition: "something_else",
+      retainedEvidence: [],
+      recordedAt: new Date().toISOString(),
+    };
     await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
   });
@@ -701,7 +969,15 @@ test("recovery scanner: blocks on an invalid disposition value", async () => {
 test("recovery scanner: blocks on a missing/invalid timestamp", async () => {
   await withTempRoot(async (root) => {
     const attemptId = await issuedAttempt(root);
-    const bad = { schema: "mutation-falsification.marker.recovery/v1", attemptId, operatorClaim: "x", observations: "y", disposition: "retired_incomplete", retainedEvidence: [], recordedAt: "not-a-timestamp" };
+    const bad = {
+      schema: "mutation-falsification.marker.recovery/v1",
+      attemptId,
+      operatorClaim: "x",
+      observations: "y",
+      disposition: "retired_incomplete",
+      retainedEvidence: [],
+      recordedAt: "not-a-timestamp",
+    };
     await writeFile(resolve(root, "markers", `${attemptId}.recovery.json`), JSON.stringify(bad));
     await assert.rejects(() => scanForIncompleteOrCorrupt(root), /corrupt/);
   });

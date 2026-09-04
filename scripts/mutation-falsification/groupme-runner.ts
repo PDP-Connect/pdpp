@@ -19,7 +19,6 @@
  * against isolated clones created by `workspace.ts`.
  */
 
-import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -27,15 +26,14 @@ import { promisify } from "node:util";
 import { runAuthority } from "../test-accounting/authority.ts";
 import { digestOf } from "./canonicalize.ts";
 import {
+  beginAttempt,
   checkBudget,
   copyAndRevalidateAccountingBundle,
   type EvidenceStorePolicy,
-  issueAttemptMarker,
   publishCompleteReceipt,
-  scanForIncompleteOrCorrupt,
 } from "./evidence-store.ts";
 import { applyOperator, findGroupMeOperator, type GroupMeOperator } from "./groupme-operators.ts";
-import { aggregateTrial, projectOutcome, type ProjectionResult } from "./projection.ts";
+import { aggregateTrial, type ProjectionResult, projectOutcome } from "./projection.ts";
 import { ATTEMPT_SCHEMA, type AttemptAxes, type AttemptReceipt, type IntentPacket } from "./schemas.ts";
 import {
   createIsolatedWorkspace,
@@ -76,7 +74,11 @@ export interface PilotBatchResult {
 }
 
 export function judgeIdentityFor(operator: GroupMeOperator | null): string {
-  return digestOf({ focusedTestFile: FOCUSED_TEST_FILE, backstopSuite: BACKSTOP_SUITE_ID, operatorId: operator?.id ?? null });
+  return digestOf({
+    focusedTestFile: FOCUSED_TEST_FILE,
+    backstopSuite: BACKSTOP_SUITE_ID,
+    operatorId: operator?.id ?? null,
+  });
 }
 
 async function runFocusedCheck(
@@ -243,7 +245,14 @@ async function computeOperatorAttempt(
     const { execFileSync } = await import("node:child_process");
     execFileSync(
       "pnpm",
-      ["install", "--frozen-lockfile", "--offline", "--ignore-scripts", "--node-linker=hoisted", "--package-import-method=copy"],
+      [
+        "install",
+        "--frozen-lockfile",
+        "--offline",
+        "--ignore-scripts",
+        "--node-linker=hoisted",
+        "--package-import-method=copy",
+      ],
       { cwd: workspace.repoRoot, env: workspace.env }
     );
   } catch (error) {
@@ -253,7 +262,11 @@ async function computeOperatorAttempt(
       referencedAccountingRunIds: [],
       nonCleanupAxes: {
         baseline: { status: "ok" },
-        materialization: { status: "failed", failure: "dependency_materialization_failed", detail: (error as Error).message },
+        materialization: {
+          status: "failed",
+          failure: "dependency_materialization_failed",
+          detail: (error as Error).message,
+        },
         focused: { status: "failed", failure: "not_run_due_to_materialization_failure", detail: "" },
         backstop: { status: "not_applicable" },
         reachability: { status: "unknown" },
@@ -293,7 +306,11 @@ async function computeOperatorAttempt(
       nonCleanupAxes: {
         baseline: { status: "ok" },
         materialization: { status: "ok" },
-        focused: { status: "failed", failure: focused.failure ?? "focused_check_failed", detail: focused.stdout.slice(-4000) },
+        focused: {
+          status: "failed",
+          failure: focused.failure ?? "focused_check_failed",
+          detail: focused.stdout.slice(-4000),
+        },
         backstop: { status: "not_run_focused_kill" },
         reachability: { status: "ok" },
       },
@@ -373,10 +390,8 @@ async function runOperatorAttempt(
   baseCommitSha: string
 ): Promise<OperatorAttemptOutcome> {
   const operator = findGroupMeOperator(operatorId);
-  await scanForIncompleteOrCorrupt(policy.evidenceStorePolicy.evidenceRoot);
-  const attemptId = randomUUID();
   await checkBudget(policy.evidenceStorePolicy, 50 * 1024 * 1024); // 50 MiB planning estimate for one attempt's retained evidence.
-  await issueAttemptMarker(policy.evidenceStorePolicy.evidenceRoot, attemptId, intent);
+  const attemptId = await beginAttempt(policy.evidenceStorePolicy.evidenceRoot, intent);
 
   const startedAt = Date.now();
   const workspace = await createIsolatedWorkspace(policy.workspacePolicy, policy.sourceRepoRoot, baseCommitSha);
@@ -408,7 +423,10 @@ async function runOperatorAttempt(
     attemptStatus: { exitCode: axes.focused.status === "ok" ? 0 : 1, signal: null },
     referencedAccountingRunIds: computation.referencedAccountingRunIds,
   };
-  const projection = projectOutcome({ axes, isMutationAttributableFailure: isMutationAttributable(computation.nonCleanupAxes) });
+  const projection = projectOutcome({
+    axes,
+    isMutationAttributableFailure: isMutationAttributable(computation.nonCleanupAxes),
+  });
   await publishCompleteReceipt(policy.evidenceStorePolicy.evidenceRoot, receipt);
   return { attemptId, operatorId, receipt, projection };
 }
@@ -430,7 +448,6 @@ export async function runGroupMePilotBatch(
   operatorIds: string[]
 ): Promise<PilotBatchResult> {
   const batchStartedAt = Date.now();
-  await scanForIncompleteOrCorrupt(policy.evidenceStorePolicy.evidenceRoot);
   await mkdir(policy.evidenceStorePolicy.evidenceRoot, { recursive: true });
 
   // Clean complete backstop at batch start. Mirrors runOperatorAttempt's
@@ -440,25 +457,37 @@ export async function runGroupMePilotBatch(
   // failed cleanup here yields a `cleanup: failed` receipt (which
   // projection.ts's row 1 always resolves to inconclusive), never a
   // `cleanup: ok` receipt published ahead of the destroy actually running.
+  const cleanBackstopAttemptId = await beginAttempt(policy.evidenceStorePolicy.evidenceRoot, intent);
   const cleanWorkspace = await createIsolatedWorkspace(
     policy.workspacePolicy,
     policy.sourceRepoRoot,
     intent.baseCommitSha
   );
   let cleanExecutionRawCount = 0;
-  const cleanBackstopAttemptId = randomUUID();
-  await issueAttemptMarker(policy.evidenceStorePolicy.evidenceRoot, cleanBackstopAttemptId, intent);
 
-  let cleanResult: { artifacts: AttemptReceipt["evidenceArtifacts"]; axis: AttemptAxes["backstop"]; runIds: string[] } | undefined;
+  let cleanResult:
+    | { artifacts: AttemptReceipt["evidenceArtifacts"]; axis: AttemptAxes["backstop"]; runIds: string[] }
+    | undefined;
   let materializationError: Error | undefined;
   try {
     const { execFileSync } = await import("node:child_process");
     execFileSync(
       "pnpm",
-      ["install", "--frozen-lockfile", "--offline", "--ignore-scripts", "--node-linker=hoisted", "--package-import-method=copy"],
+      [
+        "install",
+        "--frozen-lockfile",
+        "--offline",
+        "--ignore-scripts",
+        "--node-linker=hoisted",
+        "--package-import-method=copy",
+      ],
       { cwd: cleanWorkspace.repoRoot, env: cleanWorkspace.env }
     );
-    cleanResult = await runCompleteBackstop(cleanWorkspace.repoRoot, policy.evidenceStorePolicy, cleanBackstopAttemptId);
+    cleanResult = await runCompleteBackstop(
+      cleanWorkspace.repoRoot,
+      policy.evidenceStorePolicy,
+      cleanBackstopAttemptId
+    );
     cleanExecutionRawCount += 1;
   } catch (error) {
     materializationError = error as Error;
@@ -483,7 +512,11 @@ export async function runGroupMePilotBatch(
   const cleanReceipt: AttemptReceipt = {
     schema: ATTEMPT_SCHEMA,
     attemptId: cleanBackstopAttemptId,
-    trialKey: digestOf({ intentDigest: intent.intentDigest, kind: "clean-backstop", baseCommitSha: intent.baseCommitSha }),
+    trialKey: digestOf({
+      intentDigest: intent.intentDigest,
+      kind: "clean-backstop",
+      baseCommitSha: intent.baseCommitSha,
+    }),
     intentDigest: intent.intentDigest,
     policyVersion: policy.policyVersion,
     baseCommitSha: intent.baseCommitSha,

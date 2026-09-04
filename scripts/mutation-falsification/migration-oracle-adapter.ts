@@ -22,16 +22,10 @@
  * authority, or domain value").
  */
 
-import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { digestOf } from "./canonicalize.ts";
-import {
-  issueAttemptMarker,
-  publishCompleteReceipt,
-  recordRecoveryReceipt,
-  scanForIncompleteOrCorrupt,
-} from "./evidence-store.ts";
+import { beginAttempt, publishCompleteReceipt, recordRecoveryReceipt } from "./evidence-store.ts";
 import type { AttemptReceipt, IntentPacket } from "./schemas.ts";
 import { ATTEMPT_SCHEMA } from "./schemas.ts";
 
@@ -109,7 +103,12 @@ interface SpawnWithLimitsResult {
  * unbounded remainder is never buffered into memory at all. A separate wall
  * deadline kills the group if it fires first.
  */
-export function spawnWithLimits(command: string[], cwd: string, wallTimeMs: number, byteCap: number): Promise<SpawnWithLimitsResult> {
+export function spawnWithLimits(
+  command: string[],
+  cwd: string,
+  wallTimeMs: number,
+  byteCap: number
+): Promise<SpawnWithLimitsResult> {
   return new Promise((resolvePromise, reject) => {
     const [file, ...rest] = command;
     if (!file) {
@@ -204,9 +203,9 @@ export interface MigrationOracleAttemptOptions {
 }
 
 /**
- * Runs one attempt of the migration-oracle adapter end to end: preflight
- * scan for incomplete/corrupt markers, reject an unregistered adapter id
- * before execution, issue a marker, spawn the derived command under bounded
+ * Runs one attempt of the migration-oracle adapter end to end: atomically
+ * admit a marker only after its locked preflight rejects incomplete/corrupt
+ * ledger state, reject an unregistered adapter id before execution, spawn the derived command under bounded
  * wall-time and byte-cap limits, parse and validate the structured output,
  * and publish a complete AttemptReceipt. Returns the published receipt.
  *
@@ -221,10 +220,7 @@ export async function runMigrationOracleAttempt(options: MigrationOracleAttemptO
   if (options.intent.adapterVersion !== MIGRATION_ORACLE_ADAPTER_VERSION) {
     throw new UnregisteredAdapterError(`${options.intent.adapterId}@${options.intent.adapterVersion}`);
   }
-  await scanForIncompleteOrCorrupt(options.evidenceRoot);
-
-  const attemptId = randomUUID();
-  await issueAttemptMarker(options.evidenceRoot, attemptId, options.intent);
+  const attemptId = await beginAttempt(options.evidenceRoot, options.intent);
 
   const command = deriveEffectiveCommand();
   const trialKey = digestOf({
@@ -318,7 +314,11 @@ export async function runMigrationOracleAttempt(options: MigrationOracleAttemptO
     policyVersion: options.policyVersion,
     baseCommitSha: options.intent.baseCommitSha,
     mutantIdentity: null,
-    judgeIdentity: digestOf({ script: migrationOracleScriptPath(), command, caseSetDigest: MIGRATION_ORACLE_CASE_SET_DIGEST }),
+    judgeIdentity: digestOf({
+      script: migrationOracleScriptPath(),
+      command,
+      caseSetDigest: MIGRATION_ORACLE_CASE_SET_DIGEST,
+    }),
     environmentProfile: Object.keys(process.env),
     evidenceArtifacts: [],
     axes: {
@@ -528,7 +528,7 @@ export function parseStructuredOutput(stdout: string): StructuredOracleReportSha
   const mutations = record.mutations.map((entry, index) => requireMutationCase(entry, index));
   const positiveControl = requireOkDetailPair(record.positiveControl, "positiveControl");
   const rollback = requireOkDetailPair(record.rollback, "rollback");
-  if (!Array.isArray(record.holes) || !record.holes.every((entry) => typeof entry === "string")) {
+  if (!(Array.isArray(record.holes) && record.holes.every((entry) => typeof entry === "string"))) {
     fail("holes must be an array of strings");
   }
   const holes = record.holes as string[];
