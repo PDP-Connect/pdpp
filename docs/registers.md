@@ -35,11 +35,19 @@ workflow writes the public register with this repository's `GITHUB_TOKEN` by
 opening a PR from the fixed `publish/supporters` branch, never by committing to
 `main`.
 
-The publisher opens the generated PR. After its required checks pass, a
+The publisher opens or updates the generated PR. When the repository Actions
+setting does not allow `GITHUB_TOKEN` to create pull requests, it still pushes
+`publish/supporters`, reports the compare URL, and prints the `gh pr create`
+command a maintainer runs to open the PR. After its required checks pass, a
 maintainer merges it with **Squash and merge**. The private repository's publish
 workflow is retired. Maintainers review and merge `signatures` into the private
 repository's default branch; the site never commits directly to that protected
 branch.
+
+When a withdrawal makes the rebuilt public register equal to `main`, the
+publisher closes the open `publish/supporters` PR with the comment `register now
+equals main; nothing to publish` and deletes that branch. This removes a stale
+public-register change instead of leaving a withdrawn signatory in review.
 
 Reachable by the maintainers listed in [`MAINTAINERS.md`](../MAINTAINERS.md)
 and the site's Vercel deployment credential. The publisher uses the separate
