@@ -15,10 +15,12 @@ import { type SignatoryRecord, SigningUnavailableError, type Submission } from "
 // The alternative — degrading to a no-op — would accept a signature, tell the
 // signatory it worked, and drop it, which is the worst outcome available.
 //
-// NONE OF THIS HAS RUN. The KV store, the mail provider and the deploy key do
-// not exist yet. Treat the request shapes below as the intended contract, to
-// be checked against each provider's own documentation at the point they are
-// provisioned, not as verified integrations.
+// This is PROVISIONED AND LIVE: the KV store, the mail provider and the
+// fine-grained access token all exist, and real signatory records are being
+// written. A preview deployment once wrote rehearsal records into the
+// production register and a maintainer had to clean them out by hand, which is
+// what `resolveRegisterBranch` below exists to prevent. Treat a change here as
+// touching live personal data.
 
 function env(name: string): string {
   const value = process.env[name]?.trim();
@@ -174,13 +176,21 @@ const PREVIEW_BRANCH = "signatures-preview";
  * is real, and it is only visible as an extra row in the published register.
  *
  * Every unrecognised Vercel state fails closed. A `VERCEL=1` deployment whose
- * `VERCEL_ENV` is missing or unknown is a deployment this policy has never seen,
- * and the only safe branch for an unknown environment is none. Outside Vercel
- * there is no environment to read, so the default stays `signatures` for the
- * non-Vercel production path; a live local rehearsal must set
- * `signatures-preview` explicitly.
+ * `VERCEL_ENV` is missing or unknown is a deployment this policy has never seen.
+ * `vercel dev` sets `VERCEL_ENV=development` and is therefore refused: there is
+ * no `development` arm, so local development with live providers must run off
+ * Vercel. Outside Vercel there is no environment to read, so the default stays
+ * `signatures` for the non-Vercel production path; a live local rehearsal must
+ * set `signatures-preview` explicitly.
  *
- * Pure, and exported, so the four cases can be checked without a deployment.
+ * A rejection here is raised at write time, which on the confirm path is AFTER
+ * the pending record has been read. On this branch's base that read is a
+ * destructive GETDEL, so a rejection consumes the signatory's single-use link
+ * and the submission cannot be retried. `fix/sign-form-error-ux` (#328) changes
+ * confirm to read, write, then delete, which leaves the pending record intact
+ * for a retry; `providers.test.ts` pins that ordering requirement.
+ *
+ * Pure, and exported, so every case can be checked without a deployment.
  */
 export function resolveRegisterBranch(
   environment: { branch?: string; vercel?: string; vercelEnv?: string } = {}
