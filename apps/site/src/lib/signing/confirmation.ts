@@ -7,6 +7,11 @@ import { signedOutcome } from "./signing-outcome.ts";
 
 const NO_STORE = { "cache-control": "no-store" };
 
+// A confirmation becomes single-use only after its private record is durable:
+// POST deletes pending data after a successful create or verified duplicate.
+// writeSignatory creates without a GitHub SHA, so a competing create conflicts;
+// the loser may succeed only after it reads and matches that immutable record.
+
 export interface ConfirmationDependencies {
   buildRecord: (id: string, submission: Submission) => SignatoryRecord;
   deletePending: (id: string) => Promise<void>;
@@ -24,14 +29,23 @@ function noStore(response: NextResponse): NextResponse {
   return response;
 }
 
+function escapeAttribute(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 function confirmationPage(token: string, method: "GET" | "HEAD"): NextResponse {
   if (method === "HEAD") {
     return new NextResponse(null, { headers: NO_STORE });
   }
-  // A verified token contains only base64url characters and a dot. Keep it in
-  // the form only; it never appears in a URL, response text, or log.
+  // Keep the token in the form only; it never appears in a URL, response text,
+  // or log. Escape it because verification does not constrain every character.
   return new NextResponse(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>Confirm your signature</title></head><body><main><h1>Confirm your signature</h1><p>Confirming adds your signature to the private register.</p><form action="/api/sign/confirm" method="post"><input name="token" type="hidden" value="${token}"><button type="submit">Confirm signature</button></form></main></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>Confirm your signature</title></head><body><main><h1>Confirm your signature</h1><p>Confirming adds your signature to the private register.</p><form action="/api/sign/confirm" method="post"><input name="token" type="hidden" value="${escapeAttribute(token)}"><button type="submit">Confirm signature</button></form></main></body></html>`,
     { headers: { ...NO_STORE, "content-type": "text/html; charset=utf-8" } }
   );
 }

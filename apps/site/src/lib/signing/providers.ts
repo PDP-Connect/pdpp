@@ -122,7 +122,7 @@ export async function sendConfirmationEmail(options: {
   const text = [
     "You asked to sign the PDPP Principles.",
     "",
-    "Confirm your signature (this link expires in 48 hours and can be used once):",
+    "Open your confirmation page (this link expires in 48 hours and can be used once):",
     options.confirmUrl,
     "",
     "If you did not do this, ignore this email and nothing will be published.",

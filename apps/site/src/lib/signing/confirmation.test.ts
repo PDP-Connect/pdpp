@@ -15,8 +15,11 @@ const CONFIRMATION_FORM = /<form action="\/api\/sign\/confirm" method="post">/;
 const CONFIRMED_LOCATION = /\/principles\?signed=confirmed#sign$/;
 const ERROR_LOCATION = /\/principles\?signed=error#sign$/;
 const INVALID_LOCATION = /\/principles\?signed=invalid#sign$/;
+const ESCAPED_TOKEN = "valid-token&amp;&quot;&lt;&gt;&#39;";
+const RAW_ATTRIBUTE_BREAKOUT = /value="valid-token&"/;
+const UNSAFE_TOKEN = "valid-token&\"<>'";
 
-async function runScenario(mode: "get" | "success" | "concurrent" | "failure" | "mismatch" | "invalid") {
+async function runScenario(mode: "escaped" | "get" | "success" | "concurrent" | "failure" | "mismatch" | "invalid") {
   const program = `
     const mode = ${JSON.stringify(mode)};
     const { NextRequest } = await import("next/server");
@@ -24,6 +27,7 @@ async function runScenario(mode: "get" | "success" | "concurrent" | "failure" | 
     const { buildRecord, hasSameImmutableFields, recordPath } = await import(${JSON.stringify(SIGNING_URL)});
     console.error = () => {};
     const token = "valid-token";
+    const unsafeToken = ${JSON.stringify(UNSAFE_TOKEN)};
     const id = "signatory-id";
     const submission = {
       affiliation: "PDP-Connect", consent_age: true, consent_principles: true, consent_register: true,
@@ -40,14 +44,14 @@ async function runScenario(mode: "get" | "success" | "concurrent" | "failure" | 
       readPending: async () => { state.readCalls += 1; return state.pending; },
       readSignatory: async () => state.records[0] ?? null,
       recordPath,
-      verifyToken: (value) => value === token ? id : null,
+      verifyToken: (value) => value === token || value === unsafeToken ? id : null,
       writeSignatory: async (record) => {
         state.writeCalls += 1;
         if (state.writeFailure || state.records.length > 0) throw new Error("create lost");
         state.records.push(record);
       },
     });
-    const get = (method = "GET") => new NextRequest("https://pdpp.example.test/api/sign/confirm?token=" + token, { method });
+    const get = (method = "GET", value = token) => new NextRequest("https://pdpp.example.test/api/sign/confirm?token=" + encodeURIComponent(value), { method });
     const post = (value = token) => new NextRequest("https://pdpp.example.test/api/sign/confirm", {
       body: new URLSearchParams({ token: value }),
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -56,6 +60,7 @@ async function runScenario(mode: "get" | "success" | "concurrent" | "failure" | 
     let pendingAfterFailure = null;
     let responses;
     if (mode === "get") responses = [await handlers.GET(get()), await handlers.HEAD(get("HEAD"))];
+    else if (mode === "escaped") responses = [await handlers.GET(get("GET", unsafeToken))];
     else if (mode === "success") responses = [await handlers.POST(post())];
     else if (mode === "concurrent") responses = await Promise.all([handlers.POST(post()), handlers.POST(post())]);
     else if (mode === "failure") {
@@ -108,6 +113,13 @@ test("confirmation GET and HEAD are no-store and do not consume or write", async
   assert.equal(result.readCalls, 0);
   assert.equal(result.writeCalls, 0);
   assert.equal(result.deleteCalls, 0);
+});
+
+test("the confirmation form escapes a verified token with HTML attribute characters", async () => {
+  const result = await runScenario("escaped");
+
+  assert.match(result.responses[0]?.body ?? "", new RegExp(`value="${ESCAPED_TOKEN}"`));
+  assert.doesNotMatch(result.responses[0]?.body ?? "", RAW_ATTRIBUTE_BREAKOUT);
 });
 
 test("an explicit confirmation POST writes once, consumes pending, and redirects", async () => {
