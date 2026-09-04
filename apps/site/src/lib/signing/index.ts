@@ -295,3 +295,13 @@ export function buildRecord(id: string, submission: Submission, confirmedAt = ne
 export function recordPath(record: SignatoryRecord): string {
   return `signatories/${record.confirmedAt.slice(0, 4)}/${record.id}.json`;
 }
+
+/**
+ * Conflicting writes may have different confirmation timestamps. All other
+ * fields are the immutable statement the signatory confirmed.
+ */
+export function hasSameImmutableFields(expected: SignatoryRecord, actual: SignatoryRecord): boolean {
+  const { confirmedAt: _expectedConfirmedAt, ...expectedFields } = expected;
+  const { confirmedAt: _actualConfirmedAt, ...actualFields } = actual;
+  return JSON.stringify(expectedFields) === JSON.stringify(actualFields);
+}
