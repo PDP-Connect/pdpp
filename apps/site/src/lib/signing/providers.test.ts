@@ -135,16 +135,14 @@ async function runPendingRetry(): Promise<PendingRetryResult> {
     };
 
     const providers = await import(${JSON.stringify(PROVIDERS_URL)});
-    // Whichever non-destructive read this branch exposes.
-    const readPending = providers.readPending ?? providers.takePending;
-    const pending = await readPending("signatory-id");
+    const pending = await providers.readPending("signatory-id");
     let error = null;
     if (pending) {
       try {
         await providers.writeSignatory({ id: "signatory-id" }, "signatories/2026/signatory-id.json");
       } catch (caught) { error = { message: caught.message, name: caught.name }; }
     }
-    const retried = await readPending("signatory-id");
+    const retried = await providers.readPending("signatory-id");
     process.stdout.write(JSON.stringify({ error, pendingSurvived: retried !== null }));
   `;
   const { stdout } = await execFile(
