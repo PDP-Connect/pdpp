@@ -120,7 +120,7 @@ const execFileAsync = promisify(execFile);
 const MAILBOX_POLL_TIMEOUT_MS = 180_000;
 const MAILBOX_POLL_INTERVAL_MS = 10_000;
 const REPO_POLL_TIMEOUT_MS = 90_000;
-const REPO_POLL_INTERVAL_MS = 5000;
+const REPO_POLL_INTERVAL_MS = 5_000;
 const HTTP_TIMEOUT_MS = 30_000;
 const COMMAND_TIMEOUT_MS = 60_000;
 
@@ -175,7 +175,7 @@ export function sanitizeUrl(text, index = 0) {
   while (end < text.length && URL_SAFE.test(text[end])) {
     end += 1;
   }
-  const candidate = text.slice(index, end).replace(TRAILING_JUNK, "");
+  let candidate = text.slice(index, end).replace(TRAILING_JUNK, "");
   if (!candidate) {
     return null;
   }
@@ -641,10 +641,7 @@ async function main() {
 
   // The run is stamped so the signatory file can be told apart from every other
   // entry in the register, including previous runs of this oracle.
-  const runStamp = new Date()
-    .toISOString()
-    .replace(/[^0-9]/g, "")
-    .slice(0, 14);
+  const runStamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
   const submission = {
     signatory_kind: "individual",
     name: `Signing Oracle ${runStamp}`,
@@ -670,7 +667,7 @@ async function main() {
     // Checked inside the try so a misconfigured run leaves a receipt like every
     // other failure does. A CI job that keys off "a receipt exists, read its
     // steps" would otherwise be unable to tell a missing env var from a crash.
-    if (!(baseUrl && email)) {
+    if (!baseUrl || !email) {
       fail("SIGNING_BASE_URL and SIGNING_TEST_EMAIL are both required");
     }
 

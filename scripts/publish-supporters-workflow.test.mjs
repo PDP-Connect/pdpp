@@ -10,9 +10,8 @@ import { test } from "node:test";
 // `signatures` is the production register. `signatures-preview` is a disposable
 // rehearsal branch holding real confirmed records that nobody consented to
 // publish. The publisher turns whatever it checks out into the public
-// supporters register, so a branch input on this workflow is one dispatch away
-// from publishing test data under a real person's name — and the run would look
-// entirely successful.
+// supporters register, so a branch input here would be enough to publish the
+// rehearsal branch.
 //
 // The site enforces the same boundary at write time
 // (`resolveRegisterBranch` in apps/site/src/lib/signing/providers.ts). This is
