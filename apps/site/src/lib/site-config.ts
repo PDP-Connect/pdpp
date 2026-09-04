@@ -14,8 +14,8 @@
 //
 // Server-only values (the private repository's fine-grained access token, the
 // KV credentials, the mail provider's API key) are NOT here and never reach the
-// client bundle. They are read from
-// the environment inside the API route. See app/api/sign/.
+// client bundle. They are read from the environment inside the API route. See
+// app/api/sign/.
 
 const PLACEHOLDER_PATTERN = /^\[.*\]$/;
 
