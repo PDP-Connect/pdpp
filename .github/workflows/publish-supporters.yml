@@ -10,6 +10,11 @@ on:
         description: Branch that receives the generated register.
         required: false
         type: string
+      open_pr:
+        default: true
+        description: Open a pull request when the publisher branch changes.
+        required: false
+        type: boolean
 
 permissions:
   contents: write
@@ -27,6 +32,7 @@ jobs:
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       PUBLISH_BASE: ${{ inputs.base_branch || 'main' }}
       PUBLISH_BRANCH: publish/supporters
+      PUBLISH_OPEN_PR: ${{ github.event_name == 'workflow_dispatch' && inputs.open_pr == false && 'false' || 'true' }}
     steps:
       - name: Checkout public repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,13 +57,23 @@ jobs:
             echo "::error::Publisher branch $PUBLISH_BRANCH must not be the repository default branch $DEFAULT_BRANCH."
             exit 1
           fi
-          git fetch --no-tags origin "$PUBLISH_BASE"
+          git fetch --no-tags origin "refs/heads/$PUBLISH_BASE:refs/remotes/origin/$PUBLISH_BASE"
+          if git ls-remote --exit-code --heads origin "refs/heads/$PUBLISH_BRANCH" > /dev/null; then
+            git fetch --no-tags origin "refs/heads/$PUBLISH_BRANCH:refs/remotes/origin/$PUBLISH_BRANCH"
+            echo "PUBLISH_BRANCH_EXISTS=true" >> "$GITHUB_ENV"
+          else
+            echo "PUBLISH_BRANCH_EXISTS=false" >> "$GITHUB_ENV"
+          fi
           git checkout --force -B "$PUBLISH_BRANCH" "origin/$PUBLISH_BASE"
 
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
+
+      - name: Test supporters pull request management
+        working-directory: pdpp
+        run: node --test .github/scripts/manage-supporters-pr.test.mjs
 
       - name: Build public supporters register
         run: node pdpp/apps/site/scripts/publish-supporters.mjs supporters-private pdpp/apps/site/public/principles/supporters.json
@@ -67,11 +83,33 @@ jobs:
         working-directory: pdpp
         run: |
           set -euo pipefail
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "retire=false" >> "$GITHUB_OUTPUT"
+          register_matches_base=false
+          register_matches_branch=false
           if git diff --quiet -- apps/site/public/principles/supporters.json; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Supporters register is unchanged."
-            exit 0
+            register_matches_base=true
           fi
+          if [ "$PUBLISH_BRANCH_EXISTS" = "true" ] && git diff --quiet "origin/$PUBLISH_BRANCH" -- apps/site/public/principles/supporters.json; then
+            register_matches_branch=true
+          fi
+          action="$(PUBLISH_PR_ACTION=decide PUBLISH_REGISTER_MATCHES_BASE="$register_matches_base" PUBLISH_REGISTER_MATCHES_BRANCH="$register_matches_branch" node .github/scripts/manage-supporters-pr.mjs)"
+          case "$action" in
+            retire)
+              echo "retire=true" >> "$GITHUB_OUTPUT"
+              echo "Supporters register now equals $PUBLISH_BASE; retire any publication branch and pull request."
+              exit 0
+              ;;
+            unchanged)
+              echo "Supporters register already matches $PUBLISH_BRANCH."
+              exit 0
+              ;;
+            publish) ;;
+            *)
+              echo "::error::Unexpected supporters publication action: $action"
+              exit 1
+              ;;
+          esac
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add apps/site/public/principles/supporters.json
@@ -79,19 +117,17 @@ jobs:
           git push --force origin "HEAD:refs/heads/$PUBLISH_BRANCH"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
+      - name: Close the obsolete supporters pull request
+        if: steps.publish.outputs.retire == 'true'
+        working-directory: pdpp
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_PR_ACTION: retire
+        run: node .github/scripts/manage-supporters-pr.mjs
+
       - name: Create or update the supporters pull request
-        id: pull-request
         if: steps.publish.outputs.changed == 'true'
         working-directory: pdpp
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$PUBLISH_BRANCH" --base "$PUBLISH_BASE" --state open --json number --jq '.[0].number')"
-          if [ -z "$number" ]; then
-            gh pr create --repo "$GITHUB_REPOSITORY" --base "$PUBLISH_BASE" --head "$PUBLISH_BRANCH" --title "chore(site): publish supporters register" --body "Automated public-register publication."
-            number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$PUBLISH_BRANCH" --base "$PUBLISH_BASE" --state open --json number --jq '.[0].number')"
-          else
-            gh pr edit "$number" --repo "$GITHUB_REPOSITORY" --title "chore(site): publish supporters register"
-          fi
-          echo "number=$number" >> "$GITHUB_OUTPUT"
+        run: node .github/scripts/manage-supporters-pr.mjs
