@@ -26,14 +26,14 @@ That branch is the live register of record. The private repository's default
 branch, `main`, holds control documentation and does **not** contain the live
 register; nothing in the running system reads it.
 
-`PDPP_PRIVATE_REPO_BRANCH` names the branch a deployment writes, and Vercel sets
-it per environment:
+`PDPP_PRIVATE_REPO_BRANCH` names the branch a deployment writes. On Vercel the
+site accepts exactly one branch per environment:
 
-| Vercel environment | `PDPP_PRIVATE_REPO_BRANCH` |
+| Vercel environment (`VERCEL_ENV`) | `PDPP_PRIVATE_REPO_BRANCH` |
 | --- | --- |
-| Production | `signatures` |
-| Preview | `signatures-preview` |
-| Development with live providers | `signatures-preview` |
+| `production` | `signatures` |
+| `preview` | `signatures-preview` |
+| any other value, or unset | signing is refused |
 
 `signatures-preview` is a disposable rehearsal branch, started empty from
 private `main`. A rehearsal against a preview deployment writes a real confirmed
@@ -42,8 +42,30 @@ site enforces the pairing rather than trusting the configuration: on Vercel,
 production accepts only `signatures` and preview accepts only
 `signatures-preview`, and any other combination — including a deployment whose
 `VERCEL_ENV` is missing or unrecognised — fails before the site makes a single
-GitHub request. Off Vercel the branch defaults to `signatures`, so a live local
-rehearsal must set `signatures-preview` by hand.
+GitHub request.
+
+**Signing is refused under `vercel dev`.** It runs with `VERCEL=1` and a
+`VERCEL_ENV` that is neither `production` nor `preview` — Vercel documents
+`development` for this case — so it takes the unrecognised-environment path and
+every signing attempt returns 503. This is deliberate: there is no
+`development` arm to add without giving a local machine a branch policy of its
+own.
+
+Local development with live providers therefore runs **off Vercel** — `next dev`
+or a plain `node` server, with `VERCEL` unset. Off Vercel there is no
+environment to read, so the branch is whatever `PDPP_PRIVATE_REPO_BRANCH` says
+and defaults to `signatures`. That default exists so a non-Vercel production
+host keeps working; it is the wrong branch for a rehearsal, so **set
+`PDPP_PRIVATE_REPO_BRANCH=signatures-preview` by hand** before running a live
+local journey.
+
+A branch-policy refusal is raised when the site writes the record, which on the
+confirm path happens after the pending submission has been read. Until
+`fix/sign-form-error-ux` lands, that read also deletes it, so a refusal on a
+misconfigured deployment spends the signatory's single-use confirmation link and
+the submission cannot be retried — the person has to sign again. That change
+reorders confirm to read, write, then delete, which leaves the pending record in
+place for a retry.
 
 After a rehearsal, delete the test records from `signatures-preview` or reset
 that branch to its empty base. Its records are not withdrawals from the
