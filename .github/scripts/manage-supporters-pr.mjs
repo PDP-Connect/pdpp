@@ -8,8 +8,8 @@ const PR_TITLE = "chore(site): publish supporters register";
 const PR_BODY = "Automated public-register publication.";
 const ACTIONS_PR_FORBIDDEN = /GitHub Actions is not permitted to create or approve pull requests/i;
 
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\\"'\\\"'")}'`;
+export function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function prCreateArguments({ repository, baseBranch, publishBranch }) {

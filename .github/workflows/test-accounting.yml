@@ -18,11 +18,15 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/test-accounting.yml"
+      - "scripts/manage-supporters-pr.mjs"
+      - "scripts/manage-supporters-pr.test.mjs"
       - "scripts/test-accounting/**"
       - "test-accounting.manifest.json"
   pull_request:
     paths:
       - ".github/workflows/test-accounting.yml"
+      - "scripts/manage-supporters-pr.mjs"
+      - "scripts/manage-supporters-pr.test.mjs"
       - "scripts/test-accounting/**"
       - "test-accounting.manifest.json"
   workflow_dispatch: {}
@@ -70,3 +74,6 @@ jobs:
 
       - name: Test the accounting scripts themselves
         run: pnpm test-accounting:test
+
+      - name: Test supporters pull request management
+        run: pnpm test:scratch -- node --test scripts/manage-supporters-pr.test.mjs

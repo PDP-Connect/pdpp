@@ -71,10 +71,6 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Test supporters pull request management
-        working-directory: pdpp
-        run: node --test .github/scripts/manage-supporters-pr.test.mjs
-
       - name: Build public supporters register
         run: node pdpp/apps/site/scripts/publish-supporters.mjs supporters-private pdpp/apps/site/public/principles/supporters.json
 
@@ -83,8 +79,6 @@ jobs:
         working-directory: pdpp
         run: |
           set -euo pipefail
-          echo "changed=false" >> "$GITHUB_OUTPUT"
-          echo "retire=false" >> "$GITHUB_OUTPUT"
           register_matches_base=false
           register_matches_branch=false
           if git diff --quiet -- apps/site/public/principles/supporters.json; then
@@ -96,11 +90,16 @@ jobs:
           action="$(PUBLISH_PR_ACTION=decide PUBLISH_REGISTER_MATCHES_BASE="$register_matches_base" PUBLISH_REGISTER_MATCHES_BRANCH="$register_matches_branch" node .github/scripts/manage-supporters-pr.mjs)"
           case "$action" in
             retire)
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "manage_pr=false" >> "$GITHUB_OUTPUT"
               echo "retire=true" >> "$GITHUB_OUTPUT"
               echo "Supporters register now equals $PUBLISH_BASE; retire any publication branch and pull request."
               exit 0
               ;;
             unchanged)
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "manage_pr=true" >> "$GITHUB_OUTPUT"
+              echo "retire=false" >> "$GITHUB_OUTPUT"
               echo "Supporters register already matches $PUBLISH_BRANCH."
               exit 0
               ;;
@@ -116,6 +115,8 @@ jobs:
           git commit -s -m "chore(site): publish supporters register"
           git push --force origin "HEAD:refs/heads/$PUBLISH_BRANCH"
           echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "manage_pr=true" >> "$GITHUB_OUTPUT"
+          echo "retire=false" >> "$GITHUB_OUTPUT"
 
       - name: Close the obsolete supporters pull request
         if: steps.publish.outputs.retire == 'true'
@@ -126,7 +127,7 @@ jobs:
         run: node .github/scripts/manage-supporters-pr.mjs
 
       - name: Create or update the supporters pull request
-        if: steps.publish.outputs.changed == 'true'
+        if: steps.publish.outputs.manage_pr == 'true'
         working-directory: pdpp
         env:
           GH_TOKEN: ${{ github.token }}

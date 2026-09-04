@@ -7,7 +7,8 @@ import {
   manageSupportersPullRequest,
   publicationAction,
   retireStaleSupportersPublication,
-} from "./manage-supporters-pr.mjs";
+  shellQuote,
+} from "../.github/scripts/manage-supporters-pr.mjs";
 
 const options = {
   baseBranch: "main",
@@ -108,4 +109,24 @@ test("a rebuilt register equal to main retires the stale publication after a wit
   assert.equal(gh.calls[1].at(-1), "register now equals main; nothing to publish");
   assert.deepEqual(gitCalls, [["push", "origin", "--delete", "publish/supporters"]]);
   assert.deepEqual(messages, ["Closed pull request #319; register now equals main.", "Deleted obsolete branch publish/supporters."]);
+});
+
+test("an unchanged generated branch retries a forbidden pull request creation", () => {
+  const action = publicationAction({ registerMatchesBase: false, registerMatchesPublishBranch: true });
+  const gh = fakeGh([
+    { status: 0, stderr: "", stdout: "" },
+    { status: 1, stderr: "GitHub Actions is not permitted to create or approve pull requests", stdout: "" },
+  ]);
+  const messages = [];
+
+  assert.equal(action, "unchanged");
+  assert.deepEqual(
+    manageSupportersPullRequest({ ...options, run: gh.run, write: (message) => messages.push(message) }),
+    { kind: "forbidden" }
+  );
+  assert.match(messages[2], /^Maintainer command: /);
+});
+
+test("shell quotes an apostrophe with the POSIX single-quote escape", () => {
+  assert.equal(shellQuote("supporter's register"), "'supporter'\\''s register'");
 });
