@@ -36,7 +36,7 @@ export function signedOutcome(
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
     });
-  } else if (state === "pending") {
+  } else {
     response.cookies.delete({ name: "pdpp_signing_form", path: "/principles" });
   }
   return response;

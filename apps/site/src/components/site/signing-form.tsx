@@ -6,6 +6,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Text } from "@/components/typography/text.tsx";
+import type { RestoredSigningForm } from "@/lib/signing/form-restoration.ts";
 import { signingDisclosure, siteConfig, siteFlags } from "@/lib/site-config.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -41,20 +42,6 @@ const COUNTRIES = ["Australia", "Germany", "Netherlands", "Switzerland", "United
 const ORGANISATION_TYPES = ["Company", "Platform", "Research institute", "Civil society", "Public body"] as const;
 
 type SignatoryKind = "individual" | "organisation";
-
-export interface RestoredSigningForm {
-  affiliation?: string;
-  consent_age?: boolean;
-  consent_authority?: boolean;
-  consent_principles?: boolean;
-  consent_register?: boolean;
-  consent_updates?: boolean;
-  country?: string;
-  name?: string;
-  organisation?: string;
-  organisation_type?: string;
-  signatory_kind: SignatoryKind;
-}
 
 const fieldClassName = cn(
   "w-full border border-border bg-background px-3 py-2",

@@ -11,9 +11,7 @@ const SIGNED_MESSAGES: Record<string, string> = {
   invalid: "This confirmation link is invalid or has expired. Nothing was changed.",
   pending: "Check your email to confirm your signature. Nothing is published until you use that link.",
   ratelimited: "Too many submissions came from this connection. Try again in a few minutes.",
-  unavailable:
-    "We could not send the confirmation email right now. Your details will be discarded. Try again in a few minutes.",
-  withdrawn: "Your signature has been withdrawn. The public register updates when it is next published.",
+  unavailable: "We could not send the confirmation email. Try again in a few minutes.",
 };
 
 const WITHDRAW_MESSAGES: Record<string, string> = {
@@ -23,7 +21,7 @@ const WITHDRAW_MESSAGES: Record<string, string> = {
   invalid: "This withdrawal link is invalid. Nothing was changed.",
 };
 
-const UNKNOWN_SIGNED_MESSAGE = "We could not identify that signing status. Nothing was changed.";
+const UNKNOWN_SIGNED_MESSAGE = "That link is not valid. Nothing was changed.";
 
 export function signedStatusMessage(signed: string | undefined): string | undefined {
   if (signed) {

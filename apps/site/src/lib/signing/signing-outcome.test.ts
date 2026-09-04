@@ -8,6 +8,7 @@ import { formValuesForRetry } from "./form-restoration.ts";
 import { signedOutcome, withdrawOutcome } from "./signing-outcome.ts";
 
 const browserRequest = () => new NextRequest("https://pdpp.example.test/api/sign", { method: "POST" });
+const CLEARED_RETRY_COOKIE = /pdpp_signing_form=; Path=\/principles; Expires=Thu, 01 Jan 1970/;
 const HTTP_ONLY = /HttpOnly/;
 const PRIVATE_EMAIL = /private%40example\.test|private@example\.test/;
 
@@ -48,6 +49,11 @@ test("JSON errors are opt-in", async () => {
   const response = signedOutcome(request, "ratelimited", { error: "Too many submissions.", status: 429 });
   assert.equal(response.status, 429);
   assert.deepEqual(await response.json(), { error: "Too many submissions." });
+});
+
+test("a terminal signing outcome clears a retry cookie", () => {
+  const response = signedOutcome(browserRequest(), "confirmed", { error: "", status: 303 });
+  assert.match(response.headers.get("set-cookie") ?? "", CLEARED_RETRY_COOKIE);
 });
 
 test("retry cookie restores non-email fields only", () => {
