@@ -14,11 +14,11 @@ import { z } from "zod";
 // and personal data reaching the public repository. Everything here exists for
 // one of those four.
 //
-// Nothing in this file is exercised by a test or a live run yet: the KV store,
-// the mail provider and the deploy key do not exist until they are provisioned.
-// It is written to FAIL CLOSED at every seam rather than to degrade, so the
-// unprovisioned state is a refusal with a clear reason and never a silent
-// half-write.
+// The KV store, the mail provider and the fine-grained access token are
+// provisioned, and this path writes real signatory records. It is written to
+// FAIL CLOSED at every seam rather than to degrade, so a missing credential or
+// a branch a deployment may not write is a refusal with a clear reason and
+// never a silent half-write.
 
 // ---------------------------------------------------------------- environment
 
