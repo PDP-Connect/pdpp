@@ -18,14 +18,14 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/test-accounting.yml"
-      - "scripts/manage-supporters-pr.mjs"
+      - ".github/scripts/manage-supporters-pr.mjs"
       - "scripts/manage-supporters-pr.test.mjs"
       - "scripts/test-accounting/**"
       - "test-accounting.manifest.json"
   pull_request:
     paths:
       - ".github/workflows/test-accounting.yml"
-      - "scripts/manage-supporters-pr.mjs"
+      - ".github/scripts/manage-supporters-pr.mjs"
       - "scripts/manage-supporters-pr.test.mjs"
       - "scripts/test-accounting/**"
       - "test-accounting.manifest.json"

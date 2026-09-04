@@ -5,14 +5,13 @@
 import { spawnSync } from "node:child_process";
 
 const PR_TITLE = "chore(site): publish supporters register";
-const PR_BODY = "Automated public-register publication.";
 const ACTIONS_PR_FORBIDDEN = /GitHub Actions is not permitted to create or approve pull requests/i;
 
 export function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function prCreateArguments({ repository, baseBranch, publishBranch }) {
+function prCreateArguments({ repository, baseBranch, publishBranch, body }) {
   return [
     "pr",
     "create",
@@ -25,8 +24,17 @@ function prCreateArguments({ repository, baseBranch, publishBranch }) {
     "--title",
     PR_TITLE,
     "--body",
-    PR_BODY,
+    body,
   ];
+}
+
+export function supportersPullRequestBody({ rowsAdded, rowsRemoved, totalRows, runUrl }) {
+  return [
+    "Automated public-register publication.",
+    "",
+    `Rows: +${rowsAdded} added, -${rowsRemoved} removed; ${totalRows} total.`,
+    `Workflow run: ${runUrl}`,
+  ].join("\n");
 }
 
 function runGh(arguments_) {
@@ -72,9 +80,11 @@ function openPullRequestNumber({ repository, baseBranch, publishBranch, run }) {
   return requireSuccess(run(listArguments), listArguments);
 }
 
-function maintainerHandoff({ repository, baseBranch, publishBranch, write, notice }) {
+function maintainerHandoff({ repository, baseBranch, publishBranch, body, write, notice }) {
   const compareUrl = `https://github.com/${repository}/compare/${baseBranch}...${publishBranch}?expand=1`;
-  const command = ["gh", ...prCreateArguments({ repository, baseBranch, publishBranch })].map(shellQuote).join(" ");
+  const command = ["gh", ...prCreateArguments({ repository, baseBranch, publishBranch, body })]
+    .map(shellQuote)
+    .join(" ");
   write(`${notice} The publisher pushed ${publishBranch}.`);
   write(`Compare: ${compareUrl}`);
   write(`Maintainer command: ${command}`);
@@ -92,23 +102,14 @@ export function manageSupportersPullRequest({
   baseBranch,
   publishBranch,
   openPr = true,
+  body,
   run = runGh,
   write = console.log,
 }) {
   const number = openPullRequestNumber({ repository, baseBranch, publishBranch, run });
 
   if (number) {
-    const editArguments = [
-      "pr",
-      "edit",
-      number,
-      "--repo",
-      repository,
-      "--title",
-      PR_TITLE,
-      "--body",
-      PR_BODY,
-    ];
+    const editArguments = ["pr", "edit", number, "--repo", repository, "--title", PR_TITLE, "--body", body];
     requireSuccess(run(editArguments), editArguments);
     write(`Updated pull request #${number}.`);
     return { kind: "exists", number };
@@ -119,13 +120,14 @@ export function manageSupportersPullRequest({
       repository,
       baseBranch,
       publishBranch,
+      body,
       write,
       notice: "NOTICE: Pull request creation is disabled for this run.",
     });
     return { kind: "skipped" };
   }
 
-  const createArguments = prCreateArguments({ repository, baseBranch, publishBranch });
+  const createArguments = prCreateArguments({ repository, baseBranch, publishBranch, body });
   const created = run(createArguments);
   if (created.status === 0) {
     write("Created supporters pull request.");
@@ -136,6 +138,7 @@ export function manageSupportersPullRequest({
       repository,
       baseBranch,
       publishBranch,
+      body,
       write,
       notice: "NOTICE: GitHub Actions cannot open a pull request.",
     });
@@ -217,7 +220,7 @@ function main() {
     return;
   }
   const { GITHUB_REPOSITORY: repository, PUBLISH_BASE: baseBranch, PUBLISH_BRANCH: publishBranch } = process.env;
-  if (!repository || !baseBranch || !publishBranch) {
+  if (!(repository && baseBranch && publishBranch)) {
     throw new Error("GITHUB_REPOSITORY, PUBLISH_BASE, and PUBLISH_BRANCH are required.");
   }
   if (process.env.PUBLISH_PR_ACTION === "retire") {
@@ -230,7 +233,18 @@ function main() {
     return;
   }
   const openPr = process.env.PUBLISH_OPEN_PR !== "false";
-  manageSupportersPullRequest({ repository, baseBranch, publishBranch, openPr });
+  manageSupportersPullRequest({
+    repository,
+    baseBranch,
+    publishBranch,
+    openPr,
+    body: supportersPullRequestBody({
+      rowsAdded: process.env.PUBLISH_ROWS_ADDED,
+      rowsRemoved: process.env.PUBLISH_ROWS_REMOVED,
+      totalRows: process.env.PUBLISH_TOTAL_ROWS,
+      runUrl: process.env.PUBLISH_RUN_URL,
+    }),
+  });
 }
 
 if (import.meta.main) {
