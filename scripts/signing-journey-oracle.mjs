@@ -25,6 +25,11 @@
 //   6. GET the withdraw link                      -> 303 withdraw=done, and the
 //                                                    "Record a withdrawal" commit
 //
+// Every commit assertion is bounded to commits made after this run started. One
+// of the three subjects — "Record a withdrawal" — is a constant the app writes
+// for every withdrawal by anyone, so without that bound the first poll of step 6
+// would match an earlier run's commit and pass having proven nothing.
+//
 // Step 6 is skipped under --keep, which leaves a real confirmed entry in place so
 // it can be published. Use --keep only with an address you mean to publish.
 //
@@ -32,11 +37,12 @@
 //   - It does not prove the PUBLIC register renders the entry. Publication is a
 //     separate scheduled script in the private repo; this stops at the private
 //     write, which is the last step the site itself controls.
-//   - The Signed-off-by trailer is NOT added by the site code. It comes from the
-//     private repo's "require sign-off on web-based commits" setting. Asserting
-//     it here is a check on that REPO POLICY, and it is the only place anything
-//     checks it — which is the point, since nothing in the app would notice if
-//     the setting were turned off.
+//   - The Signed-off-by trailer is added by the SITE, in `botCommitMessage`
+//     (apps/site/src/lib/signing/providers.ts), and every write goes through it.
+//     Asserting it here checks that the trailer the app composes survives the
+//     round trip to GitHub and back — not that any repo setting is in force.
+//     Nothing here checks the repo's own "require sign-off on web-based commits"
+//     policy; that would need a separate read of the repo settings via the API.
 //   - It never runs against a deployment it was not pointed at: every mailbox
 //     match is filtered on links whose origin equals SIGNING_BASE_URL, because
 //     previews share one mailbox and a stale email from another deployment is
@@ -47,6 +53,12 @@
 //   SIGNING_BASE_URL=https://<deployment> \
 //   SIGNING_TEST_EMAIL=you@example.com \
 //     node scripts/signing-journey-oracle.mjs [--keep] [--receipt path] [--quiet]
+//
+//   The site allows 5 submissions per IP per hour (RATE_LIMIT_MAX in
+//   providers.ts). A sixth run within the hour fails at step 1 with a 429; the
+//   window is a rolling hour, so wait up to an hour and retry. That matters here
+//   more than usual, because the point of this script is repeated end-to-end
+//   runs from one address and one IP.
 //
 // ENVIRONMENT
 //   SIGNING_BASE_URL           required. Preview or production origin.
@@ -67,7 +79,10 @@
 //   PDPP_PRIVATE_REPO_NAME     default supporters-private
 //   PDPP_PRIVATE_REPO_BRANCH   default signatures
 //
-// Exit 0 only if every step passed. Any failure exits 1 with the receipt written.
+// Exit 0 only if every step passed. Any failure exits 1 with the receipt written,
+// including a missing SIGNING_BASE_URL or SIGNING_TEST_EMAIL: that failure is
+// recorded as a `setup` step so a job that keys off the receipt can tell
+// misconfiguration from a crash. There is no other exit code.
 
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
@@ -114,6 +129,12 @@ const TRAILING_JUNK = /[.,;:!?)\]}'"<>]+$/;
 /**
  * Extracts and sanitizes a single URL starting at `index` in `text`.
  * Returns null if what is there is not a usable absolute http(s) URL.
+ *
+ * NOT origin-safe on its own. It will happily return
+ * `https://your-site.example.com@evil.com/...`, because a userinfo section is
+ * legal URL syntax. What rejects a lookalike host is `extractLinks`, which
+ * searches for `origin + pathname` as a literal prefix. Anyone reusing this
+ * function outside `extractLinks` has to do that origin check themselves.
  *
  * Exported for the unit test: this is the one piece of the oracle with enough
  * edge cases to be worth testing in isolation, and the only piece that can be
@@ -175,6 +196,52 @@ export function extractLinks(body, origin, pathname) {
   return found;
 }
 
+/**
+ * Normalizes an address the way the signing schema does.
+ *
+ * The schema is `z.string().trim().toLowerCase()`, so the address stored in the
+ * private repo is the lowercased one. Comparing the stored record against the
+ * raw SIGNING_TEST_EMAIL instead would make a correct write look like a broken
+ * one for any operator whose address has a capital in it — and the failure
+ * message would point at the repo rather than at this comparison, which is
+ * exactly the silent misdirection the rest of this file works to avoid.
+ */
+export function normalizeEmail(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Describes a signing link for the receipt without putting the token on disk.
+ *
+ * The receipt is an ordinary file and these links are live single-use
+ * credentials, so the token itself must not be in it. But the operator needs to
+ * know which deployment and which link a run used — under `--keep` the entry is
+ * deliberately left live and withdrawable only from the email, and a failure at
+ * the confirm or withdraw step otherwise cannot be re-driven by hand. Origin,
+ * path, and a short fingerprint of the token body answer "which link was this?"
+ * without answering "what is the token?".
+ *
+ * The fingerprint is the first 8 characters of the base64url body — the same
+ * segment step 4 already decodes to read the signatory id — so two runs are
+ * always distinguishable, and it is far too short to reconstruct a signature.
+ */
+export function redactLink(link) {
+  let parsed;
+  try {
+    parsed = new URL(link);
+  } catch {
+    return null;
+  }
+  const token = parsed.searchParams.get("token");
+  const fingerprint = token ? (token.split(".")[0] ?? "").slice(0, 8) || null : null;
+  if (token) {
+    parsed.searchParams.set("token", "REDACTED");
+  }
+  return { tokenFingerprint: fingerprint, url: parsed.toString() };
+}
+
 // ---------------------------------------------------------------- mailbox reader
 
 /**
@@ -202,6 +269,36 @@ async function runCommand(argv) {
     timeout: COMMAND_TIMEOUT_MS,
   });
   return stdout;
+}
+
+/**
+ * Describes a failed command using only its program name and how it failed.
+ *
+ * `execFile` puts the ENTIRE command line into `error.message`, and stderr can
+ * echo an argument straight back. The mailbox reader is operator-supplied and
+ * documented as swappable, so a replacement invoked as
+ * `my-reader --password hunter2 --query {query}` would put that password into
+ * `error.message` — and this oracle writes mailbox failures into the receipt,
+ * which is an ordinary file on disk. The default `gog` reader carries no secret
+ * in argv, so nothing leaks today; the point of the template is that someone
+ * else's reader is different.
+ *
+ * So the arguments and stderr never cross into the returned string. The program
+ * name and the exit status are enough to act on: they say which reader was run
+ * and whether it was missing, timed out, or refused.
+ */
+export function describeCommandError(argv, error) {
+  const program = argv[0] ?? "<none>";
+  if (error?.code === "ENOENT") {
+    return `\`${program}\` not found on PATH`;
+  }
+  if (error?.killed || error?.signal) {
+    return `\`${program}\` timed out after ${COMMAND_TIMEOUT_MS}ms`;
+  }
+  if (typeof error?.code === "number") {
+    return `\`${program}\` exited ${error.code} (arguments and output withheld: an operator-supplied reader may carry a credential in either)`;
+  }
+  return `\`${program}\` failed (arguments and output withheld: an operator-supplied reader may carry a credential in either)`;
 }
 
 /**
@@ -319,24 +416,46 @@ async function resolveGitHubToken() {
 }
 
 /**
- * Waits for a commit with `subject` on `branch`, and returns it.
+ * Waits for a commit with `subject` on `branch`, made at or after `since`.
  *
  * Polls rather than reading once because the confirm request returns as soon as
  * the GitHub write is accepted, and the commits list is eventually consistent —
  * a single immediate read is a flake generator.
+ *
+ * `since` is not optional, and it is the difference between this proving
+ * something and proving nothing. Two of the three subjects waited for here embed
+ * a per-run uuid, so they are run-unique by accident of how the app names them.
+ * The third, "Record a withdrawal", is a CONSTANT — the app writes that same
+ * subject for every withdrawal by anybody. Matching on subject alone, any
+ * earlier withdrawal sitting in the recent history satisfies step 6 on the first
+ * poll, so the step passes without this run having logged anything. That is the
+ * precise defect step 6 exists to catch, so the floor is applied to every wait
+ * rather than only to the one that needs it.
+ *
+ * It is applied twice: `since` is passed to the API so the listing is bounded
+ * server-side, and each candidate's committer date is checked, so a stale entry
+ * cannot slip through if the parameter is ever ignored. A commit with no
+ * committer date is rejected — treating it as recent would reopen the hole.
  */
-async function waitForCommit(github, branch, subject, timeoutMs) {
+export async function waitForCommit(github, branch, subject, { since, timeoutMs }) {
+  const sinceIso = new Date(since).toISOString();
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   for (;;) {
-    const response = await github.request("commits", { per_page: "20", sha: branch });
+    const response = await github.request("commits", { per_page: "20", sha: branch, since: sinceIso });
     if (response.ok) {
       const commits = await response.json();
-      const match = commits.find((entry) => entry.commit.message.split("\n")[0] === subject);
+      const match = commits.find((entry) => {
+        if (entry.commit?.message?.split("\n")[0] !== subject) {
+          return false;
+        }
+        const committedAt = Date.parse(entry.commit?.committer?.date ?? "");
+        return Number.isFinite(committedAt) && committedAt >= since;
+      });
       if (match) {
         return match;
       }
-      lastError = `no commit titled "${subject}" in the last ${commits.length} on ${branch}`;
+      lastError = `no commit titled "${subject}" on ${branch} since ${sinceIso} (${commits.length} in range)`;
     } else {
       lastError = `GitHub responded ${response.status} listing commits on ${branch}`;
     }
@@ -345,6 +464,28 @@ async function waitForCommit(github, branch, subject, timeoutMs) {
     }
     await sleep(REPO_POLL_INTERVAL_MS);
   }
+}
+
+/**
+ * Reads this signatory's record path out of the commit that wrote it.
+ *
+ * The app files the record under the year of its CONFIRMATION
+ * (`recordPath` in apps/site/src/lib/signing/index.ts:
+ * `signatories/${record.confirmedAt.slice(0, 4)}/${record.id}.json`). Deriving
+ * that year from this process's wall clock instead is right for all but one
+ * second a year: a confirm at 2026-12-31T23:59:59Z read back at
+ * 2027-01-01T00:00:00Z looks in `signatories/2027/` for a file the app wrote to
+ * `signatories/2026/`, and reports it missing. The commit is already in hand, so
+ * the year does not have to be guessed at all.
+ *
+ * Returns null if the commit carries no usable file list, which lets the caller
+ * fall back rather than fetch an undefined path.
+ */
+export function recordPathFromCommit(commit, signatoryId) {
+  const files = Array.isArray(commit?.files) ? commit.files : [];
+  const suffix = `/${signatoryId}.json`;
+  const match = files.find((file) => file?.filename?.startsWith("signatories/") && file.filename.endsWith(suffix));
+  return match?.filename ?? null;
 }
 
 // -------------------------------------------------------------------- the journey
@@ -360,11 +501,16 @@ export function createReceipt(config) {
     startedAt: new Date().toISOString(),
     finishedAt: null,
     ok: false,
-    baseUrl: config.baseUrl,
-    email: config.email,
+    // Defaulted to null rather than left undefined: a misconfigured run writes a
+    // receipt too, and `JSON.stringify` drops undefined keys — which would make
+    // the one receipt a reader most needs to parse the one with a missing field.
+    baseUrl: config.baseUrl ?? null,
+    email: config.email || null,
     keep: config.keep,
     repo: `${config.owner}/${config.repo}#${config.branch}`,
     signatoryId: null,
+    // Filled in once the confirmation email is read. Redacted — see `redactLink`.
+    links: null,
     steps: [],
   };
 }
@@ -388,11 +534,9 @@ async function main() {
   };
 
   const baseUrl = process.env.SIGNING_BASE_URL?.trim().replace(/\/$/, "");
-  const email = process.env.SIGNING_TEST_EMAIL?.trim();
-  if (!baseUrl || !email) {
-    console.error("SIGNING_BASE_URL and SIGNING_TEST_EMAIL are both required.");
-    process.exit(2);
-  }
+  // Normalized the way the signing schema does, so the address compared against
+  // the stored record in step 4 is the address the app actually stored.
+  const email = normalizeEmail(process.env.SIGNING_TEST_EMAIL);
 
   const owner = process.env.PDPP_PRIVATE_REPO_OWNER?.trim() || "PDP-Connect";
   const repo = process.env.PDPP_PRIVATE_REPO_NAME?.trim() || "supporters-private";
@@ -429,6 +573,13 @@ async function main() {
   };
 
   try {
+    // Checked inside the try so a misconfigured run leaves a receipt like every
+    // other failure does. A CI job that keys off "a receipt exists, read its
+    // steps" would otherwise be unable to tell a missing env var from a crash.
+    if (!baseUrl || !email) {
+      fail("SIGNING_BASE_URL and SIGNING_TEST_EMAIL are both required");
+    }
+
     const token = await resolveGitHubToken();
     const github = createGitHub(token, owner, repo);
 
@@ -447,7 +598,10 @@ async function main() {
       fail("POST /api/sign returned 404: signing is not enabled on this deployment");
     }
     if (submitResponse.status === 429) {
-      fail("POST /api/sign returned 429: rate limited, wait and retry");
+      fail(
+        "POST /api/sign returned 429: the site allows 5 submissions per IP per hour, " +
+          "and this is the sixth within a rolling hour. Wait up to an hour and retry."
+      );
     }
     const submitLocation = assertRedirect(submitResponse, ["signed", "pending"], "submit");
     record(receipt, "submit", "pass", `303 -> ${submitLocation}`);
@@ -460,13 +614,21 @@ async function main() {
     let mailboxError = "no matching message arrived";
     for (;;) {
       let candidates = [];
+      const searchArgv = buildCommand(searchTemplate, {
+        query: `to:${email} subject:"Confirm your PDPP Principles signature"`,
+      });
       try {
-        const stdout = await runCommand(
-          buildCommand(searchTemplate, { query: `to:${email} subject:"Confirm your PDPP Principles signature"` })
-        );
-        candidates = normalizeSearchResults(stdout);
+        candidates = normalizeSearchResults(await runCommand(searchArgv));
       } catch (error) {
-        mailboxError = `mailbox search failed: ${error.message}`;
+        // Redacted, because this string is written into the receipt and the
+        // reader is operator-supplied. See `describeCommandError`. A JSON.parse
+        // failure lands here too, and its message quotes the reader's STDOUT —
+        // which for a reader that echoes its own invocation is another way a
+        // credential reaches the receipt. Neither shape is reported verbatim.
+        mailboxError =
+          error instanceof SyntaxError
+            ? `mailbox search failed: \`${searchArgv[0]}\` did not emit JSON (output withheld)`
+            : `mailbox search failed: ${describeCommandError(searchArgv, error)}`;
       }
 
       for (const candidate of candidates.slice(0, 10)) {
@@ -508,6 +670,12 @@ async function main() {
     if (!links) {
       fail(mailboxError);
     }
+    // Recorded redacted. The operator needs to know which links a run used —
+    // under --keep the entry is left live and withdrawable ONLY from the email,
+    // so the receipt is the natural second copy of that withdraw link, and a
+    // failure at step 3 or 5 otherwise cannot be re-driven without the mailbox.
+    // The tokens themselves stay off disk: they are live single-use credentials.
+    receipt.links = { confirm: redactLink(links.confirm), withdraw: redactLink(links.withdraw) };
     record(receipt, "confirmation-email", "pass", `"${links.subject}" with confirm and withdraw links on ${baseUrl}`);
     log(`    ok: "${links.subject}"`);
 
@@ -535,14 +703,31 @@ async function main() {
     }
     receipt.signatoryId = signatoryId;
 
-    const addCommit = await waitForCommit(github, branch, `Add signatory ${signatoryId}`, REPO_POLL_TIMEOUT_MS);
+    const addCommit = await waitForCommit(github, branch, `Add signatory ${signatoryId}`, {
+      since,
+      timeoutMs: REPO_POLL_TIMEOUT_MS,
+    });
+    // The trailer is composed by the app, in `botCommitMessage`. This asserts it
+    // survived the round trip to GitHub; it is not a check on any repo setting.
     if (!/^Signed-off-by: .+ <.+>$/m.test(addCommit.commit.message)) {
       fail(`commit ${addCommit.sha.slice(0, 8)} has no Signed-off-by trailer`);
     }
 
+    // The path is read out of the commit rather than assembled from the clock:
+    // the app files the record under the year of its confirmation, and the two
+    // disagree across a UTC new year. The commits LISTING carries no file list,
+    // so the commit is re-read on its own endpoint, which does.
+    const addCommitDetail = await github.request(`commits/${addCommit.sha}`);
+    if (!addCommitDetail.ok) {
+      fail(`could not read commit ${addCommit.sha.slice(0, 8)}: GitHub responded ${addCommitDetail.status}`);
+    }
+    const filePath = recordPathFromCommit(await addCommitDetail.json(), signatoryId);
+    if (!filePath) {
+      fail(`commit ${addCommit.sha.slice(0, 8)} added no signatories/**/${signatoryId}.json file`);
+    }
+
     // The file is read at the commit that added it, not at the branch tip: the
     // withdrawal in step 6 deletes it, so a tip read would race the same run.
-    const filePath = `signatories/${new Date().getUTCFullYear()}/${signatoryId}.json`;
     const fileResponse = await github.request(`contents/${filePath}`, { ref: addCommit.sha });
     if (!fileResponse.ok) {
       fail(`signatory file ${filePath} not readable at ${addCommit.sha.slice(0, 8)}: ${fileResponse.status}`);
@@ -598,13 +783,20 @@ async function main() {
       // deliberate in the route, so it is NOT evidence on its own. The commits
       // are. Both are required: the delete proves this signatory was removed,
       // the log proves the withdrawal was accounted for.
-      const withdrawCommit = await waitForCommit(
-        github,
-        branch,
-        `Withdraw signatory ${signatoryId}`,
-        REPO_POLL_TIMEOUT_MS
-      );
-      const logCommit = await waitForCommit(github, branch, "Record a withdrawal", REPO_POLL_TIMEOUT_MS);
+      //
+      // Both are bounded by `since`. "Withdraw signatory <id>" embeds this run's
+      // uuid and so is run-unique on its own, but "Record a withdrawal" is a
+      // constant subject the app writes for every withdrawal by anyone — an
+      // earlier run's log commit would otherwise satisfy this on the first poll
+      // and the assertion would prove nothing.
+      const withdrawCommit = await waitForCommit(github, branch, `Withdraw signatory ${signatoryId}`, {
+        since,
+        timeoutMs: REPO_POLL_TIMEOUT_MS,
+      });
+      const logCommit = await waitForCommit(github, branch, "Record a withdrawal", {
+        since,
+        timeoutMs: REPO_POLL_TIMEOUT_MS,
+      });
       record(
         receipt,
         "withdraw",
