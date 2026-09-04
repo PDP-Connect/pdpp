@@ -22,10 +22,37 @@ Also `withdrawn.log`: dates only, one line per withdrawal, with no identifier
 and no reason.
 
 The site writes these files to the private repository's `signatures` branch.
-`PDPP_PRIVATE_REPO_BRANCH` changes that branch for a deployment; it defaults to
-`signatures`. The public repository's daily `publish-supporters` workflow runs
+That branch is the live register of record. The private repository's default
+branch, `main`, holds control documentation and does **not** contain the live
+register; nothing in the running system reads it.
+
+`PDPP_PRIVATE_REPO_BRANCH` names the branch a deployment writes, and Vercel sets
+it per environment:
+
+| Vercel environment | `PDPP_PRIVATE_REPO_BRANCH` |
+| --- | --- |
+| Production | `signatures` |
+| Preview | `signatures-preview` |
+| Development with live providers | `signatures-preview` |
+
+`signatures-preview` is a disposable rehearsal branch, started empty from
+private `main`. A rehearsal against a preview deployment writes a real confirmed
+record, so it must not land in the register a real signatory appears in. The
+site enforces the pairing rather than trusting the configuration: on Vercel,
+production accepts only `signatures` and preview accepts only
+`signatures-preview`, and any other combination — including a deployment whose
+`VERCEL_ENV` is missing or unrecognised — fails before the site makes a single
+GitHub request. Off Vercel the branch defaults to `signatures`, so a live local
+rehearsal must set `signatures-preview` by hand.
+
+After a rehearsal, delete the test records from `signatures-preview` or reset
+that branch to its empty base. Its records are not withdrawals from the
+production register: never publish them, and never copy its `withdrawn.log`
+into `signatures`.
+
+The public repository's daily `publish-supporters` workflow runs
 as `github-actions[bot]`. Its private checkout uses
-`PDPP_PRIVATE_REPO_TOKEN`, a fine-grained personal access token owned by the
+`PDPP_PRIVATE_REPO_TOKEN`, a fine-grained access token owned by the
 maintainer account `tnunamak`. The token is scoped to
 `PDP-Connect/supporters-private` with Contents read and write, and is stored as
 the `pdpp` repository's Actions secret. It is neither branch-limited nor
@@ -35,16 +62,23 @@ workflow writes the public register with this repository's `GITHUB_TOKEN` by
 opening a PR from the fixed `publish/supporters` branch, never by committing to
 `main`.
 
+This public workflow is the only publisher. The private repository's own publish
+workflow is retired, and nothing else writes the public register.
+
 When `PDPP_PUBLISH_PR_TOKEN` is set, the publisher opens or updates its generated
 PR itself. It is a fine-grained personal access token scoped only to the public
 `PDP-Connect/pdpp` repository with Pull requests: write and Contents: read; it
 never needs access to the private repository. Without the token, the publisher still pushes
 `publish/supporters`, reports the compare URL, and prints the `gh pr create`
 command a maintainer runs to open the PR. After its required checks pass, a
-maintainer merges it with **Squash and merge**. The private repository's publish
-workflow is retired. Maintainers review and merge `signatures` into the private
-repository's default branch; the site never commits directly to that protected
-branch.
+maintainer merges it with **Squash and merge**.
+
+`signatures` is never merged into the private repository's default branch. A
+merge would put a second, stale copy of the personal data on `main` and make a
+branch nothing reads look authoritative. Instead, once a week a maintainer
+fetches `origin/signatures` over SSH and reviews the new commits, the current
+signatory file count, and the date-only withdrawal entries. Unexpected paths, a
+force push, or a commit by an unknown actor is an incident, not a tidy-up.
 
 When a withdrawal makes the rebuilt public register equal to `main`, the
 publisher closes the open `publish/supporters` PR with the comment `register now
@@ -119,7 +153,7 @@ Three properties hold this together, and each is worth keeping:
 
 | Store | Read | Write |
 | --- | --- | --- |
-| Private signatory repo | Maintainers in `MAINTAINERS.md`, plus `PDPP_PRIVATE_REPO_TOKEN` (the `tnunamak` fine-grained token with Contents read/write; the publisher checks out only `signatures`) | Those maintainers, plus the site's deploy key |
+| Private signatory repo | Maintainers in `MAINTAINERS.md`, plus `PDPP_PRIVATE_REPO_TOKEN` (the `tnunamak` fine-grained access token with Contents read/write; the publisher checks out only `signatures`) | Those maintainers, plus the site's fine-grained access token |
 | Public supporters JSON | Anyone | `github-actions[bot]` through this repository's `GITHUB_TOKEN`, via `publish/supporters` PRs, and maintainers via PR |
 | Mailing list | LFDT list administrators | LFDT list administrators |
 
@@ -138,12 +172,16 @@ interim controller changes.
    `gh repo archive`. Verify the archive opens and the file count matches.
 3. **Hand over** on a channel the successor has named, and get their written
    confirmation that they hold it.
-4. **Rotate the deploy key.** Delete the existing key from the private
-   repository, create the replacement against the successor's store, and update
-   the Vercel secret `PDPP_PRIVATE_REPO_TOKEN`.
-5. **Check the site still works**: submit a test signature, confirm it, and
-   watch it appear in the successor's store and then on `/principles`. Withdraw
-   the test signature afterwards.
+4. **Rotate the fine-grained access token.** Revoke the existing token, issue
+   the replacement against the successor's store scoped to that repository with
+   Contents read and write, and update the Vercel secret
+   `PDPP_PRIVATE_REPO_TOKEN`.
+5. **Check the site still works.** Rehearse on a preview deployment writing
+   `signatures-preview`, using a marked `+pdpp-test-<run>` alias of an address
+   you control: submit, confirm, and watch the record land in the successor's
+   store. Then delete the test record from `signatures-preview`. Confirm the
+   production journey separately by watching the next real signature reach
+   `/principles`.
 6. **Delete the private repository.** An interim store kept "just in case" is
    no longer interim.
 
@@ -166,5 +204,5 @@ Treat it as an incident, not a tidy-up.
 1. Remove the content and force-push the branch that carried it.
 2. Ask GitHub Support to purge the cached objects: force-pushed commits stay
    reachable by SHA for a period.
-3. Rotate the deploy key.
+3. Rotate the fine-grained access token.
 4. Tell the people whose data was exposed.
