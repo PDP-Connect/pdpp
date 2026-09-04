@@ -36,6 +36,7 @@ import {
   requiredFilesystemBinds,
   resolveTrustedLauncherPath,
   spawnWithNetworkIsolation,
+  submountEnumeratorFunctionDefinition,
 } from "./isolation.ts";
 
 const bwrapUsable =
@@ -3061,4 +3062,352 @@ test("[bwrap] guard mutation test — a --dev-bind variant is rejected", () => {
     unexpected.some((bind) => bind.flag === "--dev-bind" && bind.source === "/"),
     "the exact-set check must also independently flag the --dev-bind / / triple as an unexpected bind"
   );
+});
+
+// ─── Byte-safe submount enumeration (P1-1, external review of 2a134e153) ──
+//
+// The prior enumerator had awk DECODE `\012` into a literal newline and then
+// print the decoded path into a newline-delimited pipe its callers read with
+// `while IFS= read -r`. A mount point legitimately containing a newline
+// therefore arrived as TWO records, neither of which is a real path —
+// reproduced live in a privileged container before this fix: a single real
+// bind mount at `<dir>/a\nb` produced the records `<dir>/a` and `b`, and
+// neither exists on disk. In the setup-time remount that is a `mount
+// -o remount,ro,bind` against a nonexistent path; in the post-pivot verifier
+// it is the false-success shape this verification exists to prevent, because
+// `probe_ro` against a nonexistent path prints nothing, which the verifier
+// reads as "this submount is confirmed read-only" while it is still writable.
+//
+// The fix inverts what crosses the newline channel: RAW (still-escaped)
+// mountinfo records only — which the kernel guarantees are newline-free —
+// with the decode happening inside the consuming loop and the decoded path
+// handed to `mount`/`probe_ro` as a DIRECT argv entry.
+
+/**
+ * Runs the REAL generated submount enumerator (not a hand-copy) against a
+ * parent path, collecting one line per submount the enumerator yields. Each
+ * yielded path is reported with whether it actually EXISTS — the load-bearing
+ * assertion for the newline case, since the pre-fix bug's signature is
+ * yielding path FRAGMENTS that exist nowhere.
+ *
+ * `mountinfoPath`, when given, points the enumerator at a fixture file
+ * instead of the live `/proc/self/mountinfo`, which is how the forced-failure
+ * controls below are exercised: `mount --bind` over `/proc/self/mountinfo`
+ * reports success but the kernel keeps serving live content (confirmed
+ * empirically — `/proc/self` is a magic symlink resolved per read), so
+ * pointing the parser at a real unparsable file is the only honest way to
+ * test an unparsable mountinfo.
+ */
+function runSubmountEnumerator(options: { mountinfoPath?: string; parent: string }): {
+  exitCode: number | null;
+  stderrText: string;
+  yielded: string[];
+} {
+  // `report` prints a delimited record per yielded path. The delimiter is a
+  // fixed sentinel rather than a newline so a yielded path CONTAINING a
+  // newline stays recognizable as one record in this harness's own output —
+  // the harness must not reintroduce the very defect it is testing for.
+  const script = [
+    submountEnumeratorFunctionDefinition(),
+    'report() { printf "<<%s|%s>>\\n" "$1" "$([ -e "$1" ] && echo yes || echo no)"; }',
+    `pdpp_for_each_submount "$1" report`,
+  ].join("; ");
+  const result = spawnSync("sh", ["-c", script, "_", options.parent], {
+    encoding: "utf8",
+    env:
+      options.mountinfoPath === undefined
+        ? process.env
+        : { ...process.env, PDPP_MOUNTINFO_PATH: options.mountinfoPath },
+  });
+  const yielded = [...(result.stdout ?? "").matchAll(/<<([\s\S]*?)\|(yes|no)>>/g)].map(
+    (match) => `${match[1]}|${match[2]}`
+  );
+  return { exitCode: result.status, stderrText: result.stderr ?? "", yielded };
+}
+
+/**
+ * Creates a real bind mount at `<parent>/<name>` and returns a cleanup
+ * function. Uses a real mount (not a fixture) because the whole point is
+ * that the kernel's OWN mountinfo escaping is what the enumerator must
+ * survive — a hand-written fixture would let this test agree with a wrong
+ * assumption about how the kernel escapes these bytes.
+ */
+function withRealSubmount(parent: string, name: string): () => void {
+  const mountPoint = join(parent, name);
+  mkdirSync(mountPoint, { recursive: true });
+  const source = mkdtempSync(join(tmpdir(), "pdpp-submount-src-"));
+  const mounted = spawnSync("mount", ["--bind", source, mountPoint], { stdio: "ignore" });
+  assert.equal(mounted.status, 0, `sanity check: creating the real submount ${JSON.stringify(name)} must succeed`);
+  return () => {
+    spawnSync("umount", ["-l", mountPoint], { stdio: "ignore" });
+    rmSync(source, { recursive: true, force: true });
+  };
+}
+
+// Each of these is a byte the kernel escapes in a mountinfo mount-point field
+// (`proc(5)`: \040 space, \011 tab, \012 newline, \134 backslash), plus the
+// literal-escape-looking case that proves decoding happens EXACTLY once, plus
+// the misleading-prefix pair. Confirmed live: the raw fields are
+// `a\012b`, `tab\011x`, `sp\040ace`, `back\134slash`, `lit\134012eral`.
+const EXOTIC_SUBMOUNT_NAMES: readonly { label: string; name: string }[] = [
+  { label: "newline", name: "a\nb" },
+  { label: "tab", name: "tab\tx" },
+  { label: "space", name: "sp ace" },
+  { label: "backslash", name: "back\\slash" },
+  { label: "literal octal-escape-looking text", name: "lit\\012eral" },
+];
+
+for (const { label, name } of EXOTIC_SUBMOUNT_NAMES) {
+  test(`[unshare privileged] submount enumerator yields a ${label}-containing mount point as ONE real, existing path`, {
+    skip: !bindMountCapable,
+  }, () => {
+    const parent = mkdtempSync(join(tmpdir(), "pdpp-submount-exotic-"));
+    let cleanup: (() => void) | undefined;
+    try {
+      cleanup = withRealSubmount(parent, name);
+      const { exitCode, stderrText, yielded } = runSubmountEnumerator({ parent });
+      assert.equal(exitCode, 0, `enumeration must succeed; stderr: ${stderrText}`);
+      assert.deepEqual(
+        yielded,
+        [`${join(parent, name)}|yes`],
+        `a ${label}-containing mount point must arrive as exactly ONE record that EXISTS on disk — ` +
+          "the pre-fix defect split it into path fragments that exist nowhere, which probe silently clean"
+      );
+    } finally {
+      cleanup?.();
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+}
+
+test("[unshare privileged] submount enumerator decodes exactly once — a mount point named with a literal backslash-012 is NOT read as a newline", {
+  skip: !bindMountCapable,
+}, () => {
+  // The two cases are distinct in the RAW mountinfo field (`a\012b` for a
+  // real newline vs `lit\134012eral` for the literal text `\012`) and only
+  // STAY distinct if the raw text is decoded exactly once, left to right,
+  // without rescanning a decoded backslash as the start of a new escape.
+  // Both mounted simultaneously so a decoder that conflates them cannot
+  // pass by handling either one in isolation.
+  const parent = mkdtempSync(join(tmpdir(), "pdpp-submount-once-"));
+  const cleanups: (() => void)[] = [];
+  try {
+    cleanups.push(withRealSubmount(parent, "a\nb"));
+    cleanups.push(withRealSubmount(parent, "lit\\012eral"));
+    const { exitCode, stderrText, yielded } = runSubmountEnumerator({ parent });
+    assert.equal(exitCode, 0, `enumeration must succeed; stderr: ${stderrText}`);
+    assert.deepEqual(
+      [...yielded].sort(),
+      [`${join(parent, "a\nb")}|yes`, `${join(parent, "lit\\012eral")}|yes`].sort(),
+      "a real newline and the literal text \\012 must decode to two DIFFERENT existing paths"
+    );
+  } finally {
+    for (const cleanup of cleanups) {
+      cleanup();
+    }
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("[unshare privileged] submount enumerator excludes a misleading sibling whose path merely PREFIXES the parent", {
+  skip: !bindMountCapable,
+}, () => {
+  // `<root>/pre-fix` string-prefixes `<root>/pre` but is NOT a descendant of
+  // it. A prefix test without a path separator would wrongly remount/probe a
+  // sibling mount that the ro bind never covered.
+  const root = mkdtempSync(join(tmpdir(), "pdpp-submount-prefix-"));
+  const parent = join(root, "pre");
+  const cleanups: (() => void)[] = [];
+  try {
+    mkdirSync(parent, { recursive: true });
+    cleanups.push(withRealSubmount(root, "pre-fix"));
+    cleanups.push(withRealSubmount(parent, "real-child"));
+    const { exitCode, stderrText, yielded } = runSubmountEnumerator({ parent });
+    assert.equal(exitCode, 0, `enumeration must succeed; stderr: ${stderrText}`);
+    assert.deepEqual(
+      yielded,
+      [`${join(parent, "real-child")}|yes`],
+      "only the true descendant may be yielded — the misleading-prefix sibling must be excluded"
+    );
+  } finally {
+    for (const cleanup of cleanups) {
+      cleanup();
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── Fail-closed enumeration (P1-2, external review of 2a134e153) ─────────
+//
+// The prior shape was `awk ... | while read ...; done`: a failing awk, or an
+// absent/unreadable mountinfo, still exited 0 having run the loop body zero
+// times — reproduced live, both shapes exit 0 — so "could not enumerate" was
+// byte-identical to "no submounts exist", and setup proceeded / the
+// post-pivot check passed. Every control below must BLOCK instead.
+
+/** Writes a deliberately unparsable mountinfo fixture and returns its path. */
+function writeMountinfoFixture(kind: "empty" | "malformed" | "partial"): string {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-mountinfo-fixture-"));
+  const path = join(dir, "mountinfo");
+  const live = readFileSync("/proc/self/mountinfo", "utf8");
+  const contents: Record<typeof kind, string> = {
+    empty: "",
+    malformed: "not mountinfo at all\njunk junk\n",
+    // Truncated mid-record: the surviving prefix can still satisfy the
+    // per-record shape check, which is why the enumerator needs its separate
+    // trailing-newline test to catch this.
+    partial: live.slice(0, 60),
+  };
+  writeFileSync(path, contents[kind]);
+  return path;
+}
+
+for (const kind of ["empty", "malformed", "partial"] as const) {
+  test(`[unshare privileged] submount enumeration BLOCKS on a ${kind} mountinfo instead of reporting no submounts`, {
+    skip: !bindMountCapable,
+  }, () => {
+    const fixture = writeMountinfoFixture(kind);
+    try {
+      const { exitCode, stderrText, yielded } = runSubmountEnumerator({
+        mountinfoPath: fixture,
+        parent: "/tmp",
+      });
+      assert.equal(
+        exitCode,
+        93,
+        `a ${kind} mountinfo must exit SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE (93), not 0; stderr: ${stderrText}`
+      );
+      assert.deepEqual(yielded, [], "a failed enumeration must not yield any submount to the caller's command");
+    } finally {
+      rmSync(join(fixture, ".."), { recursive: true, force: true });
+    }
+  });
+}
+
+test("[unshare privileged] submount enumeration BLOCKS on an ABSENT mountinfo", {
+  skip: !bindMountCapable,
+}, () => {
+  const { exitCode, stderrText, yielded } = runSubmountEnumerator({
+    mountinfoPath: "/nonexistent/pdpp-mountinfo",
+    parent: "/tmp",
+  });
+  assert.equal(exitCode, 93, `an absent mountinfo must exit 93, not 0; stderr: ${stderrText}`);
+  assert.deepEqual(yielded, [], "a failed enumeration must not yield any submount");
+});
+
+test("submount enumeration BLOCKS on an UNREADABLE mountinfo", {
+  // Gated ONLY on being non-root: this control reads a fixture file, so it
+  // needs no bind-mount capability. It is skipped as root because root
+  // bypasses the permission bit entirely, which would make the control pass
+  // vacuously rather than prove anything.
+  skip: process.platform !== "linux" || process.getuid?.() === 0,
+}, () => {
+  const fixture = writeMountinfoFixture("partial");
+  chmodSync(fixture, 0o000);
+  try {
+    const { exitCode, stderrText, yielded } = runSubmountEnumerator({ mountinfoPath: fixture, parent: "/tmp" });
+    assert.equal(exitCode, 93, `an unreadable mountinfo must exit 93, not 0; stderr: ${stderrText}`);
+    assert.deepEqual(yielded, [], "a failed enumeration must not yield any submount");
+  } finally {
+    chmodSync(fixture, 0o644);
+    rmSync(join(fixture, ".."), { recursive: true, force: true });
+  }
+});
+
+test("[unshare privileged] submount enumeration BLOCKS when the PARSER ITSELF exits nonzero", {
+  skip: !bindMountCapable,
+}, () => {
+  // A fake `awk` first on PATH stands in for any reason the real parser could
+  // fail (OOM, a kernel read error mid-file, a hostile PATH). The pre-fix
+  // pipeline swallowed this entirely — confirmed live at exit 0.
+  const fakeBin = mkdtempSync(join(tmpdir(), "pdpp-fake-awk-"));
+  writeFileSync(join(fakeBin, "awk"), "#!/bin/sh\nexit 3\n", { mode: 0o755 });
+  try {
+    const script = [
+      submountEnumeratorFunctionDefinition(),
+      'report() { echo "<<$1|yes>>"; }',
+      'pdpp_for_each_submount "$1" report',
+    ].join("; ");
+    const result = spawnSync("sh", ["-c", script, "_", "/tmp"], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ""}` },
+    });
+    assert.equal(result.status, 93, `a nonzero parser exit must exit 93, not 0; stderr: ${result.stderr}`);
+    assert.ok(
+      /parser failed \(exit 3\)/.test(result.stderr ?? ""),
+      `the diagnostic must name the parser's own exit status; got ${JSON.stringify(result.stderr)}`
+    );
+    assert.ok(!/<</.test(result.stdout ?? ""), "a failed enumeration must not invoke the caller's command");
+  } finally {
+    rmSync(fakeBin, { recursive: true, force: true });
+  }
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements FAILS CLOSED when submount enumeration cannot parse mountinfo", {
+  skip: !bwrapUsable,
+}, () => {
+  // The end-to-end consequence of P1-2 in the verifier: a broken enumeration
+  // must fail the post-pivot check (91), not pass it. Before the fix the
+  // enumeration's failure was invisible — the command substitution captured
+  // no writable paths and the check reported success.
+  const fixture = writeMountinfoFixture("malformed");
+  try {
+    const setup = ["touch /pdpp-isolation-canary", "mkdir -p /oldroot"].join("; ");
+    const script = `PDPP_MOUNTINFO_PATH=/mountinfo-fixture; export PDPP_MOUNTINFO_PATH; ${setup}; ${postPivotVerificationStatements(
+      [{ path: "/etc", mode: "ro" }]
+    ).join("; ")}; echo PDPP_VERIFY_PASSED`;
+    const result = spawnSync(
+      "bwrap",
+      [
+        "--unshare-net",
+        "--tmpfs",
+        "/",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--ro-bind",
+        "/etc",
+        "/etc",
+        "--ro-bind",
+        fixture,
+        "/mountinfo-fixture",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/sbin",
+        "/sbin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--",
+        "sh",
+        "-c",
+        script,
+      ],
+      { encoding: "utf8" }
+    );
+    assert.equal(
+      result.status,
+      91,
+      `an unparsable mountinfo must FAIL the post-pivot check (91), not pass it; stderr: ${result.stderr}`
+    );
+    assert.ok(
+      !/PDPP_VERIFY_PASSED/.test(result.stdout ?? ""),
+      "the verification must not report passing when it could not enumerate submounts"
+    );
+    assert.ok(
+      /ro-check-status=93/.test(result.stderr ?? ""),
+      `the diagnostic must surface the enumeration failure status; got ${JSON.stringify(result.stderr)}`
+    );
+  } finally {
+    rmSync(join(fixture, ".."), { recursive: true, force: true });
+  }
 });

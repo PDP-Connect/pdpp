@@ -1404,85 +1404,245 @@ const MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION = [
 ].join(" ");
 
 /**
- * Builds a shell fragment (a `for`-loop-free, `while read`-based pipeline,
- * NOT a bare `for x in $(...)` — see below for why) that prints, one per
- * line, the DECODED absolute path of every mount point strictly UNDER
- * `stagedPathShQuoted` (the already-quoted staged path of a `ro` bind),
- * reading `/proc/self/mountinfo`. Shared by BOTH `recursiveReadOnlyRemountCommand`
- * (the setup-time remount) and `postPivotVerificationStatements`'s submount
- * check (the post-pivot verification) — the same parsing logic, used by two
- * different callers for two different purposes, previously duplicated with
- * the SAME bug in both places.
+ * The name of the shell function `submountEnumeratorFunctionDefinition()`
+ * defines and `forEachSubmountStatement()` invokes. Named once here so the
+ * definition and its call sites cannot drift apart.
+ */
+const SUBMOUNT_ENUMERATOR_FUNCTION_NAME = "pdpp_for_each_submount";
+
+/**
+ * The exit code the submount enumerator uses when it cannot PROVE it
+ * enumerated `/proc/self/mountinfo` — the parser exited nonzero, or the file
+ * could not be read/parsed at all (P1-2, external review of 2a134e153).
+ * Distinct from the exit code a caller's own per-submount ACTION returns, so
+ * "I could not enumerate" is never confusable with "I enumerated fine and
+ * your action failed" — the exact indistinguishability the review found.
+ */
+const SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE = 93;
+
+/**
+ * A shell function definition that invokes a caller-supplied command once per
+ * mount point strictly UNDER a given path, passing the mount point's DECODED
+ * absolute path as a direct argv entry. Shared by BOTH
+ * `recursiveReadOnlyRemountCommand` (the setup-time remount) and
+ * `postPivotVerificationStatements`'s submount check (the post-pivot
+ * verification), so neither can drift from the other — the previous version's
+ * common-mode failure was exactly that both callers shared one defective
+ * enumerator.
  *
- * MOUNTINFO PARSING FIX (P1-3, external review of ced8300be) — TWO
- * independent defects in the prior version, both closed here:
+ * BYTE-SAFE: NO DECODED PATH EVER CROSSES A NEWLINE CHANNEL (P1-1, external
+ * review of 2a134e153). The prior version had awk decode `\012` into a
+ * literal newline byte and then `print` the decoded path, one per line, into
+ * a pipe its callers consumed with `while IFS= read -r`. A mount point whose
+ * name legitimately CONTAINS a newline therefore arrived as TWO records,
+ * neither of which is a real path — confirmed live in a privileged container
+ * (see this fix's commit message): a single real bind mount at `<dir>/a\nb`
+ * produced the two records `<dir>/a` and `b`, and `[ -d ... ]` reports
+ * neither exists. In the setup-time remount that turns into a `mount
+ * -o remount,ro,bind` against a nonexistent path; in the post-pivot verifier
+ * it is worse than that — `probe_ro` against a nonexistent path prints
+ * nothing, which the verifier reads as "this submount is confirmed
+ * read-only," so a genuinely WRITABLE submount is reported clean. That is the
+ * false-success shape this whole verification exists to prevent.
  *
- * (1) UNDECODED FIELD COMPARISON: the prior version compared awk's raw
- * field-5 token directly against a plain (unescaped) `staged`/`stagedslash`
- * string — but `/proc/self/mountinfo` octal-escapes space/tab/newline/
- * backslash bytes IN the mount-point field (`\040` for a literal space,
- * etc. — see `MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION`'s doc comment for the
- * full escape set, confirmed against `proc(5)` and a real space-containing
- * bind mount on this host), so a raw field like `/tmp/mnt\040test\040space`
- * NEVER equals or string-prefixes the plain `/tmp/mnt test space` this
- * module's own JS-side `stagedPathShQuoted` provides — confirmed empirically
- * (see this fix's commit message): the OLD awk program produced ZERO output
- * for a real space-containing submount, silently omitting it from BOTH the
- * remount loop and the post-pivot verification, exactly the "escaped paths
- * can be omitted" finding. This function decodes field 5 via
- * `pdpp_decode_mountinfo_path()` BEFORE comparing, so the comparison is
- * decoded-vs-plain, which is the only pairing that can ever match.
+ * THE FIX inverts what the newline channel carries. The RAW mountinfo record
+ * is newline-free BY CONSTRUCTION — the kernel escapes a literal newline in a
+ * mount point as `\012` precisely so a record occupies exactly one line
+ * (`proc(5)`; confirmed live: a real `<dir>/a\nb` mount appears as the single
+ * raw field `<dir>/a\012b`). So the line-oriented stage now carries only RAW,
+ * still-escaped records — where a newline cannot appear — and the DECODE
+ * happens inside the consuming shell loop, after the record boundary has
+ * already been established. The decoded path then goes to the caller's
+ * command as a direct argv entry (`"$@" "$__decoded"`), never through another
+ * pipe, another `echo`, or another line-split. A path containing any byte —
+ * newline, tab, space, backslash — survives intact because after decoding it
+ * is only ever passed, never re-serialized.
  *
- * (2) FIELD EXTRACTION ITSELF was actually safe as a raw whitespace split —
- * confirmed by decoding AFTER field extraction, not before: since the
- * escaping exists specifically so a mount-point field can never CONTAIN an
- * unescaped whitespace byte, awk's default field splitting on field 5 always
- * isolates the correct (still-escaped) token regardless of what any other
- * field contains. The real defect was entirely in defect (1) above — this
- * function keeps the field-5 extraction unchanged and only adds the decode
- * step, rather than rewriting extraction that was never actually broken.
+ * DECODING IS NOT IDEMPOTENT, SO IT HAPPENS EXACTLY ONCE. A mount point whose
+ * name contains the literal four-character text `\012` escapes to `\134012`
+ * (backslash itself escapes to `\134`), which decodes back to the literal
+ * text `\012` — NOT to a newline. Confirmed live alongside the newline case
+ * above: the two are distinct in the raw field (`a\012b` vs `lit\134012eral`)
+ * and only stay distinct if the raw text is decoded exactly once, left to
+ * right, with each decoded byte emitted directly rather than rescanned. The
+ * decoder below consumes the four input characters of an escape and advances
+ * past them, so a `\134` that decodes to a backslash is never re-examined as
+ * the start of the following `012` — which is what keeps a mount point
+ * literally named `\012` from being mistaken for one containing a newline.
  *
- * NEWLINE-SAFE OUTPUT, NOT `for x in $(...)` (P1-3, the review's
- * "word-splitting" half of the finding, which applies independently of
- * decoding): the prior version's CALLERS (`recursiveReadOnlyRemountCommand`'s
- * `for __submount in $(...)`, `postPivotVerificationStatements`'s
- * `for __sm in $(...)`) both iterated over this awk program's OUTPUT using
- * unquoted command substitution inside a `for`-in loop — even with the
- * decode fix above making a DECODED path (containing a real, literal space)
- * come out of awk correctly, handing that decoded output to `for x in
- * $(cmd)` would still split it on the shell's own `IFS` whitespace,
- * corrupting it right back into two separate, wrong loop iterations. This
- * function instead prints one NEWLINE-terminated path per line (a mount
- * point can never contain a literal newline byte — `proc(5)`'s own escaping
- * exists specifically to guarantee that), and its two callers consume it via
- * `while IFS= read -r line; do ... done`, which preserves embedded spaces
- * correctly (confirmed empirically against a real space-containing
- * submount) — the standard POSIX-safe way to iterate arbitrary paths
- * line-by-line without word-splitting.
+ * FAIL-CLOSED ENUMERATION (P1-2, external review of 2a134e153). The prior
+ * version was `awk ... /proc/self/mountinfo | while read ...; done`: if awk
+ * exited nonzero, or `/proc/self/mountinfo` was absent/unreadable, the
+ * pipeline still exited 0 having run the loop body zero times — confirmed
+ * live, both shapes exit 0 — so "I could not enumerate" was byte-identical to
+ * "there are no submounts," and setup proceeded / verification passed. This
+ * version STAGES the parser's output to a temporary file and refuses to
+ * iterate until it has POSITIVE evidence of a successful parse:
  *
- * SUBSHELL EXIT-CODE PROPAGATION: a `cmd | while read ...; done` pipeline
- * runs the loop body in a SUBSHELL under dash (this module's target shell —
- * `sh -c` resolves to dash on every host this module targets), but the
- * PIPELINE's own exit status still equals the LAST command's exit status —
- * confirmed empirically: an `exit N` inside the while-loop's subshell
- * correctly becomes the whole pipeline's `$?` — so callers wrapping this in
- * `req`/an explicit `$?` check still fail closed exactly as before, no
- * behavior change from the caller's perspective beyond correctness.
+ *   1. the parser's own exit status is 0 (captured directly, not through a
+ *      pipeline that discards it), AND
+ *   2. the parser reports it actually READ AND PARSED mountinfo — it emits a
+ *      trailing `#` sentinel line carrying the number of records it saw, and
+ *      that count must be present and nonzero. A zero-record mountinfo is
+ *      impossible for a live process (the root mount alone is always there),
+ *      so "parsed zero records" is itself proof of a truncated or malformed
+ *      read rather than a legitimate empty result.
+ *
+ * Only when both hold does it iterate; otherwise it exits
+ * `SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE` with a diagnostic. This is what
+ * makes an unreadable, absent, empty, malformed, or partially-written
+ * mountinfo BLOCK the child rather than silently look clean. Note that
+ * "found zero SUBMOUNTS" remains a perfectly legitimate result (most binds
+ * have none) and is distinguished from "parsed zero RECORDS" — only the
+ * latter is a failure.
  *
  * ORDER: newest mounts appear later in `/proc/self/mountinfo`, so a mount
  * nested two levels deep (a submount of a submount) is naturally processed
  * AFTER its own parent submount, in the same top-to-bottom order the file
- * already lists them — unchanged from the prior version's own reasoning,
- * still holds regardless of the decode/iteration fixes.
+ * already lists them — unchanged from the prior version's reasoning, and
+ * preserved here because the staging file keeps the parser's original order.
  */
-function findDecodedSubmountsShellFragment(stagedPathShQuoted: string): string {
+export function submountEnumeratorFunctionDefinition(): string {
+  // The parser emits RAW (still-escaped) field-5 tokens, one per line, for
+  // every record whose DECODED path is strictly under `staged` — plus a
+  // trailing `#<count>` sentinel proving it read and parsed the file. The
+  // descendant comparison happens INSIDE awk, on decoded values, so the
+  // caller never has to compare decoded paths itself (and so a misleading
+  // prefix like `/p/pre-fix` is correctly excluded from `/p/pre`'s
+  // descendants: the `staged "/"` prefix test requires a real path
+  // separator, which `pre-fix` does not have after `pre`).
+  // VALIDATES RECORD SHAPE, NOT JUST LINE COUNT. Counting lines is NOT
+  // evidence of a successful parse — confirmed empirically against a
+  // deliberately malformed mountinfo (`not mountinfo at all\njunk`) and a
+  // byte-truncated one: both yield a nonzero line count, so a line-count
+  // sentinel alone would have let the caller iterate on garbage. A real
+  // `/proc/self/mountinfo` record (`proc(5)`) is: numeric mount ID, numeric
+  // parent ID, `major:minor`, root, mount point, then optional fields
+  // terminated by a literal `-` separator, then at least fs type and source
+  // after it. Any line failing that shape makes this parser exit nonzero, so
+  // a malformed or partially-written file BLOCKS instead of being silently
+  // treated as "no submounts here".
+  //
+  // A TRUNCATED FINAL RECORD is caught separately, by the caller comparing
+  // the bytes the parser consumed against the source's real size — a partial
+  // read leaves the last line without its terminating newline. This is NOT
+  // done with gawk's `RT` record-terminator variable: the target shell
+  // environment ships `mawk` (confirmed: `mawk 1.3.4`, which has no `RT` and
+  // silently yields an empty string for it, so an `RT`-based check would
+  // pass vacuously on every input). A byte-truncated mountinfo can cut in a
+  // place where the surviving prefix still satisfies the field-shape test
+  // above (confirmed empirically: truncating to 60 bytes left a first line
+  // that passed shape validation), so shape alone is not sufficient to catch
+  // a partial read.
   const awkProgram =
     `${MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION} ` +
-    "{ mp = pdpp_decode_mountinfo_path($5); if (mp == staged) next; if (index(mp, stagedslash) == 1) print mp }";
-  return (
-    `awk -v staged=${stagedPathShQuoted} -v stagedslash=${stagedPathShQuoted}"/" ` +
-    `${shQuote(awkProgram)} /proc/self/mountinfo`
-  );
+    "{ sep = 0; " +
+    'for (f = 7; f <= NF; f++) { if ($f == "-") { sep = f; break } } ' +
+    "if (NF < 10 || sep == 0 || NF - sep < 2 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+:[0-9]+$/) { " +
+    'printf "pdpp isolation: malformed /proc/self/mountinfo record at line %d\\n", NR > "/dev/stderr"; ' +
+    "malformed = 1; exit 1 } " +
+    "valid++; mp = pdpp_decode_mountinfo_path($5); " +
+    "if (mp != staged && index(mp, stagedslash) == 1) print $5 } " +
+    'END { if (malformed) { exit 1 } printf "#%d\\n", valid }';
+  return [
+    `${SUBMOUNT_ENUMERATOR_FUNCTION_NAME}() {`,
+    // `$1` is the parent path to enumerate under; everything after `--` is
+    // the caller's command, invoked once per submount with the decoded path
+    // appended as a direct argv entry.
+    '  __sm_parent="$1"; shift;',
+    // STAGED IN A VARIABLE, NOT A TEMP FILE. An earlier revision of this fix
+    // staged to `mktemp`, which broke every real caller: neither context this
+    // runs in is guaranteed to have a writable temp directory — the bwrap
+    // sandbox builds a bare `tmpfs` root with no `/tmp` at all, and the
+    // unshare prelude's post-pivot root likewise provides none (confirmed:
+    // `mktemp` failed with "No such file or directory" in both, which failed
+    // the check closed for an incidental reason having nothing to do with
+    // the mount table). Staging in a variable removes the filesystem
+    // dependency entirely.
+    //
+    // This is byte-safe HERE specifically because the staged content is RAW,
+    // still-escaped mountinfo records, which the kernel guarantees are
+    // newline-free — the same property the whole design rests on. Command
+    // substitution strips trailing newlines and the `while read` below splits
+    // on them, and neither can corrupt a record that cannot contain one. A
+    // DECODED path would NOT be safe to stage this way, which is exactly why
+    // the decode happens per-record inside the loop instead.
+    //
+    // SOURCE: `PDPP_MOUNTINFO_PATH` when set, else the real
+    // `/proc/self/mountinfo`. This exists so the forced-failure controls
+    // (parser nonzero, unreadable, absent, empty, malformed, partial) can be
+    // exercised against a REAL fixture file: `mount --bind` over
+    // `/proc/self/mountinfo` reports success but the kernel keeps serving
+    // live content (confirmed empirically — `/proc/self` is a magic symlink
+    // resolved per read), so pointing the parser at an unparsable file is
+    // the only honest way to test an unparsable mountinfo. The variable is
+    // set only by this module's own tests; the production prelude never sets
+    // or exports it, and it is read before `exec <target>`, so the isolated
+    // child cannot influence it. Written as a template literal because the
+    // shell's `${VAR:-default}` expansion is spelled identically to a JS
+    // template placeholder, which the linter rejects inside a plain string.
+    `  __sm_source="\${PDPP_MOUNTINFO_PATH:-/proc/self/mountinfo}";`,
+    // Parser exit status captured DIRECTLY — assigned from a command
+    // substitution rather than read after a pipeline, which is what made the
+    // prior version's failure invisible.
+    `  __sm_staged=$(awk -v staged="$__sm_parent" -v stagedslash="$__sm_parent/" ${shQuote(awkProgram)} ` +
+      '"$__sm_source" 2>/dev/null); __sm_rc=$?;',
+    '  if [ "$__sm_rc" -ne 0 ]; then ' +
+      'echo "pdpp isolation: submount enumeration parser failed (exit $__sm_rc) for [$__sm_parent]" 1>&2; ' +
+      `exit ${SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE}; fi;`,
+    // A partially-written source ends without a terminating newline. `tail
+    // -c 1` inside a command substitution yields that final byte for a
+    // truncated file and the empty string for a properly terminated one
+    // (command substitution strips the trailing newline) — a portable
+    // truncation test that does not need gawk's `RT`, which mawk lacks.
+    // An empty source has no final byte and is caught by the sentinel check
+    // below instead.
+    '  if [ -s "$__sm_source" ] && [ -n "$(tail -c 1 "$__sm_source" 2>/dev/null)" ]; then ' +
+      'echo "pdpp isolation: mountinfo source [$__sm_source] ends mid-record (partial read)" 1>&2; ' +
+      `exit ${SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE}; fi;`,
+    // Evidence that mountinfo was actually read and parsed: the sentinel must
+    // be present AND report a nonzero valid-record count.
+    '  __sm_sentinel=$(printf "%s\\n" "$__sm_staged" | sed -n "s/^#\\([0-9][0-9]*\\)$/\\1/p" | tail -n 1);',
+    '  if [ -z "$__sm_sentinel" ] || [ "$__sm_sentinel" -eq 0 ]; then ' +
+      'echo "pdpp isolation: submount enumeration could not prove mountinfo was read and parsed ' +
+      'for [$__sm_parent] (records=[$__sm_sentinel])" 1>&2; ' +
+      `exit ${SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE}; fi;`,
+    // Only now iterate. The line channel carries RAW records only; the decode
+    // happens here, per record, and the decoded path goes out as direct argv.
+    //
+    // The loop body runs in a SUBSHELL under dash, so a failing per-submount
+    // action cannot set a variable the caller would see — instead the
+    // subshell `exit`s with the action's own status, and the pipeline's
+    // status (which equals its last command's, i.e. the subshell's) becomes
+    // this function's. That is the same exit-status-propagation property the
+    // prior version relied on, kept deliberately: it is what lets `req` and
+    // the post-pivot check fail closed on a submount that refuses its
+    // remount or probe.
+    '  printf "%s\\n" "$__sm_staged" | while IFS= read -r __sm_raw; do',
+    '    [ -n "$__sm_raw" ] || continue;',
+    '    case "$__sm_raw" in "#"*) continue ;; esac;',
+    '    __sm_decoded=$(printf "%s" "$__sm_raw" | ' +
+      `awk ${shQuote(`${MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION} { printf "%s", pdpp_decode_mountinfo_path($0) }`)}` +
+      ') || { echo "pdpp isolation: submount path decode failed for [$__sm_raw]" 1>&2; ' +
+      `exit ${SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE}; };`,
+    '    "$@" "$__sm_decoded" || exit $?;',
+    "  done;",
+    "}",
+  ].join(" ");
+}
+
+/**
+ * Builds the shell statement that runs `command` (a command NAME plus any
+ * fixed leading argv entries) once per submount of `parentPathShQuoted`, with
+ * the submount's decoded path appended as the final argv entry.
+ *
+ * Command substitution is deliberately NOT used to carry the path: the whole
+ * point of `submountEnumeratorFunctionDefinition()` is that a decoded path is
+ * only ever PASSED as argv, never re-serialized into a string a shell would
+ * then have to re-split.
+ */
+function forEachSubmountStatement(parentPathShQuoted: string, command: string): string {
+  return `${SUBMOUNT_ENUMERATOR_FUNCTION_NAME} ${parentPathShQuoted} ${command}`;
 }
 
 /**
@@ -1507,14 +1667,28 @@ function findDecodedSubmountsShellFragment(stagedPathShQuoted: string): string {
  * writable and proceeds.
  */
 function recursiveReadOnlyRemountCommand(stagedPathShQuoted: string): string {
-  const findSubmounts = findDecodedSubmountsShellFragment(stagedPathShQuoted);
-  const loop = `${findSubmounts} | while IFS= read -r __submount; do mount -o remount,ro,bind "$__submount" || exit 1; done`;
+  // `mount -o remount,ro,bind` is invoked with the submount's decoded path as
+  // a DIRECT argv entry appended by the enumerator — not interpolated into a
+  // string, so a path containing a newline/tab/space/backslash reaches
+  // `mount(8)` byte-for-byte as the single argument it is.
+  // Joined with `;`, not a bare space: a shell function definition's closing
+  // `}` is a reserved word that needs a command separator before whatever
+  // follows it, or dash rejects the next word ("Syntax error: word
+  // unexpected") — confirmed against `/bin/sh` -> dash, the shell this
+  // prelude actually runs under.
+  const body = [
+    submountEnumeratorFunctionDefinition(),
+    forEachSubmountStatement(stagedPathShQuoted, "mount -o remount,ro,bind"),
+  ].join("; ");
   // `req` (see REQ_FUNCTION_DEFINITION's doc comment) executes its wrapped
   // command as `"$@"` — a single command name plus argv entries, not a
-  // shell snippet — so a compound statement like this pipeline must be
-  // handed to `req` as ONE argv entry, itself run via `sh -c`, rather than
-  // being split on whitespace the way a plain `mount ...` command is.
-  return `sh -c ${shQuote(loop)}`;
+  // shell snippet — so a compound statement like this must be handed to
+  // `req` as ONE argv entry, itself run via `sh -c`, rather than being split
+  // on whitespace the way a plain `mount ...` command is. The enumerator's
+  // own `exit` (on an enumeration failure, or on a submount that refuses the
+  // remount) becomes this `sh -c`'s exit status, which `req` then reports and
+  // fails the whole prelude on.
+  return `${shQuote(resolveTrustedLauncherPath("sh"))} -c ${shQuote(body)}`;
 }
 
 function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, cwd: string | undefined): string {
@@ -1899,7 +2073,15 @@ export function postPivotVerificationStatements(binds: readonly FilesystemBind[]
   // that is a legitimate, real calling shape this function's own contract
   // must support without a caller needing to know its internal
   // implementation detail of using a shell function.
-  const statements: string[] = [`PATH=${TRUSTED_SETUP_PATH}`, PROBE_RO_FUNCTION_DEFINITION];
+  // The submount enumerator is defined here for the same self-containment
+  // reason `probe_ro` is (see the comment above): this function's returned
+  // statements are run standalone by `isolation-mechanism.test.ts`'s sandbox
+  // harness, with no prelude to have defined it.
+  const statements: string[] = [
+    `PATH=${TRUSTED_SETUP_PATH}`,
+    PROBE_RO_FUNCTION_DEFINITION,
+    submountEnumeratorFunctionDefinition(),
+  ];
   const roBindPaths = binds.filter((b) => b.mode === "ro").map((b) => b.path);
   // Property 3 checks the TOP of each ro bind, at its real, post-pivot path
   // (`/usr`, `/etc`, ... — the new root's OWN view, not the pre-pivot
@@ -1937,19 +2119,27 @@ export function postPivotVerificationStatements(binds: readonly FilesystemBind[]
   // Docker-injected `/etc/resolv.conf`-style shape this module's own doc
   // comments elsewhere already cite as the concrete, real-world case this
   // must catch.
-  const submountRoCheck = roBindPaths
-    .map((path) => {
-      const findSubmounts = findDecodedSubmountsShellFragment(shQuote(path));
-      return `${findSubmounts} | while IFS= read -r __sm; do probe_ro "$__sm"; done`;
-    })
-    .join("; ");
+  // BYTE-SAFE + FAIL-CLOSED (P1-1/P1-2, external review of 2a134e153): the
+  // submount walk now goes through the shared enumerator, which passes each
+  // decoded path to `probe_ro` as a DIRECT argv entry (so a newline- or
+  // tab-containing submount is probed as the single path it really is,
+  // instead of being split into non-existent fragments that probe silently
+  // clean) and REFUSES to iterate unless it can prove it read and parsed
+  // `/proc/self/mountinfo`. See `submountEnumeratorFunctionDefinition()`.
+  const submountRoCheck = roBindPaths.map((path) => forEachSubmountStatement(shQuote(path), "probe_ro")).join("; ");
   const roCheck = [topLevelRoCheck, submountRoCheck].filter(Boolean).join("; ");
+  // The ro-check runs inside a command substitution, so an enumeration
+  // failure's `exit` would otherwise only kill the SUBSHELL — its status has
+  // to be captured explicitly and turned into a verification failure here,
+  // or "could not enumerate" would once again read as "nothing writable
+  // found." `__ro_rc` is that capture; any nonzero value fails the check.
   statements.push(
     "__canary_ok=1; [ -e /pdpp-isolation-canary ] || __canary_ok=0; " +
       `__oldroot_leftover=$(set -- /oldroot/*; if [ -e "$1" ]; then echo "$1"; fi); ` +
-      `__writable_ro=$(${roCheck || "true"}); ` +
-      `if [ "$__canary_ok" -ne 1 ] || [ -n "$__oldroot_leftover" ] || [ -n "$__writable_ro" ]; then ` +
-      `echo "pdpp isolation: post-pivot verification failed — new-root-active=$__canary_ok oldroot-leftover=[$__oldroot_leftover] writable-ro-binds=[$__writable_ro]" 1>&2; ` +
+      `__writable_ro=$(${roCheck || "true"}); __ro_rc=$?; ` +
+      `if [ "$__canary_ok" -ne 1 ] || [ -n "$__oldroot_leftover" ] || [ -n "$__writable_ro" ] || ` +
+      `[ "$__ro_rc" -ne 0 ]; then ` +
+      `echo "pdpp isolation: post-pivot verification failed — new-root-active=$__canary_ok oldroot-leftover=[$__oldroot_leftover] writable-ro-binds=[$__writable_ro] ro-check-status=$__ro_rc" 1>&2; ` +
       `exit ${POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE}; fi`
   );
   // IN-NAMESPACE SOCKET SCAN, POINT A (P1-2, external review of ced8300be):
