@@ -8,8 +8,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
+const CONFIRMATION_URL = pathToFileURL(fileURLToPath(new URL("./confirmation.ts", import.meta.url))).href;
 const PROVIDERS_URL = pathToFileURL(fileURLToPath(new URL("./providers.ts", import.meta.url))).href;
+const SIGNING_URL = pathToFileURL(fileURLToPath(new URL("./index.ts", import.meta.url))).href;
 const SITE_DIRECTORY = fileURLToPath(new URL("../../..", import.meta.url));
+const ERROR_LOCATION = /\/principles\?signed=error#sign$/;
 const DEFAULT_BRANCH_WRITE_ERROR = /private repo branch signatures responded 404/;
 const MISSING_BRANCH_ERROR = /private repo branch missing-branch is unavailable \(404\)/;
 const PRODUCTION_MISMATCH_ERROR = /production deployments write signatures, not signatures-preview/;
@@ -87,18 +90,22 @@ async function runProvider(
 }
 
 interface PendingRetryResult {
-  error: { message: string; name: string } | null;
+  githubCalls: number;
+  location: string | null;
   pendingSurvived: boolean;
+  status: number;
 }
 
 /**
- * Drives the confirm sequence against a simulated pending store on a deployment
- * the guard refuses: read the submission, attempt the write, and report whether
- * the submission is still retrievable afterwards.
+ * Drives a real confirmation POST on a deployment the guard refuses, against a
+ * simulated pending store, and reports the signatory's outcome and whether the
+ * submission is still retrievable afterwards.
  *
- * The read is a plain GET and the delete is a separate DEL, which is the
- * ordering the confirm route needs so a refused write is recoverable. A
- * destructive read (GETDEL) in its place makes `pendingSurvived` false.
+ * The handler comes from `confirmation.ts` and the pending functions from
+ * `providers.ts`, both unmocked, so this exercises the ordering the confirm
+ * path actually ships: read (GET), write, delete (DEL) only once the record is
+ * durable. A destructive read (GETDEL) in `readPending`'s place makes
+ * `pendingSurvived` false.
  */
 async function runPendingRetry(): Promise<PendingRetryResult> {
   const program = `
@@ -115,10 +122,19 @@ async function runPendingRetry(): Promise<PendingRetryResult> {
       VERCEL_ENV: "preview",
     });
 
-    const submission = { country: "United States", email: "private@example.test", name: "Private Display Name" };
+    const submission = {
+      affiliation: "PDP-Connect", consent_age: true, consent_principles: true, consent_register: true,
+      consent_updates: false, country: "United States", email: "private@example.test",
+      name: "Private Display Name", principles_version: "v1.0", signatory_kind: "individual",
+    };
     const store = new Map([["pending:signatory-id", JSON.stringify(submission)]]);
+    let githubCalls = 0;
     globalThis.fetch = async (input) => {
       const url = String(input);
+      if (url.startsWith("https://api.github.com/")) {
+        githubCalls += 1;
+        return new Response(null, { status: 201 });
+      }
       const read = url.match(/\\/(get|getdel)\\/([^/?]+)/);
       if (read) {
         const key = decodeURIComponent(read[2]);
@@ -134,16 +150,37 @@ async function runPendingRetry(): Promise<PendingRetryResult> {
       return new Response(JSON.stringify({ result: null }), { status: 200 });
     };
 
+    console.error = () => {};
+    const { NextRequest } = await import("next/server");
+    const { createConfirmationHandlers } = await import(${JSON.stringify(CONFIRMATION_URL)});
+    const { buildRecord, hasSameImmutableFields, recordPath } = await import(${JSON.stringify(SIGNING_URL)});
     const providers = await import(${JSON.stringify(PROVIDERS_URL)});
-    const pending = await providers.readPending("signatory-id");
-    let error = null;
-    if (pending) {
-      try {
-        await providers.writeSignatory({ id: "signatory-id" }, "signatories/2026/signatory-id.json");
-      } catch (caught) { error = { message: caught.message, name: caught.name }; }
-    }
+
+    const { POST } = createConfirmationHandlers({
+      buildRecord,
+      deletePending: providers.deletePending,
+      hasSameImmutableFields,
+      isSigningLive: () => true,
+      readPending: providers.readPending,
+      readSignatory: providers.readSignatory,
+      recordPath,
+      verifyToken: (value) => (value === "confirm-token" ? "signatory-id" : null),
+      writeSignatory: providers.writeSignatory,
+    });
+
+    const response = await POST(new NextRequest("https://pdpp.example.test/api/sign/confirm", {
+      body: new URLSearchParams({ token: "confirm-token" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    }));
+
     const retried = await providers.readPending("signatory-id");
-    process.stdout.write(JSON.stringify({ error, pendingSurvived: retried !== null }));
+    process.stdout.write(JSON.stringify({
+      githubCalls,
+      location: response.headers.get("location"),
+      pendingSurvived: retried !== null,
+      status: response.status,
+    }));
   `;
   const { stdout } = await execFile(
     process.execPath,
@@ -291,16 +328,20 @@ test("the branch policy is decided before any credential is read", async () => {
 // start again. So the read and the delete must be separate operations, with the
 // delete after a successful write.
 //
-// This asserts the provider surface that makes the safe ordering possible
-// rather than the route, because `fix/sign-form-error-ux` (#328) rewrites the
-// route wholesale and this branch must not conflict with it.
+// The confirmation handler's own suite (`confirmation.test.ts`) drives that
+// ordering against injected fakes. This drives it against the REAL providers on
+// a refused deployment, which is the only way the guard participates: nothing
+// injected can refuse a branch.
 
-test("a rejected write leaves the pending record for a retry", async () => {
+test("a guard refusal leaves the pending record and reports the write as unavailable", async () => {
   const result = await runPendingRetry();
 
-  // The guard refused the write, and the submission is still there to retry.
-  assert.equal(result.error?.name, "SigningUnavailableError");
-  assert.match(result.error?.message ?? "", PREVIEW_MISMATCH_ERROR);
+  // The guard refused before any GitHub request, the signatory is told the
+  // write failed, and the submission is still there to retry once the branch
+  // configuration is corrected.
+  assert.equal(result.githubCalls, 0);
+  assert.equal(result.status, 303);
+  assert.match(result.location ?? "", ERROR_LOCATION);
   assert.equal(result.pendingSurvived, true);
 });
 
