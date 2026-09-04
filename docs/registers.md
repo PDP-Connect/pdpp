@@ -60,12 +60,11 @@ host keeps working; it is the wrong branch for a rehearsal, so **set
 local journey.
 
 A branch-policy refusal is raised when the site writes the record, which on the
-confirm path happens after the pending submission has been read. Until
-`fix/sign-form-error-ux` lands, that read also deletes it, so a refusal on a
-misconfigured deployment spends the signatory's single-use confirmation link and
-the submission cannot be retried — the person has to sign again. That change
-reorders confirm to read, write, then delete, which leaves the pending record in
-place for a retry.
+confirm path happens after the pending submission has been read. That read does
+not consume the submission: confirm reads, writes, and deletes the pending
+record only once the private record is durable. So a refusal on a misconfigured
+deployment leaves the confirmation link usable — fix the branch configuration
+and the same link still works. The signatory sees an error and nothing is lost.
 
 After a rehearsal, delete the test records from `signatures-preview` or reset
 that branch to its empty base. Its records are not withdrawals from the

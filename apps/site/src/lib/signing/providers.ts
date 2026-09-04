@@ -184,11 +184,11 @@ const PREVIEW_BRANCH = "signatures-preview";
  * set `signatures-preview` explicitly.
  *
  * A rejection here is raised at write time, which on the confirm path is AFTER
- * the pending record has been read. On this branch's base that read is a
- * destructive GETDEL, so a rejection consumes the signatory's single-use link
- * and the submission cannot be retried. `fix/sign-form-error-ux` (#328) changes
- * confirm to read, write, then delete, which leaves the pending record intact
- * for a retry; `providers.test.ts` pins that ordering requirement.
+ * the pending record has been read. That read is non-destructive — `readPending`
+ * is a GET and `deletePending` is a separate DEL that runs only once the record
+ * is durable — so a refused write leaves the submission in the store and the
+ * signatory can retry on a corrected deployment. `providers.test.ts` pins that
+ * ordering requirement.
  *
  * Pure, and exported, so every case can be checked without a deployment.
  */
