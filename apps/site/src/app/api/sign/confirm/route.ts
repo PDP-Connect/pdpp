@@ -1,9 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { type NextRequest, NextResponse } from "next/server";
+import type { NextRequest, NextResponse } from "next/server";
 import { buildRecord, recordPath, SigningUnavailableError, verifyToken } from "@/lib/signing/index.ts";
 import { takePending, writeSignatory } from "@/lib/signing/providers.ts";
+import { signedOutcome } from "@/lib/signing/signing-outcome.ts";
 import { siteFlags } from "@/lib/site-config.ts";
 
 // GET /api/sign/confirm?token=... — the single-use confirmation link.
@@ -20,13 +21,9 @@ import { siteFlags } from "@/lib/site-config.ts";
 
 export const runtime = "nodejs";
 
-function outcome(request: NextRequest, state: string): NextResponse {
-  return NextResponse.redirect(new URL(`/principles?signed=${state}`, request.url), 303);
-}
-
 export async function GET(request: NextRequest): Promise<NextResponse> {
   if (!siteFlags.signingLive) {
-    return NextResponse.json({ error: "Signing is not open." }, { status: 404 });
+    return signedOutcome(request, "closed", { error: "Signing is not open.", status: 404 });
   }
 
   const token = new URL(request.url).searchParams.get("token");
@@ -36,13 +33,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   // wrong it is, and the person who owns the address cannot act on the
   // difference anyway.
   if (!id) {
-    return outcome(request, "invalid");
+    return signedOutcome(request, "invalid", { error: "Confirmation link is invalid or expired.", status: 400 });
   }
 
   try {
     const submission = await takePending(id);
     if (!submission) {
-      return outcome(request, "invalid");
+      return signedOutcome(request, "invalid", { error: "Confirmation link is invalid or expired.", status: 400 });
     }
 
     const record = buildRecord(id, submission);
@@ -51,13 +48,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // The public register does not change here. It changes when the publish
     // script next runs, which is what keeps the public site free of any code
     // path that reads the private store.
-    return outcome(request, "confirmed");
+    return signedOutcome(request, "confirmed", { error: "", status: 303 });
   } catch (error) {
     if (error instanceof SigningUnavailableError) {
       console.error("[sign/confirm] unavailable:", error.message);
     } else {
       console.error("[sign/confirm] unexpected:", error);
     }
-    return outcome(request, "error");
+    return signedOutcome(request, "error", { error: "Signing is temporarily unavailable.", status: 503 });
   }
 }

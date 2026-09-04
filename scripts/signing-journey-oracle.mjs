@@ -594,15 +594,6 @@ async function main() {
       headers: { "content-type": "application/x-www-form-urlencoded" },
       method: "POST",
     });
-    if (submitResponse.status === 404) {
-      fail("POST /api/sign returned 404: signing is not enabled on this deployment");
-    }
-    if (submitResponse.status === 429) {
-      fail(
-        "POST /api/sign returned 429: the site allows 5 submissions per IP per hour, " +
-          "and this is the sixth within a rolling hour. Wait up to an hour and retry."
-      );
-    }
     const submitLocation = assertRedirect(submitResponse, ["signed", "pending"], "submit");
     record(receipt, "submit", "pass", `303 -> ${submitLocation}`);
     log(`    ok: 303 -> ${submitLocation}`);
