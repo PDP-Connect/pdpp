@@ -13,6 +13,7 @@ const SIGNED_MESSAGES: Record<string, string> = {
   ratelimited: "Too many submissions came from this connection. Try again in a few minutes.",
   unavailable:
     "We could not send the confirmation email right now. Your details will be discarded. Try again in a few minutes.",
+  withdrawn: "Your signature has been withdrawn. The public register updates when it is next published.",
 };
 
 const WITHDRAW_MESSAGES: Record<string, string> = {
@@ -22,13 +23,17 @@ const WITHDRAW_MESSAGES: Record<string, string> = {
   invalid: "This withdrawal link is invalid. Nothing was changed.",
 };
 
-export function PdppSigningStatus({ signed, withdraw }: { signed?: string; withdraw?: string }) {
-  let message: string | undefined;
+const UNKNOWN_SIGNED_MESSAGE = "We could not identify that signing status. Nothing was changed.";
+
+export function signedStatusMessage(signed: string | undefined): string | undefined {
   if (signed) {
-    message = SIGNED_MESSAGES[signed];
-  } else if (withdraw) {
-    message = WITHDRAW_MESSAGES[withdraw];
+    return SIGNED_MESSAGES[signed] ?? UNKNOWN_SIGNED_MESSAGE;
   }
+  return undefined;
+}
+
+export function PdppSigningStatus({ signed, withdraw }: { signed?: string; withdraw?: string }) {
+  const message = signedStatusMessage(signed) ?? (withdraw ? WITHDRAW_MESSAGES[withdraw] : undefined);
   if (!message) {
     return null;
   }

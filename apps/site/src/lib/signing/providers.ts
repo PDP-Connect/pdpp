@@ -108,7 +108,7 @@ export async function withinRateLimit(ip: string): Promise<boolean> {
 // ---------------------------------------------------------------- mail
 
 /**
- * Sends THE confirmation email. The only email this system ever sends.
+ * Sends the confirmation email.
  *
  * Both links are in this one message: confirming and withdrawing. That is why
  * no second email is needed to withdraw, and why the withdrawal path needs no
@@ -132,8 +132,6 @@ export async function sendConfirmationEmail(options: {
     "",
     "Keep this message. To withdraw at any time, use this link:",
     options.withdrawUrl,
-    "",
-    "This is the only email this system sends.",
   ].join("\n");
 
   const response = await fetch("https://api.resend.com/emails", {
