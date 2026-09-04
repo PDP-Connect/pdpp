@@ -12,6 +12,10 @@ const PROVIDERS_URL = pathToFileURL(fileURLToPath(new URL("./providers.ts", impo
 const SITE_DIRECTORY = fileURLToPath(new URL("../../..", import.meta.url));
 const DEFAULT_BRANCH_WRITE_ERROR = /private repo branch signatures responded 404/;
 const MISSING_BRANCH_ERROR = /private repo branch missing-branch is unavailable \(404\)/;
+const PRODUCTION_MISMATCH_ERROR = /production deployments write signatures, not signatures-preview/;
+const PREVIEW_MISMATCH_ERROR = /preview deployments write signatures-preview, not signatures/;
+const MISSING_VERCEL_ENV_ERROR = /VERCEL_ENV is not set, so no register branch policy applies/;
+const UNKNOWN_VERCEL_ENV_ERROR = /VERCEL_ENV development has no register branch policy/;
 
 interface ProviderCall {
   body?: Record<string, unknown>;
@@ -24,12 +28,18 @@ interface ProviderResult {
   error: { message: string; name: string } | null;
 }
 
+interface DeploymentEnvironment {
+  branch?: string;
+  vercel?: string;
+  vercelEnv?: string;
+}
+
 async function runProvider(
   operation: "write" | "withdraw",
   statuses: readonly number[],
-  branch?: string
+  environment: DeploymentEnvironment = {}
 ): Promise<ProviderResult> {
-  const scenario = JSON.stringify({ branch, operation, statuses });
+  const scenario = JSON.stringify({ environment, operation, statuses });
   const program = `
     const scenario = ${scenario};
     Object.assign(process.env, {
@@ -37,8 +47,10 @@ async function runProvider(
       PDPP_PRIVATE_REPO_OWNER: "PDP-Connect",
       PDPP_PRIVATE_REPO_TOKEN: "test-token",
     });
-    if (scenario.branch === undefined) delete process.env.PDPP_PRIVATE_REPO_BRANCH;
-    else process.env.PDPP_PRIVATE_REPO_BRANCH = scenario.branch;
+    for (const [key, name] of [["branch", "PDPP_PRIVATE_REPO_BRANCH"], ["vercel", "VERCEL"], ["vercelEnv", "VERCEL_ENV"]]) {
+      if (scenario.environment[key] === undefined) delete process.env[name];
+      else process.env[name] = scenario.environment[key];
+    }
     const calls = [];
     const statuses = [...scenario.statuses];
     globalThis.fetch = async (input, init = {}) => {
@@ -68,7 +80,7 @@ async function runProvider(
 }
 
 test("signatory PUT sends the configured branch and bot DCO trailer", async () => {
-  const result = await runProvider("write", [201], "staged-signatures");
+  const result = await runProvider("write", [201], { branch: "staged-signatures" });
   const [request] = result.calls;
 
   assert.equal(result.error, null);
@@ -93,7 +105,7 @@ test("default branch write failures are SigningUnavailableError responses", asyn
 });
 
 test("withdrawal stops before probing files when its branch is unavailable", async () => {
-  const result = await runProvider("withdraw", [404], "missing-branch");
+  const result = await runProvider("withdraw", [404], { branch: "missing-branch" });
 
   assert.deepEqual(result.calls, [
     {
@@ -103,4 +115,87 @@ test("withdrawal stops before probing files when its branch is unavailable", asy
   ]);
   assert.equal(result.error?.name, "SigningUnavailableError");
   assert.match(result.error?.message ?? "", MISSING_BRANCH_ERROR);
+});
+
+// ------------------------------------------------------ deployment branch guard
+//
+// Each mismatch case asserts an EMPTY call list, not just the error: the point
+// of the guard is that a preview deployment never reaches GitHub with the
+// production branch, and an error raised after the write would satisfy an
+// error-only assertion while the rehearsal record already existed.
+
+test("a production deployment writes the production register", async () => {
+  const result = await runProvider("write", [201], {
+    branch: "signatures",
+    vercel: "1",
+    vercelEnv: "production",
+  });
+
+  assert.equal(result.error, null);
+  assert.equal(result.calls[0]?.body?.branch, "signatures");
+});
+
+test("a production deployment pointed at the preview branch fails before fetch", async () => {
+  const result = await runProvider("write", [201], {
+    branch: "signatures-preview",
+    vercel: "1",
+    vercelEnv: "production",
+  });
+
+  assert.deepEqual(result.calls, []);
+  assert.equal(result.error?.name, "SigningUnavailableError");
+  assert.match(result.error?.message ?? "", PRODUCTION_MISMATCH_ERROR);
+});
+
+test("a preview deployment writes the preview register", async () => {
+  const result = await runProvider("write", [201], {
+    branch: "signatures-preview",
+    vercel: "1",
+    vercelEnv: "preview",
+  });
+
+  assert.equal(result.error, null);
+  assert.equal(result.calls[0]?.body?.branch, "signatures-preview");
+});
+
+test("a preview deployment pointed at the production register fails before fetch", async () => {
+  const result = await runProvider("write", [201], {
+    branch: "signatures",
+    vercel: "1",
+    vercelEnv: "preview",
+  });
+
+  assert.deepEqual(result.calls, []);
+  assert.equal(result.error?.name, "SigningUnavailableError");
+  assert.match(result.error?.message ?? "", PREVIEW_MISMATCH_ERROR);
+});
+
+test("a Vercel deployment with no VERCEL_ENV fails closed", async () => {
+  const result = await runProvider("write", [201], { vercel: "1" });
+
+  assert.deepEqual(result.calls, []);
+  assert.equal(result.error?.name, "SigningUnavailableError");
+  assert.match(result.error?.message ?? "", MISSING_VERCEL_ENV_ERROR);
+});
+
+test("a Vercel deployment with an unknown VERCEL_ENV fails closed", async () => {
+  const result = await runProvider("write", [201], {
+    branch: "signatures-preview",
+    vercel: "1",
+    vercelEnv: "development",
+  });
+
+  assert.deepEqual(result.calls, []);
+  assert.equal(result.error?.name, "SigningUnavailableError");
+  assert.match(result.error?.message ?? "", UNKNOWN_VERCEL_ENV_ERROR);
+});
+
+test("off Vercel the branch defaults to signatures and an explicit branch is honoured", async () => {
+  const defaulted = await runProvider("write", [201]);
+  const explicit = await runProvider("write", [201], { branch: "signatures-preview" });
+
+  assert.equal(defaulted.error, null);
+  assert.equal(defaulted.calls[0]?.body?.branch, "signatures");
+  assert.equal(explicit.error, null);
+  assert.equal(explicit.calls[0]?.body?.branch, "signatures-preview");
 });
