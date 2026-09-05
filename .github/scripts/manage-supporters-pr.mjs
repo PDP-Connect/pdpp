@@ -5,7 +5,8 @@
 import { spawnSync } from "node:child_process";
 
 const PR_TITLE = "chore(site): publish supporters register";
-const ACTIONS_PR_FORBIDDEN = /GitHub Actions is not permitted to create or approve pull requests/i;
+const PR_CREATION_FORBIDDEN =
+  /Resource not accessible by integration \(HTTP 403\)|GitHub Actions is not permitted to create or approve pull requests/i;
 
 export function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -61,23 +62,16 @@ function requireSuccess(result, arguments_, command = "gh") {
 }
 
 function openPullRequestNumber({ repository, baseBranch, publishBranch, run }) {
-  const listArguments = [
-    "pr",
-    "list",
-    "--repo",
-    repository,
-    "--head",
-    publishBranch,
-    "--base",
-    baseBranch,
-    "--state",
-    "open",
-    "--json",
-    "number",
-    "--jq",
-    ".[0].number",
-  ];
-  return requireSuccess(run(listArguments), listArguments);
+  const [owner] = repository.split("/", 1);
+  const query = new URLSearchParams({
+    base: baseBranch,
+    head: `${owner}:${publishBranch}`,
+    per_page: "1",
+    state: "open",
+  });
+  const listArguments = ["api", "--method", "GET", `repos/${repository}/pulls?${query}`];
+  const pullRequests = JSON.parse(requireSuccess(run(listArguments), listArguments));
+  return String(pullRequests?.[0]?.number ?? "");
 }
 
 function maintainerHandoff({ repository, baseBranch, publishBranch, body, write, notice }) {
@@ -109,7 +103,16 @@ export function manageSupportersPullRequest({
   const number = openPullRequestNumber({ repository, baseBranch, publishBranch, run });
 
   if (number) {
-    const editArguments = ["pr", "edit", number, "--repo", repository, "--title", PR_TITLE, "--body", body];
+    const editArguments = [
+      "api",
+      "--method",
+      "PATCH",
+      `repos/${repository}/pulls/${number}`,
+      "-f",
+      `title=${PR_TITLE}`,
+      "-f",
+      `body=${body}`,
+    ];
     requireSuccess(run(editArguments), editArguments);
     write(`Updated pull request #${number}.`);
     return { kind: "exists", number };
@@ -127,13 +130,26 @@ export function manageSupportersPullRequest({
     return { kind: "skipped" };
   }
 
-  const createArguments = prCreateArguments({ repository, baseBranch, publishBranch, body });
+  const createArguments = [
+    "api",
+    "--method",
+    "POST",
+    `repos/${repository}/pulls`,
+    "-f",
+    `title=${PR_TITLE}`,
+    "-f",
+    `head=${publishBranch}`,
+    "-f",
+    `base=${baseBranch}`,
+    "-f",
+    `body=${body}`,
+  ];
   const created = run(createArguments);
   if (created.status === 0) {
     write("Created supporters pull request.");
     return { kind: "created" };
   }
-  if (ACTIONS_PR_FORBIDDEN.test(`${created.stderr}\n${created.stdout}`)) {
+  if (PR_CREATION_FORBIDDEN.test(`${created.stderr}\n${created.stdout}`)) {
     maintainerHandoff({
       repository,
       baseBranch,
@@ -162,16 +178,15 @@ export function closeSupportersPullRequest({
   }
 
   const commentArguments = [
-    "pr",
-    "comment",
-    number,
-    "--repo",
-    repository,
-    "--body",
-    "register now equals main; nothing to publish",
+    "api",
+    "--method",
+    "POST",
+    `repos/${repository}/issues/${number}/comments`,
+    "-f",
+    "body=register now equals main; nothing to publish",
   ];
   requireSuccess(run(commentArguments), commentArguments);
-  const closeArguments = ["pr", "close", number, "--repo", repository];
+  const closeArguments = ["api", "--method", "PATCH", `repos/${repository}/pulls/${number}`, "-f", "state=closed"];
   requireSuccess(run(closeArguments), closeArguments);
   write(`Closed pull request #${number}; register now equals ${baseBranch}.`);
   return { kind: "closed", number };

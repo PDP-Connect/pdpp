@@ -17,6 +17,7 @@ const options = {
   repository: "PDP-Connect/pdpp",
 };
 const MAINTAINER_COMMAND = /^Maintainer command: /;
+const ADMIN_RIGHTS_ERROR = /Must have admin rights to Repository/;
 
 const pullRequestBody = supportersPullRequestBody({
   rowsAdded: 2,
@@ -25,20 +26,20 @@ const pullRequestBody = supportersPullRequestBody({
   totalRows: 42,
 });
 
-function fakeGh(responses) {
+function fakeGhApi(responses) {
   const calls = [];
   return {
     calls,
     run(arguments_) {
       calls.push(arguments_);
-      return responses.shift() ?? { status: 0, stderr: "", stdout: "" };
+      return responses.shift() ?? { status: 0, stderr: "", stdout: "[]\n" };
     },
   };
 }
 
 test("creates a pull request when none is open", () => {
-  const gh = fakeGh([
-    { status: 0, stderr: "", stdout: "" },
+  const gh = fakeGhApi([
+    { status: 0, stderr: "", stdout: "[]\n" },
     { status: 0, stderr: "", stdout: "https://github.com/PDP-Connect/pdpp/pull/320\n" },
   ]);
   const messages = [];
@@ -51,20 +52,52 @@ test("creates a pull request when none is open", () => {
   });
 
   assert.deepEqual(result, { kind: "created" });
-  assert.deepEqual(
-    gh.calls.map((arguments_) => arguments_.slice(0, 2)),
+  assert.deepEqual(gh.calls, [
     [
-      ["pr", "list"],
-      ["pr", "create"],
-    ]
-  );
+      "api",
+      "--method",
+      "GET",
+      "repos/PDP-Connect/pdpp/pulls?base=main&head=PDP-Connect%3Apublish%2Fsupporters&per_page=1&state=open",
+    ],
+    [
+      "api",
+      "--method",
+      "POST",
+      "repos/PDP-Connect/pdpp/pulls",
+      "-f",
+      "title=chore(site): publish supporters register",
+      "-f",
+      "head=publish/supporters",
+      "-f",
+      "base=main",
+      "-f",
+      `body=${pullRequestBody}`,
+    ],
+  ]);
   assert.deepEqual(messages, ["Created supporters pull request."]);
-  assert.equal(gh.calls[1].at(-1), pullRequestBody);
+  assert.equal(gh.calls[1].at(-1), `body=${pullRequestBody}`);
+});
+
+test("creates a pull request when a legacy empty lookup emits null", () => {
+  const gh = fakeGhApi([
+    { status: 0, stderr: "", stdout: "null\n" },
+    { status: 0, stderr: "", stdout: "https://github.com/PDP-Connect/pdpp/pull/320\n" },
+  ]);
+
+  const result = manageSupportersPullRequest({
+    ...options,
+    body: pullRequestBody,
+    run: gh.run,
+    write: () => undefined,
+  });
+
+  assert.deepEqual(result, { kind: "created" });
+  assert.deepEqual(gh.calls[1].slice(0, 4), ["api", "--method", "POST", "repos/PDP-Connect/pdpp/pulls"]);
 });
 
 test("updates an existing pull request", () => {
-  const gh = fakeGh([
-    { status: 0, stderr: "", stdout: "319\n" },
+  const gh = fakeGhApi([
+    { status: 0, stderr: "", stdout: '[{"number":319}]\n' },
     { status: 0, stderr: "", stdout: "" },
   ]);
   const messages = [];
@@ -77,21 +110,32 @@ test("updates an existing pull request", () => {
   });
 
   assert.deepEqual(result, { kind: "exists", number: "319" });
-  assert.deepEqual(
-    gh.calls.map((arguments_) => arguments_.slice(0, 3)),
+  assert.deepEqual(gh.calls, [
     [
-      ["pr", "list", "--repo"],
-      ["pr", "edit", "319"],
-    ]
-  );
+      "api",
+      "--method",
+      "GET",
+      "repos/PDP-Connect/pdpp/pulls?base=main&head=PDP-Connect%3Apublish%2Fsupporters&per_page=1&state=open",
+    ],
+    [
+      "api",
+      "--method",
+      "PATCH",
+      "repos/PDP-Connect/pdpp/pulls/319",
+      "-f",
+      "title=chore(site): publish supporters register",
+      "-f",
+      `body=${pullRequestBody}`,
+    ],
+  ]);
   assert.deepEqual(messages, ["Updated pull request #319."]);
-  assert.equal(gh.calls[1].at(-1), pullRequestBody);
+  assert.equal(gh.calls[1].at(-1), `body=${pullRequestBody}`);
 });
 
 test("reports a maintainer handoff when Actions cannot create a pull request", () => {
-  const gh = fakeGh([
-    { status: 0, stderr: "", stdout: "" },
-    { status: 1, stderr: "GraphQL: GitHub Actions is not permitted to create or approve pull requests", stdout: "" },
+  const gh = fakeGhApi([
+    { status: 0, stderr: "", stdout: "[]\n" },
+    { status: 1, stderr: "gh: Resource not accessible by integration (HTTP 403)", stdout: "" },
   ]);
   const messages = [];
 
@@ -107,6 +151,7 @@ test("reports a maintainer handoff when Actions cannot create a pull request", (
     messages[0],
     "NOTICE: GitHub Actions cannot open a pull request. The publisher pushed publish/supporters."
   );
+  assert.deepEqual(gh.calls[1].slice(0, 4), ["api", "--method", "POST", "repos/PDP-Connect/pdpp/pulls"]);
   assert.equal(messages[1], "Compare: https://github.com/PDP-Connect/pdpp/compare/main...publish/supporters?expand=1");
   assert.equal(
     messages[2],
@@ -114,9 +159,21 @@ test("reports a maintainer handoff when Actions cannot create a pull request", (
   );
 });
 
+test("fails a create request that has an unrelated 403", () => {
+  const gh = fakeGhApi([
+    { status: 0, stderr: "", stdout: "[]\n" },
+    { status: 1, stderr: "gh: Must have admin rights to Repository. (HTTP 403)", stdout: "" },
+  ]);
+
+  assert.throws(
+    () => manageSupportersPullRequest({ ...options, body: pullRequestBody, run: gh.run, write: () => undefined }),
+    ADMIN_RIGHTS_ERROR
+  );
+});
+
 test("a rebuilt register equal to main retires the stale publication after a withdrawal", () => {
-  const gh = fakeGh([
-    { status: 0, stderr: "", stdout: "319\n" },
+  const gh = fakeGhApi([
+    { status: 0, stderr: "", stdout: '[{"number":319}]\n' },
     { status: 0, stderr: "", stdout: "" },
     { status: 0, stderr: "", stdout: "" },
   ]);
@@ -136,15 +193,23 @@ test("a rebuilt register equal to main retires the stale publication after a wit
   });
 
   assert.deepEqual(result, { branchDeleted: true, pullRequest: { kind: "closed", number: "319" } });
-  assert.deepEqual(
-    gh.calls.map((arguments_) => arguments_.slice(0, 3)),
+  assert.deepEqual(gh.calls, [
     [
-      ["pr", "list", "--repo"],
-      ["pr", "comment", "319"],
-      ["pr", "close", "319"],
-    ]
-  );
-  assert.equal(gh.calls[1].at(-1), "register now equals main; nothing to publish");
+      "api",
+      "--method",
+      "GET",
+      "repos/PDP-Connect/pdpp/pulls?base=main&head=PDP-Connect%3Apublish%2Fsupporters&per_page=1&state=open",
+    ],
+    [
+      "api",
+      "--method",
+      "POST",
+      "repos/PDP-Connect/pdpp/issues/319/comments",
+      "-f",
+      "body=register now equals main; nothing to publish",
+    ],
+    ["api", "--method", "PATCH", "repos/PDP-Connect/pdpp/pulls/319", "-f", "state=closed"],
+  ]);
   assert.deepEqual(gitCalls, [["push", "origin", "--delete", "publish/supporters"]]);
   assert.deepEqual(messages, [
     "Closed pull request #319; register now equals main.",
@@ -154,9 +219,9 @@ test("a rebuilt register equal to main retires the stale publication after a wit
 
 test("an unchanged generated branch retries a forbidden pull request creation", () => {
   const action = publicationAction({ registerMatchesBase: false, registerMatchesPublishBranch: true });
-  const gh = fakeGh([
-    { status: 0, stderr: "", stdout: "" },
-    { status: 1, stderr: "GitHub Actions is not permitted to create or approve pull requests", stdout: "" },
+  const gh = fakeGhApi([
+    { status: 0, stderr: "", stdout: "[]\n" },
+    { status: 1, stderr: "gh: Resource not accessible by integration (HTTP 403)", stdout: "" },
   ]);
   const messages = [];
 
@@ -170,6 +235,7 @@ test("an unchanged generated branch retries a forbidden pull request creation", 
     }),
     { kind: "forbidden" }
   );
+  assert.deepEqual(gh.calls[1].slice(0, 4), ["api", "--method", "POST", "repos/PDP-Connect/pdpp/pulls"]);
   assert.match(messages[2], MAINTAINER_COMMAND);
 });
 
