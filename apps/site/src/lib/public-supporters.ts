@@ -9,15 +9,13 @@ const BUNDLED_SUPPORTERS_PATH = ["public", "principles", "supporters.json"] as c
 const SUPPORTERS_URL =
   "https://raw.githubusercontent.com/PDP-Connect/pdpp/main/apps/site/public/principles/supporters.json";
 
-const publicSupporterSchema = z
-  .object({
-    country: z.string(),
-    principlesVersion: z.string(),
-    publicName: z.string(),
-    signedOn: z.string(),
-    type: z.string(),
-  })
-  .strict();
+const publicSupporterSchema = z.strictObject({
+  country: z.string(),
+  principlesVersion: z.string(),
+  publicName: z.string(),
+  signedOn: z.string(),
+  type: z.string(),
+});
 
 const publicSupportersSchema = z.array(publicSupporterSchema);
 
