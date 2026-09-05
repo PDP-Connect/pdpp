@@ -5,7 +5,8 @@
 import { spawnSync } from "node:child_process";
 
 const PR_TITLE = "chore(site): publish supporters register";
-const PR_CREATION_FORBIDDEN = /HTTP 403|GitHub Actions is not permitted to create or approve pull requests/i;
+const PR_CREATION_FORBIDDEN =
+  /Resource not accessible by integration \(HTTP 403\)|GitHub Actions is not permitted to create or approve pull requests/i;
 
 export function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -68,8 +69,9 @@ function openPullRequestNumber({ repository, baseBranch, publishBranch, run }) {
     per_page: "1",
     state: "open",
   });
-  const listArguments = ["api", "--method", "GET", `repos/${repository}/pulls?${query}`, "--jq", ".[0].number"];
-  return requireSuccess(run(listArguments), listArguments);
+  const listArguments = ["api", "--method", "GET", `repos/${repository}/pulls?${query}`];
+  const pullRequests = JSON.parse(requireSuccess(run(listArguments), listArguments));
+  return String(pullRequests?.[0]?.number ?? "");
 }
 
 function maintainerHandoff({ repository, baseBranch, publishBranch, body, write, notice }) {

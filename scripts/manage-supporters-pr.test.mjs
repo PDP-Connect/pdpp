@@ -17,6 +17,7 @@ const options = {
   repository: "PDP-Connect/pdpp",
 };
 const MAINTAINER_COMMAND = /^Maintainer command: /;
+const ADMIN_RIGHTS_ERROR = /Must have admin rights to Repository/;
 
 const pullRequestBody = supportersPullRequestBody({
   rowsAdded: 2,
@@ -31,14 +32,14 @@ function fakeGhApi(responses) {
     calls,
     run(arguments_) {
       calls.push(arguments_);
-      return responses.shift() ?? { status: 0, stderr: "", stdout: "" };
+      return responses.shift() ?? { status: 0, stderr: "", stdout: "[]\n" };
     },
   };
 }
 
 test("creates a pull request when none is open", () => {
   const gh = fakeGhApi([
-    { status: 0, stderr: "", stdout: "" },
+    { status: 0, stderr: "", stdout: "[]\n" },
     { status: 0, stderr: "", stdout: "https://github.com/PDP-Connect/pdpp/pull/320\n" },
   ]);
   const messages = [];
@@ -57,8 +58,6 @@ test("creates a pull request when none is open", () => {
       "--method",
       "GET",
       "repos/PDP-Connect/pdpp/pulls?base=main&head=PDP-Connect%3Apublish%2Fsupporters&per_page=1&state=open",
-      "--jq",
-      ".[0].number",
     ],
     [
       "api",
@@ -79,9 +78,26 @@ test("creates a pull request when none is open", () => {
   assert.equal(gh.calls[1].at(-1), `body=${pullRequestBody}`);
 });
 
+test("creates a pull request when a legacy empty lookup emits null", () => {
+  const gh = fakeGhApi([
+    { status: 0, stderr: "", stdout: "null\n" },
+    { status: 0, stderr: "", stdout: "https://github.com/PDP-Connect/pdpp/pull/320\n" },
+  ]);
+
+  const result = manageSupportersPullRequest({
+    ...options,
+    body: pullRequestBody,
+    run: gh.run,
+    write: () => undefined,
+  });
+
+  assert.deepEqual(result, { kind: "created" });
+  assert.deepEqual(gh.calls[1].slice(0, 4), ["api", "--method", "POST", "repos/PDP-Connect/pdpp/pulls"]);
+});
+
 test("updates an existing pull request", () => {
   const gh = fakeGhApi([
-    { status: 0, stderr: "", stdout: "319\n" },
+    { status: 0, stderr: "", stdout: '[{"number":319}]\n' },
     { status: 0, stderr: "", stdout: "" },
   ]);
   const messages = [];
@@ -100,8 +116,6 @@ test("updates an existing pull request", () => {
       "--method",
       "GET",
       "repos/PDP-Connect/pdpp/pulls?base=main&head=PDP-Connect%3Apublish%2Fsupporters&per_page=1&state=open",
-      "--jq",
-      ".[0].number",
     ],
     [
       "api",
@@ -120,7 +134,7 @@ test("updates an existing pull request", () => {
 
 test("reports a maintainer handoff when Actions cannot create a pull request", () => {
   const gh = fakeGhApi([
-    { status: 0, stderr: "", stdout: "" },
+    { status: 0, stderr: "", stdout: "[]\n" },
     { status: 1, stderr: "gh: Resource not accessible by integration (HTTP 403)", stdout: "" },
   ]);
   const messages = [];
@@ -145,9 +159,21 @@ test("reports a maintainer handoff when Actions cannot create a pull request", (
   );
 });
 
+test("fails a create request that has an unrelated 403", () => {
+  const gh = fakeGhApi([
+    { status: 0, stderr: "", stdout: "[]\n" },
+    { status: 1, stderr: "gh: Must have admin rights to Repository. (HTTP 403)", stdout: "" },
+  ]);
+
+  assert.throws(
+    () => manageSupportersPullRequest({ ...options, body: pullRequestBody, run: gh.run, write: () => undefined }),
+    ADMIN_RIGHTS_ERROR
+  );
+});
+
 test("a rebuilt register equal to main retires the stale publication after a withdrawal", () => {
   const gh = fakeGhApi([
-    { status: 0, stderr: "", stdout: "319\n" },
+    { status: 0, stderr: "", stdout: '[{"number":319}]\n' },
     { status: 0, stderr: "", stdout: "" },
     { status: 0, stderr: "", stdout: "" },
   ]);
@@ -173,8 +199,6 @@ test("a rebuilt register equal to main retires the stale publication after a wit
       "--method",
       "GET",
       "repos/PDP-Connect/pdpp/pulls?base=main&head=PDP-Connect%3Apublish%2Fsupporters&per_page=1&state=open",
-      "--jq",
-      ".[0].number",
     ],
     [
       "api",
@@ -196,7 +220,7 @@ test("a rebuilt register equal to main retires the stale publication after a wit
 test("an unchanged generated branch retries a forbidden pull request creation", () => {
   const action = publicationAction({ registerMatchesBase: false, registerMatchesPublishBranch: true });
   const gh = fakeGhApi([
-    { status: 0, stderr: "", stdout: "" },
+    { status: 0, stderr: "", stdout: "[]\n" },
     { status: 1, stderr: "gh: Resource not accessible by integration (HTTP 403)", stdout: "" },
   ]);
   const messages = [];
