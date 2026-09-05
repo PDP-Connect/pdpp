@@ -1,6 +1,12 @@
 name: publish-supporters
 
 on:
+  # The private register repository sends this event on every push to its
+  # signatures branch, so publication follows a confirmation within minutes.
+  # The nightly schedule stays as the safety net.
+  repository_dispatch:
+    types:
+      - register-updated
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
