@@ -71,6 +71,9 @@ skills/*
 # Design-review screenshot evidence — kept on disk, never committed (binary bloat)
 design-evidence/**/*.png
 
+# Mutation-falsification evidence store (openspec/changes/add-mutation-falsification-evidence) — retained on disk under its own 30-day policy, never committed
+/.mutation-falsification-evidence/
+
 # root clutter guards (curation 2026-07-09)
 /*.png
 /*.log

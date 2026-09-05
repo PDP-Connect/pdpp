@@ -432,7 +432,41 @@ function proveRollback(): { detail: string; ok: boolean } {
   };
 }
 
+/**
+ * Structured evidence shape for `--structured` mode (see the file-level
+ * doc comment on why this exists). Contains exactly the same data already
+ * computed by `main()` for the human-readable report — same named cases,
+ * same catching checks, same holes, same positive-control and rollback
+ * results — serialized instead of printed as prose. Adding this output
+ * mode changes NOTHING about the mutation scenarios themselves, the
+ * judges they call, the fixture lifecycle, or the human-readable report
+ * printed when `--structured` is absent.
+ */
+export interface StructuredOracleReport {
+  holes: string[];
+  mutations: Array<{ caught: boolean; caughtBy: string; detail: string; name: string }>;
+  ok: boolean;
+  positiveControl: { detail: string; ok: boolean };
+  rollback: { detail: string; ok: boolean };
+}
+
+function buildStructuredReport(
+  positiveControl: { detail: string; ok: boolean },
+  results: MutationResult[],
+  rollback: { detail: string; ok: boolean }
+): StructuredOracleReport {
+  const holes = results.filter((r) => !r.caught);
+  return {
+    positiveControl,
+    mutations: results.map((r) => ({ name: r.name, caught: r.caught, caughtBy: r.caughtBy, detail: r.detail })),
+    rollback,
+    holes: holes.map((h) => h.name),
+    ok: positiveControl.ok && holes.length === 0 && rollback.ok,
+  };
+}
+
 function main(): void {
+  const structured = process.argv.includes("--structured");
   const positiveControl = provePositiveControl();
   const results = runMutationScenarios();
   const rollback = proveRollback();
@@ -455,6 +489,15 @@ function main(): void {
   );
   if (holes.length > 0) {
     process.stdout.write(`HOLES (not caught): ${holes.map((h) => h.name).join(", ")}\n`);
+  }
+  // Structured output is appended AFTER the unchanged human-readable report,
+  // on its own delimited line, so `--structured` is strictly additive: a
+  // caller that greps/parses only the human report sees byte-identical
+  // output to legacy mode up to this point.
+  if (structured) {
+    process.stdout.write(
+      `MUTATION_ORACLE_STRUCTURED_JSON ${JSON.stringify(buildStructuredReport(positiveControl, results, rollback))}\n`
+    );
   }
   if (holes.length > 0 || !rollback.ok || !positiveControl.ok) {
     process.exitCode = 1;
