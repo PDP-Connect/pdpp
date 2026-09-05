@@ -124,7 +124,9 @@ individual, or the organisation name for an organisation. It is computed when
 the signature is confirmed and stored, so a later change to the naming rule
 never renames someone who already consented to appear a particular way.
 
-Rendered on `/principles`.
+The `/principles` page and its machine-readable `/principles/supporters.json` register read this committed file from
+`main` at request time. Next.js revalidates the read every 60 seconds, with the bundled copy as a fallback, so a merge
+is live within about a minute and does not need a deploy.
 
 ### 3. The external mailing list
 
