@@ -10,18 +10,33 @@
 // under it has no outbound network.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
+import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   bwrapArgvForFilesystemClosure,
+  findPreexistingSocketsUnderReadOnlyBinds,
   isNamespaceIsolationAvailable,
   postPivotVerificationStatements,
   requiredFilesystemBinds,
+  resolveTrustedLauncherPath,
   spawnWithNetworkIsolation,
+  submountEnumeratorFunctionDefinition,
 } from "./isolation.ts";
 
 const bwrapUsable =
@@ -32,6 +47,36 @@ const bwrapUsable =
 const unshareUsable =
   process.platform === "linux" &&
   spawnSync("unshare", ["-r", "-n", "-m", "true"], { stdio: "ignore", timeout: 5000 }).status === 0;
+
+/** True when this test process can actually shadow a real trusted-path
+ *  binary via a host-level bind mount (root or an equivalent capability) —
+ *  the injection mechanism the test below needs now that the prelude
+ *  resolves its setup commands through a fixed `TRUSTED_SETUP_PATH`
+ *  (P1-1, ninth review) rather than the caller's inherited `$PATH`. Probed
+ *  by attempting the exact bind-then-unbind sequence the real test performs,
+ *  against a scratch file, so the skip condition matches the test's actual
+ *  requirement rather than a proxy for it (e.g. `process.getuid() === 0`
+ *  would be wrong inside a rootless-but-capable container). */
+function canBindMountOverAFile(): boolean {
+  if (process.platform !== "linux") {
+    return false;
+  }
+  const probeSource = mkdtempSync(join(tmpdir(), "pdpp-bindmount-probe-src-"));
+  const probeTarget = mkdtempSync(join(tmpdir(), "pdpp-bindmount-probe-dst-"));
+  const srcFile = join(probeSource, "a");
+  const dstFile = join(probeTarget, "b");
+  writeFileSync(srcFile, "");
+  writeFileSync(dstFile, "");
+  const bound = spawnSync("mount", ["--bind", srcFile, dstFile], { stdio: "ignore" }).status === 0;
+  if (bound) {
+    spawnSync("umount", [dstFile], { stdio: "ignore" });
+  }
+  rmSync(probeSource, { recursive: true, force: true });
+  rmSync(probeTarget, { recursive: true, force: true });
+  return bound;
+}
+
+const bindMountCapable = unshareUsable && canBindMountOverAFile();
 
 test("a host that denies `unshare` but ships a working bwrap still reports isolation AVAILABLE", {
   skip: !bwrapUsable,
@@ -84,56 +129,61 @@ test("an isolated child has NO outbound network — the property, not the mechan
 // use) rather than trusted by reading the source, so a future edit that
 // reverts to a bare/simplified probe argv is caught mechanically.
 
+// INJECTION MECHANISM (P1, external review of ab415be6c — trusted launcher
+// resolution): this test used to shadow `bwrap` via a PATH-prepended shim
+// directory. Now that the probe resolves the launcher through
+// `resolveTrustedLauncherPath` (a fixed allowlist of trusted directories,
+// never the caller's inherited `$PATH`), a PATH-prepended shim is no longer
+// selected — proving the fix works, but also meaning a test that still
+// relied on PATH-shadowing to intercept the launcher would silently stop
+// exercising anything. The injection is done the only way that still
+// reaches a trusted-path binary: bind-mounting the logging shim DIRECTLY
+// OVER the real trusted-path `bwrap` binary for the duration of the test,
+// via `withShimmedTrustedBinary` (defined below — a hoisted function
+// declaration, callable here despite the later textual position).
 test("[bwrap] the fixed probeBwrap() invokes bwrap with the SAME production argv shape bwrapArgvForFilesystemClosure builds — not a bare --dev-bind / / check", {
-  skip: !bwrapUsable,
-}, () => {
+  skip: !(bwrapUsable && bindMountCapable),
+}, async () => {
   const logDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-argv-log-"));
   const logPath = join(logDir, "invocations.log");
   writeFileSync(logPath, "");
-  // A real, delegating shim (not a bare "exit 0") — the probe's own
-  // production-equivalence is only meaningful if the shim still actually
-  // RUNS bwrap for real (so a genuinely broken derived-bind shape would
-  // still be caught), it just additionally logs the argv it was given.
-  const realBwrapPath = spawnSync("which", ["bwrap"], { encoding: "utf8" }).stdout.trim();
-  const shimDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-argv-shim-"));
-  writeFileSync(
-    join(shimDir, "bwrap"),
-    ["#!/bin/sh", `echo "$*" >> ${JSON.stringify(logPath)}`, `exec ${realBwrapPath} "$@"`].join("\n"),
-    { mode: 0o755 }
-  );
-  const realPath = process.env.PATH;
-  process.env.PATH = `${shimDir}:${realPath ?? ""}`;
   try {
-    const cap = isNamespaceIsolationAvailable();
-    // Only meaningful when bwrap is genuinely what got selected (on a host
-    // where unshare is denied but bwrap works — this suite's own
-    // AppArmor-restricted dev sandbox is exactly that shape); skip the argv
-    // assertion (but still ran the probe) otherwise.
-    const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
-    if (cap.available && cap.mechanism === "bwrap") {
-      assert.equal(
-        invocations.length,
-        1,
-        `expected exactly one bwrap probe invocation; got ${JSON.stringify(invocations)}`
-      );
-      const probeArgv = invocations[0] ?? "";
-      assert.ok(
-        probeArgv.includes("--tmpfs") && !probeArgv.includes("--dev-bind"),
-        `probe argv must use the empty --tmpfs / root, never --dev-bind / /; got ${JSON.stringify(probeArgv)}`
-      );
-      assert.ok(
-        probeArgv.includes("--unshare-pid"),
-        `probe argv must include --unshare-pid, matching production's derived closure; got ${JSON.stringify(probeArgv)}`
-      );
-      assert.ok(
-        probeArgv.includes("--ro-bind") || probeArgv.includes("--bind"),
-        `probe argv must include the derived requiredFilesystemBinds() entries, not just namespace flags; got ${JSON.stringify(probeArgv)}`
-      );
-    }
+    await withShimmedTrustedBinary(
+      "bwrap",
+      (realBwrapPath) =>
+        ["#!/bin/sh", `echo "$*" >> ${JSON.stringify(logPath)}`, `exec ${realBwrapPath} "$@"`].join("\n"),
+      () => {
+        const cap = isNamespaceIsolationAvailable();
+        // Only meaningful when bwrap is genuinely what got selected (on a
+        // host where unshare is denied but bwrap works — this suite's own
+        // AppArmor-restricted dev sandbox is exactly that shape); skip the
+        // argv assertion (but still ran the probe) otherwise.
+        const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+        if (cap.available && cap.mechanism === "bwrap") {
+          assert.equal(
+            invocations.length,
+            1,
+            `expected exactly one bwrap probe invocation; got ${JSON.stringify(invocations)}`
+          );
+          const probeArgv = invocations[0] ?? "";
+          assert.ok(
+            probeArgv.includes("--tmpfs") && !probeArgv.includes("--dev-bind"),
+            `probe argv must use the empty --tmpfs / root, never --dev-bind / /; got ${JSON.stringify(probeArgv)}`
+          );
+          assert.ok(
+            probeArgv.includes("--unshare-pid"),
+            `probe argv must include --unshare-pid, matching production's derived closure; got ${JSON.stringify(probeArgv)}`
+          );
+          assert.ok(
+            probeArgv.includes("--ro-bind") || probeArgv.includes("--bind"),
+            `probe argv must include the derived requiredFilesystemBinds() entries, not just namespace flags; got ${JSON.stringify(probeArgv)}`
+          );
+        }
+        return Promise.resolve();
+      }
+    );
   } finally {
-    process.env.PATH = realPath;
     rmSync(logDir, { recursive: true, force: true });
-    rmSync(shimDir, { recursive: true, force: true });
   }
 });
 
@@ -157,141 +207,100 @@ test("[bwrap] the fixed probeBwrap() invokes bwrap with the SAME production argv
 // logic-level proof of the fix, complementary to (not a replacement for) the
 // live container reproduction recorded in the review notes.
 
-/** Writes a fake `unshare` that mimics the exact advertise-vs-honor failure
- *  shape: any invocation whose argv contains `mount -t proc proc /proc` (the
- *  probe's own mount-and-verify dry run, or the real prelude's) exits 32 with
- *  a stderr line matching the real kernel refusal, `mount: /proc: permission
+// INJECTION MECHANISM (P1, external review of ab415be6c — trusted launcher
+// resolution): these two tests used to shadow `unshare`/`bwrap` via a
+// PATH-prepended fake-bin directory. Now that both the probe and the real
+// execution resolve the launcher through `resolveTrustedLauncherPath` (a
+// fixed allowlist, never the caller's `$PATH`), that injection no longer
+// reaches anything — proving the fix, but also meaning a test still relying
+// on it would silently stop exercising the fallback logic. Both fakes are
+// now installed via bind-mounting DIRECTLY OVER the real trusted-path
+// `unshare`/`bwrap` binaries (`withShimmedTrustedBinary`, same technique the
+// setup-command forced-failure tests below already use), nested so both
+// binaries are shimmed for the duration of each test.
+
+/** Shim body mimicking the exact advertise-vs-honor failure shape: any
+ *  invocation whose argv contains `mount -t proc proc /proc` (the probe's
+ *  own mount-and-verify dry run, or the real prelude's) exits 32 with a
+ *  stderr line matching the real kernel refusal, `mount: /proc: permission
  *  denied.` — every other invocation shape (a bare capability probe like
  *  `-r -n true`) exits 0, so namespace CREATION still looks available; only
  *  the procfs mount specifically is refused, mirroring the CAP_SYS_ADMIN
- *  -only container shape exactly. */
-function fakeUnshareRefusingProcMount(dir: string): void {
-  const scriptPath = join(dir, "unshare");
-  writeFileSync(
-    scriptPath,
-    [
-      "#!/bin/sh",
-      'case "$*" in',
-      '  *"mount -t proc proc /proc"*)',
-      '    echo "mount: /proc: permission denied." 1>&2',
-      "    exit 32",
-      "    ;;",
-      "  *)",
-      "    exit 0",
-      "    ;;",
-      "esac",
-    ].join("\n"),
-    { mode: 0o755 }
-  );
+ *  -only container shape exactly. Ignores `realUnsharePath` (unlike the
+ *  setup-command shims elsewhere in this file, this fake never delegates —
+ *  the whole point is to mimic the OLD probe's blind spot, not to actually
+ *  run real `unshare`). */
+function unshareShimRefusingProcMount(_realUnsharePath: string): string {
+  return [
+    "#!/bin/sh",
+    'case "$*" in',
+    '  *"mount -t proc proc /proc"*)',
+    '    echo "mount: /proc: permission denied." 1>&2',
+    "    exit 32",
+    "    ;;",
+    "  *)",
+    "    exit 0",
+    "    ;;",
+    "esac",
+  ].join("\n");
 }
 
-/** Writes a fake `bwrap` that always succeeds — used to prove the fallback
- *  path is taken (not just that `unshare` was correctly rejected). */
-function fakeBwrapAlwaysAvailable(dir: string): void {
-  const scriptPath = join(dir, "bwrap");
-  writeFileSync(scriptPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+/** Shim body that always succeeds — used to prove the fallback path is
+ *  taken (not just that `unshare` was correctly rejected). */
+function bwrapShimAlwaysAvailable(_realBwrapPath: string): string {
+  return "#!/bin/sh\nexit 0\n";
 }
 
-/** Writes a fake `bwrap` that always fails — used so the "no fallback
- *  available" test is not accidentally rescued by a REAL, working bwrap
- *  elsewhere on this host's PATH; PATH-shadowing alone isn't enough because
- *  omitting a bwrap entry from the fake dir doesn't hide a real one located
- *  later in the (still-inherited) PATH string. */
-function fakeBwrapAlwaysUnavailable(dir: string): void {
-  const scriptPath = join(dir, "bwrap");
-  writeFileSync(
-    scriptPath,
-    '#!/bin/sh\necho "bwrap: Creating new namespace failed: Operation not permitted" 1>&2\nexit 1\n',
-    {
-      mode: 0o755,
-    }
-  );
+/** Shim body that always fails — used so the "no fallback available" test
+ *  is not accidentally rescued by a real, working bwrap. */
+function bwrapShimAlwaysUnavailable(_realBwrapPath: string): string {
+  return '#!/bin/sh\necho "bwrap: Creating new namespace failed: Operation not permitted" 1>&2\nexit 1\n';
 }
 
-test("probe reports UNAVAILABLE (not available-then-crash) when unshare's PID-ns procfs mount is refused, with no working bwrap fallback", () => {
-  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-refusal-"));
-  fakeUnshareRefusingProcMount(fakeBinDir);
-  // A fake bwrap that ALSO fails — not just an absent one — because the fake
-  // dir is only PREPENDED to PATH; a real, working bwrap later in the
-  // inherited PATH would otherwise rescue this "no fallback" scenario and
-  // make the test assert something false about this host.
-  fakeBwrapAlwaysUnavailable(fakeBinDir);
-  const realPath = process.env.PATH;
-  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
-  try {
-    const cap = isNamespaceIsolationAvailable();
-    assert.equal(
-      cap.available,
-      false,
-      "a host where namespace creation succeeds but the PID-namespace procfs mount is refused must report UNAVAILABLE, not available-then-crash-later"
-    );
-    if (!cap.available) {
-      assert.ok(
-        /permission denied|mount/i.test(cap.reason),
-        `the diagnostic must name the kernel-level mount refusal, not just 'unavailable'; got ${JSON.stringify(cap.reason)}`
-      );
-    }
-  } finally {
-    process.env.PATH = realPath;
-    rmSync(fakeBinDir, { recursive: true, force: true });
-  }
-});
-
-test("probe falls back to bwrap when unshare's procfs mount is refused but bwrap genuinely works", () => {
-  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-refusal-fallback-"));
-  fakeUnshareRefusingProcMount(fakeBinDir);
-  fakeBwrapAlwaysAvailable(fakeBinDir);
-  const realPath = process.env.PATH;
-  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
-  try {
-    const cap = isNamespaceIsolationAvailable();
-    assert.equal(
-      cap.available,
-      true,
-      "a host where unshare's procfs mount is refused but bwrap genuinely works must still report AVAILABLE — the fallback exists precisely for this shape"
-    );
-    if (cap.available) {
+test("probe reports UNAVAILABLE (not available-then-crash) when unshare's PID-ns procfs mount is refused, with no working bwrap fallback", {
+  skip: !bindMountCapable,
+}, async () => {
+  await withShimmedTrustedBinary("unshare", unshareShimRefusingProcMount, () =>
+    withShimmedTrustedBinary("bwrap", bwrapShimAlwaysUnavailable, () => {
+      const cap = isNamespaceIsolationAvailable();
       assert.equal(
-        cap.mechanism,
-        "bwrap",
-        "must select bwrap, not unshare — unshare demonstrably cannot honor the isolation it would advertise on this (simulated) host"
+        cap.available,
+        false,
+        "a host where namespace creation succeeds but the PID-namespace procfs mount is refused must report UNAVAILABLE, not available-then-crash-later"
       );
-    }
-  } finally {
-    process.env.PATH = realPath;
-    rmSync(fakeBinDir, { recursive: true, force: true });
-  }
+      if (!cap.available) {
+        assert.ok(
+          /permission denied|mount/i.test(cap.reason),
+          `the diagnostic must name the kernel-level mount refusal, not just 'unavailable'; got ${JSON.stringify(cap.reason)}`
+        );
+      }
+      return Promise.resolve();
+    })
+  );
 });
 
-/** True when this test process can actually shadow a real trusted-path
- *  binary via a host-level bind mount (root or an equivalent capability) —
- *  the injection mechanism the test below needs now that the prelude
- *  resolves its setup commands through a fixed `TRUSTED_SETUP_PATH`
- *  (P1-1, ninth review) rather than the caller's inherited `$PATH`. Probed
- *  by attempting the exact bind-then-unbind sequence the real test performs,
- *  against a scratch file, so the skip condition matches the test's actual
- *  requirement rather than a proxy for it (e.g. `process.getuid() === 0`
- *  would be wrong inside a rootless-but-capable container). */
-function canBindMountOverAFile(): boolean {
-  if (process.platform !== "linux") {
-    return false;
-  }
-  const probeSource = mkdtempSync(join(tmpdir(), "pdpp-bindmount-probe-src-"));
-  const probeTarget = mkdtempSync(join(tmpdir(), "pdpp-bindmount-probe-dst-"));
-  const srcFile = join(probeSource, "a");
-  const dstFile = join(probeTarget, "b");
-  writeFileSync(srcFile, "");
-  writeFileSync(dstFile, "");
-  const bound = spawnSync("mount", ["--bind", srcFile, dstFile], { stdio: "ignore" }).status === 0;
-  if (bound) {
-    spawnSync("umount", [dstFile], { stdio: "ignore" });
-  }
-  rmSync(probeSource, { recursive: true, force: true });
-  rmSync(probeTarget, { recursive: true, force: true });
-  return bound;
-}
-
-const bindMountCapable = unshareUsable && canBindMountOverAFile();
+test("probe falls back to bwrap when unshare's procfs mount is refused but bwrap genuinely works", {
+  skip: !bindMountCapable,
+}, async () => {
+  await withShimmedTrustedBinary("unshare", unshareShimRefusingProcMount, () =>
+    withShimmedTrustedBinary("bwrap", bwrapShimAlwaysAvailable, () => {
+      const cap = isNamespaceIsolationAvailable();
+      assert.equal(
+        cap.available,
+        true,
+        "a host where unshare's procfs mount is refused but bwrap genuinely works must still report AVAILABLE — the fallback exists precisely for this shape"
+      );
+      if (cap.available) {
+        assert.equal(
+          cap.mechanism,
+          "bwrap",
+          "must select bwrap, not unshare — unshare demonstrably cannot honor the isolation it would advertise on this (simulated) host"
+        );
+      }
+      return Promise.resolve();
+    })
+  );
+});
 
 test("a forced PID-ns procfs-mount refusal inside the real unshare-mechanism prelude fails the spawn closed, never silently proceeds", {
   skip: !bindMountCapable,
@@ -371,6 +380,330 @@ test("a forced PID-ns procfs-mount refusal inside the real unshare-mechanism pre
   } finally {
     spawnSync("umount", [realMountPath], { stdio: "ignore" });
     rmSync(scratchDir, { recursive: true, force: true });
+  }
+});
+
+// ─── Trusted launcher resolution (P1, external review of ab415be6c) ───────
+//
+// The review's exact finding: `probeUnshare()`/`probeBwrap()` and
+// `spawnWithNetworkIsolation`'s real execution both spawned the launcher via
+// a BARE command name (`spawnSync("unshare", ...)`, `spawn("bwrap", ...)`),
+// which `node:child_process` resolves through the CALLING process's own
+// inherited `$PATH` — so a PATH-prepended fake `unshare`/`bwrap` earlier in
+// `$PATH` than the real, trusted one gets selected instead. These tests
+// prove the fix: (1) at the unit level, `resolveTrustedLauncherPath` finds
+// the REAL binary regardless of what `$PATH` says, even with a fake
+// prepended; (2) at the end-to-end level, a PATH-prepended fake `unshare`
+// is never invoked by either the probe or a real isolated spawn.
+
+test("resolveTrustedLauncherPath: resolves the real trusted-location binary, ignoring a fake earlier in $PATH", {
+  skip: process.platform !== "linux",
+}, () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-launcher-path-"));
+  const fakeMarkerPath = join(fakeBinDir, "fake-unshare-ran");
+  writeFileSync(
+    join(fakeBinDir, "unshare"),
+    ["#!/bin/sh", `touch ${JSON.stringify(fakeMarkerPath)}`, "exit 0"].join("\n"),
+    { mode: 0o755 }
+  );
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const resolved = resolveTrustedLauncherPath("unshare");
+    assert.ok(
+      !resolved.startsWith(fakeBinDir),
+      `resolveTrustedLauncherPath must never return the PATH-prepended fake; got ${JSON.stringify(resolved)}`
+    );
+    assert.ok(
+      ["/usr/sbin/unshare", "/usr/bin/unshare", "/sbin/unshare", "/bin/unshare"].includes(resolved),
+      `expected a real trusted-directory path; got ${JSON.stringify(resolved)}`
+    );
+    // Actually running the resolved binary must not be the fake — the fake
+    // would touch its own marker file the instant it started.
+    spawnSync(resolved, ["-r", "-n", "true"], { stdio: "ignore" });
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake unshare's marker file must NOT exist — resolveTrustedLauncherPath's return value must never invoke the fake"
+    );
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+test("a PATH-prepended fake `unshare` is never selected by the probe or by a real isolated spawn", {
+  skip: !unshareUsable,
+}, async () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-launcher-e2e-"));
+  const fakeMarkerPath = join(fakeBinDir, "fake-unshare-ran");
+  // The fake always "succeeds" instantly (exit 0, no real namespace, no real
+  // isolation) — if it were ever selected, both the probe and a real spawn
+  // would misreport success while providing NO isolation at all. Also
+  // touches its own marker so this test can prove, directly, that the fake
+  // was never invoked (not just that isolation happened to still work).
+  writeFileSync(
+    join(fakeBinDir, "unshare"),
+    ["#!/bin/sh", `touch ${JSON.stringify(fakeMarkerPath)}`, "exit 0"].join("\n"),
+    { mode: 0o755 }
+  );
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const cap = isNamespaceIsolationAvailable();
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake unshare's marker must NOT exist after the capability probe — the probe must resolve the real trusted-path binary, never the PATH-prepended fake"
+    );
+    if (cap.available && cap.mechanism === "unshare") {
+      // Only meaningful when the probe genuinely selected unshare (true on
+      // this suite's own host, where unshare works natively) — prove a real
+      // spawn under `isolate: true` (which re-derives the mechanism itself,
+      // exercising the SAME resolution path as production) also never
+      // touches the fake, and that the child is genuinely isolated (no
+      // outbound network) rather than the fake's instant, unisolated exit 0.
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation(
+          process.execPath,
+          [
+            "-e",
+            'require("http").get("http://1.1.1.1",()=>process.exit(9)).on("error",()=>process.exit(0));setTimeout(()=>process.exit(0),4000)',
+          ],
+          { isolate: true, stdio: "ignore" }
+        );
+        child.on("close", resolveExit);
+      });
+      assert.ok(
+        !existsSync(fakeMarkerPath),
+        "the fake unshare's marker must NOT exist after a real isolated spawn — spawnWithNetworkIsolation must resolve the real trusted-path binary, never the PATH-prepended fake"
+      );
+      assert.equal(
+        exitCode,
+        0,
+        "the spawn must still be genuinely network-isolated (exit 9 would mean the fake ran instead and no real isolation happened)"
+      );
+    }
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+// ─── Trusted shell resolution (P1-1, external review of ced8300be) ────────
+//
+// The review's exact finding: the trusted-launcher fix above closes how
+// `unshare`/`bwrap` THEMSELVES are resolved, but never touched the `sh` those
+// launchers exec their closure script into — both `unshareProcMountProbeArgv()`
+// (the probe) and `spawnWithNetworkIsolation`'s `unshare` branch (the real
+// execution) passed the bare string `"sh"` as an argv entry to the
+// already-trusted `unshare` binary (`unshare ... -- sh -c <script>`).
+// `unshare` performs `execvp("sh", ...)` on that argv entry, and `execvp`
+// resolves a bare name through the PATH environment variable of the process
+// PERFORMING THE EXEC at that moment — the calling Node process's own
+// `spawn()` env, fully caller-controlled — NOT `TRUSTED_SETUP_PATH` (that
+// assignment is the FIRST STATEMENT INSIDE the very script the fake `sh`
+// would be asked to interpret, too late to matter: a fake `sh` can ignore it,
+// skip straight to running the connector unisolated, and still report
+// success).
+//
+// A trivial marker-touch-and-exit-0 fake would only prove the fake was never
+// invoked — it would NOT prove the specific exploit this closes, because a
+// naive test could pass by coincidence (e.g. if isolation still worked via
+// some other path). These fakes are FUNCTIONING substitutes instead: the
+// probe fake prints the real success sentinel and exits 0 WITHOUT performing
+// the actual `--map-root-user --net --mount --pid --ipc --uts --fork` mount
+// sequence a real `sh` would (it can't, since only a real trusted `sh` would
+// even receive namespace capabilities in a way that matters — the fake just
+// unconditionally claims success), and the execution fake execs the target
+// command directly with no filesystem closure or network isolation at all —
+// exactly what "a fake sh silently reports success and skips real
+// containment" looks like if this fix were absent. Each still touches its
+// own marker file so the test can assert, directly, that it was never
+// invoked at all — not merely that the outward-visible behavior happened to
+// look correct.
+
+test("resolveTrustedLauncherPath('sh'): resolves the real trusted-location shell, ignoring a fake earlier in $PATH", {
+  skip: process.platform !== "linux",
+}, () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-sh-path-"));
+  const fakeMarkerPath = join(fakeBinDir, "fake-sh-ran");
+  writeFileSync(join(fakeBinDir, "sh"), ["#!/bin/sh", `touch ${JSON.stringify(fakeMarkerPath)}`, "exit 0"].join("\n"), {
+    mode: 0o755,
+  });
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const resolved = resolveTrustedLauncherPath("sh");
+    assert.ok(
+      !resolved.startsWith(fakeBinDir),
+      `resolveTrustedLauncherPath('sh') must never return the PATH-prepended fake; got ${JSON.stringify(resolved)}`
+    );
+    // Unlike `unshare`/`bwrap` (real binaries at their own name), `/bin/sh`
+    // is commonly a symlink to a DIFFERENTLY-NAMED real shell on a
+    // merged-usr host (e.g. Debian/Ubuntu's `/bin/sh` -> `dash`) —
+    // `resolveTrustedLauncherPath` follows that symlink via `realpathSync`
+    // (same as it does for `unshare`/`bwrap`, see that function's doc
+    // comment), so the resolved path's BASENAME need not be `sh`. Assert the
+    // trust boundary that actually matters instead: an absolute path,
+    // rooted under one of the fixed trusted directories, executable.
+    assert.ok(resolved.startsWith("/"), `expected an absolute path; got ${JSON.stringify(resolved)}`);
+    assert.ok(
+      ["/usr/sbin/", "/usr/bin/", "/sbin/", "/bin/"].some((dir) => resolved.startsWith(dir)),
+      `expected a path under a trusted directory; got ${JSON.stringify(resolved)}`
+    );
+    spawnSync(resolved, ["-c", "true"], { stdio: "ignore" });
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake sh's marker file must NOT exist — resolveTrustedLauncherPath('sh')'s return value must never invoke the fake"
+    );
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+/** Builds a FUNCTIONING fake `sh` for the probe path: prints the exact
+ *  success sentinel `unshareProcMountProbeArgv()` looks for and exits 0
+ *  WITHOUT running any of the real mount-and-verify sequence — the shape
+ *  that would make `probeUnshare()` misreport `available: true` off a fake
+ *  shell doing none of the real work, if the bare `"sh"` bug were still
+ *  present. Also touches `markerPath` so the test can assert directly that
+ *  this fake was never invoked, independent of what the probe result was. */
+function functioningFakeProbeShellScript(markerPath: string): string {
+  return ["#!/bin/sh", `touch ${JSON.stringify(markerPath)}`, "echo PDPP_PROC_MOUNT_OK", "exit 0"].join("\n");
+}
+
+/** Builds a FUNCTIONING fake `sh` for the real-execution path: execs
+ *  whatever command was passed to `-c` DIRECTLY, with no mount, no
+ *  pivot_root, no filesystem closure, no network-isolation setup at all —
+ *  the exact "silently skip real containment and just run the connector
+ *  unisolated" shape the review's repro describes. Also touches `markerPath`
+ *  so the test can assert directly that this fake was never invoked. */
+function functioningFakeExecutionShellScript(markerPath: string): string {
+  return [
+    "#!/bin/sh",
+    `touch ${JSON.stringify(markerPath)}`,
+    // $2 is the script text passed after `-c` — hand it straight to the
+    // REAL /bin/sh so a caller that (incorrectly) believes this fake still
+    // ran the closure keeps getting a plausible exit code, but with zero
+    // containment actually applied (no namespace setup ran before this).
+    'exec /bin/sh -c "$2"',
+  ].join("\n");
+}
+
+test("a PATH-prepended FUNCTIONING fake `sh` is never invoked by the unshare capability probe", {
+  skip: !unshareUsable,
+}, () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-sh-probe-"));
+  const fakeMarkerPath = join(fakeBinDir, "fake-sh-probe-ran");
+  writeFileSync(join(fakeBinDir, "sh"), functioningFakeProbeShellScript(fakeMarkerPath), { mode: 0o755 });
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const cap = isNamespaceIsolationAvailable();
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake sh's marker must NOT exist after the capability probe — the probe must resolve the real trusted-path shell, never the PATH-prepended fake, even though the fake prints the exact success sentinel and would otherwise make the probe misreport success"
+    );
+    // The probe's own verdict is unaffected by the fake either way (it never
+    // ran) — this is a secondary sanity check, not the load-bearing
+    // assertion above.
+    assert.ok(typeof cap.available === "boolean", "sanity: probe still returns a real verdict");
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+test("a PATH-prepended FUNCTIONING fake `sh` is never invoked by a real isolated unshare spawn — the child stays genuinely network-isolated", {
+  skip: !unshareUsable,
+}, async () => {
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-sh-exec-"));
+  const fakeMarkerPath = join(fakeBinDir, "fake-sh-exec-ran");
+  writeFileSync(join(fakeBinDir, "sh"), functioningFakeExecutionShellScript(fakeMarkerPath), { mode: 0o755 });
+  const realPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${realPath ?? ""}`;
+  try {
+    const exitCode = await new Promise<number | null>((resolveExit) => {
+      const child = spawnWithNetworkIsolation(
+        process.execPath,
+        [
+          "-e",
+          'require("http").get("http://1.1.1.1",()=>process.exit(9)).on("error",()=>process.exit(0));setTimeout(()=>process.exit(0),4000)',
+        ],
+        { isolate: "unshare", stdio: "ignore" }
+      );
+      child.on("close", resolveExit);
+    });
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake sh's marker must NOT exist after a real isolated spawn — spawnWithNetworkIsolation must resolve the real trusted-path shell, never the PATH-prepended fake, even though the fake would have execed the target directly with zero containment if it had run"
+    );
+    assert.equal(
+      exitCode,
+      0,
+      "the spawn must still be genuinely network-isolated (exit 9 would mean the fake sh ran instead and skipped the real filesystem/network closure entirely)"
+    );
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+});
+
+// bwrap's own filesystem view is default-deny (`--tmpfs /` plus only
+// `requiredFilesystemBinds()`), so a PATH-prepended fake living OUTSIDE that
+// view (e.g. a bare `mkdtemp(tmpdir())` scratch dir) is simply unreachable
+// from inside the sandbox's own `execvp` — proven empirically (see this
+// finding's commit message): bwrap does inherit the caller's PATH env var,
+// but `execvp("sh", ...)` inside the sandbox can only find a candidate that
+// actually EXISTS in the sandbox's own mount table. That does NOT mean
+// bwrap's inner `sh` is safe, though: `filesystemBindPath` (the caller's own
+// evidence workspace) is the ONE path every isolated child gets `rw`
+// AND — being the caller's own writable directory before the spawn even
+// starts — is exactly where an attacker (a compromised connector's own
+// setup step, or a caller constructing this path) could plant a same-named
+// `sh`. Confirmed empirically: a fake `sh` placed inside `filesystemBindPath`
+// and prepended to PATH WAS reached and exec'd by bwrap's old bare-`"sh"`
+// argv (its own `touch` failed only because the FIRST version of this repro
+// placed the marker under `/usr`, itself `ro`-bound — moving the marker
+// inside the same `rw` workspace made the exec visible). This test uses that
+// realistic vector, not an unbound scratch dir.
+test("a FUNCTIONING fake `sh` planted inside filesystemBindPath (the one rw path a caller/attacker controls) is never invoked by bwrap's inner sh -c wrapper", {
+  skip: !bwrapUsable,
+}, async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-sh-bwrap-workspace-"));
+  const fakeMarkerPath = join(workspace, "fake-sh-bwrap-ran");
+  writeFileSync(join(workspace, "sh"), functioningFakeExecutionShellScript(fakeMarkerPath), { mode: 0o755 });
+  const realPath = process.env.PATH;
+  // Prepend the WORKSPACE itself (not an unrelated scratch dir) — this is
+  // the one location the isolated child's own filesystem view actually
+  // contains as `rw`, so a fake placed here is the realistic threat, not a
+  // vacuous one bwrap's default-deny root would reject before ever reaching
+  // `execvp`.
+  process.env.PATH = `${workspace}:${realPath ?? ""}`;
+  try {
+    const exitCode = await new Promise<number | null>((resolveExit) => {
+      const child = spawnWithNetworkIsolation(
+        process.execPath,
+        [
+          "-e",
+          'require("http").get("http://1.1.1.1",()=>process.exit(9)).on("error",()=>process.exit(0));setTimeout(()=>process.exit(0),4000)',
+        ],
+        { isolate: "bwrap", stdio: "ignore", filesystemBindPath: workspace }
+      );
+      child.on("close", resolveExit);
+    });
+    assert.ok(
+      !existsSync(fakeMarkerPath),
+      "the fake sh's marker must NOT exist after a real isolated bwrap spawn — bwrapArgvForFilesystemClosure must resolve the real trusted-path shell, never the PATH-prepended fake planted inside the one rw path (filesystemBindPath) an attacker actually controls"
+    );
+    assert.equal(
+      exitCode,
+      0,
+      "the spawn must still be genuinely network-isolated (exit 9 would mean the fake sh ran instead and skipped containment)"
+    );
+  } finally {
+    process.env.PATH = realPath;
+    rmSync(workspace, { recursive: true, force: true });
   }
 });
 
@@ -706,7 +1039,10 @@ test("[unshare] forced oldroot-unmount failure — the target command never runs
  */
 function runPostPivotVerificationInSandbox(options: {
   binds: readonly { path: string; mode: "ro" | "rw" }[];
+  callerPath?: string;
+  fakeBinTarget?: string;
   leaveOldrootNonempty?: boolean;
+  readOnlyFileTarget?: string;
   skipCanary?: boolean;
   writableBindTarget?: string;
 }): { exitCode: number | null; stderrText: string } {
@@ -715,7 +1051,8 @@ function runPostPivotVerificationInSandbox(options: {
     "mkdir -p /oldroot",
     options.leaveOldrootNonempty ? "touch /oldroot/leftover-file" : "true",
   ].join("; ");
-  const script = `${setup}; ${postPivotVerificationStatements(options.binds).join("; ")}; echo PDPP_VERIFY_PASSED`;
+  const callerPathAssignment = options.callerPath === undefined ? "" : `PATH=${options.callerPath}; `;
+  const script = `${callerPathAssignment}${setup}; ${postPivotVerificationStatements(options.binds).join("; ")}; echo PDPP_VERIFY_PASSED`;
   const args = [
     "--unshare-net",
     "--tmpfs",
@@ -746,6 +1083,12 @@ function runPostPivotVerificationInSandbox(options: {
   if (options.writableBindTarget !== undefined) {
     args.push("--bind", options.writableBindTarget, "/writable-fake-bind");
   }
+  if (options.readOnlyFileTarget !== undefined) {
+    args.push("--ro-bind", options.readOnlyFileTarget, "/ro-file");
+  }
+  if (options.fakeBinTarget !== undefined) {
+    args.push("--bind", options.fakeBinTarget, "/fake-bin");
+  }
   args.push("--", "sh", "-c", script);
   const result = spawnSync("bwrap", args, { encoding: "utf8" });
   return { exitCode: result.status, stderrText: result.stderr };
@@ -757,6 +1100,34 @@ test("[bwrap sandbox] postPivotVerificationStatements PASSES a genuinely-closed 
   const { exitCode, stderrText } = runPostPivotVerificationInSandbox({ binds: [{ path: "/etc", mode: "ro" }] });
   assert.equal(exitCode, 0, `expected the happy-path shape to pass verification; stderr: ${stderrText}`);
   assert.equal(stderrText, "", "a passing verification must not print a diagnostic");
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements establishes its own trusted PATH when called standalone", {
+  skip: !bwrapUsable,
+}, () => {
+  const fakeBin = mkdtempSync(join(tmpdir(), "pdpp-isolation-standalone-path-fake-bin-"));
+  const readOnlyFile = join(fakeBin, "read-only-file");
+  const fakeShellMarker = join(fakeBin, "fake-sh-ran");
+  writeFileSync(readOnlyFile, "probe target");
+  writeFileSync(join(fakeBin, "sh"), ["#!/bin/sh", "touch /fake-bin/fake-sh-ran", "exit 0"].join("\n"), {
+    mode: 0o755,
+  });
+  try {
+    const { exitCode, stderrText } = runPostPivotVerificationInSandbox({
+      binds: [{ path: "/ro-file", mode: "ro" }],
+      callerPath: "/fake-bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      fakeBinTarget: fakeBin,
+      readOnlyFileTarget: readOnlyFile,
+    });
+    assert.equal(
+      exitCode,
+      0,
+      `standalone verification must reset a caller-poisoned PATH before probe_ro invokes sh; stderr: ${stderrText}`
+    );
+    assert.ok(!existsSync(fakeShellMarker), "a fake sh placed first on the standalone caller PATH must not run");
+  } finally {
+    rmSync(fakeBin, { recursive: true, force: true });
+  }
 });
 
 test("[bwrap sandbox] postPivotVerificationStatements FAILS when a declared ro bind is actually writable (P1-1 scenario (b))", {
@@ -810,6 +1181,338 @@ test("[bwrap sandbox] postPivotVerificationStatements FAILS when /oldroot is non
   );
 });
 
+test("[bwrap sandbox] postPivotVerificationStatements FAILS when a NESTED submount under a genuinely-read-only ro bind is writable (P1, external review of ab415be6c)", {
+  skip: !(bwrapUsable && bindMountCapable),
+}, () => {
+  // Unlike scenario (b) above (a bind whose OWN top mount never went
+  // read-only), this proves the EXTENDED property: the top-level bind IS
+  // genuinely read-only, but a real, separate mount point nested underneath
+  // it is not — the exact gap --rbind + a single top-level remount,ro,bind
+  // leaves open (see recursiveReadOnlyRemountCommand's doc comment).
+  const roDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-ro-parent-"));
+  const nestedSource = mkdtempSync(join(tmpdir(), "pdpp-isolation-nested-source-"));
+  const nestedMountPoint = join(roDir, "nested");
+  try {
+    mkdirSync(nestedMountPoint, { recursive: true });
+    const mountResult = spawnSync("mount", ["--bind", nestedSource, nestedMountPoint], { stdio: "inherit" });
+    assert.equal(mountResult.status, 0, "sanity check: creating the real nested mount point must itself succeed");
+    try {
+      // The sandbox's OWN --ro-bind of roDir is genuinely read-only (bwrap's
+      // own mechanism, proven elsewhere in this file to close this
+      // specific case) — so this test targets the VERIFICATION FUNCTION's
+      // own submount-probing logic directly, independent of which
+      // mechanism's setup produced the nested mount.
+      const setup = ["touch /pdpp-isolation-canary", "mkdir -p /oldroot"].join("; ");
+      const script = `${setup}; ${postPivotVerificationStatements([{ path: "/ro-parent", mode: "ro" }]).join("; ")}; echo PDPP_VERIFY_PASSED`;
+      const result = spawnSync(
+        "bwrap",
+        [
+          "--unshare-net",
+          "--tmpfs",
+          "/",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--ro-bind",
+          "/usr",
+          "/usr",
+          "--ro-bind",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          roDir,
+          "/ro-parent",
+          "--bind",
+          nestedMountPoint,
+          "/ro-parent/nested",
+          "--symlink",
+          "usr/bin",
+          "/bin",
+          "--symlink",
+          "usr/sbin",
+          "/sbin",
+          "--symlink",
+          "usr/lib",
+          "/lib",
+          "--symlink",
+          "usr/lib64",
+          "/lib64",
+          "--",
+          "sh",
+          "-c",
+          script,
+        ],
+        { encoding: "utf8" }
+      );
+      assert.equal(
+        result.status,
+        91,
+        `expected POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE (91) when a nested submount under a ro bind is genuinely writable; stderr: ${result.stderr}`
+      );
+      assert.ok(
+        /writable-ro-binds=\[[\s\S]*\/ro-parent\/nested[\s\S]*\]/.test(result.stderr),
+        `expected the diagnostic to name the specific writable NESTED path; got ${JSON.stringify(result.stderr)}`
+      );
+    } finally {
+      spawnSync("umount", ["-l", nestedMountPoint], { stdio: "ignore" });
+    }
+  } finally {
+    rmSync(roDir, { recursive: true, force: true });
+    rmSync(nestedSource, { recursive: true, force: true });
+  }
+});
+
+// ─── Mountinfo parsing fix (P1-3, external review of ced8300be) ───────────
+//
+// /proc/self/mountinfo octal-escapes space/tab/newline/backslash bytes IN a
+// mount point path (e.g. `\040` for a literal space). The prior submount
+// walk compared awk's RAW (still-escaped) field-5 token directly against a
+// PLAIN (unescaped) staged path — a raw `/tmp/x\040y` token never equals or
+// prefix-matches the plain string `/tmp/x y`, so a real, space-containing
+// submount was silently OMITTED from both the setup-time remount and this
+// post-pivot verification. Separately, the old verification probed a
+// submount by `touch <path>/.probe` — creating a file INSIDE it — which is
+// meaningless for a FILE bind mount (no "inside" to touch); confirmed
+// empirically this makes `touch` fail with ENOTDIR regardless of the file
+// mount's actual read-only state, a false negative that reports a still-
+// writable file submount as "confirmed read-only."
+
+test("[bwrap sandbox] postPivotVerificationStatements FAILS when a nested submount at a SPACE-containing path is writable — the fixed mountinfo decode finds it", {
+  skip: !(bwrapUsable && bindMountCapable),
+}, () => {
+  const roDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-ro-space-parent-"));
+  const nestedSource = mkdtempSync(join(tmpdir(), "pdpp-isolation-nested-space-source-"));
+  // The space in the mount point's basename is the load-bearing part of
+  // this test — mountinfo encodes it as `\040` in the raw field the old
+  // code compared unescaped, causing it to never match and silently skip
+  // this submount entirely.
+  const nestedMountPoint = join(roDir, "nested with space");
+  try {
+    mkdirSync(nestedMountPoint, { recursive: true });
+    const mountResult = spawnSync("mount", ["--bind", nestedSource, nestedMountPoint], { stdio: "inherit" });
+    assert.equal(mountResult.status, 0, "sanity check: creating the real nested mount point must itself succeed");
+    try {
+      const setup = ["touch /pdpp-isolation-canary", "mkdir -p /oldroot"].join("; ");
+      const script = `${setup}; ${postPivotVerificationStatements([{ path: "/ro-parent", mode: "ro" }]).join("; ")}; echo PDPP_VERIFY_PASSED`;
+      const result = spawnSync(
+        "bwrap",
+        [
+          "--unshare-net",
+          "--tmpfs",
+          "/",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--ro-bind",
+          "/usr",
+          "/usr",
+          "--ro-bind",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          roDir,
+          "/ro-parent",
+          "--bind",
+          nestedMountPoint,
+          "/ro-parent/nested with space",
+          "--symlink",
+          "usr/bin",
+          "/bin",
+          "--symlink",
+          "usr/sbin",
+          "/sbin",
+          "--symlink",
+          "usr/lib",
+          "/lib",
+          "--symlink",
+          "usr/lib64",
+          "/lib64",
+          "--",
+          "sh",
+          "-c",
+          script,
+        ],
+        { encoding: "utf8" }
+      );
+      assert.equal(
+        result.status,
+        91,
+        `expected POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE (91) — the space-containing submount must be found and reported writable, not silently skipped; stderr: ${result.stderr}`
+      );
+      assert.ok(
+        /writable-ro-binds=\[[\s\S]*\/ro-parent\/nested with space[\s\S]*\]/.test(result.stderr),
+        `expected the diagnostic to name the specific writable space-containing path; got ${JSON.stringify(result.stderr)}`
+      );
+    } finally {
+      spawnSync("umount", ["-l", nestedMountPoint], { stdio: "ignore" });
+    }
+  } finally {
+    rmSync(roDir, { recursive: true, force: true });
+    rmSync(nestedSource, { recursive: true, force: true });
+  }
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements detects a writable nested FILE submount without changing its host-backed bytes", {
+  skip: !(bwrapUsable && bindMountCapable),
+}, () => {
+  const roDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-ro-file-parent-"));
+  const nestedSourceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-nested-file-source-"));
+  const nestedSourceFile = join(nestedSourceDir, "source-file");
+  // This is the real host file whose bind-mounted sandbox view `probe_ro`
+  // opens. The regression oracle reads it after that probe: `>` used to
+  // truncate it merely to establish writability.
+  const originalContents = Buffer.from([0x00, 0x70, 0x64, 0x70, 0xff, 0x0a]);
+  writeFileSync(nestedSourceFile, originalContents);
+  const nestedMountPoint = join(roDir, "nested-file");
+  writeFileSync(nestedMountPoint, "");
+  try {
+    const mountResult = spawnSync("mount", ["--bind", nestedSourceFile, nestedMountPoint], { stdio: "inherit" });
+    assert.equal(mountResult.status, 0, "sanity check: creating the real nested FILE mount point must itself succeed");
+    try {
+      // Deliberately left WITHOUT a read-only remount — this file submount
+      // stays genuinely writable, the false-negative case the old
+      // touch-inside probe could never detect.
+      const setup = ["touch /pdpp-isolation-canary", "mkdir -p /oldroot"].join("; ");
+      const script = `${setup}; ${postPivotVerificationStatements([{ path: "/ro-parent", mode: "ro" }]).join("; ")}; echo PDPP_VERIFY_PASSED`;
+      const result = spawnSync(
+        "bwrap",
+        [
+          "--unshare-net",
+          "--tmpfs",
+          "/",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--ro-bind",
+          "/usr",
+          "/usr",
+          "--ro-bind",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          roDir,
+          "/ro-parent",
+          "--bind",
+          nestedMountPoint,
+          "/ro-parent/nested-file",
+          "--symlink",
+          "usr/bin",
+          "/bin",
+          "--symlink",
+          "usr/sbin",
+          "/sbin",
+          "--symlink",
+          "usr/lib",
+          "/lib",
+          "--symlink",
+          "usr/lib64",
+          "/lib64",
+          "--",
+          "sh",
+          "-c",
+          script,
+        ],
+        { encoding: "utf8" }
+      );
+      assert.equal(
+        result.status,
+        91,
+        `expected POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE (91) — a genuinely writable FILE submount must be detected via a non-truncating append-mode open, not silently reported clean via a meaningless touch-inside-a-file attempt; stderr: ${result.stderr}`
+      );
+      assert.deepEqual(
+        readFileSync(nestedSourceFile),
+        originalContents,
+        "probing a writable file submount must not change any bytes in its host-backed source file"
+      );
+      assert.ok(
+        /writable-ro-binds=\[[\s\S]*\/ro-parent\/nested-file[\s\S]*\]/.test(result.stderr),
+        `expected the diagnostic to name the specific writable file submount path; got ${JSON.stringify(result.stderr)}`
+      );
+    } finally {
+      spawnSync("umount", ["-l", nestedMountPoint], { stdio: "ignore" });
+    }
+  } finally {
+    rmSync(roDir, { recursive: true, force: true });
+    rmSync(nestedSourceDir, { recursive: true, force: true });
+  }
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements PASSES a genuinely read-only FILE submount (negative control — the append-mode probe isn't vacuously always failing)", {
+  skip: !(bwrapUsable && bindMountCapable),
+}, () => {
+  const roDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-ro-file-clean-parent-"));
+  const nestedSourceDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-nested-file-clean-source-"));
+  const nestedSourceFile = join(nestedSourceDir, "source-file");
+  writeFileSync(nestedSourceFile, "original content");
+  const nestedMountPoint = join(roDir, "nested-file");
+  writeFileSync(nestedMountPoint, "");
+  try {
+    const mountResult = spawnSync("mount", ["--bind", nestedSourceFile, nestedMountPoint], { stdio: "inherit" });
+    assert.equal(mountResult.status, 0, "sanity check: creating the real nested FILE mount point must itself succeed");
+    const remountResult = spawnSync("mount", ["-o", "remount,ro,bind", nestedMountPoint], { stdio: "inherit" });
+    assert.equal(remountResult.status, 0, "sanity check: remounting the file submount read-only must itself succeed");
+    try {
+      const setup = ["touch /pdpp-isolation-canary", "mkdir -p /oldroot"].join("; ");
+      const script = `${setup}; ${postPivotVerificationStatements([{ path: "/ro-parent", mode: "ro" }]).join("; ")}; echo PDPP_VERIFY_PASSED`;
+      const result = spawnSync(
+        "bwrap",
+        [
+          "--unshare-net",
+          "--tmpfs",
+          "/",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--ro-bind",
+          "/usr",
+          "/usr",
+          "--ro-bind",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          roDir,
+          "/ro-parent",
+          "--ro-bind",
+          nestedMountPoint,
+          "/ro-parent/nested-file",
+          "--symlink",
+          "usr/bin",
+          "/bin",
+          "--symlink",
+          "usr/sbin",
+          "/sbin",
+          "--symlink",
+          "usr/lib",
+          "/lib",
+          "--symlink",
+          "usr/lib64",
+          "/lib64",
+          "--",
+          "sh",
+          "-c",
+          script,
+        ],
+        { encoding: "utf8" }
+      );
+      assert.equal(
+        result.stdout.trim(),
+        "PDPP_VERIFY_PASSED",
+        `expected verification to PASS for a genuinely read-only file submount; stderr: ${result.stderr}`
+      );
+      assert.equal(result.status, 0, `expected exit 0; stderr: ${result.stderr}`);
+    } finally {
+      spawnSync("umount", ["-l", nestedMountPoint], { stdio: "ignore" });
+    }
+  } finally {
+    rmSync(roDir, { recursive: true, force: true });
+    rmSync(nestedSourceDir, { recursive: true, force: true });
+  }
+});
+
 test("[unshare] a genuinely successful filesystem closure passes post-pivot verification and the target command DOES run", {
   skip: !unshareUsable,
 }, async () => {
@@ -839,110 +1542,119 @@ test("[unshare] a genuinely successful filesystem closure passes post-pivot veri
 // `detectMechanism()`, which re-runs the ENTIRE probe (spawning `unshare`,
 // and — if that's denied — `bwrap`) from scratch on every single spawn,
 // contradicting the "probe once, reuse everywhere" contract callers rely
-// on. This test proves that contract mechanically: with fake `unshare`/
-// `bwrap` binaries on PATH that log every invocation, passing the
-// already-known mechanism directly must invoke the probe binaries ZERO
-// times, while passing a bare `true` must invoke them (the regression this
-// test exists to catch if a caller — or this function itself — regresses
-// back to re-probing).
+// on. This test proves that contract mechanically: with logging shims
+// covering both trusted-path binaries, passing the already-known mechanism
+// directly must invoke the probe binaries ZERO times, while passing a bare
+// `true` must invoke them (the regression this test exists to catch if a
+// caller — or this function itself — regresses back to re-probing).
+//
+// INJECTION MECHANISM (P1, external review of ab415be6c — trusted launcher
+// resolution): these two tests used to PATH-prepend fake `unshare`/`bwrap`
+// binaries. Now that both the probe and the real execution resolve the
+// launcher through `resolveTrustedLauncherPath` (never the caller's `$PATH`),
+// that no longer reaches anything — both binaries are shimmed via
+// bind-mount-over-the-real-trusted-path binary instead
+// (`withShimmedTrustedBinary`, nested so both are covered at once).
 
-/** Writes a fake `unshare`/`bwrap` shell shim to `dir/name` that appends its
- *  full argv (one line, space-joined) to `logPath` and exits 0, then
- *  returns `dir` prepended onto `PATH` so a child process resolves the fake
- *  binary instead of the real one. */
-function fakeIsolationBinDir(logPath: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-bin-"));
-  for (const name of ["unshare", "bwrap"]) {
-    const scriptPath = join(dir, name);
-    writeFileSync(scriptPath, `#!/bin/sh\necho "${name} $*" >> ${JSON.stringify(logPath)}\nexit 0\n`, { mode: 0o755 });
-  }
-  return dir;
+/** Shim body that appends its full argv (one line, space-joined) to
+ *  `logPath` and exits 0 WITHOUT delegating to the real binary — unlike
+ *  the setup-command shims elsewhere in this file, these two tests need to
+ *  observe exactly which binary/argv shape `spawnWithNetworkIsolation`
+ *  invokes, not exercise a real isolated spawn. */
+function loggingShim(name: string, logPath: string): (realBinaryPath: string) => string {
+  return (_realBinaryPath: string) => `#!/bin/sh\necho "${name} $*" >> ${JSON.stringify(logPath)}\nexit 0\n`;
 }
 
-test("spawnWithNetworkIsolation given an already-resolved mechanism does NOT re-probe (no unshare/bwrap probe invocation)", async () => {
+function withBothLaunchersLoggingShimmed<T>(logPath: string, fn: () => Promise<T>): Promise<T> {
+  return withShimmedTrustedBinary("unshare", loggingShim("unshare", logPath), () =>
+    withShimmedTrustedBinary("bwrap", loggingShim("bwrap", logPath), fn)
+  );
+}
+
+test("spawnWithNetworkIsolation given an already-resolved mechanism does NOT re-probe (no unshare/bwrap probe invocation)", {
+  skip: !bindMountCapable,
+}, async () => {
   const logDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-log-"));
   const logPath = join(logDir, "invocations.log");
   writeFileSync(logPath, "");
-  const fakeBinDir = fakeIsolationBinDir(logPath);
-  const fakePath = `${fakeBinDir}:${process.env.PATH ?? ""}`;
-  // detectMechanism()'s isNamespaceIsolationAvailable() probe (when it runs
-  // at all — the whole point of this test is that it must NOT) runs
-  // spawnSync in THIS process using THIS process's env/PATH, not the
-  // spawned child's — so the fake binaries must be resolvable from here too.
-  const realPath = process.env.PATH;
-  process.env.PATH = fakePath;
 
   try {
-    const exitCode = await new Promise<number | null>((resolve) => {
-      const child = spawnWithNetworkIsolation("node", ["-e", "process.exit(0)"], {
-        isolate: "bwrap",
-        stdio: "ignore",
-        env: { ...process.env, PATH: fakePath },
+    await withBothLaunchersLoggingShimmed(logPath, async () => {
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation("node", ["-e", "process.exit(0)"], {
+          isolate: "bwrap",
+          stdio: "ignore",
+        });
+        child.on("close", resolveExit);
       });
-      child.on("close", resolve);
-    });
-    assert.equal(exitCode, 0);
+      assert.equal(exitCode, 0);
 
-    const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
-    // Exactly one bwrap call: the ACTUAL wrapped spawn (`bwrap --unshare-net
-    // ... -- sh -c ...`), never a probe call (`bwrap --unshare-net
-    // --dev-bind / / true`, no trailing `-- sh -c`) and never an `unshare`
-    // call at all — proving detectMechanism()'s `isNamespaceIsolationAvailable()`
-    // re-probe path was never taken when the mechanism was already known.
-    assert.equal(
-      invocations.length,
-      1,
-      `expected exactly one fake-binary invocation (the real spawn, no probe); got ${JSON.stringify(invocations)}`
-    );
-    assert.ok(
-      invocations[0]?.startsWith("bwrap "),
-      `expected the one invocation to be bwrap; got ${JSON.stringify(invocations)}`
-    );
-    assert.ok(
-      invocations[0]?.includes("-- sh -c"),
-      `expected the real wrapped-spawn argv shape, not a probe; got ${JSON.stringify(invocations)}`
-    );
+      const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+      // Exactly one bwrap call: the ACTUAL wrapped spawn (`bwrap --unshare-net
+      // ... -- <trusted-absolute-sh> -c ...`), never a probe call (`bwrap
+      // --unshare-net --dev-bind / / true`, no trailing `-- <sh> -c`) and
+      // never an `unshare` call at all — proving detectMechanism()'s
+      // `isNamespaceIsolationAvailable()` re-probe path was never taken when
+      // the mechanism was already known. The inner shell is asserted by
+      // PATTERN (`-- /<trusted-dir>/<shell-basename> -c`), not the literal
+      // string `"-- sh -c"` — P1-1 (external review of ced8300be) resolves
+      // that shell through `resolveTrustedLauncherPath("sh")`'s absolute,
+      // symlink-followed path (e.g. `/usr/bin/dash` on a merged-usr host
+      // where `/bin/sh` -> `dash`), never the bare name `"sh"`.
+      assert.equal(
+        invocations.length,
+        1,
+        `expected exactly one fake-binary invocation (the real spawn, no probe); got ${JSON.stringify(invocations)}`
+      );
+      assert.ok(
+        invocations[0]?.startsWith("bwrap "),
+        `expected the one invocation to be bwrap; got ${JSON.stringify(invocations)}`
+      );
+      assert.ok(
+        /-- \/\S+ -c/.test(invocations[0] ?? ""),
+        `expected the real wrapped-spawn argv shape (an absolute-path shell after "--"), not a probe; got ${JSON.stringify(invocations)}`
+      );
+      assert.ok(
+        !invocations[0]?.includes("-- sh -c"),
+        `the inner shell must be an absolute trusted path, never the bare string "sh" (P1-1, external review of ced8300be); got ${JSON.stringify(invocations)}`
+      );
+    });
   } finally {
-    process.env.PATH = realPath;
     rmSync(logDir, { recursive: true, force: true });
-    rmSync(fakeBinDir, { recursive: true, force: true });
   }
 });
 
-test("spawnWithNetworkIsolation given a bare `true` DOES re-probe (documents the boolean fallback path's cost, for contrast)", async () => {
+test("spawnWithNetworkIsolation given a bare `true` DOES re-probe (documents the boolean fallback path's cost, for contrast)", {
+  skip: !bindMountCapable,
+}, async () => {
   const logDir = mkdtempSync(join(tmpdir(), "pdpp-isolation-probe-log-"));
   const logPath = join(logDir, "invocations.log");
   writeFileSync(logPath, "");
-  const fakeBinDir = fakeIsolationBinDir(logPath);
-  const fakePath = `${fakeBinDir}:${process.env.PATH ?? ""}`;
-  const realPath = process.env.PATH;
-  process.env.PATH = fakePath;
 
   try {
-    const exitCode = await new Promise<number | null>((resolve) => {
-      const child = spawnWithNetworkIsolation("node", ["-e", "process.exit(0)"], {
-        isolate: true,
-        stdio: "ignore",
-        env: { ...process.env, PATH: fakePath },
+    await withBothLaunchersLoggingShimmed(logPath, async () => {
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation("node", ["-e", "process.exit(0)"], {
+          isolate: true,
+          stdio: "ignore",
+        });
+        child.on("close", resolveExit);
       });
-      child.on("close", resolve);
-    });
-    assert.equal(exitCode, 0);
+      assert.equal(exitCode, 0);
 
-    const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
-    // A bare `true` forces detectMechanism() to call isNamespaceIsolationAvailable(),
-    // which probes `unshare` first (the fake shim reports success, so the
-    // probe reports mechanism "unshare" without ever trying bwrap — but the
-    // point is a probe call happens AT ALL, unlike the resolved-mechanism
-    // case above) before the real wrapped spawn.
-    assert.ok(
-      invocations.length >= 2,
-      `expected at least a probe call plus the real spawn call; got ${JSON.stringify(invocations)}`
-    );
+      const invocations = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+      // A bare `true` forces detectMechanism() to call isNamespaceIsolationAvailable(),
+      // which probes `unshare` first (the fake shim reports success, so the
+      // probe reports mechanism "unshare" without ever trying bwrap — but the
+      // point is a probe call happens AT ALL, unlike the resolved-mechanism
+      // case above) before the real wrapped spawn.
+      assert.ok(
+        invocations.length >= 2,
+        `expected at least a probe call plus the real spawn call; got ${JSON.stringify(invocations)}`
+      );
+    });
   } finally {
-    process.env.PATH = realPath;
     rmSync(logDir, { recursive: true, force: true });
-    rmSync(fakeBinDir, { recursive: true, force: true });
   }
 });
 
@@ -1629,6 +2341,513 @@ for (const mechanism of ["bwrap", "unshare"] as const) {
   });
 }
 
+// ─── Recursive read-only — nested submount under a ro bind (P1, external
+// review of ab415be6c) ──────────────────────────────────────────────────────
+//
+// `--rbind` (recursive bind) pulls in every submount that exists under a
+// `ro` bind's source directory at bind time — but the classic
+// `mount -o remount,ro,bind <staged>` step that follows only remounts the
+// TOP mount; Linux does not apply that operation recursively to the
+// submounts `--rbind` carried along. Before this fix, a nested mount point
+// that existed under REPO_ROOT (or any other declared `ro` bind) at spawn
+// time stayed WRITABLE inside the isolated child even though the parent
+// directory correctly reported read-only. This test proves the fix by
+// creating a REAL nested bind mount under REPO_ROOT on the host (requiring
+// genuine bind-mount capability — the same `canBindMountOverAFile`/
+// `bindMountCapable` gate the setup-command forced-failure tests above use),
+// spawning an isolated child, and attempting a write specifically INSIDE
+// that nested mount — asserting EACCES/EROFS, not just checking the parent
+// directory.
+
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = (mechanism === "bwrap" ? bwrapUsable : unshareUsable) && bindMountCapable;
+
+  test(`[${mechanism}] a nested bind mount under REPO_ROOT (a ro bind) stays read-only inside isolation — not just the parent directory`, {
+    skip: !usable,
+  }, async () => {
+    // A real, separate mount point INSIDE REPO_ROOT — a scratch directory
+    // bind-mounted onto ANOTHER scratch directory that itself lives under
+    // REPO_ROOT, mirroring the real-world shape this fix targets (Docker's
+    // own /etc/resolv.conf-style injected submounts, or any nested mount
+    // that happens to exist under a ro bind's real path at spawn time).
+    const nestedSource = mkdtempSync(join(tmpdir(), "pdpp-nested-ro-source-"));
+    writeFileSync(join(nestedSource, "seed.txt"), "seed");
+    const nestedMountPoint = join(TEST_REPO_ROOT, `.pdpp-nested-ro-probe-${String(process.pid)}`);
+    rmSync(nestedMountPoint, { recursive: true, force: true });
+    mkdirSync(nestedMountPoint, { recursive: true });
+    const mountResult = spawnSync("mount", ["--bind", nestedSource, nestedMountPoint], { stdio: "inherit" });
+    assert.equal(
+      mountResult.status,
+      0,
+      `sanity check: bind-mounting a real nested mount point under REPO_ROOT must itself succeed for this test's injection to mean anything`
+    );
+    try {
+      const probeFileName = `.pdpp-nested-ro-write-probe-${String(process.pid)}`;
+      const probePath = join(nestedMountPoint, probeFileName);
+      const { stdout, exitCode } = await runIsolatedProbe(
+        mechanism,
+        `const fs=require("fs");try{fs.writeFileSync(${JSON.stringify(probePath)},"x");console.log("WRITE_SUCCEEDED");}catch(e){console.log("WRITE_BLOCKED:"+e.code);}`
+      );
+      if (existsSync(probePath)) {
+        rmSync(probePath, { force: true });
+      }
+      assert.equal(exitCode, 0, `probe child must exit cleanly; stdout was ${JSON.stringify(stdout)}`);
+      assert.ok(
+        stdout.startsWith("WRITE_BLOCKED:"),
+        `an isolated child under ${mechanism} must NOT be able to write into a NESTED mount under REPO_ROOT (only remounting the top-level ro bind, not its submounts, is exactly the P1 this test guards) — got ${JSON.stringify(stdout)}`
+      );
+      assert.ok(
+        ["EROFS", "EACCES", "EPERM"].includes(stdout.slice("WRITE_BLOCKED:".length)),
+        `expected a genuine read-only-filesystem error, got ${JSON.stringify(stdout)}`
+      );
+    } finally {
+      spawnSync("umount", ["-l", nestedMountPoint], { stdio: "ignore" });
+      rmSync(nestedMountPoint, { recursive: true, force: true });
+      rmSync(nestedSource, { recursive: true, force: true });
+    }
+  });
+}
+
+// ─── Repository-UDS exception, reconciled: findPreexistingSocketsUnderReadOnlyBinds
+// (P1, external review of ab415be6c) ──────────────────────────────────────
+//
+// Recursive read-only (proven above) closes the ability to CREATE a socket
+// under a ro bind, but a socket that already existed at spawn time stays
+// dialable — a ro bind blocks writes, not reads/dials. These tests prove
+// the reconciling scan itself: it finds a real, nested socket under
+// REPO_ROOT (no root/bind-mount capability needed — creating a UDS file is
+// an ordinary, unprivileged filesystem operation), and stops finding it the
+// moment it's removed — closing the loop the claim-eligibility gate depends
+// on (see the `evaluateClaimEligibility` tests in bin/scenario-verify-strict.test.ts
+// for the claim-text side of this same reconciliation).
+
+// `AF_UNIX` socket paths are capped at `sizeof(sockaddr_un.sun_path)` — 108
+// bytes on Linux, a hard kernel limit enforced by `bind(2)`/`listen(2)`
+// (EINVAL/ENAMETOOLONG for anything longer), independent of filesystem path
+// length limits (usually 4096) that apply everywhere else. `TEST_REPO_ROOT`
+// itself is a real, unpredictable absolute path (the checkout location of
+// whoever/whatever is running this suite — a CI runner, a colleague's home
+// directory, a deeply nested worktree path), so a socket test that builds
+// its path from `TEST_REPO_ROOT` plus even a modest suffix can silently
+// exceed this limit in a long-path checkout while staying comfortably under
+// it in a short one — confirmed: a test in this file failed with `EINVAL`
+// in a worktree whose checkout path alone was long enough to push the total
+// past 108 bytes, deterministically, not flakily, for every run from that
+// location. Every test below that creates a REAL socket (not just a
+// directory/symlink) keeps its own path components short and guards with
+// this constant.
+const UNIX_SOCKET_PATH_MAX_BYTES = 108;
+
+test("findPreexistingSocketsUnderReadOnlyBinds: finds a real socket nested under REPO_ROOT, and stops finding it once removed", async (t) => {
+  // Short name (`.psp-<pid>/l.sock`, not `.pdpp-socket-scan-probe-<pid>/leftover.sock`)
+  // — see `UNIX_SOCKET_PATH_MAX_BYTES`'s doc comment.
+  const nestedDir = join(TEST_REPO_ROOT, `.psp-${String(process.pid)}`);
+  const socketPath = join(nestedDir, "l.sock");
+  if (Buffer.byteLength(socketPath, "utf8") > UNIX_SOCKET_PATH_MAX_BYTES - 8) {
+    t.skip(
+      `TEST_REPO_ROOT (${TEST_REPO_ROOT}) is too long for an AF_UNIX socket path in this test — ` +
+        `${String(Buffer.byteLength(socketPath, "utf8"))} bytes computed, kernel limit is ${String(UNIX_SOCKET_PATH_MAX_BYTES)}; ` +
+        "this environment cannot exercise this specific test, not a defect in the scan itself"
+    );
+    return;
+  }
+  mkdirSync(nestedDir, { recursive: true });
+  const server = createServer();
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+
+    const foundWhilePresent = findPreexistingSocketsUnderReadOnlyBinds();
+    assert.ok(
+      foundWhilePresent.complete,
+      `expected a complete scan (no unreadable subtrees) while the socket is present; got errors ${JSON.stringify(foundWhilePresent.errors)}`
+    );
+    assert.ok(
+      foundWhilePresent.sockets.includes(socketPath),
+      `expected the scan to find the real socket at ${JSON.stringify(socketPath)}; got ${JSON.stringify(foundWhilePresent.sockets)}`
+    );
+
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    rmSync(socketPath, { force: true });
+
+    const foundAfterRemoval = findPreexistingSocketsUnderReadOnlyBinds();
+    assert.ok(
+      !foundAfterRemoval.sockets.includes(socketPath),
+      `expected the scan to stop finding the socket once removed; got ${JSON.stringify(foundAfterRemoval.sockets)}`
+    );
+  } finally {
+    server.close();
+    rmSync(nestedDir, { recursive: true, force: true });
+  }
+});
+
+test("findPreexistingSocketsUnderReadOnlyBinds: does NOT descend into symlinks (avoids an unbounded/cyclic walk)", () => {
+  const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-scan-symlink-probe-${String(process.pid)}`);
+  mkdirSync(nestedDir, { recursive: true });
+  const symlinkPath = join(nestedDir, "self-loop");
+  try {
+    // A symlink pointing back at its own parent directory — if the scan
+    // followed symlinks, this would recurse forever (or at least far beyond
+    // the bounded, finite walk this function's own doc comment promises).
+    symlinkSync(nestedDir, symlinkPath, "dir");
+    const result = findPreexistingSocketsUnderReadOnlyBinds();
+    assert.ok(
+      Array.isArray(result.sockets),
+      "the scan must complete (not hang/throw) against a self-referential symlink"
+    );
+    assert.ok(result.complete, "a symlink loop must not itself be reported as an enumeration failure");
+  } finally {
+    rmSync(nestedDir, { recursive: true, force: true });
+  }
+});
+
+// ─── Fail-closed on an unreadable subtree (P1-2, external review of
+// ced8300be) ────────────────────────────────────────────────────────────
+//
+// An earlier version caught readdirSync's EACCES and silently returned from
+// that subtree, treating "I could not see in here" as "nothing here" — a
+// fail-OPEN default given this scan's whole purpose is to justify a strong
+// claim. These tests plant a real socket, then lock its containing
+// directory down so the scan cannot enumerate it, and assert the scan
+// reports `complete: false` naming the exact unreadable path — never a
+// silently-empty result. Linux enforces directory mode bits against the
+// OWNING user too (not just other users), confirmed empirically, so these
+// tests do not need a separate UID — chmod against a self-owned directory
+// reproduces the real EACCES this function must handle.
+
+test("findPreexistingSocketsUnderReadOnlyBinds: fails CLOSED (complete: false) on a chmod 000 subtree, never silently reports it clean", () => {
+  const nestedDir = join(TEST_REPO_ROOT, `.pdpp-socket-scan-000-probe-${String(process.pid)}`);
+  const blockedDir = join(nestedDir, "blocked");
+  mkdirSync(blockedDir, { recursive: true });
+  try {
+    chmodSync(blockedDir, 0o000);
+    const result = findPreexistingSocketsUnderReadOnlyBinds();
+    assert.equal(
+      result.complete,
+      false,
+      "a chmod 000 subtree the scan cannot readdirSync into must mark the scan incomplete, not silently clean"
+    );
+    assert.ok(
+      result.errors.includes(blockedDir),
+      `expected the unreadable path to be named in errors; got ${JSON.stringify(result.errors)}`
+    );
+  } finally {
+    chmodSync(blockedDir, 0o755);
+    rmSync(nestedDir, { recursive: true, force: true });
+  }
+});
+
+test("findPreexistingSocketsUnderReadOnlyBinds: fails CLOSED on a chmod 311 (searchable, not listable) subtree hiding a real socket", async (t) => {
+  // Directory read vs search are SEPARATE permissions: 311 grants
+  // search/execute (traverse into a KNOWN child path) but not read (LIST
+  // the directory's contents). readdirSync needs the read bit and throws
+  // EACCES identically to a chmod 000 directory — but a socket with a
+  // KNOWN name inside a 311 directory stays fully connectable (proven live
+  // in this same test, not just asserted): this is the specific gap a
+  // naive "just check if I can list it" mental model misses, and why this
+  // scan must fail closed on EITHER permission shape identically.
+  //
+  // Names kept deliberately SHORT (`.pss311-<pid>/s/h.sock`, not a
+  // descriptive `.pdpp-socket-scan-311-probe-<pid>/search-only/hidden.sock`)
+  // to leave as much of the 108-byte budget as possible for
+  // `TEST_REPO_ROOT` itself, which this test does not control — see
+  // `UNIX_SOCKET_PATH_MAX_BYTES`'s doc comment above. This alone does not
+  // ELIMINATE the dependency on checkout path length, only pushes the
+  // threshold further out; the explicit skip below is the actual backstop
+  // for a checkout path long enough to exceed even this.
+  const nestedDir = join(TEST_REPO_ROOT, `.pss311-${String(process.pid)}`);
+  const searchOnlyDir = join(nestedDir, "s");
+  const socketPath = join(searchOnlyDir, "h.sock");
+  if (Buffer.byteLength(socketPath, "utf8") > UNIX_SOCKET_PATH_MAX_BYTES - 8) {
+    // Loud, explicit, reasoned skip — never a silent pass. This environment
+    // (specifically, this checkout's absolute path) cannot run this test at
+    // all: any socket path built from `TEST_REPO_ROOT` here would risk
+    // exceeding the kernel's own 108-byte `AF_UNIX` path limit before this
+    // test's own logic is even exercised, which would be a false failure
+    // about path length, not a finding about the scan's fail-closed
+    // behavior. The 8-byte margin covers this test's own short suffix
+    // headroom, not a guarantee for every possible caller.
+    t.skip(
+      `TEST_REPO_ROOT (${TEST_REPO_ROOT}) is too long for an AF_UNIX socket path in this test — ` +
+        `${String(Buffer.byteLength(socketPath, "utf8"))} bytes computed, kernel limit is ${String(UNIX_SOCKET_PATH_MAX_BYTES)}; ` +
+        "this environment cannot exercise this specific test, not a defect in the scan itself"
+    );
+    return;
+  }
+  mkdirSync(searchOnlyDir, { recursive: true });
+  const server = createServer();
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+    chmodSync(searchOnlyDir, 0o311);
+
+    // Prove the socket is genuinely still reachable despite being
+    // unlistable — the property that makes fail-open dangerous here, not
+    // just theoretically.
+    const stillConnectable = await new Promise<boolean>((resolveConnect) => {
+      const client = createConnection(socketPath);
+      client.on("connect", () => {
+        client.destroy();
+        resolveConnect(true);
+      });
+      client.on("error", () => resolveConnect(false));
+    });
+    assert.ok(
+      stillConnectable,
+      "sanity: a socket with a known name inside a chmod 311 directory must remain connectable — otherwise this test isn't proving the real gap"
+    );
+
+    const result = findPreexistingSocketsUnderReadOnlyBinds();
+    assert.equal(
+      result.complete,
+      false,
+      "a chmod 311 subtree (unlistable but searchable, hiding a live connectable socket) must mark the scan incomplete"
+    );
+    assert.ok(
+      result.errors.includes(searchOnlyDir),
+      `expected the unreadable path to be named in errors; got ${JSON.stringify(result.errors)}`
+    );
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    chmodSync(searchOnlyDir, 0o755);
+    rmSync(nestedDir, { recursive: true, force: true });
+  }
+});
+
+// ─── TOCTOU narrowing: in-namespace re-scan catches what the one host-side
+// pre-flight scan misses (P1-2, external review of ced8300be) ─────────────
+//
+// The host-side scan (`findPreexistingSocketsUnderReadOnlyBinds`, tested
+// above) runs ONCE, before spawn, from the calling process — it cannot see
+// a socket a HOST process plants AFTER that scan but BEFORE the isolated
+// child's own `exec`. `inNamespaceSocketScanStatement` closes that gap by
+// re-running the same kind of check twice more, IN NAMESPACE, wired into
+// both `filesystemClosureShellPrelude` (unshare) and
+// `bwrapArgvForFilesystemClosure` (bwrap). These tests plant the socket
+// AFTER the host-side scan would have already run clean, proving the
+// isolated child's OWN in-namespace scan — not the host-side one — is what
+// actually catches it and refuses to run the target.
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
+
+  test(`[${mechanism}] a socket planted under REPO_ROOT AFTER the host-side pre-flight scan is still caught by the in-namespace scan — the target never runs`, {
+    skip: !usable,
+  }, async (t) => {
+    // Short names (`.pt-<mech>-<pid>/t.sock`, not a descriptive
+    // `.pdpp-socket-toctou-probe-<mechanism>-<pid>/toctou.sock`) — see
+    // `UNIX_SOCKET_PATH_MAX_BYTES`'s doc comment: `TEST_REPO_ROOT` itself is
+    // an unpredictable, uncontrolled prefix this test doesn't own, and the
+    // 108-byte AF_UNIX path cap is a hard kernel limit, not a style choice.
+    const nestedDir = join(TEST_REPO_ROOT, `.pt-${mechanism}-${String(process.pid)}`);
+    const socketPath = join(nestedDir, "t.sock");
+    if (Buffer.byteLength(socketPath, "utf8") > UNIX_SOCKET_PATH_MAX_BYTES - 8) {
+      t.skip(
+        `TEST_REPO_ROOT (${TEST_REPO_ROOT}) is too long for an AF_UNIX socket path in this test — ` +
+          `${String(Buffer.byteLength(socketPath, "utf8"))} bytes computed, kernel limit is ${String(UNIX_SOCKET_PATH_MAX_BYTES)}; ` +
+          "this environment cannot exercise this specific test, not a defect in the scan itself"
+      );
+      return;
+    }
+    mkdirSync(nestedDir, { recursive: true });
+    const markerPath = join(tmpdir(), `pdpp-isolation-toctou-marker-${mechanism}-${String(process.pid)}`);
+    rmSync(markerPath, { force: true });
+    const server = createServer();
+    try {
+      // Simulates the host-side pre-flight scan already having run CLEAN —
+      // the real production call site (bin/scenario-verify.ts) runs its own
+      // scan before this point in an actual replay; this test skips
+      // re-implementing that call site and instead proves the STRONGER
+      // property that the in-namespace scan alone (with no help from a
+      // host-side scan at all) still catches a socket planted right before
+      // spawn.
+      await new Promise<void>((resolveListen, rejectListen) => {
+        server.once("error", rejectListen);
+        server.listen(socketPath, resolveListen);
+      });
+
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation(
+          process.execPath,
+          ["-e", `require("fs").writeFileSync(${JSON.stringify(markerPath)}, "ran"); process.exit(0);`],
+          { isolate: mechanism, stdio: "ignore" }
+        );
+        child.on("close", resolveExit);
+      });
+
+      assert.notEqual(
+        exitCode,
+        0,
+        `[${mechanism}] the spawn must NOT exit 0 when a pre-existing socket is present under a ro bind — the in-namespace scan must refuse to run`
+      );
+      assert.ok(
+        !existsSync(markerPath),
+        `[${mechanism}] the target command must NEVER run when the in-namespace socket scan finds a pre-existing socket`
+      );
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+      rmSync(nestedDir, { recursive: true, force: true });
+      rmSync(markerPath, { force: true });
+    }
+  });
+}
+
+test("[bwrap] a caller-planted fake find cannot hide a pre-existing socket from the in-namespace scan", {
+  skip: !bwrapUsable,
+}, async (t) => {
+  const nestedDir = join(TEST_REPO_ROOT, `.pf-${String(process.pid)}`);
+  const socketPath = join(nestedDir, "f.sock");
+  if (Buffer.byteLength(socketPath, "utf8") > UNIX_SOCKET_PATH_MAX_BYTES - 8) {
+    t.skip(
+      `TEST_REPO_ROOT (${TEST_REPO_ROOT}) is too long for an AF_UNIX socket path in this test — ` +
+        `${String(Buffer.byteLength(socketPath, "utf8"))} bytes computed, kernel limit is ${String(UNIX_SOCKET_PATH_MAX_BYTES)}`
+    );
+    return;
+  }
+  const workspace = mkdtempSync(join(tmpdir(), "pdpp-isolation-fake-find-workspace-"));
+  const markerPath = join(workspace, "target-ran");
+  const realPath = process.env.PATH;
+  const server = createServer();
+  const run = async (): Promise<number | null> =>
+    new Promise((resolveExit) => {
+      const child = spawnWithNetworkIsolation(
+        process.execPath,
+        ["-e", `require("fs").writeFileSync(${JSON.stringify(markerPath)}, "ran")`],
+        { isolate: "bwrap", stdio: "ignore", filesystemBindPath: workspace }
+      );
+      child.on("close", resolveExit);
+    });
+  mkdirSync(nestedDir, { recursive: true });
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+
+    // Control 1: a real socket with an unpoisoned PATH is refused.
+    const cleanSocketExitCode = await run();
+    assert.equal(cleanSocketExitCode, 92, "a real pre-existing socket must fail the bwrap in-namespace scan closed");
+    assert.ok(!existsSync(markerPath), "the target must not run while the socket is present");
+
+    // Control 2: the same socket remains visible when a caller-controlled,
+    // silent fake find is both in the rw workspace and first on PATH.
+    writeFileSync(join(workspace, "find"), ["#!/bin/sh", "exit 0"].join("\n"), { mode: 0o755 });
+    process.env.PATH = `${workspace}:${realPath ?? ""}`;
+    const poisonedSocketExitCode = await run();
+    assert.equal(
+      poisonedSocketExitCode,
+      92,
+      "the bwrap script must ignore a caller-planted fake find and still fail closed on the socket"
+    );
+    assert.ok(!existsSync(markerPath), "the target must not run when the poisoned-path scan finds the socket");
+
+    // Control 3: after removing the socket, the unpoisoned baseline runs.
+    process.env.PATH = realPath;
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    rmSync(socketPath, { force: true });
+    const cleanExitCode = await run();
+    assert.equal(cleanExitCode, 0, "the clean no-socket baseline must still run normally");
+    assert.ok(existsSync(markerPath), "the target must run once no socket is present");
+  } finally {
+    process.env.PATH = realPath;
+    server.close();
+    rmSync(nestedDir, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// ─── Orphaned / replaced socket between scan and dial (P1-2, external
+// review of ced8300be) ──────────────────────────────────────────────────
+//
+// A socket that is DELETED and RECREATED at the same path between a scan
+// and the eventual dial is a distinct control from "a socket simply
+// appears": it proves the scan isn't fooled by transient absence (e.g. a
+// scan racing a socket's close-then-immediately-relisten cycle) into a
+// false "clean" verdict for a path that is, at exec time, genuinely
+// occupied by a live socket again. This plants a socket, removes it,
+// recreates a DIFFERENT socket at the exact same path, then spawns — the
+// in-namespace scan runs fresh at spawn time and must see whatever is
+// AT THE PATH right then, not a stale first-seen-clean memory of it.
+for (const mechanism of ["bwrap", "unshare"] as const) {
+  const usable = mechanism === "bwrap" ? bwrapUsable : unshareUsable;
+
+  test(`[${mechanism}] a socket deleted and RECREATED at the same path is still caught (not a stale "seen clean once" verdict)`, {
+    skip: !usable,
+  }, async (t) => {
+    // Short names — see `UNIX_SOCKET_PATH_MAX_BYTES`'s doc comment.
+    const nestedDir = join(TEST_REPO_ROOT, `.po-${mechanism}-${String(process.pid)}`);
+    const socketPath = join(nestedDir, "o.sock");
+    if (Buffer.byteLength(socketPath, "utf8") > UNIX_SOCKET_PATH_MAX_BYTES - 8) {
+      t.skip(
+        `TEST_REPO_ROOT (${TEST_REPO_ROOT}) is too long for an AF_UNIX socket path in this test — ` +
+          `${String(Buffer.byteLength(socketPath, "utf8"))} bytes computed, kernel limit is ${String(UNIX_SOCKET_PATH_MAX_BYTES)}; ` +
+          "this environment cannot exercise this specific test, not a defect in the scan itself"
+      );
+      return;
+    }
+    mkdirSync(nestedDir, { recursive: true });
+    const markerPath = join(tmpdir(), `pdpp-isolation-orphan-marker-${mechanism}-${String(process.pid)}`);
+    rmSync(markerPath, { force: true });
+    const firstServer = createServer();
+    let secondServer: ReturnType<typeof createServer> | undefined;
+    try {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        firstServer.once("error", rejectListen);
+        firstServer.listen(socketPath, resolveListen);
+      });
+      // Confirm the scan sees it once, establishing there is genuinely
+      // something at this path before the delete/recreate cycle — not
+      // asserted as the load-bearing check, just a sanity baseline.
+      const seenFirst = findPreexistingSocketsUnderReadOnlyBinds();
+      assert.ok(
+        seenFirst.sockets.includes(socketPath),
+        `sanity: expected the first socket to be visible before the orphan/replace cycle; got ${JSON.stringify(seenFirst.sockets)}`
+      );
+      await new Promise<void>((resolveClose) => firstServer.close(() => resolveClose()));
+      rmSync(socketPath, { force: true });
+
+      // Recreate a DIFFERENT socket at the SAME path — this is the orphan/
+      // replace shape: the path existed, went away, and now exists again
+      // with a new underlying socket, all before the isolated spawn below.
+      secondServer = createServer();
+      await new Promise<void>((resolveListen, rejectListen) => {
+        secondServer?.once("error", rejectListen);
+        secondServer?.listen(socketPath, resolveListen);
+      });
+
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        const child = spawnWithNetworkIsolation(
+          process.execPath,
+          ["-e", `require("fs").writeFileSync(${JSON.stringify(markerPath)}, "ran"); process.exit(0);`],
+          { isolate: mechanism, stdio: "ignore" }
+        );
+        child.on("close", resolveExit);
+      });
+
+      assert.notEqual(
+        exitCode,
+        0,
+        `[${mechanism}] the spawn must NOT exit 0 against the RECREATED socket — a fresh scan at spawn time must see it, not a stale first-look verdict`
+      );
+      assert.ok(
+        !existsSync(markerPath),
+        `[${mechanism}] the target command must NEVER run against the recreated (orphan/replaced) socket`
+      );
+    } finally {
+      await new Promise<void>((resolveClose) => firstServer.close(() => resolveClose()));
+      if (secondServer !== undefined) {
+        const closeSecond = secondServer;
+        await new Promise<void>((resolveClose) => closeSecond.close(() => resolveClose()));
+      }
+      rmSync(nestedDir, { recursive: true, force: true });
+      rmSync(markerPath, { force: true });
+    }
+  });
+}
+
 // ─── cwd survives the filesystem closure (R9) ──────────────────────────────
 //
 // Node's `spawn(cmd, args, { cwd })` only sets the working directory of the
@@ -1843,4 +3062,352 @@ test("[bwrap] guard mutation test — a --dev-bind variant is rejected", () => {
     unexpected.some((bind) => bind.flag === "--dev-bind" && bind.source === "/"),
     "the exact-set check must also independently flag the --dev-bind / / triple as an unexpected bind"
   );
+});
+
+// ─── Byte-safe submount enumeration (P1-1, external review of 2a134e153) ──
+//
+// The prior enumerator had awk DECODE `\012` into a literal newline and then
+// print the decoded path into a newline-delimited pipe its callers read with
+// `while IFS= read -r`. A mount point legitimately containing a newline
+// therefore arrived as TWO records, neither of which is a real path —
+// reproduced live in a privileged container before this fix: a single real
+// bind mount at `<dir>/a\nb` produced the records `<dir>/a` and `b`, and
+// neither exists on disk. In the setup-time remount that is a `mount
+// -o remount,ro,bind` against a nonexistent path; in the post-pivot verifier
+// it is the false-success shape this verification exists to prevent, because
+// `probe_ro` against a nonexistent path prints nothing, which the verifier
+// reads as "this submount is confirmed read-only" while it is still writable.
+//
+// The fix inverts what crosses the newline channel: RAW (still-escaped)
+// mountinfo records only — which the kernel guarantees are newline-free —
+// with the decode happening inside the consuming loop and the decoded path
+// handed to `mount`/`probe_ro` as a DIRECT argv entry.
+
+/**
+ * Runs the REAL generated submount enumerator (not a hand-copy) against a
+ * parent path, collecting one line per submount the enumerator yields. Each
+ * yielded path is reported with whether it actually EXISTS — the load-bearing
+ * assertion for the newline case, since the pre-fix bug's signature is
+ * yielding path FRAGMENTS that exist nowhere.
+ *
+ * `mountinfoPath`, when given, points the enumerator at a fixture file
+ * instead of the live `/proc/self/mountinfo`, which is how the forced-failure
+ * controls below are exercised: `mount --bind` over `/proc/self/mountinfo`
+ * reports success but the kernel keeps serving live content (confirmed
+ * empirically — `/proc/self` is a magic symlink resolved per read), so
+ * pointing the parser at a real unparsable file is the only honest way to
+ * test an unparsable mountinfo.
+ */
+function runSubmountEnumerator(options: { mountinfoPath?: string; parent: string }): {
+  exitCode: number | null;
+  stderrText: string;
+  yielded: string[];
+} {
+  // `report` prints a delimited record per yielded path. The delimiter is a
+  // fixed sentinel rather than a newline so a yielded path CONTAINING a
+  // newline stays recognizable as one record in this harness's own output —
+  // the harness must not reintroduce the very defect it is testing for.
+  const script = [
+    submountEnumeratorFunctionDefinition(),
+    'report() { printf "<<%s|%s>>\\n" "$1" "$([ -e "$1" ] && echo yes || echo no)"; }',
+    `pdpp_for_each_submount "$1" report`,
+  ].join("; ");
+  const result = spawnSync("sh", ["-c", script, "_", options.parent], {
+    encoding: "utf8",
+    env:
+      options.mountinfoPath === undefined
+        ? process.env
+        : { ...process.env, PDPP_MOUNTINFO_PATH: options.mountinfoPath },
+  });
+  const yielded = [...(result.stdout ?? "").matchAll(/<<([\s\S]*?)\|(yes|no)>>/g)].map(
+    (match) => `${match[1]}|${match[2]}`
+  );
+  return { exitCode: result.status, stderrText: result.stderr ?? "", yielded };
+}
+
+/**
+ * Creates a real bind mount at `<parent>/<name>` and returns a cleanup
+ * function. Uses a real mount (not a fixture) because the whole point is
+ * that the kernel's OWN mountinfo escaping is what the enumerator must
+ * survive — a hand-written fixture would let this test agree with a wrong
+ * assumption about how the kernel escapes these bytes.
+ */
+function withRealSubmount(parent: string, name: string): () => void {
+  const mountPoint = join(parent, name);
+  mkdirSync(mountPoint, { recursive: true });
+  const source = mkdtempSync(join(tmpdir(), "pdpp-submount-src-"));
+  const mounted = spawnSync("mount", ["--bind", source, mountPoint], { stdio: "ignore" });
+  assert.equal(mounted.status, 0, `sanity check: creating the real submount ${JSON.stringify(name)} must succeed`);
+  return () => {
+    spawnSync("umount", ["-l", mountPoint], { stdio: "ignore" });
+    rmSync(source, { recursive: true, force: true });
+  };
+}
+
+// Each of these is a byte the kernel escapes in a mountinfo mount-point field
+// (`proc(5)`: \040 space, \011 tab, \012 newline, \134 backslash), plus the
+// literal-escape-looking case that proves decoding happens EXACTLY once, plus
+// the misleading-prefix pair. Confirmed live: the raw fields are
+// `a\012b`, `tab\011x`, `sp\040ace`, `back\134slash`, `lit\134012eral`.
+const EXOTIC_SUBMOUNT_NAMES: readonly { label: string; name: string }[] = [
+  { label: "newline", name: "a\nb" },
+  { label: "tab", name: "tab\tx" },
+  { label: "space", name: "sp ace" },
+  { label: "backslash", name: "back\\slash" },
+  { label: "literal octal-escape-looking text", name: "lit\\012eral" },
+];
+
+for (const { label, name } of EXOTIC_SUBMOUNT_NAMES) {
+  test(`[unshare privileged] submount enumerator yields a ${label}-containing mount point as ONE real, existing path`, {
+    skip: !bindMountCapable,
+  }, () => {
+    const parent = mkdtempSync(join(tmpdir(), "pdpp-submount-exotic-"));
+    let cleanup: (() => void) | undefined;
+    try {
+      cleanup = withRealSubmount(parent, name);
+      const { exitCode, stderrText, yielded } = runSubmountEnumerator({ parent });
+      assert.equal(exitCode, 0, `enumeration must succeed; stderr: ${stderrText}`);
+      assert.deepEqual(
+        yielded,
+        [`${join(parent, name)}|yes`],
+        `a ${label}-containing mount point must arrive as exactly ONE record that EXISTS on disk — ` +
+          "the pre-fix defect split it into path fragments that exist nowhere, which probe silently clean"
+      );
+    } finally {
+      cleanup?.();
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+}
+
+test("[unshare privileged] submount enumerator decodes exactly once — a mount point named with a literal backslash-012 is NOT read as a newline", {
+  skip: !bindMountCapable,
+}, () => {
+  // The two cases are distinct in the RAW mountinfo field (`a\012b` for a
+  // real newline vs `lit\134012eral` for the literal text `\012`) and only
+  // STAY distinct if the raw text is decoded exactly once, left to right,
+  // without rescanning a decoded backslash as the start of a new escape.
+  // Both mounted simultaneously so a decoder that conflates them cannot
+  // pass by handling either one in isolation.
+  const parent = mkdtempSync(join(tmpdir(), "pdpp-submount-once-"));
+  const cleanups: (() => void)[] = [];
+  try {
+    cleanups.push(withRealSubmount(parent, "a\nb"));
+    cleanups.push(withRealSubmount(parent, "lit\\012eral"));
+    const { exitCode, stderrText, yielded } = runSubmountEnumerator({ parent });
+    assert.equal(exitCode, 0, `enumeration must succeed; stderr: ${stderrText}`);
+    assert.deepEqual(
+      [...yielded].sort(),
+      [`${join(parent, "a\nb")}|yes`, `${join(parent, "lit\\012eral")}|yes`].sort(),
+      "a real newline and the literal text \\012 must decode to two DIFFERENT existing paths"
+    );
+  } finally {
+    for (const cleanup of cleanups) {
+      cleanup();
+    }
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("[unshare privileged] submount enumerator excludes a misleading sibling whose path merely PREFIXES the parent", {
+  skip: !bindMountCapable,
+}, () => {
+  // `<root>/pre-fix` string-prefixes `<root>/pre` but is NOT a descendant of
+  // it. A prefix test without a path separator would wrongly remount/probe a
+  // sibling mount that the ro bind never covered.
+  const root = mkdtempSync(join(tmpdir(), "pdpp-submount-prefix-"));
+  const parent = join(root, "pre");
+  const cleanups: (() => void)[] = [];
+  try {
+    mkdirSync(parent, { recursive: true });
+    cleanups.push(withRealSubmount(root, "pre-fix"));
+    cleanups.push(withRealSubmount(parent, "real-child"));
+    const { exitCode, stderrText, yielded } = runSubmountEnumerator({ parent });
+    assert.equal(exitCode, 0, `enumeration must succeed; stderr: ${stderrText}`);
+    assert.deepEqual(
+      yielded,
+      [`${join(parent, "real-child")}|yes`],
+      "only the true descendant may be yielded — the misleading-prefix sibling must be excluded"
+    );
+  } finally {
+    for (const cleanup of cleanups) {
+      cleanup();
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── Fail-closed enumeration (P1-2, external review of 2a134e153) ─────────
+//
+// The prior shape was `awk ... | while read ...; done`: a failing awk, or an
+// absent/unreadable mountinfo, still exited 0 having run the loop body zero
+// times — reproduced live, both shapes exit 0 — so "could not enumerate" was
+// byte-identical to "no submounts exist", and setup proceeded / the
+// post-pivot check passed. Every control below must BLOCK instead.
+
+/** Writes a deliberately unparsable mountinfo fixture and returns its path. */
+function writeMountinfoFixture(kind: "empty" | "malformed" | "partial"): string {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-mountinfo-fixture-"));
+  const path = join(dir, "mountinfo");
+  const live = readFileSync("/proc/self/mountinfo", "utf8");
+  const contents: Record<typeof kind, string> = {
+    empty: "",
+    malformed: "not mountinfo at all\njunk junk\n",
+    // Truncated mid-record: the surviving prefix can still satisfy the
+    // per-record shape check, which is why the enumerator needs its separate
+    // trailing-newline test to catch this.
+    partial: live.slice(0, 60),
+  };
+  writeFileSync(path, contents[kind]);
+  return path;
+}
+
+for (const kind of ["empty", "malformed", "partial"] as const) {
+  test(`[unshare privileged] submount enumeration BLOCKS on a ${kind} mountinfo instead of reporting no submounts`, {
+    skip: !bindMountCapable,
+  }, () => {
+    const fixture = writeMountinfoFixture(kind);
+    try {
+      const { exitCode, stderrText, yielded } = runSubmountEnumerator({
+        mountinfoPath: fixture,
+        parent: "/tmp",
+      });
+      assert.equal(
+        exitCode,
+        93,
+        `a ${kind} mountinfo must exit SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE (93), not 0; stderr: ${stderrText}`
+      );
+      assert.deepEqual(yielded, [], "a failed enumeration must not yield any submount to the caller's command");
+    } finally {
+      rmSync(join(fixture, ".."), { recursive: true, force: true });
+    }
+  });
+}
+
+test("[unshare privileged] submount enumeration BLOCKS on an ABSENT mountinfo", {
+  skip: !bindMountCapable,
+}, () => {
+  const { exitCode, stderrText, yielded } = runSubmountEnumerator({
+    mountinfoPath: "/nonexistent/pdpp-mountinfo",
+    parent: "/tmp",
+  });
+  assert.equal(exitCode, 93, `an absent mountinfo must exit 93, not 0; stderr: ${stderrText}`);
+  assert.deepEqual(yielded, [], "a failed enumeration must not yield any submount");
+});
+
+test("submount enumeration BLOCKS on an UNREADABLE mountinfo", {
+  // Gated ONLY on being non-root: this control reads a fixture file, so it
+  // needs no bind-mount capability. It is skipped as root because root
+  // bypasses the permission bit entirely, which would make the control pass
+  // vacuously rather than prove anything.
+  skip: process.platform !== "linux" || process.getuid?.() === 0,
+}, () => {
+  const fixture = writeMountinfoFixture("partial");
+  chmodSync(fixture, 0o000);
+  try {
+    const { exitCode, stderrText, yielded } = runSubmountEnumerator({ mountinfoPath: fixture, parent: "/tmp" });
+    assert.equal(exitCode, 93, `an unreadable mountinfo must exit 93, not 0; stderr: ${stderrText}`);
+    assert.deepEqual(yielded, [], "a failed enumeration must not yield any submount");
+  } finally {
+    chmodSync(fixture, 0o644);
+    rmSync(join(fixture, ".."), { recursive: true, force: true });
+  }
+});
+
+test("[unshare privileged] submount enumeration BLOCKS when the PARSER ITSELF exits nonzero", {
+  skip: !bindMountCapable,
+}, () => {
+  // A fake `awk` first on PATH stands in for any reason the real parser could
+  // fail (OOM, a kernel read error mid-file, a hostile PATH). The pre-fix
+  // pipeline swallowed this entirely — confirmed live at exit 0.
+  const fakeBin = mkdtempSync(join(tmpdir(), "pdpp-fake-awk-"));
+  writeFileSync(join(fakeBin, "awk"), "#!/bin/sh\nexit 3\n", { mode: 0o755 });
+  try {
+    const script = [
+      submountEnumeratorFunctionDefinition(),
+      'report() { echo "<<$1|yes>>"; }',
+      'pdpp_for_each_submount "$1" report',
+    ].join("; ");
+    const result = spawnSync("sh", ["-c", script, "_", "/tmp"], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ""}` },
+    });
+    assert.equal(result.status, 93, `a nonzero parser exit must exit 93, not 0; stderr: ${result.stderr}`);
+    assert.ok(
+      /parser failed \(exit 3\)/.test(result.stderr ?? ""),
+      `the diagnostic must name the parser's own exit status; got ${JSON.stringify(result.stderr)}`
+    );
+    assert.ok(!/<</.test(result.stdout ?? ""), "a failed enumeration must not invoke the caller's command");
+  } finally {
+    rmSync(fakeBin, { recursive: true, force: true });
+  }
+});
+
+test("[bwrap sandbox] postPivotVerificationStatements FAILS CLOSED when submount enumeration cannot parse mountinfo", {
+  skip: !bwrapUsable,
+}, () => {
+  // The end-to-end consequence of P1-2 in the verifier: a broken enumeration
+  // must fail the post-pivot check (91), not pass it. Before the fix the
+  // enumeration's failure was invisible — the command substitution captured
+  // no writable paths and the check reported success.
+  const fixture = writeMountinfoFixture("malformed");
+  try {
+    const setup = ["touch /pdpp-isolation-canary", "mkdir -p /oldroot"].join("; ");
+    const script = `PDPP_MOUNTINFO_PATH=/mountinfo-fixture; export PDPP_MOUNTINFO_PATH; ${setup}; ${postPivotVerificationStatements(
+      [{ path: "/etc", mode: "ro" }]
+    ).join("; ")}; echo PDPP_VERIFY_PASSED`;
+    const result = spawnSync(
+      "bwrap",
+      [
+        "--unshare-net",
+        "--tmpfs",
+        "/",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--ro-bind",
+        "/etc",
+        "/etc",
+        "--ro-bind",
+        fixture,
+        "/mountinfo-fixture",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/sbin",
+        "/sbin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--",
+        "sh",
+        "-c",
+        script,
+      ],
+      { encoding: "utf8" }
+    );
+    assert.equal(
+      result.status,
+      91,
+      `an unparsable mountinfo must FAIL the post-pivot check (91), not pass it; stderr: ${result.stderr}`
+    );
+    assert.ok(
+      !/PDPP_VERIFY_PASSED/.test(result.stdout ?? ""),
+      "the verification must not report passing when it could not enumerate submounts"
+    );
+    assert.ok(
+      /ro-check-status=93/.test(result.stderr ?? ""),
+      `the diagnostic must surface the enumeration failure status; got ${JSON.stringify(result.stderr)}`
+    );
+  } finally {
+    rmSync(join(fixture, ".."), { recursive: true, force: true });
+  }
 });

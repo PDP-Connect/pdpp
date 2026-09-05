@@ -92,9 +92,11 @@ import {
 import { evaluateClaimEligibility } from "../src/scenario/claims.ts";
 import type { ConnectorScenario, ScenarioUserInteraction } from "../src/scenario/format.ts";
 import {
+  findPreexistingSocketsUnderReadOnlyBinds,
   type IsolationMechanism,
   isNamespaceIsolationAvailable,
   type NamespaceIsolationCapability,
+  type SocketScanResult,
   sandboxScratchEnv,
   spawnWithNetworkIsolation,
 } from "../src/scenario/isolation.ts";
@@ -1387,6 +1389,40 @@ function resolveIsolationMechanism(capability: NamespaceIsolationCapability): fa
   return capability.available ? capability.mechanism : false;
 }
 
+/**
+ * REPOSITORY-UDS EXCEPTION, host-side PRE-FLIGHT scan (P1, external review
+ * of ab415be6c; return contract and TOCTOU scope corrected P1-2, external
+ * review of ced8300be) — this is ONE of THREE scans a fully-isolated replay
+ * now performs, not the only one: it runs ONCE, from the host process,
+ * before any run's subprocess spawns, and its result is EARLY signal, not
+ * the sole authority the strong claim rests on. `isolation.ts`'s
+ * `inNamespaceSocketScanStatement` runs the equivalent check TWICE more, IN
+ * NAMESPACE (after every ro-bind remount completes, and again immediately
+ * before `exec` — see that function's doc comment), narrowing the TOCTOU
+ * window this scan alone cannot close: a `ro` bind stops the SANDBOX from
+ * creating a socket under a bound path, but NOT a separate HOST process
+ * (outside the sandbox, with ordinary write access to the bind's SOURCE
+ * directory) from creating one between this early scan and the target
+ * command's actual `exec` — the earlier version of this comment claimed
+ * "nothing new can appear under a ro bind while replay runs," which
+ * overstated what recursive read-only proves (see `isolation.ts`'s
+ * `findPreexistingSocketsUnderReadOnlyBinds()` doc comment for the full
+ * correction). Only meaningful when isolation is actually active for this
+ * replay — an empty scan result under process-local-only isolation would be
+ * misleading (the escape this scan closes is specific to the OS-isolation
+ * boundary), so this returns a vacuously-clean result without scanning
+ * otherwise, which is also the CORRECT input for `evaluateClaimEligibility`
+ * in that case — the coarser `isNamespaceIsolationActive: false` limitation
+ * already fires and takes priority, per that function's `else if` chain.
+ * Split out of `main` purely to keep `main`'s own cognitive complexity
+ * under this package's lint ceiling.
+ */
+function scanPreexistingSocketsIfIsolated(isolationCapability: NamespaceIsolationCapability): SocketScanResult {
+  return isolationCapability.available
+    ? findPreexistingSocketsUnderReadOnlyBinds()
+    : { sockets: [], complete: true, errors: [] };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const connectorPath = resolveConnectorPath(args);
@@ -1455,6 +1491,7 @@ async function main(): Promise<void> {
     ? "network isolation: os-namespace"
     : `network isolation: process-local only (${isolationCapability.reason})`;
   process.stdout.write(`  ${isolationLine}\n`);
+  const socketScanResult = scanPreexistingSocketsIfIsolated(isolationCapability);
   // Every replayed response is served from the recording, not a live
   // provider, so a connector's own pacing/backoff timers (governor pacing,
   // an inline PAGE_DELAY sleep, anything else built on setTimeout/
@@ -1716,7 +1753,8 @@ async function main(): Promise<void> {
     isolationLine,
     digestObservation,
     isolationCapability,
-    observedUnsupportedEvidenceSurface(allRunMessages)
+    observedUnsupportedEvidenceSurface(allRunMessages),
+    socketScanResult
   );
   process.exitCode = 0;
 }
@@ -1748,7 +1786,8 @@ function printCoverageReport(
   isolationLine: string,
   digestObservation: CaptureSourceDigestObservation,
   isolationCapability: NamespaceIsolationCapability,
-  observedUnsupportedEvidenceSurfaceFlag: boolean
+  observedUnsupportedEvidenceSurfaceFlag: boolean,
+  socketScanResult: SocketScanResult
 ): void {
   const capturedAt = scenario.capture.captured_at;
   // state_seeded_second_run_with_changed_requests (formerly named
@@ -1844,11 +1883,49 @@ function printCoverageReport(
     currentDeclarationDigestComputed: digestObservation.currentDeclarationDigestComputed,
     currentSourceDigestComputed: digestObservation.currentSourceDigestComputed,
     isNamespaceIsolationActive: isolationCapability.available,
+    // WITHHELD AGAIN PENDING INDEPENDENT REVIEW OF THIS ROUND'S REPAIR
+    // (external review of ced8300be, R11): the previous round
+    // (2714089be/774c4a620) flipped this from a hardcoded `false` to
+    // `isolationCapability.available`, genuinely re-enabling the strong
+    // claim, on the belief that the trusted-launcher and recursive-read-only
+    // repair was complete. The external reviewer's next pass found it was
+    // NOT: unshare (and bwrap) still invoked their inner `sh` through
+    // inherited PATH before any trusted PATH took effect (now fixed — see
+    // `resolveTrustedLauncherPath("sh")`), the pre-existing-socket scanner
+    // failed OPEN on an unreadable subtree and remained TOCTOU-prone (now
+    // fixed — see `SocketScanResult`/`inNamespaceSocketScanStatement`), and
+    // the mountinfo-based submount verification used naive word-splitting
+    // that could omit escaped paths and could not verify file submounts
+    // (see isolation.ts's mountinfo-parsing fix). Every one of THIS round's
+    // fixes is proven by its own test — but per the reviewer's explicit
+    // instruction ("keep recorded_replay withheld"), this literal stays
+    // hardcoded `false` until an INDEPENDENT review (not the maker who wrote
+    // these fixes) confirms the repair, matching this module's own
+    // "the maker is not the judge" discipline. Do not flip this back to
+    // `isolationCapability.available` in this same PR/round — that decision
+    // belongs to whoever reviews R11's changes, not to the commit that makes
+    // them.
+    isolationEvidenceBoundaryProven: false,
+    preexistingSocketsUnderReadOnlyBinds: socketScanResult.sockets,
+    preexistingSocketScanIncomplete: !socketScanResult.complete,
+    preexistingSocketScanUnreadablePaths: socketScanResult.errors,
     observedUnsupportedEvidenceSurface: observedUnsupportedEvidenceSurfaceFlag,
     driverEvidenceSatisfied: driverEvidenceOk,
   });
   if (decision.claim === "recorded_replay") {
-    process.stdout.write(`\nrecorded_replay: PASS (captured ${capturedAt})\n`);
+    // A bare "PASS (captured ...)" line let a reader tell THAT the strong
+    // claim was earned but not WHAT was checked — the preconditions only
+    // ever surfaced as named limitations on the WITHHELD path. This branch
+    // is currently UNREACHABLE (isolationEvidenceBoundaryProven is
+    // hardcoded false above, pending independent review of R11's changes —
+    // see that field's own doc comment), kept ready for the commit that
+    // re-enables it once that review confirms the repair: once reachable
+    // again, it restates the (by-then-proven) preconditions inline instead
+    // of making the reader go read claims.ts.
+    process.stdout.write(
+      `\nrecorded_replay: PASS (captured ${capturedAt}; preconditions: trusted absolute launcher path, ` +
+        "every ro-bind submount verified read-only, no pre-existing sockets under writable-bound paths)\n"
+    );
   } else {
     process.stdout.write(`\ndiagnostic_replay: PASS (captured ${capturedAt})\n`);
     process.stdout.write("recorded_replay: WITHHELD\n");

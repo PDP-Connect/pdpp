@@ -6,7 +6,9 @@
  * binding split and the ASSISTANCE-withholding condition added repair wave
  * 4, P1-1/P1-2; driver-evidence prerequisite added repair wave 6, P1-1;
  * recorded-browser driver support and its mandatory staleness limitation
- * added alongside `browser-har-replay.ts`).
+ * added alongside `browser-har-replay.ts`; isolation-evidence-boundary and
+ * repository-UDS-socket-scan conditions added by the bounded P1 repair
+ * following external review of the merged tree ab415be6c).
  *
  * `bin/scenario-verify.ts` used to print `recorded_replay: PASS` the moment
  * every per-run comparison passed — but a passing comparison only proves the
@@ -90,6 +92,40 @@ import type { ConnectorScenario } from "./format.ts";
 export type ScenarioStalenessLimitation =
   `recorded-browser: verified against capture of ${string}; asserts nothing about the live provider`;
 
+/**
+ * The repository-UDS-socket withholding limitation, PARAMETERIZED on the
+ * comma-joined list of pre-existing socket paths `findPreexistingSocketsUnderReadOnlyBinds()`
+ * found under a `ro` bind for THIS run — a TypeScript template-literal type,
+ * matching `ScenarioStalenessLimitation`'s own reasoning: the path(s) are
+ * genuinely per-run data, not a closed enum value. See
+ * `buildPreexistingSocketLimitation` below for the single place this string
+ * is constructed, and this module's doc comment ("REPOSITORY-UDS EXCEPTION,
+ * RECONCILED") for the reasoning: recursive read-only (isolation.ts's
+ * `recursiveReadOnlyRemountCommand`) closes the ability to CREATE a socket
+ * under a `ro` bind, so the only sockets an isolated child can ever dial
+ * through one are sockets that ALREADY EXISTED at spawn time — a finite,
+ * checkable fact about this specific run, not an open-ended exception.
+ */
+export type PreexistingSocketLimitation =
+  `pre-existing socket(s) found under a read-only bind at spawn time, dialable despite recursive read-only: ${string}`;
+
+/**
+ * The socket-scan-incomplete limitation, PARAMETERIZED on the comma-joined
+ * list of subtree paths `findPreexistingSocketsUnderReadOnlyBinds()` could
+ * NOT fully enumerate (P1-2, external review of ced8300be) — distinct from
+ * `PreexistingSocketLimitation` (a socket was actually FOUND) because "I
+ * could not prove this subtree clean" and "I found a socket" are two
+ * independently true facts a caller must be able to tell apart, matching
+ * `SocketScanResult`'s own `sockets`/`errors` split. An unreadable subtree
+ * (whether `chmod 000` or `chmod 311` — search-without-read, a genuinely
+ * separate DAC permission, confirmed to hide a live, connectable socket
+ * from enumeration exactly as effectively as `000` does) means the scan's
+ * `sockets` list cannot be trusted as exhaustive, so this withholds the
+ * strong claim identically to actually finding one.
+ */
+export type SocketScanIncompleteLimitation =
+  `pre-existing-socket scan could not fully enumerate one or more read-only bind subtrees (unreadable path(s), possibly hiding a dialable socket): ${string}`;
+
 export type ClaimLimitation =
   | "unbound entrypoint replay"
   | "no capture-time declaration digest"
@@ -100,10 +136,36 @@ export type ClaimLimitation =
   | "non-recorded-http driver - canonical replay is defined only for recorded-http"
   | "legacy scenario without protocol trace"
   | "network isolation: process-local only - descendant escape not excluded"
+  | "network isolation: launcher trust or recursive read-only filesystem closure not proven for this run"
   | "connector exercised an evidence surface the oracle cannot observe (ASSISTANCE)"
   | "no recorded provider interaction - driver evidence for recorded-http not satisfied"
   | "no recorded HAR entries - driver evidence for recorded-browser not satisfied"
+  | PreexistingSocketLimitation
+  | SocketScanIncompleteLimitation
   | ScenarioStalenessLimitation;
+
+/**
+ * Builds the exact repository-UDS-socket limitation string for a run whose
+ * pre-existing-socket scan found at least one match. `socketPaths` must be
+ * non-empty — callers only invoke this when
+ * `preexistingSocketsUnderReadOnlyBinds.length > 0` (see
+ * `evaluateClaimEligibility`).
+ */
+export function buildPreexistingSocketLimitation(socketPaths: readonly string[]): PreexistingSocketLimitation {
+  return `pre-existing socket(s) found under a read-only bind at spawn time, dialable despite recursive read-only: ${socketPaths.join(", ")}`;
+}
+
+/**
+ * Builds the exact socket-scan-incomplete limitation string for a run whose
+ * scan hit at least one unreadable subtree. `unreadablePaths` must be
+ * non-empty — callers only invoke this when
+ * `preexistingSocketScanIncomplete` is true (see `evaluateClaimEligibility`).
+ */
+export function buildSocketScanIncompleteLimitation(
+  unreadablePaths: readonly string[]
+): SocketScanIncompleteLimitation {
+  return `pre-existing-socket scan could not fully enumerate one or more read-only bind subtrees (unreadable path(s), possibly hiding a dialable socket): ${unreadablePaths.join(", ")}`;
+}
 
 /**
  * Builds the exact staleness limitation string for a scenario carrying at
@@ -166,6 +228,26 @@ export interface ClaimEligibilityInput {
    *  `isNamespaceIsolationAvailable()`) was ACTIVE for this replay, as
    *  opposed to the weaker process-local-only fallback (condition f). */
   isNamespaceIsolationActive: boolean;
+  /**
+   * External review of the merged tree (ab415be6c) found the evidence
+   * boundary this claim rests on was itself unproven in two ways: (1) the
+   * `unshare`/`bwrap` launcher binaries were resolved through the CALLER's
+   * inherited `$PATH` rather than a trusted absolute path, so a
+   * PATH-prepended fake launcher could be selected in place of the real one;
+   * (2) the unshare mechanism's `--rbind` submounts only had their TOP mount
+   * remounted read-only — Linux does not apply `remount,ro,bind` recursively
+   * — so a nested mount under a `ro` bind (e.g. `REPO_ROOT`) stayed writable.
+   * Either defect lets `isNamespaceIsolationActive` read `true` (namespaces
+   * genuinely exist) while the filesystem/launcher half of the OS-isolation
+   * claim does not actually hold. `isNamespaceIsolationActive` alone is no
+   * longer sufficient for `recorded_replay`: this field must ALSO be true,
+   * set by `bin/scenario-verify.ts` only once both the trusted-launcher
+   * resolution (isolation.ts's `resolveTrustedLauncherPath`) and the
+   * recursive-read-only post-pivot verification
+   * (`postPivotVerificationStatements`'s per-submount check) are wired in and
+   * this replay's own isolated child was verified against them.
+   */
+  isolationEvidenceBoundaryProven: boolean;
   /** Repair wave 4 (P1-2, FIX 2d): true when this run's messages included at
    *  least one kind `TRACE_POLICY` (verify.ts) dispositions
    *  `"unsupported_claim_withheld"` — today, ASSISTANCE or ASSISTANCE_STATUS.
@@ -173,6 +255,48 @@ export interface ClaimEligibilityInput {
    *  oracle cannot observe, so even an otherwise-fully-eligible run must not
    *  print the unqualified `recorded_replay: PASS` claim. */
   observedUnsupportedEvidenceSurface: boolean;
+  /**
+   * SCAN COMPLETENESS (P1-2, external review of ced8300be): `false` whenever
+   * `findPreexistingSocketsUnderReadOnlyBinds()`'s scan could not fully
+   * enumerate one or more subtrees (an unreadable directory — `readdirSync`
+   * throws `EACCES` identically whether the directory is `chmod 000` or
+   * `chmod 311` — search permitted, read denied, a genuinely separate DAC
+   * bit that still leaves a KNOWN-name socket inside it fully connectable,
+   * confirmed empirically). Gated on the SAME `else if` rung as
+   * `preexistingSocketsUnderReadOnlyBinds` (see `evaluateClaimEligibility`)
+   * — an incomplete scan withholds `recorded_replay` exactly like a
+   * non-empty socket list does, never merely a softer warning, because an
+   * incomplete scan means the empty-array case above cannot be trusted as
+   * "scanned clean."
+   */
+  preexistingSocketScanIncomplete: boolean;
+  /** Absolute paths of every subtree the scan could not enumerate — named
+   *  explicitly so `buildSocketScanIncompleteLimitation`'s limitation string
+   *  points at the exact path, matching this module's "name the path"
+   *  discipline for every other socket-scan-derived limitation. Non-empty
+   *  only when `preexistingSocketScanIncomplete` is true. */
+  preexistingSocketScanUnreadablePaths: readonly string[];
+  /**
+   * REPOSITORY-UDS EXCEPTION, RECONCILED (P1, external review of ab415be6c):
+   * a `ro` bind (e.g. `REPO_ROOT`) blocks WRITES, not reads/dials — a Unix
+   * domain socket file that already existed under a `ro` bind at spawn time
+   * stays dialable from inside the isolated child regardless of recursive
+   * read-only, confirmed empirically (a `curl --unix-socket` against a real
+   * `REPO_ROOT`-internal socket succeeds with both the trusted-launcher and
+   * recursive-ro fixes applied). Recursive read-only DOES close the other
+   * half: a connector cannot CREATE a new socket under a `ro` bind once
+   * every submount is genuinely read-only, so the only sockets reachable
+   * this way are ones that existed BEFORE the spawn — a finite, checkable
+   * precondition, not an open-ended gap. `bin/scenario-verify.ts` populates
+   * this from `isolation.ts`'s `findPreexistingSocketsUnderReadOnlyBinds()`,
+   * run immediately before spawning. An EMPTY array means the scan found
+   * nothing — combined with `isolationEvidenceBoundaryProven`, this is what
+   * justifies `recorded_replay`'s OS-isolation claim being airtight for this
+   * specific run; a NON-EMPTY array withholds the strong claim and names
+   * every path found (see `buildPreexistingSocketLimitation`), rather than
+   * silently accepting the old, undocumented, open-ended exception.
+   */
+  preexistingSocketsUnderReadOnlyBinds: readonly string[];
   scenario: ConnectorScenario;
 }
 
@@ -250,6 +374,22 @@ export function evaluateClaimEligibility(input: ClaimEligibilityInput): ClaimDec
   }
   if (!input.isNamespaceIsolationActive) {
     limitations.push("network isolation: process-local only - descendant escape not excluded");
+  } else if (!input.isolationEvidenceBoundaryProven) {
+    limitations.push(
+      "network isolation: launcher trust or recursive read-only filesystem closure not proven for this run"
+    );
+  } else if (input.preexistingSocketsUnderReadOnlyBinds.length > 0) {
+    limitations.push(buildPreexistingSocketLimitation(input.preexistingSocketsUnderReadOnlyBinds));
+  } else if (input.preexistingSocketScanIncomplete) {
+    // P1-2 (external review of ced8300be): a scan that could not fully
+    // enumerate a subtree is NOT the same fact as "scanned, found nothing"
+    // — it must withhold the strong claim on its own rung, checked AFTER
+    // the non-empty-sockets case above (a run that both found a socket AND
+    // hit an unreadable subtree reports the found-socket limitation, the
+    // more specific and more actionable of the two) but still strictly
+    // gating `recorded_replay`, same severity as every other condition on
+    // this chain.
+    limitations.push(buildSocketScanIncompleteLimitation(input.preexistingSocketScanUnreadablePaths));
   }
   if (input.observedUnsupportedEvidenceSurface) {
     limitations.push("connector exercised an evidence surface the oracle cannot observe (ASSISTANCE)");

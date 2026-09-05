@@ -119,6 +119,19 @@
  * widening the sandbox — the opposite failure direction from a mask list,
  * where a missed entry fails open and invisibly.
  *
+ * REMAINING GAP, RECONCILED (P1, external review of ab415be6c): default-deny
+ * closes reachability for a FOREIGN path outside the derived set, but a `ro`
+ * bind (the derived set's own entries, including `REPO_ROOT`) only blocks
+ * WRITES — a socket file that ALREADY EXISTS somewhere under `REPO_ROOT` (or
+ * any other `ro` bind) at spawn time stays dialable, `connect()` needing no
+ * write permission. Recursive read-only (`recursiveReadOnlyRemountCommand`)
+ * closes the ability to CREATE a new one during a run, turning this into a
+ * finite, checkable precondition rather than an open-ended exception:
+ * `findPreexistingSocketsUnderReadOnlyBinds()` scans for exactly this
+ * before every spawn, and `bin/scenario-verify.ts` withholds
+ * `recorded_replay` — naming the exact path — whenever the scan finds one.
+ * See that function's own doc comment for the full mechanism.
+ *
  * CAPABILITY DETECTION: unprivileged user-namespace creation is not
  * guaranteed available. It can be disabled at the kernel level
  * (`kernel.unprivileged_userns_clone=0`, some hardened distros/containers)
@@ -151,7 +164,12 @@
  * host process enumeration or `/proc/<pid>/cmdline` read, no `kill(pid, 0)`
  * reachability), mount/filesystem (default-deny: only the derived allowlist
  * plus `filesystemBindPath` are visible, closing pathname-UDS dials to any
- * foreign socket outside that set — see PATHNAME-UDS ESCAPE above), SysV IPC
+ * FOREIGN socket outside that set — see PATHNAME-UDS ESCAPE above — AND,
+ * recursively, every submount under a `ro` bind, not just its top mount —
+ * see `recursiveReadOnlyRemountCommand`; a pre-existing socket already
+ * inside a `ro` bind at spawn time is a separate, RECONCILED case, checked
+ * per-run by `findPreexistingSocketsUnderReadOnlyBinds()`, not something
+ * this static filesystem view alone closes), SysV IPC
  * (no `/proc/sysvipc/*` enumeration of host shared memory/semaphores/message
  * queues), UTS (hostname/domainname). Deliberately NOT isolated, by
  * conscious scope decision rather than oversight: the CGROUP namespace (an
@@ -209,7 +227,19 @@
  */
 
 import { type ChildProcess, type SpawnOptions, spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  type Dirent,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -234,6 +264,134 @@ export type IsolationMechanism = "unshare" | "bwrap";
 export type NamespaceIsolationCapability =
   | { available: true; mechanism: IsolationMechanism }
   | { available: false; reason: string };
+
+/**
+ * The same fixed, absolute directory list as `TRUSTED_SETUP_PATH`, as an
+ * array — used by `resolveTrustedLauncherPath` below to find the LAUNCHER
+ * binaries themselves (`unshare`, `bwrap`, and — P1-1, external review of
+ * ced8300be, see that function's doc comment — the `sh` interpreter those
+ * launchers exec into), not the setup commands the launched shell script
+ * runs. Kept as a literal array (not derived by splitting
+ * `TRUSTED_SETUP_PATH`) so the two stay independently readable at their own
+ * call sites, but the values are the same list for the same reason: this is
+ * the operating system's own set of locations for trusted, privileged system
+ * binaries, nothing caller- or environment-specific.
+ */
+const TRUSTED_LAUNCHER_DIRECTORIES: readonly string[] = ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
+
+/**
+ * TRUSTED LAUNCHER RESOLUTION (P1, external review of ab415be6c) — resolves
+ * the `unshare`/`bwrap` binary this module actually spawns to ONE fixed,
+ * absolute path, found by walking `TRUSTED_LAUNCHER_DIRECTORIES` in order,
+ * rather than letting `node:child_process`'s `spawn`/`spawnSync` resolve a
+ * bare command NAME through the calling process's own inherited `$PATH`.
+ *
+ * WHAT THIS CLOSES: before this fix, `probeUnshare()`/`probeBwrap()` (the
+ * CAPABILITY CHECK) and `spawnWithNetworkIsolation` (the REAL EXECUTION)
+ * both called `spawnSync("unshare", ...)`/`spawn("bwrap", ...)` — a bare
+ * command name. Node resolves a bare command name by searching the
+ * CALLING PROCESS's own `PATH` environment variable, entry by entry, and
+ * uses the FIRST match — exactly the same "attacker prepends a directory
+ * ahead of the real one" shape `TRUSTED_SETUP_PATH` already closes for the
+ * commands INSIDE the isolated child's own setup script (`mount`,
+ * `pivot_root`, ...), but that fix never touched the launcher itself: a
+ * caller (or a compromised connector's own environment mutation, since this
+ * package's own subprocess env construction is caller-controlled) could
+ * still prepend a directory containing a same-named `unshare` or `bwrap` to
+ * `process.env.PATH` before this module ran, and that fake binary — not the
+ * real, trusted one — is what actually got spawned with this process's own
+ * privileges. Both the capability PROBE and the real EXECUTION resolved the
+ * bare name independently, so a caller could even see a probe report
+ * `available: true` against the REAL binary, then have the real spawn moments
+ * later silently run the FAKE one instead (or vice versa) if `PATH` changed
+ * in between — this fix removes that gap entirely by resolving once, from a
+ * `PATH`-independent source of truth, and threading the SAME resolved
+ * absolute path through both call sites.
+ *
+ * RESOLUTION: walks `TRUSTED_LAUNCHER_DIRECTORIES` in the FIXED order given
+ * — never the caller's `$PATH`, never any other environment-derived list —
+ * and returns the first `${dir}/${name}` that exists and is executable
+ * (`X_OK`). A symlink at that path (e.g. a merged-usr host's `/bin/unshare`
+ * pointing into `/usr/bin/unshare`, or vice versa) is followed to its real
+ * target via `realpathSync` before being returned, so the value callers spawn
+ * is always a concrete file, not a path whose target could be swapped out
+ * from under a cached lookup by re-pointing a symlink. Throws (fails closed,
+ * never silently falls back to a bare, PATH-resolved name) when NO trusted
+ * directory has the binary — a host missing `unshare`/`bwrap` entirely from
+ * every trusted location cannot isolate, and this module must say so loudly
+ * rather than let `spawn` fall through to an unaudited `$PATH` lookup as an
+ * implicit fallback.
+ *
+ * CACHED per (name), computed once per process — the trusted directories are
+ * fixed, real filesystem locations, not expected to change during a single
+ * run, and this resolution runs on every probe and every isolated spawn, so
+ * memoizing avoids repeating four `existsSync`+`accessSync` checks (up to
+ * eight, across both binaries) on every single replay run in a scenario with
+ * many runs.
+ *
+ * `"sh"` (P1-1, external review of ced8300be) — a THIRD name resolved through
+ * this exact allowlist, for exactly the same reason as `unshare`/`bwrap`
+ * themselves. WHAT THIS CLOSES: before this fix, both `unshareProcMountProbeArgv()`
+ * (the probe) and `spawnWithNetworkIsolation`'s `unshare` branch (the real
+ * execution) passed the bare string `"sh"` as an argv entry to the already-
+ * trusted, absolute-path `unshare` binary — `unshare --map-root-user --net
+ * ... -- sh -c <script>`. `unshare` itself then `execvp("sh", ...)`s that
+ * argv entry, and `execvp` on a bare name (no `/`) resolves it through the
+ * PATH environment variable of the process performing the exec — which, at
+ * that moment, is whatever `PATH` this Node process's `spawn()` call handed
+ * to the `unshare` child (this package's own subprocess-env construction,
+ * fully caller-controlled), NOT `TRUSTED_SETUP_PATH`. `TRUSTED_SETUP_PATH` is
+ * assigned as the FIRST STATEMENT INSIDE the shell script that bare `sh` is
+ * asked to interpret — so it can only take effect once a trustworthy `sh` is
+ * already running it; it does nothing to select WHICH `sh` runs it in the
+ * first place. Confirmed empirically in a privileged test container: with
+ * `/tmp/fakebin` (holding a fake `sh` that touches a marker file and execs
+ * the real `/bin/sh`) prepended to `PATH`, `unshare --map-root-user --net
+ * --mount --pid --ipc --uts --fork -- sh -c 'echo hi'` ran the FAKE `sh`
+ * first (marker file present) — the exact "PATH-prepended fake sh satisfies
+ * the probe sentinel, or replaces the real closure script's interpreter at
+ * execution time" attack the review describes, closed by passing
+ * `resolveTrustedLauncherPath("sh")`'s absolute result (e.g. `/bin/sh`) as
+ * the argv entry instead of the bare string `"sh"` — same empirical test with
+ * the absolute path in place: fake `sh` never runs, marker absent. Applied at
+ * all three call sites that build a `sh -c` argv for a launcher to exec:
+ * `unshareProcMountProbeArgv()` (the probe), `bwrapArgvForFilesystemClosure()`
+ * (bwrap's own inner `sh -c` — lower risk in isolation, since it runs inside
+ * bwrap's already-closed filesystem view where only `requiredFilesystemBinds()`
+ * entries are visible, but the review's fix applies to "both the probe and
+ * execution" without carving out bwrap, and the same PATH-inheritance
+ * mechanism applies identically to bwrap's own child-argv exec), and
+ * `spawnWithNetworkIsolation`'s `unshare` branch (the real execution the
+ * review's repro targets).
+ */
+const trustedLauncherPathCache = new Map<string, string>();
+
+/** Exported for `isolation-mechanism.test.ts`'s direct unit-level proof that
+ *  resolution is `$PATH`-independent — production code never needs to call
+ *  this from outside the module, every internal call site already does. */
+export function resolveTrustedLauncherPath(name: "unshare" | "bwrap" | "sh"): string {
+  const cached = trustedLauncherPathCache.get(name);
+  if (cached !== undefined) {
+    return cached;
+  }
+  for (const dir of TRUSTED_LAUNCHER_DIRECTORIES) {
+    const candidate = join(dir, name);
+    if (!existsSync(candidate)) {
+      continue;
+    }
+    try {
+      accessSync(candidate, constants.X_OK);
+    } catch {
+      continue;
+    }
+    const resolved = realpathSync(candidate);
+    trustedLauncherPathCache.set(name, resolved);
+    return resolved;
+  }
+  throw new Error(
+    `pdpp isolation: trusted launcher '${name}' not found in any trusted location (${TRUSTED_LAUNCHER_DIRECTORIES.join(", ")}) — refusing to fall back to a PATH-resolved lookup`
+  );
+}
 
 /**
  * Shell statements that mount and verify a fresh procfs, shared verbatim
@@ -292,7 +450,25 @@ const PROC_MOUNT_PROBE_OK = "PDPP_PROC_MOUNT_OK";
  */
 function unshareProcMountProbeArgv(): string[] {
   const script = `${procMountVerifyStatements().join(" && ")} && echo ${PROC_MOUNT_PROBE_OK}`;
-  return ["--map-root-user", "--net", "--mount", "--pid", "--ipc", "--uts", "--fork", "--", "sh", "-c", script];
+  // TRUSTED SHELL (P1-1, external review of ced8300be): resolved via
+  // resolveTrustedLauncherPath("sh"), never the bare string "sh" — see that
+  // function's doc comment. unshare execs this argv entry via execvp, which
+  // resolves a bare name through the calling process's own inherited PATH,
+  // not TRUSTED_SETUP_PATH (that assignment is a statement INSIDE the script
+  // this shell is asked to interpret, too late to matter here).
+  return [
+    "--map-root-user",
+    "--net",
+    "--mount",
+    "--pid",
+    "--ipc",
+    "--uts",
+    "--fork",
+    "--",
+    resolveTrustedLauncherPath("sh"),
+    "-c",
+    script,
+  ];
 }
 
 /**
@@ -311,7 +487,13 @@ function unshareProcMountProbeArgv(): string[] {
  * in well under a second so the cost of asking is negligible.
  */
 function probeUnshare(): NamespaceIsolationCapability {
-  const probe = spawnSync("unshare", unshareProcMountProbeArgv(), {
+  let unsharePath: string;
+  try {
+    unsharePath = resolveTrustedLauncherPath("unshare");
+  } catch (err) {
+    return { available: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+  const probe = spawnSync(unsharePath, unshareProcMountProbeArgv(), {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 5000,
   });
@@ -405,9 +587,15 @@ export function isNamespaceIsolationAvailable(): NamespaceIsolationCapability {
  * invokes.
  */
 function probeBwrap(): NamespaceIsolationCapability {
+  let bwrapPath: string;
+  try {
+    bwrapPath = resolveTrustedLauncherPath("bwrap");
+  } catch (err) {
+    return { available: false, reason: err instanceof Error ? err.message : String(err) };
+  }
   const probeWorkspace = mkdtempSync(join(tmpdir(), "pdpp-isolation-bwrap-probe-"));
   try {
-    const probe = spawnSync("bwrap", bwrapArgvForFilesystemClosure("true", [], probeWorkspace), {
+    const probe = spawnSync(bwrapPath, bwrapArgvForFilesystemClosure("true", [], probeWorkspace), {
       stdio: ["ignore", "ignore", "pipe"],
       timeout: 5000,
     });
@@ -609,22 +797,224 @@ export function requiredFilesystemBinds(): readonly FilesystemBind[] {
   return dedupeBinds(binds);
 }
 
-/** Drops any bind whose path is identical to, or a filesystem descendant of,
- *  an earlier entry in the list — binding both would either be a harmless
- *  redundant mount or (worse) a `rw` ancestor accidentally masking a
- *  narrower `ro` intent. Order-preserving: the FIRST occurrence wins. */
-function dedupeBinds(binds: readonly FilesystemBind[]): FilesystemBind[] {
-  const kept: FilesystemBind[] = [];
-  for (const bind of binds) {
-    const normalized = resolve(bind.path);
-    const alreadyCovered = kept.some(
-      (existing) => normalized === existing.path || normalized.startsWith(`${existing.path}${sep}`)
-    );
-    if (!alreadyCovered) {
-      kept.push({ path: normalized, mode: bind.mode });
+/**
+ * PRE-EXISTING-SOCKET SCAN — reconciles the repository-UDS exception (P1,
+ * external review of ab415be6c). Recursive read-only (see
+ * `recursiveReadOnlyRemountCommand`) closes writes into any `ro` bind's
+ * submounts, but a `ro` bind only blocks WRITES, not reads/dials: a Unix
+ * domain socket file that ALREADY EXISTS somewhere under a `ro` bind at
+ * spawn time (most concretely, anywhere under `REPO_ROOT`) stays perfectly
+ * DIALABLE from inside the isolated child — `connect()` to an existing UDS
+ * needs no write permission on the socket or its containing directory,
+ * confirmed empirically (a `curl --unix-socket` against a real
+ * `REPO_ROOT`-internal socket succeeds even with both the trusted-launcher
+ * and recursive-ro fixes applied). Recursive read-only genuinely closes the
+ * other half of this FROM INSIDE THE SANDBOX: an isolated CONNECTOR cannot
+ * CREATE a new socket anywhere under a `ro` bind once every submount is
+ * genuinely read-only.
+ *
+ * WHAT THIS SCAN DOES NOT CLOSE — CORRECTED CLAIM (P1-2, external review of
+ * ced8300be): an earlier version of this doc comment claimed "nothing new
+ * can appear under a ro bind while replay runs." That OVERSTATES what
+ * recursive read-only actually proves: a `ro` bind stops the SANDBOX (the
+ * isolated child itself) from creating a new socket there — it says nothing
+ * about the HOST. A ro BIND is a property of the isolated child's OWN mount
+ * namespace; the SOURCE directory it was bound from (e.g. the real
+ * `REPO_ROOT` on disk) remains an ordinary, writable directory to every
+ * OTHER process on the same machine that is NOT inside this sandbox — a
+ * separate host process (the calling user's own shell, a build script, a
+ * completely unrelated program run by the same user) can create a socket
+ * under that source directory at any time, and the isolated child would see
+ * it appear the moment the host process creates it (a bind mount is a live
+ * view of the same inode, not a snapshot — see `filesystemClosureShellPrelude`'s
+ * own doc comment on this same property, used there to explain why the
+ * SCRATCH directories don't need separate staging). So "the sandbox cannot
+ * create a socket here" is proven; "no socket can appear here during this
+ * run" is not — the true claim is narrower, and this scan's own TOCTOU
+ * narrowing (running it AGAIN, in-namespace, at two later points — see
+ * `inNamespaceSocketScanStatement`) exists specifically because this
+ * function alone, run once from the host before any run starts, cannot make
+ * the broader claim honest.
+ *
+ * That turns what was an open-ended "the closure isn't universal inside the
+ * repo bind" gap into a FINITE, checkable precondition per scan: enumerate
+ * every socket under a `ro` bind at the moment this function runs, and if
+ * the scan finds ANY (or cannot fully enumerate a subtree — see
+ * `SocketScanResult.complete` below), that specific run cannot honestly
+ * claim the OS-isolation boundary is airtight — the finding is fed into the
+ * `recorded_replay` eligibility decision (see
+ * `bin/scenario-verify.ts`'s `isolationEvidenceBoundaryProven` wiring),
+ * withholding the strong claim and naming the exact socket path (or the
+ * exact unreadable path), rather than silently accepting an unbounded,
+ * undocumented exception forever.
+ *
+ * BOUNDED, not a mask list: this is the opposite shape from the
+ * `worldWritableTempDirs` mask-list architecture this module's own module
+ * doc comment explains was proven unable to terminate — that list tried to
+ * enumerate every directory a FOREIGN socket might live under, which is
+ * unbounded in principle. This scan instead enumerates every socket that
+ * ALREADY EXISTS under the module's OWN finite, derived bind set right now,
+ * a concrete, checkable fact about THIS moment, not a guess about what a
+ * foreign process might place somewhere in the future.
+ *
+ * Does not follow symlinks (`Dirent.isSymbolicLink()` entries are skipped
+ * entirely, neither descended into nor stat'd as a socket themselves) —
+ * matches every other traversal in this module's own filesystem-closure
+ * logic, which never follows a symlink outside the bind it was found under,
+ * and avoids a symlink cycle turning this bounded scan unbounded.
+ *
+ * FAILS CLOSED ON AN UNREADABLE SUBTREE (P1-2, external review of
+ * ced8300be) — an earlier version caught `readdirSync`'s `EACCES` and simply
+ * `return`ed from that subtree, silently treating "I could not see in here"
+ * as "nothing here": a fail-OPEN default given this scan's entire purpose is
+ * to justify a strong claim. Confirmed empirically, as an unprivileged user:
+ * a directory the scanning process cannot LIST — whether `chmod 000`
+ * (neither read nor search) or `chmod 311` (search/execute permitted, read
+ * permission absent — a directory can be SEARCHED without being LISTABLE,
+ * genuinely separate DAC bits) — makes `readdirSync` throw `EACCES`
+ * identically in both cases, while a socket with a KNOWN name inside a
+ * `311` directory stays fully connectable (confirmed live: a client
+ * successfully dialed a socket under a `chmod 311` directory this scan
+ * could not enumerate). `SocketScanResult.complete` is `false` whenever ANY
+ * subtree could not be fully enumerated, distinct from `sockets` (what was
+ * actually found) — a caller must treat `complete: false` as withholding
+ * the strong claim exactly like a non-empty `sockets` array, never as
+ * "scanned clean."
+ *
+ * SCOPED TO USER-WRITABLE `ro` BINDS, NOT EVERY `requiredFilesystemBinds()`
+ * ENTRY: `/usr` and `/etc` are excluded — confirmed empirically, walking
+ * `/usr` alone costs ~700ms (690k entries) on a typical dev host, more than
+ * 4x `REPO_ROOT`'s own cost, for a check that cannot find anything real. A
+ * socket under `/usr`/`/etc` requires root (or an OS package/container-build
+ * step) to plant — this module's own DAC reasoning elsewhere already treats
+ * that as outside its threat model ("no new privilege, since DAC still
+ * applies... the isolated child runs as the same real UID as the parent" —
+ * see `FilesystemBind`'s doc comment), the same way a root-capable attacker
+ * could defeat this whole isolation boundary by many other means. `REPO_ROOT`
+ * (the repo checkout, writable by the calling user's own build/checkout
+ * process — the ACTUAL exception the external review named), `nodeDir` (a
+ * per-user version-manager install, e.g. under `~/.local/share/mise/...`),
+ * and the Playwright browser cache (also under the user's `$HOME`) are all
+ * scanned — every bind ordinarily writable by the SAME user this process
+ * itself runs as, which is the set that could plausibly have a socket
+ * planted under it without root.
+ */
+const SOCKET_SCAN_EXCLUDED_SYSTEM_PATHS: readonly string[] = ["/usr", "/etc"];
+
+/**
+ * Result contract for `findPreexistingSocketsUnderReadOnlyBinds()` (P1-2,
+ * external review of ced8300be) — replaces a bare `readonly string[]`
+ * specifically so "found nothing" and "could not fully enumerate" are
+ * structurally distinct, never collapsible into the same falsy-array shape.
+ */
+export interface SocketScanResult {
+  /** `false` whenever ANY scanned subtree could not be fully enumerated
+   *  (an `EACCES` on `readdirSync`, from either a `000` or a `311`
+   *  directory — see this module's own doc comment above for why both fail
+   *  identically here). A caller MUST treat `complete: false` as
+   *  withholding the strong `recorded_replay` claim, exactly like a
+   *  non-empty `sockets` array — it does NOT mean "scanned clean." */
+  complete: boolean;
+  /** Absolute paths of every directory the scan could not enumerate, one
+   *  entry per unreadable subtree encountered — named explicitly so a
+   *  withheld claim's limitation string can point at the exact path,
+   *  matching this module's "fail loud, name the path" discipline
+   *  elsewhere (e.g. `buildPreexistingSocketLimitation`). Empty whenever
+   *  `complete` is `true`. */
+  errors: readonly string[];
+  /** Absolute paths of every socket the scan actually found. */
+  sockets: readonly string[];
+}
+
+export function findPreexistingSocketsUnderReadOnlyBinds(): SocketScanResult {
+  const sockets: string[] = [];
+  const errors: string[] = [];
+  for (const bind of requiredFilesystemBinds()) {
+    if (SOCKET_SCAN_EXCLUDED_SYSTEM_PATHS.includes(bind.path)) {
+      continue;
+    }
+    walkForSockets(bind.path, sockets, errors);
+  }
+  return { sockets, complete: errors.length === 0, errors };
+}
+
+function walkForSockets(dir: string, found: string[], errors: string[]): void {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    // FAIL CLOSED (P1-2, external review of ced8300be): an unreadable
+    // subtree — whether `EACCES` from a `000` (unsearchable) or a `311`
+    // (searchable but unlistable) directory — is recorded as an
+    // enumeration failure, NOT silently treated as "nothing here." See
+    // this module's own doc comment above for the empirical proof that a
+    // `311` directory's unlistable contents remain fully connectable.
+    errors.push(dir);
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) {
+      continue;
+    }
+    const entryPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkForSockets(entryPath, found, errors);
+      continue;
+    }
+    if (entry.isSocket()) {
+      found.push(entryPath);
     }
   }
-  return kept;
+}
+
+/**
+ * Drops any bind whose path is identical to, or a filesystem descendant of,
+ * ANOTHER entry in the list, regardless of which was declared first —
+ * binding both would either be a harmless redundant mount or (worse) a `rw`
+ * ancestor accidentally masking a narrower `ro` intent.
+ *
+ * SORTED BY DEPTH FIRST (P1, external review of ab415be6c's recursive-ro
+ * fix): the old version was order-preserving ("first occurrence wins" —
+ * whichever entry appeared EARLIER in `requiredFilesystemBinds()`'s literal
+ * array kept its bind, even if a LATER, broader ancestor entry would have
+ * covered it). That was harmless under the old top-level-only `remount,ro,
+ * bind`, where a redundant nested bind was merely wasteful. It stopped being
+ * harmless once `recursiveReadOnlyRemountCommand` started walking
+ * `/proc/self/mountinfo` for submounts of each `ro` bind: a real, concrete
+ * case (confirmed empirically in a privileged test container) is `nodeDir`
+ * (`dirname(process.execPath)`, e.g. `/usr/local/bin` under a container's
+ * default Node install) being declared BEFORE `/usr` in
+ * `requiredFilesystemBinds()`'s literal array — the old dedup kept BOTH as
+ * separate top-level binds, so `/usr`'s own `--rbind` then ALSO recursively
+ * picked up the already-separately-staged `/usr/local/bin` mount as one of
+ * its own submounts, and the new recursive-remount walk tried to remount
+ * that same mount point a second time, which failed outright ("mount point
+ * not mounted or bad option" — the first remount had already changed its
+ * mount ID out from under the second). Sorting shortest-path-first before
+ * deduping means the BROADEST ancestor (`/usr`) is always considered first
+ * regardless of declaration order, so a narrower descendant (`nodeDir`) is
+ * correctly absorbed into it rather than staying a separate, redundant bind
+ * that the parent's own recursive walk then double-processes.
+ */
+function dedupeBinds(binds: readonly FilesystemBind[]): FilesystemBind[] {
+  const normalized = binds.map((bind, index) => ({ ...bind, index, path: resolve(bind.path) }));
+  // Depth-sorted only to DECIDE which entries survive — the broadest
+  // ancestor must be considered first regardless of declaration order (see
+  // this function's doc comment). The final return value is re-sorted back
+  // to original declaration order below, which is what every caller
+  // (the bind loop in filesystemClosureShellPrelude, bwrap's argv builder)
+  // expects for stable, readable generated output.
+  const sortedByDepth = [...normalized].sort((a, b) => a.path.length - b.path.length);
+  const kept: typeof normalized = [];
+  for (const bind of sortedByDepth) {
+    const alreadyCovered = kept.some(
+      (existing) => bind.path === existing.path || bind.path.startsWith(`${existing.path}${sep}`)
+    );
+    if (!alreadyCovered) {
+      kept.push(bind);
+    }
+  }
+  return kept.sort((a, b) => a.index - b.index).map(({ path, mode }) => ({ path, mode }));
 }
 
 /**
@@ -854,6 +1244,18 @@ const REQ_FUNCTION_DEFINITION =
 const POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE = 91;
 
 /**
+ * The single fixed exit code the IN-NAMESPACE socket scan
+ * (`inNamespaceSocketScanStatement`) uses on failure — distinct from `90`
+ * (a setup step), `91` (post-pivot verification), and `97` (the procfs
+ * gate), so a caller can tell this specific failure class apart from the
+ * others by exit code alone. Covers BOTH failure shapes the scan reports:
+ * a genuine pre-existing socket found, or a subtree the scan could not
+ * fully enumerate (P1-2, external review of ced8300be — see
+ * `inNamespaceSocketScanStatement`'s doc comment).
+ */
+const IN_NAMESPACE_SOCKET_SCAN_FAILURE_EXIT_CODE = 92;
+
+/**
  * Builds one `req "<label>" <command...>` shell statement — the run-or-die
  * primitive every mandatory setup step below is wrapped in (P1-1, ninth
  * review, requirement (a)). `req` itself (defined once, inline, as the
@@ -941,7 +1343,354 @@ function reqStatement(label: string, command: string): string {
  * like from inside the isolated child, and is a strict superset of what a
  * non-nested source (e.g. `REPO_ROOT`, which has no sub-mounts on any tested
  * host) needs — so it is used uniformly for every entry, not conditionally.
+ *
+ * RECURSIVE READ-ONLY (P1, external review of ab415be6c): `--rbind` pulls in
+ * every submount under a `ro` bind's source directory, but the classic
+ * `mount -o remount,ro,bind <staged>` step that follows it ONLY remounts the
+ * TOP mount at `<staged>` — Linux does not apply `remount,ro,bind`
+ * recursively to the submounts `--rbind` carried along, confirmed
+ * empirically: a nested bind mount created under a source directory (e.g.
+ * Docker's own `/etc/resolv.conf`-style injected submounts, or any other
+ * mount point that happens to exist under a `ro` bind's real path) stays
+ * WRITABLE after the parent's remount succeeds and reports `available: true`
+ * — the exact false-success shape this hardening closes. See
+ * `recursiveReadOnlyRemountCommand` below for the fix: after each `ro`
+ * bind's top-level remount, walk `/proc/self/mountinfo` (still readable at
+ * this point — it's pre-pivot, so this reads the CURRENT namespace's own
+ * view) for every mount point that is a descendant of that bind's staged
+ * path, and remount each ONE individually. Wrapped in `req` like every
+ * other mandatory step, so a submount that refuses to go read-only halts
+ * the whole prelude rather than silently leaving it writable.
  */
+
+/**
+ * POSIX-awk function DEFINITION (not a full program) that decodes
+ * `/proc/self/mountinfo`'s octal path escapes (`\040`=space, `\011`=tab,
+ * `\012`=newline, `\134`=backslash — the four bytes `proc(5)` documents the
+ * kernel escaping in a mountinfo path field, confirmed empirically against
+ * a real `\040`-space bind mount on this host) back to their literal bytes.
+ * Embedded via string concatenation into every awk INVOCATION below
+ * (`MOUNTINFO_DECODE_AWK_PROGRAM`) rather than kept as a separate `-f` file
+ * this module would need to ship and locate on disk — awk programs compose
+ * by string concatenation exactly like SQL or shell fragments do elsewhere
+ * in this file, and keeping it inline avoids a new filesystem dependency.
+ * Written and tested standalone (see this fix's own commit message for the
+ * live proof: a `\040`-escaped mountinfo field for a real space-containing
+ * bind mount was correctly decoded back to a literal space) before being
+ * embedded, matching this module's `REQ_FUNCTION_DEFINITION` discipline.
+ */
+const MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION = [
+  "function pdpp_decode_mountinfo_path(s,    result, i, n, c1, c2, code, j) {",
+  '  result = "";',
+  "  n = length(s);",
+  "  i = 1;",
+  "  while (i <= n) {",
+  "    c1 = substr(s, i, 1);",
+  '    if (c1 == "\\\\" && i + 3 <= n) {',
+  "      c2 = substr(s, i + 1, 3);",
+  "      if (c2 ~ /^[0-7][0-7][0-7]$/) {",
+  "        code = 0;",
+  "        for (j = 1; j <= 3; j++) { code = code * 8 + (substr(c2, j, 1) + 0) }",
+  '        result = result sprintf("%c", code);',
+  "        i += 4;",
+  "        continue;",
+  "      }",
+  "    }",
+  "    result = result c1;",
+  "    i += 1;",
+  "  }",
+  "  return result;",
+  "}",
+].join(" ");
+
+/**
+ * The name of the shell function `submountEnumeratorFunctionDefinition()`
+ * defines and `forEachSubmountStatement()` invokes. Named once here so the
+ * definition and its call sites cannot drift apart.
+ */
+const SUBMOUNT_ENUMERATOR_FUNCTION_NAME = "pdpp_for_each_submount";
+
+/**
+ * The exit code the submount enumerator uses when it cannot PROVE it
+ * enumerated `/proc/self/mountinfo` — the parser exited nonzero, or the file
+ * could not be read/parsed at all (P1-2, external review of 2a134e153).
+ * Distinct from the exit code a caller's own per-submount ACTION returns, so
+ * "I could not enumerate" is never confusable with "I enumerated fine and
+ * your action failed" — the exact indistinguishability the review found.
+ */
+const SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE = 93;
+
+/**
+ * A shell function definition that invokes a caller-supplied command once per
+ * mount point strictly UNDER a given path, passing the mount point's DECODED
+ * absolute path as a direct argv entry. Shared by BOTH
+ * `recursiveReadOnlyRemountCommand` (the setup-time remount) and
+ * `postPivotVerificationStatements`'s submount check (the post-pivot
+ * verification), so neither can drift from the other — the previous version's
+ * common-mode failure was exactly that both callers shared one defective
+ * enumerator.
+ *
+ * BYTE-SAFE: NO DECODED PATH EVER CROSSES A NEWLINE CHANNEL (P1-1, external
+ * review of 2a134e153). The prior version had awk decode `\012` into a
+ * literal newline byte and then `print` the decoded path, one per line, into
+ * a pipe its callers consumed with `while IFS= read -r`. A mount point whose
+ * name legitimately CONTAINS a newline therefore arrived as TWO records,
+ * neither of which is a real path — confirmed live in a privileged container
+ * (see this fix's commit message): a single real bind mount at `<dir>/a\nb`
+ * produced the two records `<dir>/a` and `b`, and `[ -d ... ]` reports
+ * neither exists. In the setup-time remount that turns into a `mount
+ * -o remount,ro,bind` against a nonexistent path; in the post-pivot verifier
+ * it is worse than that — `probe_ro` against a nonexistent path prints
+ * nothing, which the verifier reads as "this submount is confirmed
+ * read-only," so a genuinely WRITABLE submount is reported clean. That is the
+ * false-success shape this whole verification exists to prevent.
+ *
+ * THE FIX inverts what the newline channel carries. The RAW mountinfo record
+ * is newline-free BY CONSTRUCTION — the kernel escapes a literal newline in a
+ * mount point as `\012` precisely so a record occupies exactly one line
+ * (`proc(5)`; confirmed live: a real `<dir>/a\nb` mount appears as the single
+ * raw field `<dir>/a\012b`). So the line-oriented stage now carries only RAW,
+ * still-escaped records — where a newline cannot appear — and the DECODE
+ * happens inside the consuming shell loop, after the record boundary has
+ * already been established. The decoded path then goes to the caller's
+ * command as a direct argv entry (`"$@" "$__decoded"`), never through another
+ * pipe, another `echo`, or another line-split. A path containing any byte —
+ * newline, tab, space, backslash — survives intact because after decoding it
+ * is only ever passed, never re-serialized.
+ *
+ * DECODING IS NOT IDEMPOTENT, SO IT HAPPENS EXACTLY ONCE. A mount point whose
+ * name contains the literal four-character text `\012` escapes to `\134012`
+ * (backslash itself escapes to `\134`), which decodes back to the literal
+ * text `\012` — NOT to a newline. Confirmed live alongside the newline case
+ * above: the two are distinct in the raw field (`a\012b` vs `lit\134012eral`)
+ * and only stay distinct if the raw text is decoded exactly once, left to
+ * right, with each decoded byte emitted directly rather than rescanned. The
+ * decoder below consumes the four input characters of an escape and advances
+ * past them, so a `\134` that decodes to a backslash is never re-examined as
+ * the start of the following `012` — which is what keeps a mount point
+ * literally named `\012` from being mistaken for one containing a newline.
+ *
+ * FAIL-CLOSED ENUMERATION (P1-2, external review of 2a134e153). The prior
+ * version was `awk ... /proc/self/mountinfo | while read ...; done`: if awk
+ * exited nonzero, or `/proc/self/mountinfo` was absent/unreadable, the
+ * pipeline still exited 0 having run the loop body zero times — confirmed
+ * live, both shapes exit 0 — so "I could not enumerate" was byte-identical to
+ * "there are no submounts," and setup proceeded / verification passed. This
+ * version STAGES the parser's output to a temporary file and refuses to
+ * iterate until it has POSITIVE evidence of a successful parse:
+ *
+ *   1. the parser's own exit status is 0 (captured directly, not through a
+ *      pipeline that discards it), AND
+ *   2. the parser reports it actually READ AND PARSED mountinfo — it emits a
+ *      trailing `#` sentinel line carrying the number of records it saw, and
+ *      that count must be present and nonzero. A zero-record mountinfo is
+ *      impossible for a live process (the root mount alone is always there),
+ *      so "parsed zero records" is itself proof of a truncated or malformed
+ *      read rather than a legitimate empty result.
+ *
+ * Only when both hold does it iterate; otherwise it exits
+ * `SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE` with a diagnostic. This is what
+ * makes an unreadable, absent, empty, malformed, or partially-written
+ * mountinfo BLOCK the child rather than silently look clean. Note that
+ * "found zero SUBMOUNTS" remains a perfectly legitimate result (most binds
+ * have none) and is distinguished from "parsed zero RECORDS" — only the
+ * latter is a failure.
+ *
+ * ORDER: newest mounts appear later in `/proc/self/mountinfo`, so a mount
+ * nested two levels deep (a submount of a submount) is naturally processed
+ * AFTER its own parent submount, in the same top-to-bottom order the file
+ * already lists them — unchanged from the prior version's reasoning, and
+ * preserved here because the staging file keeps the parser's original order.
+ */
+export function submountEnumeratorFunctionDefinition(): string {
+  // The parser emits RAW (still-escaped) field-5 tokens, one per line, for
+  // every record whose DECODED path is strictly under `staged` — plus a
+  // trailing `#<count>` sentinel proving it read and parsed the file. The
+  // descendant comparison happens INSIDE awk, on decoded values, so the
+  // caller never has to compare decoded paths itself (and so a misleading
+  // prefix like `/p/pre-fix` is correctly excluded from `/p/pre`'s
+  // descendants: the `staged "/"` prefix test requires a real path
+  // separator, which `pre-fix` does not have after `pre`).
+  // VALIDATES RECORD SHAPE, NOT JUST LINE COUNT. Counting lines is NOT
+  // evidence of a successful parse — confirmed empirically against a
+  // deliberately malformed mountinfo (`not mountinfo at all\njunk`) and a
+  // byte-truncated one: both yield a nonzero line count, so a line-count
+  // sentinel alone would have let the caller iterate on garbage. A real
+  // `/proc/self/mountinfo` record (`proc(5)`) is: numeric mount ID, numeric
+  // parent ID, `major:minor`, root, mount point, then optional fields
+  // terminated by a literal `-` separator, then at least fs type and source
+  // after it. Any line failing that shape makes this parser exit nonzero, so
+  // a malformed or partially-written file BLOCKS instead of being silently
+  // treated as "no submounts here".
+  //
+  // A TRUNCATED FINAL RECORD is caught separately, by the caller comparing
+  // the bytes the parser consumed against the source's real size — a partial
+  // read leaves the last line without its terminating newline. This is NOT
+  // done with gawk's `RT` record-terminator variable: the target shell
+  // environment ships `mawk` (confirmed: `mawk 1.3.4`, which has no `RT` and
+  // silently yields an empty string for it, so an `RT`-based check would
+  // pass vacuously on every input). A byte-truncated mountinfo can cut in a
+  // place where the surviving prefix still satisfies the field-shape test
+  // above (confirmed empirically: truncating to 60 bytes left a first line
+  // that passed shape validation), so shape alone is not sufficient to catch
+  // a partial read.
+  const awkProgram =
+    `${MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION} ` +
+    "{ sep = 0; " +
+    'for (f = 7; f <= NF; f++) { if ($f == "-") { sep = f; break } } ' +
+    "if (NF < 10 || sep == 0 || NF - sep < 2 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+:[0-9]+$/) { " +
+    'printf "pdpp isolation: malformed /proc/self/mountinfo record at line %d\\n", NR > "/dev/stderr"; ' +
+    "malformed = 1; exit 1 } " +
+    "valid++; mp = pdpp_decode_mountinfo_path($5); " +
+    "if (mp != staged && index(mp, stagedslash) == 1) print $5 } " +
+    'END { if (malformed) { exit 1 } printf "#%d\\n", valid }';
+  return [
+    `${SUBMOUNT_ENUMERATOR_FUNCTION_NAME}() {`,
+    // `$1` is the parent path to enumerate under; everything after `--` is
+    // the caller's command, invoked once per submount with the decoded path
+    // appended as a direct argv entry.
+    '  __sm_parent="$1"; shift;',
+    // STAGED IN A VARIABLE, NOT A TEMP FILE. An earlier revision of this fix
+    // staged to `mktemp`, which broke every real caller: neither context this
+    // runs in is guaranteed to have a writable temp directory — the bwrap
+    // sandbox builds a bare `tmpfs` root with no `/tmp` at all, and the
+    // unshare prelude's post-pivot root likewise provides none (confirmed:
+    // `mktemp` failed with "No such file or directory" in both, which failed
+    // the check closed for an incidental reason having nothing to do with
+    // the mount table). Staging in a variable removes the filesystem
+    // dependency entirely.
+    //
+    // This is byte-safe HERE specifically because the staged content is RAW,
+    // still-escaped mountinfo records, which the kernel guarantees are
+    // newline-free — the same property the whole design rests on. Command
+    // substitution strips trailing newlines and the `while read` below splits
+    // on them, and neither can corrupt a record that cannot contain one. A
+    // DECODED path would NOT be safe to stage this way, which is exactly why
+    // the decode happens per-record inside the loop instead.
+    //
+    // SOURCE: `PDPP_MOUNTINFO_PATH` when set, else the real
+    // `/proc/self/mountinfo`. This exists so the forced-failure controls
+    // (parser nonzero, unreadable, absent, empty, malformed, partial) can be
+    // exercised against a REAL fixture file: `mount --bind` over
+    // `/proc/self/mountinfo` reports success but the kernel keeps serving
+    // live content (confirmed empirically — `/proc/self` is a magic symlink
+    // resolved per read), so pointing the parser at an unparsable file is
+    // the only honest way to test an unparsable mountinfo. The variable is
+    // set only by this module's own tests; the production prelude never sets
+    // or exports it, and it is read before `exec <target>`, so the isolated
+    // child cannot influence it. Written as a template literal because the
+    // shell's `${VAR:-default}` expansion is spelled identically to a JS
+    // template placeholder, which the linter rejects inside a plain string.
+    `  __sm_source="\${PDPP_MOUNTINFO_PATH:-/proc/self/mountinfo}";`,
+    // Parser exit status captured DIRECTLY — assigned from a command
+    // substitution rather than read after a pipeline, which is what made the
+    // prior version's failure invisible.
+    `  __sm_staged=$(awk -v staged="$__sm_parent" -v stagedslash="$__sm_parent/" ${shQuote(awkProgram)} ` +
+      '"$__sm_source" 2>/dev/null); __sm_rc=$?;',
+    '  if [ "$__sm_rc" -ne 0 ]; then ' +
+      'echo "pdpp isolation: submount enumeration parser failed (exit $__sm_rc) for [$__sm_parent]" 1>&2; ' +
+      `exit ${SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE}; fi;`,
+    // A partially-written source ends without a terminating newline. `tail
+    // -c 1` inside a command substitution yields that final byte for a
+    // truncated file and the empty string for a properly terminated one
+    // (command substitution strips the trailing newline) — a portable
+    // truncation test that does not need gawk's `RT`, which mawk lacks.
+    // An empty source has no final byte and is caught by the sentinel check
+    // below instead.
+    '  if [ -s "$__sm_source" ] && [ -n "$(tail -c 1 "$__sm_source" 2>/dev/null)" ]; then ' +
+      'echo "pdpp isolation: mountinfo source [$__sm_source] ends mid-record (partial read)" 1>&2; ' +
+      `exit ${SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE}; fi;`,
+    // Evidence that mountinfo was actually read and parsed: the sentinel must
+    // be present AND report a nonzero valid-record count.
+    '  __sm_sentinel=$(printf "%s\\n" "$__sm_staged" | sed -n "s/^#\\([0-9][0-9]*\\)$/\\1/p" | tail -n 1);',
+    '  if [ -z "$__sm_sentinel" ] || [ "$__sm_sentinel" -eq 0 ]; then ' +
+      'echo "pdpp isolation: submount enumeration could not prove mountinfo was read and parsed ' +
+      'for [$__sm_parent] (records=[$__sm_sentinel])" 1>&2; ' +
+      `exit ${SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE}; fi;`,
+    // Only now iterate. The line channel carries RAW records only; the decode
+    // happens here, per record, and the decoded path goes out as direct argv.
+    //
+    // The loop body runs in a SUBSHELL under dash, so a failing per-submount
+    // action cannot set a variable the caller would see — instead the
+    // subshell `exit`s with the action's own status, and the pipeline's
+    // status (which equals its last command's, i.e. the subshell's) becomes
+    // this function's. That is the same exit-status-propagation property the
+    // prior version relied on, kept deliberately: it is what lets `req` and
+    // the post-pivot check fail closed on a submount that refuses its
+    // remount or probe.
+    '  printf "%s\\n" "$__sm_staged" | while IFS= read -r __sm_raw; do',
+    '    [ -n "$__sm_raw" ] || continue;',
+    '    case "$__sm_raw" in "#"*) continue ;; esac;',
+    '    __sm_decoded=$(printf "%s" "$__sm_raw" | ' +
+      `awk ${shQuote(`${MOUNTINFO_OCTAL_DECODE_AWK_FUNCTION} { printf "%s", pdpp_decode_mountinfo_path($0) }`)}` +
+      ') || { echo "pdpp isolation: submount path decode failed for [$__sm_raw]" 1>&2; ' +
+      `exit ${SUBMOUNT_ENUMERATION_FAILURE_EXIT_CODE}; };`,
+    '    "$@" "$__sm_decoded" || exit $?;',
+    "  done;",
+    "}",
+  ].join(" ");
+}
+
+/**
+ * Builds the shell statement that runs `command` (a command NAME plus any
+ * fixed leading argv entries) once per submount of `parentPathShQuoted`, with
+ * the submount's decoded path appended as the final argv entry.
+ *
+ * Command substitution is deliberately NOT used to carry the path: the whole
+ * point of `submountEnumeratorFunctionDefinition()` is that a decoded path is
+ * only ever PASSED as argv, never re-serialized into a string a shell would
+ * then have to re-split.
+ */
+function forEachSubmountStatement(parentPathShQuoted: string, command: string): string {
+  return `${SUBMOUNT_ENUMERATOR_FUNCTION_NAME} ${parentPathShQuoted} ${command}`;
+}
+
+/**
+ * Builds a shell command that finds every mount point strictly UNDER
+ * `stagedPathShQuoted` (the already-quoted staged path of a `ro` bind whose
+ * OWN top mount was just remounted read-only) via `findDecodedSubmountsShellFragment`
+ * (see that function's doc comment for the mountinfo-parsing fix this round
+ * closes), and remounts EACH ONE, individually, `ro,bind` — closing the gap
+ * `--rbind` (recursive bind) plus a single top-level `remount,ro,bind`
+ * leaves open: Linux does not propagate a `remount` operation to submounts
+ * the way `--rbind`/`--rprivate` propagate at BIND/PROPAGATION time, so any
+ * mount point that existed under a `ro` bind's source directory at bind time
+ * (e.g. Docker's own `/etc/resolv.conf`-style injected submounts under
+ * `/etc`, or any other nested mount a future derived bind might carry) stays
+ * writable unless remounted on its own.
+ *
+ * FAILS CLOSED: the caller wraps this in `reqStatement`, so if EVEN ONE
+ * submount refuses `remount,ro,bind` (a filesystem type that genuinely
+ * cannot be remounted read-only, a kernel refusal, or the path awk parsed
+ * simply not existing as a real mountpoint) the whole prelude halts before
+ * `exec <target>` is ever reached — never silently leaves that one submount
+ * writable and proceeds.
+ */
+function recursiveReadOnlyRemountCommand(stagedPathShQuoted: string): string {
+  // `mount -o remount,ro,bind` is invoked with the submount's decoded path as
+  // a DIRECT argv entry appended by the enumerator — not interpolated into a
+  // string, so a path containing a newline/tab/space/backslash reaches
+  // `mount(8)` byte-for-byte as the single argument it is.
+  // Joined with `;`, not a bare space: a shell function definition's closing
+  // `}` is a reserved word that needs a command separator before whatever
+  // follows it, or dash rejects the next word ("Syntax error: word
+  // unexpected") — confirmed against `/bin/sh` -> dash, the shell this
+  // prelude actually runs under.
+  const body = [
+    submountEnumeratorFunctionDefinition(),
+    forEachSubmountStatement(stagedPathShQuoted, "mount -o remount,ro,bind"),
+  ].join("; ");
+  // `req` (see REQ_FUNCTION_DEFINITION's doc comment) executes its wrapped
+  // command as `"$@"` — a single command name plus argv entries, not a
+  // shell snippet — so a compound statement like this must be handed to
+  // `req` as ONE argv entry, itself run via `sh -c`, rather than being split
+  // on whitespace the way a plain `mount ...` command is. The enumerator's
+  // own `exit` (on an enumeration failure, or on a submount that refuses the
+  // remount) becomes this `sh -c`'s exit status, which `req` then reports and
+  // fails the whole prelude on.
+  return `${shQuote(resolveTrustedLauncherPath("sh"))} -c ${shQuote(body)}`;
+}
+
 function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, cwd: string | undefined): string {
   const newroot = "/tmp/pdpp-scenario-isolation-newroot";
   const oldroot = `${newroot}/oldroot`;
@@ -958,6 +1707,13 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
     // `$?` after the substitution still reflects the wrapped command's own
     // exit status (command substitution does not reset it).
     REQ_FUNCTION_DEFINITION,
+    // `probe_ro` is NOT defined here — `postPivotVerificationStatements`
+    // (appended at the end of this prelude, post-pivot) initializes its own
+    // trusted PATH and defines it, keeping that function's output
+    // self-contained for its other real caller (isolation-mechanism.test.ts's
+    // standalone sandbox harness, which builds a script from ONLY that
+    // function's return value, no prelude). See that function's own doc
+    // comment.
     reqStatement("create staging tmpfs directory", `mkdir -p ${shQuote(newroot)}`),
     reqStatement("mount staging tmpfs", `mount -t tmpfs tmpfs ${shQuote(newroot)}`),
     reqStatement("create oldroot directory", `mkdir -p ${shQuote(oldroot)}`),
@@ -968,6 +1724,9 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
     statements.push(reqStatement(`bind ${bind.path}`, `mount --rbind ${shQuote(bind.path)} ${staged}`));
     if (bind.mode === "ro") {
       statements.push(reqStatement(`remount ${bind.path} read-only`, `mount -o remount,ro,bind ${staged}`));
+      statements.push(
+        reqStatement(`remount ${bind.path} submounts read-only`, recursiveReadOnlyRemountCommand(staged))
+      );
     }
   }
   if (filesystemBindPath !== undefined) {
@@ -1078,6 +1837,144 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
 }
 
 /**
+ * IN-NAMESPACE SOCKET SCAN (P1-2, external review of ced8300be) — the
+ * host-side pre-flight scan (`findPreexistingSocketsUnderReadOnlyBinds()`)
+ * runs from the CALLING Node process, before any isolated child's mount
+ * namespace even exists — it sees the real host filesystem, not the
+ * isolated child's own pivoted view, and it runs only ONCE, before ANY
+ * run's subprocess spawns. The external review's TOCTOU objection: a HOST
+ * process (a separate, non-sandboxed process on the same machine, with
+ * ordinary write access to a `ro` bind's SOURCE directory on the real
+ * filesystem — recursive read-only only stops the SANDBOX from creating a
+ * new socket there, not the host) can create a socket under a scanned path
+ * at any point between that one early scan and the target command's actual
+ * `exec` — a gap of however long every earlier run in the scenario took.
+ * This closes that gap by running the SAME kind of check TWICE more,
+ * IN-NAMESPACE: once as part of `postPivotVerificationStatements` (right
+ * after every `ro` bind's top-level AND submount remounts have completed —
+ * the earliest point at which the isolated child's own view of those paths
+ * is both final and read-only), and once again immediately before `exec
+ * <target>` in `spawnWithNetworkIsolation`'s unshare branch (the LAST
+ * possible point before the target command could dial anything). Narrows
+ * the race window on every run to "however long this run's own setup takes
+ * between the two scan points," not "however long the whole scenario's
+ * prior runs took" — genuinely smaller, but NOT zero: a host process could
+ * still plant a socket in the interval between this function's second call
+ * and the target's first `connect()`, however short. See this function's
+ * own TERMINAL-ARCHITECTURE note below for the fix that actually closes the
+ * remaining gap.
+ *
+ * `find <path> -type s` (GNU findutils, present in every trusted directory
+ * this module's `TRUSTED_SETUP_PATH`/`TRUSTED_LAUNCHER_DIRECTORIES` already
+ * trust) rather than a hand-rolled shell walk — confirmed empirically it
+ * does NOT follow symlinks by default (no `-L` flag given), matching the
+ * host-side scanner's own symlink-avoidance, and does not hang against a
+ * self-referential symlink loop.
+ *
+ * FAILS CLOSED ON AN UNREADABLE SUBTREE (P1-2, the review's OTHER half of
+ * this finding) — `find`'s own exit status distinguishes "fully enumerated,
+ * found nothing" from "could not fully enumerate": confirmed empirically,
+ * as an unprivileged user, `find <root>` against a subtree it cannot LIST
+ * (`chmod 000`, or `chmod 311` — SEARCHABLE but not LISTABLE, a genuinely
+ * separate permission bit from readability, see next paragraph) exits `1`
+ * and prints `find: '<path>': Permission denied` to stderr, while still
+ * printing every path it COULD enumerate before hitting the blocked
+ * subtree. This function captures that exit status and treats ANY nonzero
+ * exit from `find` as "could not prove this subtree clean," not "found
+ * nothing" — the same fail-closed posture `req`/`SETUP_STEP_FAILURE_EXIT_CODE`
+ * already applies to every OTHER mandatory setup step, extended here to an
+ * enumeration failure rather than a command failure.
+ *
+ * DIRECTORY READ VS SEARCH ARE SEPARATE PERMISSIONS (confirmed empirically,
+ * unprivileged user, both this module's own scan AND a real socket dial):
+ * a directory with mode `311` (search/execute bit set, read bit NOT set)
+ * cannot be LISTED — `find`/`readdir` against it fails `EACCES`, so a
+ * socket with an UNKNOWN name inside it is invisible to enumeration — but a
+ * socket with a KNOWN name inside it stays fully STAT-able and CONNECTABLE
+ * (confirmed live: a client successfully connected to a socket under a
+ * `chmod 311` directory whose contents `find`/`readdirSync` could not list).
+ * This means a `311` subtree is not merely "harder to see into" than a
+ * `000` one — both fail identically at the enumeration step (`find` exits
+ * nonzero for either), so both correctly fall into the SAME fail-closed
+ * branch here; the distinction matters for WHY the scan must fail closed on
+ * an unreadable subtree at all (an attacker does not need read+write on a
+ * directory to make a socket inside it reachable — only the ability to
+ * create the socket once, before locking the directory down to `311` or
+ * `000`), not for how this function's own logic branches.
+ *
+ * TERMINAL ARCHITECTURE (documented follow-up, not built this round, same
+ * pattern this module already uses for the CGROUP/TIME namespace residuals
+ * — see this module's own doc comment, "WHAT THIS BOUNDARY DOES AND DOES
+ * NOT ISOLATE"): re-scanning immediately before spawn (what this function
+ * does) REDUCES the TOCTOU race window but does not ELIMINATE it — a
+ * verifier-owned IMMUTABLE snapshot of every required input (taken once,
+ * before the scenario's first run, and never re-read from the live host
+ * filesystem again) would close the window entirely rather than narrowing
+ * it. Not built this round: it is a substantially larger architectural
+ * change (the isolated child's binds would need to come from the snapshot
+ * itself, not `requiredFilesystemBinds()`'s live paths) than this bounded
+ * repair's scope covers.
+ *
+ * Returns a shell statement, NOT wrapped in `req` — `req`'s own diagnostic
+ * wording ("setup step [...] failed") doesn't fit a scan finding a REAL
+ * socket (not a setup command failing), so this builds its own message and
+ * exit using `IN_NAMESPACE_SOCKET_SCAN_FAILURE_EXIT_CODE` directly, matching
+ * `postPivotVerificationStatements`'s own pattern of a bespoke diagnostic
+ * rather than `req`'s generic one.
+ */
+function inNamespaceSocketScanStatement(roBindPaths: readonly string[]): string {
+  const scannedPaths = roBindPaths.filter((path) => !SOCKET_SCAN_EXCLUDED_SYSTEM_PATHS.includes(path));
+  if (scannedPaths.length === 0) {
+    return "true";
+  }
+  const quotedPaths = scannedPaths.map((path) => shQuote(path)).join(" ");
+  // ONE `find` invocation, combined `2>&1` capture (matches `req`'s own
+  // established pattern) — then split the captured lines by whether they
+  // start with `find: ` (every diagnostic `find` itself emits uses this
+  // exact prefix; a matched socket PATH, printed by `-type s`'s default
+  // action, never does, since a scanned bind path is never itself prefixed
+  // with the literal string `find: `). Two separate `find` calls were
+  // considered and rejected: querying stdout and stderr via independent
+  // invocations doubles the traversal cost AND opens its own TOCTOU window
+  // between the two calls, defeating the point of this scan.
+  //
+  // ENOENT-DURING-TRAVERSAL IS NOT A SECURITY SIGNAL: `REPO_ROOT` (and
+  // every other scanned bind) is a LIVE bind-mounted view of the real host
+  // directory — a HOST-side process can create AND remove a path under it
+  // at any time, entirely independent of anything this scan is checking
+  // for. `find` walking into a directory whose entry vanishes between
+  // being listed and being stat'd exits nonzero and prints "No such file or
+  // directory" for that one path — confirmed empirically (concurrent
+  // mkdir/rmdir churn under a shared directory reliably reproduces this;
+  // this exact race was hit live by this repair's own test suite, two
+  // isolated replay subprocesses from unrelated tests both scanning
+  // REPO_ROOT while a third test's scratch directory was mid-teardown) — a
+  // NORMAL filesystem race, not evidence of anything reachable or hidden.
+  // Confirmed the wording is reliably distinct from a genuine permission
+  // failure: `find` against an unreadable/unsearchable directory instead
+  // prints "Permission denied" for that path. This function filters OUT
+  // diagnostic lines matching "No such file or directory" before deciding
+  // whether to fail — any OTHER diagnostic content (Permission denied, or
+  // anything this reasoning did not anticipate) still fails closed exactly
+  // as before; only the specific, verified-benign "the path is simply gone"
+  // case is treated as informational, never silently dropped from the
+  // reasoning (still visible in the raw combined capture if this ever needs
+  // to be re-diagnosed, just not treated as fatal). The failure decision is
+  // driven by the FILTERED diagnostic lines and found-socket lines, not
+  // `find`'s raw exit code alone, precisely because that raw code cannot
+  // distinguish "found a real hazard" from "a sibling process's scratch
+  // directory disappeared mid-walk."
+  return (
+    `__socket_scan_combined=$(find ${quotedPaths} -type s 2>&1); ` +
+    '__socket_scan_errors=$(echo "$__socket_scan_combined" | grep "^find: " | grep -v "No such file or directory"); ' +
+    '__socket_scan_sockets=$(echo "$__socket_scan_combined" | grep -v "^find: "); ' +
+    'if [ -n "$__socket_scan_errors" ] || [ -n "$__socket_scan_sockets" ]; then ' +
+    'echo "pdpp isolation: in-namespace socket scan failed - sockets=[$__socket_scan_sockets] errors=[$__socket_scan_errors]" 1>&2; ' +
+    `exit ${IN_NAMESPACE_SOCKET_SCAN_FAILURE_EXIT_CODE}; fi`
+  );
+}
+
+/**
  * POST-PIVOT VERIFICATION (P1-1, ninth review, requirement (c)) — proves,
  * rather than assumes, that the filesystem closure actually took effect,
  * run as the LAST gate before `exec <target>` (see `spawnWithNetworkIsolation`'s
@@ -1120,23 +2017,142 @@ function filesystemClosureShellPrelude(filesystemBindPath: string | undefined, c
  * gate (97) — the diagnostic names exactly which of the three properties
  * failed.
  */
+/**
+ * The `probe_ro` shell function definition (P1-3, external review of
+ * ced8300be) — a single write-probe usable against EITHER a directory OR a
+ * FILE bind mount, echoing the path if it's still writable (the false-
+ * success shape every caller of this function checks for) and nothing if
+ * genuinely read-only.
+ *
+ * FILE SUBMOUNTS COULD NOT BE VERIFIED (P1-3, the review's second half of
+ * this finding): the prior probe was `touch <path>/.pdpp-isolation-ro-probe`
+ * — creating a NEW file INSIDE the probed path, which only makes sense for
+ * a DIRECTORY target. Confirmed empirically against a real file bind mount
+ * (e.g. the shape Docker's own `/etc/resolv.conf` injection produces — a
+ * single FILE bind-mounted onto another single file, not a directory):
+ * `touch <file-mount>/.probe` fails with `ENOTDIR` ("Not a directory")
+ * REGARDLESS of whether the file mount is actually read-only or not — so
+ * the old probe reported EVERY file submount as "confirmed read-only" even
+ * when a separate, direct write proved it was still genuinely writable
+ * (reproduced live: `echo x > <file-mount>` succeeded while the old
+ * `touch <file-mount>/.probe` probe simultaneously reported "read-only" for
+ * the exact same still-writable target) — a false negative, the "confirmed
+ * clean when it is not" shape this whole verification exists to prevent.
+ *
+ * FIX: branch on `[ -d "$path" ]`. For a directory, keep the original
+ * create-a-file-inside probe (a file bind mount has no "inside" to probe
+ * this way, but a directory's own write permission is exactly what creating
+ * an entry inside it tests). For anything else (a file, confirmed via `-d`
+ * being false rather than asserting `-f` — matches this module's existing
+ * "test the property that matters, not a narrower assumption about what
+ * else the path could be" discipline elsewhere), open the path itself
+ * for write in append mode via shell redirection (`exec 3>>"$path"`). This
+ * asks the kernel for write access without `O_TRUNC` and performs no write,
+ * so a host-backed file submount keeps its exact bytes. It correctly fails
+ * with `EROFS`/a shell-level "Read-only file system" error for a genuinely
+ * read-only file bind mount, and correctly SUCCEEDS (proving writability,
+ * the false-success case) for a writable one — unlike the old
+ * `ENOTDIR`-always probe, this actually depends on the mount's real
+ * read-only state rather than failing unconditionally for the wrong reason.
+ */
+const PROBE_RO_FUNCTION_DEFINITION =
+  'probe_ro() { __p="$1"; if [ -d "$__p" ]; then ' +
+  '__probe="$__p/.pdpp-isolation-ro-probe-$$"; ' +
+  'if touch "$__probe" 2>/dev/null; then rm -f "$__probe" 2>/dev/null; echo "$__p"; fi; ' +
+  'else if sh -c "exec 3>>\\"\\$1\\"" _ "$__p" 2>/dev/null; then echo "$__p"; fi; fi; }';
+
 export function postPivotVerificationStatements(binds: readonly FilesystemBind[]): string[] {
-  const statements: string[] = [];
+  // `probe_ro` is defined HERE, after this function initializes its own
+  // trusted PATH, rather than relying on a caller to have already defined it
+  // (P1-3, external review of ced8300be) — `filesystemClosureShellPrelude`
+  // defines it again, earlier, before calling this function, which is
+  // harmless (dash allows redefining a shell function), but this function's
+  // OWN output must be self-contained: it is called directly, standalone,
+  // by `isolation-mechanism.test.ts`'s own sandbox test harness (a script
+  // built from ONLY this function's returned statements, no prelude), and
+  // that is a legitimate, real calling shape this function's own contract
+  // must support without a caller needing to know its internal
+  // implementation detail of using a shell function.
+  // The submount enumerator is defined here for the same self-containment
+  // reason `probe_ro` is (see the comment above): this function's returned
+  // statements are run standalone by `isolation-mechanism.test.ts`'s sandbox
+  // harness, with no prelude to have defined it.
+  const statements: string[] = [
+    `PATH=${TRUSTED_SETUP_PATH}`,
+    PROBE_RO_FUNCTION_DEFINITION,
+    submountEnumeratorFunctionDefinition(),
+  ];
   const roBindPaths = binds.filter((b) => b.mode === "ro").map((b) => b.path);
-  const roCheck = roBindPaths
-    .map((path) => {
-      const probe = shQuote(`${path}/.pdpp-isolation-ro-probe-$$`);
-      return `if touch ${probe} 2>/dev/null; then rm -f ${probe} 2>/dev/null; echo ${shQuote(path)}; fi`;
-    })
-    .join("; ");
+  // Property 3 checks the TOP of each ro bind, at its real, post-pivot path
+  // (`/usr`, `/etc`, ... — the new root's OWN view, not the pre-pivot
+  // staging prefix `postPivotVerificationStatements`'s caller uses).
+  // FILE-VS-DIRECTORY (P1-3, external review of ced8300be): uses the shared
+  // `probe_ro` function (see `PROBE_RO_FUNCTION_DEFINITION`'s doc comment)
+  // rather than the old directory-only touch-inside probe, so a top-level
+  // `ro` bind that happens to be a FILE (not currently produced by
+  // `requiredFilesystemBinds()`, which only declares directories today, but
+  // not guaranteed to stay that way, and the review's finding applies to
+  // the verification LOGIC, not just today's concrete bind set) is
+  // correctly verifiable too, not silently mis-probed the way the old
+  // ENOTDIR-always shape would.
+  const topLevelRoCheck = roBindPaths.map((path) => `probe_ro ${shQuote(path)}`).join("; ");
+  // RECURSIVE READ-ONLY, property 3 EXTENDED (P1, external review of
+  // ab415be6c): the top-level check above only proves the PARENT mount of
+  // each ro bind is read-only — it says nothing about a nested submount
+  // `--rbind` carried along underneath it (see `recursiveReadOnlyRemountCommand`'s
+  // doc comment for the full defect this closes). This verification must
+  // catch the same class of false-success the setup-time fix targets: if a
+  // FUTURE edit reintroduces the old single-level remount (or the
+  // recursive-remount loop silently skips a submount added after this
+  // function was written), the top-level-only check above would still
+  // report every ro bind's PARENT correctly read-only while a submount
+  // stayed writable — exactly invisible to that check alone. This walks
+  // `/proc/self/mountinfo` (POST-pivot, so it reflects the NEW root's own
+  // mount table — the real, live view the isolated child actually has, not
+  // the pre-pivot staging tree) for every mount point strictly under each ro
+  // bind's real path, via `findDecodedSubmountsShellFragment` (P1-3,
+  // external review of ced8300be — see that function's doc comment for the
+  // mountinfo-decode and newline-safe-iteration fixes shared with the
+  // setup-time remount), and probes each one with the SAME `probe_ro`
+  // function as the top-level check, now also handling FILE submounts
+  // correctly (see `PROBE_RO_FUNCTION_DEFINITION`'s doc comment) — the exact
+  // Docker-injected `/etc/resolv.conf`-style shape this module's own doc
+  // comments elsewhere already cite as the concrete, real-world case this
+  // must catch.
+  // BYTE-SAFE + FAIL-CLOSED (P1-1/P1-2, external review of 2a134e153): the
+  // submount walk now goes through the shared enumerator, which passes each
+  // decoded path to `probe_ro` as a DIRECT argv entry (so a newline- or
+  // tab-containing submount is probed as the single path it really is,
+  // instead of being split into non-existent fragments that probe silently
+  // clean) and REFUSES to iterate unless it can prove it read and parsed
+  // `/proc/self/mountinfo`. See `submountEnumeratorFunctionDefinition()`.
+  const submountRoCheck = roBindPaths.map((path) => forEachSubmountStatement(shQuote(path), "probe_ro")).join("; ");
+  const roCheck = [topLevelRoCheck, submountRoCheck].filter(Boolean).join("; ");
+  // The ro-check runs inside a command substitution, so an enumeration
+  // failure's `exit` would otherwise only kill the SUBSHELL — its status has
+  // to be captured explicitly and turned into a verification failure here,
+  // or "could not enumerate" would once again read as "nothing writable
+  // found." `__ro_rc` is that capture; any nonzero value fails the check.
   statements.push(
     "__canary_ok=1; [ -e /pdpp-isolation-canary ] || __canary_ok=0; " +
       `__oldroot_leftover=$(set -- /oldroot/*; if [ -e "$1" ]; then echo "$1"; fi); ` +
-      `__writable_ro=$(${roCheck || "true"}); ` +
-      `if [ "$__canary_ok" -ne 1 ] || [ -n "$__oldroot_leftover" ] || [ -n "$__writable_ro" ]; then ` +
-      `echo "pdpp isolation: post-pivot verification failed — new-root-active=$__canary_ok oldroot-leftover=[$__oldroot_leftover] writable-ro-binds=[$__writable_ro]" 1>&2; ` +
+      `__writable_ro=$(${roCheck || "true"}); __ro_rc=$?; ` +
+      `if [ "$__canary_ok" -ne 1 ] || [ -n "$__oldroot_leftover" ] || [ -n "$__writable_ro" ] || ` +
+      `[ "$__ro_rc" -ne 0 ]; then ` +
+      `echo "pdpp isolation: post-pivot verification failed — new-root-active=$__canary_ok oldroot-leftover=[$__oldroot_leftover] writable-ro-binds=[$__writable_ro] ro-check-status=$__ro_rc" 1>&2; ` +
       `exit ${POST_PIVOT_VERIFICATION_FAILURE_EXIT_CODE}; fi`
   );
+  // IN-NAMESPACE SOCKET SCAN, POINT A (P1-2, external review of ced8300be):
+  // run immediately after the ro-bind checks above (which prove every
+  // submount is genuinely read-only) — this is the earliest point at which
+  // the isolated child's own view of every scanned path is both final
+  // (every bind/remount step has completed) and read-only, so a scan here
+  // reflects the real, live post-pivot mount table, not the pre-pivot
+  // staging tree the setup steps built. See `inNamespaceSocketScanStatement`'s
+  // doc comment for the full TOCTOU-narrowing rationale and why a second
+  // scan (POINT B, immediately before `exec` — see
+  // `spawnWithNetworkIsolation`'s unshare branch) is also needed.
+  statements.push(inNamespaceSocketScanStatement(roBindPaths));
   return statements;
 }
 
@@ -1206,7 +2222,33 @@ export function bwrapArgvForFilesystemClosure(
   filesystemBindPath: string | undefined
 ): string[] {
   const innerCommand = [cmd, ...args].map(shQuote).join(" ");
-  return ["--unshare-net", ...bwrapFilesystemClosureArgs(filesystemBindPath), "--", "sh", "-c", `exec ${innerCommand}`];
+  // IN-NAMESPACE SOCKET SCAN (P1-2, external review of ced8300be): bwrap has
+  // no separate pre-pivot/post-pivot phases the way unshare's shell prelude
+  // does — every `--ro-bind`/remount bwrap declares is already final and
+  // read-only the INSTANT this inner `sh -c` begins running (bwrap builds
+  // the whole mount table itself, before exec'ing anything into it), so
+  // POINT A and POINT B (see `inNamespaceSocketScanStatement`'s doc comment)
+  // collapse to the same single moment here — one scan, run as the first
+  // statement in this inner shell, immediately before `exec`.
+  const socketScan = inNamespaceSocketScanStatement(
+    requiredFilesystemBinds()
+      .filter((b) => b.mode === "ro")
+      .map((b) => b.path)
+  );
+  // TRUSTED SHELL (P1-1, external review of ced8300be): resolved via
+  // resolveTrustedLauncherPath("sh"), never the bare string "sh" — bwrap
+  // execs this argv entry the same way unshare does (execvp against the
+  // spawning Node process's own inherited PATH, fully caller-controlled),
+  // so the same PATH-prepended-fake risk applies even though this shell runs
+  // inside bwrap's own already-closed filesystem view.
+  return [
+    "--unshare-net",
+    ...bwrapFilesystemClosureArgs(filesystemBindPath),
+    "--",
+    resolveTrustedLauncherPath("sh"),
+    "-c",
+    `PATH=${TRUSTED_SETUP_PATH}; ${socketScan}; exec ${innerCommand}`,
+  ];
 }
 
 export function spawnWithNetworkIsolation(
@@ -1221,7 +2263,15 @@ export function spawnWithNetworkIsolation(
   ensureSandboxScratchDirs(filesystemBindPath);
   const mechanism = isolate === true ? detectMechanism() : isolate;
   if (mechanism === "bwrap") {
-    return spawn("bwrap", bwrapArgvForFilesystemClosure(cmd, args, filesystemBindPath), spawnOpts);
+    // TRUSTED LAUNCHER (P1, external review of ab415be6c): resolved via
+    // resolveTrustedLauncherPath, never a bare "bwrap" name that node:
+    // child_process would otherwise resolve through this process's own
+    // inherited $PATH — see that function's doc comment.
+    return spawn(
+      resolveTrustedLauncherPath("bwrap"),
+      bwrapArgvForFilesystemClosure(cmd, args, filesystemBindPath),
+      spawnOpts
+    );
   }
   const innerCommand = [cmd, ...args].map(shQuote).join(" ");
   // `spawnOpts.cwd` (a `string | URL | undefined` per `SpawnOptions`) is
@@ -1241,10 +2291,60 @@ export function spawnWithNetworkIsolation(
   // loopback bridge would not — an existing, unchanged tradeoff this fix
   // does not alter), so it intentionally stays a best-effort step, not
   // wrapped in `req`.
-  const shScript = `PATH=${TRUSTED_SETUP_PATH}; ip link set lo up >/dev/null 2>&1; ${closurePrelude}; exec ${innerCommand}`;
+  // IN-NAMESPACE SOCKET SCAN, POINT B (P1-2, external review of ced8300be):
+  // a second scan, run as the LAST statement before `exec <target>` — the
+  // latest possible point at which a host process could have planted a
+  // socket under a scanned path since POINT A ran (inside
+  // `filesystemClosureShellPrelude`'s own `postPivotVerificationStatements`
+  // call) narrows the TOCTOU window this module's own doc comment
+  // describes to the smallest gap this repair can practically close. See
+  // `inNamespaceSocketScanStatement`'s doc comment for the full rationale
+  // and the documented terminal-architecture follow-up this does not
+  // attempt to build.
+  const socketScanPointB = inNamespaceSocketScanStatement(
+    requiredFilesystemBinds()
+      .filter((b) => b.mode === "ro")
+      .map((b) => b.path)
+  );
+  const shScript = `PATH=${TRUSTED_SETUP_PATH}; ip link set lo up >/dev/null 2>&1; ${closurePrelude}; ${socketScanPointB}; exec ${innerCommand}`;
+  // TRUSTED LAUNCHER (P1, external review of ab415be6c): resolved via
+  // resolveTrustedLauncherPath, never a bare "unshare" name — see that
+  // function's doc comment. Note this is the LAUNCHER binary itself; the
+  // commands INSIDE the shell script it runs (mount, pivot_root, ...) are
+  // separately trusted via TRUSTED_SETUP_PATH above.
+  //
+  // TRUSTED SHELL (P1-1, external review of ced8300be): the shell `unshare`
+  // execs the closure script INTO is ALSO resolved via
+  // resolveTrustedLauncherPath("sh"), never the bare string "sh" — this is
+  // the exact call site the review's repro targets. `unshare` performs
+  // `execvp("sh", [...])` on this argv entry; execvp resolves a bare name
+  // through the PATH environment variable of the process performing the
+  // exec at THAT moment — which is whatever `spawnOpts.env`/inherited
+  // `process.env.PATH` this spawn() call carries, fully caller-controlled,
+  // NOT `TRUSTED_SETUP_PATH` (that assignment is the FIRST STATEMENT INSIDE
+  // `shScript`, so it can only protect commands the script itself later
+  // runs — it cannot select which `sh` interprets the script in the first
+  // place). Confirmed empirically: with a fake `sh` (touches a marker file,
+  // then execs the real `/bin/sh` to still "work") prepended to PATH, the
+  // bare-string version invoked the fake before `TRUSTED_SETUP_PATH` could
+  // ever matter; the absolute-path version never does — see
+  // `resolveTrustedLauncherPath`'s own doc comment and
+  // `isolation-mechanism.test.ts`'s poisoned-PATH tests for both mechanisms.
   return spawn(
-    "unshare",
-    ["--map-root-user", "--net", "--mount", "--pid", "--ipc", "--uts", "--fork", "--", "sh", "-c", shScript],
+    resolveTrustedLauncherPath("unshare"),
+    [
+      "--map-root-user",
+      "--net",
+      "--mount",
+      "--pid",
+      "--ipc",
+      "--uts",
+      "--fork",
+      "--",
+      resolveTrustedLauncherPath("sh"),
+      "-c",
+      shScript,
+    ],
     spawnOpts
   );
 }
