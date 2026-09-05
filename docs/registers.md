@@ -35,8 +35,10 @@ workflow writes the public register with this repository's `GITHUB_TOKEN` by
 opening a PR from the fixed `publish/supporters` branch, never by committing to
 `main`.
 
-The publisher opens or updates the generated PR. When the repository Actions
-setting does not allow `GITHUB_TOKEN` to create pull requests, it still pushes
+When `PDPP_PUBLISH_PR_TOKEN` is set, the publisher opens or updates its generated
+PR itself. It is a fine-grained personal access token scoped only to the public
+`PDP-Connect/pdpp` repository with Pull requests: write and Contents: read; it
+never needs access to the private repository. Without the token, the publisher still pushes
 `publish/supporters`, reports the compare URL, and prints the `gh pr create`
 command a maintainer runs to open the PR. After its required checks pass, a
 maintainer merges it with **Squash and merge**. The private repository's publish

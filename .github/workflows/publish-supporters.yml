@@ -74,6 +74,30 @@ jobs:
       - name: Build public supporters register
         run: node pdpp/apps/site/scripts/publish-supporters.mjs supporters-private pdpp/apps/site/public/principles/supporters.json
 
+      - name: Summarize public register changes
+        working-directory: pdpp
+        run: |
+          node --input-type=module <<'NODE' >> "$GITHUB_ENV"
+          import { execFileSync } from "node:child_process";
+          import { readFile } from "node:fs/promises";
+
+          const registerPath = "apps/site/public/principles/supporters.json";
+          const base = JSON.parse(
+            execFileSync("git", ["show", `origin/${process.env.PUBLISH_BASE}:${registerPath}`], { encoding: "utf8" })
+          );
+          const published = JSON.parse(await readFile(registerPath, "utf8"));
+          const entry = (value) => JSON.stringify(value);
+          const baseEntries = new Set(base.map(entry));
+          const publishedEntries = new Set(published.map(entry));
+          const rowsAdded = [...publishedEntries].filter((value) => !baseEntries.has(value)).length;
+          const rowsRemoved = [...baseEntries].filter((value) => !publishedEntries.has(value)).length;
+
+          console.log(`PUBLISH_ROWS_ADDED=${rowsAdded}`);
+          console.log(`PUBLISH_ROWS_REMOVED=${rowsRemoved}`);
+          console.log(`PUBLISH_TOTAL_ROWS=${published.length}`);
+          console.log(`PUBLISH_RUN_URL=${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`);
+          NODE
+
       - name: Commit and publish changed register
         id: publish
         working-directory: pdpp
@@ -118,11 +142,21 @@ jobs:
           echo "manage_pr=true" >> "$GITHUB_OUTPUT"
           echo "retire=false" >> "$GITHUB_OUTPUT"
 
+      - name: Record pull request token path
+        env:
+          PUBLISH_PR_TOKEN: ${{ secrets.PDPP_PUBLISH_PR_TOKEN }}
+        run: |
+          if [ -n "$PUBLISH_PR_TOKEN" ]; then
+            echo "Supporters pull request token: PDPP_PUBLISH_PR_TOKEN." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Supporters pull request token: github.token fallback." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Close the obsolete supporters pull request
         if: steps.publish.outputs.retire == 'true'
         working-directory: pdpp
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PDPP_PUBLISH_PR_TOKEN || github.token }}
           PUBLISH_PR_ACTION: retire
         run: node .github/scripts/manage-supporters-pr.mjs
 
@@ -130,5 +164,5 @@ jobs:
         if: steps.publish.outputs.manage_pr == 'true'
         working-directory: pdpp
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PDPP_PUBLISH_PR_TOKEN || github.token }}
         run: node .github/scripts/manage-supporters-pr.mjs
