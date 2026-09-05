@@ -12,9 +12,10 @@
 // value, and `unsetConfigValues()` below lists everything still outstanding so
 // the PR checklist and a pre-launch check can both read it from one place.
 //
-// Server-only values (the deploy key, the KV credentials, the mail provider's
-// API key) are NOT here and never reach the client bundle. They are read from
-// the environment inside the API route. See app/api/sign/.
+// Server-only values (the private repository's fine-grained access token, the
+// KV credentials, the mail provider's API key) are NOT here and never reach the
+// client bundle. They are read from the environment inside the API route. See
+// app/api/sign/.
 
 const PLACEHOLDER_PATTERN = /^\[.*\]$/;
 

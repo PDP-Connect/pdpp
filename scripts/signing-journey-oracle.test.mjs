@@ -5,10 +5,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  assertPreviewRegisterBranch,
   buildCommand,
   createReceipt,
   describeCommandError,
   extractLinks,
+  looksLikeVercelPreview,
   normalizeEmail,
   recordPathFromCommit,
   redactLink,
@@ -351,4 +353,81 @@ test("describeCommandError never leaks stderr, which can echo an argument back",
   });
   const described = describeCommandError(["reader"], error);
   assert.ok(!described.includes("ghp_realsecret"), described);
+});
+
+// ------------------------------------------------------------- register branch
+//
+// A rehearsal writes a real confirmed record. The branch it lands on is the
+// difference between disposable test data and production data a maintainer has
+// to remove by hand, so the refusal is asserted in both directions.
+
+test("a preview target refuses to track the production register", () => {
+  const refusal = assertPreviewRegisterBranch({
+    baseUrl: "https://pdpp-git-feature-pdpp.vercel.app",
+    branch: "signatures",
+  });
+
+  assert.match(refusal ?? "", /refusing to run a preview rehearsal against signatures/);
+  assert.match(refusal ?? "", /PDPP_PRIVATE_REPO_BRANCH=signatures-preview/);
+});
+
+test("a preview target on the preview register is allowed", () => {
+  assert.equal(
+    assertPreviewRegisterBranch({
+      baseUrl: "https://pdpp-git-feature-pdpp.vercel.app",
+      branch: "signatures-preview",
+    }),
+    null
+  );
+});
+
+test("SIGNING_TARGET=preview refuses signatures on an origin the URL cannot classify", () => {
+  const refusal = assertPreviewRegisterBranch({
+    baseUrl: "https://staging.pdpp.dev",
+    branch: "signatures",
+    target: "preview",
+  });
+
+  assert.match(refusal ?? "", /refusing to run a preview rehearsal against signatures/);
+});
+
+test("SIGNING_TARGET=production overrides a vercel.app production alias", () => {
+  assert.equal(
+    assertPreviewRegisterBranch({
+      baseUrl: "https://pdpp.vercel.app",
+      branch: "signatures",
+      target: "production",
+    }),
+    null
+  );
+});
+
+test("SIGNING_TARGET=production refuses to track the preview register", () => {
+  const refusal = assertPreviewRegisterBranch({
+    baseUrl: "https://pdpp.dev",
+    branch: "signatures-preview",
+    target: "production",
+  });
+
+  assert.match(refusal ?? "", /SIGNING_TARGET=production cannot track signatures-preview/);
+});
+
+test("an unrecognised SIGNING_TARGET is rejected rather than treated as production", () => {
+  const refusal = assertPreviewRegisterBranch({
+    baseUrl: "https://pdpp-git-feature-pdpp.vercel.app",
+    branch: "signatures",
+    target: "prod",
+  });
+
+  assert.match(refusal ?? "", /SIGNING_TARGET must be "preview" or "production"/);
+});
+
+test("a production origin on the production register is allowed", () => {
+  assert.equal(assertPreviewRegisterBranch({ baseUrl: "https://pdpp.dev", branch: "signatures" }), null);
+});
+
+test("looksLikeVercelPreview reads the host, and a malformed URL is not a preview", () => {
+  assert.equal(looksLikeVercelPreview("https://pdpp-git-x-pdpp.vercel.app/principles"), true);
+  assert.equal(looksLikeVercelPreview("https://pdpp.dev"), false);
+  assert.equal(looksLikeVercelPreview("not a url"), false);
 });

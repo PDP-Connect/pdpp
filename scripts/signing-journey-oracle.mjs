@@ -60,6 +60,29 @@
 //   more than usual, because the point of this script is repeated end-to-end
 //   runs from one address and one IP.
 //
+// REHEARSALS RUN ON THE PREVIEW REGISTER
+//   A run against a preview deployment writes a real, confirmed signatory record.
+//   Written to `signatures` it is production data that a maintainer then has to
+//   remove by hand — which has already happened once. So preview deployments
+//   write `signatures-preview`, a disposable branch started empty from private
+//   `main`, and this oracle REFUSES to track `signatures` for a preview target
+//   (see `assertPreviewRegisterBranch`). The site enforces the same boundary in
+//   `resolveRegisterBranch` (apps/site/src/lib/signing/providers.ts); this check
+//   exists so the oracle fails at setup rather than polling a branch the
+//   deployment is not allowed to write.
+//
+//   Use a marked owner-controlled address for every rehearsal — a
+//   `you+pdpp-test-<run>@example.com` alias, one per run. Gmail and most
+//   providers deliver a `+suffix` address to the same mailbox, so the oracle
+//   still reads it, and the marking makes a stray rehearsal record identifiable
+//   in the register by its address alone. This is an operations convention. The
+//   branch boundary is the hard guard; the alias is not.
+//
+//   Preview records are NOT withdrawals from the production register. After a
+//   rehearsal, delete the marked records from `signatures-preview` or reset that
+//   branch to its empty base. Never publish it and never copy its
+//   `withdrawn.log` into production.
+//
 // ENVIRONMENT
 //   SIGNING_BASE_URL           required. Preview or production origin.
 //   SIGNING_TEST_EMAIL         required. Address the confirmation is sent to.
@@ -77,7 +100,11 @@
 //   GITHUB_TOKEN               optional. Falls back to `gh auth token`.
 //   PDPP_PRIVATE_REPO_OWNER    default PDP-Connect
 //   PDPP_PRIVATE_REPO_NAME     default supporters-private
-//   PDPP_PRIVATE_REPO_BRANCH   default signatures
+//   PDPP_PRIVATE_REPO_BRANCH   default signatures. Must be signatures-preview
+//                              when SIGNING_BASE_URL is a Vercel preview.
+//   SIGNING_TARGET             optional. `preview` or `production`. Says which
+//                              the deployment is when the URL does not, e.g. a
+//                              preview behind a custom domain or a local run.
 //
 // Exit 0 only if every step passed. Any failure exits 1 with the receipt written,
 // including a missing SIGNING_BASE_URL or SIGNING_TEST_EMAIL: that failure is
@@ -240,6 +267,70 @@ export function redactLink(link) {
     parsed.searchParams.set("token", "REDACTED");
   }
   return { tokenFingerprint: fingerprint, url: parsed.toString() };
+}
+
+// -------------------------------------------------------------- register branch
+
+const PRODUCTION_REGISTER_BRANCH = "signatures";
+const PREVIEW_REGISTER_BRANCH = "signatures-preview";
+
+/**
+ * Recognises a Vercel preview origin from its hostname alone.
+ *
+ * Vercel gives every preview a `*.vercel.app` host, and production is served
+ * from the project's own domain. A preview behind a custom domain is therefore
+ * invisible here, which is why `SIGNING_TARGET` exists: this returns what the
+ * URL can prove, and the operator says the rest.
+ *
+ * A production `*.vercel.app` alias exists too, so this is deliberately not the
+ * only input to the decision — it makes a run MORE careful, never less.
+ */
+export function looksLikeVercelPreview(baseUrl) {
+  let host;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    return false;
+  }
+  return host.endsWith(".vercel.app");
+}
+
+/**
+ * Returns an error string when the target and the register branch disagree.
+ * Returns null when the pair is allowed.
+ *
+ * A rehearsal against a preview writes a REAL confirmed record. Written to
+ * `signatures` it is production data a maintainer removes by hand — which has
+ * already happened. So a preview run tracking `signatures` is refused outright
+ * rather than warned about: the site's own guard rejects the write, and polling
+ * a branch the deployment cannot write only turns a clear setup error into a
+ * 90-second timeout with a misleading message.
+ *
+ * `SIGNING_TARGET=production` with `signatures-preview` is refused for the
+ * mirror-image reason: it would poll a branch production never writes.
+ *
+ * Exported for the unit test; this is a pure decision with no deployment.
+ */
+export function assertPreviewRegisterBranch({ baseUrl, branch, target }) {
+  const declared = String(target ?? "")
+    .trim()
+    .toLowerCase();
+  if (declared && declared !== "preview" && declared !== "production") {
+    return `SIGNING_TARGET must be "preview" or "production", not ${JSON.stringify(declared)}`;
+  }
+  const isPreview = declared ? declared === "preview" : looksLikeVercelPreview(baseUrl);
+
+  if (isPreview && branch !== PREVIEW_REGISTER_BRANCH) {
+    return (
+      `refusing to run a preview rehearsal against ${branch}: a preview deployment writes ` +
+      `${PREVIEW_REGISTER_BRANCH}, and a confirmed record on ${PRODUCTION_REGISTER_BRANCH} is production data. ` +
+      `Set PDPP_PRIVATE_REPO_BRANCH=${PREVIEW_REGISTER_BRANCH}, or SIGNING_TARGET=production if this origin is production.`
+    );
+  }
+  if (declared === "production" && branch !== PRODUCTION_REGISTER_BRANCH) {
+    return `SIGNING_TARGET=production cannot track ${branch}: production writes ${PRODUCTION_REGISTER_BRANCH}`;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------- mailbox reader
@@ -578,6 +669,19 @@ async function main() {
     // steps" would otherwise be unable to tell a missing env var from a crash.
     if (!baseUrl || !email) {
       fail("SIGNING_BASE_URL and SIGNING_TEST_EMAIL are both required");
+    }
+
+    // Checked before anything is submitted. A preview run tracking `signatures`
+    // would write a real confirmed record into the production register, and by
+    // the time the branch mismatch showed up as a polling timeout the record
+    // would already exist.
+    const branchMismatch = assertPreviewRegisterBranch({
+      baseUrl,
+      branch,
+      target: process.env.SIGNING_TARGET,
+    });
+    if (branchMismatch) {
+      fail(branchMismatch);
     }
 
     const token = await resolveGitHubToken();

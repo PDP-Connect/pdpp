@@ -15,10 +15,12 @@ import { type SignatoryRecord, SigningUnavailableError, type Submission } from "
 // The alternative — degrading to a no-op — would accept a signature, tell the
 // signatory it worked, and drop it, which is the worst outcome available.
 //
-// NONE OF THIS HAS RUN. The KV store, the mail provider and the deploy key do
-// not exist yet. Treat the request shapes below as the intended contract, to
-// be checked against each provider's own documentation at the point they are
-// provisioned, not as verified integrations.
+// This is PROVISIONED AND LIVE: the KV store, the mail provider and the
+// fine-grained access token all exist, and real signatory records are being
+// written. A preview deployment once wrote rehearsal records into the
+// production register and a maintainer had to clean them out by hand, which is
+// what `resolveRegisterBranch` below exists to prevent. Treat a change here as
+// touching live personal data.
 
 function env(name: string): string {
   const value = process.env[name]?.trim();
@@ -158,9 +160,74 @@ export async function sendConfirmationEmail(options: {
 // reads, and a signatory's name in a commit subject is personal data in a
 // place nobody thinks to redact.
 
+/** The production register of record. The public publisher reads only this branch. */
+const PRODUCTION_BRANCH = "signatures";
+
+/** The disposable rehearsal branch. Started empty from private `main`, never published. */
+const PREVIEW_BRANCH = "signatures-preview";
+
+/**
+ * Resolves the register branch from the deployment environment, or throws.
+ *
+ * A preview deployment that keeps the default branch writes rehearsal records
+ * into the production register, and that already happened: the register had to
+ * be cleaned by hand. The guard is the branch boundary, not an operator
+ * convention, because the failure is silent — the journey succeeds, the record
+ * is real, and it is only visible as an extra row in the published register.
+ *
+ * Every unrecognised Vercel state fails closed. A `VERCEL=1` deployment whose
+ * `VERCEL_ENV` is missing or unknown is a deployment this policy has never seen.
+ * `vercel dev` sets `VERCEL_ENV=development` and is therefore refused: there is
+ * no `development` arm, so local development with live providers must run off
+ * Vercel. Outside Vercel there is no environment to read, so the default stays
+ * `signatures` for the non-Vercel production path; a live local rehearsal must
+ * set `signatures-preview` explicitly.
+ *
+ * A rejection here is raised at write time, which on the confirm path is AFTER
+ * the pending record has been read. That read is non-destructive — `readPending`
+ * is a GET and `deletePending` is a separate DEL that runs only once the record
+ * is durable — so a refused write leaves the submission in the store and the
+ * signatory can retry on a corrected deployment. `providers.test.ts` pins that
+ * ordering requirement.
+ *
+ * Pure, and exported, so every case can be checked without a deployment.
+ */
+export function resolveRegisterBranch(
+  environment: { branch?: string; vercel?: string; vercelEnv?: string } = {}
+): string {
+  const branch = environment.branch?.trim() || PRODUCTION_BRANCH;
+  const onVercel = (environment.vercel?.trim() ?? "") === "1";
+  const vercelEnv = environment.vercelEnv?.trim() ?? "";
+
+  if (!onVercel) {
+    return branch;
+  }
+  if (vercelEnv === "production") {
+    if (branch !== PRODUCTION_BRANCH) {
+      throw new SigningUnavailableError(`production deployments write ${PRODUCTION_BRANCH}, not ${branch}`);
+    }
+    return branch;
+  }
+  if (vercelEnv === "preview") {
+    if (branch !== PREVIEW_BRANCH) {
+      throw new SigningUnavailableError(`preview deployments write ${PREVIEW_BRANCH}, not ${branch}`);
+    }
+    return branch;
+  }
+  throw new SigningUnavailableError(
+    vercelEnv
+      ? `VERCEL_ENV ${vercelEnv} has no register branch policy`
+      : "VERCEL_ENV is not set, so no register branch policy applies"
+  );
+}
+
 function repoConfig() {
   return {
-    branch: process.env.PDPP_PRIVATE_REPO_BRANCH?.trim() || "signatures",
+    branch: resolveRegisterBranch({
+      branch: process.env.PDPP_PRIVATE_REPO_BRANCH,
+      vercel: process.env.VERCEL,
+      vercelEnv: process.env.VERCEL_ENV,
+    }),
     owner: env("PDPP_PRIVATE_REPO_OWNER"),
     repo: env("PDPP_PRIVATE_REPO_NAME"),
     token: env("PDPP_PRIVATE_REPO_TOKEN"),
