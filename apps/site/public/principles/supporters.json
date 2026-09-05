@@ -5,5 +5,12 @@
     "publicName": "Tim N.",
     "signedOn": "2026-09-04",
     "type": "Individual"
+  },
+  {
+    "country": "Germany",
+    "principlesVersion": "1.0",
+    "publicName": "Kalo",
+    "signedOn": "2026-09-05",
+    "type": "Company"
   }
 ]
