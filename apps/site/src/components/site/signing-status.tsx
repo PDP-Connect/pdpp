@@ -2,17 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Text } from "@/components/typography/text.tsx";
-
-const SIGNED_MESSAGES: Record<string, string> = {
-  closed: "Signing is closed. Nothing was saved.",
-  confirmed: "Your signature is confirmed. The public register updates when it is next published.",
-  error: "We could not confirm your signature right now. Try again in a few minutes.",
-  incomplete: "We could not accept that submission. Check the required fields and try again.",
-  invalid: "This confirmation link is invalid or has expired. Nothing was changed.",
-  pending: "Check your email to confirm your signature. Nothing is published until you use that link.",
-  ratelimited: "Too many submissions came from this connection. Try again in a few minutes.",
-  unavailable: "We could not send the confirmation email. Try again in a few minutes.",
-};
+import { signedStatusMessage } from "@/lib/signing/status-messages.ts";
 
 const WITHDRAW_MESSAGES: Record<string, string> = {
   closed: "Signing is closed. Nothing was changed.",
@@ -20,15 +10,6 @@ const WITHDRAW_MESSAGES: Record<string, string> = {
   error: "We could not withdraw your signature right now. Try again in a few minutes.",
   invalid: "This withdrawal link is invalid. Nothing was changed.",
 };
-
-const UNKNOWN_SIGNED_MESSAGE = "That link is not valid. Nothing was changed.";
-
-export function signedStatusMessage(signed: string | undefined): string | undefined {
-  if (signed) {
-    return SIGNED_MESSAGES[signed] ?? UNKNOWN_SIGNED_MESSAGE;
-  }
-  return undefined;
-}
 
 export function PdppSigningStatus({ signed, withdraw }: { signed?: string; withdraw?: string }) {
   const message = signedStatusMessage(signed) ?? (withdraw ? WITHDRAW_MESSAGES[withdraw] : undefined);

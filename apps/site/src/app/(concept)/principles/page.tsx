@@ -39,8 +39,7 @@ export default async function Page({
 }: {
   searchParams: Promise<{ signed?: string; withdraw?: string }>;
 }) {
-  const supporters = await readPublicSupporters();
-  const [params, cookieStore] = await Promise.all([searchParams, cookies()]);
+  const [supporters, params, cookieStore] = await Promise.all([readPublicSupporters(), searchParams, cookies()]);
   const restoredForm = readRestoredForm(cookieStore.get("pdpp_signing_form")?.value);
 
   return (

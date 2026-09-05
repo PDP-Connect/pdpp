@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { PdppSigningStatus, signedStatusMessage } from "./signing-status.tsx";
+import { signedStatusMessage } from "@/lib/signing/status-messages.ts";
+import { PdppSigningStatus } from "./signing-status.tsx";
 
 const signedStates = ["pending", "incomplete", "ratelimited", "unavailable", "closed", "confirmed", "error", "invalid"];
 const withdrawStates = ["done", "invalid", "error", "closed"];
