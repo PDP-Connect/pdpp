@@ -5,5 +5,12 @@
     "publicName": "Tim N.",
     "signedOn": "2026-09-04",
     "type": "Individual"
+  },
+  {
+    "country": "United States",
+    "principlesVersion": "1",
+    "publicName": "Signing 2.",
+    "signedOn": "2026-09-05",
+    "type": "Individual"
   }
 ]
