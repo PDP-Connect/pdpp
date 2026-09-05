@@ -83,7 +83,7 @@ workflow writes the public register with this repository's `GITHUB_TOKEN` by
 opening a PR from the fixed `publish/supporters` branch, never by committing to
 `main`.
 
-This public workflow is the only publisher. The private repository's own publish
+This public workflow is the only publisher. It runs within minutes of any change to `signatures` (the private repository sends a `register-updated` event) and nightly as a safety net. The private repository's own publish
 workflow is retired, and nothing else writes the public register.
 
 When `PDPP_PUBLISH_PR_TOKEN` is set, the publisher opens or updates its generated
