@@ -107,9 +107,9 @@ export default function Page() {
         <PdppConceptSection id="confirmation" title="Confirming and withdrawing">
           <div className="mt-6 flex max-w-[68ch] flex-col gap-4">
             <Text as="p" size="body" wrap="pretty">
-              When you submit the form we send one email to the address you gave, containing a link that confirms your
-              signature. The link expires after 48 hours and can be used once. If you do not use it, nothing is
-              published and the details you submitted are discarded.
+              When you submit the form we send one email to the address you gave, containing a link to a confirmation
+              page. The page asks you to confirm your signature. The link expires after 48 hours and can be used once.
+              If you do not use it, nothing is published and the details you submitted are discarded.
             </Text>
             <Text as="p" size="body" wrap="pretty">
               That same email carries a withdrawal link. Using it deletes your record. Only the date of the withdrawal

@@ -62,17 +62,9 @@ export async function putPending(id: string, submission: Submission): Promise<vo
   await kvCommand(["set", `pending:${id}`, JSON.stringify(submission), "ex", PENDING_TTL_SECONDS]);
 }
 
-/**
- * Reads a pending submission AND deletes it in the same step.
- *
- * This is what makes a confirmation link single-use. Reading and then deleting
- * would leave a window in which two clicks both see the record and both write
- * a signatory file; GETDEL closes it in the store rather than in this process,
- * which is the only place it can be closed when the function runs concurrently
- * in more than one region.
- */
-export async function takePending(id: string): Promise<Submission | null> {
-  const raw = await kvCommand(["getdel", `pending:${id}`]);
+/** Reads a pending submission without consuming it. */
+export async function readPending(id: string): Promise<Submission | null> {
+  const raw = await kvCommand(["get", `pending:${id}`]);
   if (typeof raw !== "string") {
     return null;
   }
@@ -81,6 +73,11 @@ export async function takePending(id: string): Promise<Submission | null> {
   } catch {
     return null;
   }
+}
+
+/** Consumes a pending submission only after its private record is durable. */
+export async function deletePending(id: string): Promise<void> {
+  await kvCommand(["del", `pending:${id}`]);
 }
 
 // ---------------------------------------------------------------- rate limit
@@ -108,7 +105,7 @@ export async function withinRateLimit(ip: string): Promise<boolean> {
 // ---------------------------------------------------------------- mail
 
 /**
- * Sends THE confirmation email. The only email this system ever sends.
+ * Sends the confirmation email.
  *
  * Both links are in this one message: confirming and withdrawing. That is why
  * no second email is needed to withdraw, and why the withdrawal path needs no
@@ -125,15 +122,13 @@ export async function sendConfirmationEmail(options: {
   const text = [
     "You asked to sign the PDPP Principles.",
     "",
-    "Confirm your signature (this link expires in 48 hours and can be used once):",
+    "Open your confirmation page (this link expires in 48 hours and can be used once):",
     options.confirmUrl,
     "",
     "If you did not do this, ignore this email and nothing will be published.",
     "",
     "Keep this message. To withdraw at any time, use this link:",
     options.withdrawUrl,
-    "",
-    "This is the only email this system sends.",
   ].join("\n");
 
   const response = await fetch("https://api.resend.com/emails", {
@@ -212,6 +207,27 @@ export async function writeSignatory(record: SignatoryRecord, filePath: string):
   });
   if (!response.ok) {
     throw new SigningUnavailableError(`private repo branch ${branch} responded ${response.status}`);
+  }
+}
+
+/** Reads an existing private record to verify a racing confirmation was identical. */
+export async function readSignatory(filePath: string): Promise<SignatoryRecord | null> {
+  const { branch } = repoConfig();
+  const response = await repoRequest(`contents/${filePath}?ref=${encodeURIComponent(branch)}`, { method: "GET" });
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new SigningUnavailableError(`private repo branch ${branch} responded ${response.status}`);
+  }
+  const file = (await response.json()) as { content?: string };
+  if (!file.content) {
+    throw new SigningUnavailableError("private repo returned an empty signatory record");
+  }
+  try {
+    return JSON.parse(Buffer.from(file.content, "base64").toString("utf8")) as SignatoryRecord;
+  } catch (error) {
+    throw new SigningUnavailableError("private repo returned an invalid signatory record", { cause: error });
   }
 }
 

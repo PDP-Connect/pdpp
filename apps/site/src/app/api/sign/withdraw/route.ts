@@ -1,9 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { type NextRequest, NextResponse } from "next/server";
+import type { NextRequest, NextResponse } from "next/server";
 import { SigningUnavailableError, verifyToken } from "@/lib/signing/index.ts";
 import { withdrawSignatory } from "@/lib/signing/providers.ts";
+import { withdrawOutcome } from "@/lib/signing/signing-outcome.ts";
 import { siteFlags } from "@/lib/site-config.ts";
 
 // GET /api/sign/withdraw?token=... — the withdrawal link from the one email.
@@ -19,13 +20,9 @@ import { siteFlags } from "@/lib/site-config.ts";
 
 export const runtime = "nodejs";
 
-function outcome(request: NextRequest, state: string): NextResponse {
-  return NextResponse.redirect(new URL(`/principles?withdraw=${state}`, request.url), 303);
-}
-
 export async function GET(request: NextRequest): Promise<NextResponse> {
   if (!siteFlags.signingLive) {
-    return NextResponse.json({ error: "Signing is not open." }, { status: 404 });
+    return withdrawOutcome(request, "closed", { error: "Signing is not open.", status: 404 });
   }
 
   const token = new URL(request.url).searchParams.get("token");
@@ -33,7 +30,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   // the signature is what authorises it, not its age.
   const id = token ? verifyToken(token, "withdraw", 0) : null;
   if (!id) {
-    return outcome(request, "invalid");
+    return withdrawOutcome(request, "invalid", { error: "Withdrawal link is invalid.", status: 400 });
   }
 
   try {
@@ -42,13 +39,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // confirm route has one failure state: a link holder learning whether an
     // id is on the register is a disclosure, and the signatory's outcome is
     // identical either way.
-    return outcome(request, "done");
+    return withdrawOutcome(request, "done");
   } catch (error) {
     if (error instanceof SigningUnavailableError) {
       console.error("[sign/withdraw] unavailable:", error.message);
     } else {
       console.error("[sign/withdraw] unexpected:", error);
     }
-    return outcome(request, "error");
+    return withdrawOutcome(request, "error", { error: "Signing is temporarily unavailable.", status: 503 });
   }
 }

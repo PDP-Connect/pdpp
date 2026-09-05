@@ -81,8 +81,6 @@ test("extractLinks finds the confirm and withdraw links in a real email body", (
     "",
     "Keep this message. To withdraw at any time, use this link:",
     withdraw,
-    "",
-    "This is the only email this system sends.",
   ].join("\r\n");
 
   assert.deepEqual(extractLinks(body, BASE, "/api/sign/confirm"), [confirm]);

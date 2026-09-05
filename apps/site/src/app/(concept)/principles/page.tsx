@@ -2,15 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
 import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
 import { PdppPrinciplesList } from "@/components/site/principles-list.tsx";
 import { PdppSigningForm } from "@/components/site/signing-form.tsx";
+import { PdppSigningStatus } from "@/components/site/signing-status.tsx";
 import { PdppSupportersTable } from "@/components/site/supporters.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { PRINCIPLES_FRONT_MATTER, PRINCIPLES_PREAMBLE } from "@/generated/spec-front-matter.ts";
 import { readPublicSupporters } from "@/lib/public-supporters.ts";
+import { readRestoredForm } from "@/lib/signing/form-restoration.ts";
 import { repoBlobUrl } from "@/lib/site-facts.ts";
 
 export const metadata: Metadata = {
@@ -31,8 +34,13 @@ export const metadata: Metadata = {
 // signature attaches to a version. It is the one fact a signatory needs before
 // they act, and PRINCIPLES.md's own Status line is where it comes from.
 
-export default async function Page() {
-  const supporters = await readPublicSupporters();
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ signed?: string; withdraw?: string }>;
+}) {
+  const [supporters, params, cookieStore] = await Promise.all([readPublicSupporters(), searchParams, cookies()]);
+  const restoredForm = readRestoredForm(cookieStore.get("pdpp_signing_form")?.value);
 
   return (
     <PdppConceptPage>
@@ -58,7 +66,7 @@ export default async function Page() {
           <PdppPrinciplesList />
         </div>
 
-        <PdppConceptSection id="who-can-sign" title="Who can sign">
+        <PdppConceptSection id="sign" title="Who can sign">
           <div className="mt-6 flex max-w-[68ch] flex-col gap-4">
             <Text as="p" size="body" wrap="pretty">
               Anyone. Individuals, companies, universities, civil society groups, and public bodies are all welcome.
@@ -70,7 +78,10 @@ export default async function Page() {
             </Text>
           </div>
           <div className="mt-8 max-w-[46rem]">
-            <PdppSigningForm />
+            <div className="flex flex-col gap-4">
+              <PdppSigningStatus signed={params.signed} withdraw={params.withdraw} />
+              <PdppSigningForm restoredForm={restoredForm} />
+            </div>
           </div>
         </PdppConceptSection>
 

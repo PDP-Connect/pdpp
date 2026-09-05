@@ -16,12 +16,12 @@
 //
 //   1. POST a valid individual submission        -> 303 /principles?signed=pending
 //   2. Poll the mailbox for the confirmation      -> confirm + withdraw links
-//   3. GET the confirm link                       -> 303 signed=confirmed
+//   3. GET the confirm link, then POST its form   -> 303 signed=confirmed
 //   4. Check GitHub                               -> "Add signatory <id>" commit,
 //                                                    Signed-off-by trailer, and a
 //                                                    signatory file whose public
 //                                                    fields match what was sent
-//   5. GET the confirm link AGAIN                 -> 303 signed=invalid (single use)
+//   5. POST the confirmation form AGAIN           -> 303 signed=invalid (single use)
 //   6. GET the withdraw link                      -> 303 withdraw=done, and the
 //                                                    "Record a withdrawal" commit
 //
@@ -603,6 +603,19 @@ async function main() {
           "and this is the sixth within a rolling hour. Wait up to an hour and retry."
       );
     }
+    if (submitResponse.status === 303) {
+      const location = submitResponse.headers.get("location");
+      const state = location ? new URL(location, baseUrl).searchParams.get("signed") : null;
+      if (state === "closed") {
+        fail("POST /api/sign redirected with signed=closed: signing is not enabled on this deployment");
+      }
+      if (state === "ratelimited") {
+        fail(
+          "POST /api/sign redirected with signed=ratelimited: the site allows 5 submissions per IP per hour, " +
+            "and this is the sixth within a rolling hour. Wait up to an hour and retry."
+        );
+      }
+    }
     const submitLocation = assertRedirect(submitResponse, ["signed", "pending"], "submit");
     record(receipt, "submit", "pass", `303 -> ${submitLocation}`);
     log(`    ok: 303 -> ${submitLocation}`);
@@ -679,9 +692,24 @@ async function main() {
     record(receipt, "confirmation-email", "pass", `"${links.subject}" with confirm and withdraw links on ${baseUrl}`);
     log(`    ok: "${links.subject}"`);
 
-    // ---- step 3: confirm
-    log("3/6 confirming…");
-    const confirmResponse = await fetchNoRedirect(links.confirm);
+    // ---- step 3: load the safe landing page, then explicitly confirm
+    log("3/6 opening the confirmation page…");
+    const confirmPage = await fetchNoRedirect(links.confirm);
+    if (confirmPage.status !== 200 || confirmPage.headers.get("cache-control") !== "no-store") {
+      fail(`confirm-page: expected no-store 200, got ${confirmPage.status}`);
+    }
+    const confirmPageBody = await confirmPage.text();
+    if (!/<form action="\/api\/sign\/confirm" method="post">/.test(confirmPageBody)) {
+      fail("confirm-page: explicit confirmation form was missing");
+    }
+    log("    ok: no-store confirmation page");
+    log("    confirming…");
+    const confirmToken = new URL(links.confirm).searchParams.get("token") ?? "";
+    const confirmResponse = await fetchNoRedirect(`${baseUrl}/api/sign/confirm`, {
+      body: new URLSearchParams({ token: confirmToken }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
     const confirmLocation = assertRedirect(confirmResponse, ["signed", "confirmed"], "confirm");
     record(receipt, "confirm", "pass", `303 -> ${confirmLocation}`);
     log(`    ok: 303 -> ${confirmLocation}`);
@@ -690,7 +718,6 @@ async function main() {
     log("4/6 verifying the private repo commit…");
     // The id is the token's subject, so it is read from the link rather than
     // guessed: it is the only thing tying the HTTP journey to the repo write.
-    const confirmToken = new URL(links.confirm).searchParams.get("token") ?? "";
     const tokenBody = confirmToken.split(".")[0] ?? "";
     let signatoryId = null;
     try {
@@ -764,8 +791,12 @@ async function main() {
     log(`    ok: ${addCommit.sha.slice(0, 8)} ${filePath}`);
 
     // ---- step 5: the link is single use
-    log("5/6 re-using the confirm link…");
-    const replayResponse = await fetchNoRedirect(links.confirm);
+    log("5/6 re-using the confirmation form…");
+    const replayResponse = await fetchNoRedirect(`${baseUrl}/api/sign/confirm`, {
+      body: new URLSearchParams({ token: confirmToken }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
     const replayLocation = assertRedirect(replayResponse, ["signed", "invalid"], "confirm-replay");
     record(receipt, "confirm-single-use", "pass", `second use -> ${replayLocation}`);
     log(`    ok: 303 -> ${replayLocation}`);

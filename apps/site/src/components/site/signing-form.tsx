@@ -6,6 +6,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Text } from "@/components/typography/text.tsx";
+import type { RestoredSigningForm } from "@/lib/signing/form-restoration.ts";
 import { signingDisclosure, siteConfig, siteFlags } from "@/lib/site-config.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -59,10 +60,26 @@ function Field({ children, htmlFor, label }: { children: React.ReactNode; htmlFo
   );
 }
 
-function Consent({ id, name, children }: { children: React.ReactNode; id: string; name: string }) {
+function Consent({
+  checked,
+  id,
+  name,
+  children,
+}: {
+  checked?: boolean;
+  children: React.ReactNode;
+  id: string;
+  name: string;
+}) {
   return (
     <label className="flex cursor-pointer items-start gap-2.5" htmlFor={id}>
-      <input className="mt-1 size-4 shrink-0 accent-[var(--primary)]" id={id} name={name} type="checkbox" />
+      <input
+        className="mt-1 size-4 shrink-0 accent-[var(--primary)]"
+        defaultChecked={checked}
+        id={id}
+        name={name}
+        type="checkbox"
+      />
       <Text as="span" size="small">
         {children}
       </Text>
@@ -70,8 +87,8 @@ function Consent({ id, name, children }: { children: React.ReactNode; id: string
   );
 }
 
-export function PdppSigningForm() {
-  const [kind, setKind] = useState<SignatoryKind>("individual");
+export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigningForm }) {
+  const [kind, setKind] = useState<SignatoryKind>(restoredForm?.signatory_kind ?? "individual");
 
   if (!siteFlags.signingLive) {
     return (
@@ -128,7 +145,15 @@ export function PdppSigningForm() {
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field htmlFor="sign-name" label="Name">
-          <input autoComplete="name" className={fieldClassName} id="sign-name" name="name" required type="text" />
+          <input
+            autoComplete="name"
+            className={fieldClassName}
+            defaultValue={restoredForm?.name}
+            id="sign-name"
+            name="name"
+            required
+            type="text"
+          />
         </Field>
         <Field htmlFor="sign-email" label="Email">
           <input autoComplete="email" className={fieldClassName} id="sign-email" name="email" required type="email" />
@@ -136,17 +161,36 @@ export function PdppSigningForm() {
 
         {isOrganisation && (
           <Field htmlFor="sign-organisation" label="Organisation">
-            <input className={fieldClassName} id="sign-organisation" name="organisation" required type="text" />
+            <input
+              className={fieldClassName}
+              defaultValue={restoredForm?.organisation}
+              id="sign-organisation"
+              name="organisation"
+              required
+              type="text"
+            />
           </Field>
         )}
         {!isOrganisation && (
           <Field htmlFor="sign-affiliation" label="Affiliation, optional">
-            <input className={fieldClassName} id="sign-affiliation" name="affiliation" type="text" />
+            <input
+              className={fieldClassName}
+              defaultValue={restoredForm?.affiliation}
+              id="sign-affiliation"
+              name="affiliation"
+              type="text"
+            />
           </Field>
         )}
 
         <Field htmlFor="sign-country" label="Country">
-          <select className={fieldClassName} defaultValue="" id="sign-country" name="country" required>
+          <select
+            className={fieldClassName}
+            defaultValue={restoredForm?.country ?? ""}
+            id="sign-country"
+            name="country"
+            required
+          >
             <option disabled value="">
               Select a country
             </option>
@@ -160,7 +204,13 @@ export function PdppSigningForm() {
 
         {isOrganisation && (
           <Field htmlFor="sign-type" label="Type">
-            <select className={fieldClassName} defaultValue="" id="sign-type" name="organisation_type" required>
+            <select
+              className={fieldClassName}
+              defaultValue={restoredForm?.organisation_type ?? ""}
+              id="sign-type"
+              name="organisation_type"
+              required
+            >
               <option disabled value="">
                 Select a type
               </option>
@@ -181,21 +231,21 @@ export function PdppSigningForm() {
       </Text>
 
       <div className="flex flex-col gap-3">
-        <Consent id="consent-principles" name="consent_principles">
+        <Consent checked={restoredForm?.consent_principles} id="consent-principles" name="consent_principles">
           I support the PDPP Principles v1.0.
         </Consent>
-        <Consent id="consent-register" name="consent_register">
+        <Consent checked={restoredForm?.consent_register} id="consent-register" name="consent_register">
           List me on the public register.
         </Consent>
-        <Consent id="consent-updates" name="consent_updates">
+        <Consent checked={restoredForm?.consent_updates} id="consent-updates" name="consent_updates">
           Email me about new versions and comment periods.
         </Consent>
         {isOrganisation ? (
-          <Consent id="consent-authority" name="consent_authority">
+          <Consent checked={restoredForm?.consent_authority} id="consent-authority" name="consent_authority">
             I am authorised to sign on behalf of this organisation.
           </Consent>
         ) : (
-          <Consent id="consent-age" name="consent_age">
+          <Consent checked={restoredForm?.consent_age} id="consent-age" name="consent_age">
             I am 18 or over.
           </Consent>
         )}
