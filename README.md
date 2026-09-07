@@ -50,29 +50,26 @@ connectors).
 
 ## Reference implementation
 
-[`reference-implementation/`](reference-implementation/README.md) is one
-runnable implementation of the protocol — a forkable substrate, not the
-protocol itself. It provides an authorization server and resource server, the
-Collection Profile runtime, a CLI, sample connector manifests, and a black-box
-conformance-style test suite.
+The reference implementation is one runnable implementation of the protocol — a
+forkable substrate, not the protocol itself. It provides an authorization server
+and resource server, the Collection Profile runtime, a CLI, sample connector
+manifests, and a black-box conformance-style test suite.
 
-To run it from the repository root:
+It is no longer part of this repository. It lives in
+[`PDP-Connect/data-connect`](https://github.com/PDP-Connect/data-connect) under
+`reference-implementation/`. Run it from a checkout of that repository; see its
+[reference implementation README](https://github.com/PDP-Connect/data-connect/blob/main/reference-implementation/README.md)
+for the current commands.
 
-```bash
-pnpm install
-pnpm dev                               # reference AS/RS + operator console
-pnpm reference-implementation:server   # reference server only
-pnpm reference-implementation:cli --help
-pnpm reference-implementation:test     # reference implementation tests
-```
+For Docker, self-hosting, and MCP-client wiring, see the
+[self-host quickstart](docs/operator/selfhost-quickstart.md). To collect from
+apps that keep their data on your own machine, see the
+[local collector runbook](docs/operator/local-collector-runbook.md).
 
-For Docker, self-hosting, connector setup, and MCP-client wiring, see the
-[self-host quickstart](docs/operator/selfhost-quickstart.md) and the
-[reference implementation README](reference-implementation/README.md).
-
-The public site (`apps/site/`) and operator console (`apps/console/`) are
-downstream surfaces that explain and front the reference implementation; they
-are not the protocol boundary. The durable boundary between them lives in the
+The public site (`apps/site/`, in this repository) and the operator console
+(`apps/console/`, in `PDP-Connect/data-connect`) are downstream surfaces that
+explain and front the reference implementation; they are not the protocol
+boundary. The durable boundary between them lives in the
 `reference-surface-topology` capability spec
 ([`openspec/specs/reference-surface-topology/spec.md`](openspec/specs/reference-surface-topology/spec.md)).
 

@@ -2,7 +2,21 @@
 
 Thanks for your interest in PDPP. This project is a protocol plus a forkable
 reference implementation, so contributions range from protocol-text edits to
-reference-implementation code, connectors, docs, and the public site.
+docs and the public site.
+
+Two kinds of contribution now start in a different repository:
+
+- **Connector source** begins in
+  [`PDP-Connect/data-connectors`](https://github.com/PDP-Connect/data-connectors).
+  This repository keeps a retained frozen copy under
+  `packages/polyfill-connectors/connectors/`. A pull request that changes those
+  files fails the write-freeze guard in
+  `.github/workflows/polyfill-connectors.yml`, unless it carries the
+  `connector-write-freeze-override` label. Fixtures, docs, and scripts are not
+  frozen.
+- **Reference-implementation code** lives under `reference-implementation/`;
+  **console code** lives under `apps/console/`, both in
+  [`PDP-Connect/data-connect`](https://github.com/PDP-Connect/data-connect).
 
 This guide applies to human and AI contributors alike. It distills the durable
 conventions for working in this repo: the spec-first workflow for protocol and
@@ -221,9 +235,10 @@ compensate. Keep per-test `t.after()`/`try/finally` cleanup for prompt local
 release, and do not move reviewed container paths or the shared dynamic n.eko
 flock into invocation scratch.
 
-See the [self-host quickstart](docs/operator/selfhost-quickstart.md) and the
-[reference implementation README](reference-implementation/README.md) for the
-full local, Docker, and connector workflows.
+See the [self-host quickstart](docs/operator/selfhost-quickstart.md) for the
+full local and Docker workflows, and the
+[reference implementation README](https://github.com/PDP-Connect/data-connect/blob/main/reference-implementation/README.md)
+in `PDP-Connect/data-connect` for the reference-implementation workflows.
 
 The [testing policy](docs/reference/testing-policy.md) defines oracle selection,
 fixture and live-service rules, profile-gated evidence, test changes, and the

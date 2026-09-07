@@ -2,6 +2,8 @@
 
 This guide is for first-party connector manifests. Keep it open while adding or reviewing a connector.
 
+Connector source begins in [`PDP-Connect/data-connectors`](https://github.com/PDP-Connect/data-connectors). Write a new or changed connector there. This repository keeps a retained frozen copy under `packages/polyfill-connectors/connectors/`: a pull request that changes those files fails the write-freeze guard in `.github/workflows/polyfill-connectors.yml`, unless it carries the `connector-write-freeze-override` label. The rules and tests below apply in both repositories.
+
 To run and prove out a connector's `collect()` behavior locally — the `connector-dev`/`scenario-record`/`scenario-verify` loop — see [`connector-verification-workflow.md`](./connector-verification-workflow.md).
 
 The goal is not "valid JSON." The goal is an honest, useful record surface: clients can search what should be searched, filter what should be filtered, group what should be grouped, display records without guessing, and ask for bounded follow-up reads before full fetch/export.
