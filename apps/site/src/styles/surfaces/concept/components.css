@@ -359,7 +359,11 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 }
 
 /* ─── Tables ─────────────────────────────────────────────────────────────── */
-.pdpp-doc table {
+/* Open ruled rows for prose / impl tables. Bordered register tables
+   (`data-slot="pdpp-boxed-table"`) keep table layout and own their cell
+   padding in JSX — these unlayered rules otherwise beat TW and flush the
+   first column to the box edge. */
+.pdpp-doc table:not([data-slot="pdpp-boxed-table"]) {
   display: block;
   width: 100%;
   max-width: 100%;
@@ -369,15 +373,15 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   font-variant-numeric: tabular-nums;
   border-collapse: collapse;
 }
-.pdpp-doc th,
-.pdpp-doc td {
+.pdpp-doc table:not([data-slot="pdpp-boxed-table"]) th,
+.pdpp-doc table:not([data-slot="pdpp-boxed-table"]) td {
   padding: 10px 14px 10px 0;
   line-height: 1.45;
   vertical-align: top;
   text-align: left;
   border-bottom: 1px solid var(--border);
 }
-.pdpp-doc thead th {
+.pdpp-doc table:not([data-slot="pdpp-boxed-table"]) thead th {
   font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 600;

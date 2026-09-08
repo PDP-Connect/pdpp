@@ -73,7 +73,7 @@ export const SUPPORTER_SIGNING_OPEN: boolean = false;
 // Shown only while SUPPORTER_SIGNING_OPEN is false. Wording is the programme's,
 // not the site's: it names the condition (hosting confirmed with LFDT) rather
 // than promising a date.
-export const SUPPORTER_SIGNING_INTERIM_NOTICE = "Signing opens once hosting is confirmed with LF Decentralized Trust";
+export const SUPPORTER_SIGNING_INTERIM_NOTICE = "Signing will open pending hosting confirmation.";
 
 export const SITE_LICENSES = [
   {

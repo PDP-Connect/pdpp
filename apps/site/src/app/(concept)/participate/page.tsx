@@ -21,7 +21,8 @@ export const metadata: Metadata = {
 };
 
 const CARD = cn("flex flex-col gap-3 bg-background p-6", "shadow-[0_0_0_1px_var(--border)]");
-const CELL = "px-3 py-2.5 text-left align-top";
+const CELL = "px-6 text-left align-top";
+const BODY_CELL = cn(CELL, "py-3");
 
 /**
  * A channel link that refuses to be a link until its destination is real.
@@ -274,11 +275,11 @@ function VerificationSection() {
         The statuses
       </Text>
       <div className="mt-4 overflow-x-auto border border-border">
-        <table className="w-full border-collapse">
+        <table className="w-full border-collapse" data-slot="pdpp-boxed-table">
           <thead>
             <tr className="border-border border-b">
               {["Status", "Role", "Level", "How established", "Opens", "State"].map((heading) => (
-                <th className={cn(CELL, "font-normal")} key={heading} scope="col">
+                <th className={cn(CELL, "pt-6 pb-3 font-normal")} key={heading} scope="col">
                   <Text as="span" color="subtle" inline size="stamp">
                     {heading}
                   </Text>
@@ -288,9 +289,9 @@ function VerificationSection() {
           </thead>
           <tbody>
             {STATUSES.map((row) => (
-              <tr className="border-border/60 border-b last:border-b-0" key={row[0]}>
+              <tr className="border-border/60 border-b last:border-b-0 last:[&>td]:pb-6" key={row[0]}>
                 {row.map((cell, index) => (
-                  <td className={CELL} key={cell}>
+                  <td className={BODY_CELL} key={cell}>
                     <Text as="span" color={index === 0 ? "inherit" : "muted"} inline size="small">
                       {cell}
                     </Text>
@@ -321,11 +322,11 @@ function RegisterSection({
         Applications open by 14 November.
       </Text>
       <div className="mt-4 overflow-x-auto border border-border">
-        <table className="w-full border-collapse">
+        <table className="w-full border-collapse" data-slot="pdpp-boxed-table">
           <thead>
             <tr className="border-border border-b">
               {["Organisation", "Role", "Status", "Spec version", "Since", "State"].map((heading) => (
-                <th className={cn(CELL, "font-normal")} key={heading} scope="col">
+                <th className={cn(CELL, "pt-6 pb-3 font-normal")} key={heading} scope="col">
                   <Text as="span" color="subtle" inline size="stamp">
                     {heading}
                   </Text>
@@ -336,7 +337,7 @@ function RegisterSection({
           <tbody>
             {register.length === 0 ? (
               <tr>
-                <td className={CELL} colSpan={6}>
+                <td className={cn(CELL, "pt-3 pb-6")} colSpan={6}>
                   <Text as="span" color="muted" inline size="small">
                     Nothing listed yet.
                   </Text>
@@ -344,14 +345,17 @@ function RegisterSection({
               </tr>
             ) : (
               register.map((entry) => (
-                <tr className="border-border/60 border-b last:border-b-0" key={`${entry.organisation}-${entry.status}`}>
-                  <td className={CELL}>
+                <tr
+                  className="border-border/60 border-b last:border-b-0 last:[&>td]:pb-6"
+                  key={`${entry.organisation}-${entry.status}`}
+                >
+                  <td className={BODY_CELL}>
                     <Text as="span" inline size="small">
                       {entry.organisation}
                     </Text>
                   </td>
                   {[entry.role, entry.status, entry.specVersion, entry.since, entry.state].map((cell) => (
-                    <td className={CELL} key={cell}>
+                    <td className={BODY_CELL} key={cell}>
                       <Text as="span" color="muted" inline size="small">
                         {cell}
                       </Text>

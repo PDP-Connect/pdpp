@@ -18,7 +18,8 @@ import { cn } from "@/lib/utils.ts";
 // them have a route to this component, because the publish script never writes
 // them into the public register. See docs/registers.md.
 
-const CELL = "px-3 py-2.5 text-left align-top";
+const CELL = "px-6 text-left align-top";
+const BODY_CELL = cn(CELL, "py-3");
 
 export function PdppSupportersTable({ supporters }: { supporters: readonly PublicSupporter[] }) {
   if (supporters.length === 0) {
@@ -35,11 +36,11 @@ export function PdppSupportersTable({ supporters }: { supporters: readonly Publi
     // Wide tables scroll inside their own scrollport rather than pushing the
     // page sideways.
     <div className="overflow-x-auto border border-border">
-      <table className="w-full border-collapse">
+      <table className="w-full border-collapse tabular-nums" data-slot="pdpp-boxed-table">
         <thead>
           <tr className="border-border border-b">
             {["Signatory", "Type", "Country", "Version", "Signed"].map((heading) => (
-              <th className={cn(CELL, "font-normal")} key={heading} scope="col">
+              <th className={cn(CELL, "pt-6 pb-3 font-normal")} key={heading} scope="col">
                 <Text as="span" color="subtle" inline size="stamp">
                   {heading}
                 </Text>
@@ -50,30 +51,30 @@ export function PdppSupportersTable({ supporters }: { supporters: readonly Publi
         <tbody>
           {supporters.map((supporter) => (
             <tr
-              className="border-border/60 border-b last:border-b-0"
+              className="border-border/60 border-b last:border-b-0 last:[&>td]:pb-6"
               key={`${supporter.publicName}-${supporter.signedOn}`}
             >
-              <td className={CELL}>
+              <td className={BODY_CELL}>
                 <Text as="span" inline size="small">
                   {supporter.publicName}
                 </Text>
               </td>
-              <td className={CELL}>
+              <td className={BODY_CELL}>
                 <Text as="span" color="muted" inline size="small">
                   {supporter.type}
                 </Text>
               </td>
-              <td className={CELL}>
+              <td className={BODY_CELL}>
                 <Text as="span" color="muted" inline size="small">
                   {supporter.country}
                 </Text>
               </td>
-              <td className={CELL}>
+              <td className={BODY_CELL}>
                 <Text as="span" color="muted" family="mono" inline size="small">
                   {supporter.principlesVersion}
                 </Text>
               </td>
-              <td className={CELL}>
+              <td className={BODY_CELL}>
                 <Text as="span" color="muted" family="mono" inline size="small">
                   {supporter.signedOn}
                 </Text>

@@ -21,7 +21,7 @@ import { Text } from "../typography/text.tsx";
 
 export function PdppPrinciplesList({ className, compact = false }: { className?: string; compact?: boolean }) {
   return (
-    <ol className={cn("m-0 grid list-none grid-cols-1 gap-px p-0 md:grid-cols-2", className)}>
+    <ol className={cn("m-0 grid min-w-0 list-none grid-cols-1 gap-px p-0 lg:grid-cols-2", className)}>
       {PRINCIPLES_LIST.map((principle, index) => (
         <li
           className={cn(
