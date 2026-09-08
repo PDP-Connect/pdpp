@@ -26,7 +26,12 @@ const nextConfig = {
     useTypeScriptCli: true,
   },
   output: "standalone",
-  serverExternalPackages: ["fumadocs-mdx"],
+  serverExternalPackages: ["fumadocs-mdx", "satteri"],
+  turbopack: {
+    resolveAlias: {
+      "@generated-docs/*": `./${sourceDir}/*`,
+    },
+  },
   // Runtime file reads outside the bundled output need explicit tracing
   // includes so Next copies them into the standalone deploy. Without these,
   // /self-host/coverage, the well-known agent-skill catalog, and /llms-full.txt

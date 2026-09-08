@@ -7,7 +7,7 @@
 
 - [x] 2.1 Scope the conservative worker default to production builds.
 - [x] 2.2 Measure isolated cold and warm `/` and `/specification` responses under Webpack and Turbopack.
-- [x] 2.3 Retain Webpack because Turbopack fails the `/specification` cold-load probe before an edit/reload probe is meaningful.
+- [x] 2.3 Fix Turbopack's Satteri resolution boundary and retain Turbopack after cold-route, generated-source, MDX edit/reload, and process-health probes pass.
 
 ## 3. Acceptance
 
@@ -21,3 +21,5 @@
 - [x] 4.2 Remove the unused Lucide page-tree plugin and verify the rendered specification remains intact.
 - [x] 4.3 Benchmark direct Shiki ownership/externalization and reject it after it fails to improve the preceding result.
 - [x] 4.4 Verify the retained changes through the full site gate, standalone server, and browser navigation.
+- [x] 4.5 Narrow the Mermaid remark plugin import to its public subpath and preserve all rendered diagrams.
+- [x] 4.6 Remove Beautiful Mermaid's bogus Google Fonts request and verify real font inheritance in light and dark themes.

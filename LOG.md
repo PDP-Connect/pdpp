@@ -16,3 +16,14 @@
 - Evidence: repeated baseline was 61.5s cold. Fumadocs externalization measured 28.0s and 51.2s cold; removing Lucide then measured 21.9s. Direct Shiki measured 24.9s. All successful routes contained Core and Governance; highlighted code remained present.
 - Completion: full site verification passed (240 tests, checks, and production build). The standalone route returned HTTP 200 in 0.05s with expected content/highlighting, proving deploy viability rather than production performance; browser navigation rendered the specification with 29 code blocks.
 - Caveat: host/filesystem cache variance is high; the measurements establish useful direction, not a guaranteed latency percentage.
+
+## 2026-09-08 — Correlated Next development profiling
+
+- Objective: profile the complete browser-visible cold and warm `/specification` sequence before making another performance change.
+- Scope: isolated Webpack CPU profile and warning stack, browser waterfall across specification and manifest compilation, guarded cache-compression A/B if supported by evidence, Turbopack/Satteri requalification, and confirmation of the Mermaid font-request defect.
+- Constraint: leave the user's port-3001 server and the unrelated generated `.source/dynamic.ts` hash churn untouched.
+- Evidence: the Webpack warning stack originates in Next's HTTP response-compression middleware, not its filesystem cache. Blocking the manifest did not remove the cold specification delay. The official CLI CPU profile captured the wrapper rather than the server and was non-diagnostic.
+- Decision: use Turbopack for development with direct/external Satteri and an explicit `.source-dev` alias; keep production builds on Webpack. A clean browser comparison observed roughly 55s Webpack versus 13s Turbopack cold render, with 7.00 MB versus 2.58 MB of scripts and about 1.42 GB versus 639 MB peak process-family memory.
+- Proof: `/`, `/specification`, and a nested specification route returned successfully. The compiled graph referenced `.source-dev/dynamic.ts`; a temporary MDX sentence appeared and disappeared through Fast Refresh. The specification retained 29 highlighted blocks and three diagrams in both themes, with no Google Fonts request.
+- Remaining: the roughly 11-second HTML-to-paint gap is client-side work dominated by the large document, highlighting, and diagrams. Further gains require a separate decision about deferred rendering or document composition.
+- Completion: focused formatting passed; the full site gate passed with 241 tests and the production Webpack build; the standalone specification route returned HTTP 200 in 0.06s. Test-accounting inventory remains deferred because its runner intentionally refuses a dirty worktree.

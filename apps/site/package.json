@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "license": "Apache-2.0",
+  "type": "module",
   "scripts": {
     "//dev-node-options": "NODE_OPTIONS adds Node.js diagnostic reports on fatal V8 errors and uncaught exceptions. Reports land in tmp/node-reports/ at the repo root (gitignored), excluding env/network sections so reports do not persist secrets.",
     "//dev-port": "Public site defaults to :3001 (design.md §5). PDPP_SITE_PORT overrides; PDPP_WEB_PORT kept as a fallback for existing contributor env files.",
@@ -13,7 +14,7 @@
     "colors:check": "tsx scripts/generate-concept-colors.mts --check",
     "colors:generate": "tsx scripts/generate-concept-colors.mts",
     "predev": "node scripts/sync-spec-docs.mjs",
-    "dev": "sh -c 'export PDPP_SITE_NEXT_DIST_DIR=.next-dev PDPP_SITE_SOURCE_DIR=.source-dev; mkdir -p ../../tmp/node-reports && SITE_PORT=${PDPP_SITE_PORT:-${PDPP_WEB_PORT:-3001}} && NODE_OPTIONS=\"--report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=$(cd ../../tmp/node-reports && pwd)\" next dev --webpack --hostname 0.0.0.0 --port $SITE_PORT'",
+    "dev": "sh -c 'export PDPP_SITE_NEXT_DIST_DIR=.next-dev PDPP_SITE_SOURCE_DIR=.source-dev; mkdir -p ../../tmp/node-reports && SITE_PORT=${PDPP_SITE_PORT:-${PDPP_WEB_PORT:-3001}} && NODE_OPTIONS=\"--report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=$(cd ../../tmp/node-reports && pwd)\" next dev --turbopack --hostname 0.0.0.0 --port $SITE_PORT'",
     "fix": "ultracite fix",
     "start": "next start",
     "sync:specs": "node scripts/sync-spec-docs.mjs",
@@ -45,6 +46,7 @@
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "satteri": "0.10.5",
     "server-only": "^0.0.1",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",
@@ -60,5 +62,5 @@
     "typescript": "^7.0.2"
   },
   "//build": "TEMPORARY: --webpack keeps local/CI builds off Turbopack after repeated native SIGSEGV during static page generation on Next 16.2.x.",
-  "//dev": "TEMPORARY: --webpack works around a Turbopack dev-server async-hook leak in Next 16.2.x (RangeError: Map maximum size exceeded). Remove the flag once vercel/next.js#91396 is fixed."
+  "//dev": "Turbopack is qualified for development on Next 16.3.3 with isolated generated sources, cold-route, MDX edit/reload, and process-health probes. Production builds remain on Webpack."
 }
