@@ -1,4 +1,6 @@
 .next/
+.next-*/
+.source-*/
 next-env.d.ts
 node_modules/
 .env*.local

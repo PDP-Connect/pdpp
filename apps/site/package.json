@@ -13,13 +13,13 @@
     "colors:check": "tsx scripts/generate-concept-colors.mts --check",
     "colors:generate": "tsx scripts/generate-concept-colors.mts",
     "predev": "node scripts/sync-spec-docs.mjs",
-    "dev": "sh -c 'mkdir -p ../../tmp/node-reports && SITE_PORT=${PDPP_SITE_PORT:-${PDPP_WEB_PORT:-3001}} && NODE_OPTIONS=\"--report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=$(cd ../../tmp/node-reports && pwd)\" next dev --webpack --hostname 0.0.0.0 --port $SITE_PORT'",
+    "dev": "sh -c 'export PDPP_SITE_NEXT_DIST_DIR=.next-dev PDPP_SITE_SOURCE_DIR=.source-dev; mkdir -p ../../tmp/node-reports && SITE_PORT=${PDPP_SITE_PORT:-${PDPP_WEB_PORT:-3001}} && NODE_OPTIONS=\"--report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=$(cd ../../tmp/node-reports && pwd)\" next dev --webpack --hostname 0.0.0.0 --port $SITE_PORT'",
     "fix": "ultracite fix",
     "start": "next start",
     "sync:specs": "node scripts/sync-spec-docs.mjs",
     "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx --import ../../packages/operator-ui/css-stub-register.ts \"scripts/*.test.ts\" \"src/**/*.test.ts\"",
-    "types:check": "node scripts/sync-spec-docs.mjs && fumadocs-mdx && next typegen && tsc --noEmit",
-    "verify": "pnpm types:check && pnpm test && pnpm check && pnpm build"
+    "types:check": "node scripts/sync-spec-docs.mjs && fumadocs-mdx source.config.ts \"${PDPP_SITE_SOURCE_DIR:-.source}\" && next typegen && tsc --noEmit",
+    "verify": "sh -c 'export PDPP_SITE_NEXT_DIST_DIR=.next-verify PDPP_SITE_SOURCE_DIR=.source-verify; pnpm types:check && pnpm test && pnpm check && pnpm build'"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

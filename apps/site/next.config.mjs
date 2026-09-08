@@ -6,34 +6,27 @@ import { fileURLToPath } from "node:url";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve fumadocs-mdx's exported ./next subpath; Node & the production build resolve it
 import { createMDX } from "fumadocs-mdx/next";
 import { collectAllowedDevOrigins } from "./scripts/dev-origins.ts";
+import { resolveSiteRuntime } from "./scripts/site-runtime.ts";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
-const withMDX = createMDX();
-
-const allowedDevOrigins = process.env.NODE_ENV === "production" ? [] : collectAllowedDevOrigins();
-
-function parseBuildWorkers(value) {
-  if (!value) {
-    return 1;
-  }
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-}
-
-const buildWorkers = parseBuildWorkers(process.env.PDPP_WEB_BUILD_WORKERS);
+const { buildWorkers, distDir, isProduction, sourceDir } = resolveSiteRuntime();
+const withMDX = createMDX({ outDir: sourceDir });
+const allowedDevOrigins = isProduction ? [] : collectAllowedDevOrigins();
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
+  distDir,
   experimental: {
     // The default is host CPU count minus one (23 on the owner workstation),
     // which repeatedly trips native SIGSEGV / SIGTRAP during production
     // builds on Next 16.2.x. Keep the canonical build stable by default while
     // still allowing CI/operators to raise it intentionally.
-    cpus: buildWorkers,
+    ...(buildWorkers ? { cpus: buildWorkers } : {}),
     useTypeScriptCli: true,
   },
   output: "standalone",
+  serverExternalPackages: ["fumadocs-mdx"],
   // Runtime file reads outside the bundled output need explicit tracing
   // includes so Next copies them into the standalone deploy. Without these,
   // /self-host/coverage, the well-known agent-skill catalog, and /llms-full.txt
@@ -270,6 +263,7 @@ const nextConfig = {
     config.resolve.alias = {
       ...config.resolve.alias,
       "@": path.join(__dirname, "src"),
+      "@generated-docs": path.resolve(__dirname, sourceDir),
     };
     return config;
   },
