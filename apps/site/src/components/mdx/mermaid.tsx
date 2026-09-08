@@ -21,6 +21,7 @@
 import { useTheme } from "@pdpp/operator-ui/components/theme/theme-provider";
 import { type DiagramColors, renderMermaidSVG } from "beautiful-mermaid";
 import { useEffect, useState } from "react";
+import { normalizeMermaidSvgFont } from "./mermaid-svg.ts";
 
 // Hex equivalents of packages/pdpp-brand/styles/base.css design tokens (:root and
 // html.dark), converted from oklch. Keep in sync if those tokens change.
@@ -60,11 +61,13 @@ function MermaidContent({ chart }: { chart: string }) {
   const { resolvedTheme } = useTheme();
   const colors = resolvedTheme === "dark" ? DARK_COLORS : LIGHT_COLORS;
 
-  const svg = renderMermaidSVG(chart, {
-    ...colors,
-    font: "inherit",
-    transparent: true,
-  });
+  const svg = normalizeMermaidSvgFont(
+    renderMermaidSVG(chart, {
+      ...colors,
+      font: "inherit",
+      transparent: true,
+    })
+  );
 
   return (
     <div
