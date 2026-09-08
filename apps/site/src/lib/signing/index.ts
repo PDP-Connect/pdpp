@@ -4,6 +4,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import "server-only";
 import { z } from "zod";
+import { COUNTRIES } from "@/lib/countries.ts";
 
 // The interim Supporter signing system, server side.
 //
@@ -52,8 +53,6 @@ const personName = z.string().trim().min(1).max(120);
 // check, and an over-clever pattern rejects valid addresses. This only rules
 // out shapes that cannot be an address at all.
 const email = z.string().trim().toLowerCase().min(3).max(254).email();
-
-const COUNTRIES = ["Australia", "Germany", "Netherlands", "Switzerland", "United Kingdom", "United States"] as const;
 
 const ORGANISATION_TYPES = ["Company", "Platform", "Research institute", "Civil society", "Public body"] as const;
 

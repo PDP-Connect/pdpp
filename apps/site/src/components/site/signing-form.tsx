@@ -4,8 +4,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { type ComponentProps, useState } from "react";
 import { Text } from "@/components/typography/text.tsx";
+import { COUNTRIES } from "@/lib/countries.ts";
 import type { RestoredSigningForm } from "@/lib/signing/form-restoration.ts";
 import { signingDisclosure, siteConfig, siteFlags } from "@/lib/site-config.ts";
 import { SUPPORTER_SIGNING_INTERIM_NOTICE } from "@/lib/site-facts.ts";
@@ -34,12 +35,6 @@ import { cn } from "@/lib/utils.ts";
 // /api/sign, because anything checked only in this file is checked only for
 // people who use the form.
 //
-// The country and type lists are the prototype's. They are deliberately short
-// and will grow; a free-text country field would make the public register
-// unsortable and invite an address.
-
-const COUNTRIES = ["Australia", "Germany", "Netherlands", "Switzerland", "United Kingdom", "United States"] as const;
-
 const ORGANISATION_TYPES = ["Company", "Platform", "Research institute", "Civil society", "Public body"] as const;
 
 type SignatoryKind = "individual" | "organisation";
@@ -50,6 +45,8 @@ const fieldClassName = cn(
   "focus-visible:border-primary focus-visible:outline-none"
 );
 
+const choiceTextClassName = "font-sans text-[14px] leading-[1.6]";
+
 function Field({ children, htmlFor, label }: { children: React.ReactNode; htmlFor: string; label: string }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -57,6 +54,26 @@ function Field({ children, htmlFor, label }: { children: React.ReactNode; htmlFo
         {label}
       </Text>
       {children}
+    </div>
+  );
+}
+
+function Select({ children, className, ...props }: ComponentProps<"select">) {
+  return (
+    <div className="relative flex items-center">
+      <select className={cn(fieldClassName, "appearance-none pr-8", className)} {...props}>
+        {children}
+      </select>
+      <svg aria-hidden className="pointer-events-none absolute right-3 size-3 text-foreground" viewBox="0 0 12 12">
+        <path
+          d="M3 4.5 L6 7.5 L9 4.5"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+        />
+      </svg>
     </div>
   );
 }
@@ -133,7 +150,8 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
           <button
             aria-pressed={kind === option}
             className={cn(
-              "cursor-pointer border border-border px-4 py-2 font-sans text-[14px] capitalize",
+              "cursor-pointer border border-border px-4 py-2 capitalize",
+              choiceTextClassName,
               kind === option
                 ? "bg-primary text-on-primary-emphasis"
                 : "bg-background text-muted-foreground hover:text-primary"
@@ -188,8 +206,8 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
         )}
 
         <Field htmlFor="sign-country" label="Country">
-          <select
-            className={fieldClassName}
+          <Select
+            className={choiceTextClassName}
             defaultValue={restoredForm?.country ?? ""}
             id="sign-country"
             name="country"
@@ -203,13 +221,12 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
                 {country}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
 
         {isOrganisation && (
           <Field htmlFor="sign-type" label="Type">
-            <select
-              className={fieldClassName}
+            <Select
               defaultValue={restoredForm?.organisation_type ?? ""}
               id="sign-type"
               name="organisation_type"
@@ -223,7 +240,7 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
                   {type}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
         )}
       </div>
