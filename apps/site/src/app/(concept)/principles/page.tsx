@@ -41,13 +41,18 @@ export default async function Page({
 }) {
   const [supporters, params, cookieStore] = await Promise.all([readPublicSupporters(), searchParams, cookies()]);
   const restoredForm = readRestoredForm(cookieStore.get("pdpp_signing_form")?.value);
+  const statusStamp = PRINCIPLES_FRONT_MATTER.status.replaceAll(". ", " · ");
+  const statusStampLine = statusStamp.endsWith(".") ? statusStamp.slice(0, -1) : statusStamp;
 
   return (
     <PdppConceptPage>
       <PdppConceptDoc>
         <div className="flex flex-col gap-4 pt-10">
-          <Text as="p" color="subtle" family="mono" size="stamp">
-            PDPP Principles · v{PRINCIPLES_FRONT_MATTER.version} · {PRINCIPLES_FRONT_MATTER.status}
+          <Text as="p" className="whitespace-normal max-sm:leading-normal" color="subtle" family="mono" size="stamp">
+            PDPP Principles · v{PRINCIPLES_FRONT_MATTER.version}
+            <span className="max-md:hidden"> · </span>
+            <br className="md:hidden" />
+            {statusStampLine}
           </Text>
           <Text as="h1" size="display">
             The principles guiding PDPP

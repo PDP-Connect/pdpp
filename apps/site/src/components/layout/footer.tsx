@@ -29,12 +29,19 @@ const githubDisplayText = GITHUB_REPO_URL.replace(GITHUB_URL_SCHEME_RE, "");
 // no prose p margin to zero).
 // License rows stay a dl — leave .pdpp-doc table / .pdpp-impl-table alone.
 
-const footerLinkClassName = cn(
-  "text-on-primary-emphasis! no-underline",
-  "border-on-primary-emphasis/30 border-b border-solid",
-  "hover:border-on-primary-emphasis hover:text-white!",
-  "focus-visible:border-on-primary-emphasis focus-visible:text-white!"
+// w-fit: withIcon is inline-flex in a flex-col and would otherwise stretch.
+// Underline lives on the label, not the flex <a> — otherwise the icon's box
+// drops border-b below the text content edge the other footer links use.
+const footerLinkColorClassName = cn(
+  "w-fit text-on-primary-emphasis! no-underline",
+  "hover:text-white! focus-visible:text-white!"
 );
+const footerLinkUnderlineClassName = cn(
+  "border-on-primary-emphasis/30 border-b border-solid",
+  "hover:border-on-primary-emphasis focus-visible:border-on-primary-emphasis",
+  "group-hover:border-on-primary-emphasis group-focus-visible:border-on-primary-emphasis"
+);
+const footerLinkClassName = cn(footerLinkColorClassName, footerLinkUnderlineClassName);
 
 const colClassName = "flex max-w-[34ch] flex-col gap-1.5";
 
@@ -74,7 +81,15 @@ export function PdppConceptFooter() {
           </Text>
         </div>
 
-        <div className="xl:flex xl:shrink-0 xl:gap-x-8 min-[721px]:max-xl:contents">
+        <div
+          className={cn(
+            // Mobile: two stacks are siblings, not outer-flex children (`contents`
+            // only from 721px–xl). Without this gap they abut.
+            "flex flex-col gap-6",
+            "min-[721px]:max-xl:contents",
+            "xl:flex xl:shrink-0 xl:flex-row xl:gap-x-8"
+          )}
+        >
           <div className={cn(colClassName, "max-w-[40ch] gap-6 tabular-nums")}>
             <div className="flex flex-col gap-1.5">
               <Text color="onAccentLabel" size="stamp" weight="normal">
@@ -97,30 +112,33 @@ export function PdppConceptFooter() {
               <Text color="onAccentLabel" size="stamp" weight="normal">
                 Governance
               </Text>
-              <Text color="onAccentSoft" size="inherit">
-                PDP-Connect is an{" "}
-                <a
-                  className={footerLinkClassName}
-                  href="https://www.lfdecentralizedtrust.org/"
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  LF Decentralized Trust
-                </a>{" "}
-                Lab.
-              </Text>
-              {/* Internal routes, so next/link rather than the bare <a> the
-                  LFDT attribution above uses (that one leaves the site). */}
-              <Text color="onAccentSoft" size="inherit">
-                <Link className={footerLinkClassName} href="/specification#governance">
-                  Governance, membership and conformance
-                </Link>
-              </Text>
-              <Text color="onAccentSoft" size="inherit">
-                <Link className={footerLinkClassName} href="/principles">
-                  PDPP Principles
-                </Link>
-              </Text>
+              {/* Same row gap as the license dl — not Text <p> siblings at gap-1.5. */}
+              <div className="flex flex-col gap-0.5">
+                <div>
+                  PDP-Connect is an{" "}
+                  <a
+                    className={footerLinkClassName}
+                    href="https://www.lfdecentralizedtrust.org/"
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  >
+                    LF Decentralized Trust
+                  </a>{" "}
+                  Lab.
+                </div>
+                {/* Internal routes, so next/link rather than the bare <a> the
+                    LFDT attribution above uses (that one leaves the site). */}
+                <div>
+                  <Link className={footerLinkClassName} href="/specification#governance">
+                    Governance, membership and conformance
+                  </Link>
+                </div>
+                <div>
+                  <Link className={footerLinkClassName} href="/principles">
+                    PDPP Principles
+                  </Link>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -131,7 +149,7 @@ export function PdppConceptFooter() {
               </Text>
               <Text
                 as="a"
-                className={footerLinkClassName}
+                className={cn("group", footerLinkColorClassName)}
                 color="onAccent"
                 href={siteConfig.discordUrl}
                 rel="noopener noreferrer"
@@ -140,7 +158,7 @@ export function PdppConceptFooter() {
                 withIcon
               >
                 <DiscordIcon />
-                #pdp-connect on LFDT Discord
+                <span className={footerLinkUnderlineClassName}>#pdp-connect on LFDT Discord</span>
               </Text>
             </div>
             <div className="flex flex-col gap-1.5">
@@ -149,7 +167,7 @@ export function PdppConceptFooter() {
               </Text>
               <Text
                 as="a"
-                className={footerLinkClassName}
+                className={cn("group", footerLinkColorClassName)}
                 color="onAccent"
                 href={GITHUB_REPO_URL}
                 rel="noopener noreferrer"
@@ -158,7 +176,7 @@ export function PdppConceptFooter() {
                 withIcon
               >
                 <GithubIcon />
-                {githubDisplayText}
+                <span className={footerLinkUnderlineClassName}>{githubDisplayText}</span>
               </Text>
             </div>
             {/* Two addresses, and they are never the same one. Reports is an
@@ -189,7 +207,7 @@ export function PdppConceptFooter() {
         </div>
 
         {isContributorSurfaceEnabled() && (
-          <div className="absolute right-5 bottom-5">
+          <div className="self-start min-[721px]:absolute min-[721px]:right-5 min-[721px]:bottom-5">
             <Suspense fallback={<div aria-hidden className="min-h-11 w-40" />}>
               <ColorSchemeMenu />
             </Suspense>
@@ -198,9 +216,14 @@ export function PdppConceptFooter() {
       </div>
 
       <div className="container max-w-page pb-8">
-        <Text color="onAccentLabel" size="stamp" weight="normal">
+        <Text className="whitespace-normal leading-normal md:w-1/2" color="onAccentLabel" size="stamp" weight="normal">
           {LFDT_COPYRIGHT_NOTICE}. For web site terms of use, trademark policy and other project policies please see{" "}
-          <a className={footerLinkClassName} href={LFPROJECTS_URL} rel="noopener noreferrer" target="_blank">
+          <a
+            className={cn(footerLinkClassName, "break-words")}
+            href={LFPROJECTS_URL}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
             {LFPROJECTS_URL.replace(GITHUB_URL_SCHEME_RE, "")}
           </a>
           .

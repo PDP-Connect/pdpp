@@ -8,6 +8,7 @@ import { useState } from "react";
 import { Text } from "@/components/typography/text.tsx";
 import type { RestoredSigningForm } from "@/lib/signing/form-restoration.ts";
 import { signingDisclosure, siteConfig, siteFlags } from "@/lib/site-config.ts";
+import { SUPPORTER_SIGNING_INTERIM_NOTICE } from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 
 // The Supporter signing form.
@@ -93,6 +94,9 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
   if (!siteFlags.signingLive) {
     return (
       <div className="flex flex-col gap-3 border border-border p-6" data-slot="pdpp-signing-closed">
+        <Text as="p" className="whitespace-normal" color="subtle" family="mono" size="stamp">
+          {SUPPORTER_SIGNING_INTERIM_NOTICE}
+        </Text>
         <Text as="h3" size="lede" weight="semi">
           Signatures open shortly
         </Text>

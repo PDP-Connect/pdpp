@@ -50,7 +50,7 @@ export default async function Page() {
             <Text as="p" color="subtle" family="mono" size="stamp">
               The Personal Data Portability Protocol
             </Text>
-            <Text as="h1" size="hero">
+            <Text as="h1" className="max-w-none!" size="hero">
               The open standard for personal data.
             </Text>
             <Text as="p" className="max-w-[54ch]" size="lede" wrap="pretty">
