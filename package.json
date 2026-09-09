@@ -60,7 +60,7 @@
   "keywords": [],
   "author": "",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@12.3.4",
   "engines": {
     "node": ">=24.15.0"
   },
@@ -71,13 +71,13 @@
     "@pdpp/list-envelope": "workspace:*",
     "@semantic-release/exec": "^7.1.0",
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.5.0",
     "conventional-changelog-conventionalcommits": "^10.4.0",
     "lefthook": "^2.1.12",
-    "patchright": "1.62.3",
+    "patchright": "1.63.0",
     "semantic-release": "^25.0.9",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
-    "ultracite": "7.10.8"
+    "ultracite": "7.11.0"
   }
 }

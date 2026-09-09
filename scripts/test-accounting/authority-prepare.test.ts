@@ -27,7 +27,7 @@ const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "
 // The site suite's generated prerequisite. Gitignored (apps/site/.gitignore),
 // so removing and rebuilding it never dirties the source tree.
 const GENERATED = join(root, "apps/site/src/generated/spec-front-matter.ts");
-const MODULE_NOT_FOUND_PATTERN = /Cannot find module/;
+const MODULE_NOT_FOUND_PATTERN = /ERR_MODULE_NOT_FOUND/;
 const PREPARE_FAILED_PATTERN = /site prepare failed \(exit 3/;
 
 async function siteSuite(): Promise<Suite> {
@@ -43,12 +43,10 @@ async function siteSuite(): Promise<Suite> {
  * for that suite. Returns the child's stderr when the import fails, or null
  * when it resolves.
  *
- * Deliberately imports an on-disk file rather than using `node -e`: tsx anchors
- * tsconfig `paths` to the importing file's location, so an `-e` string (which
- * has no location) fails with a bare "Cannot find package '@/generated'" before
- * the alias is ever applied. That would make the pre-change assertion below pass
- * for the wrong reason — a baseline resolution failure rather than the absent
- * prerequisite this gate is about.
+ * Imports an on-disk site module so alias resolution exercises real site code.
+ * Both an absent generated file and a broken alias can report
+ * ERR_MODULE_NOT_FOUND. Requiring the same import to succeed after prepare
+ * distinguishes the missing prerequisite from a persistent resolution defect.
  *
  * Runs from the suite's own cwd (the repo root), because the declared
  * TSX_TSCONFIG_PATH is repository-relative: from anywhere else tsx reports
@@ -76,8 +74,8 @@ test("a suite's declared prepare command materializes the prerequisite its child
   const suite = await siteSuite();
   assert.ok(suite.prepare?.length, "site must declare a prepare command");
 
-  // Absent prerequisite is the pre-change state: the alias resolves (tsx reads
-  // the declared tsconfig) but the target file does not exist.
+  // Absent prerequisite is the pre-change state. The successful import after
+  // prepare below proves that this failure comes from the missing target.
   rmSync(GENERATED, { force: true });
   const before = await importThroughAlias(suite);
   assert.match(

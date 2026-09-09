@@ -3275,14 +3275,6 @@
   border-radius: 2px;
   opacity: 1;
 }
-.rr-x-compiled .rr-copyid {
-  display: block;
-  margin-top: 6px;
-  color: var(--foreground);
-  text-align: left;
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
 .rr-x-raw {
   margin-top: 14px;
   background: var(--muted);
@@ -5098,6 +5090,14 @@ a.rr-x-row {
   min-width: 44px;
   min-height: 44px;
   padding: 10px 8px;
+}
+.rr-x-compiled .rr-copyid {
+  display: block;
+  margin-top: 6px;
+  color: var(--foreground);
+  text-align: left;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 /* ═══════════════════════════════════════════════════════════════════

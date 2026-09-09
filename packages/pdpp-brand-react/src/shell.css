@@ -95,13 +95,6 @@ html:has(.rr-app) {
   --pdpp-mark-cool: oklch(0.58 0.18 253);
   --pdpp-mark-counter: oklch(0.985 0.005 85);
 }
-/* Dark surface — the elevated "night" pair. */
-[data-theme="dark"] .rr-app,
-[data-theme="dark"] .pdpp-dialog.rr-drawer {
-  --pdpp-mark-warm: oklch(0.72 0.12 45);
-  --pdpp-mark-cool: oklch(0.74 0.16 253);
-  --pdpp-mark-counter: oklch(0.16 0.01 60);
-}
 .rr-side__name {
   font-size: 15px;
   font-weight: 800;
@@ -326,6 +319,13 @@ html:has(.rr-app) {
   border-radius: 0;
   box-shadow: none;
   transform: none;
+}
+/* Dark surface — the elevated "night" pair. */
+[data-theme="dark"] .rr-app,
+[data-theme="dark"] .pdpp-dialog.rr-drawer {
+  --pdpp-mark-warm: oklch(0.72 0.12 45);
+  --pdpp-mark-cool: oklch(0.74 0.16 253);
+  --pdpp-mark-counter: oklch(0.16 0.01 60);
 }
 .pdpp-dialog.rr-drawer > nav {
   display: flex;

@@ -28,6 +28,10 @@ import {
   retainedBytesFromDatasetSummary,
 } from "./storage-footprint.ts";
 
+const POSTGRES_AUTHORITY_RE = /Postgres is authoritative/;
+const SQLITE_BACKEND_RE = /SQLite-backed/;
+const UNKNOWN_BACKEND_RE = /backend is unknown/;
+
 const NEVER_COMPUTED_RE = /never computed/i;
 const DISK_FULL_RE = /disk full/;
 
@@ -99,8 +103,8 @@ test("measured model renders physical and logical as two separate labeled number
 test("split deployment trusts authoritative reference backend when physical probe is unavailable", () => {
   const model = buildStorageFootprintModel(pgDatabase({ physical_bytes: null, top_relations: null }), 4_800_000_000);
   assert.equal(model.measured, false);
-  assert.match(model.unmeasuredNote ?? "", /Postgres is authoritative/);
-  assert.doesNotMatch(model.unmeasuredNote ?? "", /SQLite-backed/);
+  assert.match(model.unmeasuredNote ?? "", POSTGRES_AUTHORITY_RE);
+  assert.doesNotMatch(model.unmeasuredNote ?? "", SQLITE_BACKEND_RE);
 });
 
 test("unknown backend remains unknown instead of defaulting to SQLite", () => {
@@ -108,8 +112,8 @@ test("unknown backend remains unknown instead of defaulting to SQLite", () => {
     { path: "/remote/reference", physical_bytes: null, top_relations: null },
     null
   );
-  assert.match(model.unmeasuredNote ?? "", /backend is unknown/);
-  assert.doesNotMatch(model.unmeasuredNote ?? "", /SQLite-backed/);
+  assert.match(model.unmeasuredNote ?? "", UNKNOWN_BACKEND_RE);
+  assert.doesNotMatch(model.unmeasuredNote ?? "", SQLITE_BACKEND_RE);
 });
 
 test("measured model never sums physical with retained", () => {

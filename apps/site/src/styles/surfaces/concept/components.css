@@ -346,17 +346,6 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   background: var(--pdpp-editorial-paper-deep);
   border-radius: 2px;
 }
-/* The rule above styles INLINE code in prose (a light chip on paper). Inside the
-   dark terminal block that chip is paper-on-paper — the command rendered as
-   invisible white bars on the teal ground. A code element in a pre is a code
-   BLOCK: it inherits the terminal's own colour and carries no chip. */
-[data-surface="concept"] .pdpp-terminal pre code {
-  padding: 0;
-  font-size: 1em;
-  color: inherit;
-  background: none;
-  border-radius: 0;
-}
 
 /* ─── Tables ─────────────────────────────────────────────────────────────── */
 /* Open ruled rows for prose / impl tables. Bordered register tables
@@ -755,6 +744,17 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   white-space: pre;
 }
 .pdpp-cmd__line code {
+  padding: 0;
+  font-size: 1em;
+  color: inherit;
+  background: none;
+  border-radius: 0;
+}
+/* The general code rule styles INLINE code in prose (a light chip on paper). Inside the
+   dark terminal block that chip is paper-on-paper — the command rendered as
+   invisible white bars on the teal ground. A code element in a pre is a code
+   BLOCK: it inherits the terminal's own colour and carries no chip. */
+[data-surface="concept"] .pdpp-terminal pre code {
   padding: 0;
   font-size: 1em;
   color: inherit;

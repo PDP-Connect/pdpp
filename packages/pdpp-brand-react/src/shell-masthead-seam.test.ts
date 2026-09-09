@@ -22,6 +22,11 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+const MASTHEAD_HEIGHT_RE = /height:\s*var\(--rr-masthead-height\)/;
+const BOTTOM_BORDER_RE = /border-bottom:\s*1px solid var\(--border\)/;
+const PADDING_RE = /padding:\s*([^;]+);/;
+const NONZERO_PADDING_RE = /^\s*[1-9]/;
+
 const SHELL_CSS = fileURLToPath(new URL("./shell.css", import.meta.url));
 
 function ruleBody(css: string, selector: string): string {
@@ -42,7 +47,7 @@ test("both sides of the seam derive their height from that one token", async () 
   for (const selector of [".rr-side__brand", ".rr-head"]) {
     assert.match(
       ruleBody(css, selector),
-      /height:\s*var\(--rr-masthead-height\)/,
+      MASTHEAD_HEIGHT_RE,
       `${selector} must take its height from --rr-masthead-height, not a hand-tuned value`
     );
   }
@@ -51,7 +56,7 @@ test("both sides of the seam derive their height from that one token", async () 
 test("both sides of the seam draw a bottom rule", async () => {
   const css = await readFile(SHELL_CSS, "utf8");
   for (const selector of [".rr-side__brand", ".rr-head"]) {
-    assert.match(ruleBody(css, selector), /border-bottom:\s*1px solid var\(--border\)/, `${selector} draws the rule`);
+    assert.match(ruleBody(css, selector), BOTTOM_BORDER_RE, `${selector} draws the rule`);
   }
 });
 
@@ -60,6 +65,6 @@ test("the sidebar adds no top padding above the masthead", async () => {
   // pushed the lockup down so its rule no longer met the header's.
   const css = await readFile(SHELL_CSS, "utf8");
   const side = ruleBody(css, ".rr-side");
-  const padding = side.match(/padding:\s*([^;]+);/)?.[1] ?? "";
-  assert.doesNotMatch(padding, /^\s*[1-9]/, "top padding must stay 0; put spacing below the masthead instead");
+  const padding = side.match(PADDING_RE)?.[1] ?? "";
+  assert.doesNotMatch(padding, NONZERO_PADDING_RE, "top padding must stay 0; put spacing below the masthead instead");
 });

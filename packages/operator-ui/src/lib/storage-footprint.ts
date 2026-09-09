@@ -101,7 +101,8 @@ function isFiniteNonNegative(value: number | null | undefined): value is number 
  * physical-footprint "last known" precedent.
  */
 export function retainedBytesFromDatasetSummary(summary: DatasetSummary): number | null {
-  const hasConverged = summary.projection?.computed_at != null;
+  const computedAt = summary.projection?.computed_at;
+  const hasConverged = computedAt !== null && computedAt !== undefined;
   return hasConverged && typeof summary.total_retained_bytes === "number" ? summary.total_retained_bytes : null;
 }
 
