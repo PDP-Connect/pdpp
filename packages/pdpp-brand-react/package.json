@@ -18,7 +18,7 @@
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {
-    "@base-ui/react": "^1.7.0",
+    "@base-ui/react": "^1.8.0",
     "@pdpp/brand": "workspace:*",
     "@pdpp/display": "workspace:*",
     "class-variance-authority": "^0.7.1",
@@ -26,17 +26,17 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
-    "@testing-library/user-event": "^14.6.6",
+    "@testing-library/user-event": "^14.6.7",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^26.4.0",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5",
+    "@types/react-dom": "^19.2.7",
     "jsdom": "30.0.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2",
-    "ultracite": "7.10.7"
+    "ultracite": "7.10.8"
   },
   "peerDependencies": {
     "next": "16.3.0-canary.93",
