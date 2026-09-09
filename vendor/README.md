@@ -261,3 +261,14 @@ change this time, since #37 is a devDependency-only bump). Data-connectors' own 
 tarball (`packages/polyfill-connectors/vendor/pdpp-collector-runtime-0.0.1.tgz`) was re-vendored
 identically in the same cutover, and both share the same digest — packed from the same
 data-connect commit.
+
+`pdpp-collector-runtime-0.0.1.tgz` was resynced on 2026-09-09 from
+data-connect commit `82fd91f2e5a23ff750c85dd50d3837dd884786ea` in
+[data-connect#63](https://github.com/PDP-Connect/data-connect/pull/63), which
+updates npm dependencies. The archive was built with `npm pack` in the
+collector-runtime workspace and is byte-identical to the copy in
+[data-connectors#88](https://github.com/PDP-Connect/data-connectors/pull/88).
+Compared with the previous archive, only `package/package.json` changes;
+compiled runtime files are unchanged. This refresh keeps the legacy archive
+aligned with the source used by cross-repository artifact checks. The 1.0.0
+release archives and their active consumer pins above remain unchanged.
