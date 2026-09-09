@@ -12,5 +12,47 @@
     "publicName": "Kalo",
     "signedOn": "2026-09-05",
     "type": "Company"
+  },
+  {
+    "country": "United States",
+    "principlesVersion": "1.0",
+    "publicName": "Annette T.",
+    "signedOn": "2026-09-08",
+    "type": "Individual"
+  },
+  {
+    "country": "Australia",
+    "principlesVersion": "1.0",
+    "publicName": "Art A.",
+    "signedOn": "2026-09-08",
+    "type": "Individual"
+  },
+  {
+    "country": "United Kingdom",
+    "principlesVersion": "1.0",
+    "publicName": "Claralynn N.",
+    "signedOn": "2026-09-08",
+    "type": "Individual"
+  },
+  {
+    "country": "United States",
+    "principlesVersion": "1.0",
+    "publicName": "Elisabeth M.",
+    "signedOn": "2026-09-08",
+    "type": "Individual"
+  },
+  {
+    "country": "United States",
+    "principlesVersion": "1.0",
+    "publicName": "Ghazal M.",
+    "signedOn": "2026-09-08",
+    "type": "Individual"
+  },
+  {
+    "country": "United States",
+    "principlesVersion": "1.0",
+    "publicName": "Spencer N.",
+    "signedOn": "2026-09-09",
+    "type": "Individual"
   }
 ]
