@@ -23,7 +23,7 @@
     "verify": "sh -c 'export PDPP_SITE_NEXT_DIST_DIR=.next-verify PDPP_SITE_SOURCE_DIR=.source-verify; pnpm types:check && pnpm test && pnpm check && pnpm build'"
   },
   "dependencies": {
-    "@base-ui/react": "^1.7.0",
+    "@base-ui/react": "^1.8.0",
     "@pdpp/brand": "workspace:*",
     "@pdpp/brand-react": "workspace:*",
     "@pdpp/display": "workspace:*",
@@ -36,12 +36,12 @@
     "beautiful-mermaid": "^1.1.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "fumadocs-core": "^16.15.4",
+    "fumadocs-core": "^16.15.8",
     "fumadocs-mdx": "^15.4.0",
-    "fumadocs-ui": "^16.15.4",
-    "lucide-react": "^1.37.0",
-    "next": "16.3.3",
-    "postcss": "^8.5.26",
+    "fumadocs-ui": "^16.15.8",
+    "lucide-react": "^1.43.0",
+    "next": "16.3.4",
+    "postcss": "^8.5.28",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
@@ -50,15 +50,15 @@
     "server-only": "^0.0.1",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",
-    "zod": "^4.5.2"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/mdx": "^2.0.14",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.5.0",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5",
+    "@types/react-dom": "^19.2.7",
     "design-book": "0.5.0",
-    "playwright": "^1.62.1",
+    "playwright": "^1.63.0",
     "typescript": "^7.0.2"
   },
   "//build": "TEMPORARY: --webpack keeps local/CI builds off Turbopack after repeated native SIGSEGV during static page generation on Next 16.2.x.",

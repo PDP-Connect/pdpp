@@ -17,6 +17,14 @@ import test from "node:test";
 
 import { buildDatasetStreamSizeModel, buildDatasetTopModel, buildStreamConnectionLabels } from "./dataset-grains.ts";
 
+const ZERO_PREFIX_RE = /^0/;
+const MEGABYTE_UNIT_RE = /MB/;
+const RECORD_KEY_RE = /rec_1/;
+const BLOB_ID_RE = /blob_sha256_abc/;
+const LARGE_BYTE_UNIT_RE = /KB|MB/;
+const SMALL_BLOB_RE = /small/;
+const LARGE_BLOB_RE = /large/;
+
 // ─── stream-grain model ─────────────────────────────────────────────────────
 
 test("buildDatasetStreamSizeModel renders — for a missing total, never a fabricated 0 B", () => {
@@ -27,7 +35,7 @@ test("buildDatasetStreamSizeModel renders — for a missing total, never a fabri
   assert.equal(model.rows[0]?.sizeLabel, "—");
   assert.equal(model.rows[0]?.sizeMeasured, false);
   assert.equal(model.someMeasured, false);
-  assert.doesNotMatch(model.rows[0]?.sizeLabel ?? "", /^0/);
+  assert.doesNotMatch(model.rows[0]?.sizeLabel ?? "", ZERO_PREFIX_RE);
 });
 
 test("buildDatasetStreamSizeModel renders — for a non-finite total (NaN), never 0 B", () => {
@@ -43,7 +51,7 @@ test("buildDatasetStreamSizeModel formats a measured total and labels connector/
   ]);
   assert.equal(model.rows[0]?.label, "gmail / messages");
   assert.equal(model.rows[0]?.sizeMeasured, true);
-  assert.match(model.rows[0]?.sizeLabel ?? "", /MB/);
+  assert.match(model.rows[0]?.sizeLabel ?? "", MEGABYTE_UNIT_RE);
 });
 
 test("buildDatasetStreamSizeModel sorts measured rows before unmeasured rows, bytes descending", () => {
@@ -157,8 +165,8 @@ test("buildDatasetTopModel formats a record row using the requested measure", ()
     "record",
     "current_record_json_bytes"
   );
-  assert.match(model.rows[0]?.sizeLabel ?? "", /MB/);
-  assert.match(model.rows[0]?.label ?? "", /rec_1/);
+  assert.match(model.rows[0]?.sizeLabel ?? "", MEGABYTE_UNIT_RE);
+  assert.match(model.rows[0]?.label ?? "", RECORD_KEY_RE);
 });
 
 test("buildDatasetTopModel formats a blob row keyed by blob_id", () => {
@@ -176,8 +184,8 @@ test("buildDatasetTopModel formats a blob row keyed by blob_id", () => {
     "blob",
     "blob_bytes"
   );
-  assert.match(model.rows[0]?.label ?? "", /blob_sha256_abc/);
-  assert.match(model.rows[0]?.sizeLabel ?? "", /KB|MB/);
+  assert.match(model.rows[0]?.label ?? "", BLOB_ID_RE);
+  assert.match(model.rows[0]?.sizeLabel ?? "", LARGE_BYTE_UNIT_RE);
 });
 
 test("buildDatasetTopModel does not re-sort or re-slice — renders rows in the order the server returned", () => {
@@ -197,6 +205,6 @@ test("buildDatasetTopModel does not re-sort or re-slice — renders rows in the 
     model.rows.map((r) => r.rank),
     [1, 2]
   );
-  assert.match(model.rows[0]?.label ?? "", /small/);
-  assert.match(model.rows[1]?.label ?? "", /large/);
+  assert.match(model.rows[0]?.label ?? "", SMALL_BLOB_RE);
+  assert.match(model.rows[1]?.label ?? "", LARGE_BLOB_RE);
 });

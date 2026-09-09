@@ -579,6 +579,17 @@
   border-radius: 2px;
 }
 
+[data-pdpp-doc-theme] .pdpp-docs-body > pre code {
+  padding: 0;
+  font-family: var(--font-mono) !important;
+  font-size: 1em;
+  color: inherit !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0;
+  box-shadow: none !important;
+}
+
 [data-pdpp-doc-theme] .pdpp-docs-body th :not(pre) > code,
 [data-pdpp-doc-theme] .pdpp-docs-body td :not(pre) > code {
   overflow-wrap: normal;
@@ -622,8 +633,7 @@
 
 [data-pdpp-doc-theme] .pdpp-docs-body figure.shiki pre,
 [data-pdpp-doc-theme] .pdpp-docs-body figure.shiki code,
-[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki span,
-[data-pdpp-doc-theme] .pdpp-docs-body > pre code {
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki span {
   padding: 0;
   font-family: var(--font-mono) !important;
   font-size: 1em;

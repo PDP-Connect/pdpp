@@ -14,8 +14,8 @@
     "verify": "pnpm typecheck && pnpm test"
   },
   "devDependencies": {
-    "@types/node": "^26.4.0",
-    "tsx": "^4.23.12",
+    "@types/node": "^26.5.0",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   },
   "license": "Apache-2.0"

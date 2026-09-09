@@ -35,23 +35,23 @@
     "@streamparser/json": "^0.0.26",
     "better-sqlite3": "^13.0.3",
     "dotenv": "^17.4.2",
-    "imapflow": "^1.7.6",
+    "imapflow": "^2.0.0",
     "linkedom": "^0.18.13",
     "ofx-js": "^1.1.1",
     "p-queue": "^9.3.3",
-    "p-retry": "^8.0.0",
-    "patchright": "1.62.1",
+    "p-retry": "^8.0.1",
+    "patchright": "1.63.0",
     "pdf-parse": "^2.4.5",
-    "playwright": "^1.62.1",
+    "playwright": "^1.63.0",
     "saxes": "^6.0.0",
     "ws": "^8.21.3",
-    "zod": "^4.5.2"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@babel/parser": "8.0.4",
-    "@biomejs/biome": "2.5.11",
+    "@biomejs/biome": "2.5.12",
     "@types/better-sqlite3": "^9.6.0",
     "@types/ws": "^8.18.1",
-    "ultracite": "7.10.7"
+    "ultracite": "7.11.0"
   }
 }

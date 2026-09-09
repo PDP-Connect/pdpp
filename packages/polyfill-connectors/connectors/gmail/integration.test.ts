@@ -2745,21 +2745,23 @@ test("runAttachmentBackfillAndRecoveryPass: served gaps preempt historical attac
     return Promise.resolve(recoveryMessage);
   });
   const fetch = mock.fn(
-    () =>
-      ({
-        [Symbol.asyncIterator]() {
-          return this;
-        },
-        next() {
-          return Promise.reject(new Error("historical backfill must not run when served gaps exist"));
-        },
-        return() {
-          return Promise.resolve({ done: true, value: undefined }) as Promise<IteratorResult<FetchMessageObject>>;
-        },
-        throw(error: unknown) {
-          return Promise.reject(error) as Promise<IteratorResult<FetchMessageObject>>;
-        },
-      }) as AsyncIterableIterator<FetchMessageObject>
+    (): ReturnType<ImapFlow["fetch"]> => ({
+      [Symbol.asyncDispose]() {
+        return Promise.resolve();
+      },
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      next() {
+        return Promise.reject(new Error("historical backfill must not run when served gaps exist"));
+      },
+      return() {
+        return Promise.resolve({ done: true, value: undefined });
+      },
+      throw(error: unknown) {
+        return Promise.reject(error);
+      },
+    })
   );
   const client: Pick<ImapFlow, "fetch" | "fetchOne" | "search"> = { fetch, fetchOne, search };
   const attachmentCoverage = makeAttachmentDetailCoverage();
@@ -2937,21 +2939,23 @@ test("runAttachmentBackfillAndRecoveryPass: recoveryOnly=true recovers served ga
     return Promise.resolve(recoveryMessage);
   });
   const fetch = mock.fn(
-    () =>
-      ({
-        [Symbol.asyncIterator]() {
-          return this;
-        },
-        next() {
-          return Promise.reject(new Error("historical backfill must not run in recoveryOnly mode"));
-        },
-        return() {
-          return Promise.resolve({ done: true, value: undefined }) as Promise<IteratorResult<FetchMessageObject>>;
-        },
-        throw(error: unknown) {
-          return Promise.reject(error) as Promise<IteratorResult<FetchMessageObject>>;
-        },
-      }) as AsyncIterableIterator<FetchMessageObject>
+    (): ReturnType<ImapFlow["fetch"]> => ({
+      [Symbol.asyncDispose]() {
+        return Promise.resolve();
+      },
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      next() {
+        return Promise.reject(new Error("historical backfill must not run in recoveryOnly mode"));
+      },
+      return() {
+        return Promise.resolve({ done: true, value: undefined });
+      },
+      throw(error: unknown) {
+        return Promise.reject(error);
+      },
+    })
   );
   const client: Pick<ImapFlow, "fetch" | "fetchOne" | "search"> = { fetch, fetchOne, search };
   const attachmentCoverage = makeAttachmentDetailCoverage();

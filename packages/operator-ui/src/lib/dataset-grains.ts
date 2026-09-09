@@ -218,12 +218,14 @@ export function buildDatasetTopModel(
   measure: "total_retained_bytes" | "current_record_json_bytes" | "blob_bytes" = "total_retained_bytes"
 ): DatasetTopModel {
   const built: DatasetTopRow[] = rows.map((row, index) => {
-    const raw =
-      measure === "current_record_json_bytes"
-        ? row.current_record_json_bytes
-        : measure === "blob_bytes"
-          ? row.blob_bytes
-          : row.total_retained_bytes;
+    let raw: number | null | undefined;
+    if (measure === "current_record_json_bytes") {
+      raw = row.current_record_json_bytes;
+    } else if (measure === "blob_bytes") {
+      raw = row.blob_bytes;
+    } else {
+      raw = row.total_retained_bytes;
+    }
     const bytes = isFiniteNonNegative(raw) ? raw : null;
     return {
       key: row.grain_key ?? `${scope}-${index}`,
