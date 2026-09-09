@@ -16,7 +16,7 @@ import {
   runCollectorConnector,
   transformRecordsToCollectorEnvelopes,
 } from "./collector-runner.ts";
-import { LocalDeviceHttpError, type IngestBatchRequest, type LocalDeviceClient } from "./local-device-client.ts";
+import { type IngestBatchRequest, type LocalDeviceClient, LocalDeviceHttpError } from "./local-device-client.ts";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import { RuntimeCapabilityMismatchError } from "./runtime-capabilities.ts";

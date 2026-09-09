@@ -3,7 +3,7 @@
   "connector_id": "https://registry.pdpp.org/connectors/github",
   "connector_key": "github",
   "manifest_uri": "https://registry.pdpp.org/connectors/github",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "display_name": "GitHub",
   "runtime_requirements": {
     "bindings": {
