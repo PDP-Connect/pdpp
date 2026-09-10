@@ -8,9 +8,9 @@
  * to seed a fresh server before interactive exploration.
  *
  * Usage:
- *   AS_URL=http://localhost:7662 node bin/register-all.js
+ *   AS_URL=http://localhost:7662 node --import tsx bin/register-all.ts
  * or start an embedded server:
- *   node bin/register-all.js --embedded
+ *   node --import tsx bin/register-all.ts --embedded
  */
 
 import { dirname, join } from "node:path";

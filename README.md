@@ -96,6 +96,11 @@ or compete with the normative specs.
   [`Session 1 notes`](docs/community/working-sessions/2026-08-06-session-1-intro-architecture.md).
 - **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md) — the spec-first
   workflow, test expectations, and pull-request conventions.
+- **Build a connector:**
+  [`packages/polyfill-connectors/CONNECTORS.md`](packages/polyfill-connectors/CONNECTORS.md)
+  — the runnable quickstart and the current connector registry. Connector
+  source itself begins in
+  [`PDP-Connect/data-connectors`](https://github.com/PDP-Connect/data-connectors).
 - **Maintainers:** [`MAINTAINERS.md`](MAINTAINERS.md) — active maintainers and
   their scopes. Root specification maintainers act as editors for the current
   draft.
