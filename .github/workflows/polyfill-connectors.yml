@@ -27,9 +27,8 @@ concurrency:
 
 jobs:
   write-freeze-guard:
-    # Move A ownership flip: connector source now begins in
-    # PDP-Connect/data-connectors. This repo's copy keeps running the
-    # product (DUALHOME-AUDIT.md: ~150 consuming files) but is frozen for
+    # Connector-source ownership now begins in PDP-Connect/data-connectors.
+    # The copy here is retained but frozen for
     # direct connector-source edits. Fails a PR that touches connector
     # source under packages/polyfill-connectors/connectors/** unless it
     # carries the `connector-write-freeze-override` label. Deliberately
