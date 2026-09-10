@@ -51,8 +51,29 @@
   {
     "country": "United States",
     "principlesVersion": "1.0",
+    "publicName": "Open Data Labs",
+    "signedOn": "2026-09-09",
+    "type": "Company"
+  },
+  {
+    "country": "United Kingdom",
+    "principlesVersion": "1.0",
+    "publicName": "Sara S.",
+    "signedOn": "2026-09-09",
+    "type": "Individual"
+  },
+  {
+    "country": "United States",
+    "principlesVersion": "1.0",
     "publicName": "Spencer N.",
     "signedOn": "2026-09-09",
     "type": "Individual"
+  },
+  {
+    "country": "Cayman Islands",
+    "principlesVersion": "1.0",
+    "publicName": "Vana Foundation",
+    "signedOn": "2026-09-10",
+    "type": "Company"
   }
 ]
