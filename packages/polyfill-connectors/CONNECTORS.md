@@ -5,7 +5,7 @@ When adding or changing a connector manifest, follow the repo-level
 is enforced by manifest-honesty tests for search affordances and presentation
 roles; do not land readable owner-visible fields without the matching semantics.
 
-32 connectors, organized by auth/operational class.
+45 connectors, organized by auth/operational class.
 
 ## What the status columns mean
 
@@ -37,7 +37,7 @@ These connectors fetch via the platform's public HTTP API using a long-lived tok
 
 ## Browser-scraper
 
-These connectors drive a Playwright session against a persistent browser profile. Session expiry is handled by `src/auto-login/<platform>.js` helpers that drive re-login + 2FA via `INTERACTION`. **None of these are first-run portable without some friction** — the upstream platforms have anti-bot surfaces that treat fresh IPs and cold profiles as higher-risk by design.
+These connectors drive a Playwright session against a persistent browser profile. Session expiry is handled by `src/auto-login/<platform>.ts` helpers that drive re-login + 2FA via `INTERACTION`. **None of these are first-run portable without some friction** — the upstream platforms have anti-bot surfaces that treat fresh IPs and cold profiles as higher-risk by design.
 
 All browser-scrape connectors use `acquireIsolatedBrowser({ profileName: '<name>' })` (per-connector on-disk profile at the deployment-owned `PDPP_BROWSER_PROFILE_ROOT`, defaulting to `~/.pdpp/profiles/<name>/`, full Patchright). Core sets that root to `/var/lib/pdpp/browser-profiles/<name>/`. See `docs/reference/connector-authoring-guide.md`. The legacy shared daemon and shared `~/.pdpp/browser-profile/` were retired 2026-04-25.
 
@@ -49,20 +49,20 @@ First-run-portability notes are platform-specific and worth reading before handi
 |---|---|---|---|---|---|
 | amazon | Amazon login + 2FA | ✅ | ⚠ needs 2FA device | 2,863 (orders+items) | 2FA on the account's registered device. First run may burn trusted-device state; subsequent runs smoother. Full best-practices refactor (Zod, shape-check, tracing, p-retry, structural extraction, isolated browser). |
 | whoop | Owner login in isolated WHOOP browser | ✅ | ⚠ owner login required | 44 (6 streams) | Uses the authenticated app.whoop.com session and first-party JSON endpoints. Live owner testing proved full collection plus a second checkpointed run with saved-session reuse; no credentials or tokens leave the browser context. |
-| chase | Chase login + SMS 2FA | ✅ | ⚠ needs SMS access, fresh OTP per run | 21 (4 streams verified) | Chase does not persist trusted-device cookie across runs; every run currently requires a fresh OTP. Root cause: `_tmprememberme` cookie is session-only; the opt-in "remember me" checkbox may not be getting ticked. See `src/auto-login/chase.js` — speculative fix landed but un-verified. |
+| chase | Chase login + SMS 2FA | ✅ | ⚠ needs SMS access, fresh OTP per run | 21 (4 streams verified) | Chase does not persist trusted-device cookie across runs; every run currently requires a fresh OTP. Root cause: `_tmprememberme` cookie is session-only; the opt-in "remember me" checkbox may not be getting ticked. See `src/auto-login/chase.ts` — speculative fix landed but un-verified. |
 | chatgpt | ChatGPT login (email+password); optional 2FA | ✅ | ⚠ conditional | 2,302 conv / 9,252 msg | Cloudflare may challenge on new IPs. Core defaults local browser sessions headed; set deployment-wide `PDPP_BROWSER_HEADLESS=1` only for an intentionally headless run. p-retry on 429/5xx from OpenAI API. |
 | usaa | USAA member login + SMS 2FA | ✅ | ⚠ needs SMS access | 887 (5 streams, pre-refactor) | SMS OTP delivered to the account's registered phone. Tier A refactor (Zod, shape-check, tracing, isolated-browser code) complete; end-to-end validation blocked on Akamai rejecting the maintainer's IP — need reverse proxy or fresh IP. |
-| anthropic | Claude.ai login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js` (now on isolated path); selectors TBD. |
-| shopify | Shopify admin login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
-| heb | HEB.com login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
-| wholefoods | Piggybacks on Amazon session | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. Inherits Amazon's portability profile. |
-| linkedin | LinkedIn login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
-| meta | Instagram login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
-| loom | Loom login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
-| uber | Uber login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
-| doordash | DoorDash login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |
+| anthropic | Claude.ai login | 🟡 scaffolded | — | — | Uses `src/connector-runtime.ts` (now on isolated path); selectors TBD. |
+| shopify | Shopify admin login | 🟡 scaffolded | — | — | Uses `src/connector-runtime.ts`. |
+| heb | HEB.com login | 🟡 scaffolded | — | — | Uses `src/connector-runtime.ts`. |
+| wholefoods | Piggybacks on Amazon session | 🟡 scaffolded | — | — | Uses `src/connector-runtime.ts`. Inherits Amazon's portability profile. |
+| linkedin | LinkedIn login | 🟡 scaffolded | — | — | Uses `src/connector-runtime.ts`. |
+| meta | Instagram login | 🟡 scaffolded | — | — | Uses `src/connector-runtime.ts`. |
+| loom | Loom login | 🟡 scaffolded | — | — | Uses `src/connector-runtime.ts`. |
+| uber | Uber login | 🟡 scaffolded | — | — | Uses `src/connector-runtime.ts`. |
+| doordash | DoorDash login | 🟡 scaffolded | — | — | Uses `src/connector-runtime.ts`. |
 
-Scaffolded = manifest + connector shell exist with correct streams, but DOM selectors need a live co-pilot session to wire. All scaffolded connectors inherit the isolated-browser + patchright stealth path via `browser-scraper-runtime.js`.
+Scaffolded = manifest + connector shell exist with correct streams, but DOM selectors need a live co-pilot session to wire. All scaffolded connectors inherit the isolated-browser + patchright stealth path via `src/connector-runtime.ts`.
 
 "Conditional" first-run portability means: works without manual intervention *if* specific conditions are met (user has their 2FA device, clears any visible Cloudflare challenge, etc.). If those conditions can't be met, the connector emits an `INTERACTION manual_action` asking the user to complete the step manually, then re-run.
 
@@ -96,10 +96,10 @@ the container, leave `CLAUDE_CODE_HOME=/imports/claude`,
 
 ```bash
 # One-shot run
-node packages/polyfill-connectors/bin/orchestrate.js run <name>
+node --import tsx packages/polyfill-connectors/bin/orchestrate.ts run <name>
 
 # Validate all manifests
-node packages/polyfill-connectors/bin/register-all.js --embedded
+node --import tsx packages/polyfill-connectors/bin/register-all.ts --embedded
 
 # Query results
 sqlite3 packages/polyfill-connectors/.pdpp-data/pdpp.sqlite \
@@ -108,11 +108,18 @@ sqlite3 packages/polyfill-connectors/.pdpp-data/pdpp.sqlite \
 
 ## Adding a new connector
 
+Connector source starts in
+[`PDP-Connect/data-connectors`](https://github.com/PDP-Connect/data-connectors).
+`connectors/` in this repo is a retained frozen copy: a pull request that edits
+those files fails the write-freeze guard in
+`.github/workflows/polyfill-connectors.yml` unless it carries the
+`connector-write-freeze-override` label. See [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
+
 1. Create `manifests/<name>.json` following an existing shape (e.g. `github.json` for API-based, `claude_code.json` for file-based, `amazon.json` for browser-scraper).
-2. Create `connectors/<name>/index.js` — see `connectors/github/index.js` for a clean API example.
-3. Register in `src/orchestrator.js` `KNOWN_CONNECTORS`.
-4. Add to `bin/register-all.js` for smoke testing.
-5. Run: `node bin/orchestrate.js run <name>`.
+2. Create `connectors/<name>/index.ts` — see `connectors/github/index.ts` for a clean API example.
+3. Register in `src/orchestrator.ts` `KNOWN_CONNECTORS`.
+4. Add to `bin/register-all.ts` for smoke testing.
+5. Run: `node --import tsx bin/orchestrate.ts run <name>`.
 
 Required conventions: `flushAndExit` helper, `resourceSet` filter, tombstones on mutable_state deletion (where platform supports), `requireCredentialsOrAsk` for env-var creds.
 

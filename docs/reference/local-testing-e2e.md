@@ -60,7 +60,7 @@ mkdir -p "$(dirname "$PDPP_DB_PATH")"
 In one terminal:
 
 ```bash
-PDPP_BROWSER_HEADLESS=0 node packages/polyfill-connectors/bin/orchestrate.js run chatgpt
+PDPP_BROWSER_HEADLESS=0 node --import tsx packages/polyfill-connectors/bin/orchestrate.ts run chatgpt
 ```
 
 `PDPP_BROWSER_HEADLESS=0` makes the deployment-wide choice explicit and opens a visible Patchright browser window. It's recommended for the **first run** because ChatGPT's Cloudflare protection may show a challenge that you need to complete manually once. Core is already headed when the variable is omitted; set `PDPP_BROWSER_HEADLESS=1` only when intentionally selecting the advanced headless path.
@@ -255,7 +255,7 @@ The dashboard reads from the same PDPP server you started earlier (at 7662/7663)
 **`[orchestrate] result: status=failed records_emitted=0` with no reason** — the orchestrator is swallowing the child connector's error. Run the connector directly to see the real error:
 
 ```bash
-node packages/polyfill-connectors/connectors/chatgpt/index.js <<< '{"type":"START","request_id":"r1","scope":{"streams":[{"name":"conversations"}]},"state":null}'
+node --import tsx packages/polyfill-connectors/connectors/chatgpt/index.ts <<< '{"type":"START","request_id":"r1","scope":{"streams":[{"name":"conversations"}]},"state":null}'
 ```
 
 **Connector hangs waiting on `INTERACTION kind=manual_action`** — ChatGPT's Cloudflare protection blocked auto-login and the connector wrote `/tmp/pdpp-interaction-*.json` asking for a manual login. The INTERACTION message file contains the full request; reply by writing a response JSON file as the message describes. Or re-run with `PDPP_BROWSER_HEADLESS=0` (or unset it) so you can complete the challenge in the visible browser window.

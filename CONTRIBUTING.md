@@ -13,7 +13,9 @@ Two kinds of contribution now start in a different repository:
   files fails the write-freeze guard in
   `.github/workflows/polyfill-connectors.yml`, unless it carries the
   `connector-write-freeze-override` label. Fixtures, docs, and scripts are not
-  frozen.
+  frozen. For the runnable mechanics — how to run a connector, validate
+  manifests, and what the registry currently contains — see
+  [`packages/polyfill-connectors/CONNECTORS.md`](packages/polyfill-connectors/CONNECTORS.md).
 - **Reference-implementation code** lives under `reference-implementation/`;
   **console code** lives under `apps/console/`, both in
   [`PDP-Connect/data-connect`](https://github.com/PDP-Connect/data-connect).
