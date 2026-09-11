@@ -442,7 +442,7 @@ function ChannelsSection() {
             Mailing list
           </Text>
           <Text as="p" color="muted" size="small">
-            New versions and comment periods. Low volume. Opening alongside the register.
+            New versions and comment periods. Low volume.
           </Text>
           <div className="mt-auto pt-2">
             <ChannelLink href={siteConfig.mailingListUrl} label="Subscribe →" />
