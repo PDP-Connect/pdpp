@@ -1,0 +1,104 @@
+name: Community invite liveness
+
+# The site publishes a Discord invite and a mailing-list address. Both can stop working
+# without anything in this repository changing, so no unit test can catch it:
+# apps/site/scripts/pdpp-concept-facts.test.ts pins their shape and stays offline, and
+# this covers the part that needs the network.
+#
+# Weekly rather than per-push, because an invite does not rot in response to a commit and
+# a network call on every PR would fail unrelated changes. Also on demand, and on any
+# change to the file holding the values.
+#
+# An expired Discord invite still serves a 200 HTML page, so this asks the invite API
+# instead of fetching the URL. Both endpoints are public and unauthenticated.
+
+on:
+  schedule:
+    # Mondays 08:00 UTC. Early in the week, so a dead invite is fixed before the
+    # fortnightly Thursday working session rather than discovered during it.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+  push:
+    paths:
+      - "apps/site/src/lib/site-config.ts"
+      - ".github/workflows/community-invite-liveness.yml"
+  pull_request:
+    paths:
+      - "apps/site/src/lib/site-config.ts"
+      - ".github/workflows/community-invite-liveness.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check-invites:
+    name: Check the published community links still work
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the published values and check each one resolves
+        run: |
+          set -euo pipefail
+
+          # Read the committed defaults out of site-config.ts rather than duplicating them
+          # here. A second copy in this file is the same two-doors-to-one-room problem the
+          # config comment warns about, and it would go stale silently.
+          discord_url="$(grep -oE 'https://discord\.gg/[A-Za-z0-9]+' apps/site/src/lib/site-config.ts | head -1)"
+          list_url="$(grep -oE 'https://lists\.lfdecentralizedtrust\.org/g/[A-Za-z0-9-]+' apps/site/src/lib/site-config.ts | head -1)"
+
+          if [ -z "$discord_url" ] || [ -z "$list_url" ]; then
+            echo "::error::Could not read both community URLs from apps/site/src/lib/site-config.ts."
+            echo "Discord: '${discord_url:-<none>}'  list: '${list_url:-<none>}'"
+            echo "If the shape of those values changed, update the patterns in this workflow."
+            exit 1
+          fi
+
+          echo "Discord invite: $discord_url"
+          echo "Mailing list:   $list_url"
+
+          failed=0
+
+          invite_code="${discord_url##*/}"
+          invite_json="$(curl -sS --max-time 20 "https://discord.com/api/v10/invites/${invite_code}")"
+
+          # Parsed with node rather than grep/sed: the response nests several objects that
+          # each carry a "name", so a regex reaches the wrong one as soon as Discord
+          # reorders its JSON.
+          if ! printf '%s' "$invite_json" | node -e '
+            const raw = require("node:fs").readFileSync(0, "utf8");
+            let invite;
+            try {
+              invite = JSON.parse(raw);
+            } catch {
+              console.log("::error::Discord returned a response that is not JSON.");
+              process.exit(1);
+            }
+            if (!invite.guild) {
+              const reason = invite.message ?? "unknown error";
+              console.log(`::error::Discord invite is not usable: ${reason}`);
+              process.exit(1);
+            }
+            const channel = invite.channel?.name ? `#${invite.channel.name}` : "unknown channel";
+            console.log(`Discord invite is valid (${invite.guild.name}, ${channel}).`);
+            if (invite.expires_at !== null && invite.expires_at !== undefined) {
+              console.log(`::warning::This invite expires at ${invite.expires_at}. Prefer a non-expiring invite so it cannot rot.`);
+            }
+          '; then
+            echo "Replace it in apps/site/src/lib/site-config.ts with a non-expiring invite to #pdp-connect."
+            failed=1
+          fi
+
+          list_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -L "$list_url")"
+          if [ "$list_status" = "200" ]; then
+            echo "Mailing list is reachable (HTTP $list_status)."
+          else
+            echo "::error::Mailing list $list_url returned HTTP $list_status."
+            failed=1
+          fi
+
+          exit "$failed"

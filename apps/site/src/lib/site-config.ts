@@ -85,9 +85,9 @@ export const siteConfig = {
    * The #pdp-connect invite. One value for the whole site: the footer and
    * /participate previously held separate constants, which is how a site ends
    * up offering two different doors to the same room and only noticing when
-   * one of them expires.
+   * one of them expires. Use an invite set to never expire.
    */
-  discordUrl: settled(process.env.NEXT_PUBLIC_PDPP_DISCORD_URL, "https://discord.gg/JmKcFYE4"),
+  discordUrl: settled(process.env.NEXT_PUBLIC_PDPP_DISCORD_URL, "https://discord.gg/FV4bkZBdmA"),
 
   /**
    * The LF Decentralized Trust list for specification discussion. Settled, not
