@@ -21,7 +21,8 @@ const githubDisplayText = GITHUB_REPO_URL.replace(GITHUB_URL_SCHEME_RE, "");
 // Column order and content are load-bearing:
 //   BRAND       — wordmark + protocol name.
 //   LICENSE     — licenses (spec first) + governance.
-//   COMMUNITY   — Discord and the GitHub repository (SOURCE folded in here).
+//   COMMUNITY   — Discord, the mailing list, and the GitHub repository
+//                 (SOURCE folded in here).
 //
 // Three columns on all pages.
 //
@@ -159,6 +160,17 @@ export function PdppConceptFooter() {
               >
                 <DiscordIcon />
                 <span className={footerLinkUnderlineClassName}>#pdp-connect on LFDT Discord</span>
+              </Text>
+              <Text
+                as="a"
+                className={cn("group", footerLinkColorClassName)}
+                color="onAccent"
+                href={siteConfig.mailingListUrl}
+                rel="noopener noreferrer"
+                size="inherit"
+                target="_blank"
+              >
+                <span className={footerLinkUnderlineClassName}>pdp-connect-discuss mailing list</span>
               </Text>
             </div>
             <div className="flex flex-col gap-1.5">
