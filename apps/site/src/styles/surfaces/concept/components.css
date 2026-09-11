@@ -986,3 +986,20 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
     transform: translate3d(-50%, 0, 0);
   }
 }
+
+/* Supporters roll, on the front page. Same two-track trick as the review
+   ticker, turned through ninety degrees: two identical copies of the register
+   stacked, translated by exactly -50% so the seam lands where the first copy
+   began. The component sets animation-duration inline, because the loop is one
+   copy tall and has to keep the same rows-per-second as the register grows —
+   a duration baked into the shorthand here would speed the roll up with every
+   new signature. Reduced motion stops it at the top of the register rather
+   than hiding it: these are real signatories, not decoration. */
+@keyframes pdpp-supporters-roll {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(0, -50%, 0);
+  }
+}

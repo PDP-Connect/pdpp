@@ -7,7 +7,7 @@ import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-pag
 import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
 import { PdppHeroWaterStill } from "@/components/sections/hero-water-still.tsx";
 import { PdppPrinciplesList } from "@/components/site/principles-list.tsx";
-import { PdppSupportersTable } from "@/components/site/supporters.tsx";
+import { PdppSupportersRoll } from "@/components/site/supporters.tsx";
 import { PdppWhatChanges } from "@/components/site/what-changes.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { readPublicSupporters } from "@/lib/public-supporters.ts";
@@ -82,7 +82,7 @@ export default async function Page() {
 
         <PdppConceptSection id="supporters" title="Supporters">
           <div className="mt-6 flex flex-col gap-4">
-            <PdppSupportersTable supporters={supporters} />
+            <PdppSupportersRoll supporters={supporters} />
             <Text as="p" size="small">
               <Link className="text-primary hover:text-foreground" href="/principles#supporters">
                 All Supporters →
