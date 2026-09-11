@@ -89,5 +89,19 @@
     "publicName": "Vana Foundation",
     "signedOn": "2026-09-10",
     "type": "Company"
+  },
+  {
+    "country": "United States",
+    "principlesVersion": "1.0",
+    "publicName": "Anna K.",
+    "signedOn": "2026-09-11",
+    "type": "Individual"
+  },
+  {
+    "country": "Finland",
+    "principlesVersion": "1.0",
+    "publicName": "Katariina F.",
+    "signedOn": "2026-09-11",
+    "type": "Individual"
   }
 ]
