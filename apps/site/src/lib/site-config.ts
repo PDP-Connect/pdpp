@@ -88,7 +88,17 @@ export const siteConfig = {
    * one of them expires.
    */
   discordUrl: settled(process.env.NEXT_PUBLIC_PDPP_DISCORD_URL, "https://discord.gg/JmKcFYE4"),
-  mailingListUrl: configured(process.env.NEXT_PUBLIC_PDPP_MAILING_LIST_URL, "mailing list URL not set"),
+
+  /**
+   * The LF Decentralized Trust list for specification discussion. Settled, not
+   * configured: the list exists and its address is a decided fact, so it
+   * belongs in the repository rather than only in a deployment's environment.
+   * A clone that renders the real address is the point.
+   */
+  mailingListUrl: settled(
+    process.env.NEXT_PUBLIC_PDPP_MAILING_LIST_URL,
+    "https://lists.lfdecentralizedtrust.org/g/pdp-connect-discuss"
+  ),
 } as const;
 
 // The reports mailbox is NOT configurable: it is an LF Decentralized Trust
