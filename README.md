@@ -91,6 +91,10 @@ or compete with the normative specs.
 
 ## Participate
 
+- **Mailing list:**
+  [`pdp-connect-discuss`](https://lists.lfdecentralizedtrust.org/g/pdp-connect-discuss)
+  — the public LF Decentralized Trust list for specification discussion, new
+  versions, and comment periods. Reading the archive needs no subscription.
 - **Community sessions:** read the current
   [`session reading`](docs/community/session-reading.md) and the
   [`Session 1 notes`](docs/community/working-sessions/2026-08-06-session-1-intro-architecture.md).

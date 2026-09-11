@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { siteConfig } from "../src/lib/site-config.ts";
 import { GITHUB_REPO_URL, repoBlobUrl, SITE_LICENSES } from "../src/lib/site-facts.ts";
 import { SPEC_EDITORS, SPEC_STATUS } from "../src/lib/spec-status.ts";
 
@@ -109,5 +110,20 @@ test("no site source file hand-types the GitHub repo URL outside site-facts.ts",
       !source.includes("github.com/PDP-Connect/pdpp"),
       `${relativePath} must derive the repo URL from site-facts.ts, not hand-type it`
     );
+  }
+});
+
+// The Subscribe link on /participate once pointed at "/principles#supporters",
+// an internal anchor, because the deployment set NEXT_PUBLIC_PDPP_MAILING_LIST_URL
+// to one. Nothing caught it: the placeholder guard only fires on an EMPTY value,
+// so a non-empty but wrong one rendered as an ordinary working link. These two
+// channels are off-site by definition, so pin that: a value that is not an
+// absolute URL cannot be a mailing list or a chat invite.
+test("the community channels resolve to absolute off-site URLs", () => {
+  for (const [name, value] of [
+    ["mailingListUrl", siteConfig.mailingListUrl],
+    ["discordUrl", siteConfig.discordUrl],
+  ] as const) {
+    assert.match(value, HTTPS_URL, `${name} must be an absolute https URL, not an internal path`);
   }
 });
