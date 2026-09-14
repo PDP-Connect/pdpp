@@ -4,45 +4,22 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import {
-  chmodSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import process from "node:process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
   CI_GATE_SELF_PATHS,
-  CONNECTOR_CONFORMANCE_TEST_FILES,
   changeTouchesCiGateSelf,
-  changeTouchesConnectorSurface,
-  changeTouchesRiProduction,
   ciModeSelfTestRequired,
-  connectorGateRequired,
   detectCiMode,
   getRequiredStatusContexts,
   HOSTED_CONTEXT,
   LOCAL_CONTEXT,
-  RI_PRODUCTION_PATH_PREFIXES,
   rulesetWithRequiredStatusContexts,
-  STREAM_EVIDENCE_INVENTORY_PATHS,
-  streamEvidenceInventoryGateRequired,
   workflowUpdatesForMode,
-  ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE,
-  ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE,
-  ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE,
-  ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE,
-  zeroConnectorKnowledgeGateRequired,
 } from "./ci-mode.ts";
 
 const CI_MODE_SCRIPT = fileURLToPath(new URL("./ci-mode.ts", import.meta.url));
@@ -50,14 +27,6 @@ const REPOSITORY_ROOT = dirname(dirname(CI_MODE_SCRIPT));
 
 const UNCOMMITTED_OR_UNPUSHED_PATTERN = /uncommitted or unpushed changes/;
 const DOES_NOT_MATCH_HEAD_PATTERN = /does not match HEAD/;
-const STREAM_EVIDENCE_INVENTORY_FAIL_PATTERN = /stream-evidence inventory: FAIL/;
-const CONNECTOR_CONFORMANCE_GATE_RAN_PATTERN =
-  /shipped manifest root or this gate changed — running the connector-conformance gate/;
-const STREAM_EVIDENCE_INVENTORY_GATE_RAN_PATTERN =
-  /shipped manifest root or stream-evidence inventory input changed — running the inventory check/;
-const ZERO_CONNECTOR_KNOWLEDGE_GATE_RAN_PATTERN =
-  /RI production code or a shipped manifest root changed — running the zero-connector-knowledge guard/;
-const HARDCODED_CONNECTOR_IDENTITY_VIOLATION_PATTERN = /hardcoded-connector-identity-literal/;
 
 function fixtureRuleset() {
   return {
@@ -211,129 +180,19 @@ test("workflowUpdatesForMode enables non-active managed workflows in hosted mode
   );
 });
 
-test("changeTouchesConnectorSurface flags bundled connector and reference-manifest paths", () => {
-  assert.equal(changeTouchesConnectorSurface(["packages/polyfill-connectors/manifests/gmail.json"]), true);
-  assert.equal(changeTouchesConnectorSurface(["reference-implementation/fixtures/seed-manifests/github.json"]), true);
-  assert.equal(changeTouchesConnectorSurface(["reference-implementation/server/ref-control.ts"]), false);
-  assert.equal(changeTouchesConnectorSurface([]), false);
-  assert.equal(
-    changeTouchesConnectorSurface([
-      "docs/reference/ci-mode.md",
-      "packages/polyfill-connectors/src/connector-conformance-roster.ts",
-    ]),
-    true
-  );
-});
-
-test("connectorGateRequired is required when the connector surface is touched", () => {
-  assert.equal(connectorGateRequired(["packages/polyfill-connectors/connectors/gmail/index.ts"]), true);
-  assert.equal(connectorGateRequired(["reference-implementation/fixtures/seed-manifests/github.json"]), true);
-  assert.equal(connectorGateRequired(["CONTRIBUTING.md"]), false);
-  assert.equal(connectorGateRequired([]), false);
-});
-
-test("connectorGateRequired is ALSO required when only the gate itself changed (no connector-surface path)", () => {
-  // CI_GATE_SELF_PATHS is distinct from CONNECTOR_SURFACE_PATH_PREFIXES — a
-  // naive connector-surface-only check would miss a gate change. A change to
-  // the gate must prove the conformance suite it runs still passes, not just
-  // that ci:mode:test passes.
-  assert.equal(connectorGateRequired(["scripts/ci-mode.ts"]), true);
-  assert.equal(connectorGateRequired(["scripts/ci-mode.test.ts"]), true);
-  assert.equal(connectorGateRequired(["package.json"]), true);
-});
-
-test("changeTouchesCiGateSelf pins the gate implementation and every conformance test path", () => {
-  const expectedSelfPaths = [
-    "scripts/ci-mode.ts",
-    "scripts/ci-mode.test.ts",
-    "package.json",
-    "packages/polyfill-connectors/src/stream-evidence-strategy-manifest.test.ts",
-    "packages/polyfill-connectors/src/coverage-policy-manifest-honesty.test.ts",
-    "packages/polyfill-connectors/src/connector-conformance.test.ts",
-    "reference-implementation/test/ri-zero-connector-knowledge-conformance.test.ts",
-    "reference-implementation/test/helpers/ri-zero-connector-knowledge-scan.ts",
-    "reference-implementation/test/helpers/ri-zero-connector-knowledge-data-load-scan.ts",
-    "reference-implementation/test/helpers/ri-zero-connector-knowledge-identity-scan.ts",
-  ];
+test("changeTouchesCiGateSelf pins the gate implementation paths", () => {
+  const expectedSelfPaths = ["scripts/ci-mode.ts", "scripts/ci-mode.test.ts", "package.json"];
   assert.deepEqual(CI_GATE_SELF_PATHS, expectedSelfPaths);
-  assert.deepEqual(
-    CONNECTOR_CONFORMANCE_TEST_FILES,
-    expectedSelfPaths.slice(3, 6).map((path) => path.replace("packages/polyfill-connectors/", ""))
-  );
-  assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`, expectedSelfPaths[6]);
-  assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE}`, expectedSelfPaths[7]);
-  assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE}`, expectedSelfPaths[8]);
-  assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE}`, expectedSelfPaths[9]);
   for (const path of expectedSelfPaths) {
     assert.equal(changeTouchesCiGateSelf([path]), true);
     assert.equal(ciModeSelfTestRequired([path]), true);
   }
   assert.equal(changeTouchesCiGateSelf(["scripts/other-script.ts"]), false);
-  assert.equal(changeTouchesCiGateSelf(["packages/polyfill-connectors/package.json"]), false);
   assert.equal(changeTouchesCiGateSelf([]), false);
-});
-
-test("changeTouchesCiGateSelf specifically covers the data-load scanner (regression pin for the P1 fix — this file was previously invisible to every local-signoff trigger)", () => {
-  const dataLoadHelperPath = `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE}`;
-  assert.equal(zeroConnectorKnowledgeGateRequired([dataLoadHelperPath]), true);
-  assert.equal(ciModeSelfTestRequired([dataLoadHelperPath]), true);
-  assert.equal(changeTouchesCiGateSelf([dataLoadHelperPath]), true);
-});
-
-test("changeTouchesCiGateSelf specifically covers the identity scanner (ast-authority-0810: a change to the rules (1)/(6)/(7)/(4b) constant-folder or its SHARED_LIBRARY_KIND_DISPATCH_ALLOWLIST must not silently bypass gate-self)", () => {
-  const identityHelperPath = `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE}`;
-  assert.equal(zeroConnectorKnowledgeGateRequired([identityHelperPath]), true);
-  assert.equal(ciModeSelfTestRequired([identityHelperPath]), true);
-  assert.equal(changeTouchesCiGateSelf([identityHelperPath]), true);
-});
-
-test("changeTouchesRiProduction flags RI production paths but not connectors/tests/manifests", () => {
-  for (const prefix of RI_PRODUCTION_PATH_PREFIXES) {
-    assert.equal(changeTouchesRiProduction([`${prefix}some-file.ts`]), true);
-  }
-  assert.equal(changeTouchesRiProduction(["reference-implementation/connectors/seed/index.ts"]), false);
-  assert.equal(changeTouchesRiProduction(["reference-implementation/test/some.test.ts"]), false);
-  assert.equal(changeTouchesRiProduction(["reference-implementation/fixtures/seed-manifests/github.json"]), false);
-  assert.equal(changeTouchesRiProduction(["CONTRIBUTING.md"]), false);
-  assert.equal(changeTouchesRiProduction([]), false);
-});
-
-test("zeroConnectorKnowledgeGateRequired triggers on RI production, connector-surface, and gate-self changes", () => {
-  assert.equal(zeroConnectorKnowledgeGateRequired(["reference-implementation/server/connector-key.ts"]), true);
-  assert.equal(
-    zeroConnectorKnowledgeGateRequired(["reference-implementation/fixtures/seed-manifests/github.json"]),
-    true
-  );
-  assert.equal(zeroConnectorKnowledgeGateRequired(["packages/polyfill-connectors/manifests/gmail.json"]), true);
-  assert.equal(zeroConnectorKnowledgeGateRequired(["scripts/ci-mode.ts"]), true);
-  assert.equal(
-    zeroConnectorKnowledgeGateRequired([`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`]),
-    true
-  );
-  assert.equal(zeroConnectorKnowledgeGateRequired(["reference-implementation/connectors/seed/index.ts"]), false);
-  assert.equal(zeroConnectorKnowledgeGateRequired(["CONTRIBUTING.md"]), false);
-  assert.equal(zeroConnectorKnowledgeGateRequired([]), false);
 });
 
 test("ciModeSelfTestRequired does not over-trigger outside the pinned gate paths", () => {
   assert.equal(ciModeSelfTestRequired(["CONTRIBUTING.md"]), false);
-});
-
-test("streamEvidenceInventoryGateRequired covers both shipped roots and only the inventory producer/artifact", () => {
-  assert.deepEqual(STREAM_EVIDENCE_INVENTORY_PATHS, [
-    "scripts/stream-evidence-inventory.ts",
-    "docs/reference/stream-evidence-inventory.md",
-  ]);
-  assert.equal(streamEvidenceInventoryGateRequired(["packages/polyfill-connectors/manifests/gmail.json"]), true);
-  assert.equal(
-    streamEvidenceInventoryGateRequired(["reference-implementation/fixtures/seed-manifests/github.json"]),
-    true
-  );
-  for (const path of STREAM_EVIDENCE_INVENTORY_PATHS) {
-    assert.equal(streamEvidenceInventoryGateRequired([path]), true);
-  }
-  assert.equal(streamEvidenceInventoryGateRequired(["reference-implementation/server/ref-control.ts"]), false);
-  assert.equal(streamEvidenceInventoryGateRequired([]), false);
 });
 
 /**
@@ -342,40 +201,8 @@ test("streamEvidenceInventoryGateRequired covers both shipped roots and only the
  * "origin" remote so isCleanAndPushed's @{push} + --base origin/main both
  * resolve honestly instead of faking a ref). Never touches the real repo's
  * git state — no stash, no shared worktree risk.
- *
- * Includes the real RI production tree (RI_PRODUCTION_PATH_PREFIXES) and the
- * zero-connector-knowledge guard's own test + helpers, so
- * runZeroConnectorKnowledgeGate runs the actual guard against actual
- * production code inside the fixture instead of failing to find its test
- * file. This is bounded to exactly the guard's own declared scan scope
- * (RI_PRODUCTION_PATH_PREFIXES) plus its test harness — never the whole
- * repository — so the fixture stays a faithful, narrow slice of what real
- * signoff exercises rather than a copy of everything.
  */
-const TRAILING_SLASH_PATTERN = /\/$/;
-
-function copySignoffGateFixtureFiles(dir: string) {
-  const copy = (relativePath: string) =>
-    cpSync(join(REPOSITORY_ROOT, relativePath), join(dir, relativePath), { recursive: true });
-  copy("packages/polyfill-connectors/src");
-  copy("packages/polyfill-connectors/manifests");
-  copy("packages/polyfill-connectors/connectors");
-  copy("reference-implementation/fixtures/seed-manifests");
-  copy("reference-implementation/package.json");
-  copy("reference-implementation/tsconfig.json");
-  for (const prefix of RI_PRODUCTION_PATH_PREFIXES) {
-    copy(prefix.replace(TRAILING_SLASH_PATTERN, ""));
-  }
-  copy(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`);
-  copy("reference-implementation/test/helpers/ri-zero-connector-knowledge-ast-shared.ts");
-  copy(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE}`);
-  copy(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE}`);
-  copy(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE}`);
-  copy("scripts/stream-evidence-inventory.ts");
-  copy("docs/reference/stream-evidence-inventory.md");
-}
-
-function initSignoffFixtureRepo({ withSignoffGateFiles = false } = {}) {
+function initSignoffFixtureRepo() {
   const root = mkdtempSync(join(tmpdir(), "ci-mode-signoff-test-"));
   const bareDir = join(root, "origin.git");
   const dir = join(root, "work");
@@ -391,9 +218,6 @@ function initSignoffFixtureRepo({ withSignoffGateFiles = false } = {}) {
   writeFileSync(join(dir, "package.json"), '{"name":"ci-mode-signoff-fixture","private":true,"type":"module"}\n');
   symlinkSync(join(REPOSITORY_ROOT, "node_modules"), join(dir, "node_modules"), "dir");
   writeFileSync(join(dir, ".gitignore"), "node_modules\nbin/\ngh-status-posted.txt\n");
-  if (withSignoffGateFiles) {
-    copySignoffGateFixtureFiles(dir);
-  }
   writeFileSync(join(dir, "README.md"), "fixture\n");
   run(["add", "."]);
   run(["commit", "--quiet", "-m", "initial"]);
@@ -414,22 +238,6 @@ function runSignoffCli(dir: string, args: string[], options: { env?: NodeJS.Proc
     stdio: ["ignore", "pipe", "pipe"],
     env: options.env,
   });
-}
-
-function createFakeGh(dir: string) {
-  const binDir = join(dir, "bin");
-  const marker = join(dir, "gh-status-posted.txt");
-  const command = join(binDir, "gh");
-  mkdirSync(binDir, { recursive: true });
-  writeFileSync(
-    command,
-    `#!/usr/bin/env node\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(' '));\n`
-  );
-  chmodSync(command, 0o755);
-  return {
-    marker,
-    env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
-  };
 }
 
 test("signoff CLI rejects a dirty worktree before any gh call", () => {
@@ -460,139 +268,6 @@ test("signoff CLI fails closed when --base cannot be resolved", () => {
   const fixture = initSignoffFixtureRepo();
   try {
     assert.throws(() => runSignoffCli(fixture.dir, ["--base", "origin/does-not-exist"]));
-  } finally {
-    cleanupSignoffFixtureRepo(fixture);
-  }
-});
-
-test("signoff cannot post success for a reference-only required flip while the generated inventory is stale", () => {
-  const fixture = initSignoffFixtureRepo({ withSignoffGateFiles: true });
-  try {
-    const manifestPath = join(fixture.dir, "reference-implementation/fixtures/seed-manifests/github.json");
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.streams[0].required = false;
-    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-    fixture.run(["add", "reference-implementation/fixtures/seed-manifests/github.json"]);
-    fixture.run(["commit", "--quiet", "-m", "flip reference requiredness"]);
-    fixture.run(["push", "--quiet"]);
-
-    const fakeGh = createFakeGh(fixture.dir);
-    let error: (Error & { stdout?: string; stderr?: string }) | undefined;
-    try {
-      runSignoffCli(fixture.dir, [], { env: fakeGh.env });
-    } catch (caught) {
-      error = caught as Error & { stdout?: string; stderr?: string };
-    }
-    assert.ok(error, "stale inventory must make signoff fail");
-    assert.match(`${error?.stdout ?? ""}${error?.stderr ?? ""}`, STREAM_EVIDENCE_INVENTORY_FAIL_PATTERN);
-    assert.equal(existsSync(fakeGh.marker), false, "inventory failure must prevent the gh status post");
-  } finally {
-    cleanupSignoffFixtureRepo(fixture);
-  }
-});
-
-test("signoff cannot post success when a manifest moves out of either protected root and leaves inventory stale", () => {
-  const moves = [
-    {
-      source: "packages/polyfill-connectors/manifests/github.json",
-      destination: "archive/polyfill-github.json",
-    },
-    {
-      source: "reference-implementation/fixtures/seed-manifests/github.json",
-      destination: "archive/reference-github.json",
-    },
-  ];
-
-  for (const { source, destination } of moves) {
-    const fixture = initSignoffFixtureRepo({ withSignoffGateFiles: true });
-    try {
-      mkdirSync(dirname(join(fixture.dir, destination)), { recursive: true });
-      fixture.run(["mv", source, destination]);
-      fixture.run(["commit", "--quiet", "-m", `move ${source} out of protected root`]);
-      fixture.run(["push", "--quiet"]);
-
-      const fakeGh = createFakeGh(fixture.dir);
-      let error: (Error & { stdout?: string; stderr?: string }) | undefined;
-      try {
-        runSignoffCli(fixture.dir, [], { env: fakeGh.env });
-      } catch (caught) {
-        error = caught as Error & { stdout?: string; stderr?: string };
-      }
-      assert.ok(error, `${source} rename-out must make signoff fail`);
-      assert.match(`${error?.stdout ?? ""}${error?.stderr ?? ""}`, STREAM_EVIDENCE_INVENTORY_FAIL_PATTERN);
-      assert.equal(existsSync(fakeGh.marker), false, `${source} rename-out must prevent the gh status post`);
-    } finally {
-      cleanupSignoffFixtureRepo(fixture);
-    }
-  }
-});
-
-test("signoff recognizes Unicode and embedded-newline paths under both protected manifest roots", () => {
-  const fixture = initSignoffFixtureRepo({ withSignoffGateFiles: true });
-  try {
-    const protectedPaths = [
-      "packages/polyfill-connectors/manifests/évidence.txt",
-      "packages/polyfill-connectors/manifests/embedded\nnewline.txt",
-      "reference-implementation/fixtures/seed-manifests/évidence.txt",
-      "reference-implementation/fixtures/seed-manifests/embedded\nnewline.txt",
-    ];
-    for (const path of protectedPaths) {
-      writeFileSync(join(fixture.dir, path), "fixture\n");
-    }
-    fixture.run(["add", "."]);
-    fixture.run(["commit", "--quiet", "-m", "exercise unusual manifest paths"]);
-    fixture.run(["push", "--quiet"]);
-
-    const fakeGh = createFakeGh(fixture.dir);
-    const output = runSignoffCli(fixture.dir, [], { env: fakeGh.env });
-    assert.match(output, CONNECTOR_CONFORMANCE_GATE_RAN_PATTERN);
-    assert.match(output, STREAM_EVIDENCE_INVENTORY_GATE_RAN_PATTERN);
-    assert.equal(existsSync(fakeGh.marker), true, "fake gh proves the protected paths reached the signoff gate");
-  } finally {
-    cleanupSignoffFixtureRepo(fixture);
-  }
-});
-
-test("signoff cannot post success when RI production code carries a real hardcoded connector-identity violation", () => {
-  // Negative discriminator for the fixture above: it proves the
-  // zero-connector-knowledge gate is not merely selected but must actually
-  // SUCCEED. A fixture bug that made the gate a no-op (e.g. an empty
-  // production scan root) would still let the Unicode-paths test above pass,
-  // since that test only asserts the gate ran, not that it enforces
-  // anything. Planting a real violation and proving it blocks the gh post
-  // closes that gap.
-  const fixture = initSignoffFixtureRepo({ withSignoffGateFiles: true });
-  try {
-    const violationPath = join(fixture.dir, "reference-implementation/server/synthetic-signoff-violation.ts");
-    writeFileSync(
-      violationPath,
-      [
-        "export function isFirstParty(connectorId: string): boolean {",
-        '  return connectorId === "gmail" || connectorId === "slack";',
-        "}",
-        "",
-      ].join("\n")
-    );
-    fixture.run(["add", "reference-implementation/server/synthetic-signoff-violation.ts"]);
-    fixture.run(["commit", "--quiet", "-m", "plant a hardcoded connector-identity violation"]);
-    fixture.run(["push", "--quiet"]);
-
-    const fakeGh = createFakeGh(fixture.dir);
-    let error: (Error & { stdout?: string; stderr?: string }) | undefined;
-    try {
-      runSignoffCli(fixture.dir, [], { env: fakeGh.env });
-    } catch (caught) {
-      error = caught as Error & { stdout?: string; stderr?: string };
-    }
-    assert.ok(error, "a real hardcoded connector-identity violation must make signoff fail");
-    const combinedOutput = `${error?.stdout ?? ""}${error?.stderr ?? ""}`;
-    assert.match(combinedOutput, ZERO_CONNECTOR_KNOWLEDGE_GATE_RAN_PATTERN);
-    assert.match(combinedOutput, HARDCODED_CONNECTOR_IDENTITY_VIOLATION_PATTERN);
-    assert.equal(
-      existsSync(fakeGh.marker),
-      false,
-      "a selected zero-connector-knowledge gate failure must prevent the gh status post"
-    );
   } finally {
     cleanupSignoffFixtureRepo(fixture);
   }

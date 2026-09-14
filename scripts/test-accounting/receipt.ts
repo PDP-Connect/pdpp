@@ -164,10 +164,9 @@ const PROFILE_SCOPED_POSTGRES_SKIP_TEST_NAME_ROWS: readonly (readonly [string, r
 // the lookup Map is built, exactly like the postgres cohort above. Each row
 // carries the SUITE SCOPE under which its emitted identity is expected to be
 // consumed, because a mapping row is only valid within the suite whose run
-// emits it — the `parse*` fixture skips belong to the polyfill-connectors
-// suite, not the RI custom-runner suite. The consumed-vs-configured join must
-// be scoped to the suite whose transcript it validates.
-type MappingSuiteScope = "ri-default" | "polyfill-connectors";
+// emits it. The consumed-vs-configured join must be scoped to the suite whose
+// transcript it validates.
+type MappingSuiteScope = "ri-default";
 // The ri-default suite runs under more than one PROFILE (memory-default,
 // postgres), and a named-mapping row can be structurally reachable under only
 // ONE of them. `device-exporter-postgres-proof.test.js` is the proof case:
@@ -197,36 +196,6 @@ const UNNAMED_SKIP_REASON_ROWS: readonly (readonly [string, string, MappingSuite
     "live-shadow-comparison: production projection has no unexpected drift",
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run",
     "ri-default",
-  ],
-  [
-    "parseOrdersListDom: local real fixture parses ≥5 orders with ids + dates",
-    "local Amazon raw-DOM fixture directory not present",
-    "polyfill-connectors",
-  ],
-  [
-    "parseOrderDetailDom: local real fixtures yield items and grand_total",
-    "local Amazon raw-DOM fixture directory not present",
-    "polyfill-connectors",
-  ],
-  [
-    "parseDashboardAccountsDom: local real capture parses ≥1 account",
-    "local Chase raw-DOM fixture directory not present",
-    "polyfill-connectors",
-  ],
-  [
-    "parseStatementsListDom: local real capture parses ≥1 statement row",
-    "local Chase raw-DOM fixture directory not present",
-    "polyfill-connectors",
-  ],
-  [
-    "parseCurrentActivityDom: local real capture — dashboard-accounts.html parses ≥1 MDS row",
-    "local Chase raw-DOM fixture directory not present",
-    "polyfill-connectors",
-  ],
-  [
-    "parseModernCheckingEra: local statement text parses ≥1 txn (smoke)",
-    "local USAA raw fixture directory not present",
-    "polyfill-connectors",
   ],
 ];
 

@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    // Language + module (Node ESM, matches polyfill-connectors exemplar).
+    // Language + module (Node ESM).
     "target": "ES2023",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
@@ -13,9 +13,8 @@
     "erasableSyntaxOnly": true,
     "forceConsistentCasingInFileNames": true,
 
-    // Strictness: 2026 "strict-plus" baseline, matching the bar established
-    // in packages/polyfill-connectors. Every flag catches a bug class that
-    // plain `strict: true` does not.
+    // Strictness: 2026 "strict-plus" baseline. Every flag catches a bug
+    // class that plain `strict: true` does not.
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -29,8 +28,7 @@
     "useUnknownInCatchVariables": true,
 
     // Source-only TS: .ts files run directly under Node 23+ (native
-    // type-stripping). tsc type-checks, it never emits. Same shape as the
-    // polyfill-connectors exemplar.
+    // type-stripping). tsc type-checks, it never emits.
     "noEmit": true,
     "skipLibCheck": true,
     "types": ["node"],

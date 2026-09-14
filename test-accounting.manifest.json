@@ -80,13 +80,8 @@
           "skip_reasons": {}
         }
       ],
-      "command": [
-        "bash",
-        "scripts/test-accounting/root-shell-leaf.sh"
-      ],
-      "include": [
-        "scripts/**/*.test.sh"
-      ]
+      "command": ["bash", "scripts/test-accounting/root-shell-leaf.sh"],
+      "include": ["scripts/**/*.test.sh"]
     },
     {
       "id": "reference-contract",
@@ -109,9 +104,7 @@
         "--test-reporter",
         "scripts/test-accounting/node-reporter.ts"
       ],
-      "include": [
-        "packages/reference-contract/test/*.test.ts"
-      ]
+      "include": ["packages/reference-contract/test/*.test.ts"]
     },
     {
       "id": "list-envelope",
@@ -137,43 +130,7 @@
         "--test-reporter",
         "scripts/test-accounting/node-reporter.ts"
       ],
-      "include": [
-        "packages/list-envelope/src/**/*.test.ts"
-      ]
-    },
-    {
-      "id": "polyfill-connectors",
-      "cwd": ".",
-      "loader": "node-test",
-      "authority_argument": null,
-      "execution": "direct",
-      "profiles": [
-        {
-          "id": "default",
-          "required": true,
-          "skip_reasons": {
-            "GROUPME_ACCESS_TOKEN unset": 2,
-            "local Amazon raw-DOM fixture directory not present": 2,
-            "local Chase raw-DOM fixture directory not present": 3,
-            "local USAA raw fixture directory not present": 1,
-            "requires --experimental-test-module-mocks": 1,
-            "run with --expose-gc for a reliable memory-growth comparison": 1
-          }
-        }
-      ],
-      "command": [
-        "node",
-        "--test",
-        "--import",
-        "tsx",
-        "--test-reporter",
-        "scripts/test-accounting/node-reporter.ts"
-      ],
-      "include": [
-        "packages/polyfill-connectors/bin/**/*.test.ts",
-        "packages/polyfill-connectors/connectors/**/*.test.ts",
-        "packages/polyfill-connectors/src/**/*.test.ts"
-      ]
+      "include": ["packages/list-envelope/src/**/*.test.ts"]
     },
     {
       "id": "display",
@@ -199,9 +156,7 @@
         "--test-reporter",
         "scripts/test-accounting/node-reporter.ts"
       ],
-      "include": [
-        "packages/display/src/**/*.test.ts"
-      ]
+      "include": ["packages/display/src/**/*.test.ts"]
     },
     {
       "id": "operator-ui",
@@ -229,9 +184,7 @@
         "--test-reporter",
         "scripts/test-accounting/node-reporter.ts"
       ],
-      "include": [
-        "packages/operator-ui/src/**/*.test.ts"
-      ]
+      "include": ["packages/operator-ui/src/**/*.test.ts"]
     },
     {
       "id": "brand-react",
@@ -259,9 +212,7 @@
         "--test-reporter",
         "scripts/test-accounting/node-reporter.ts"
       ],
-      "include": [
-        "packages/pdpp-brand-react/src/**/*.test.ts"
-      ]
+      "include": ["packages/pdpp-brand-react/src/**/*.test.ts"]
     },
     {
       "id": "site",
@@ -272,10 +223,7 @@
       "environment": {
         "TSX_TSCONFIG_PATH": "apps/site/tsconfig.json"
       },
-      "prepare": [
-        "node",
-        "apps/site/scripts/sync-spec-docs.mjs"
-      ],
+      "prepare": ["node", "apps/site/scripts/sync-spec-docs.mjs"],
       "profiles": [
         {
           "id": "default",
@@ -293,10 +241,7 @@
         "--test-reporter",
         "scripts/test-accounting/node-reporter.ts"
       ],
-      "include": [
-        "apps/site/scripts/*.test.ts",
-        "apps/site/src/**/*.test.ts"
-      ]
+      "include": ["apps/site/scripts/*.test.ts", "apps/site/src/**/*.test.ts"]
     }
   ],
   "exclusions": [

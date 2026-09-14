@@ -1,1 +1,0 @@
-Synthetic Codex memory note: FIXTURE_FAKE_MEMORY_PRIVATE_DO_NOT_COLLECT

@@ -25,7 +25,7 @@
     // Source-only package: components are consumed as raw .ts/.tsx through the
     // apps' Next bundler (transpilePackages). Imports carry explicit .ts/.tsx
     // extensions (Biome's useImportExtensions), which the bundler strips. Same
-    // posture as packages/polyfill-connectors and the apps themselves.
+    // posture as the apps themselves.
     "allowImportingTsExtensions": true,
     "allowJs": true,
     "types": ["node", "react", "react-dom"]

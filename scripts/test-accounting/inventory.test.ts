@@ -897,7 +897,6 @@ test("the checked authority graph contains only direct leaves and no recursive a
   const packagePaths = [
     "packages/operator-ui/package.json",
     "packages/pdpp-brand-react/package.json",
-    "packages/polyfill-connectors/package.json",
     "packages/reference-contract/package.json",
     "apps/site/package.json",
   ];
@@ -1004,20 +1003,6 @@ test("the dedicated scratch lifecycle leaf removes every inherited capability va
   assert.deepEqual((await runAuthority({ root, suites: ["renamed-lifecycle"], env: inherited })).result.verified, [
     "renamed-lifecycle/default",
   ]);
-});
-test("the polyfill-connectors default profile declares the exact current skip baseline", async () => {
-  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-  const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
-  const suite = manifestValue.suites.find((entry) => entry.id === "polyfill-connectors");
-  const defaultProfile = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "default");
-  assert.deepEqual(typeof defaultProfile === "string" ? undefined : defaultProfile?.skip_reasons, {
-    "GROUPME_ACCESS_TOKEN unset": 2,
-    "local Amazon raw-DOM fixture directory not present": 2,
-    "local Chase raw-DOM fixture directory not present": 3,
-    "local USAA raw fixture directory not present": 1,
-    "requires --experimental-test-module-mocks": 1,
-    "run with --expose-gc for a reliable memory-growth comparison": 1,
-  });
 });
 test("default authority selection spawns and completes only required profiles even when an optional predicate is present", async () => {
   const root = await mkdtemp(join(tmpdir(), "pdpp-authority-"));

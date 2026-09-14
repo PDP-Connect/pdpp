@@ -44,6 +44,10 @@ interface PatchrightModule {
 // Resolved at runtime relative to repo root (harness lives at
 // docs/explorer/uat/harness/ → repo root is four levels up), since patchright
 // is not a root dependency.
+//
+// STALE: this path no longer resolves. patchright came from
+// packages/polyfill-connectors, whose source is now canonical in
+// PDP-Connect/data-connectors. See seed-and-serve.ts for the same note.
 const { chromium }: PatchrightModule = await import(
   new URL("../../../../packages/polyfill-connectors/node_modules/patchright/index.mjs", import.meta.url).href
 );

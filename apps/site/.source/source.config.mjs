@@ -1,5 +1,5 @@
 // source.config.ts
-import { remarkMdxMermaid } from "fumadocs-core/mdx-plugins";
+import { remarkMdxMermaid } from "fumadocs-core/mdx-plugins/remark-mdx-mermaid";
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
 import { defineConfig, defineDocs } from "fumadocs-mdx/config";
 

@@ -18,6 +18,12 @@
  *
  * Run: node --import tsx docs/explorer/uat/harness/seed-and-serve.ts
  * Env: PDPP_DB_PATH (optional; defaults to a temp file beside this script).
+ *
+ * STALE: this harness does not run in this repository any more. It imports
+ * `reference-implementation/server/index.ts` (moved to PDP-Connect/data-connect)
+ * and reads connector manifests from `packages/polyfill-connectors/manifests`
+ * (now canonical in PDP-Connect/data-connectors). Both paths are recorded here
+ * as history; reviving the harness means pointing it at those repositories.
  */
 
 import { readFileSync } from "node:fs";

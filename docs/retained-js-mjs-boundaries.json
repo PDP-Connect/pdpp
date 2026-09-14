@@ -72,38 +72,6 @@
       "review": "Regenerate and review whenever the adjacent rr-explore-data.ts source or TypeScript emitter changes."
     },
     {
-      "path": "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/data/direct-messages.js",
-      "owner": "Polyfill-connectors maintainers",
-      "runtimeReason": "Provider-captured Twitter archive fixture whose window.YTD assignment shape must remain byte-faithful to the browser archive format.",
-      "probe": "pnpm --dir packages/polyfill-connectors test -- connectors/twitter_archive/parsers.test.ts",
-      "sha256": "1dd01fa30c16d538858f647b0ab0be737147ae9f47d1dfb12462d788f5f16466",
-      "review": "Replace only when a newly captured provider archive format and its parser conformance fixtures supersede it."
-    },
-    {
-      "path": "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/data/tweets.js",
-      "owner": "Polyfill-connectors maintainers",
-      "runtimeReason": "Provider-captured Twitter archive fixture whose window.YTD assignment shape must remain byte-faithful to the browser archive format.",
-      "probe": "pnpm --dir packages/polyfill-connectors test -- connectors/twitter_archive/parsers.test.ts",
-      "sha256": "05d68bf68bf0cf04653ccbdb56579cfd154e317040c16c5c0cb3e3a26430eaad",
-      "review": "Replace only when a newly captured provider archive format and its parser conformance fixtures supersede it."
-    },
-    {
-      "path": "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/empty/data/tweets.js",
-      "owner": "Polyfill-connectors maintainers",
-      "runtimeReason": "Provider-captured empty Twitter archive fixture whose window.YTD assignment shape exercises the no-record boundary.",
-      "probe": "pnpm --dir packages/polyfill-connectors test -- connectors/twitter_archive/parsers.test.ts",
-      "sha256": "1291e72651680f5ea383965d0b082428860a4e1b510328bdefe10a9941323530",
-      "review": "Replace only when a newly captured provider archive format and its parser conformance fixtures supersede it."
-    },
-    {
-      "path": "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/legacy/data/tweet.js",
-      "owner": "Polyfill-connectors maintainers",
-      "runtimeReason": "Provider-captured legacy Twitter archive fixture whose window.YTD assignment shape exercises backward-compatible parsing.",
-      "probe": "pnpm --dir packages/polyfill-connectors test -- connectors/twitter_archive/parsers.test.ts",
-      "sha256": "bcacc4e5ea1b71bf1826266836f6a0d72e8e0dbc3289255637f6ed828bee54a6",
-      "review": "Replace only when a newly captured provider archive format and its parser conformance fixtures supersede it."
-    },
-    {
       "path": "scripts/spec-prose-lint.mjs",
       "owner": "Specification editors",
       "runtimeReason": "The spec prose gate runs on a bare checkout before any dependency is installed, so it must not need the tsx loader the repository's TypeScript entrypoints load through. It also runs inside a detached git worktree of the merge-base to build its warning baseline, where node_modules is absent by construction.",
