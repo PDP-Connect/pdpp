@@ -14,110 +14,14 @@ export const MANAGED_WORKFLOW_PATHS = [
   ".github/workflows/react-doctor.yml",
   ".github/workflows/docker-images.yml",
   ".github/workflows/spec-check.yml",
-  ".github/workflows/polyfill-connectors.yml",
   ".github/workflows/remote-surface.yml",
   ".github/workflows/semantic-release.yml",
 ];
 
-// Path prefixes whose change makes the connector-conformance gate (below)
-// part of the local signoff gate. The suite audits both the bundled polyfill
-// manifests and reference manifests, so either manifest source must trigger
-// it. `.github/workflows/polyfill-connectors.yml` runs the full suite on
-// every PR but is explicitly non-blocking (see its file header) — this closes
-// the resulting merge-gate gap for local-mode signoff without touching
-// hosted CI.
-//
-// Also includes this gate's OWN implementation (this file, its test file,
-// and the connector-conformance test files it runs) plus package.json (where
-// the gate's scripts are wired) — a change to the gate itself must exercise
-// the gate, so it cannot be weakened without proving the weakened version
-// still passes ci:mode:test and the connector-conformance run.
-export const CONNECTOR_SURFACE_PATH_PREFIXES = [
-  "packages/polyfill-connectors/",
-  "reference-implementation/fixtures/seed-manifests/",
-];
-
-// The specific, fast, deterministic tests that catch a scaffolded/dishonest
-// connector manifest — not the full polyfill-connectors package suite (which
-// also runs slow browser/integration connector tests unrelated to this gate).
-// Paths are relative to packages/polyfill-connectors.
-export const CONNECTOR_CONFORMANCE_TEST_FILES = [
-  "src/stream-evidence-strategy-manifest.test.ts",
-  "src/coverage-policy-manifest-honesty.test.ts",
-  "src/connector-conformance.test.ts",
-];
-
-// The zero-connector-knowledge conformance guard and the helpers it scans
-// with. A change to any of these must prove the guard still runs and still
-// detects what it claims to detect, so all are gate-self paths too. The
-// data-load helper is the AST constant-folder plus both security-critical
-// allowlists (SANCTIONED_POLICY_RESOURCES, SANCTIONED_GENERIC_DATA_READ_CALL_SITES)
-// for rule (5)'s sibling-JSON evasion closure; the identity helper is the AST
-// constant-folder for rules (1)/(6)/(7)/(4b) (connector-identity/validation-
-// kind literals, connector-module imports, connector-manifest-import-then-
-// extract) plus the SHARED_LIBRARY_KIND_DISPATCH_ALLOWLIST it feeds into via
-// ri-zero-connector-knowledge-scan.ts — a change here (e.g. widening an
-// allowlist or loosening the resolver) is exactly the kind of silent
-// weakening this list exists to catch, so it cannot be exempt from its own
-// gate-self trigger.
-export const ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE = "test/ri-zero-connector-knowledge-conformance.test.ts";
-export const ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE = "test/helpers/ri-zero-connector-knowledge-scan.ts";
-export const ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE =
-  "test/helpers/ri-zero-connector-knowledge-data-load-scan.ts";
-export const ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE =
-  "test/helpers/ri-zero-connector-knowledge-identity-scan.ts";
-
-export const CI_GATE_SELF_PATHS = [
-  "scripts/ci-mode.ts",
-  "scripts/ci-mode.test.ts",
-  "package.json",
-  ...CONNECTOR_CONFORMANCE_TEST_FILES.map((path) => `packages/polyfill-connectors/${path}`),
-  `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`,
-  `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE}`,
-  `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE}`,
-  `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE}`,
-];
-
-// RI production code — everything the zero-connector-knowledge guard scans.
-// `reference-implementation/connectors/` (connector-authored code) and
-// `reference-implementation/test/` (tests/helpers, including the guard
-// itself — covered separately via CI_GATE_SELF_PATHS) are excluded, matching
-// the guard's own scan scope in ri-zero-connector-knowledge-scan.ts.
-export const RI_PRODUCTION_PATH_PREFIXES = [
-  "reference-implementation/cli/",
-  "reference-implementation/lib/",
-  "reference-implementation/operations/",
-  "reference-implementation/runtime/",
-  "reference-implementation/scripts/",
-  "reference-implementation/server/",
-];
-
-// The generated inventory is source-derived evidence over both shipped
-// manifest roots. A manifest edit must prove the committed rendering is still
-// current; changing the generator or generated artifact must prove the same
-// fact, otherwise a local signoff could bless an intentionally stale render.
-export const STREAM_EVIDENCE_INVENTORY_PATHS = [
-  "scripts/stream-evidence-inventory.ts",
-  "docs/reference/stream-evidence-inventory.md",
-];
-
-export function changeTouchesConnectorSurface(changedFiles: string[]): boolean {
-  return changedFiles.some((path) => CONNECTOR_SURFACE_PATH_PREFIXES.some((prefix) => path.startsWith(prefix)));
-}
+export const CI_GATE_SELF_PATHS = ["scripts/ci-mode.ts", "scripts/ci-mode.test.ts", "package.json"];
 
 export function changeTouchesCiGateSelf(changedFiles: string[]): boolean {
   return changedFiles.some((path) => CI_GATE_SELF_PATHS.includes(path));
-}
-
-export function streamEvidenceInventoryGateRequired(changedFiles: string[]): boolean {
-  return (
-    changeTouchesConnectorSurface(changedFiles) ||
-    changedFiles.some((path) => STREAM_EVIDENCE_INVENTORY_PATHS.includes(path))
-  );
-}
-
-export function changeTouchesRiProduction(changedFiles: string[]): boolean {
-  return changedFiles.some((path) => RI_PRODUCTION_PATH_PREFIXES.some((prefix) => path.startsWith(prefix)));
 }
 
 type CiMode = "hosted" | "local";
@@ -146,17 +50,7 @@ signoff always tests the exact commit it signs: the worktree must be clean
 and pushed (there is no --force / dirty-tree override), and --sha, if given,
 must equal HEAD — signoff refuses to post a status for a commit whose code
 it did not just test. It diffs HEAD against --base (default origin/main);
-it gets changed paths with --no-renames and NUL delimiters; if that diff
-touches either shipped manifest root
-(${CONNECTOR_SURFACE_PATH_PREFIXES.join(", ")}), it runs the connector-conformance
-suite (${CONNECTOR_CONFORMANCE_TEST_FILES.join(", ")}) and the source-derived
-stream-evidence inventory check. Changes to the inventory producer/artifact
-(${STREAM_EVIDENCE_INVENTORY_PATHS.join(", ")}) also run that inventory check.
-If the diff touches RI production code (${RI_PRODUCTION_PATH_PREFIXES.join(", ")})
-or either shipped manifest root, signoff also runs the zero-connector-knowledge
-conformance guard (${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}), proving RI production
-code carries no hardcoded connector/provider identity, endpoint, scope, or
-credential-env-var knowledge.
+it gets changed paths with --no-renames and NUL delimiters.
 For a gate-self change (${CI_GATE_SELF_PATHS.join(", ")}), signoff also runs
 ci:mode:test — failing closed if any required check does not pass. There is no
 opt-out: if the diff cannot be computed (missing base ref, shallow clone),
@@ -519,40 +413,12 @@ function parseSignoffArgs(args: string[]): SignoffArgs {
 }
 
 /**
- * Decide whether the connector-conformance gate must pass before this
- * signoff can post success. Required when the connector surface changed OR
- * when the gate's own implementation changed — a change to
- * scripts/ci-mode.ts itself must prove the conformance suite it runs still
- * passes, not just that ci:mode:test passes. There is no opt-out: a caller
- * that cannot determine what changed (e.g. `changedFilesAgainstBase` threw)
- * must treat the gate as required, not skip it.
- */
-export function connectorGateRequired(changedFiles: string[]): boolean {
-  return changeTouchesConnectorSurface(changedFiles) || changeTouchesCiGateSelf(changedFiles);
-}
-
-/**
  * Decide whether ci:mode:test must pass before this signoff can post
  * success — required whenever the gate's own implementation changed, so a
  * weakened gate cannot sign itself off without exercising its own tests.
  */
 export function ciModeSelfTestRequired(changedFiles: string[]): boolean {
   return changeTouchesCiGateSelf(changedFiles);
-}
-
-/**
- * Decide whether the zero-connector-knowledge conformance guard must pass
- * before this signoff can post success. Required when RI production code or
- * either manifest root changed (a manifest change can newly satisfy or newly
- * violate the guard's manifest-derived identity set) OR when the guard's own
- * implementation changed. There is no opt-out, matching connectorGateRequired.
- */
-export function zeroConnectorKnowledgeGateRequired(changedFiles: string[]): boolean {
-  return (
-    changeTouchesRiProduction(changedFiles) ||
-    changeTouchesConnectorSurface(changedFiles) ||
-    changeTouchesCiGateSelf(changedFiles)
-  );
 }
 
 /**
@@ -573,32 +439,6 @@ function gateSpawnEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   Reflect.deleteProperty(env, "NODE_TEST_CONTEXT");
   return env;
-}
-
-function runConnectorConformanceGate(): void {
-  console.log("a shipped manifest root or this gate changed — running the connector-conformance gate...");
-  execFileSync("node", ["--test", "--test-timeout=30000", "--import", "tsx", ...CONNECTOR_CONFORMANCE_TEST_FILES], {
-    cwd: "packages/polyfill-connectors",
-    env: gateSpawnEnv(),
-    stdio: "inherit",
-  });
-}
-
-function runZeroConnectorKnowledgeGate(): void {
-  console.log("RI production code or a shipped manifest root changed — running the zero-connector-knowledge guard...");
-  execFileSync("node", ["--test", "--test-timeout=30000", ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE], {
-    cwd: "reference-implementation",
-    env: gateSpawnEnv(),
-    stdio: "inherit",
-  });
-}
-
-function runStreamEvidenceInventoryGate(): void {
-  console.log("a shipped manifest root or stream-evidence inventory input changed — running the inventory check...");
-  execFileSync("node", ["--import", "tsx", "scripts/stream-evidence-inventory.ts", "--check"], {
-    env: gateSpawnEnv(),
-    stdio: "inherit",
-  });
 }
 
 function runCiModeSelfTest(): void {
@@ -624,15 +464,6 @@ function signoff(args: string[]): void {
   }
   const sha = headSha;
   const changedFiles = changedFilesAgainstBase(options.base);
-  if (streamEvidenceInventoryGateRequired(changedFiles)) {
-    runStreamEvidenceInventoryGate();
-  }
-  if (connectorGateRequired(changedFiles)) {
-    runConnectorConformanceGate();
-  }
-  if (zeroConnectorKnowledgeGateRequired(changedFiles)) {
-    runZeroConnectorKnowledgeGate();
-  }
   if (ciModeSelfTestRequired(changedFiles)) {
     runCiModeSelfTest();
   }

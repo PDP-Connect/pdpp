@@ -6,8 +6,7 @@
     "moduleDetection": "force",
     // DOM is needed for docs/explorer/uat/harness/capture.ts's
     // page.evaluate(...) callback body, which runs inside a browser
-    // context (document, querySelectorAll) — same as
-    // packages/polyfill-connectors's tsconfig.json.
+    // context (document, querySelectorAll).
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "esModuleInterop": true,
     "resolveJsonModule": true,

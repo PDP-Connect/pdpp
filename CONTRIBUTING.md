@@ -6,16 +6,12 @@ docs and the public site.
 
 Two kinds of contribution now start in a different repository:
 
-- **Connector source** begins in
+- **Connector source** lives in
   [`PDP-Connect/data-connectors`](https://github.com/PDP-Connect/data-connectors).
-  This repository keeps a retained frozen copy under
-  `packages/polyfill-connectors/connectors/`. A pull request that changes those
-  files fails the write-freeze guard in
-  `.github/workflows/polyfill-connectors.yml`, unless it carries the
-  `connector-write-freeze-override` label. Fixtures, docs, and scripts are not
-  frozen. For the runnable mechanics — how to run a connector, validate
-  manifests, and what the registry currently contains — see
-  [`packages/polyfill-connectors/CONNECTORS.md`](packages/polyfill-connectors/CONNECTORS.md).
+  This repository no longer carries a copy. Open connector pull requests there.
+  For the runnable mechanics — how to run a connector, validate manifests, and
+  what the registry currently contains — see that repository's
+  [`packages/polyfill-connectors/CONNECTORS.md`](https://github.com/PDP-Connect/data-connectors/blob/main/packages/polyfill-connectors/CONNECTORS.md).
 - **Reference-implementation code** lives under `reference-implementation/`;
   **console code** lives under `apps/console/`, both in
   [`PDP-Connect/data-connect`](https://github.com/PDP-Connect/data-connect).
@@ -31,18 +27,14 @@ contract changes, test expectations, and pull-request conventions.
   code, fixtures, or reports. Use role-neutral labels (`the owner`, `an
   operator`, `your-pdpp-host.example.com`) unless a real value is explicitly
   approved.
-- **Connector fixtures are opt-in, and raw captures never leave your
-  machine.** Capturing live connector runs (`PDPP_CAPTURE_FIXTURES=1`) is
-  something you choose to do locally; nothing captures or commits
-  automatically. Raw captures under `fixtures/<connector>/raw/` are
-  gitignored and must never be committed. Turning a capture into a
-  contributed fixture is a deliberate, separate act: run the scrubber
-  (`bin/scrub-fixtures.ts`), then **review the scrubbed output yourself as a
-  human before committing it** — the deterministic scrubber is a
-  conservative first pass, not a guarantee, and DOM/HTML captures in
-  particular can carry unredacted names. See
-  `packages/polyfill-connectors/docs/connector-authoring-guide.md` for the
-  full scrub-and-review workflow.
+- **Connector fixtures are captured and scrubbed in
+  `data-connectors`.** Raw captures of live connector runs never leave your
+  machine, and turning one into a contributed fixture is a deliberate,
+  separate act that ends in a human review of the scrubbed output — the
+  deterministic scrubber is a conservative first pass, not a guarantee. That
+  workflow now belongs to the repository that owns connector source; see
+  [`packages/polyfill-connectors/docs/connector-authoring-guide.md`](https://github.com/PDP-Connect/data-connectors/blob/main/packages/polyfill-connectors/docs/connector-authoring-guide.md)
+  there.
 - **Respect the authority order.** This repo has a strict authority order:
   1. Root PDPP specs (`spec-*.md`) define normative protocol semantics.
   2. Code and tests define what the current reference implementation actually

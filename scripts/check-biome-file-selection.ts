@@ -21,15 +21,10 @@ const recognizedExtensions = new Set([
 const authoredExamples = [
   "packages/reference-contract/src/validate.ts",
   "packages/reference-contract/test/validate-response.test.ts",
-  "packages/polyfill-connectors/src/connector-runtime.ts",
-  "packages/polyfill-connectors/connectors/apple_health/__fixtures__/record-step-count.ts",
   "scripts/spec-check.ts",
 ];
 
 const excludedExamples = [
-  "packages/polyfill-connectors/fixtures/claude_code/scrubbed/pilot-real-shape/records/messages.jsonl",
-  "packages/polyfill-connectors/connectors/heb/__fixtures__/sign-in-page.html",
-  "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/data/tweets.js",
   "packages/local-collector/dist/local-collector/src/runner.js",
   "reports/biome-report.json",
   "node_modules/ultracite/package.json",

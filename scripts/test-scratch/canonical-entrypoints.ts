@@ -108,16 +108,6 @@ const REVIEWED_WRITER_EXCEPTIONS: readonly ReviewedWriterException[] = [
     source: /mktemp \/tmp\/patchright-chromium-/,
   },
   {
-    path: "packages/polyfill-connectors/src/connector-runtime.ts",
-    reason: "production trace fallback outside canonical test ownership",
-    source: /`\/tmp\/\$\{traceName\}\.zip`/,
-  },
-  {
-    path: "packages/polyfill-connectors/bin/amazon-request-export.ts",
-    reason: "production CLI output default outside canonical test ownership",
-    source: /const outDir = "\/tmp"/,
-  },
-  {
     path: "docs/explorer/uat/harness/capture.ts",
     reason: "standalone UAT capture output outside canonical entrypoints",
     source: /"\/tmp\/explorer-uat-out"/,

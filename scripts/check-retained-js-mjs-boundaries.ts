@@ -16,12 +16,11 @@ const HOST_MJS_BOUNDARIES = new Set([
   "apps/site/postcss.config.mjs",
   "apps/site/scripts/sync-spec-docs.mjs",
 ]);
-const PROVIDER_CAPTURE_BOUNDARIES = new Set([
-  "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/data/direct-messages.js",
-  "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/data/tweets.js",
-  "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/empty/data/tweets.js",
-  "packages/polyfill-connectors/connectors/twitter_archive/__fixtures__/archive-files/legacy/data/tweet.js",
-]);
+// Provider-captured JavaScript lived in the connector tree, which is now
+// canonical in PDP-Connect/data-connectors. Nothing in this repo carries that
+// boundary kind today; the set stays so a future capture is classified, not
+// silently admitted.
+const PROVIDER_CAPTURE_BOUNDARIES = new Set<string>([]);
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 interface BoundaryEntry {
@@ -179,20 +178,6 @@ function assertGeneratorAndFixtureProbes(): void {
     cwd: ROOT,
     stdio: "inherit",
   });
-  execFileSync(
-    "pnpm",
-    [
-      "--dir",
-      "packages/polyfill-connectors",
-      "exec",
-      "node",
-      "--test",
-      "--import",
-      "tsx",
-      "connectors/twitter_archive/parsers.test.ts",
-    ],
-    { cwd: ROOT, stdio: "inherit" }
-  );
 }
 
 function main(): void {

@@ -1,3 +1,0 @@
-model = "synthetic"
-[auth]
-api_key = "FIXTURE_FAKE_CONFIG_SECRET_DO_NOT_COLLECT"
