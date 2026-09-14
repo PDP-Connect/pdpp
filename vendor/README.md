@@ -272,3 +272,11 @@ Compared with the previous archive, only `package/package.json` changes;
 compiled runtime files are unchanged. This refresh keeps the legacy archive
 aligned with the source used by cross-repository artifact checks. The 1.0.0
 release archives and their active consumer pins above remain unchanged.
+
+`pdpp-collector-runtime-0.0.1.tgz` was removed on 2026-09-14. Nothing in this repo
+consumed it: `packages/polyfill-connectors/package.json` and the lockfile point only at
+the 1.0.0 archives, and `scripts/check-pdpp-vendored-package-pins.ts` covers only those.
+Every resync above since 2026-09-02 existed only to keep the archive aligned with
+data-connectors' tarball-digest drift check, which rebuilds each entry in this file's
+`SHA256SUMS` from the data-connect pin. Deleting the entry ends that treadmill; the 1.0.0
+release archives and their consumer pins are unchanged.
