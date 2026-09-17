@@ -25,6 +25,7 @@ import { runSuite } from "./suite.ts";
 import { type HttpTargetConfig, httpTargetFromConfig } from "./targets/http-target.ts";
 import { ReferenceTargetAdapter } from "./targets/reference-adapter.ts";
 import { ReferenceAsAdapter, type ReferenceAsConfig } from "./targets/reference-as-adapter.ts";
+import { VanaPsAdapter, type VanaPsConfig } from "./targets/vana-ps-adapter.ts";
 
 const USAGE = `pdpp-conformance --target <reference|config.json|module-path> [options]
 
@@ -53,6 +54,11 @@ async function loadAdapter(target: string): Promise<TargetAdapter> {
     // so the grant-shape cases can run instead of skipping.
     if (parsed.kind === "reference-as") {
       return new ReferenceAsAdapter(parsed as unknown as ReferenceAsConfig);
+    }
+    // A session-based authorization journey (authorize -> review -> approve ->
+    // PKCE code exchange) rather than the reference's PAR + consent shape.
+    if (parsed.kind === "vana-ps") {
+      return new VanaPsAdapter(parsed as unknown as VanaPsConfig);
     }
     return httpTargetFromConfig(parsed as unknown as HttpTargetConfig);
   }

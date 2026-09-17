@@ -1,0 +1,63 @@
+{
+  "_comment": [
+    "The Vana Personal Server's composed PDPP AS + RS.",
+    "",
+    "Endpoints read from packages/server/src/pdpp-live-http-journey.test.ts on",
+    "vana-com/personal-server-ts @ waspflow/pdpp-integrated-journey-0917 (c1217fe),",
+    "which mounts the Resource Server on a real boot. Confirmation requested from",
+    "the integration lane; treat the values below as provisional until they reply.",
+    "",
+    "Boot recipe: local/conformance-fleet-0917/handoff/LIVE-BOOT.md. It documents",
+    "the AS-only shape (config, VANA_MASTER_KEY_SIGNATURE, the scope-index row);",
+    "the composed branch also mounts the RS, so a grant to record read completes.",
+    "",
+    "Unlike the reference implementation this deployment is CO-LOCATED (one origin,",
+    "one port), uses a session-based authorization journey rather than RFC 9126 PAR,",
+    "and exchanges an authorization code with PKCE. None of that is pinned by Core:",
+    "Section 6 defines the selection request and Section 7 the resolved grant, not",
+    "the route between them. The case bodies never see the difference.",
+    "",
+    "foreignSubjectOwnerToken is deliberately absent: this deployment binds one",
+    "owner to the server, so RS-12 reports skip naming that rather than passing on",
+    "no evidence.",
+    "",
+    "Open questions for the integration lane, tracked rather than guessed:",
+    "  - is there an RFC 7662 introspection endpoint, advertised via RFC 8414",
+    "    metadata, and does it require caller credentials?",
+    "  - how are records seeded so the RS serves rows?",
+    "  - are owner reads scoped by a query parameter, as the reference requires",
+    "    connector_id? If so it is configuration here, not a finding.",
+    "",
+    "Run: tsx src/cli.ts --target targets/vana-personal-server.json"
+  ],
+  "kind": "vana-ps",
+  "targetId": "vana-personal-server",
+  "targetVersion": "personal-server-ts@waspflow/pdpp-integrated-journey-0917 c1217fe",
+  "baseUrl": "http://127.0.0.1:8420",
+  "ownerBootstrapToken": "REPLACE_WITH_CTX_DEV_TOKEN",
+  "clientId": "concert_finder",
+  "redirectUri": "https://app.example.com/callback",
+  "sourceId": "https://registry.pdpp.dev/connectors/spotify",
+  "purposeCode": "https://pdpp.dev/purpose/personalization",
+  "roles": ["resource-server", "authorization-server"],
+  "capabilities": {
+    "separatedDeployment": false,
+    "ownerTokens": true,
+    "selfExport": true,
+    "incrementalSync": false,
+    "views": false,
+    "singleUseGrants": false,
+    "refreshTokens": false,
+    "blobs": true
+  },
+  "streams": [
+    {
+      "name": "top_artists",
+      "fields": ["id", "name", "genres", "source_updated_at"],
+      "primaryKey": ["id"],
+      "cursorField": "source_updated_at",
+      "semantics": "mutable_state",
+      "recordCount": 1
+    }
+  ]
+}
