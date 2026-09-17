@@ -79,15 +79,35 @@ tested/applicable per role.
 # Against the bundled target (the suite's self-test)
 pnpm --filter @pdpp/conformance-suite exec tsx src/cli.ts --target reference
 
-# Against the Vana Personal Server's composed AS + RS
+# Against the Vana Personal Server's composed AS + RS.
+# vana-target.sh checks out the pinned ref, installs, builds, boots, seeds both
+# streams, and prints the per-boot owner token for the run to pick up.
+export PDPP_VANA_PS=/path/to/personal-server-ts
+scripts/vana-target.sh up
+eval "$(scripts/vana-target.sh env)"
 pnpm --filter @pdpp/conformance-suite exec tsx src/cli.ts \
   --target targets/vana-personal-server.json
+scripts/vana-target.sh stop
 
 # Against the real reference implementation (AS + RS)
+scripts/reference-target.sh up
 pnpm --filter @pdpp/conformance-suite exec tsx src/cli.ts \
   --target targets/reference-implementation.json \
   --json report.json --markdown report.md
+scripts/reference-target.sh stop
 ```
+
+Each real target has a script that owns its whole lifecycle, because the setup is
+not incidental to the result: which streams are declared and how many records they
+hold decides whether five requirements are *tested* or merely *skipped*. A recipe
+in prose lets a later reader reproduce the commands but not the coverage. Both
+scripts poll for readiness rather than sleeping, and `stop` terminates only the PID
+it recorded — never a pattern match.
+
+Target configs never carry credentials. A field written as `${VAR}` resolves from
+the environment at run time and fails loudly if unset: a server that mints a fresh
+owner token per boot cannot have a correct value committed, and a real deployment's
+credential committed by habit is a leak.
 
 `--target` takes `reference` for the bundled target, a `.json` config describing a
 deployment over HTTP, or a module whose default export returns a `TargetAdapter`.
@@ -173,36 +193,40 @@ that has already expired against this AS.
 
 ### Second target: the Vana Personal Server's composed AS + RS
 
-Run against `personal-server-ts` with the authorization journey of
-`waspflow/pdpp-integrated-journey-0917` (`6e5ff0d`) and the Resource Server fixes
-of `feat/pdpp-record-storage-rs` (`8ba3265`, PR vana-com/personal-server-ts#328).
-Neither branch alone is the target: the RS branch deletes the AS entirely — no
-`routes/pdpp-auth.ts`, no `pdpp/bootstrap.ts` — so the consent journey cannot run
-there, while the integration branch predates the fixes. The target is the merge of
-the two, which is what a deployment shipping both would serve. Config:
-`targets/vana-personal-server.json`.
+Run against `personal-server-ts` @ `waspflow/pdpp-integrated-journey-0917`
+(`5e98085`) — the integration owner's composed tree, carrying both PDPP halves.
+Config: `targets/vana-personal-server.json`. Bring it up with
+`scripts/vana-target.sh up`.
 
-**Result: 13 of 33 applicable tested, 12 passed, 1 failed MUST, 2 skips.**
+A resource-server-only ref is not a target on its own, which is worth stating
+because it is an easy mistake to make from a PR number alone:
+`feat/pdpp-record-storage-rs` carries the RS fixes but deletes the authorization
+server outright — no `routes/pdpp-auth.ts`, no `pdpp/bootstrap.ts` — so the consent
+journey cannot run there and a run would report skips rather than findings.
+`scripts/vana-target.sh` refuses such a ref rather than producing a thin report.
 
-Two of the three MUSTs this suite previously reported against this target are
-fixed and confirmed fixed by re-running the same cases:
+**Result: 13 of 33 applicable tested, 13 passed, 0 failed, 2 skips.** Exit code 2:
+no failures, coverage incomplete — which is not the same as a complete pass, and
+the exit code says so.
 
-| Requirement | Level | Finding |
+All three MUSTs this suite reported against this target are now fixed, each
+confirmed by re-running the same case that found it:
+
+| Requirement | Was | Now |
 | --- | --- | --- |
-| RS-10 | Now passes | An unknown query parameter returned 200. Now `400 invalid_request` naming the parameter in `error.param`. |
-| RS-6 | Now passes | A malformed cursor returned `500 INTERNAL_ERROR`. Now `400 invalid_cursor`, with a valid cursor still paginating. |
-| RS-16 | **Failed MUST** | Unchanged. The 401 on a *rejected* token still carries no `WWW-Authenticate` header. |
+| RS-10 | Unknown query parameter served 200, silently dropped | `400 invalid_request`, naming the parameter in `error.param` |
+| RS-6 | Malformed cursor returned `500 INTERNAL_ERROR` | `400 invalid_cursor`, with a valid cursor still paginating |
+| RS-16 | A *rejected* token got a bare 401, no challenge | `401` with `WWW-Authenticate` on both the missing- and rejected-token paths |
 
-RS-16 needs stating precisely, because the fix that landed addressed a different
-defect. `20a65d6` made the challenge's `resource_metadata` absolute rather than the
-relative `/.well-known/oauth-protected-resource` — a real RFC 9728 §5.1 improvement,
-and one this suite recorded as an observation rather than reporting as a finding.
-But the finding was about *which path emits a challenge at all*. In
-`routes/pdpp-records.ts`, `authenticate()` calls `unauthorized()` — the only builder
-of the challenge — solely on the `!token` branch; a token that is present and
-rejected by `resolveToken` returns a bare 401. So the no-token path is correct and
-the rejected-token path, which Core Section 8 governs and which a client holding a
-stale token actually takes, still omits it:
+RS-16 is worth recording in more detail than its one-line fix suggests, because the
+first attempt at it fixed a different defect. `20a65d6` made the challenge's
+`resource_metadata` absolute rather than relative — a real RFC 9728 §5.1
+improvement, but one this suite had recorded as an *observation it explicitly did
+not report*. The finding was about which path emits a challenge at all:
+`authenticate()` built one only on its `!token` branch, so a token that was present
+and rejected by `resolveToken` returned a bare 401. `8e1c518` attaches the challenge
+where the 401 is emitted rather than at each call site, so a future 401 path cannot
+omit it. Both paths now answer identically:
 
 ```console
 $ curl -sD- -o /dev/null http://127.0.0.1:8420/v1/streams/top_artists/records
@@ -211,8 +235,16 @@ www-authenticate: Bearer error="invalid_token", resource_metadata="http://127.0.
 
 $ curl -sD- -o /dev/null http://127.0.0.1:8420/v1/streams/top_artists/records \
     -H 'Authorization: Bearer pdpp-conformance-invalid-token'
-HTTP/1.1 401 Unauthorized          # no www-authenticate at all
+HTTP/1.1 401 Unauthorized
+www-authenticate: Bearer error="invalid_token", resource_metadata="http://127.0.0.1:8420/.well-known/oauth-protected-resource"
 ```
+
+The fix deliberately does **not** challenge on a grant-level refusal: a revoked or
+expired *grant* answers `403 grant_revoked` / `403 grant_expired` with no challenge,
+because that is an authorization outcome and a challenge would point the client at
+the wrong remedy. This suite does not currently test that distinction — it is the
+implementation's own regression coverage, recorded here so the gap is visible rather
+than assumed closed.
 
 This target uses a different authorization journey from the reference — a session
 opened at `/pdpp/v1/authorize`, reviewed by digest, approved against that digest,
@@ -226,10 +258,16 @@ one deployment's habits.
 Coverage rose from 8 tested to 13 because the target now declares a second stream,
 not because any oracle was relaxed. Stream-membership enforcement (RS-2) and its
 error classification (RS-6) work by holding one stream *out* of the grant, so with
-a single declared stream they could only report `skip`. Both now pass, and RS-6
-passes on a point the reference implementation fails — a client token granted
-`top_artists` is refused `saved_tracks` with `403 grant_stream_not_allowed`, which
-is what the Section 8 error table specifies:
+a single declared stream they could only report `skip`. Both now pass.
+
+RS-6 here is the one place where the two targets in this README disagree, and the
+disagreement runs against the reference. A client token granted `top_artists` is
+refused `saved_tracks` with `403 grant_stream_not_allowed` — what the Section 8
+error table specifies — where the reference implementation answers `401
+context.stream_not_allowed` for the same situation. **The reference is the one that
+fails this requirement.** Saying so plainly matters: a reader who assumes the
+reference implementation is normative would draw the opposite conclusion, and
+Section 8's table, not any implementation, is what the suite judges against.
 
 ```console
 $ curl -s -w '\nHTTP %{http_code}\n' http://127.0.0.1:8420/v1/streams/saved_tracks/records \
