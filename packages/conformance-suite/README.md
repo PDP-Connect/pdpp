@@ -127,19 +127,56 @@ and error code, and does not claim to test the ordering.
 
 ## Status against a real implementation
 
-The suite has **not** yet produced a conformance result for any real deployment, and
-the coverage figures above describe the bundled target only. They are not a claim
-about any implementation's conformance.
+The suite has been run against a real PDPP resource server, and it found a real
+failure.
 
-An adapter and config for the PDPP work in `vana-com/personal-server-ts` are
-included (`targets/personal-server.example.json`). As of 2026-09-17 that target
-serves no PDPP HTTP surface to test: `feat/pdpp-as-grants` is empty against its
-base, and `feat/pdpp-record-storage-rs` (`eecdaa7`, self-described WIP) adds record
-storage primitives with no `/v1/streams` routes and no route registration. Running
-the suite against it reports a connection failure naming the unreachable base URL,
-which is the correct result. That run is the integration gate this suite is waiting
-on, not a defect in the adapter.
+**Target:** the PDP-Connect reference operations, served over HTTP by `apps/site`
+under `/sandbox/v1`. Those routes mount the same operations that
+`packages/reference-operations-sandbox` vendors from the reference implementation.
+Config: `targets/site-sandbox.json`.
 
-Expect coverage against a real target to differ from the bundled figures: a target
-implementing views, incremental sync, or single-use grants moves requirements out of
-`unsupported` and into the tested denominator.
+```sh
+cd apps/site && npx next dev -p 3211        # in one shell
+pnpm --filter @pdpp/conformance-suite exec \
+  tsx src/cli.ts --target targets/site-sandbox.json   # exit 1
+```
+
+**Result: 1 of 14 applicable requirements tested, 0 passed, 1 failed MUST.**
+
+RS-16 fails. Section 8 requires a request with no usable token to be refused with
+401 and a `WWW-Authenticate: Bearer` challenge carrying `resource_metadata`. This
+target returns 200 and serves records. Its routes hardcode
+`actor: { kind: "owner", subject_id: null }` and never read an `Authorization`
+header. Reproduced independently:
+
+```console
+$ curl -s -o /dev/null -w '%{http_code}\n' \
+    http://127.0.0.1:3211/sandbox/v1/streams/pay_statements/records
+200
+$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer garbage' \
+    http://127.0.0.1:3211/sandbox/v1/streams/pay_statements/records
+200
+```
+
+This is expected of a public demo that has no authorization layer, and it is not a
+defect report against the reference implementation's own AS/RS. It is recorded
+because a suite that suppressed it would be worthless. Ten further cases report
+`skip`: the target exposes no way to issue a grant of a given shape, so the
+grant-enforcement oracles cannot establish their preconditions and do not pretend
+to have run.
+
+Running against this target also corrected an assumption in the suite. Cases
+composed URLs as `/v1/...`, which Core does not fix — Section 8 publishes
+`pdpp_core_query_base` so a client composes a query without assuming a version
+segment. This target mounts at `/sandbox/v1`; every case would have 404'd and the
+suite would have called a conforming layout broken.
+
+The Vana PDPP work in `vana-com/personal-server-ts` is configured too
+(`targets/personal-server.example.json`) but has no HTTP surface to test yet: as of
+2026-09-17 its AS branch is empty against its base and its RS branch adds record
+storage with no `/v1/streams` routes. That run reports a connection failure naming
+the unreachable base URL.
+
+Expect coverage to differ per target: one implementing views, incremental sync, or
+single-use grants moves requirements out of `unsupported` and into the tested
+denominator.
