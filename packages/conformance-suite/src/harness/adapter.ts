@@ -100,6 +100,47 @@ export interface StagedApproval {
   readonly reviewRevision?: string;
 }
 
+/**
+ * The outcome of submitting a selection request, without approving it.
+ *
+ * Section 9 AS items 2, 5 and 6 are about what the AS REFUSES at selection time,
+ * which a successful grant cannot show: an accepted request proves nothing about
+ * what an unacceptable one would have done. The adapter reports the status and
+ * the machine-readable error code so a case can assert the classification rather
+ * than merely that "something failed" — a server that rejects everything with
+ * 500 would otherwise pass a naive refusal oracle.
+ */
+export interface SelectionOutcome {
+  /** Raw body, for report evidence. */
+  readonly body?: unknown;
+  /** The RFC 9396 / OAuth error code, when the response carried one. */
+  readonly errorCode?: string;
+  readonly status: number;
+}
+
+/** A selection request expressed in the shapes Core Section 6 defines. */
+export interface SelectionRequest {
+  /** An unsupported PDPP-Version, for AS-17. */
+  readonly pdppVersion?: string;
+  readonly purposeCode?: string;
+  /** Mutually exclusive with `streams` — AS-5 requires exactly one. */
+  readonly selectionPreset?: string;
+  /** Omit `fields` to test AS-4 expansion; name an undeclared one to test AS-2. */
+  readonly streams?: readonly { readonly name: string; readonly fields?: readonly string[] }[];
+}
+
+/**
+ * A refresh-token family, for the AS-20 rotation and reuse-detection oracle.
+ *
+ * `refresh` returns null when the AS refuses, which is the expected outcome for
+ * the reuse leg and a failure for the rotation leg — the case distinguishes them.
+ */
+export interface RefreshableGrant {
+  readonly accessToken: string;
+  readonly refresh: (token: string) => Promise<RefreshableGrant | null>;
+  readonly refreshToken: string;
+}
+
 /** The grant shape a test needs. The adapter arranges consent out of band. */
 export interface GrantRequest {
   readonly accessMode?: "single_use" | "continuous" | "recurring";
@@ -168,6 +209,16 @@ export interface TargetAdapter {
   issueGrant: (request: GrantRequest) => Promise<IssuedGrant | null>;
 
   /**
+   * Issue a grant that carries a refresh token, for the AS-20 family oracle.
+   *
+   * Separate from `issueGrant` because most cases neither need nor should see a
+   * refresh token, and because a target may support grants without supporting
+   * rotation. Returns null when this deployment issues none, which reports
+   * `unsupported` rather than `fail`.
+   */
+  issueRefreshableGrant?: (request: GrantRequest) => Promise<RefreshableGrant | null>;
+
+  /**
    * Query parameters this deployment requires on owner-token reads.
    *
    * Core scopes an owner token to one subject's data store but does not say how
@@ -194,6 +245,19 @@ export interface TargetAdapter {
    */
   readonly queryBase?: string | undefined;
 
+  /**
+   * The streams and fields a staged request resolved to, before approval.
+   *
+   * Section 9 AS item 4 requires request-time conveniences (an omitted field
+   * list, a wildcard, an implied instance) to be expanded into explicit terms
+   * BEFORE issuance. A finished grant cannot show that: by then the expansion
+   * either happened or the grant is wrong, and both look like a field list.
+   * Reading the reviewed grant is what makes the resolution step observable.
+   */
+  reviewedStreams?: (
+    handle: string
+  ) => Promise<readonly { readonly name: string; readonly fields: readonly string[] }[] | null>;
+
   /** Revoke a previously issued grant, for the revocation negative oracles. */
   revokeGrant: (grantId: string) => Promise<void>;
   /** Roles this target claims to implement and wants assessed. */
@@ -215,6 +279,17 @@ export interface TargetAdapter {
    * separable review step reports those cases `skip` rather than `fail`.
    */
   stageApproval?: (request: GrantRequest) => Promise<StagedApproval | null>;
+
+  /**
+   * Submit a selection request and report what the AS did, without approving.
+   *
+   * Makes the selection-time validation requirements (Section 9 AS items 2, 4,
+   * 5, 6 and 17) observable. `issueGrant` cannot reach them: it only exercises
+   * requests the server accepts, and these requirements are about what it must
+   * refuse and how it must classify the refusal. Optional — a target without
+   * this hook reports those cases `skip` naming it.
+   */
+  submitSelection?: (request: SelectionRequest) => Promise<SelectionOutcome | null>;
   /** Stable identifier recorded in the report, e.g. "acme-rs". */
   readonly targetId: string;
   /** Version string of the implementation under test, recorded in the report. */

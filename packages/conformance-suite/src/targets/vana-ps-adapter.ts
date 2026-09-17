@@ -21,7 +21,10 @@
 import type {
   GrantRequest,
   IssuedGrant,
+  RefreshableGrant,
   SeededStream,
+  SelectionOutcome,
+  SelectionRequest,
   StagedApproval,
   TargetAdapter,
   TargetCapabilities,
@@ -199,6 +202,94 @@ export class VanaPsAdapter implements TargetAdapter {
     return { handle: sessionId, ...(digest ? { reviewRevision: digest } : {}), approve };
   }
 
+  /**
+   * Submit a selection request and report what the AS answered, without
+   * approving it. Used by the selection-time validation cases, which are about
+   * refusals a successful grant can never demonstrate.
+   */
+  async submitSelection(wanted: SelectionRequest): Promise<SelectionOutcome | null> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return null;
+    }
+    const detail: Record<string, unknown> = {
+      type: "https://pdpp.dev/data-access",
+      source: { id: this.config.sourceId },
+      purpose_code: wanted.purposeCode ?? this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
+      access_mode: "continuous",
+    };
+    if (wanted.streams) {
+      detail.streams = wanted.streams.map((s) => ({
+        name: s.name,
+        // An absent `fields` is the request-time convenience AS-4 must expand,
+        // so it has to reach the server absent rather than as an empty array.
+        ...(s.fields ? { fields: [...s.fields] } : {}),
+      }));
+    }
+    if (wanted.selectionPreset !== undefined) {
+      detail.selection_preset = wanted.selectionPreset;
+    }
+
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${owner}`,
+        "content-type": "application/json",
+        ...(wanted.pdppVersion ? { "PDPP-Version": wanted.pdppVersion } : {}),
+      },
+      body: JSON.stringify({
+        client_id: this.config.clientId,
+        redirect_uri: this.config.redirectUri,
+        code_challenge: await s256Challenge(PKCE_VERIFIER),
+        code_challenge_method: "S256",
+        client_display: { name: "pdpp-conformance-suite" },
+        authorization_details: [detail],
+      }),
+    });
+    const body: unknown = await response.json().catch(() => undefined);
+    const errorCode = (body as { error?: unknown } | undefined)?.error;
+    return {
+      status: response.status,
+      ...(typeof errorCode === "string" ? { errorCode } : {}),
+      body,
+    };
+  }
+
+  /**
+   * Read the resolved grant the server bound to a staged request, so AS-4 can
+   * check that request-time conveniences were expanded before issuance.
+   */
+  async reviewedStreams(handle: string): Promise<readonly { name: string; fields: readonly string[] }[] | null> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return null;
+    }
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(handle)}/review`, {
+      headers: { authorization: `Bearer ${owner}` },
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as {
+      review?: { data?: { streams?: { name?: string; fields?: string[]; instance_ids?: string[] }[] } };
+    };
+    const streams = body.review?.data?.streams;
+    if (!streams) {
+      return null;
+    }
+    return streams.map((s) => ({ name: s.name ?? "", fields: [...(s.fields ?? [])] }));
+  }
+
+  /** Issue a grant carrying a refresh token, for the rotation/reuse oracle. */
+  async issueRefreshableGrant(wanted: GrantRequest): Promise<RefreshableGrant | null> {
+    const staged = await this.stageApproval(wanted);
+    if (!staged?.reviewRevision) {
+      return null;
+    }
+    const approved = await this.approveForTokens(staged.handle, staged.reviewRevision);
+    return approved;
+  }
+
   /** The RFC 9396 selection request this server expects, for both entry points. */
   private async authorizeBody(wanted: GrantRequest): Promise<Record<string, unknown>> {
     return {
@@ -252,6 +343,70 @@ export class VanaPsAdapter implements TargetAdapter {
     }
     const token = (await response.json()) as { access_token?: string };
     return token.access_token ?? null;
+  }
+
+  /**
+   * Approve a staged request and redeem its code, keeping the refresh token.
+   *
+   * `exchangeCode` deliberately returns only the access token, because that is
+   * all every other case should see. The rotation oracle needs the family, so it
+   * redeems here instead of widening the common path.
+   */
+  private async approveForTokens(handle: string, revision: string): Promise<RefreshableGrant | null> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return null;
+    }
+    const approved = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(handle)}/approve`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${owner}`, "content-type": "application/json" },
+      body: JSON.stringify({ review_digest: revision }),
+    });
+    if (!approved.ok) {
+      return null;
+    }
+    const { redirect_uri: redirectUri } = (await approved.json()) as { redirect_uri?: string };
+    const code = redirectUri ? new URL(redirectUri).searchParams.get("code") : null;
+    if (!code) {
+      return null;
+    }
+    return await this.redeem(
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: this.config.clientId,
+        redirect_uri: this.config.redirectUri,
+        code_verifier: PKCE_VERIFIER,
+      })
+    );
+  }
+
+  /** One token-endpoint redemption, shaped as a refreshable family member. */
+  private async redeem(form: URLSearchParams): Promise<RefreshableGrant | null> {
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as { access_token?: string; refresh_token?: string };
+    if (!(body.access_token && body.refresh_token)) {
+      return null;
+    }
+    return {
+      accessToken: body.access_token,
+      refreshToken: body.refresh_token,
+      refresh: (token: string) =>
+        this.redeem(
+          new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: token,
+            client_id: this.config.clientId,
+          })
+        ),
+    };
   }
 
   /**

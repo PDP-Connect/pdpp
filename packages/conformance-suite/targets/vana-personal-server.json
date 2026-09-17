@@ -64,7 +64,7 @@
     "incrementalSync": true,
     "views": false,
     "singleUseGrants": false,
-    "refreshTokens": false,
+    "refreshTokens": true,
     "blobs": true
   },
   "streams": [

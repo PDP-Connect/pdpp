@@ -131,9 +131,10 @@ a complete pass and must not be scriptable as one:
 
 ## Coverage
 
-Against the bundled target, this version tests 11 of 33 applicable requirements
-(RS 10/16, AS 1/17). Four AS requirements report `unsupported` because that target
-is co-located and exposes no RFC 7662 introspection endpoint, so they leave the
+Against the bundled target, this version tests 16 of 30 applicable requirements
+(RS 11/14, AS 5/16). Requirements the target declares absent — incremental sync,
+views, single-use grants, refresh tokens, blobs, and RFC 7662 introspection, which
+a co-located deployment need not expose — report `unsupported` and leave the
 applicable denominator rather than counting as passes. The gaps are deliberate and
 recorded rather than hidden:
 
@@ -144,14 +145,20 @@ recorded rather than hidden:
   case returns `skip` with the specific missing hook named. The reference target does
   not declare the client role, so those requirements are scoped out of its report
   entirely; they appear only for a target that claims the role.
-- **Most AS requirements.** Consent-surface rendering (AS-7), snapshot retention
-  (AS-16), and approval-revision binding (AS-15) are not observable over the record
-  query interface. They need an AS-side adapter surface. Four AS requirements
-  (AS-3, AS-8, AS-9, AS-18) do have executable cases that read the RFC 7662
-  introspection response, which Section 8 makes the authoritative enforcement
-  context; they run against any target declaring `separatedDeployment`.
-- **`changes_since` (RS-7, RS-8)**, views, blobs, and single-use grants are declared
-  unsupported by the reference target and report as `unsupported`, not as passes.
+- **Consent-surface AS requirements.** What the owner is actually *shown* — requester
+  identity and client-claim attribution (AS-7), AI-training consent (AS-14), and
+  declaration-snapshot retention across the whole journey (AS-16) — is not observable
+  from outside. A case can see what the server bound, not what it rendered, and
+  asserting on a rendered surface would be testing a deployment's HTML rather than
+  the protocol. These stay `not-tested` rather than being approximated.
+- **Views (AS-12, AS-13) and access-mode requirements (AS-10, AS-20 on targets
+  without refresh tokens)** report `unsupported` where a target declares the
+  capability absent, not as passes.
+- **Persisted-state and introspection-timing requirements (AS-21, RS-3)** describe
+  what a server must do internally — refuse unsupported persisted state before
+  handling a request, consult introspection exactly once. Both are about ordering
+  and internal calls, which black-box observation cannot distinguish from a correct
+  result reached differently.
 
 Some requirements are also not black-box observable in principle. RS-9 requires
 rejection "before the RS consults declaration metadata"; the suite asserts the status
@@ -205,9 +212,37 @@ server outright — no `routes/pdpp-auth.ts`, no `pdpp/bootstrap.ts` — so the 
 journey cannot run there and a run would report skips rather than findings.
 `scripts/vana-target.sh` refuses such a ref rather than producing a thin report.
 
-**Result: 13 of 33 applicable tested, 13 passed, 0 failed, 2 skips.** Exit code 2:
+**Result: 20 of 33 applicable tested, 20 passed, 0 failed, 2 skips.** Exit code 2:
 no failures, coverage incomplete — which is not the same as a complete pass, and
 the exit code says so.
+
+The most recent batch took coverage from 13 to 20 by testing the authorization
+server's own decisions rather than only the resource server's enforcement. Seven
+requirements moved out of `not-tested`, all passing, none by relaxing anything:
+
+| Requirement | What is now tested |
+| --- | --- |
+| AS-2 | A selection naming an undeclared stream, an undeclared field, or an undefined preset is refused as `invalid_authorization_details`. |
+| AS-4 | A stream requested with no field list is expanded to the explicit declared list before issuance, not stored as an open reference. |
+| AS-5 | Requests carrying both `streams` and `selection_preset`, and neither, are both refused. |
+| AS-6 | An unregistered `purpose_code` is *not* refused — the inverted case, where the defect is over-refusal. |
+| AS-17 | An unsupported `PDPP-Version` on a selection request returns 400 `unsupported_version`. |
+| AS-20 | Refresh tokens rotate; replaying a superseded token returns `invalid_grant`, revokes the family, and kills the family's access tokens. |
+| RS-7 | A record deleted after a sync cursor was issued comes back as a tombstone (`deleted: true`, no `data`) when that cursor resumes. |
+
+Two properties of this batch are worth stating because they are what makes the
+passes mean anything. Every negative case carries a **positive control** that
+differs in exactly one property and must be accepted, so a server that refuses all
+selection requests fails rather than passes. And every one is in the
+discrimination matrix with an injected defect, so each has been shown able to fail
+before being trusted to pass — including AS-6, whose defect makes the reference
+target reject an unregistered purpose that a conforming server must allow.
+
+AS-20 deserves its three separate legs. A server that rotates but never detects
+reuse looks healthiest of all: the legitimate client's rotation succeeds while a
+stolen token keeps working. So the case checks rotation, then refusal of the
+superseded token, then — the leg a refusal alone does not prove — that an access
+token from the revoked family actually stops serving records.
 
 All three MUSTs this suite reported against this target are now fixed, each
 confirmed by re-running the same case that found it:

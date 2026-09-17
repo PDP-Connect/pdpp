@@ -331,4 +331,113 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
       return pass([response.evidence]);
     },
   },
+
+  // ----------------------------------------------------------------- RS-7 ---
+  // Section 9 RS item 7 and Core Section 4 "Tombstones": when a record is deleted
+  // from a `mutable_state` stream, an incremental sync whose cursor predates the
+  // deletion MUST carry a tombstone for it.
+  //
+  // This is the requirement that makes incremental sync safe to build on. Without
+  // it, deletion is invisible to a syncing client: the record simply stops
+  // appearing in changes, so a client that mirrors the stream keeps serving data
+  // the owner deleted, indefinitely and with no way to notice. "Absent from the
+  // next page" and "deleted" are indistinguishable without an explicit signal.
+  //
+  // The oracle is the full round trip — sync to a terminal page, delete, resume
+  // from the stored token — because only that ordering proves the tombstone is
+  // reported to a cursor that predates the deletion.
+  {
+    caseId: "RS-7/deletion-surfaces-as-a-tombstone",
+    requirementId: "RS-7",
+    appliesWhen: (adapter) => adapter.capabilities.incrementalSync,
+    assertion: "A record deleted after a sync cursor was issued appears as a tombstone when that cursor resumes.",
+    async run({ adapter, streams, path }) {
+      // Owner token: deletion is an owner operation, and the sync leg must run
+      // as the same principal so the two cursors share a scope.
+      const owner = await adapter.ownerToken();
+      if (!owner) {
+        return skip("The target issues no owner token, so no record can be deleted to observe.");
+      }
+      // Deliberately the LAST seeded stream: the earlier ones are used by cases
+      // that assert exact record counts, and deleting from those would couple
+      // this case's side effects to their oracles.
+      const stream = streams.at(-1);
+      if (!stream || stream.recordCount < 1) {
+        return skip("No seeded stream with a record to delete.");
+      }
+      const ownerQuery = adapter.ownerReadParams ? { ...adapter.ownerReadParams } : {};
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+
+      // 1. Open a sync session and take the resume token from its terminal page.
+      const opened = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, changes_since: "" },
+      });
+      if (opened.status !== 200) {
+        return fail(`The target declares incremental sync, but opening a session returned ${opened.status}.`, [
+          opened.evidence,
+        ]);
+      }
+      const openedBody = asList(opened.json);
+      if (openedBody?.has_more === true) {
+        return skip(
+          "The first sync page was not terminal, and this case does not page to the end; the resume token is only defined on the terminal page."
+        );
+      }
+      const resumeToken = openedBody?.next_changes_since;
+      if (typeof resumeToken !== "string" || resumeToken.length === 0) {
+        return skip(
+          "The terminal page carried no next_changes_since, so there is no cursor to resume from. RS-8 covers that requirement directly."
+        );
+      }
+      const victim = openedBody?.data?.find((record) => typeof record.id === "string" && !record.deleted);
+      if (!victim?.id) {
+        return skip("The sync session returned no live record to delete.");
+      }
+
+      // 2. Delete it.
+      const deleted = await request(
+        adapter.baseUrl,
+        path(`/streams/${encodeURIComponent(stream.name)}/records/${encodeURIComponent(victim.id)}`),
+        { token: owner, method: "DELETE", query: ownerQuery }
+      );
+      if (deleted.status !== 200 && deleted.status !== 204) {
+        return skip(
+          `Deleting a record returned ${deleted.status}, so this deployment does not expose the deletion this requirement is about.`
+        );
+      }
+
+      // 3. Resume from the cursor that predates the deletion.
+      const resumed = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, changes_since: resumeToken },
+      });
+      if (resumed.status !== 200) {
+        return fail(`Resuming a sync from a valid next_changes_since returned ${resumed.status}.`, [resumed.evidence]);
+      }
+      const tombstone = asList(resumed.json)?.data?.find((record) => record.id === victim.id);
+      if (!tombstone) {
+        return fail(
+          `The record "${victim.id}" was deleted after the cursor was issued, but resuming that cursor did not report it at all. Section 9 RS item 7 requires a tombstone: without one, deletion is invisible to a syncing client, which keeps serving data the owner deleted because "absent from this page" and "deleted" look identical.`,
+          [deleted.evidence, resumed.evidence]
+        );
+      }
+      if (tombstone.deleted !== true) {
+        return fail(
+          `The deleted record "${victim.id}" reappeared in the incremental sync without deleted: true, so a client reads it as a live record rather than a removal.`,
+          [resumed.evidence]
+        );
+      }
+      // Core Section 4: a tombstone carries no `data`. Returning the record's
+      // contents alongside the deletion marker leaks exactly what deletion was
+      // meant to withdraw.
+      if (tombstone.data !== undefined) {
+        return fail(
+          `The tombstone for "${victim.id}" carried a data field. Core Section 4 specifies no data on tombstones: a deletion notice that still contains the record hands back the content the owner deleted.`,
+          [resumed.evidence]
+        );
+      }
+      return pass([deleted.evidence, resumed.evidence]);
+    },
+  },
 ];

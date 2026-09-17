@@ -31,8 +31,14 @@ import type { Defect } from "../src/targets/reference-server.ts";
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
+import { SELECTION_VALIDATION_CASES } from "../src/tests/selection-validation.ts";
 
-const CASES: readonly ConformanceCase[] = [...RESOURCE_SERVER_CASES, ...GRANT_LIFECYCLE_CASES, ...QUERY_SURFACE_CASES];
+const CASES: readonly ConformanceCase[] = [
+  ...RESOURCE_SERVER_CASES,
+  ...GRANT_LIFECYCLE_CASES,
+  ...QUERY_SURFACE_CASES,
+  ...SELECTION_VALIDATION_CASES,
+];
 
 function caseById(caseId: string): ConformanceCase {
   const found = CASES.find((c) => c.caseId === caseId);
@@ -102,6 +108,38 @@ const DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "RS-13/self-export-supported",
     defect: "declare-self-export-but-refuse",
+  },
+  // Selection-time validation. Each defect models the server taking the
+  // client's word for something the retained declaration is supposed to settle.
+  {
+    caseId: "AS-2/undeclared-stream-refused",
+    defect: "accept-undeclared-selection",
+  },
+  {
+    caseId: "AS-2/undeclared-field-refused",
+    defect: "accept-undeclared-selection",
+  },
+  {
+    caseId: "AS-2/unrecognized-preset-refused",
+    defect: "accept-undeclared-selection",
+  },
+  {
+    caseId: "AS-5/both-streams-and-preset-refused",
+    defect: "accept-malformed-selection",
+  },
+  {
+    caseId: "AS-5/neither-streams-nor-preset-refused",
+    defect: "accept-malformed-selection",
+  },
+  // AS-6 is the inverted one: the defect is OVER-refusal, so the violating
+  // target rejects a request the clean one accepts.
+  {
+    caseId: "AS-6/unregistered-purpose-not-rejected",
+    defect: "reject-unregistered-purpose",
+  },
+  {
+    caseId: "AS-17/unsupported-version-rejected",
+    defect: "accept-unsupported-version",
   },
 ];
 

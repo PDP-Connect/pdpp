@@ -50,7 +50,15 @@ export type Defect =
   /** Serves any subject's store to any owner token (RS-12). */
   | "ignore-subject-scope"
   /** Declares self-export but refuses owner reads (RS-13). */
-  | "declare-self-export-but-refuse";
+  | "declare-self-export-but-refuse"
+  /** Accepts a selection naming an undeclared stream, field, or preset (AS-2). */
+  | "accept-undeclared-selection"
+  /** Accepts a selection with both or neither of streams/preset (AS-5). */
+  | "accept-malformed-selection"
+  /** Rejects a purpose_code merely for being unregistered (AS-6). */
+  | "reject-unregistered-purpose"
+  /** Proceeds on an unsupported PDPP-Version instead of 400 (AS-17). */
+  | "accept-unsupported-version";
 
 export type Record_ = { readonly id: string } & Record<string, unknown>;
 
@@ -79,7 +87,8 @@ interface GrantState {
 /** What a bearer token resolves to, as an introspection response would report. */
 type Principal = { kind: "client"; grantId: string } | { kind: "owner"; subjectId: string };
 
-const SUPPORTED_VERSION = "2026-04-06";
+export const PDPP_VERSION = "2026-04-06";
+const SUPPORTED_VERSION = PDPP_VERSION;
 const KNOWN_PARAMS = new Set(["limit", "cursor", "order", "fields", "changes_since"]);
 
 const RECORDS_PATH = /^\/v1\/streams\/([^/]+)\/records$/;

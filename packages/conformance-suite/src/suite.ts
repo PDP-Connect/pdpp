@@ -9,9 +9,11 @@ import { makeContext, runCases } from "./harness/runner.ts";
 import { buildReport, type ConformanceReport } from "./report/result.ts";
 import { AUTHORIZATION_SERVER_CASES } from "./tests/authorization-server.ts";
 import { CLIENT_CASES } from "./tests/client.ts";
+import { GRANT_INTEGRITY_CASES } from "./tests/grant-integrity.ts";
 import { GRANT_LIFECYCLE_CASES } from "./tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "./tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "./tests/resource-server.ts";
+import { SELECTION_VALIDATION_CASES } from "./tests/selection-validation.ts";
 
 /**
  * Suite version. Distinct from the spec version: the same spec revision can be
@@ -25,6 +27,8 @@ export const ALL_CASES: readonly ConformanceCase[] = [
   ...RESOURCE_SERVER_CASES,
   ...AUTHORIZATION_SERVER_CASES,
   ...GRANT_LIFECYCLE_CASES,
+  ...GRANT_INTEGRITY_CASES,
+  ...SELECTION_VALIDATION_CASES,
   ...QUERY_SURFACE_CASES,
   ...CLIENT_CASES,
 ];
