@@ -1,0 +1,563 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Resource Server conformance cases against Core Section 9 "Resource Server
+// conformance" and the Section 8 interface it refers to.
+//
+// These are weighted toward NEGATIVE oracles, deliberately. A resource server
+// that returns records to an authorized client is the easy half and the half a
+// vendor will have exercised in its own tests; the half that decides whether
+// grant enforcement is real is what happens when the request exceeds the grant.
+// A suite that only asked for the happy path would certify a server that
+// ignores grants entirely, because such a server returns the records too.
+//
+// Each negative case therefore pairs with a positive control on the same
+// surface where one exists, so that "rejected everything" cannot pass either:
+// RS-2 asserts the granted stream is readable AND the ungranted one is refused.
+
+import { errorBody, request } from "../harness/http.ts";
+import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+
+/** Records as returned in a Section 8 list envelope. */
+interface ListBody {
+  data?: { id?: string; data?: Record<string, unknown> }[];
+  has_more?: boolean;
+  meta?: { warnings?: { code?: string }[] };
+  next_changes_since?: string;
+  next_cursor?: string;
+  object?: string;
+}
+
+/** RFC 6750 Section 3 challenge shape, checked by the RS-16 bootstrap oracle. */
+const BEARER_SCHEME = /^Bearer\b/i;
+const INVALID_TOKEN_ERROR = /error="?invalid_token"?/;
+
+function asList(json: unknown): ListBody | undefined {
+  return typeof json === "object" && json !== null ? (json as ListBody) : undefined;
+}
+
+export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
+  // ---------------------------------------------------------------- RS-1 ---
+  {
+    caseId: "RS-1/list-streams-envelope",
+    requirementId: "RS-1",
+    assertion: "GET /v1/streams returns a Section 8 list envelope for an authorized client token.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const response = await request(adapter.baseUrl, "/v1/streams", {
+        token: grant.accessToken,
+      });
+      if (response.status !== 200) {
+        return fail(`Expected 200 from the list-streams endpoint, got ${response.status}.`, [response.evidence]);
+      }
+      const body = asList(response.json);
+      if (body?.object !== "list" || !Array.isArray(body.data)) {
+        return fail('The list-streams response is not a Section 8 list envelope ({ object: "list", data: [] }).', [
+          response.evidence,
+        ]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+
+  // ---------------------------------------------------------------- RS-2 ---
+  // The central grant-enforcement oracle, in three parts: the granted stream
+  // is readable (positive control), an ungranted stream is refused, and the
+  // field projection is not exceeded. Without the positive control, a server
+  // that 403s everything would score as enforcing.
+  {
+    caseId: "RS-2/granted-stream-readable",
+    requirementId: "RS-2",
+    assertion: "A client token can read the stream its grant names (positive control for the enforcement oracles).",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+        token: grant.accessToken,
+      });
+      if (response.status !== 200) {
+        return fail(`A grant naming stream "${stream.name}" did not permit reading it: got ${response.status}.`, [
+          response.evidence,
+        ]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+  {
+    caseId: "RS-2/ungranted-stream-refused",
+    requirementId: "RS-2",
+    assertion: "A client token is refused a stream absent from its grant, with 403 grant_stream_not_allowed.",
+    async run({ adapter, streams }) {
+      const [granted] = streams;
+      const ungranted = streams.find((s) => s.name !== granted?.name);
+      if (!(granted && ungranted)) {
+        return skip("Two seeded streams are required to test stream-membership enforcement.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: granted.name, fields: [...granted.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a single-stream grant.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(ungranted.name)}/records`, {
+        token: grant.accessToken,
+      });
+      if (response.status === 200) {
+        return fail(
+          `Overbroad access: a grant naming only "${granted.name}" returned records for "${ungranted.name}".`,
+          [response.evidence]
+        );
+      }
+      if (response.status !== 403) {
+        return fail(
+          `Expected 403 for a stream outside the grant, got ${response.status}. Section 8 maps this to grant_stream_not_allowed.`,
+          [response.evidence]
+        );
+      }
+      const error = errorBody(response);
+      if (error?.code !== "grant_stream_not_allowed") {
+        return fail(`Expected error code grant_stream_not_allowed, got ${error?.code ?? "no structured error"}.`, [
+          response.evidence,
+        ]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+  {
+    caseId: "RS-2/field-projection-not-exceeded",
+    requirementId: "RS-2",
+    assertion: "Records returned under a field-narrowed grant carry no field outside the grant's fields allowlist.",
+    async run({ adapter, streams }) {
+      const stream = streams.find((s) => s.fields.length >= 2);
+      if (!stream) {
+        return skip("A stream with at least two declared fields is required to narrow a projection.");
+      }
+      // Narrow to the primary key plus one field, leaving at least one out.
+      const keep = [...new Set([...stream.primaryKey, stream.fields[0]])].filter(
+        (f): f is string => typeof f === "string"
+      );
+      const omitted = stream.fields.filter((f) => !keep.includes(f));
+      if (omitted.length === 0) {
+        return skip("Narrowing left no omitted field to check for leakage.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: keep }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a field-narrowed grant.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+        token: grant.accessToken,
+      });
+      if (response.status !== 200) {
+        return fail(`A field-narrowed grant did not permit reading its stream: got ${response.status}.`, [
+          response.evidence,
+        ]);
+      }
+      const records = asList(response.json)?.data ?? [];
+      const leaked = new Set<string>();
+      for (const record of records) {
+        for (const field of Object.keys(record.data ?? {})) {
+          if (omitted.includes(field)) {
+            leaked.add(field);
+          }
+        }
+      }
+      if (leaked.size > 0) {
+        return fail(
+          `Overbroad access: fields outside the grant projection appeared in records: ${[...leaked].join(", ")}. Granted fields were ${keep.join(", ")}.`,
+          [response.evidence]
+        );
+      }
+      return pass([response.evidence]);
+    },
+  },
+
+  // ---------------------------------------------------------------- RS-4 ---
+  {
+    caseId: "RS-4/unauthenticated-request-refused",
+    requirementId: "RS-4",
+    assertion: "A record read with no access token is refused with 401 rather than served.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`);
+      if (response.status !== 401) {
+        return fail(`Expected 401 for a request carrying no token, got ${response.status}.`, [response.evidence]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+
+  // ---------------------------------------------------------------- RS-9 ---
+  // Section 8: client-token filter[...] MUST be rejected with 400
+  // invalid_request BEFORE the RS consults declaration metadata. The case
+  // asserts the status and code; "before declaration lookup" is not
+  // black-box observable, and the suite does not claim to test it.
+  {
+    caseId: "RS-9/client-token-exact-filter-rejected",
+    requirementId: "RS-9",
+    assertion: "A client-token exact filter[...] parameter is rejected with 400 invalid_request.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      const field = stream?.fields[0];
+      if (!(stream && field)) {
+        return skip("A seeded stream with at least one field is required.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+        token: grant.accessToken,
+        query: { [`filter[${field}]`]: "any-value" },
+      });
+      if (response.status === 200) {
+        return fail(
+          `A client-token request carrying filter[${field}] was served instead of rejected. Section 8 removes request-time predicate filters from the v0.1 client surface.`,
+          [response.evidence]
+        );
+      }
+      if (response.status !== 400) {
+        return fail(`Expected 400 for a client-token filter parameter, got ${response.status}.`, [response.evidence]);
+      }
+      const error = errorBody(response);
+      if (error?.code !== "invalid_request") {
+        return fail(`Expected error code invalid_request, got ${error?.code ?? "no structured error"}.`, [
+          response.evidence,
+        ]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+  {
+    caseId: "RS-9/client-token-expand-rejected",
+    requirementId: "RS-9",
+    assertion: "A client-token expand[] parameter is rejected with 400 invalid_request.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+        token: grant.accessToken,
+        query: { "expand[]": "anything" },
+      });
+      if (response.status !== 400) {
+        return fail(`Expected 400 for a client-token expand[] parameter, got ${response.status}.`, [response.evidence]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+
+  // --------------------------------------------------------------- RS-10 ---
+  {
+    caseId: "RS-10/unknown-parameter-rejected",
+    requirementId: "RS-10",
+    assertion: "An unknown query parameter is rejected with 400 rather than silently ignored.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+        token: grant.accessToken,
+        query: { pdpp_conformance_unknown_param: "1" },
+      });
+      if (response.status === 200) {
+        return fail("An unknown query parameter was silently ignored and the request served. Section 8 requires 400.", [
+          response.evidence,
+        ]);
+      }
+      if (response.status !== 400) {
+        return fail(`Expected 400 for an unknown query parameter, got ${response.status}.`, [response.evidence]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+
+  // --------------------------------------------------------------- RS-11 ---
+  {
+    caseId: "RS-11/unsupported-version-rejected",
+    requirementId: "RS-11",
+    assertion: "An unsupported PDPP-Version header is rejected with 400 unsupported_version.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+        token: grant.accessToken,
+        // A date far outside any plausible supported set.
+        headers: { "PDPP-Version": "1999-01-01" },
+      });
+      if (response.status !== 400) {
+        return fail(`Expected 400 for an unsupported PDPP-Version, got ${response.status}.`, [response.evidence]);
+      }
+      const error = errorBody(response);
+      if (error?.code !== "unsupported_version") {
+        return fail(`Expected error code unsupported_version, got ${error?.code ?? "no structured error"}.`, [
+          response.evidence,
+        ]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+
+  // --------------------------------------------------------------- RS-12 ---
+  // Cross-subject isolation. Without a second subject the target cannot
+  // DEMONSTRATE scoping, so the case is skipped rather than passed: absence of
+  // a foreign token is absence of evidence, not evidence of isolation.
+  {
+    caseId: "RS-12/foreign-subject-cannot-read",
+    requirementId: "RS-12",
+    appliesWhen: (adapter) => adapter.capabilities.ownerTokens,
+    assertion: "An owner token for another subject cannot read the seeded subject's records.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.foreignSubjectOwnerToken) {
+        return skip("The adapter cannot mint a second subject's owner token, so subject scoping is not demonstrable.");
+      }
+      const foreign = await adapter.foreignSubjectOwnerToken();
+      if (!foreign) {
+        return skip("The adapter returned no foreign-subject owner token.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+        token: foreign,
+      });
+      if (response.status === 200) {
+        const records = asList(response.json)?.data ?? [];
+        if (records.length > 0) {
+          return fail(
+            `Cross-subject leak: an owner token scoped to another subject returned ${records.length} record(s) from the seeded subject's store.`,
+            [response.evidence]
+          );
+        }
+        return fail(
+          "An owner token for another subject was accepted (200) on the seeded subject's stream. Section 9 item 12 requires owner access to be scoped to a single subject's data store.",
+          [response.evidence]
+        );
+      }
+      if (response.status !== 403 && response.status !== 404) {
+        return fail(`Expected the foreign-subject read to be refused with 403 or 404, got ${response.status}.`, [
+          response.evidence,
+        ]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+
+  // --------------------------------------------------------------- RS-13 ---
+  {
+    caseId: "RS-13/self-export-supported",
+    requirementId: "RS-13",
+    appliesWhen: (adapter) => adapter.capabilities.selfExport,
+    assertion:
+      "An owner token reads the owner's own records through the client query endpoints without a client grant.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const owner = await adapter.ownerToken();
+      if (!owner) {
+        return skip("The target declares self-export but the adapter produced no owner token.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+        token: owner,
+      });
+      if (response.status !== 200) {
+        return fail(
+          `The target declares pdpp_self_export_supported, but an owner-token read returned ${response.status}.`,
+          [response.evidence]
+        );
+      }
+      return pass([response.evidence]);
+    },
+  },
+
+  // --------------------------------------------------------------- RS-15 ---
+  // The metadata-projection oracle. A client-token stream-metadata read must
+  // not disclose current capability or post-issuance declaration changes. This
+  // is the quiet leak: the records endpoint can be perfectly enforced while
+  // metadata hands the client the full current schema.
+  {
+    caseId: "RS-15/client-metadata-projection-closed",
+    requirementId: "RS-15",
+    assertion:
+      "Client-token stream metadata exposes only granted fields and omits current view/relationship/query capability.",
+    async run({ adapter, streams }) {
+      const stream = streams.find((s) => s.fields.length >= 2);
+      if (!stream) {
+        return skip("A stream with at least two declared fields is required to narrow a projection.");
+      }
+      const keep = [...new Set([...stream.primaryKey, stream.fields[0]])].filter(
+        (f): f is string => typeof f === "string"
+      );
+      const omitted = stream.fields.filter((f) => !keep.includes(f));
+      if (omitted.length === 0) {
+        return skip("Narrowing left no omitted field to check for disclosure.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: keep }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a field-narrowed grant.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}`, {
+        token: grant.accessToken,
+      });
+      if (response.status !== 200) {
+        return fail(
+          `A client token holding a grant on "${stream.name}" could not read its stream metadata: got ${response.status}.`,
+          [response.evidence]
+        );
+      }
+      const body = response.json as
+        | {
+            schema?: { properties?: Record<string, unknown> };
+            views?: unknown[];
+            relationships?: unknown[];
+            query?: Record<string, unknown>;
+          }
+        | undefined;
+
+      const exposed = Object.keys(body?.schema?.properties ?? {});
+      const leakedFields = exposed.filter((f) => omitted.includes(f));
+      if (leakedFields.length > 0) {
+        return fail(
+          `Client-token stream metadata disclosed ungranted schema fields: ${leakedFields.join(", ")}. The grant froze ${keep.join(", ")}.`,
+          [response.evidence]
+        );
+      }
+      if (Array.isArray(body?.views) && body.views.length > 0) {
+        return fail(
+          "Client-token stream metadata disclosed current views. Section 9 item 15 closes the client projection to frozen grant facts.",
+          [response.evidence]
+        );
+      }
+      if (Array.isArray(body?.relationships) && body.relationships.length > 0) {
+        return fail(
+          "Client-token stream metadata disclosed current relationships, which a v0.1 grant does not freeze.",
+          [response.evidence]
+        );
+      }
+      if (body?.query && Object.keys(body.query).length > 0) {
+        return fail(
+          `Client-token stream metadata disclosed current query capability (${Object.keys(body.query).join(", ")}), which a v0.1 grant does not freeze.`,
+          [response.evidence]
+        );
+      }
+      return pass([response.evidence]);
+    },
+  },
+
+  // --------------------------------------------------------------- RS-16 ---
+  {
+    caseId: "RS-16/protected-resource-metadata-published",
+    requirementId: "RS-16",
+    assertion: "RFC 9728 protected resource metadata is published with `resource` and the four pdpp_ members.",
+    async run({ adapter }) {
+      const response = await request(adapter.baseUrl, "/.well-known/oauth-protected-resource");
+      if (response.status !== 200) {
+        return fail(`Expected 200 at the RFC 9728 metadata location, got ${response.status}.`, [response.evidence]);
+      }
+      const body = response.json as Record<string, unknown> | undefined;
+      if (!body || typeof body.resource !== "string") {
+        return fail("The metadata document is missing the RFC 9728 `resource` member.", [response.evidence]);
+      }
+      const required = [
+        "pdpp_core_query_base",
+        "pdpp_token_kinds_supported",
+        "pdpp_self_export_supported",
+        "pdpp_provider_connect_version",
+      ];
+      const missing = required.filter((member) => !(member in body));
+      if (missing.length > 0) {
+        return fail(`The metadata document is missing PDPP members: ${missing.join(", ")}.`, [response.evidence]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+  {
+    caseId: "RS-16/401-carries-resource-metadata-challenge",
+    requirementId: "RS-16",
+    assertion: "A 401 carries a WWW-Authenticate: Bearer challenge with the resource_metadata parameter.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+        token: "pdpp-conformance-invalid-token",
+      });
+      if (response.status !== 401) {
+        return fail(`Expected 401 for a rejected token, got ${response.status}.`, [response.evidence]);
+      }
+      const challenge = response.headers.get("www-authenticate");
+      if (!challenge) {
+        return fail(
+          "The 401 carries no WWW-Authenticate header. RFC 6750 Section 3 requires the challenge; it is the bootstrap path for a client holding no token.",
+          [response.evidence]
+        );
+      }
+      if (!BEARER_SCHEME.test(challenge)) {
+        return fail(`Expected a Bearer challenge, got "${challenge}".`, [response.evidence]);
+      }
+      if (!challenge.includes("resource_metadata=")) {
+        return fail(`The Bearer challenge omits the RFC 9728 resource_metadata parameter: "${challenge}".`, [
+          response.evidence,
+        ]);
+      }
+      if (!INVALID_TOKEN_ERROR.test(challenge)) {
+        return fail(
+          `A token was presented and rejected, so the challenge must set error="invalid_token": "${challenge}".`,
+          [response.evidence]
+        );
+      }
+      return pass([response.evidence]);
+    },
+  },
+];

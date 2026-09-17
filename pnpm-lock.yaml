@@ -271,6 +271,15 @@ importers:
         specifier: file:./vendor/blume-1.5.3.tgz
         version: file:apps/site-blume-spike/vendor/blume-1.5.3.tgz(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@shikijs/themes@4.4.3)(@types/node@26.5.1)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(@vercel/functions@3.9.5(ws@8.21.3))(csstype@3.2.3)(esbuild@0.28.2)(next@16.3.4(@babel/core@7.29.7(supports-color@7.2.0))(@playwright/test@1.61.1)(@types/node@26.5.1)(babel-plugin-react-compiler@1.0.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(prettier@3.9.6)(supports-color@7.2.0)(tsx@4.23.13)(vite@8.2.2(@types/node@26.5.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))(ws@8.21.3)(yaml@2.9.0)
 
+  packages/conformance-suite:
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 2.5.13
+        version: 2.5.13
+      ultracite:
+        specifier: 7.11.1
+        version: 7.11.1(@biomejs/biome@2.5.13)(prettier@3.9.6)
+
   packages/display:
     devDependencies:
       '@types/node':
