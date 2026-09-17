@@ -99,7 +99,9 @@ Against the reference target, this version tests 11 of 36 applicable requirement
   a client under test and observing its outgoing requests. The adapter has no reverse
   channel — it only lets the suite call *into* a target. Closing this needs a
   client-adapter hook, a harness change rather than a test-authoring one. Every client
-  case returns `skip` with the specific missing hook named.
+  case returns `skip` with the specific missing hook named. The reference target does
+  not declare the client role, so those requirements are scoped out of its report
+  entirely; they appear only for a target that claims the role.
 - **Most AS requirements.** Consent-surface rendering (AS-7), snapshot retention
   (AS-16), and approval-revision binding (AS-15) are not observable over the record
   query interface. They need an AS-side adapter surface.
