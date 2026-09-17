@@ -284,6 +284,101 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // --------------------------------------------------------------- AS-15 ---
+  // Section 9 AS item 15: the AS "binds exact resolved instances and all final
+  // decision fields to an immutable review revision" and "rejects stale approval
+  // if eligibility or the reviewed revision changes before approval".
+  //
+  // The half testable from outside is the binding itself: an approval carrying a
+  // revision the server never issued must be refused. A server that ignores the
+  // revision cannot detect a stale approval either, because it has nothing to
+  // compare against — so this case is the precondition for the requirement's
+  // whole purpose, which is that a user approves exactly what they reviewed.
+  {
+    caseId: "AS-15/approval-requires-the-issued-revision",
+    requirementId: "AS-15",
+    assertion: "An approval carrying a review revision the server never issued is refused.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.stageApproval) {
+        return skip(
+          "The adapter cannot stage an authorization request short of approval, so revision binding is not observable. This needs a harness hook, not a different assertion."
+        );
+      }
+      const staged = await adapter.stageApproval({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!staged) {
+        return skip("The target could not stage an authorization request.");
+      }
+      if (!staged.reviewRevision) {
+        return skip(
+          "The target publishes no review revision or digest, so there is no binding to test. Section 9 item 15 assumes one exists."
+        );
+      }
+
+      const forged = await staged.approve("pdpp-conformance-never-issued-revision");
+      if (forged) {
+        return fail(
+          `An approval carrying a revision the server never issued was accepted and produced grant ${forged.grantId}. Section 9 AS item 15 requires the final decision to be bound to an immutable review revision; a server that does not check it cannot detect a stale approval either, so a user can approve something other than what they reviewed.`
+        );
+      }
+
+      // Positive control: the real revision must still work, or the refusal
+      // above would prove only that approval is broken.
+      const genuine = await staged.approve(staged.reviewRevision);
+      if (!genuine) {
+        return skip(
+          "The forged revision was refused, but so was the genuine one, so this run cannot show the server distinguishes them."
+        );
+      }
+      return pass();
+    },
+  },
+
+  // --------------------------------------------------------------- AS-19 ---
+  // Section 9 AS item 19: each authorization code is consumed atomically on its
+  // first successful redemption, and every later redemption is rejected. A
+  // replayable code is a credential an attacker who observes one redirect can
+  // reuse to mint their own token.
+  {
+    caseId: "AS-19/authorization-approval-is-not-replayable",
+    requirementId: "AS-19",
+    assertion: "A second approval of the same staged request does not mint a second grant.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.stageApproval) {
+        return skip(
+          "The adapter cannot stage an authorization request short of approval, so replay is not observable."
+        );
+      }
+      const staged = await adapter.stageApproval({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!staged) {
+        return skip("The target could not stage an authorization request.");
+      }
+
+      const first = await staged.approve(staged.reviewRevision);
+      if (!first) {
+        return skip("The first approval did not succeed, so replay cannot be isolated.");
+      }
+      const second = await staged.approve(staged.reviewRevision);
+      if (second && second.grantId !== first.grantId) {
+        return fail(
+          `Replaying the same approval minted a second, distinct grant (${first.grantId} then ${second.grantId}). Section 9 AS item 19 requires the authorization to be consumed atomically on first redemption and every later attempt rejected, so an observed redirect cannot be replayed into another token.`
+        );
+      }
+      return pass();
+    },
+  },
+
   // --------------------------------------------------------------- AS-18 ---
   {
     caseId: "AS-18/introspection-requires-authentication",

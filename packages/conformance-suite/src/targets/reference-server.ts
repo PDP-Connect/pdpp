@@ -41,6 +41,10 @@ export type Defect =
   | "leak-current-metadata"
   /** Refuses an ungranted stream, but with 401 instead of 403 (RS-6). */
   | "misclassify-stream-denial"
+  /** Crashes on a malformed cursor instead of returning 400 (RS-6). */
+  | "crash-on-bad-cursor"
+  /** Clamps an oversized limit but omits the limit_clamped warning (RS-10). */
+  | "silent-limit-clamp"
   /** Reads token kind from the token string instead of its principal (RS-4). */
   | "infer-token-kind-from-syntax"
   /** Serves any subject's store to any owner token (RS-12). */
@@ -63,7 +67,12 @@ interface GrantState {
   expired: boolean;
   readonly grantId: string;
   revoked: boolean;
-  readonly streams: readonly { name: string; fields: readonly string[] }[];
+  readonly streams: readonly {
+    name: string;
+    fields: readonly string[];
+    /** Frozen consent window, when the grant carries one (Core Section 7). */
+    timeConstraint?: { field: string; from?: string; to?: string };
+  }[];
   readonly subjectId: string;
 }
 
@@ -74,6 +83,7 @@ const SUPPORTED_VERSION = "2026-04-06";
 const KNOWN_PARAMS = new Set(["limit", "cursor", "order", "fields", "changes_since"]);
 
 const RECORDS_PATH = /^\/v1\/streams\/([^/]+)\/records$/;
+const SINGLE_RECORD_PATH = /^\/v1\/streams\/([^/]+)\/records\/([^/]+)$/;
 const METADATA_PATH = /^\/v1\/streams\/([^/]+)$/;
 
 /** The seeded subject. A second subject exists so cross-subject scoping is testable. */
@@ -159,7 +169,11 @@ export class ReferenceServer {
   }
 
   issueGrant(
-    requested: readonly { name: string; fields: readonly string[] }[],
+    requested: readonly {
+      name: string;
+      fields: readonly string[];
+      timeConstraint?: { field: string; from?: string; to?: string };
+    }[],
     options: { expired?: boolean } = {}
   ): { grantId: string; accessToken: string } | null {
     // Reject a grant naming a stream this server does not serve: an AS must
@@ -175,7 +189,11 @@ export class ReferenceServer {
     this.grants.set(grantId, {
       grantId,
       subjectId: SEEDED_SUBJECT,
-      streams: requested.map((s) => ({ name: s.name, fields: [...s.fields] })),
+      streams: requested.map((s) => ({
+        name: s.name,
+        fields: [...s.fields],
+        ...(s.timeConstraint ? { timeConstraint: s.timeConstraint } : {}),
+      })),
       revoked: false,
       expired: options.expired ?? false,
     });
@@ -270,8 +288,9 @@ export class ReferenceServer {
     }
 
     const recordsMatch = RECORDS_PATH.exec(path);
+    const singleMatch = SINGLE_RECORD_PATH.exec(path);
     const metadataMatch = METADATA_PATH.exec(path);
-    const streamName = decodeURIComponent(recordsMatch?.[1] ?? metadataMatch?.[1] ?? "");
+    const streamName = decodeURIComponent(recordsMatch?.[1] ?? singleMatch?.[1] ?? metadataMatch?.[1] ?? "");
     const fixture = this.streams.find((s) => s.name === streamName);
 
     if (!fixture) {
@@ -295,8 +314,29 @@ export class ReferenceServer {
     }
 
     // --- GET /v1/streams/{stream} (RS-14, RS-15) ---
-    if (metadataMatch) {
+    if (metadataMatch && !singleMatch) {
       send(200, this.streamMetadata(fixture, principal.kind, grantedStream?.fields ?? []));
+      return;
+    }
+
+    // --- GET /v1/streams/{stream}/records/{id} (RS-1) ---
+    if (singleMatch) {
+      const recordId = decodeURIComponent(singleMatch[2] ?? "");
+      const record = fixture.records.find((r) => r.id === recordId);
+      if (!record) {
+        error(404, "not_found", "not_found_error", "Record not found.");
+        return;
+      }
+      const projection =
+        principal.kind === "client" && !this.has("ignore-field-projection")
+          ? (grantedStream?.fields ?? [])
+          : fixture.fields;
+      send(200, {
+        object: "record",
+        id: record.id,
+        stream: fixture.name,
+        data: Object.fromEntries(Object.entries(record).filter(([k]) => projection.includes(k))),
+      });
       return;
     }
 
@@ -308,23 +348,62 @@ export class ReferenceServer {
         return;
       }
 
+      // A malformed cursor must be a 400, not a crash: the defect models a server
+      // that lets a decode error escape as a 500.
+      if (!this.has("ignore-unknown-params")) {
+        const cursor = parsed.searchParams.get("cursor");
+        if (cursor !== null && cursor !== "" && !cursor.startsWith("ok:")) {
+          if (this.has("crash-on-bad-cursor")) {
+            error(500, "api_error", "api_error", "Internal server error.");
+            return;
+          }
+          error(400, "invalid_cursor", "invalid_request_error", "Cursor token is malformed or unrecognized.");
+          return;
+        }
+      }
+
       const projection =
         principal.kind === "client" && !this.has("ignore-field-projection")
           ? (grantedStream?.fields ?? [])
           : fixture.fields;
 
-      const data = fixture.records.map((record) => ({
+      // Enforce the grant's frozen time constraint (Section 8 "Grant
+      // enforcement"): records outside the consented window are not the client's
+      // to see, whatever the request asked for.
+      const constraint = grantedStream?.timeConstraint;
+      const withinWindow = (record: Record_): boolean => {
+        if (!constraint) {
+          return true;
+        }
+        const value = record[constraint.field];
+        if (typeof value !== "string") {
+          return false;
+        }
+        if (constraint.from && value < constraint.from) {
+          return false;
+        }
+        return !(constraint.to && value >= constraint.to);
+      };
+
+      const data = fixture.records.filter(withinWindow).map((record) => ({
         object: "record",
         id: record.id,
         stream: fixture.name,
         data: Object.fromEntries(Object.entries(record).filter(([k]) => projection.includes(k))),
       }));
 
+      // An oversized limit is clamped with a non-fatal warning (Section 8). The
+      // defect clamps silently, which a client reads as the end of the stream.
+      const requestedLimit = Number(parsed.searchParams.get("limit") ?? "25");
+      const clamped = Number.isFinite(requestedLimit) && requestedLimit > 100;
       send(200, {
         object: "list",
         url: path,
         has_more: false,
-        data,
+        ...(clamped && !this.has("silent-limit-clamp")
+          ? { meta: { warnings: [{ code: "limit_clamped", message: "limit clamped to 100" }] } }
+          : {}),
+        data: clamped ? data.slice(0, 100) : data,
       });
       return;
     }

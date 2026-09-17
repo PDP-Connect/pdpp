@@ -29,9 +29,10 @@ import { makeContext, runCase } from "../src/harness/runner.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import type { Defect } from "../src/targets/reference-server.ts";
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
+import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
 
-const CASES: readonly ConformanceCase[] = [...RESOURCE_SERVER_CASES, ...GRANT_LIFECYCLE_CASES];
+const CASES: readonly ConformanceCase[] = [...RESOURCE_SERVER_CASES, ...GRANT_LIFECYCLE_CASES, ...QUERY_SURFACE_CASES];
 
 function caseById(caseId: string): ConformanceCase {
   const found = CASES.find((c) => c.caseId === caseId);
@@ -92,6 +93,11 @@ const DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "RS-6/ungranted-stream-error-classification",
     defect: "misclassify-stream-denial",
+  },
+  { caseId: "RS-6/malformed-cursor-rejected", defect: "crash-on-bad-cursor" },
+  {
+    caseId: "RS-10/oversized-limit-clamped-with-warning",
+    defect: "silent-limit-clamp",
   },
   {
     caseId: "RS-13/self-export-supported",

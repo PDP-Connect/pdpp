@@ -39,15 +39,12 @@
   "redirectUri": "https://app.example.com/callback",
   "sourceId": "https://registry.pdpp.dev/connectors/spotify",
   "purposeCode": "https://pdpp.dev/purpose/personalization",
-  "roles": [
-    "resource-server",
-    "authorization-server"
-  ],
+  "roles": ["resource-server", "authorization-server"],
   "capabilities": {
     "separatedDeployment": false,
     "ownerTokens": true,
     "selfExport": true,
-    "incrementalSync": false,
+    "incrementalSync": true,
     "views": false,
     "singleUseGrants": false,
     "refreshTokens": false,
@@ -56,15 +53,8 @@
   "streams": [
     {
       "name": "top_artists",
-      "fields": [
-        "id",
-        "name",
-        "genres",
-        "source_updated_at"
-      ],
-      "primaryKey": [
-        "id"
-      ],
+      "fields": ["id", "name", "genres", "source_updated_at"],
+      "primaryKey": ["id"],
       "cursorField": "source_updated_at",
       "semantics": "mutable_state",
       "recordCount": 1

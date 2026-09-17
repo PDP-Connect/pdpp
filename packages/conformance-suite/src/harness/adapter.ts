@@ -84,6 +84,22 @@ export interface IssuedGrant {
   }[];
 }
 
+/**
+ * An authorization request staged but not yet approved, with the handles needed
+ * to attempt approval — correctly, twice, or with a stale revision.
+ */
+export interface StagedApproval {
+  /** Approve this staged request. Returns the grant, or null if refused. */
+  readonly approve: (revision?: string) => Promise<IssuedGrant | null>;
+  /** Opaque handle for the pending request (a session id, request_uri, ...). */
+  readonly handle: string;
+  /**
+   * The revision or digest the server bound the reviewed facts to, if it
+   * publishes one. Absent when the server has no such concept.
+   */
+  readonly reviewRevision?: string;
+}
+
 /** The grant shape a test needs. The adapter arranges consent out of band. */
 export interface GrantRequest {
   readonly accessMode?: "single_use" | "continuous" | "recurring";
@@ -185,6 +201,20 @@ export interface TargetAdapter {
 
   /** Bring the target to a known state and seed records. Called once per run. */
   setup: () => Promise<{ readonly streams: readonly SeededStream[] }>;
+
+  /**
+   * Stage an authorization request and stop before approval, exposing the
+   * server's own approval-review artifact.
+   *
+   * This is what makes Section 9 AS items 15 and 16 observable from outside.
+   * Both are about what the server binds and retains BETWEEN review and
+   * approval — a revision that a stale approval must be rejected against, and a
+   * declaration snapshot that a later declaration may not replace. Neither is
+   * visible from a finished grant, so an adapter that can only produce grants
+   * leaves them untestable. Optional: a target whose consent flow has no
+   * separable review step reports those cases `skip` rather than `fail`.
+   */
+  stageApproval?: (request: GrantRequest) => Promise<StagedApproval | null>;
   /** Stable identifier recorded in the report, e.g. "acme-rs". */
   readonly targetId: string;
   /** Version string of the implementation under test, recorded in the report. */

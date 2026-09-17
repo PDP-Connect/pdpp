@@ -18,7 +18,14 @@
 // receive a token and a resolved grant, and never learn which journey produced
 // them.
 
-import type { GrantRequest, IssuedGrant, SeededStream, TargetAdapter, TargetCapabilities } from "../harness/adapter.ts";
+import type {
+  GrantRequest,
+  IssuedGrant,
+  SeededStream,
+  StagedApproval,
+  TargetAdapter,
+  TargetCapabilities,
+} from "../harness/adapter.ts";
 import type { Role } from "../requirements/catalog.ts";
 
 export interface VanaPsConfig {
@@ -124,7 +131,11 @@ export class VanaPsAdapter implements TargetAdapter {
    * Returns null at any refusal so the case reports `skip` with the reason,
    * rather than a grant the server declined becoming a silent pass.
    */
-  async issueGrant(wanted: GrantRequest): Promise<IssuedGrant | null> {
+  /**
+   * Open an authorization session and review it, stopping short of approval, so
+   * the approval-binding and replay cases can drive the final step themselves.
+   */
+  async stageApproval(wanted: GrantRequest): Promise<StagedApproval | null> {
     const owner = await this.ownerToken();
     if (!owner) {
       return null;
@@ -134,25 +145,7 @@ export class VanaPsAdapter implements TargetAdapter {
     const authorized = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize`, {
       method: "POST",
       headers: { ...ownerAuth, "content-type": "application/json" },
-      body: JSON.stringify({
-        client_id: this.config.clientId,
-        redirect_uri: this.config.redirectUri,
-        code_challenge: await s256Challenge(PKCE_VERIFIER),
-        code_challenge_method: "S256",
-        client_display: { name: "pdpp-conformance-suite" },
-        authorization_details: [
-          {
-            type: "https://pdpp.dev/data-access",
-            source: { id: this.config.sourceId },
-            purpose_code: this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
-            access_mode: wanted.accessMode ?? "continuous",
-            streams: wanted.streams.map((s) => ({
-              name: s.name,
-              ...(s.fields.length > 0 ? { fields: [...s.fields] } : {}),
-            })),
-          },
-        ],
-      }),
+      body: JSON.stringify(await this.authorizeBody(wanted)),
     });
     if (authorized.status !== 201) {
       return null;
@@ -162,44 +155,88 @@ export class VanaPsAdapter implements TargetAdapter {
       return null;
     }
 
-    // Review binds the exact reviewed facts to a digest; approval must carry it
-    // back (Core Section 9 AS item 15).
     const reviewed = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/review`, {
       headers: ownerAuth,
     });
-    if (!reviewed.ok) {
-      return null;
-    }
-    const review = (await reviewed.json()) as {
-      review?: { review_digest?: string; streams?: { name?: string; fields?: string[] }[] };
-    };
-    const digest = review.review?.review_digest;
-    if (!digest) {
-      return null;
-    }
+    const review = reviewed.ok ? ((await reviewed.json()) as { review?: { review_digest?: string } }) : undefined;
 
-    const approved = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/approve`, {
-      method: "POST",
-      headers: { ...ownerAuth, "content-type": "application/json" },
-      body: JSON.stringify({ review_digest: digest }),
-    });
-    if (!approved.ok) {
-      return null;
-    }
-    const approval = (await approved.json()) as {
-      redirect_uri?: string;
-      grant_id?: string;
-      grant?: { streams?: { name?: string; fields?: string[] }[] };
+    const approve = async (revision?: string): Promise<IssuedGrant | null> => {
+      const response = await fetch(
+        `${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/approve`,
+        {
+          method: "POST",
+          headers: { ...ownerAuth, "content-type": "application/json" },
+          body: JSON.stringify(revision ? { review_digest: revision } : {}),
+        }
+      );
+      if (!response.ok) {
+        return null;
+      }
+      const approval = (await response.json()) as {
+        redirect_uri?: string;
+        grant_id?: string;
+        grant?: { streams?: { name?: string; fields?: string[] }[] };
+      };
+      if (!(approval.redirect_uri && approval.grant_id)) {
+        return null;
+      }
+      const token = await this.exchangeCode(approval.redirect_uri);
+      if (!token) {
+        return null;
+      }
+      const resolved = approval.grant?.streams ?? [];
+      return {
+        grantId: approval.grant_id,
+        accessToken: token,
+        streams: wanted.streams.map((s) => {
+          const got = resolved.find((r) => r.name === s.name);
+          return { name: s.name, fields: got?.fields ? [...got.fields] : [...s.fields] };
+        }),
+      };
     };
-    if (!(approval.redirect_uri && approval.grant_id)) {
-      return null;
-    }
-    const code = new URL(approval.redirect_uri).searchParams.get("code");
+
+    const digest = review?.review?.review_digest;
+    return { handle: sessionId, ...(digest ? { reviewRevision: digest } : {}), approve };
+  }
+
+  /** The RFC 9396 selection request this server expects, for both entry points. */
+  private async authorizeBody(wanted: GrantRequest): Promise<Record<string, unknown>> {
+    return {
+      client_id: this.config.clientId,
+      redirect_uri: this.config.redirectUri,
+      code_challenge: await s256Challenge(PKCE_VERIFIER),
+      code_challenge_method: "S256",
+      client_display: { name: "pdpp-conformance-suite" },
+      authorization_details: [
+        {
+          type: "https://pdpp.dev/data-access",
+          source: { id: this.config.sourceId },
+          purpose_code: this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
+          access_mode: wanted.accessMode ?? "continuous",
+          streams: wanted.streams.map((s) => ({
+            name: s.name,
+            ...(s.fields.length > 0 ? { fields: [...s.fields] } : {}),
+            ...(wanted.timeConstraint
+              ? {
+                  time_range: {
+                    ...(wanted.timeConstraint.from ? { since: wanted.timeConstraint.from } : {}),
+                    ...(wanted.timeConstraint.to ? { until: wanted.timeConstraint.to } : {}),
+                  },
+                }
+              : {}),
+          })),
+        },
+      ],
+    };
+  }
+
+  /** Redeem the authorization code the approval redirect carries, with PKCE. */
+  private async exchangeCode(redirectUri: string): Promise<string | null> {
+    const code = new URL(redirectUri).searchParams.get("code");
     if (!code) {
       return null;
     }
-
-    const tokenResponse = await fetch(`${this.config.baseUrl}/pdpp/v1/token`, {
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/token`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -210,27 +247,24 @@ export class VanaPsAdapter implements TargetAdapter {
         code_verifier: PKCE_VERIFIER,
       }).toString(),
     });
-    if (!tokenResponse.ok) {
+    if (!response.ok) {
       return null;
     }
-    const token = (await tokenResponse.json()) as { access_token?: string };
-    if (!token.access_token) {
-      return null;
-    }
+    const token = (await response.json()) as { access_token?: string };
+    return token.access_token ?? null;
+  }
 
-    // Report the fields the server RESOLVED, not the ones requested: Section 5
-    // requires schema-required fields in every resolved allowlist, so a
-    // conforming server widens a narrow request, and a case comparing against
-    // the request would read that correct behaviour as a leak.
-    const resolved = approval.grant?.streams ?? review.review?.streams ?? [];
-    return {
-      grantId: approval.grant_id,
-      accessToken: token.access_token,
-      streams: wanted.streams.map((s) => {
-        const got = resolved.find((r) => r.name === s.name);
-        return { name: s.name, fields: got?.fields ? [...got.fields] : [...s.fields] };
-      }),
-    };
+  /**
+   * The whole journey, for cases that just need a grant: stage, then approve
+   * with the revision the server issued. Built on stageApproval so there is one
+   * implementation of the flow rather than two that can drift apart.
+   */
+  async issueGrant(wanted: GrantRequest): Promise<IssuedGrant | null> {
+    const staged = await this.stageApproval(wanted);
+    if (!staged) {
+      return null;
+    }
+    return await staged.approve(staged.reviewRevision);
   }
 
   async revokeGrant(grantId: string): Promise<void> {

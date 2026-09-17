@@ -117,7 +117,13 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       // Not supported; declared absent in capabilities, so AS-10 is unsupported.
       return null;
     }
-    const issued = this.server.issueGrant(request.streams.map((s) => ({ name: s.name, fields: [...s.fields] })));
+    const issued = this.server.issueGrant(
+      request.streams.map((s) => ({
+        name: s.name,
+        fields: [...s.fields],
+        ...(request.timeConstraint ? { timeConstraint: request.timeConstraint } : {}),
+      }))
+    );
     if (!issued) {
       return null;
     }
