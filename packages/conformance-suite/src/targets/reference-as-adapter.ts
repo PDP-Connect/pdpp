@@ -32,6 +32,8 @@ export interface ReferenceAsConfig {
   readonly dcrInitialAccessToken: string;
   /** A second subject, so cross-subject isolation (RS-12) is demonstrable. */
   readonly foreignSubjectId?: string;
+  /** Credentials an RS uses at the introspection endpoint (RFC 7662 §2.1). */
+  readonly introspectionCredentials?: { readonly clientId: string; readonly clientSecret: string };
   /** Query parameters this deployment requires on owner-token reads. */
   readonly ownerReadParams?: Readonly<Record<string, string>>;
   readonly roles: readonly Role[];
@@ -126,6 +128,14 @@ export class ReferenceAsAdapter implements TargetAdapter {
 
   get ownerReadParams(): Readonly<Record<string, string>> | undefined {
     return this.config.ownerReadParams;
+  }
+
+  get authorizationServerUrl(): string {
+    return this.config.asUrl;
+  }
+
+  get introspectionCredentials(): { readonly clientId: string; readonly clientSecret: string } | undefined {
+    return this.config.introspectionCredentials;
   }
 
   async setup(): Promise<{ readonly streams: readonly SeededStream[] }> {

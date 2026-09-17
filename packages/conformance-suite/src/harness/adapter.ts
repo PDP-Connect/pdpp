@@ -106,6 +106,14 @@ export interface GrantRequest {
  */
 export interface TargetAdapter {
   /**
+   * Base URL of the authorization server, when it is a separate service.
+   *
+   * The AS cases discover its endpoints from RFC 8414 metadata published here.
+   * Absent for a co-located deployment, where there is no separate AS to query
+   * and the introspection requirements do not apply.
+   */
+  readonly authorizationServerUrl?: string | undefined;
+  /**
    * Base URL of the resource server, e.g. "http://localhost:4000".
    */
   readonly baseUrl: string;
@@ -124,6 +132,17 @@ export interface TargetAdapter {
    * recorded `unsupported` rather than passing by absence of evidence.
    */
   foreignSubjectOwnerToken?: () => Promise<string | null>;
+
+  /**
+   * Credentials a resource server uses to authenticate at the introspection
+   * endpoint (RFC 7662 Section 2.1 client authentication).
+   *
+   * Required to exercise the introspection-content requirements at all: a
+   * conforming AS rejects an unauthenticated caller, so without these the AS
+   * cases can only observe that rejection and never the response body. Supplying
+   * them does not weaken the AS-18 case, which deliberately calls without them.
+   */
+  readonly introspectionCredentials?: { readonly clientId: string; readonly clientSecret: string } | undefined;
 
   /**
    * Arrange consent for the requested grant and return a bound access token.

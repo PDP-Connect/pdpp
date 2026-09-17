@@ -36,17 +36,44 @@ interface IntrospectionBody {
   subject_id?: string;
 }
 
-const INTROSPECTION_PATH = "/oauth/introspect";
+/**
+ * Discover the introspection endpoint from RFC 8414 authorization server
+ * metadata rather than assuming a path.
+ *
+ * RFC 7662 fixes no location, and RFC 8414 exists so a caller does not have to
+ * guess: the reference implementation publishes `/introspect`, while a suite
+ * assuming `/oauth/introspect` would report every introspection requirement as
+ * untested against a perfectly conforming server. Guessing a path is testing our
+ * own convention, which is the same defect the query-base assumption was.
+ */
+async function discoverIntrospectionEndpoint(asBaseUrl: string): Promise<string | null> {
+  const metadata = await request(asBaseUrl, "/.well-known/oauth-authorization-server");
+  if (metadata.status !== 200) {
+    return null;
+  }
+  const endpoint = (metadata.json as { introspection_endpoint?: unknown } | undefined)?.introspection_endpoint;
+  return typeof endpoint === "string" && endpoint.length > 0 ? endpoint : null;
+}
 
 /**
- * Ask the AS about a token. Returns undefined when the target exposes no
- * introspection endpoint, which a co-located deployment legitimately may not.
+ * Ask the AS about a token, at the endpoint its metadata advertises,
+ * authenticating as a resource server would (RFC 7662 Section 2.1).
  */
-async function introspect(baseUrl: string, token: string, adminToken?: string) {
-  return await request(baseUrl, INTROSPECTION_PATH, {
+async function introspect(
+  endpoint: string,
+  token: string,
+  credentials?: { readonly clientId: string; readonly clientSecret: string }
+) {
+  const headers: Record<string, string> = {
+    "content-type": "application/x-www-form-urlencoded",
+  };
+  if (credentials) {
+    const basic = Buffer.from(`${credentials.clientId}:${credentials.clientSecret}`).toString("base64");
+    headers.authorization = `Basic ${basic}`;
+  }
+  return await request(endpoint, "", {
     method: "POST",
-    ...(adminToken && { token: adminToken }),
-    headers: { "content-type": "application/x-www-form-urlencoded" },
+    headers,
     body: `token=${encodeURIComponent(token)}`,
   });
 }
@@ -70,12 +97,15 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a grant for a seeded stream.");
       }
-      const response = await introspect(adapter.baseUrl, grant.accessToken);
-      if (response.status === 404) {
+      const endpoint = adapter.authorizationServerUrl
+        ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
+        : null;
+      if (!endpoint) {
         return skip(
-          `The target declares a separated deployment but exposes no introspection endpoint at ${INTROSPECTION_PATH}.`
+          "The target declares a separated deployment but publishes no introspection_endpoint in its RFC 8414 authorization server metadata."
         );
       }
+      const response = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
       if (response.status !== 200) {
         return fail(`Expected 200 from the introspection endpoint, got ${response.status}.`, [response.evidence]);
       }
@@ -121,12 +151,15 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a grant for a seeded stream.");
       }
-      const response = await introspect(adapter.baseUrl, grant.accessToken);
-      if (response.status === 404) {
+      const endpoint = adapter.authorizationServerUrl
+        ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
+        : null;
+      if (!endpoint) {
         return skip(
-          `The target declares a separated deployment but exposes no introspection endpoint at ${INTROSPECTION_PATH}.`
+          "The target declares a separated deployment but publishes no introspection_endpoint in its RFC 8414 authorization server metadata."
         );
       }
+      const response = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
       if (response.status !== 200) {
         return fail(`Expected 200 from the introspection endpoint, got ${response.status}.`, [response.evidence]);
       }
@@ -197,19 +230,22 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
 
       // Establish that introspection reports this token active first; otherwise a
       // later active:false proves nothing about revocation.
-      const before = await introspect(adapter.baseUrl, grant.accessToken);
-      if (before.status === 404) {
+      const endpoint = adapter.authorizationServerUrl
+        ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
+        : null;
+      if (!endpoint) {
         return skip(
-          `The target declares a separated deployment but exposes no introspection endpoint at ${INTROSPECTION_PATH}.`
+          "The target declares a separated deployment but publishes no introspection_endpoint in its RFC 8414 authorization server metadata."
         );
       }
+      const before = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
       if (before.status !== 200 || (before.json as IntrospectionBody | undefined)?.active !== true) {
         return skip("Introspection did not report the fresh token as active, so revocation cannot be isolated.");
       }
 
       await adapter.revokeGrant(grant.grantId);
 
-      const after = await introspect(adapter.baseUrl, grant.accessToken);
+      const after = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
       if (after.status !== 200) {
         return fail(`Expected 200 from introspection after revocation, got ${after.status}.`, [
           before.evidence,
@@ -256,16 +292,21 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       // Deliberately no credential: RFC 7662 requires the AS to authenticate the
       // caller. An open introspection endpoint turns any leaked token string into
       // a lookup oracle for the grant it carries.
-      const response = await request(adapter.baseUrl, INTROSPECTION_PATH, {
+      const endpoint = adapter.authorizationServerUrl
+        ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
+        : null;
+      if (!endpoint) {
+        return skip(
+          "The target declares a separated deployment but publishes no introspection_endpoint in its RFC 8414 authorization server metadata."
+        );
+      }
+      // Deliberately no credential: RFC 7662 requires the AS to authenticate the
+      // caller. An open endpoint turns any leaked token into a lookup oracle.
+      const response = await request(endpoint, "", {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: `token=${encodeURIComponent(grant.accessToken)}`,
       });
-      if (response.status === 404) {
-        return skip(
-          `The target declares a separated deployment but exposes no introspection endpoint at ${INTROSPECTION_PATH}.`
-        );
-      }
       if (response.status === 401 || response.status === 403) {
         return pass([response.evidence]);
       }

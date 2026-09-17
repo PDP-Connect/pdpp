@@ -76,5 +76,9 @@
   ],
   "ownerReadParams": {
     "connector_id": "https://registry.pdpp.dev/connectors/github"
+  },
+  "introspectionCredentials": {
+    "clientId": "conformance-rs",
+    "clientSecret": "conformance-rs-secret"
   }
 }
