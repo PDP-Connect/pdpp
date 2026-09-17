@@ -132,6 +132,18 @@ export interface TargetAdapter {
    */
   issueGrant: (request: GrantRequest) => Promise<IssuedGrant | null>;
 
+  /**
+   * Query parameters this deployment requires on owner-token reads.
+   *
+   * Core scopes an owner token to one subject's data store but does not say how
+   * a deployment serving several connector instances disambiguates between them.
+   * A reference deployment requires `connector_id`, and omitting it is a 400 for
+   * a malformed request, not a refusal of the owner's authority. Without this the
+   * suite would read that 400 as a failure of subject scoping (RS-12) or of
+   * self-export (RS-13) — reporting a deployment convention as a spec violation.
+   */
+  readonly ownerReadParams?: Readonly<Record<string, string>> | undefined;
+
   /** An owner token for the seeded subject, when the target issues them. */
   ownerToken: () => Promise<string | null>;
 

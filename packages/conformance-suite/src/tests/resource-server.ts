@@ -163,6 +163,21 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a field-narrowed grant.");
       }
+
+      // Judge against the fields the AS RESOLVED, not the ones requested.
+      // Section 5 requires schema-required fields to be present in every
+      // resolved allowlist, so a conforming AS legitimately widens a narrow
+      // request. Comparing against the request would report that correct
+      // behaviour as a leak; the question is whether the RS returns anything
+      // beyond what the grant actually froze.
+      const granted = grant.streams.find((s) => s.name === stream.name)?.fields ?? keep;
+      const stillOmitted = stream.fields.filter((f) => !granted.includes(f));
+      if (stillOmitted.length === 0) {
+        return skip(
+          `The authorization server resolved the narrowed request to every declared field (${granted.join(", ")}), so no field was withheld and projection enforcement is not observable on this stream.`
+        );
+      }
+
       const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: grant.accessToken,
       });
@@ -175,14 +190,14 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       const leaked = new Set<string>();
       for (const record of records) {
         for (const field of Object.keys(record.data ?? {})) {
-          if (omitted.includes(field)) {
+          if (stillOmitted.includes(field)) {
             leaked.add(field);
           }
         }
       }
       if (leaked.size > 0) {
         return fail(
-          `Overbroad access: fields outside the grant projection appeared in records: ${[...leaked].join(", ")}. Granted fields were ${keep.join(", ")}.`,
+          `Overbroad access: fields outside the grant's resolved projection appeared in records: ${[...leaked].join(", ")}. The grant froze ${granted.join(", ")}.`,
           [response.evidence]
         );
       }
@@ -259,7 +274,10 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
 
       // Positive control: the genuine owner token must still work, otherwise the
       // rejection above could just be a server that refuses every owner read.
-      const control = await request(adapter.baseUrl, recordsPath, { token: realOwner });
+      const control = await request(adapter.baseUrl, recordsPath, {
+        token: realOwner,
+        ...(adapter.ownerReadParams ? { query: { ...adapter.ownerReadParams } } : {}),
+      });
       if (control.status === 401 || control.status === 403) {
         return skip(
           `The genuine owner token was also refused (${control.status}), so this run cannot distinguish syntax-based token handling from a target that rejects all owner reads.`
@@ -427,6 +445,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
       const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: foreign,
+        ...(adapter.ownerReadParams ? { query: { ...adapter.ownerReadParams } } : {}),
       });
       if (response.status === 200) {
         const records = asList(response.json)?.data ?? [];
@@ -468,6 +487,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
       const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: owner,
+        ...(adapter.ownerReadParams ? { query: { ...adapter.ownerReadParams } } : {}),
       });
       if (response.status !== 200) {
         return fail(
@@ -507,6 +527,17 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a field-narrowed grant.");
       }
+
+      // As in the records case: the resolved allowlist is the oracle, because a
+      // conforming AS adds schema-required fields to a narrow request.
+      const granted = grant.streams.find((s) => s.name === stream.name)?.fields ?? keep;
+      const stillOmitted = stream.fields.filter((f) => !granted.includes(f));
+      if (stillOmitted.length === 0) {
+        return skip(
+          `The authorization server resolved the narrowed request to every declared field (${granted.join(", ")}), so metadata projection is not observable on this stream.`
+        );
+      }
+
       const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}`), {
         token: grant.accessToken,
       });
@@ -526,10 +557,10 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
         | undefined;
 
       const exposed = Object.keys(body?.schema?.properties ?? {});
-      const leakedFields = exposed.filter((f) => omitted.includes(f));
+      const leakedFields = exposed.filter((f) => stillOmitted.includes(f));
       if (leakedFields.length > 0) {
         return fail(
-          `Client-token stream metadata disclosed ungranted schema fields: ${leakedFields.join(", ")}. The grant froze ${keep.join(", ")}.`,
+          `Client-token stream metadata disclosed ungranted schema fields: ${leakedFields.join(", ")}. The grant froze ${granted.join(", ")}.`,
           [response.evidence]
         );
       }

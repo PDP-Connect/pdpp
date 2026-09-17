@@ -24,6 +24,7 @@ import { renderMarkdown } from "./report/markdown.ts";
 import { runSuite } from "./suite.ts";
 import { type HttpTargetConfig, httpTargetFromConfig } from "./targets/http-target.ts";
 import { ReferenceTargetAdapter } from "./targets/reference-adapter.ts";
+import { ReferenceAsAdapter, type ReferenceAsConfig } from "./targets/reference-as-adapter.ts";
 
 const USAGE = `pdpp-conformance --target <reference|config.json|module-path> [options]
 
@@ -47,7 +48,13 @@ async function loadAdapter(target: string): Promise<TargetAdapter> {
   // A JSON config describes a real server over HTTP, so pointing the suite at a
   // deployment is a config change rather than a code change.
   if (target.endsWith(".json")) {
-    return httpTargetFromConfig(JSON.parse(readFileSync(target, "utf8")) as HttpTargetConfig);
+    const parsed = JSON.parse(readFileSync(target, "utf8")) as { kind?: string };
+    // A config naming an authorization server drives the real consent journey,
+    // so the grant-shape cases can run instead of skipping.
+    if (parsed.kind === "reference-as") {
+      return new ReferenceAsAdapter(parsed as unknown as ReferenceAsConfig);
+    }
+    return httpTargetFromConfig(parsed as unknown as HttpTargetConfig);
   }
   const module = (await import(target)) as {
     default?: () => TargetAdapter | Promise<TargetAdapter>;
