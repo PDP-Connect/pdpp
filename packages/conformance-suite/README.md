@@ -71,16 +71,16 @@ tested/applicable per role.
 # Against the bundled target (the suite's self-test)
 pnpm --filter @pdpp/conformance-suite exec tsx src/cli.ts --target reference
 
-# Against a real server, described by a JSON config
+# Against the real reference implementation (AS + RS)
 pnpm --filter @pdpp/conformance-suite exec tsx src/cli.ts \
-  --target targets/personal-server.example.json \
+  --target targets/reference-implementation.json \
   --json report.json --markdown report.md
 ```
 
 `--target` takes `reference` for the bundled target, a `.json` config describing a
 deployment over HTTP, or a module whose default export returns a `TargetAdapter`.
 The JSON form means pointing the suite at a real implementation is a config change
-rather than a code change: see `targets/personal-server.example.json`. Where an
+rather than a code change: see `targets/reference-implementation.json`. Where an
 adapter cannot produce what a case needs — a field-narrowed grant, a second
 subject's owner token — that case reports `skip` naming the gap rather than
 passing vacuously.
@@ -127,55 +127,54 @@ and error code, and does not claim to test the ordering.
 
 ## Status against a real implementation
 
-The suite has been run against a real PDPP resource server, and it found a real
-failure.
+The suite runs against the PDP-Connect reference implementation's real
+authorization and resource servers, and reports two findings that reproduce
+independently.
 
-**Target:** the PDP-Connect reference operations, served over HTTP by `apps/site`
-under `/sandbox/v1`. Those routes mount the same operations that
-`packages/reference-operations-sandbox` vendors from the reference implementation.
-Config: `targets/site-sandbox.json`.
+**Target:** `reference-implementation/server/index.ts` in the data-connect
+repository, started with separate AS and RS ports. `ReferenceAsAdapter` drives the
+real consent journey over HTTP — RFC 7591 client registration, PAR, owner review
+and approval, grant issuance, revocation — so the grant-shape cases execute rather
+than skipping. Config: `targets/reference-implementation.json`.
 
-```sh
-cd apps/site && npx next dev -p 3211        # in one shell
-pnpm --filter @pdpp/conformance-suite exec \
-  tsx src/cli.ts --target targets/site-sandbox.json   # exit 1
-```
+**Result: 11 of 37 applicable tested, 9 passed, 2 failed MUSTs, no RS-side skips.**
 
-**Result: 1 of 14 applicable requirements tested, 0 passed, 1 failed MUST.**
+| Finding | Detail |
+| --- | --- |
+| RS-2 | A grant covering `repositories` correctly denies `starred`, but with 401 `context.stream_not_allowed`. Section 8 maps stream-not-in-grant to 403 `grant_stream_not_allowed`. Access control holds; the classification differs, and a client branching on the documented code will not recognise it. |
+| RS-16 | The `WWW-Authenticate` challenge on a rejected token omits `error="invalid_token"`, which RFC 6750 Section 3 requires when a token was presented and refused. |
 
-RS-16 fails. Section 8 requires a request with no usable token to be refused with
-401 and a `WWW-Authenticate: Bearer` challenge carrying `resource_metadata`. This
-target returns 200 and serves records. Its routes hardcode
-`actor: { kind: "owner", subject_id: null }` and never read an `Authorization`
-header. Reproduced independently:
+Both were reproduced with curl against the running server, independent of the
+suite. Everything else the suite can currently test on the RS passes, including
+stream membership, cross-subject isolation, self-export, client-token filter and
+expansion rejection, unknown-parameter rejection, version negotiation, metadata
+projection, and revocation.
 
-```console
-$ curl -s -o /dev/null -w '%{http_code}\n' \
-    http://127.0.0.1:3211/sandbox/v1/streams/pay_statements/records
-200
-$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer garbage' \
-    http://127.0.0.1:3211/sandbox/v1/streams/pay_statements/records
-200
-```
+### The apps/site sandbox is not this target
 
-This is expected of a public demo that has no authorization layer, and it is not a
-defect report against the reference implementation's own AS/RS. It is recorded
-because a suite that suppressed it would be worthless. Ten further cases report
-`skip`: the target exposes no way to issue a grant of a given shape, so the
-grant-enforcement oracles cannot establish their preconditions and do not pretend
-to have run.
+An earlier revision of this file reported an RS-16 failure against the public
+sandbox that `apps/site` serves under `/sandbox/v1`. That was a category error and
+is withdrawn. The sandbox is a demo with no authorization layer — its routes
+hardcode an owner actor and read no `Authorization` header — and it makes no
+conformance claim. Its behaviour is not a product defect and is not reported as
+one. `targets/site-sandbox.json` is retained only as harness plumbing: it exercises
+the HTTP adapter and the declared-query-base path against a server that mounts its
+surface somewhere other than `/v1`.
 
-Running against this target also corrected an assumption in the suite. Cases
-composed URLs as `/v1/...`, which Core does not fix — Section 8 publishes
-`pdpp_core_query_base` so a client composes a query without assuming a version
-segment. This target mounts at `/sandbox/v1`; every case would have 404'd and the
-suite would have called a conforming layout broken.
+### Why running against the real server changed the suite
 
-The Vana PDPP work in `vana-com/personal-server-ts` is configured too
-(`targets/personal-server.example.json`) but has no HTTP surface to test yet: as of
-2026-09-17 its AS branch is empty against its base and its RS branch adds record
-storage with no `/v1/streams` routes. That run reports a connection failure naming
-the unreachable base URL.
+Three cases that failed on first contact were defects in the suite, not the server:
+
+- RS-2 and RS-15 compared returned fields against the fields *requested*. Section 5
+  requires schema-required fields in every resolved allowlist, so a conforming AS
+  widens a narrow request — and the cases read that correct behaviour as a leak.
+  They now judge against the fields the grant actually resolved.
+- RS-12 and RS-13 read a 400 as a scoping failure when the deployment simply
+  requires `connector_id` on owner reads. `ownerReadParams` carries that
+  convention, and both now pass.
+
+A fourth, found earlier, was the hardcoded `/v1` prefix that Core deliberately does
+not fix. None of these would have surfaced against a purpose-built fixture.
 
 Expect coverage to differ per target: one implementing views, incremental sync, or
 single-use grants moves requirements out of `unsupported` and into the tested
