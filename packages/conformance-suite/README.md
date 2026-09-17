@@ -173,29 +173,75 @@ that has already expired against this AS.
 
 ### Second target: the Vana Personal Server's composed AS + RS
 
-Run against `personal-server-ts` @ `waspflow/pdpp-integrated-journey-0917`
-(`6e5ff0d`), which mounts the Resource Server on a real boot. Config:
+Run against `personal-server-ts` with the authorization journey of
+`waspflow/pdpp-integrated-journey-0917` (`6e5ff0d`) and the Resource Server fixes
+of `feat/pdpp-record-storage-rs` (`8ba3265`, PR vana-com/personal-server-ts#328).
+Neither branch alone is the target: the RS branch deletes the AS entirely — no
+`routes/pdpp-auth.ts`, no `pdpp/bootstrap.ts` — so the consent journey cannot run
+there, while the integration branch predates the fixes. The target is the merge of
+the two, which is what a deployment shipping both would serve. Config:
 `targets/vana-personal-server.json`.
 
-**Result: 8 of 33 applicable tested, 6 passed, 2 failed MUSTs, 3 skips.**
+**Result: 13 of 33 applicable tested, 12 passed, 1 failed MUST, 2 skips.**
+
+Two of the three MUSTs this suite previously reported against this target are
+fixed and confirmed fixed by re-running the same cases:
 
 | Requirement | Level | Finding |
 | --- | --- | --- |
-| RS-10 | **Failed MUST** | An unknown query parameter is silently ignored and the request served with 200. Section 8 requires 400, so a client cannot have a misunderstood parameter quietly dropped. |
-| RS-16 | **Failed MUST** | The 401 on a *rejected* token carries no `WWW-Authenticate` header. The no-token path is correct — a request with no `Authorization` header gets a well-formed challenge with `resource_metadata` and `error="invalid_token"`. Only the rejected-token path omits it, and that is the path Core Section 8 governs. |
+| RS-10 | Now passes | An unknown query parameter returned 200. Now `400 invalid_request` naming the parameter in `error.param`. |
+| RS-6 | Now passes | A malformed cursor returned `500 INTERNAL_ERROR`. Now `400 invalid_cursor`, with a valid cursor still paginating. |
+| RS-16 | **Failed MUST** | Unchanged. The 401 on a *rejected* token still carries no `WWW-Authenticate` header. |
+
+RS-16 needs stating precisely, because the fix that landed addressed a different
+defect. `20a65d6` made the challenge's `resource_metadata` absolute rather than the
+relative `/.well-known/oauth-protected-resource` — a real RFC 9728 §5.1 improvement,
+and one this suite recorded as an observation rather than reporting as a finding.
+But the finding was about *which path emits a challenge at all*. In
+`routes/pdpp-records.ts`, `authenticate()` calls `unauthorized()` — the only builder
+of the challenge — solely on the `!token` branch; a token that is present and
+rejected by `resolveToken` returns a bare 401. So the no-token path is correct and
+the rejected-token path, which Core Section 8 governs and which a client holding a
+stale token actually takes, still omits it:
+
+```console
+$ curl -sD- -o /dev/null http://127.0.0.1:8420/v1/streams/top_artists/records
+HTTP/1.1 401 Unauthorized
+www-authenticate: Bearer error="invalid_token", resource_metadata="http://127.0.0.1:8420/.well-known/oauth-protected-resource"
+
+$ curl -sD- -o /dev/null http://127.0.0.1:8420/v1/streams/top_artists/records \
+    -H 'Authorization: Bearer pdpp-conformance-invalid-token'
+HTTP/1.1 401 Unauthorized          # no www-authenticate at all
+```
 
 This target uses a different authorization journey from the reference — a session
-opened at `/pdpp/v1/authorize`, reviewed by digest, approved, then an
-authorization code exchanged with PKCE, rather than RFC 9126 PAR plus a consent
-endpoint. Core pins neither: Section 6 defines the selection request and Section 7
-the resolved grant, not the route between them. Both are conformant, and the case
-bodies never learn which journey produced the token they were handed. That is the
-strongest available evidence that the suite tests the protocol rather than one
-deployment's habits.
+opened at `/pdpp/v1/authorize`, reviewed by digest, approved against that digest,
+then an authorization code exchanged with PKCE, rather than RFC 9126 PAR plus a
+consent endpoint. Core pins neither: Section 6 defines the selection request and
+Section 7 the resolved grant, not the route between them. Both are conformant, and
+the case bodies never learn which journey produced the token they were handed. That
+is the strongest available evidence that the suite tests the protocol rather than
+one deployment's habits.
 
-Three cases skip rather than pass vacuously: this deployment seeds one stream (so
-stream-membership and error-classification have nothing to hold out) and binds one
-owner (so there is no foreign subject for RS-12).
+Coverage rose from 8 tested to 13 because the target now declares a second stream,
+not because any oracle was relaxed. Stream-membership enforcement (RS-2) and its
+error classification (RS-6) work by holding one stream *out* of the grant, so with
+a single declared stream they could only report `skip`. Both now pass, and RS-6
+passes on a point the reference implementation fails — a client token granted
+`top_artists` is refused `saved_tracks` with `403 grant_stream_not_allowed`, which
+is what the Section 8 error table specifies:
+
+```console
+$ curl -s -w '\nHTTP %{http_code}\n' http://127.0.0.1:8420/v1/streams/saved_tracks/records \
+    -H "Authorization: Bearer $CLIENT_TOKEN"
+{"error":{"type":"permission_error","code":"grant_stream_not_allowed",
+  "message":"Grant does not include stream 'saved_tracks'", ...}}
+HTTP 403
+```
+
+Two cases still skip rather than pass vacuously: this deployment binds one owner,
+so there is no foreign subject for RS-12, and the adapter cannot fabricate an
+already-expired grant for AS-8.
 
 ### The apps/site sandbox is not this target
 

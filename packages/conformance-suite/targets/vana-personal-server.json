@@ -2,7 +2,18 @@
   "_comment": [
     "The Vana Personal Server's composed PDPP AS + RS. RUN AND VERIFIED.",
     "",
-    "Boot (from a personal-server-ts checkout at the pinned commit):",
+    "The target is the MERGE of two branches, because neither alone can serve it:",
+    "  - waspflow/pdpp-integrated-journey-0917 (6e5ff0d) has the AS and the",
+    "    authorization journey this adapter drives.",
+    "  - feat/pdpp-record-storage-rs (8ba3265, PR #328) has the RS fixes for",
+    "    unknown query parameters and malformed cursors, but DELETES the AS",
+    "    (no routes/pdpp-auth.ts, no pdpp/bootstrap.ts), so the journey cannot",
+    "    run against it on its own.",
+    "Merge 8ba3265 into 6e5ff0d; two conflicts in routes/pdpp-records{,.test}.ts",
+    "resolve by taking the RS branch's rejectUnknownParams and keeping the",
+    "integration branch's PDPP_API_VERSION (both constants are '2026-04-06').",
+    "",
+    "Boot (from a personal-server-ts checkout at that merge):",
     "  1. npm install --allow-git=root --ignore-scripts",
     "  2. npm install-scripts approve better-sqlite3 esbuild secp256k1  (native builds)",
     "  3. npm rebuild better-sqlite3 secp256k1 esbuild",
@@ -28,13 +39,20 @@
     "  - one owner is bound to the server, so there is no second subject. RS-12",
     "    reports skip naming that rather than passing on no evidence.",
     "",
+    "Declare BOTH streams below in the boot declaration and give each a data_files",
+    "scope row, then seed both. The stream-membership oracles (RS-2 enforcement,",
+    "RS-6 error classification) work by holding one stream OUT of the grant, so a",
+    "single-stream deployment can only report skip on them. Seed several records",
+    "into top_artists as well: a stream too short to produce a page cursor cannot",
+    "exercise the cursor/changes_since token-space separation case.",
+    "",
     "Run: tsx src/cli.ts --target targets/vana-personal-server.json"
   ],
   "kind": "vana-ps",
   "targetId": "vana-personal-server",
-  "targetVersion": "personal-server-ts@waspflow/pdpp-integrated-journey-0917 6e5ff0d",
+  "targetVersion": "personal-server-ts@waspflow/pdpp-integrated-journey-0917 6e5ff0d + feat/pdpp-record-storage-rs 8ba3265 (composed f370673)",
   "baseUrl": "http://127.0.0.1:8420",
-  "ownerBootstrapToken": "c7f7918e11764cdb3ac69e4848855e805247ac6b8e3bec65fbd67559be27e6e5",
+  "ownerBootstrapToken": "c4662452e16b7e79c8af018975efd707bcb0e41e6ee492ee8b0d440ebf4cdd85",
   "clientId": "music_recommendations",
   "redirectUri": "https://app.example.com/callback",
   "sourceId": "https://registry.pdpp.dev/connectors/spotify",
@@ -57,7 +75,15 @@
       "primaryKey": ["id"],
       "cursorField": "source_updated_at",
       "semantics": "mutable_state",
-      "recordCount": 1
+      "recordCount": 5
+    },
+    {
+      "name": "saved_tracks",
+      "fields": ["id", "title", "artist", "source_updated_at"],
+      "primaryKey": ["id"],
+      "cursorField": "source_updated_at",
+      "semantics": "mutable_state",
+      "recordCount": 3
     }
   ]
 }
