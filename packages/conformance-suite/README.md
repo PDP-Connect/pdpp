@@ -68,18 +68,25 @@ tested/applicable per role.
 ## Running it
 
 ```sh
-# Against the bundled reference target
+# Against the bundled target (the suite's self-test)
 pnpm --filter @pdpp/conformance-suite exec tsx src/cli.ts --target reference
 
-# Against your own implementation
+# Against a real server, described by a JSON config
 pnpm --filter @pdpp/conformance-suite exec tsx src/cli.ts \
-  --target ./my-adapter.ts \
+  --target targets/personal-server.example.json \
   --json report.json --markdown report.md
 ```
 
-`--target` takes a module whose default export returns a `TargetAdapter`. Set
-`SOURCE_DATE_EPOCH` to fix run timestamps for a byte-reproducible report; the report
-records whether that held.
+`--target` takes `reference` for the bundled target, a `.json` config describing a
+deployment over HTTP, or a module whose default export returns a `TargetAdapter`.
+The JSON form means pointing the suite at a real implementation is a config change
+rather than a code change: see `targets/personal-server.example.json`. Where an
+adapter cannot produce what a case needs — a field-narrowed grant, a second
+subject's owner token — that case reports `skip` naming the gap rather than
+passing vacuously.
+
+Set `SOURCE_DATE_EPOCH` to fix run timestamps for a byte-reproducible report; the
+report records whether that held.
 
 Exit codes are three-valued, because a run with no failures and partial coverage is not
 a complete pass and must not be scriptable as one:
@@ -92,8 +99,11 @@ a complete pass and must not be scriptable as one:
 
 ## Coverage
 
-Against the reference target, this version tests 11 of 36 applicable requirements
-(RS 10/16, AS 1/20). The gaps are deliberate and recorded rather than hidden:
+Against the bundled target, this version tests 11 of 33 applicable requirements
+(RS 10/16, AS 1/17). Four AS requirements report `unsupported` because that target
+is co-located and exposes no RFC 7662 introspection endpoint, so they leave the
+applicable denominator rather than counting as passes. The gaps are deliberate and
+recorded rather than hidden:
 
 - **Client role (CL-1…CL-8): entirely untested.** Client conformance requires driving
   a client under test and observing its outgoing requests. The adapter has no reverse
@@ -104,10 +114,32 @@ Against the reference target, this version tests 11 of 36 applicable requirement
   entirely; they appear only for a target that claims the role.
 - **Most AS requirements.** Consent-surface rendering (AS-7), snapshot retention
   (AS-16), and approval-revision binding (AS-15) are not observable over the record
-  query interface. They need an AS-side adapter surface.
+  query interface. They need an AS-side adapter surface. Four AS requirements
+  (AS-3, AS-8, AS-9, AS-18) do have executable cases that read the RFC 7662
+  introspection response, which Section 8 makes the authoritative enforcement
+  context; they run against any target declaring `separatedDeployment`.
 - **`changes_since` (RS-7, RS-8)**, views, blobs, and single-use grants are declared
   unsupported by the reference target and report as `unsupported`, not as passes.
 
 Some requirements are also not black-box observable in principle. RS-9 requires
 rejection "before the RS consults declaration metadata"; the suite asserts the status
 and error code, and does not claim to test the ordering.
+
+## Status against a real implementation
+
+The suite has **not** yet produced a conformance result for any real deployment, and
+the coverage figures above describe the bundled target only. They are not a claim
+about any implementation's conformance.
+
+An adapter and config for the PDPP work in `vana-com/personal-server-ts` are
+included (`targets/personal-server.example.json`). As of 2026-09-17 that target
+serves no PDPP HTTP surface to test: `feat/pdpp-as-grants` is empty against its
+base, and `feat/pdpp-record-storage-rs` (`eecdaa7`, self-described WIP) adds record
+storage primitives with no `/v1/streams` routes and no route registration. Running
+the suite against it reports a connection failure naming the unreachable base URL,
+which is the correct result. That run is the integration gate this suite is waiting
+on, not a defect in the adapter.
+
+Expect coverage against a real target to differ from the bundled figures: a target
+implementing views, incremental sync, or single-use grants moves requirements out of
+`unsupported` and into the tested denominator.

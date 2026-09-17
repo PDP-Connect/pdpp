@@ -35,6 +35,10 @@ export interface PdppResponse {
 }
 
 export interface RequestOptions {
+  /** Request body, for the provisioning calls an adapter makes. Not captured as
+   * evidence: it may carry adapter credentials, and no conformance case asserts
+   * on it. */
+  readonly body?: string;
   readonly headers?: Record<string, string>;
   readonly method?: string;
   readonly query?: Record<string, string | undefined>;
@@ -64,7 +68,11 @@ export async function request(baseUrl: string, path: string, options: RequestOpt
   }
 
   const method = options.method ?? "GET";
-  const response = await fetch(url, { method, headers });
+  const response = await fetch(url, {
+    method,
+    headers,
+    ...(options.body !== undefined && { body: options.body }),
+  });
   const text = await response.text();
 
   let json: unknown;

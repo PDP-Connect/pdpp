@@ -80,6 +80,19 @@ const DISCRIMINATION_MATRIX: readonly {
     defect: "weak-401-challenge",
   },
   { caseId: "AS-8/revoked-grant-refused", defect: "ignore-revocation" },
+  // Added after independent review: these three are negative-shaped oracles
+  // (they exist to catch a cross-subject leak, a fake self-export declaration,
+  // and syntax-derived token kind) and previously had only a passes-clean
+  // control, which does not show the assertion can fire.
+  {
+    caseId: "RS-4/token-kind-not-inferred-from-syntax",
+    defect: "infer-token-kind-from-syntax",
+  },
+  { caseId: "RS-12/foreign-subject-cannot-read", defect: "ignore-subject-scope" },
+  {
+    caseId: "RS-13/self-export-supported",
+    defect: "declare-self-export-but-refuse",
+  },
 ];
 
 describe("negative oracles discriminate conforming from violating targets", () => {
@@ -112,10 +125,8 @@ describe("positive controls hold", () => {
   for (const caseId of [
     "RS-1/list-streams-envelope",
     "RS-2/granted-stream-readable",
-    "RS-4/unauthenticated-request-refused",
     "RS-11/unsupported-version-rejected",
-    "RS-12/foreign-subject-cannot-read",
-    "RS-13/self-export-supported",
+    "RS-16/unauthenticated-request-refused",
     "RS-16/protected-resource-metadata-published",
   ]) {
     it(`${caseId} passes against the clean reference target`, async () => {

@@ -38,7 +38,13 @@ export type Defect =
   /** Omits resource_metadata from the 401 challenge (RS-16). */
   | "weak-401-challenge"
   /** Discloses current views/relationships to a client token (RS-15). */
-  | "leak-current-metadata";
+  | "leak-current-metadata"
+  /** Reads token kind from the token string instead of its principal (RS-4). */
+  | "infer-token-kind-from-syntax"
+  /** Serves any subject's store to any owner token (RS-12). */
+  | "ignore-subject-scope"
+  /** Declares self-export but refuses owner reads (RS-13). */
+  | "declare-self-export-but-refuse";
 
 export type Record_ = { readonly id: string } & Record<string, unknown>;
 
@@ -387,7 +393,18 @@ export class ReferenceServer {
     if (typeof authorization !== "string" || !authorization.startsWith("Bearer ")) {
       return undefined;
     }
-    return this.tokens.get(authorization.slice("Bearer ".length));
+    const credential = authorization.slice("Bearer ".length);
+    const known = this.tokens.get(credential);
+    if (known) {
+      return known;
+    }
+    // The defect RS-4 exists to catch: deciding token kind from the token's
+    // shape rather than from the principal it resolves to. A string that merely
+    // starts like an owner credential is honoured as one.
+    if (this.has("infer-token-kind-from-syntax") && credential.startsWith("owner-")) {
+      return { kind: "owner", subjectId: SEEDED_SUBJECT };
+    }
+    return undefined;
   }
 
   /**
@@ -415,6 +432,15 @@ export class ReferenceServer {
   ): string | undefined {
     if (kind === "client") {
       return inGrant || this.has("ignore-grant-streams") ? undefined : `Grant does not include stream '${streamName}'.`;
+    }
+    if (this.has("declare-self-export-but-refuse")) {
+      // Declares pdpp_self_export_supported in its metadata, then refuses the
+      // owner read it advertised (RS-13).
+      return "Self-export is not available.";
+    }
+    if (this.has("ignore-subject-scope")) {
+      // Any owner token reaches any subject's store (RS-12).
+      return undefined;
     }
     return subjectScoped ? undefined : "Owner token is scoped to a different subject.";
   }

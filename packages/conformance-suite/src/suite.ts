@@ -7,6 +7,7 @@ import type { TargetAdapter } from "./harness/adapter.ts";
 import type { ConformanceCase } from "./harness/runner.ts";
 import { makeContext, runCases } from "./harness/runner.ts";
 import { buildReport, type ConformanceReport } from "./report/result.ts";
+import { AUTHORIZATION_SERVER_CASES } from "./tests/authorization-server.ts";
 import { CLIENT_CASES } from "./tests/client.ts";
 import { GRANT_LIFECYCLE_CASES } from "./tests/grant-lifecycle.ts";
 import { RESOURCE_SERVER_CASES } from "./tests/resource-server.ts";
@@ -21,6 +22,7 @@ export const SUITE = { name: "pdpp-conformance-suite", version: "0.1.0" } as con
 /** Every case the suite knows, in a stable order. */
 export const ALL_CASES: readonly ConformanceCase[] = [
   ...RESOURCE_SERVER_CASES,
+  ...AUTHORIZATION_SERVER_CASES,
   ...GRANT_LIFECYCLE_CASES,
   ...CLIENT_CASES,
 ];

@@ -16,19 +16,22 @@
 //   1  at least one requirement failed
 //   2  no failures, but coverage is incomplete (untested applicable requirements)
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 import type { TargetAdapter } from "./harness/adapter.ts";
 import { renderMarkdown } from "./report/markdown.ts";
 import { runSuite } from "./suite.ts";
+import { type HttpTargetConfig, httpTargetFromConfig } from "./targets/http-target.ts";
 import { ReferenceTargetAdapter } from "./targets/reference-adapter.ts";
 
-const USAGE = `pdpp-conformance --target <reference|module-path> [options]
+const USAGE = `pdpp-conformance --target <reference|config.json|module-path> [options]
 
 Options:
-  --target <t>       "reference" for the bundled in-process target, or a path to
-                     a module whose default export is a TargetAdapter factory.
+  --target <t>       One of:
+                       "reference"  the bundled in-process target (self-test)
+                       a .json path  an HTTP target config (see README)
+                       a module path whose default export returns a TargetAdapter
   --json <path>      Write the machine-readable report to this path.
   --markdown <path>  Write the human-readable report to this path.
   --quiet            Do not print the markdown report to stdout.
@@ -40,6 +43,11 @@ Exit codes: 0 all applicable MUSTs tested and passed; 1 failures present;
 async function loadAdapter(target: string): Promise<TargetAdapter> {
   if (target === "reference") {
     return new ReferenceTargetAdapter();
+  }
+  // A JSON config describes a real server over HTTP, so pointing the suite at a
+  // deployment is a config change rather than a code change.
+  if (target.endsWith(".json")) {
+    return httpTargetFromConfig(JSON.parse(readFileSync(target, "utf8")) as HttpTargetConfig);
   }
   const module = (await import(target)) as {
     default?: () => TargetAdapter | Promise<TargetAdapter>;

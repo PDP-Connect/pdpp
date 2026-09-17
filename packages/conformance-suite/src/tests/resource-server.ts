@@ -190,10 +190,15 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
-  // ---------------------------------------------------------------- RS-4 ---
+  // --------------------------------------------------------------- RS-16 ---
+  // This is the authentication boundary, not token-kind discrimination: a
+  // request with no credential must be challenged rather than served. It is
+  // filed under RS-16 because that requirement owns the 401 challenge path.
+  // It was previously mislabelled RS-4, which made RS-4 read as covered while
+  // nothing tested what RS-4 actually requires.
   {
-    caseId: "RS-4/unauthenticated-request-refused",
-    requirementId: "RS-4",
+    caseId: "RS-16/unauthenticated-request-refused",
+    requirementId: "RS-16",
     assertion: "A record read with no access token is refused with 401 rather than served.",
     async run({ adapter, streams }) {
       const [stream] = streams;
@@ -205,6 +210,62 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
         return fail(`Expected 401 for a request carrying no token, got ${response.status}.`, [response.evidence]);
       }
       return pass([response.evidence]);
+    },
+  },
+
+  // ---------------------------------------------------------------- RS-4 ---
+  // What RS-4 actually requires: token kind comes from the introspection
+  // response, never from token syntax. The defect this catches is a server that
+  // branches on a prefix or other shape in the token string — it behaves
+  // correctly for every well-formed token its own AS mints, and grants owner
+  // powers to anyone who can guess the naming convention.
+  //
+  // The probe is a bearer string shaped like the target's own owner credential
+  // but never issued by it. A server reading introspection rejects it as
+  // unknown; a server reading syntax treats it as an owner token.
+  {
+    caseId: "RS-4/token-kind-not-inferred-from-syntax",
+    requirementId: "RS-4",
+    appliesWhen: (adapter) => adapter.capabilities.ownerTokens,
+    assertion:
+      "An unissued bearer string shaped like an owner token is rejected, not treated as an owner token by syntax.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const realOwner = await adapter.ownerToken();
+      if (!realOwner) {
+        return skip("The adapter produced no owner token, so its syntactic shape is unknown.");
+      }
+
+      // Derive a forgery from the real token's own shape, so the probe tracks
+      // whatever convention the target uses instead of guessing one. The suffix
+      // makes it a string the target cannot have issued.
+      const forged = `${realOwner}-pdpp-conformance-unissued`;
+
+      const path = `/v1/streams/${encodeURIComponent(stream.name)}/records`;
+      const response = await request(adapter.baseUrl, path, { token: forged });
+
+      if (response.status === 200) {
+        return fail(
+          "A bearer string the target never issued, differing from a real owner token only by a suffix, was served records. Section 8 requires the RS to determine the token's properties solely from the introspection response and never from token syntax.",
+          [response.evidence]
+        );
+      }
+      if (response.status !== 401 && response.status !== 403) {
+        return fail(`Expected 401 or 403 for an unissued token, got ${response.status}.`, [response.evidence]);
+      }
+
+      // Positive control: the genuine owner token must still work, otherwise the
+      // rejection above could just be a server that refuses every owner read.
+      const control = await request(adapter.baseUrl, path, { token: realOwner });
+      if (control.status === 401 || control.status === 403) {
+        return skip(
+          `The genuine owner token was also refused (${control.status}), so this run cannot distinguish syntax-based token handling from a target that rejects all owner reads.`
+        );
+      }
+      return pass([response.evidence, control.evidence]);
     },
   },
 
