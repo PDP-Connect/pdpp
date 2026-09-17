@@ -20,6 +20,7 @@ import type {
 } from "./result.ts";
 
 const OUTCOME_MARKER: Record<Outcome, string> = {
+  advisory: "ADVISORY",
 	pass: "PASS",
 	fail: "FAIL",
 	unsupported: "UNSUPPORTED",

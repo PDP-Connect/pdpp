@@ -20,7 +20,7 @@
 // rather than failed.
 
 import { request } from "../harness/http.ts";
-import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import { advisory, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 
 /** The RFC 7662 + PDPP introspection response shape (Core Section 8). */
 interface IntrospectionBody {
@@ -206,16 +206,26 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   },
 
   // ---------------------------------------------------------------- AS-8 ---
-  // RFC 7662 Section 2.2 requires an inactive token to return active:false and
-  // nothing that describes it. An AS that keeps echoing the subject, client or
-  // grant of a revoked token leaks who held it and what it covered, to any
-  // caller able to present the string.
+  // Two normative levels, kept apart on purpose.
+  //
+  // The MUST: Core Section 9 AS item 8 requires revocation to be "reflected
+  // immediately in introspection responses (`active: false`)". That is the whole
+  // of what Core pins here, and failing it is a conformance failure.
+  //
+  // The SHOULD: RFC 7662 Section 2.2 says an authorization server "SHOULD NOT"
+  // include extra information about an inactive token. Core does not restate or
+  // strengthen that clause — no text in spec-core.md raises it to a MUST the way
+  // Section 8 does for `error="invalid_token"`. So a target that returns
+  // `active: false` while still echoing the subject or grant is CONFORMANT and is
+  // reported `advisory`, not `fail`. Calling it a failed MUST would mean telling
+  // an implementer their conforming server is non-conformant, on a clause the
+  // specification never made binding.
   {
-    caseId: "AS-8/revoked-token-introspects-inactive-without-detail",
+    caseId: "AS-8/revoked-token-introspects-inactive",
     requirementId: "AS-8",
     appliesWhen: (adapter) => adapter.capabilities.separatedDeployment,
     assertion:
-      "After revocation, introspection reports active false and discloses no subject, client, grant or authorization detail.",
+      "After revocation, introspection reports active false (MUST); extra disclosure on the inactive response is reported as advisory (RFC 7662 SHOULD NOT).",
     async run({ adapter, streams }) {
       const [stream] = streams;
       if (!stream) {
@@ -259,12 +269,14 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
           [before.evidence, after.evidence]
         );
       }
-      const leaked = (["subject_id", "client_id", "grant_id", "authorization_details"] as const).filter(
+      // The MUST is satisfied at this point: active is false. Anything below is
+      // a recommendation, and is reported at that level.
+      const disclosed = (["subject_id", "client_id", "grant_id", "authorization_details"] as const).filter(
         (key) => body[key] !== undefined
       );
-      if (leaked.length > 0) {
-        return fail(
-          `Introspection of a revoked token still disclosed ${leaked.join(", ")}. RFC 7662 Section 2.2 requires an inactive response to carry no information about the token.`,
+      if (disclosed.length > 0) {
+        return advisory(
+          `Revocation is correctly reflected (active: false), which is what Core Section 9 AS item 8 requires. The inactive introspection response additionally disclosed ${disclosed.join(", ")}. RFC 7662 Section 2.2 says an authorization server SHOULD NOT include that information, and Core does not raise that clause to a MUST, so this is a recommendation rather than a conformance failure. A holder of a revoked token string can still learn whose it was and what it covered.`,
           [before.evidence, after.evidence]
         );
       }

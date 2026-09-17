@@ -90,6 +90,10 @@ const DISCRIMINATION_MATRIX: readonly {
   },
   { caseId: "RS-12/foreign-subject-cannot-read", defect: "ignore-subject-scope" },
   {
+    caseId: "RS-6/ungranted-stream-error-classification",
+    defect: "misclassify-stream-denial",
+  },
+  {
     caseId: "RS-13/self-export-supported",
     defect: "declare-self-export-but-refuse",
   },

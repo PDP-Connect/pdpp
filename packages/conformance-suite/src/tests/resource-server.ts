@@ -28,7 +28,9 @@ interface ListBody {
   object?: string;
 }
 
-/** RFC 6750 Section 3 challenge shape, checked by the RS-16 bootstrap oracle. */
+// The challenge shape RS-16 checks. The Bearer scheme and the challenge itself
+// come from RFC 6750 Section 3; the `error="invalid_token"` requirement is
+// PDPP's own strengthening in Core Section 8, not something RFC 6750 mandates.
 const BEARER_SCHEME = /^Bearer\b/i;
 const INVALID_TOKEN_ERROR = /error="?invalid_token"?/;
 
@@ -103,7 +105,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-2/ungranted-stream-refused",
     requirementId: "RS-2",
-    assertion: "A client token is refused a stream absent from its grant, with 403 grant_stream_not_allowed.",
+    assertion: "A client token is refused a stream absent from its grant (enforcement only; classification is RS-6).",
     async run({ adapter, streams, path }) {
       const [granted] = streams;
       const ungranted = streams.find((s) => s.name !== granted?.name);
@@ -125,18 +127,12 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
           [response.evidence]
         );
       }
-      if (response.status !== 403) {
-        return fail(
-          `Expected 403 for a stream outside the grant, got ${response.status}. Section 8 maps this to grant_stream_not_allowed.`,
-          [response.evidence]
-        );
-      }
-      const error = errorBody(response);
-      if (error?.code !== "grant_stream_not_allowed") {
-        return fail(`Expected error code grant_stream_not_allowed, got ${error?.code ?? "no structured error"}.`, [
-          response.evidence,
-        ]);
-      }
+      // Enforcement (RS-2) is satisfied: the request was refused. Whether the
+      // refusal carries the status and code Section 8's error table specifies is
+      // a separate requirement, RS-6, and is asserted by its own case below.
+      // Keeping them apart matters: a server that denies correctly but classifies
+      // the denial differently has an interoperability defect, not an
+      // access-control one, and the report should not conflate the two.
       return pass([response.evidence]);
     },
   },
@@ -223,6 +219,53 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`));
       if (response.status !== 401) {
         return fail(`Expected 401 for a request carrying no token, got ${response.status}.`, [response.evidence]);
+      }
+      return pass([response.evidence]);
+    },
+  },
+
+  // ---------------------------------------------------------------- RS-6 ---
+  // Section 9 RS item 6 requires structured errors "as defined in Section 8
+  // (unified error table)". That table binds stream-not-in-grant to HTTP 403 with
+  // code `grant_stream_not_allowed`. A server that refuses the request but
+  // classifies it differently is enforcing correctly while breaking the contract
+  // a client branches on, so this is reported separately from RS-2 enforcement.
+  {
+    caseId: "RS-6/ungranted-stream-error-classification",
+    requirementId: "RS-6",
+    assertion:
+      "Refusing a stream outside the grant uses 403 grant_stream_not_allowed, as the Section 8 error table defines.",
+    async run({ adapter, streams, path }) {
+      const [granted] = streams;
+      const ungranted = streams.find((s) => s.name !== granted?.name);
+      if (!(granted && ungranted)) {
+        return skip("Two seeded streams are required to test error classification.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: granted.name, fields: [...granted.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a single-stream grant.");
+      }
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(ungranted.name)}/records`), {
+        token: grant.accessToken,
+      });
+      if (response.status === 200) {
+        return skip(
+          "The request was served rather than refused, so there is no error to classify. RS-2 reports that as the enforcement failure it is."
+        );
+      }
+      const error = errorBody(response);
+      if (response.status !== 403) {
+        return fail(
+          `Expected 403 for a stream outside the grant, got ${response.status} with code ${error?.code ?? "none"}. Section 8's error table binds stream-not-in-grant to 403 grant_stream_not_allowed. Access was correctly refused, so this is a classification defect rather than an access-control one: a client branching on the documented code will not recognise this response.`,
+          [response.evidence]
+        );
+      }
+      if (error?.code !== "grant_stream_not_allowed") {
+        return fail(`Expected error code grant_stream_not_allowed, got ${error?.code ?? "no structured error"}.`, [
+          response.evidence,
+        ]);
       }
       return pass([response.evidence]);
     },
@@ -645,7 +688,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
       if (!INVALID_TOKEN_ERROR.test(challenge)) {
         return fail(
-          `A token was presented and rejected, so the challenge must set error="invalid_token": "${challenge}".`,
+          `A token was presented and rejected, so the challenge must set error="invalid_token": "${challenge}". This is a PDPP requirement, not an inherited one: RFC 6750 Section 3 makes the error attribute optional ("MAY"/"SHOULD" depending on the parameter), while Core Section 8 "Protected resource metadata" states the resource server "MUST set error="invalid_token" when a token was presented and rejected".`,
           [response.evidence]
         );
       }

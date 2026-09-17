@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { renderMarkdown } from "../src/report/markdown.ts";
+import { buildReport } from "../src/report/result.ts";
 import { REQUIREMENTS } from "../src/requirements/catalog.ts";
 import { ALL_CASES, coveredRequirementIds, runSuite } from "../src/suite.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
@@ -129,5 +130,91 @@ describe("the CLI exit code distinguishes a partial run from a complete pass", (
       (error: { code?: number }) => ({ code: error.code ?? -1 })
     );
     assert.equal(result.code, 2, "A run with no failures but untested applicable requirements must exit 2, not 0.");
+  });
+});
+
+describe("SHOULD-level observations are never reported as failed MUSTs", () => {
+  // Protected risk: overstating a finding. Reporting an RFC "SHOULD NOT" as a
+  // conformance failure tells an implementer their conforming server is
+  // non-conformant — the most damaging error a conformance suite can make,
+  // because the reader has no way to check the citation. A root review caught
+  // exactly this: RFC 7662 Section 2.2 says an AS SHOULD NOT disclose extra
+  // information about an inactive token, and Core does not raise it to a MUST,
+  // but the suite was reporting it as a failed MUST.
+  //
+  // The oracle: an advisory case must keep its requirement out of the failed set
+  // while still appearing in the summary, and must not block the all-MUSTs gate.
+  it("counts an advisory case as passing its MUSTs but still surfaces it", () => {
+    const report = buildReport({
+      suite: { name: "t", version: "0" },
+      target: {
+        id: "t",
+        version: "0",
+        baseUrl: "http://127.0.0.1:1",
+        roles: ["authorization-server"],
+      },
+      run: { startedAt: "", finishedAt: "", reproducible: true },
+      cases: [
+        {
+          caseId: "AS-8/advisory-case",
+          requirementId: "AS-8",
+          outcome: "advisory",
+          assertion: "MUST met; SHOULD-level observation recorded.",
+          detail: "RFC SHOULD NOT, not strengthened by Core.",
+        },
+      ],
+    });
+
+    assert.ok(
+      !report.summary.failedRequirements.includes("AS-8"),
+      "A SHOULD-level observation must not appear as a failed MUST."
+    );
+    assert.ok(
+      !report.summary.failedShouldRequirements.includes("AS-8"),
+      "An advisory is not a failed SHOULD-level requirement either; the MUSTs passed."
+    );
+    assert.ok(
+      report.summary.advisoryRequirements.includes("AS-8"),
+      "The observation must still be visible rather than silently dropped."
+    );
+
+    const coverage = report.coverage.find((c) => c.role === "authorization-server");
+    assert.equal(coverage?.failed, 0, "An advisory must not increment the failed count.");
+    assert.equal(coverage?.advisory, 1, "An advisory must be counted as such.");
+  });
+
+  it("keeps an advisory visible when a sibling case on the same requirement passes", () => {
+    // The roll-up for AS-8 here is `pass`, so a summary built from roll-ups alone
+    // would lose the observation entirely.
+    const report = buildReport({
+      suite: { name: "t", version: "0" },
+      target: {
+        id: "t",
+        version: "0",
+        baseUrl: "http://127.0.0.1:1",
+        roles: ["authorization-server"],
+      },
+      run: { startedAt: "", finishedAt: "", reproducible: true },
+      cases: [
+        {
+          caseId: "AS-8/passing-sibling",
+          requirementId: "AS-8",
+          outcome: "pass",
+          assertion: "Revocation reflected.",
+        },
+        {
+          caseId: "AS-8/advisory-case",
+          requirementId: "AS-8",
+          outcome: "advisory",
+          assertion: "SHOULD-level observation.",
+          detail: "Extra disclosure on the inactive response.",
+        },
+      ],
+    });
+    assert.ok(
+      report.summary.advisoryRequirements.includes("AS-8"),
+      "An advisory case must surface even when a sibling case passes."
+    );
+    assert.ok(!report.summary.failedRequirements.includes("AS-8"));
   });
 });

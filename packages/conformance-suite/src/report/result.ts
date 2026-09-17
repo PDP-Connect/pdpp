@@ -30,7 +30,14 @@ import {
  * The outcome of a single conformance case.
  *
  * - `pass`: the target demonstrated the required behaviour.
- * - `fail`: the target demonstrated a violation. Always carries evidence.
+ * - `fail`: the target violated a MUST-level requirement. Always carries evidence.
+ * - `advisory`: the target met every MUST the case checks, but did not follow a
+ *   SHOULD-level recommendation the case also observed. NOT a conformance
+ *   failure and never counted as one. It exists because collapsing a SHOULD into
+ *   `fail` overstates the finding — a reader acting on it would report a
+ *   conforming implementation as non-conformant — while collapsing it into
+ *   `pass` discards a real observation. RFC 2119 separates the two levels, and
+ *   so does this report.
  * - `unsupported`: the target declares the underlying optional capability
  *   absent, so the requirement does not apply. Not a defect, not a pass.
  * - `skip`: the case could not run for an environmental reason (a precondition
@@ -39,7 +46,13 @@ import {
  * - `not-tested`: no case exists in this suite version for the requirement.
  *   Generated from the catalogue, never written by a test.
  */
-export type Outcome = "pass" | "fail" | "unsupported" | "skip" | "not-tested";
+export type Outcome =
+	| "pass"
+	| "fail"
+	| "advisory"
+	| "unsupported"
+	| "skip"
+	| "not-tested";
 
 /**
  * A captured HTTP exchange backing a result. Every `fail` carries at least one,
@@ -93,6 +106,8 @@ export type RoleCoverage = {
 	readonly skipped: number;
 	readonly unsupported: number;
 	readonly notTested: number;
+	/** Requirements whose MUSTs passed but that carry a SHOULD-level observation. */
+	readonly advisory: number;
 };
 
 export type ConformanceReport = {
@@ -121,6 +136,8 @@ export type ConformanceReport = {
 	readonly summary: {
 		readonly failedRequirements: readonly string[];
 		readonly failedShouldRequirements: readonly string[];
+		/** Requirements conformant on every MUST but carrying a SHOULD observation. */
+		readonly advisoryRequirements: readonly string[];
 		readonly notTestedRequirements: readonly string[];
 		/** True only when every applicable MUST was tested and passed. */
 		readonly allApplicableMustsTestedAndPassed: boolean;
@@ -137,9 +154,12 @@ export const EVIDENCE_BODY_LIMIT = 4096;
  * so that a half-exercised requirement cannot read as satisfied.
  */
 const OUTCOME_SEVERITY: Record<Outcome, number> = {
-	fail: 5,
-	"not-tested": 4,
-	skip: 3,
+	fail: 6,
+	"not-tested": 5,
+	skip: 4,
+	// Above `pass` so a requirement with one advisory case does not read as a clean
+	// pass, but below `skip` because the MUSTs were actually exercised and met.
+	advisory: 3,
 	pass: 2,
 	unsupported: 1,
 };
@@ -172,8 +192,11 @@ function coverageForRole(
 		total: forRole.length,
 		applicable,
 		tested: applicable - notTested - skipped,
-		passed: count("pass"),
+		// An advisory requirement met its MUSTs, so it counts as passed for
+		// conformance purposes and is additionally surfaced under `advisory`.
+		passed: count("pass") + count("advisory"),
 		failed: count("fail"),
+		advisory: count("advisory"),
 		skipped,
 		unsupported,
 		notTested,
@@ -222,6 +245,10 @@ export function buildReport(input: {
 	const applicableMusts = requirements.filter(
 		(r) => r.requirement.level === "must" && r.outcome !== "unsupported",
 	);
+	// Collected from CASES, not from requirement roll-ups: a requirement with one
+	// advisory case and one passing case rolls up to `pass`, and the observation
+	// would otherwise vanish from the summary entirely.
+	const advisoryCases = input.cases.filter((c) => c.outcome === "advisory");
 
 	return {
 		reportVersion: "1",
@@ -238,9 +265,10 @@ export function buildReport(input: {
 			failedShouldRequirements: failed
 				.filter((r) => r.requirement.level === "should")
 				.map((r) => r.requirement.id),
+			advisoryRequirements: [...new Set(advisoryCases.map((c) => c.requirementId))],
 			notTestedRequirements: notTested.map((r) => r.requirement.id),
 			allApplicableMustsTestedAndPassed: applicableMusts.every(
-				(r) => r.outcome === "pass",
+				(r) => r.outcome === "pass" || r.outcome === "advisory",
 			),
 		},
 	};

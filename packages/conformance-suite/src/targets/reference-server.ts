@@ -39,6 +39,8 @@ export type Defect =
   | "weak-401-challenge"
   /** Discloses current views/relationships to a client token (RS-15). */
   | "leak-current-metadata"
+  /** Refuses an ungranted stream, but with 401 instead of 403 (RS-6). */
+  | "misclassify-stream-denial"
   /** Reads token kind from the token string instead of its principal (RS-4). */
   | "infer-token-kind-from-syntax"
   /** Serves any subject's store to any owner token (RS-12). */
@@ -281,6 +283,13 @@ export class ReferenceServer {
     const grantedStream = grant?.streams.find((g) => g.name === streamName);
     const denial = this.denyStreamAccess(principal.kind, streamName, grantedStream !== undefined, subjectScoped);
     if (denial) {
+      // The misclassification defect still refuses the request — enforcement is
+      // intact — but reports it outside the Section 8 error table, which is
+      // exactly the shape RS-6 exists to catch.
+      if (this.has("misclassify-stream-denial")) {
+        error(401, "context.stream_not_allowed", "authentication_error", denial);
+        return;
+      }
       error(403, "grant_stream_not_allowed", "permission_error", denial);
       return;
     }

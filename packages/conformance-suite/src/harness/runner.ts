@@ -49,6 +49,11 @@ export interface CaseContext {
 export type CaseVerdict =
   | { readonly outcome: "pass"; readonly evidence?: readonly Evidence[] }
   | {
+      readonly outcome: "advisory";
+      readonly detail: string;
+      readonly evidence?: readonly Evidence[];
+    }
+  | {
       readonly outcome: "fail";
       readonly detail: string;
       readonly evidence?: readonly Evidence[];
@@ -76,6 +81,16 @@ export const pass = (evidence?: readonly Evidence[]): CaseVerdict =>
 
 export const fail = (detail: string, evidence?: readonly Evidence[]): CaseVerdict =>
   evidence ? { outcome: "fail", detail, evidence } : { outcome: "fail", detail };
+
+/**
+ * The target met every MUST this case checks, but not a SHOULD it also observed.
+ *
+ * Reporting a SHOULD as `fail` would overstate the finding: a reader acting on it
+ * would call a conforming implementation non-conformant. Reporting it as `pass`
+ * would discard a real observation. This is the third thing.
+ */
+export const advisory = (detail: string, evidence?: readonly Evidence[]): CaseVerdict =>
+  evidence ? { outcome: "advisory", detail, evidence } : { outcome: "advisory", detail };
 
 export const skip = (detail: string): CaseVerdict => ({
   outcome: "skip",

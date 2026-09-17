@@ -96,12 +96,45 @@ cmd_up() {
     return
   fi
 
-  log "installing dependencies (pinned by the checkout's lockfile)"
-  (cd "$PDPP_DC_REF" && pnpm install --frozen-lockfile --prefer-offline) ||
-    die "dependency install failed. The reference implementation declares \`workspaces\`
-  in package.json with no pnpm-workspace.yaml, so pnpm may not link its vendored
-  @pdpp/* packages, and npm refuses its git-protocol dependency in restricted
-  networks. Both are checkout-side issues; report them rather than hand-linking."
+  # The checkout is an npm workspace (`workspaces` in package.json, no
+  # pnpm-workspace.yaml), so npm is the correct installer: pnpm 10 ignores that
+  # declaration and leaves the vendored @pdpp/* packages unlinked.
+  #
+  # `--allow-git=root` is required because one dependency is a pinned git+ssh
+  # reference. npm's default `allow-git=none` is a local POLICY setting, not a
+  # network restriction — the registry is reachable either way. The flag is
+  # scoped to root (direct dependencies of this project) rather than blanket,
+  # so a transitive git dependency introduced later still has to be reviewed.
+  # Two phases on purpose. Vendored @pdpp/* packages declare `prepare` scripts
+  # that build one another, and npm runs those during install before the
+  # workspace links they depend on exist — so a single `npm install` fails on an
+  # ordering problem, not a real dependency problem. Resolve the tree first with
+  # scripts off, then build the vendored packages once everything is linked.
+  log "installing dependencies (npm workspaces, lockfile-pinned)"
+  (cd "$PDPP_DC_REF" && npm install --allow-git=root --no-audit --no-fund --ignore-scripts) ||
+    die "dependency install failed; see the npm output above."
+
+  # Build the vendored packages the server imports at runtime. `@pdpp/mcp-server`
+  # is built best-effort: at this checkout it has a pre-existing type error
+  # against its resolved @modelcontextprotocol/sdk version
+  # (src/server.ts:88, inputSchema under exactOptionalPropertyTypes), which emits
+  # usable JavaScript but a non-zero tsc exit. That is a defect in the vendored
+  # package, unrelated to PDPP conformance, and the server only needs the emitted
+  # `dist/src/server.js`. The check below fails loudly if that file is absent, so
+  # a genuinely broken build is still caught.
+  log "building vendored workspace packages"
+  for pkg in vendor/read-core vendor/cli vendor/mcp-server; do
+    dir="$PDPP_DC_REF/reference-implementation/$pkg"
+    [ -d "$dir" ] || continue
+    if (cd "$dir" && npm run build --if-present >/dev/null 2>&1); then
+      log "  built $pkg"
+    else
+      log "  $pkg build exited non-zero (see note above); checking emitted output"
+    fi
+  done
+  [ -f "$PDPP_DC_REF/reference-implementation/vendor/mcp-server/dist/src/server.js" ] ||
+    die "vendor/mcp-server emitted no dist/src/server.js; the reference server
+  statically imports it at server/index.ts:16 and cannot boot without it."
 
   log "writing boot entrypoint"
   cat > "$PDPP_DC_REF/reference-implementation/pdpp-conformance-boot.mts" <<BOOT
