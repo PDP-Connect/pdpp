@@ -137,18 +137,28 @@ real consent journey over HTTP — RFC 7591 client registration, PAR, owner revi
 and approval, grant issuance, revocation — so the grant-shape cases execute rather
 than skipping. Config: `targets/reference-implementation.json`.
 
-**Result: 11 of 37 applicable tested, 9 passed, 2 failed MUSTs, no RS-side skips.**
+**Result: 15 of 37 applicable tested, 12 passed, 3 failed MUSTs, one skip.**
+
+Bring the target up reproducibly with `scripts/reference-target.sh up` (pinned
+install, readiness polling, PID-tracked lifecycle), then run the suite against
+`targets/reference-implementation.json`.
 
 | Finding | Detail |
 | --- | --- |
 | RS-2 | A grant covering `repositories` correctly denies `starred`, but with 401 `context.stream_not_allowed`. Section 8 maps stream-not-in-grant to 403 `grant_stream_not_allowed`. Access control holds; the classification differs, and a client branching on the documented code will not recognise it. |
 | RS-16 | The `WWW-Authenticate` challenge on a rejected token omits `error="invalid_token"`, which RFC 6750 Section 3 requires when a token was presented and refused. |
+| AS-8 | After an owner-authenticated revoke the AS correctly reports `active: false`, but the inactive introspection response still carries `subject_id`, `client_id` and `grant_id`. RFC 7662 Section 2.2 requires an inactive response to carry no information about the token, so a holder of a revoked token string can still learn whose it was and what it covered. |
 
-Both were reproduced with curl against the running server, independent of the
-suite. Everything else the suite can currently test on the RS passes, including
-stream membership, cross-subject isolation, self-export, client-token filter and
-expansion rejection, unknown-parameter rejection, version negotiation, metadata
-projection, and revocation.
+All three reproduce with curl against the running server, independent of the suite.
+Everything else currently testable passes: stream membership, field projection,
+cross-subject isolation, self-export, token-kind-from-introspection, client-token
+filter and expansion rejection, unknown-parameter rejection, version negotiation,
+metadata projection, RFC 9728 metadata, revocation enforcement at the RS,
+single-use consumption, resolved-grant expansion, introspection extension fields,
+and introspection caller authentication.
+
+The one skip is expired-grant enforcement: the adapter cannot fabricate a grant
+that has already expired against this AS.
 
 ### The apps/site sandbox is not this target
 
