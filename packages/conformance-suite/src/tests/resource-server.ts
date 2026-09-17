@@ -674,7 +674,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       const challenge = response.headers.get("www-authenticate");
       if (!challenge) {
         return fail(
-          "The 401 carries no WWW-Authenticate header. RFC 6750 Section 3 requires the challenge; it is the bootstrap path for a client holding no token.",
+          'The 401 on a REJECTED token carries no WWW-Authenticate header. RFC 6750 Section 3 requires the challenge on every 401, and Core Section 8 requires it to carry resource_metadata plus error="invalid_token" when a token was presented and rejected. Note this is the rejected-token path specifically: a server may answer a request with no Authorization header correctly and still omit the challenge here.',
           [response.evidence]
         );
       }

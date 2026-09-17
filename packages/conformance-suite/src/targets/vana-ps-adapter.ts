@@ -235,13 +235,19 @@ export class VanaPsAdapter implements TargetAdapter {
 
   async revokeGrant(grantId: string): Promise<void> {
     const owner = await this.ownerToken();
+    // Form-encoded, not JSON. This server splits its bodies deliberately: the
+    // consent endpoints take JSON while /token, /introspect and /revoke take
+    // form encoding, matching the OAuth endpoints they mirror. Sending JSON here
+    // returns 400 "grant_id is required", the revoke never lands, and the
+    // revocation oracle then reports a target that enforces revocation correctly
+    // as failing to — which is exactly what this adapter got wrong first time.
     await fetch(`${this.config.baseUrl}/pdpp/v1/revoke`, {
       method: "POST",
       headers: {
-        "content-type": "application/json",
+        "content-type": "application/x-www-form-urlencoded",
         ...(owner ? { authorization: `Bearer ${owner}` } : {}),
       },
-      body: JSON.stringify({ grant_id: grantId }),
+      body: new URLSearchParams({ grant_id: grantId }).toString(),
     });
   }
 
