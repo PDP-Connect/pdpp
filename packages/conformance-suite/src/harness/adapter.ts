@@ -106,8 +106,7 @@ export interface GrantRequest {
  */
 export interface TargetAdapter {
   /**
-   * Base URL of the resource server, e.g. "http://localhost:4000". Section 8
-   * endpoint paths are appended to it.
+   * Base URL of the resource server, e.g. "http://localhost:4000".
    */
   readonly baseUrl: string;
   readonly capabilities: TargetCapabilities;
@@ -136,6 +135,18 @@ export interface TargetAdapter {
   /** An owner token for the seeded subject, when the target issues them. */
   ownerToken: () => Promise<string | null>;
 
+  /**
+   * Path prefix the Section 8 endpoint paths extend, e.g. "/v1".
+   *
+   * This exists because Core does not fix it. Section 8 publishes
+   * `pdpp_core_query_base` in the RFC 9728 metadata document precisely "so a
+   * client composes a record query without assuming a version segment". A suite
+   * that hardcoded "/v1" would fail a conforming server that mounts its query
+   * surface elsewhere, and would be testing its own assumption rather than the
+   * spec. Defaults to "/v1" when a target does not say otherwise.
+   */
+  readonly queryBase?: string | undefined;
+
   /** Revoke a previously issued grant, for the revocation negative oracles. */
   revokeGrant: (grantId: string) => Promise<void>;
   /** Roles this target claims to implement and wants assessed. */
@@ -150,4 +161,13 @@ export interface TargetAdapter {
 
   /** Release whatever `setup` acquired. Always called, including after failure. */
   teardown: () => Promise<void>;
+
+  /**
+   * Location of the RFC 9728 protected resource metadata document.
+   *
+   * RFC 9728 Section 3 derives this from the resource identifier, which for a
+   * target mounted under a path prefix is not the bare host. Recorded per target
+   * so RS-16 checks the document where the target actually publishes it.
+   */
+  readonly wellKnownPath?: string | undefined;
 }

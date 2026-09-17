@@ -23,37 +23,31 @@
 // Where a strategy cannot supply what a case needs, the adapter returns null and
 // the case records `skip` with the reason. It never fabricates a token, because
 // a case that silently tests nothing is worse than one that reports a gap.
+//
+// Several methods are `async` without awaiting: the TargetAdapter contract is
+// async because a real adapter may do I/O to mint a token. This one reads
+// credentials the operator supplied in config, so there is nothing to await.
 
-import type {
-  GrantRequest,
-  IssuedGrant,
-  SeededStream,
-  TargetAdapter,
-  TargetCapabilities,
-} from "../harness/adapter.ts";
-import type { Role } from "../requirements/catalog.ts";
+// biome-ignore-all lint/suspicious/useAwait: the TargetAdapter contract is async; this adapter reads operator-supplied config.
+
+import type { GrantRequest, IssuedGrant, SeededStream, TargetAdapter, TargetCapabilities } from "../harness/adapter.ts";
 import { request } from "../harness/http.ts";
+import type { Role } from "../requirements/catalog.ts";
 
 /** A grant the operator minted out of band, described so cases can match it. */
-export type PreprovisionedGrant = {
+export interface PreprovisionedGrant {
   readonly accessToken: string;
   readonly grantId: string;
   readonly streams: readonly { readonly name: string; readonly fields: readonly string[] }[];
-};
+}
 
-export type HttpTargetConfig = {
-  readonly targetId: string;
-  readonly targetVersion: string;
+export interface HttpTargetConfig {
   readonly baseUrl: string;
-  readonly roles: readonly Role[];
   readonly capabilities: TargetCapabilities;
-  /** Streams the operator seeded, with the shape the suite needs to build requests. */
-  readonly streams: readonly SeededStream[];
-  readonly ownerToken?: string;
-  /** A second subject's owner token. Without it, RS-12 cannot be demonstrated. */
-  readonly foreignSubjectOwnerToken?: string;
   /** A token whose grant has already expired. Without it, expiry is not demonstrable. */
   readonly expiredGrantToken?: string;
+  /** A second subject's owner token. Without it, RS-12 cannot be demonstrated. */
+  readonly foreignSubjectOwnerToken?: string;
   readonly grants?: {
     /** Grants minted out of band, matched to a case's request by stream and fields. */
     readonly preprovisioned?: readonly PreprovisionedGrant[];
@@ -68,7 +62,17 @@ export type HttpTargetConfig = {
     /** Bearer credential authorizing the two endpoints above. */
     readonly adminToken?: string;
   };
-};
+  readonly ownerToken?: string;
+  /** Path prefix the Section 8 endpoints extend. Defaults to "/v1". */
+  readonly queryBase?: string;
+  readonly roles: readonly Role[];
+  /** Streams the operator seeded, with the shape the suite needs to build requests. */
+  readonly streams: readonly SeededStream[];
+  readonly targetId: string;
+  readonly targetVersion: string;
+  /** Where the target publishes its RFC 9728 metadata document. */
+  readonly wellKnownPath?: string;
+}
 
 function sameFieldSet(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) {
@@ -101,6 +105,8 @@ export class HttpTargetAdapter implements TargetAdapter {
   readonly targetId: string;
   readonly targetVersion: string;
   readonly baseUrl: string;
+  readonly queryBase: string | undefined;
+  readonly wellKnownPath: string | undefined;
   readonly roles: readonly Role[];
   readonly capabilities: TargetCapabilities;
   private readonly config: HttpTargetConfig;
@@ -110,6 +116,8 @@ export class HttpTargetAdapter implements TargetAdapter {
     this.targetId = config.targetId;
     this.targetVersion = config.targetVersion;
     this.baseUrl = config.baseUrl;
+    this.queryBase = config.queryBase;
+    this.wellKnownPath = config.wellKnownPath;
     this.roles = config.roles;
     this.capabilities = config.capabilities;
   }
@@ -124,7 +132,7 @@ export class HttpTargetAdapter implements TargetAdapter {
   async setup(): Promise<{ readonly streams: readonly SeededStream[] }> {
     let reachable: boolean;
     try {
-      const probe = await request(this.baseUrl, "/.well-known/oauth-protected-resource");
+      const probe = await request(this.baseUrl, this.wellKnownPath ?? "/.well-known/oauth-protected-resource");
       // Any HTTP status means something is listening and speaking HTTP. Whether
       // the document is correct is RS-16's job to judge, not setup's.
       reachable = probe.status > 0;
@@ -132,7 +140,8 @@ export class HttpTargetAdapter implements TargetAdapter {
       throw new Error(
         `Target ${this.targetId} is not reachable at ${this.baseUrl}: ${
           error instanceof Error ? error.message : String(error)
-        }. The suite tests a running server over HTTP; start the target before running it.`
+        }. The suite tests a running server over HTTP; start the target before running it.`,
+        { cause: error }
       );
     }
     if (!reachable) {
@@ -142,10 +151,10 @@ export class HttpTargetAdapter implements TargetAdapter {
   }
 
   async teardown(): Promise<void> {
-    // The suite did not create the target and does not tear it down. Any records
-    // it seeded are the operator's to clean up, deliberately: silently deleting
-    // data on someone else's server is not a test runner's business.
-    return;
+    // Deliberately nothing. The suite did not create this target and does not
+    // tear it down: silently deleting data on someone else's server is not a
+    // test runner's business. Records the operator seeded are theirs to remove.
+    await Promise.resolve();
   }
 
   async issueGrant(wanted: GrantRequest): Promise<IssuedGrant | null> {

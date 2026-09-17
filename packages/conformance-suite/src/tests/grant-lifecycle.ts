@@ -45,7 +45,7 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
     caseId: "AS-8/revoked-grant-refused",
     requirementId: "AS-8",
     assertion: "A token that read successfully is refused after its grant is revoked, within the visibility budget.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
@@ -57,11 +57,11 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
         return skip("The target could not issue a grant for a seeded stream.");
       }
 
-      const path = `/v1/streams/${encodeURIComponent(stream.name)}/records`;
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
 
       // Before: establish that this exact token reads the stream. Without this
       // control a later 403 would not isolate revocation as its cause.
-      const before = await request(adapter.baseUrl, path, {
+      const before = await request(adapter.baseUrl, recordsPath, {
         token: grant.accessToken,
       });
       if (before.status !== 200) {
@@ -78,7 +78,7 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
         // Polling is the point: the case measures how long revocation takes to
         // become visible, which requires sequential reads of a changing state.
         // biome-ignore lint/performance/noAwaitInLoops: sequential polling measures revocation visibility latency.
-        const after = await request(adapter.baseUrl, path, {
+        const after = await request(adapter.baseUrl, recordsPath, {
           token: grant.accessToken,
         });
         last = after;
@@ -112,7 +112,7 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
     caseId: "AS-8/expired-grant-refused",
     requirementId: "AS-8",
     assertion: "A token bound to an expired grant is refused with 403 grant_expired.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
@@ -126,7 +126,7 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
       if (!token) {
         return skip("The adapter returned no expired-grant token.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token,
       });
       if (response.status === 200) {

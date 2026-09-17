@@ -41,8 +41,8 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-1/list-streams-envelope",
     requirementId: "RS-1",
-    assertion: "GET /v1/streams returns a Section 8 list envelope for an authorized client token.",
-    async run({ adapter, streams }) {
+    assertion: "GET {queryBase}/streams returns a Section 8 list envelope for an authorized client token.",
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
@@ -53,7 +53,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a grant for a seeded stream.");
       }
-      const response = await request(adapter.baseUrl, "/v1/streams", {
+      const response = await request(adapter.baseUrl, path("/streams"), {
         token: grant.accessToken,
       });
       if (response.status !== 200) {
@@ -78,7 +78,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "RS-2/granted-stream-readable",
     requirementId: "RS-2",
     assertion: "A client token can read the stream its grant names (positive control for the enforcement oracles).",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
@@ -89,7 +89,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a grant for a seeded stream.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: grant.accessToken,
       });
       if (response.status !== 200) {
@@ -104,7 +104,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "RS-2/ungranted-stream-refused",
     requirementId: "RS-2",
     assertion: "A client token is refused a stream absent from its grant, with 403 grant_stream_not_allowed.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [granted] = streams;
       const ungranted = streams.find((s) => s.name !== granted?.name);
       if (!(granted && ungranted)) {
@@ -116,7 +116,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a single-stream grant.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(ungranted.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(ungranted.name)}/records`), {
         token: grant.accessToken,
       });
       if (response.status === 200) {
@@ -144,7 +144,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "RS-2/field-projection-not-exceeded",
     requirementId: "RS-2",
     assertion: "Records returned under a field-narrowed grant carry no field outside the grant's fields allowlist.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const stream = streams.find((s) => s.fields.length >= 2);
       if (!stream) {
         return skip("A stream with at least two declared fields is required to narrow a projection.");
@@ -163,7 +163,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a field-narrowed grant.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: grant.accessToken,
       });
       if (response.status !== 200) {
@@ -200,12 +200,12 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "RS-16/unauthenticated-request-refused",
     requirementId: "RS-16",
     assertion: "A record read with no access token is refused with 401 rather than served.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`);
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`));
       if (response.status !== 401) {
         return fail(`Expected 401 for a request carrying no token, got ${response.status}.`, [response.evidence]);
       }
@@ -229,7 +229,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     appliesWhen: (adapter) => adapter.capabilities.ownerTokens,
     assertion:
       "An unissued bearer string shaped like an owner token is rejected, not treated as an owner token by syntax.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
@@ -244,8 +244,8 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       // makes it a string the target cannot have issued.
       const forged = `${realOwner}-pdpp-conformance-unissued`;
 
-      const path = `/v1/streams/${encodeURIComponent(stream.name)}/records`;
-      const response = await request(adapter.baseUrl, path, { token: forged });
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const response = await request(adapter.baseUrl, recordsPath, { token: forged });
 
       if (response.status === 200) {
         return fail(
@@ -259,7 +259,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
 
       // Positive control: the genuine owner token must still work, otherwise the
       // rejection above could just be a server that refuses every owner read.
-      const control = await request(adapter.baseUrl, path, { token: realOwner });
+      const control = await request(adapter.baseUrl, recordsPath, { token: realOwner });
       if (control.status === 401 || control.status === 403) {
         return skip(
           `The genuine owner token was also refused (${control.status}), so this run cannot distinguish syntax-based token handling from a target that rejects all owner reads.`
@@ -278,7 +278,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "RS-9/client-token-exact-filter-rejected",
     requirementId: "RS-9",
     assertion: "A client-token exact filter[...] parameter is rejected with 400 invalid_request.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       const field = stream?.fields[0];
       if (!(stream && field)) {
@@ -290,7 +290,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a grant for a seeded stream.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: grant.accessToken,
         query: { [`filter[${field}]`]: "any-value" },
       });
@@ -316,7 +316,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "RS-9/client-token-expand-rejected",
     requirementId: "RS-9",
     assertion: "A client-token expand[] parameter is rejected with 400 invalid_request.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
@@ -327,7 +327,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a grant for a seeded stream.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: grant.accessToken,
         query: { "expand[]": "anything" },
       });
@@ -343,7 +343,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "RS-10/unknown-parameter-rejected",
     requirementId: "RS-10",
     assertion: "An unknown query parameter is rejected with 400 rather than silently ignored.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
@@ -354,7 +354,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a grant for a seeded stream.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: grant.accessToken,
         query: { pdpp_conformance_unknown_param: "1" },
       });
@@ -375,7 +375,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "RS-11/unsupported-version-rejected",
     requirementId: "RS-11",
     assertion: "An unsupported PDPP-Version header is rejected with 400 unsupported_version.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
@@ -386,7 +386,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a grant for a seeded stream.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: grant.accessToken,
         // A date far outside any plausible supported set.
         headers: { "PDPP-Version": "1999-01-01" },
@@ -413,7 +413,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     requirementId: "RS-12",
     appliesWhen: (adapter) => adapter.capabilities.ownerTokens,
     assertion: "An owner token for another subject cannot read the seeded subject's records.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
@@ -425,7 +425,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!foreign) {
         return skip("The adapter returned no foreign-subject owner token.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: foreign,
       });
       if (response.status === 200) {
@@ -457,7 +457,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     appliesWhen: (adapter) => adapter.capabilities.selfExport,
     assertion:
       "An owner token reads the owner's own records through the client query endpoints without a client grant.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
@@ -466,7 +466,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!owner) {
         return skip("The target declares self-export but the adapter produced no owner token.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: owner,
       });
       if (response.status !== 200) {
@@ -489,7 +489,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     requirementId: "RS-15",
     assertion:
       "Client-token stream metadata exposes only granted fields and omits current view/relationship/query capability.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const stream = streams.find((s) => s.fields.length >= 2);
       if (!stream) {
         return skip("A stream with at least two declared fields is required to narrow a projection.");
@@ -507,7 +507,7 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a field-narrowed grant.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}`), {
         token: grant.accessToken,
       });
       if (response.status !== 200) {
@@ -560,8 +560,8 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "RS-16/protected-resource-metadata-published",
     requirementId: "RS-16",
     assertion: "RFC 9728 protected resource metadata is published with `resource` and the four pdpp_ members.",
-    async run({ adapter }) {
-      const response = await request(adapter.baseUrl, "/.well-known/oauth-protected-resource");
+    async run({ adapter, wellKnownPath }) {
+      const response = await request(adapter.baseUrl, wellKnownPath());
       if (response.status !== 200) {
         return fail(`Expected 200 at the RFC 9728 metadata location, got ${response.status}.`, [response.evidence]);
       }
@@ -586,12 +586,12 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "RS-16/401-carries-resource-metadata-challenge",
     requirementId: "RS-16",
     assertion: "A 401 carries a WWW-Authenticate: Bearer challenge with the resource_metadata parameter.",
-    async run({ adapter, streams }) {
+    async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
       }
-      const response = await request(adapter.baseUrl, `/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
         token: "pdpp-conformance-invalid-token",
       });
       if (response.status !== 401) {

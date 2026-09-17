@@ -16,14 +16,28 @@
 //   - a case that cannot arrange its precondition returns `skip` explicitly
 
 import { assertRequirementExists, type CaseResult, type Evidence } from "../report/result.ts";
+
+/** Strips one trailing slash so a declared base and a suffix do not double up. */
+const TRAILING_SLASH = /\/$/;
+
 import type { SeededStream, TargetAdapter } from "./adapter.ts";
 
 /** What a case body receives. The adapter plus what setup() provisioned. */
 export interface CaseContext {
   readonly adapter: TargetAdapter;
+  /**
+   * Compose a Section 8 endpoint path under the target's query base, so a case
+   * never assumes a "/v1" prefix that Core does not fix. Section 8 publishes
+   * `pdpp_core_query_base` precisely "so a client composes a record query
+   * without assuming a version segment"; a suite that hardcoded the prefix
+   * would fail a conforming server and be testing its own assumption.
+   */
+  path: (suffix: string) => string;
   readonly streams: readonly SeededStream[];
   /** A seeded stream by semantics, for cases that need a particular kind. */
   streamWith: (semantics: SeededStream["semantics"]) => SeededStream | undefined;
+  /** Where this target publishes its RFC 9728 metadata document. */
+  wellKnownPath: () => string;
 }
 
 /**
@@ -137,9 +151,12 @@ export async function runCases(
 }
 
 export function makeContext(adapter: TargetAdapter, streams: readonly SeededStream[]): CaseContext {
+  const base = (adapter.queryBase ?? "/v1").replace(TRAILING_SLASH, "");
   return {
     adapter,
     streams,
     streamWith: (semantics) => streams.find((s) => s.semantics === semantics),
+    path: (suffix) => `${base}${suffix.startsWith("/") ? suffix : `/${suffix}`}`,
+    wellKnownPath: () => adapter.wellKnownPath ?? "/.well-known/oauth-protected-resource",
   };
 }
