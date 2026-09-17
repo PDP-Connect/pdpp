@@ -171,6 +171,32 @@ and introspection caller authentication.
 The one skip is expired-grant enforcement: the adapter cannot fabricate a grant
 that has already expired against this AS.
 
+### Second target: the Vana Personal Server's composed AS + RS
+
+Run against `personal-server-ts` @ `waspflow/pdpp-integrated-journey-0917`
+(`6e5ff0d`), which mounts the Resource Server on a real boot. Config:
+`targets/vana-personal-server.json`.
+
+**Result: 8 of 33 applicable tested, 6 passed, 2 failed MUSTs, 3 skips.**
+
+| Requirement | Level | Finding |
+| --- | --- | --- |
+| RS-10 | **Failed MUST** | An unknown query parameter is silently ignored and the request served with 200. Section 8 requires 400, so a client cannot have a misunderstood parameter quietly dropped. |
+| RS-16 | **Failed MUST** | The 401 on a *rejected* token carries no `WWW-Authenticate` header. The no-token path is correct — a request with no `Authorization` header gets a well-formed challenge with `resource_metadata` and `error="invalid_token"`. Only the rejected-token path omits it, and that is the path Core Section 8 governs. |
+
+This target uses a different authorization journey from the reference — a session
+opened at `/pdpp/v1/authorize`, reviewed by digest, approved, then an
+authorization code exchanged with PKCE, rather than RFC 9126 PAR plus a consent
+endpoint. Core pins neither: Section 6 defines the selection request and Section 7
+the resolved grant, not the route between them. Both are conformant, and the case
+bodies never learn which journey produced the token they were handed. That is the
+strongest available evidence that the suite tests the protocol rather than one
+deployment's habits.
+
+Three cases skip rather than pass vacuously: this deployment seeds one stream (so
+stream-membership and error-classification have nothing to hold out) and binds one
+owner (so there is no foreign subject for RS-12).
+
 ### The apps/site sandbox is not this target
 
 An earlier revision of this file reported an RS-16 failure against the public
