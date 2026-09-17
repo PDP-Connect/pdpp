@@ -50,13 +50,21 @@ reported as broken.
 
 ## Outcomes
 
-Five, not two. `pass` and `fail` are judgments; the rest record an **absence of
-evidence** and are never folded into a numerator.
+Six, not two. `pass` and `fail` are MUST-level judgments, `advisory` records a
+SHOULD-level observation on an otherwise conformant target, and the rest record an
+**absence of evidence**. Only `fail` is a conformance failure.
+
+Keeping `advisory` distinct matters more than it looks. Reporting an RFC "SHOULD
+NOT" as a failed MUST tells an implementer their conforming server is
+non-conformant, on a clause the specification never made binding — and a reader
+has no easy way to check the citation. A root review caught the suite doing
+exactly that; `test/report-honesty.test.ts` now locks the distinction.
 
 | Outcome | Meaning |
 | --- | --- |
 | `pass` | The target demonstrated the required behaviour. |
-| `fail` | The target demonstrated a violation. Always carries captured evidence. |
+| `fail` | The target violated a MUST-level requirement. Always carries captured evidence. |
+| `advisory` | Every MUST the case checks was met, but a SHOULD-level recommendation the case also observed was not. Counted as passing for conformance; surfaced separately so the observation is not lost. |
 | `unsupported` | The target declares the optional capability absent, so the requirement does not apply. |
 | `skip` | A precondition could not be arranged. Signals an incomplete run. |
 | `not-tested` | No case exists in this suite version. Generated from the catalogue. |
@@ -70,6 +78,10 @@ tested/applicable per role.
 ```sh
 # Against the bundled target (the suite's self-test)
 pnpm --filter @pdpp/conformance-suite exec tsx src/cli.ts --target reference
+
+# Against the Vana Personal Server's composed AS + RS
+pnpm --filter @pdpp/conformance-suite exec tsx src/cli.ts \
+  --target targets/vana-personal-server.json
 
 # Against the real reference implementation (AS + RS)
 pnpm --filter @pdpp/conformance-suite exec tsx src/cli.ts \
@@ -137,17 +149,16 @@ real consent journey over HTTP — RFC 7591 client registration, PAR, owner revi
 and approval, grant issuance, revocation — so the grant-shape cases execute rather
 than skipping. Config: `targets/reference-implementation.json`.
 
-**Result: 15 of 37 applicable tested, 12 passed, 3 failed MUSTs, one skip.**
+**Result: 15 of 37 applicable tested, 13 passed, 2 failed MUSTs, 1 advisory.**
 
-Bring the target up reproducibly with `scripts/reference-target.sh up` (pinned
-install, readiness polling, PID-tracked lifecycle), then run the suite against
-`targets/reference-implementation.json`.
+Bring the target up reproducibly with `scripts/reference-target.sh up`, then run
+the suite against `targets/reference-implementation.json`.
 
-| Finding | Detail |
-| --- | --- |
-| RS-2 | A grant covering `repositories` correctly denies `starred`, but with 401 `context.stream_not_allowed`. Section 8 maps stream-not-in-grant to 403 `grant_stream_not_allowed`. Access control holds; the classification differs, and a client branching on the documented code will not recognise it. |
-| RS-16 | The `WWW-Authenticate` challenge on a rejected token omits `error="invalid_token"`, which RFC 6750 Section 3 requires when a token was presented and refused. |
-| AS-8 | After an owner-authenticated revoke the AS correctly reports `active: false`, but the inactive introspection response still carries `subject_id`, `client_id` and `grant_id`. RFC 7662 Section 2.2 requires an inactive response to carry no information about the token, so a holder of a revoked token string can still learn whose it was and what it covered. |
+| Requirement | Level | Finding |
+| --- | --- | --- |
+| RS-6 | **Failed MUST** | A grant covering `repositories` correctly denies `starred` — enforcement passes as RS-2 — but with 401 `context.stream_not_allowed`. Section 9 RS item 6 requires structured errors as the Section 8 table defines, and that table binds stream-not-in-grant to 403 `grant_stream_not_allowed`. A classification defect, not an access-control one: a client branching on the documented code will not recognise this response. |
+| RS-16 | **Failed MUST** | The `WWW-Authenticate` challenge on a rejected token omits `error="invalid_token"`. This is PDPP's own requirement, not an inherited one: RFC 6750 Section 3 does not mandate the attribute, while spec-core.md states the resource server "MUST set `error=\"invalid_token\"` when a token was presented and rejected". |
+| AS-8 | Advisory (SHOULD) | Revocation is correctly reflected as `active: false`, which is all Core Section 9 AS item 8 pins. The inactive introspection response additionally discloses `subject_id`, `client_id` and `grant_id`. RFC 7662 Section 2.2 says an AS **SHOULD NOT** include that, and Core does not raise it to a MUST — so this is a recommendation, not a conformance failure. A holder of a revoked token string can still learn whose it was. |
 
 All three reproduce with curl against the running server, independent of the suite.
 Everything else currently testable passes: stream membership, field projection,
