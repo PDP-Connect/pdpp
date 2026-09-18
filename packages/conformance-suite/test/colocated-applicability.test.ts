@@ -65,30 +65,42 @@ describe("co-located topology does not exempt always-applicable AS requirements"
     }
   });
 
-  it("reports AS-3 and AS-9 as skip (missing evidence), not unsupported, against a co-located target", async () => {
+  it("never reports AS-3 or AS-9 as unsupported against a co-located target", async () => {
+    // The assertion is `not unsupported`, not a specific outcome.
+    //
+    // These previously asserted "skip", which was the honest report while the
+    // reference target exposed no introspection mechanism at all. It now
+    // implements the local equivalent Core Section 8 permits, so they pass —
+    // and pinning "skip" would have made a target improvement look like a
+    // regression. What must never happen is `unsupported`: that claims the
+    // requirement does not apply to a co-located deployment, which is the false
+    // exemption this file exists to prevent.
     const report = await runSuite(new ReferenceTargetAdapter());
     for (const id of ["AS-3", "AS-9"]) {
       const result = report.requirements.find((r) => r.requirement.id === id);
       assert.ok(result, `Requirement ${id} must appear in the report.`);
-      assert.equal(
+      assert.notEqual(
         result?.outcome,
-        "skip",
-        `${id} against the co-located reference target (no introspection_endpoint) must be "skip": the ` +
-          "requirement still applies, this suite version just has no mechanism to observe it here. " +
-          `"unsupported" would wrongly claim the requirement is inapplicable to this target.`
+        "unsupported",
+        `${id} applies to every authorization server regardless of topology. "unsupported" would remove it ` +
+          "from the applicable denominator instead of reporting the evidence (or its absence) honestly."
       );
     }
   });
 
-  it("reports AS-8 as skip (missing evidence), not unsupported, against a co-located target", async () => {
+  it("never reports AS-8 as unsupported against a co-located target", async () => {
     const report = await runSuite(new ReferenceTargetAdapter());
     const result = report.requirements.find((r) => r.requirement.id === "AS-8");
     assert.ok(result, "Requirement AS-8 must appear in the report.");
-    assert.equal(
+    // As above: the outcome may now be `pass`, because the reference target
+    // implements Core Section 8's local introspection equivalent. The invariant
+    // is that AS-8's revocation-reflection obligation is never reported as
+    // inapplicable to a co-located AS — it binds every authorization server.
+    assert.notEqual(
       result?.outcome,
-      "skip",
-      "AS-8's revocation-reflection obligation applies to every AS; a co-located target with no " +
-        "introspection_endpoint is missing evidence for it, not exempt from it."
+      "unsupported",
+      "AS-8's revocation-reflection obligation applies to every AS; a co-located target is missing evidence " +
+        "for it or satisfies it, never exempt from it."
     );
   });
 

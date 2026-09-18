@@ -114,6 +114,23 @@ export class VanaPsAdapter implements TargetAdapter {
    * so a grant and its header map are always from the same exchange.
    */
   private lastTokenResponseHeaders: Record<string, string> | null = null;
+  /** Body of the most recent successful token-endpoint redemption (RFC 9396 §7). */
+  private lastTokenResponseBody: unknown = undefined;
+
+  /**
+   * The headers and body of the exchange that produced the current token, as
+   * the `IssuedGrant` fields clause 10.2-4 and RFC 9396 Section 7 read.
+   *
+   * One helper rather than two inline spreads at the call site: both come from
+   * the same exchange and are always reported together, and keeping them here
+   * leaves `approve` reading as the consent journey it is.
+   */
+  private lastTokenExchange(): Partial<IssuedGrant> {
+    return {
+      ...(this.lastTokenResponseHeaders === null ? {} : { tokenResponseHeaders: this.lastTokenResponseHeaders }),
+      ...(this.lastTokenResponseBody === undefined ? {} : { tokenResponseBody: this.lastTokenResponseBody }),
+    };
+  }
 
   constructor(config: VanaPsConfig) {
     this.config = config;
@@ -288,8 +305,7 @@ export class VanaPsAdapter implements TargetAdapter {
         // target's /approve returns `{ redirect_uri, grant_id }`, so in practice
         // this is absent and AS-3's schema case skips for missing evidence.
         ...(approval.grant === undefined ? {} : { rawGrant: approval.grant }),
-        // The headers of the exchange that produced THIS token (clause 10.2-4).
-        ...(this.lastTokenResponseHeaders === null ? {} : { tokenResponseHeaders: this.lastTokenResponseHeaders }),
+        ...this.lastTokenExchange(),
       };
     };
 
@@ -515,8 +531,10 @@ export class VanaPsAdapter implements TargetAdapter {
     if (!response.ok) {
       return null;
     }
-    const token = (await response.json()) as { access_token?: string };
+    const parsedBody: unknown = await response.json();
+    const token = parsedBody as { access_token?: string };
     if (token.access_token) {
+      this.lastTokenResponseBody = parsedBody;
       // Recorded only for a response that actually carried a token: clause
       // 10.2-4 binds "every successful token response that contains an access
       // token or refresh token", so headers from a tokenless response would be

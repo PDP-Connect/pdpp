@@ -388,7 +388,19 @@ export type Defect =
    * written against, and a document whose preset means two different things
    * depending on who expands it cannot support that consent.
    */
-  | "accept-duplicate-preset-stream";
+  | "accept-duplicate-preset-stream"
+  /**
+   * Omits `authorization_details` from a token response for a request that
+   * carried them (RFC 9396 Section 7, adopted by Core's Section 2 normative
+   * reference and not restated in Core).
+   *
+   * Everything else about the exchange is correct — the token works, the grant
+   * is right, introspection reports it faithfully. What a client loses is the
+   * ability to learn what it was granted from the response that granted it: it
+   * must instead introspect, which on a separated deployment is an endpoint
+   * authenticated for resource servers, not for it.
+   */
+  | "omit-token-response-authorization-details";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -552,6 +564,9 @@ const SINGLE_RECORD_PATH = /^\/v1\/streams\/([^/]+)\/records\/([^/]+)$/;
 const METADATA_PATH = /^\/v1\/streams\/([^/]+)$/;
 
 /** The seeded subject. A second subject exists so cross-subject scoping is testable. */
+/** The client this target issues grants to, as introspection reports it. */
+export const CLIENT_ID = "pdpp-conformance-client";
+
 export const SEEDED_SUBJECT = "subject_seeded";
 export const FOREIGN_SUBJECT = "subject_foreign";
 
@@ -963,6 +978,28 @@ export class ReferenceServer {
     return accessToken;
   }
 
+  /**
+   * The RFC 9396 `authorization_details` entry for a grant, as granted.
+   *
+   * One shape, used by BOTH the token response and the co-located introspection
+   * equivalent, so the two cannot drift: the case that compares them is only
+   * meaningful if a server could have got them out of step, and a server that
+   * derives both from the same resolved grant is the conforming one.
+   */
+  private grantedAuthorizationDetails(grantId: string): Record<string, unknown> | null {
+    const grant = this.grants.get(grantId);
+    if (!grant) {
+      return null;
+    }
+    return {
+      type: "https://pdpp.dev/data-access",
+      streams: grant.streams.map((stream) => ({
+        name: stream.name,
+        fields: [...this.grantedFields(stream)],
+      })),
+    };
+  }
+
   /** The access token bound to a grant, for the token endpoint to re-serve. */
   private tokenForGrant(grantId: string): string | null {
     if (!this.grants.has(grantId)) {
@@ -974,6 +1011,52 @@ export class ReferenceServer {
       }
     }
     return null;
+  }
+
+  /**
+   * The co-located introspection equivalent Core Section 8 permits, as a
+   * PdppResponse the adapter can hand straight to a case.
+   *
+   * Answers from the SAME `grantedAuthorizationDetails` the token endpoint
+   * uses, because it is the same grant. That is what makes the RFC 9396
+   * Section 7 comparison meaningful rather than circular: the two surfaces
+   * agreeing is the conforming behaviour, and the defect makes exactly one of
+   * them stop reporting.
+   */
+  introspect(accessToken: string): import("../harness/http.ts").PdppResponse | null {
+    const principal = this.tokens.get(accessToken);
+    if (principal?.kind !== "client") {
+      return null;
+    }
+    const grant = this.grants.get(principal.grantId);
+    // Revocation and expiry are reported here, not just enforced at the query
+    // surface: Section 9 AS item 8 requires revocation to be reflected in
+    // introspection, and a stub that always answered `active: true` would make
+    // the AS-8 oracle pass against a server that never propagates it.
+    const active = grant !== undefined && !(grant.revoked || grant.expired);
+    const detail = this.grantedAuthorizationDetails(principal.grantId);
+    const body = active
+      ? {
+          active: true,
+          pdpp_token_kind: "client",
+          grant_id: principal.grantId,
+          // Core Section 8 requires the client-token context to name both the
+          // subject whose data is reachable and the client it was issued to.
+          subject_id: grant?.subjectId ?? SEEDED_SUBJECT,
+          client_id: CLIENT_ID,
+          ...(detail ? { authorization_details: [detail] } : {}),
+        }
+      : { active: false };
+    return {
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: body,
+      text: JSON.stringify(body),
+      evidence: {
+        request: { method: "POST", url: `${this.baseUrl}/introspect`, headers: {} },
+        response: { status: 200, headers: {}, body: JSON.stringify(body) },
+      },
+    };
   }
 
   /** Base URL of this server's token endpoint, for the adapter to call. */
@@ -1051,7 +1134,28 @@ export class ReferenceServer {
       const cacheHeaders = this.has("token-response-without-no-store")
         ? {}
         : { "cache-control": "no-store", pragma: "no-cache" };
-      send(200, { access_token: issuedToken, token_type: "Bearer" }, cacheHeaders);
+      // RFC 9396 Section 7: a token response for a request that carried
+      // `authorization_details` MUST itself carry the authorization_details AS
+      // GRANTED. Core adopts the RFC 9396 envelope by normative reference and
+      // describes the introspection response, but never restates this — so a
+      // server can satisfy every Core clause and still leave a client unable to
+      // learn what it was actually granted without a separate introspection
+      // call it may not be authorized to make.
+      //
+      // Built from the grant's OWN resolved state, never echoed from the
+      // request, so it reports what was granted rather than what was asked for.
+      const detail = this.grantedAuthorizationDetails(grantId);
+      send(
+        200,
+        {
+          access_token: issuedToken,
+          token_type: "Bearer",
+          ...(detail && !this.has("omit-token-response-authorization-details")
+            ? { authorization_details: [detail] }
+            : {}),
+        },
+        cacheHeaders
+      );
       return;
     }
 

@@ -235,9 +235,12 @@ describe("AS-9 co-located introspection fallback (coLocatedIntrospect)", () => {
   });
 
   it("still reports skip (missing evidence) when the adapter supplies no coLocatedIntrospect hook", async () => {
-    // Regression guard for colocated-applicability.test.ts's contract: adding
-    // the fallback must not turn "no hook" into anything but skip.
+    // The reference adapter now IMPLEMENTS coLocatedIntrospect, so the hook is
+    // removed here to model a target that has none. Deleting it keeps this
+    // guard about the fallback's behaviour, which is what it protects: "no
+    // hook" must remain skip (missing evidence), never pass or unsupported.
     const adapter = new ReferenceTargetAdapter(DEFAULT_FIXTURES);
+    (adapter as { coLocatedIntrospect?: unknown }).coLocatedIntrospect = undefined;
     const { streams } = await adapter.setup();
     try {
       const result = await runCase(AS9_CASE, makeContext(adapter, streams));

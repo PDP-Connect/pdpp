@@ -29,6 +29,7 @@ import type {
   UrlHostedClientOffer,
   UrlHostedClientOutcome,
 } from "../harness/adapter.ts";
+import type { PdppResponse } from "../harness/http.ts";
 import type { Role } from "../requirements/catalog.ts";
 import {
   type Defect,
@@ -598,16 +599,33 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * reports the 10.2-4 case `skip` rather than reading a failed fetch as a
    * missing header.
    */
-  private async fetchTokenResponseHeaders(grantId: string): Promise<Record<string, string> | null> {
+  private async fetchTokenResponse(
+    grantId: string
+  ): Promise<{ headers: Record<string, string>; body: unknown } | null> {
     try {
       const response = await fetch(`${this.server.tokenEndpoint}?grant_id=${encodeURIComponent(grantId)}`);
       if (!response.ok) {
         return null;
       }
-      return Object.fromEntries([...response.headers].map(([k, v]) => [k.toLowerCase(), v]));
+      const body: unknown = await response.json();
+      return {
+        headers: Object.fromEntries([...response.headers].map(([k, v]) => [k.toLowerCase(), v])),
+        body,
+      };
     } catch {
       return null;
     }
+  }
+
+  /**
+   * The co-located introspection equivalent Core Section 8 allows.
+   *
+   * Reports the SAME resolved grant the token response does, because it is the
+   * same grant — which is what the RFC 9396 Section 7 case compares. A target
+   * where the two could not be compared would make that case unrunnable.
+   */
+  async coLocatedIntrospect(accessToken: string): Promise<PdppResponse | null> {
+    return await this.server.introspect(accessToken);
   }
 
   async issueGrant(request: GrantRequest): Promise<IssuedGrant | null> {
@@ -668,13 +686,15 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     // 10.2-4 case asserts on are the ones an HTTP client actually received.
     // Building a header map here instead would be the suite testing its own
     // constant.
-    const tokenResponseHeaders = await this.fetchTokenResponseHeaders(issued.grantId);
+    const tokenResponse = await this.fetchTokenResponse(issued.grantId);
 
     return {
       grantId: issued.grantId,
       accessToken: issued.accessToken,
       ...(rawGrant === undefined ? {} : { rawGrant }),
-      ...(tokenResponseHeaders === null ? {} : { tokenResponseHeaders }),
+      ...(tokenResponse === null
+        ? {}
+        : { tokenResponseHeaders: tokenResponse.headers, tokenResponseBody: tokenResponse.body }),
       // The RESOLVED field set, not the requested one. For a request naming a
       // view these differ, and Core Section 5 makes the resolved list the
       // authoritative content of the grant; echoing the request here would

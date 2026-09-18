@@ -127,6 +127,33 @@ async function introspect(
   });
 }
 
+/**
+ * The granted (stream, fields) pairs of an authorization_details array, as a
+ * stable comparable string.
+ *
+ * Normalized — streams and fields sorted — because neither RFC 9396 nor Core
+ * fixes an ordering for either, so two surfaces listing the same grant in
+ * different orders are reporting the same thing. Comparing raw documents would
+ * report an ordering difference as a conformance failure.
+ */
+function grantedStreamFields(details: readonly unknown[]): string {
+  const streams = details.flatMap((detail) => {
+    const entry = (detail as { streams?: unknown }).streams;
+    return Array.isArray(entry) ? entry : [];
+  });
+  return JSON.stringify(
+    streams
+      .map((s) => {
+        const stream = s as { name?: unknown; fields?: unknown };
+        const fields = Array.isArray(stream.fields)
+          ? [...stream.fields].map(String).sort((a, b) => a.localeCompare(b))
+          : [];
+        return { name: String(stream.name), fields };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name))
+  );
+}
+
 export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   // ---------------------------------------------------------------- AS-9 ---
   // AS-9 is `applicability: "always"` (grant-bound tokens with PDPP extension
@@ -741,6 +768,105 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       if (missing.length > 0) {
         return fail(
           `The successful token response carrying an access token omitted ${missing.join(" and ")}. Core Section 10 "Token security" requires both on every token response that contains an access or refresh token, before the response is serialized. Without them a caching intermediary is entitled to store the credential and serve it to a later caller, which nothing later in the exchange would reveal.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
+  // --------------------------------------------- RFC 9396 Section 7 ---------
+  // NOT a Core clause, and deliberately not given one. Core adopts the RFC 9396
+  // `authorization_details` envelope by normative reference (Section 2,
+  // "Related standards": "PDPP uses the `authorization_details` envelope for
+  // selection requests") and describes both the selection request and the
+  // introspection response — but never restates RFC 9396 Section 7's
+  // token-response obligation:
+  //
+  //   "the AS MUST return the `authorization_details` as granted in the token
+  //    response"  — when the request carried them.
+  //
+  // So a deployment can satisfy every Core clause in the matrix and still fail
+  // an obligation it owes, because Core's own normative reference pulls it in.
+  // The matrix enumerates spec-core.md only (see its header section
+  // "Obligations from referenced standards"): adding a row here would mean
+  // inventing a Core clause id for text Core does not contain, which makes the
+  // matrix a worse record rather than a better one. The obligation is tracked
+  // on this case instead, which names the standard and section in its own
+  // assertion, and rides on AS-9 — the requirement that owns token issuance.
+  //
+  // Why it matters concretely: a client that cannot read what it was granted
+  // from the response that granted it must introspect to find out. On a
+  // separated deployment that endpoint authenticates resource servers, not
+  // clients, so the client may have no way to ask at all — and is left
+  // enforcing its own idea of the grant against a server enforcing another.
+  {
+    caseId: "AS-9/token-response-carries-granted-authorization-details",
+    requirementId: "AS-9",
+    assertion:
+      "RFC 9396 Section 7 (adopted by Core's Section 2 normative reference, not restated in Core): the token response carries `authorization_details` as granted, agreeing with what introspection reports for the same grant.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip("The target issued no grant, so there is no token response to inspect.");
+      }
+      if (grant.tokenResponseBody === undefined) {
+        return skip(
+          "The adapter does not surface the token endpoint's response body (IssuedGrant.tokenResponseBody), so this deployment's token response is unobserved. An absent body is not an absent field."
+        );
+      }
+
+      const tokenDetails = (grant.tokenResponseBody as { authorization_details?: unknown }).authorization_details;
+      const evidence = [
+        {
+          request: { method: "POST", url: "token endpoint", headers: {} },
+          response: { status: 200, headers: {}, body: JSON.stringify(grant.tokenResponseBody) },
+        },
+      ];
+      if (!Array.isArray(tokenDetails) || tokenDetails.length === 0) {
+        return fail(
+          "The token response carried no `authorization_details`. RFC 9396 Section 7 requires the AS to return the authorization_details as granted in the token response when the request carried them, and Core adopts that envelope by normative reference. Without it a client cannot learn what it was actually granted from the response that granted it — it must introspect, which on a separated deployment is an endpoint authenticated for resource servers rather than for clients.",
+          evidence
+        );
+      }
+
+      // The comparison half. "As granted" is the obligation, so a response
+      // carrying SOMETHING under the right key is not enough: it has to agree
+      // with what this AS itself says the grant is. Introspection is the only
+      // other place that answer is published, so it is the oracle — and a
+      // target with no introspection surface reports skip rather than letting
+      // the presence check alone stand in for the clause.
+      const endpoint = adapter.authorizationServerUrl
+        ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
+        : null;
+      const introspection = endpoint
+        ? await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials)
+        : await adapter.coLocatedIntrospect?.(grant.accessToken);
+      if (introspection?.status !== 200) {
+        return skip(
+          'The token response carries authorization_details, but this deployment publishes no introspection result to compare them against, so "as granted" is unverified. The presence check alone is not the obligation.'
+        );
+      }
+      evidence.push(introspection.evidence);
+      const introspected = (introspection.json as IntrospectionBody | undefined)?.authorization_details;
+      if (!Array.isArray(introspected) || introspected.length === 0) {
+        return skip("Introspection reported no authorization_details for this grant, so there is nothing to compare.");
+      }
+
+      // Compared on the facts that decide enforcement — the granted streams and
+      // their fields — rather than by deep-equality of the two documents. Core
+      // fixes no requirement that the two surfaces serialize identically, and
+      // asserting that would test this suite's assumption rather than the
+      // standard's obligation.
+      const granted = grantedStreamFields(tokenDetails);
+      const reported = grantedStreamFields(introspected);
+      if (granted !== reported) {
+        return fail(
+          `The token response's authorization_details do not match what introspection reports for the same grant. Token response granted ${granted}; introspection reports ${reported}. RFC 9396 Section 7 requires the token response to carry the authorization_details AS GRANTED — a response carrying some other shape tells the client it holds an authorization it does not, and the client then enforces one grant while the resource server enforces another.`,
           evidence
         );
       }

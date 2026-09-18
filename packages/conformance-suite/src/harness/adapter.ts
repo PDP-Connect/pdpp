@@ -138,6 +138,23 @@ export interface IssuedGrant {
     readonly fields: readonly string[];
   }[];
   /**
+   * The token endpoint's response BODY for this grant, unparsed and unreshaped.
+   *
+   * For RFC 9396 Section 7: "the AS MUST return the `authorization_details` as
+   * granted in the token response" when the request carried them. Core adopts
+   * the RFC 9396 envelope by normative reference (Section 2, "Related
+   * standards") and describes both the selection request and the introspection
+   * response — but never restates this token-response obligation, so no Core
+   * clause covers it and it is tracked on the case rather than in the matrix.
+   *
+   * `unknown` rather than a typed body BECAUSE the case under test is whether
+   * the body has the right shape; typing it would let the adapter's reshaping
+   * supply the field the case is looking for. Absent when the adapter obtains
+   * tokens by a route with no HTTP token endpoint, which reports the case
+   * `skip` naming this hook.
+   */
+  readonly tokenResponseBody?: unknown;
+  /**
    * The response headers the TOKEN ENDPOINT returned alongside this token,
    * lower-cased, exactly as received.
    *

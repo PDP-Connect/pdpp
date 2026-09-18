@@ -484,6 +484,15 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-16/duplicate-stream-in-a-selection-preset-refused",
     defect: "accept-duplicate-preset-stream",
   },
+  // RFC 9396 Section 7, which Core adopts by normative reference and does not
+  // restate — so this row has no Core clause id, by design (see the matrix
+  // header, "Obligations from referenced standards"). The defect omits the
+  // field from the token response while leaving the token, the grant and
+  // introspection all correct, which is the whole shape of the violation.
+  {
+    caseId: "AS-9/token-response-carries-granted-authorization-details",
+    defect: "omit-token-response-authorization-details",
+  },
 ];
 
 describe("negative oracles discriminate conforming from violating targets", () => {
