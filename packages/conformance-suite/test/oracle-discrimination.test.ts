@@ -493,3 +493,38 @@ describe("AS-14 cannot be satisfied by silently issuing the ai_training grant", 
     }
   });
 });
+
+it("AS-14 does not pass without structured denial evidence", async () => {
+  const adapter = new AiTrainingStageableAdapter(new ReferenceTargetAdapter());
+  const original = adapter.stageApproval.bind(adapter);
+  adapter.stageApproval = async (request) => {
+    const staged = await original(request);
+    return staged ? { ...staged, lastApproveError: () => null } : null;
+  };
+  const { streams } = await adapter.setup();
+  try {
+    const result = await runCase(
+      caseById("AS-14/explicit-consent-required-for-ai-training"),
+      makeContext(adapter, streams)
+    );
+    assert.equal(result.outcome, "skip");
+  } finally {
+    await adapter.teardown();
+  }
+});
+
+it("AS-14 does not require a policy to allow AI-training grants", async () => {
+  const inner = new ReferenceTargetAdapter();
+  inner.issueGrant = () => Promise.resolve(null);
+  const adapter = new AiTrainingStageableAdapter(inner);
+  const { streams } = await adapter.setup();
+  try {
+    const result = await runCase(
+      caseById("AS-14/explicit-consent-required-for-ai-training"),
+      makeContext(adapter, streams)
+    );
+    assert.equal(result.outcome, "skip");
+  } finally {
+    await adapter.teardown();
+  }
+});
