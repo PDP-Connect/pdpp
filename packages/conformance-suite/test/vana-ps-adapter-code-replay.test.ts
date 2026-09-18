@@ -48,7 +48,7 @@ interface TokenRequest {
 }
 
 /**
- * Implements exactly the four routes `VanaPsAdapter.stageApproval` and
+ * Implements the five routes `VanaPsAdapter.stageApproval` and
  * `replayLastCode` call: owner bootstrap, authorize, review, approve, token.
  * One authorization code is issued per session and, once redeemed, `mode`
  * decides what a second redemption of that SAME code does — the fact AS-19
@@ -208,6 +208,12 @@ describe("VanaPsAdapter drives a real second token-endpoint redemption for AS-19
 
       assert.equal(fixture.tokenRequests.length, 2, "expected exactly two token-endpoint requests");
       const [first, replay] = fixture.tokenRequests as [TokenRequest, TokenRequest];
+      assert.equal(first.code, "code-1");
+      assert.ok(first.code_verifier, "the initial redemption must supply a PKCE verifier");
+      assert.equal(first.client_id, CLIENT_ID);
+      assert.equal(first.redirect_uri, REDIRECT_URI);
+      assert.equal(first.grant_type, "authorization_code");
+      assert.deepEqual(replay, first, "replay must preserve the entire token request");
       assert.equal(replay.code, first.code, "replay must reuse the exact same authorization code");
       assert.equal(replay.code_verifier, first.code_verifier, "replay must reuse the exact same PKCE verifier");
       assert.equal(replay.client_id, first.client_id, "replay must reuse the exact same client_id");
