@@ -215,6 +215,19 @@ function queryValues(url: URL): Readonly<Record<string, string>> {
   return Object.fromEntries(url.searchParams.entries());
 }
 
+/**
+ * Start the instrumented AS+RS fixture on its own.
+ *
+ * `createPdppClientUnderTest` starts one implicitly, which is all a client
+ * that this package constructs needs. A client under test that is an external
+ * process — Vana Context Gateway, whose outbound resource origin is fixed
+ * when its grant is stored — has to learn the fixture's URL before it can be
+ * started at all, so it needs the fixture as a separate step.
+ */
+export async function startClientFixture(): Promise<ClientFixture> {
+  return await startFixture();
+}
+
 async function startFixture(): Promise<ClientFixture> {
   const requests: ClientRequest[] = [];
   let configuredResponse: ClientFixtureResponse = {
