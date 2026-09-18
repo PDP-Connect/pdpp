@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **56** have at least one case and **50** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **58** have at least one case and **48** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -128,6 +128,7 @@ Renders requester identity, declaration-authored descriptions, policy declaratio
 | `6.1-9` | MUST | review-only | — | Consent-surface wording obligation; not observable without asserting on a deployment's rendered text. |
 | `6.1-10` | MUST | review-only | — | Observing whether the AS fetched a remote logo needs an inbound HTTP fixture the AS would call out to, which the harness does not provide. |
 | `6.1-11` | SHOULD | review-only | — | — |
+| `6.2-2` | MUST | black-box-http | `AS-7/pre-registered-public-clients-carry-no-private-state` | — |
 | `6.3-1` | MUST | review-only | — | A visual-register obligation on the consent surface. This is the clause AS-7 chiefly summarizes, and it is the clearest example of a MUST that is not black-box observable in principle. |
 | `6.4-1` | MUST | review-only | — | The normative core of AS-7, and not observable over HTTP: a case can see what the server bound, not what it rendered. |
 | `6.5-2` | MUST | review-only | — | The AS half is a display obligation on the consent surface; the client half is a SHOULD needing client capture. Neither is reachable from this suite's seam. |
@@ -308,7 +309,7 @@ Distinguishes owner tokens from client tokens via `pdpp_token_kind`, determined 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
 | `8.1-3` | MUST | black-box-http | `RS-4/token-kind-not-inferred-from-syntax` | — |
-| `8.2-3` | MUST | black-box-http | — | Needs an introspection-response injection hook so an unrecognized `pdpp_token_kind` can reach the RS; the adapter obtains tokens from the AS and cannot alter what introspection reports about them. |
+| `8.2-3` | MUST | black-box-http | `RS-4/unrecognized-token-kind-is-unauthorized` | — |
 
 ### RS-5 (resource-server, MUST)
 
@@ -523,7 +524,6 @@ reports.
 | `6.1-3` | MAY | black-box-http | — | — |
 | `6.1-4` | MUST | black-box-http | — | Same missing hook as 6.1-2: the adapter registers clients through the target's own flow and cannot offer a URL-hosted identity document instead. |
 | `6.2-1` | MAY | black-box-http | — | — |
-| `6.2-2` | MUST | black-box-http | — | No Section 9 item covers it; a case would fetch AS metadata and assert `pdpp_pre_registered_public_clients` entries carry only `client_id`, `client_name`, and `token_endpoint_auth_method`, but no current target advertises the mode. |
 | `7.4-1` | MUST | review-only | — | A design constraint on implementations rather than a checkable wire behaviour; its observable consequences are the three axis rows, recorded separately as 7.4-2, AS-17, and RS-11. |
 | `7.8-1` | SHOULD | review-only | — | — |
 | `8.8-1` | MAY | black-box-http | — | — |

@@ -815,6 +815,90 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // ----------------------------------------------------------------- 8.2-3 ---
+  // Token kind extensibility. Core Section 8: "This specification defines
+  // `owner` and `client`. Deployments MAY introduce additional token kinds in
+  // companion profiles. A resource server that receives a `pdpp_token_kind`
+  // value it does not recognize MUST treat the token as unauthorized for ALL
+  // operations defined in this specification."
+  //
+  // Distinct from RS-4/token-kind-not-inferred-from-syntax above, and the
+  // distinction is the point. That case sends a string the target never issued,
+  // which a conforming server rejects at authentication. This one sends a
+  // GENUINE, grant-bound token whose introspection result names a kind the
+  // server does not know — it authenticates perfectly, and the only question is
+  // what the server does next. A server passing that case can still fail this
+  // one, because the two failures live in different branches.
+  //
+  // Every Core operation is probed, not just the records read: the clause says
+  // "all operations", and a server gating only its records route would still
+  // serve stream listings and metadata to a token it admits it cannot classify.
+  {
+    caseId: "RS-4/unrecognized-token-kind-is-unauthorized",
+    requirementId: "RS-4",
+    assertion:
+      "A genuine grant-bound token whose introspection reports an unrecognized pdpp_token_kind is unauthorized for every Section 8 operation, while an ordinary client token still reads.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.tokenWithIntrospectedKind) {
+        return skip(
+          "The adapter has no tokenWithIntrospectedKind hook, so no token can be made to introspect as an unrecognized kind. The suite will not forge a token instead: Section 8 makes token format opaque to the RS, so a fabricated string is a token of NO kind — rejected at authentication for a different reason — and the case would pass against a server that never implemented this rule."
+        );
+      }
+      const grantRequest = { streams: [{ name: stream.name, fields: [...stream.fields] }] };
+
+      // The positive control: an ordinary client token on the same surface.
+      // Without it, a server that refuses everything satisfies the negative.
+      const ordinary = await adapter.issueGrant(grantRequest);
+      if (!ordinary) {
+        return skip("The target issued no ordinary grant, so there is no positive control for this surface.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const control = await request(adapter.baseUrl, recordsPath, { token: ordinary.accessToken });
+      if (control.status !== 200) {
+        return skip(
+          `The positive control read with an ordinary client token returned ${control.status}, so a refusal of an unrecognized-kind token could not be attributed to its kind.`
+        );
+      }
+
+      // A kind Core does not define and no companion profile plausibly claims.
+      const probe = await adapter.tokenWithIntrospectedKind("pdpp-conformance-unknown-kind", grantRequest);
+      if (!probe) {
+        return skip(
+          "The target minted no token reporting an unrecognized kind, so clause 8.2-3 has nothing to act on."
+        );
+      }
+
+      // "All operations defined in this specification" — the Section 8 surface,
+      // not the records route alone.
+      const operations = [
+        { label: "list streams", suffix: "/streams" },
+        { label: "stream metadata", suffix: `/streams/${encodeURIComponent(stream.name)}` },
+        { label: "list records", suffix: `/streams/${encodeURIComponent(stream.name)}/records` },
+      ];
+      const evidence: Evidence[] = [control.evidence];
+      const served: string[] = [];
+      for (const operation of operations) {
+        // biome-ignore lint/performance/noAwaitInLoops: each probe is a separate authorization decision against shared target state.
+        const response = await request(adapter.baseUrl, path(operation.suffix), { token: probe.accessToken });
+        evidence.push(response.evidence);
+        if (response.status < 400) {
+          served.push(`${operation.label} (${response.status})`);
+        }
+      }
+      if (served.length > 0) {
+        return fail(
+          `A token whose introspection reports the unrecognized kind 'pdpp-conformance-unknown-kind' was served: ${served.join(", ")}. Core Section 8 "Token kind extensibility": an RS receiving a \`pdpp_token_kind\` it does not recognize MUST treat the token as unauthorized for all operations defined in this specification. Serving it means applying the rules of a kind this token is not, to permissions this specification never defined.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
   // ---------------------------------------------------------------- RS-9 ---
   // Section 8: client-token filter[...] MUST be rejected with 400
   // invalid_request BEFORE the RS consults declaration metadata. The case

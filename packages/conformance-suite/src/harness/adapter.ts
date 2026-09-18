@@ -721,6 +721,31 @@ export interface TargetAdapter {
   teardown: () => Promise<void>;
 
   /**
+   * Mint a token whose introspection result reports `pdpp_token_kind` as
+   * `kind`, for clause 8.2-3.
+   *
+   * Core Section 8 "Token kind extensibility": deployments MAY add token kinds
+   * in companion profiles, and "a resource server that receives a
+   * `pdpp_token_kind` value it does not recognize MUST treat the token as
+   * unauthorized for all operations defined in this specification". Core
+   * defines exactly `owner` and `client`.
+   *
+   * The suite cannot reach this by any other route. It obtains tokens from the
+   * AS and cannot change what introspection says about them, and it must not
+   * forge a token: Section 8 makes token FORMAT opaque to the RS, so a
+   * suite-minted string is not a token of an unknown kind — it is a token of no
+   * kind, which a conforming RS rejects at authentication for an entirely
+   * different reason. That would pass the case against a server which has never
+   * implemented the rule.
+   *
+   * So the token must be genuine, and the injection must be at the introspection
+   * result the RS resolves it through. On a co-located target that is the local
+   * equivalent Core Section 8 allows. Returns null when the deployment has no
+   * such seam, which reports the case `skip` naming this hook.
+   */
+  tokenWithIntrospectedKind?: (kind: string, request: GrantRequest) => Promise<{ readonly accessToken: string } | null>;
+
+  /**
    * Location of the RFC 9728 protected resource metadata document.
    *
    * RFC 9728 Section 3 derives this from the resource identifier, which for a

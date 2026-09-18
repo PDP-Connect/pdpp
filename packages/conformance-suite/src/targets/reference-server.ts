@@ -268,7 +268,31 @@ export type Defect =
    * meaning of an artifact written against a schema it has never seen, which is
    * exactly the silent mis-enforcement the clause exists to prevent.
    */
-  | "accept-unsupported-grant-schema-version";
+  | "accept-unsupported-grant-schema-version"
+  /**
+   * Publishes secrets, owner-scoped clients and dynamically registered clients
+   * in `pdpp_pre_registered_public_clients` (clause 6.2-2).
+   *
+   * The document stays otherwise well-formed and every advertised client still
+   * works, so nothing else in the suite notices. What leaks is the deployment's
+   * private registration state, out of an endpoint that is unauthenticated by
+   * design because it exists to be discovered.
+   */
+  | "leak-private-registration-state"
+  /**
+   * Serves a token whose introspection result names a `pdpp_token_kind` this
+   * server does not recognize, by falling back to client handling (clause
+   * 8.2-3).
+   *
+   * The realistic shape of the violation. Nobody writes a server that
+   * deliberately honours unknown kinds; they write one whose branch is
+   * `if (kind === "owner") { ... } else { ...treat as client... }`, which is
+   * indistinguishable from correct until a companion profile introduces a third
+   * kind. At that point a token carrying permissions this specification never
+   * defined is enforced under the rules for one it did — and the grant the
+   * server reaches for is whatever the token happens to be bound to.
+   */
+  | "honour-unrecognized-token-kind";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -339,8 +363,20 @@ interface GrantState {
   readonly subjectId: string;
 }
 
-/** What a bearer token resolves to, as an introspection response would report. */
-type Principal = { kind: "client"; grantId: string } | { kind: "owner"; subjectId: string };
+/**
+ * What a bearer token resolves to, as an introspection response would report.
+ *
+ * The third member is the whole of clause 8.2-3: a token that authenticates
+ * perfectly well and whose introspection result names a `pdpp_token_kind` this
+ * server does not recognize. It is deliberately NOT an invalid token — Core
+ * makes token format opaque to the RS, so "unrecognized kind" and "unparseable
+ * credential" are different conditions and only the first is what this clause
+ * governs.
+ */
+type Principal =
+  | { kind: "client"; grantId: string }
+  | { kind: "owner"; subjectId: string }
+  | { kind: "unrecognized"; reportedKind: string };
 
 export const PDPP_VERSION = "2026-04-06";
 const SUPPORTED_VERSION = PDPP_VERSION;
@@ -402,6 +438,18 @@ export class ReferenceServer {
    * field list is not. Seeded from the fixtures at construction.
    */
   private readonly views = new Map<string, string[]>();
+
+  /**
+   * Grant a token of an unrecognized kind is bound to, keyed by the kind it
+   * reports (clause 8.2-3).
+   *
+   * Held so the `honour-unrecognized-token-kind` defect has a REAL grant to
+   * fall back to. Without it the defect would deny for lack of a grant and the
+   * oracle could not tell "refused because the kind is unknown" from "refused
+   * because there was nothing to serve" — the defect would appear to work while
+   * proving nothing.
+   */
+  private readonly unrecognizedKindGrants = new Map<string, string>();
 
   constructor(streams: readonly StreamFixture[], defects: ReadonlySet<Defect> = new Set()) {
     this.streams = streams;
@@ -492,6 +540,17 @@ export class ReferenceServer {
   ): { grant: GrantState | undefined; subjectId: string } | { denial: { code: string; message: string } } {
     if (principal.kind === "owner") {
       return { grant: undefined, subjectId: principal.subjectId };
+    }
+    // Only reachable under `honour-unrecognized-token-kind` — the handler
+    // refuses this kind before getting here otherwise. This is the fallback
+    // branch itself: an unknown kind handled under the rules for `client`,
+    // against whatever grant the token is bound to.
+    if (principal.kind === "unrecognized") {
+      const fallback = this.unrecognizedKindGrants.get(principal.reportedKind);
+      const grant = fallback === undefined ? undefined : this.grants.get(fallback);
+      return grant
+        ? { grant, subjectId: grant.subjectId }
+        : { denial: { code: "grant_invalid", message: "Unknown grant." } };
     }
     const grant = this.grants.get(principal.grantId);
     if (!grant) {
@@ -592,6 +651,26 @@ export class ReferenceServer {
     return { grantId, accessToken };
   }
 
+  /**
+   * A genuine token bound to `grantId` whose introspection result reports
+   * `kind` (clause 8.2-3).
+   *
+   * The token is real and authenticates normally; the ONLY thing distinguishing
+   * it from an ordinary client token is what this server's introspection
+   * equivalent says its kind is. That is what makes a refusal attributable to
+   * the kind rather than to the credential.
+   */
+  mintTokenWithKind(kind: string, grantId: string): string | null {
+    if (!this.grants.has(grantId)) {
+      return null;
+    }
+    this.counter += 1;
+    const accessToken = `token_kind_${this.counter}`;
+    this.tokens.set(accessToken, { kind: "unrecognized", reportedKind: kind });
+    this.unrecognizedKindGrants.set(kind, grantId);
+    return accessToken;
+  }
+
   /** The access token bound to a grant, for the token endpoint to re-serve. */
   private tokenForGrant(grantId: string): string | null {
     if (!this.grants.has(grantId)) {
@@ -648,6 +727,12 @@ export class ReferenceServer {
       return;
     }
 
+    // --- RFC 8414 authorization server metadata (clause 6.2-2) ---
+    if (path === "/.well-known/oauth-authorization-server") {
+      send(200, this.authorizationServerMetadata());
+      return;
+    }
+
     // --- OAuth token endpoint (clause 10.2-4) ---
     //
     // Before the bearer check, because a token endpoint is where a caller goes
@@ -678,6 +763,27 @@ export class ReferenceServer {
       error(401, "authentication_error", "authentication_error", "Missing or invalid access token.", {
         "www-authenticate": this.bearerChallenge(),
       });
+      return;
+    }
+
+    // --- Unrecognized token kind (clause 8.2-3) ---
+    //
+    // Checked immediately after authentication and before ANY Core operation,
+    // because the clause says "unauthorized for all operations defined in this
+    // specification" — not for record reads specifically. A server that gated
+    // only its records route would still serve stream listings and metadata to
+    // a token it admits it does not understand.
+    //
+    // 403, not 401: the credential is valid and the server knows exactly who
+    // presented it. What it does not know is what this kind of token is
+    // permitted to do, and Core's answer is nothing.
+    if (principal.kind === "unrecognized" && !this.has("honour-unrecognized-token-kind")) {
+      error(
+        403,
+        "access_denied",
+        "permission_error",
+        `Token kind '${principal.reportedKind}' is not recognized by this resource server.`
+      );
       return;
     }
 
@@ -1100,6 +1206,62 @@ export class ReferenceServer {
       pdpp_token_kinds_supported: ["owner", "client"],
       pdpp_self_export_supported: true,
       pdpp_provider_connect_version: SUPPORTED_VERSION,
+    };
+  }
+
+  /**
+   * The RFC 8414 document, advertising `pre_registered_public` and publishing
+   * the entries clause 6.2-2 governs.
+   *
+   * Core: "Each `pdpp_pre_registered_public_clients` entry contains
+   * `client_id`, `client_name`, and `token_endpoint_auth_method` ... the field
+   * MUST NOT contain secrets, access tokens, owner-scoped clients, dynamically
+   * registered clients, or private registration state."
+   *
+   * The clause is conditional on advertising the mode, so this server advertises
+   * it: a target that never does makes 6.2-2 vacuous, and "no target advertises
+   * the mode" is exactly why the clause was unreachable.
+   *
+   * `leak-private-registration-state` adds the forbidden content. Each addition
+   * is a DIFFERENT prohibited category from Core's list, because a server can
+   * leak one without leaking the others and an oracle checking only for a key
+   * literally named "secret" would miss the rest.
+   */
+  private authorizationServerMetadata(): Record<string, unknown> {
+    const leaks = this.has("leak-private-registration-state");
+    return {
+      issuer: this.baseUrl,
+      token_endpoint: `${this.baseUrl}/oauth/token`,
+      pdpp_registration_modes_supported: ["pre_registered_public"],
+      pdpp_pre_registered_public_clients: [
+        {
+          client_id: "cli_reference_public",
+          client_name: "PDPP conformance reference public client",
+          token_endpoint_auth_method: "none",
+          // A bare secret, the obvious category.
+          ...(leaks ? { client_secret: "s3cr3t-must-not-be-published" } : {}),
+        },
+        ...(leaks
+          ? [
+              // An owner-scoped client and a dynamically registered one: both
+              // are prohibited entries rather than prohibited FIELDS, so a
+              // check that only scanned each entry's keys for secrets would
+              // pass a server publishing these.
+              {
+                client_id: "cli_owner_scoped",
+                client_name: "Owner's own device client",
+                token_endpoint_auth_method: "none",
+                owner_scoped: true,
+              },
+              {
+                client_id: "cli_dynamically_registered",
+                client_name: "Dynamically registered client",
+                token_endpoint_auth_method: "client_secret_basic",
+                registration_access_token: "rat-must-not-be-published",
+              },
+            ]
+          : []),
+      ],
     };
   }
 

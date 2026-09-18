@@ -21,7 +21,7 @@
 
 import { grantSchemaViolations } from "../harness/grant-schema.ts";
 import { request } from "../harness/http.ts";
-import { advisory, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import { advisory, type ConformanceCase, fail, pass, skip, unsupported } from "../harness/runner.ts";
 
 /** The RFC 7662 + PDPP introspection response shape (Core Section 8). */
 interface IntrospectionBody {
@@ -747,4 +747,98 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       return pass(evidence);
     },
   },
+
+  // ----------------------------------------------------------------- 6.2-2 ---
+  // Pre-registered public client discovery. No Section 9 item covers it, so it
+  // rides on AS-7, the requirement that owns requester identity metadata.
+  //
+  // The clause is conditional on the AS advertising `pre_registered_public` in
+  // `pdpp_registration_modes_supported`, and a target that does not advertise
+  // it reports `unsupported` — the obligation genuinely does not bind it.
+  //
+  // What makes this worth a case: the endpoint is unauthenticated by design,
+  // because its whole purpose is to be discovered by agents and third-party
+  // clients without an out-of-band walkthrough. Anything published here is
+  // published to everyone. Core lists exactly what an entry may carry and names
+  // four categories it MUST NOT — and the failure is not a leaked credential
+  // that something downstream would reject, but a deployment's private
+  // registration state readable by anyone who fetches a well-known document.
+  {
+    caseId: "AS-7/pre-registered-public-clients-carry-no-private-state",
+    requirementId: "AS-7",
+    assertion:
+      "When the AS advertises pre_registered_public, every published entry carries only client_id, client_name and token_endpoint_auth_method — no secrets, tokens, owner-scoped clients, dynamically registered clients, or private registration state.",
+    async run({ adapter }) {
+      const asUrl = adapter.authorizationServerUrl;
+      if (!asUrl) {
+        return skip(
+          "The adapter publishes no authorizationServerUrl, so the RFC 8414 metadata document cannot be located and the registration modes this clause is conditional on are unobserved."
+        );
+      }
+      const metadata = await request(asUrl, "/.well-known/oauth-authorization-server");
+      if (metadata.status !== 200) {
+        return skip(
+          `The RFC 8414 metadata document returned ${metadata.status}, so whether this AS advertises pre_registered_public is unknown.`
+        );
+      }
+      const body = metadata.json as
+        | {
+            pdpp_registration_modes_supported?: unknown;
+            pdpp_pre_registered_public_clients?: unknown;
+          }
+        | undefined;
+      const modes = body?.pdpp_registration_modes_supported;
+      const advertises = Array.isArray(modes) && modes.includes("pre_registered_public");
+      if (!advertises) {
+        return unsupported(
+          "This AS does not advertise `pre_registered_public` in `pdpp_registration_modes_supported`, so the obligations on `pdpp_pre_registered_public_clients` do not bind it."
+        );
+      }
+
+      const entries = body?.pdpp_pre_registered_public_clients;
+      const evidence = [metadata.evidence];
+      if (!Array.isArray(entries)) {
+        return fail(
+          "The AS advertises `pre_registered_public` but publishes no `pdpp_pre_registered_public_clients` array. Core: when the mode is advertised, the reference publishes that field so agents and third-party clients can discover usable `client_id` values without an out-of-band walkthrough.",
+          evidence
+        );
+      }
+
+      // Checked as an allowlist, not a denylist of known-bad key names. Core
+      // names the three fields an entry contains, so anything else is either
+      // private state or unspecified — and a denylist would only ever catch the
+      // leak shapes whoever wrote it thought of.
+      const violations: string[] = [];
+      for (const [index, entry] of entries.entries()) {
+        if (typeof entry !== "object" || entry === null) {
+          violations.push(`entry ${index} is not an object`);
+          continue;
+        }
+        const extra = Object.keys(entry).filter((key) => !ALLOWED_PUBLIC_CLIENT_KEYS.has(key));
+        if (extra.length > 0) {
+          violations.push(`entry ${index} (${describeEntry(entry)}) carries ${extra.join(", ")}`);
+        }
+      }
+      if (violations.length > 0) {
+        return fail(
+          `The published pre-registered public client entries carry fields outside the three Core defines (${[...ALLOWED_PUBLIC_CLIENT_KEYS].join(", ")}): ${violations.join("; ")}. Core: "These entries are public client metadata, not authority to access data ... the field MUST NOT contain secrets, access tokens, owner-scoped clients, dynamically registered clients, or private registration state." This document is unauthenticated by design, so whatever it carries is readable by anyone.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
 ];
+
+/** The three fields Core says a `pdpp_pre_registered_public_clients` entry contains. */
+const ALLOWED_PUBLIC_CLIENT_KEYS: ReadonlySet<string> = new Set([
+  "client_id",
+  "client_name",
+  "token_endpoint_auth_method",
+]);
+
+/** A published entry's identity, for naming it in a failure without dumping it. */
+function describeEntry(entry: object): string {
+  const id = (entry as { client_id?: unknown }).client_id;
+  return typeof id === "string" ? id : "no client_id";
+}

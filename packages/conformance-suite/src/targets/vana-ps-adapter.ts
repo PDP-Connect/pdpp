@@ -289,9 +289,7 @@ export class VanaPsAdapter implements TargetAdapter {
         // this is absent and AS-3's schema case skips for missing evidence.
         ...(approval.grant === undefined ? {} : { rawGrant: approval.grant }),
         // The headers of the exchange that produced THIS token (clause 10.2-4).
-        ...(this.lastTokenResponseHeaders === null
-          ? {}
-          : { tokenResponseHeaders: this.lastTokenResponseHeaders }),
+        ...(this.lastTokenResponseHeaders === null ? {} : { tokenResponseHeaders: this.lastTokenResponseHeaders }),
       };
     };
 
@@ -511,9 +509,7 @@ export class VanaPsAdapter implements TargetAdapter {
       // 10.2-4 binds "every successful token response that contains an access
       // token or refresh token", so headers from a tokenless response would be
       // evidence about a different obligation.
-      this.lastTokenResponseHeaders = Object.fromEntries(
-        [...response.headers].map(([k, v]) => [k.toLowerCase(), v])
-      );
+      this.lastTokenResponseHeaders = Object.fromEntries([...response.headers].map(([k, v]) => [k.toLowerCase(), v]));
     }
     return token.access_token ?? null;
   }

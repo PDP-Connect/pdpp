@@ -674,16 +674,14 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.2-2",
-    requirementIds: [],
+    requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
     text: "the field MUST NOT contain secrets, access tokens, owner-scoped clients, dynamically registered clients, or private registration state.",
     specAnchor: "#pre-registered-public-clients",
     applicability: "the AS advertises `pre_registered_public` in `pdpp_registration_modes_supported`",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "No Section 9 item covers it; a case would fetch AS metadata and assert `pdpp_pre_registered_public_clients` entries carry only `client_id`, `client_name`, and `token_endpoint_auth_method`, but no current target advertises the mode.",
+    caseIds: ["AS-7/pre-registered-public-clients-carry-no-private-state"],
   },
   {
     clauseId: "6.3-1",
@@ -1098,9 +1096,7 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#token-introspection",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs an introspection-response injection hook so an unrecognized `pdpp_token_kind` can reach the RS; the adapter obtains tokens from the AS and cannot alter what introspection reports about them.",
+    caseIds: ["RS-4/unrecognized-token-kind-is-unauthorized"],
   },
   {
     clauseId: "8.2-4",

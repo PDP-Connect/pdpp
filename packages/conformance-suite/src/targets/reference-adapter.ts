@@ -259,6 +259,17 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     return this.server.baseUrl;
   }
 
+  /**
+   * Co-located AS and RS, so the authorization server is the same origin.
+   *
+   * Published so the RFC 8414 metadata cases can find the document. This does
+   * NOT declare `separatedDeployment` — the two are different facts, and the
+   * introspection cases stay gated on the capability rather than on this URL.
+   */
+  get authorizationServerUrl(): string {
+    return this.server.baseUrl;
+  }
+
   async setup(): Promise<{ readonly streams: readonly SeededStream[] }> {
     await this.server.start();
     const streams: SeededStream[] = this.fixtures.map((f) => ({
@@ -872,6 +883,26 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       return null;
     }
     return { accessToken: issued.accessToken, grantId: issued.grantId };
+  }
+
+  /**
+   * A genuine grant-bound token whose introspection result reports `kind`
+   * (clause 8.2-3).
+   *
+   * Issues a real grant first, so the token has something to be bound to and
+   * the case's negative cannot pass merely because there was nothing to serve.
+   */
+  async tokenWithIntrospectedKind(kind: string, request: GrantRequest): Promise<{ accessToken: string } | null> {
+    const resolved = this.resolveStreams(request);
+    if (!resolved) {
+      return null;
+    }
+    const issued = this.server.issueGrant(resolved.map((s) => ({ name: s.name, fields: [...s.fields] })));
+    if (!issued || "deniedReason" in issued) {
+      return null;
+    }
+    const accessToken = this.server.mintTokenWithKind(kind, issued.grantId);
+    return accessToken === null ? null : { accessToken };
   }
 
   async expiredGrantToken(): Promise<string | null> {

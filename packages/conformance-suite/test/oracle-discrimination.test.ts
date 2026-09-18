@@ -384,6 +384,24 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "RS-11/unsupported-grant-schema-version-rejected",
     defect: "accept-unsupported-grant-schema-version",
   },
+  // Clause 6.2-2. The defect leaks three DIFFERENT prohibited categories at
+  // once (a secret field, an owner-scoped client, a dynamically registered
+  // one), because the clause names four and a server can publish any of them
+  // alone. The case checks the allowed keys as an allowlist rather than
+  // scanning for known-bad names, which is what makes one defect enough here.
+  {
+    caseId: "AS-7/pre-registered-public-clients-carry-no-private-state",
+    defect: "leak-private-registration-state",
+  },
+  // Clause 8.2-3. Paired with a defect that FALLS BACK to client handling, not
+  // with one that mishandles token syntax: the token here is genuine and
+  // authenticates, so `infer-token-kind-from-syntax` (which RS-4's other case
+  // owns) never fires on it and would leave this oracle passing against a
+  // server with no kind check at all.
+  {
+    caseId: "RS-4/unrecognized-token-kind-is-unauthorized",
+    defect: "honour-unrecognized-token-kind",
+  },
 ];
 
 describe("negative oracles discriminate conforming from violating targets", () => {
