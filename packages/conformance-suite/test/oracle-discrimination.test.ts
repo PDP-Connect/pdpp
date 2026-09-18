@@ -39,6 +39,7 @@ import { DECLARATION_VALIDITY_CASES } from "../src/tests/declaration-validity.ts
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
+import { SELECTION_MINIMA_V02_CASES } from "../src/tests/selection-minima-v02.ts";
 import { SELECTION_VALIDATION_CASES } from "../src/tests/selection-validation.ts";
 import { VIEW_CASES } from "../src/tests/views.ts";
 
@@ -52,6 +53,7 @@ const CASES: readonly ConformanceCase[] = [
   ...GRANT_LIFECYCLE_CASES,
   ...QUERY_SURFACE_CASES,
   ...SELECTION_VALIDATION_CASES,
+  ...SELECTION_MINIMA_V02_CASES,
   ...VIEW_CASES,
   ...CLIENT_IDENTITY_CASES,
   ...CONSENT_ARTIFACT_CASES,
@@ -290,6 +292,43 @@ const DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "AS-2/time-range-without-consent-time-field-refused",
     defect: "accept-time-range-without-consent-time-field",
+  },
+  // ---- v0.2 explicit authorization minima (PR #1) ----
+  //
+  // `accept-malformed-minimum` is one defect covering the three shape clauses
+  // because it models ONE decision an implementer actually makes — "treat
+  // `minimum` as advisory" — rather than three separate bugs. Each case still
+  // discriminates on its own: they send different malformed shapes, and a
+  // server that validated only the shape a given case sends would pass that
+  // case and fail the other two.
+  //
+  // The empty-minimum and outside-the-request rows are separate clauses
+  // (`v0.2/6.5-2` and its "fields outside the expanded request" half) and a
+  // server can implement either without the other: the first is a check on the
+  // object alone, the second requires comparing the floor against the ceiling
+  // in the same request, which is where an implementation that validates
+  // members in isolation fails.
+  {
+    caseId: "AS-11/v0.2-empty-minimum-refused",
+    defect: "accept-malformed-minimum",
+  },
+  {
+    caseId: "AS-11/v0.2-minimum-field-outside-request-refused",
+    defect: "accept-malformed-minimum",
+  },
+  {
+    caseId: "AS-11/v0.2-inverted-minimum-window-refused",
+    defect: "accept-malformed-minimum",
+  },
+  // A DIFFERENT defect, deliberately. This case is not about the minimum's
+  // shape — the one it sends is well-formed and a v0.2 server must accept it —
+  // but about the revision that carried it. Pairing it with
+  // `accept-malformed-minimum` would have passed for the wrong reason: that
+  // defect skips validation entirely, so the request is accepted under both
+  // and the case would look like it discriminated when it had not.
+  {
+    caseId: "AS-11/v0.2-minimum-on-v0.1-request-refused",
+    defect: "ignore-minimum-on-v01-request",
   },
   // ---- The final approval artifact (clauses 7.2-2, 6.3-2, 7.2-4) ----
   //

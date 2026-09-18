@@ -179,6 +179,30 @@ export type Defect =
    */
   | "accept-time-range-without-consent-time-field"
   /**
+   * Accepts a malformed v0.2 `minimum` instead of refusing it
+   * (matrix `v0.2/6.5-1`, `-2`, `-3`, `-7`, `-8`).
+   *
+   * Models the AS that reads `minimum` as a hint rather than a contract. It is
+   * the more dangerous half of getting minima wrong: a floor the server did not
+   * validate is a floor it cannot enforce, so the client believes it has a
+   * guaranteed baseline and the owner believes they approved a bounded one,
+   * while the resolved grant is whatever fell out of the narrowing. A rejected
+   * request is visibly broken; this one silently is not.
+   */
+  | "accept-malformed-minimum"
+  /**
+   * Silently drops a `minimum` carried on a v0.1 request instead of refusing it
+   * (matrix `v0.2/1-1`).
+   *
+   * Separate from `accept-malformed-minimum` because the failure is about the
+   * REVISION, not the shape: the request here is one a v0.2 server would accept
+   * unchanged. A server that ignores the member answers 201 and issues a grant
+   * with no floor, and the client cannot tell that from a server that honoured
+   * one — which is exactly why Core requires the rejection rather than leaving
+   * it to the client to notice.
+   */
+  | "ignore-minimum-on-v01-request"
+  /**
    * Binds client claims into the final approval artifact WITHOUT client
    * attribution (clause 6.3-2).
    *

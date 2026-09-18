@@ -49,6 +49,7 @@ import {
   specFileOf,
 } from "../src/requirements/matrix.ts";
 import { ALL_CASES } from "../src/suite.ts";
+import { SELECTION_MINIMA_V02_CASES } from "../src/tests/selection-minima-v02.ts";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const SPEC_PATH = join(REPO_ROOT, "spec-core.md");
@@ -439,19 +440,45 @@ test("every v0.2 clause anchor is a heading the pinned PR #1 revision defines", 
   );
 });
 
-test("every v0.2 clause is honest about having no case", () => {
-  // The claim the batch makes: mechanics first, cases later. A case id appearing
-  // on a v0.2 entry would be a coverage claim for text no case sends, and it
-  // would pass the registered-case test — the id exists, it just exercises v0.1.
-  const claiming = CLAUSE_MATRIX.filter((c) => c.specVersion === "0.2" && c.caseIds.length > 0).map(
-    (c) => `${c.clauseId}: ${c.caseIds.join(", ")}`
+test("a v0.2 clause cites only cases that actually send v0.2", () => {
+  // This replaced a blanket "no v0.2 clause may cite any case", which was right
+  // while no case could send the v0.2 detail type and wrong the moment one
+  // could. The risk it guarded is unchanged and still real: a v0.1 case id on a
+  // v0.2 entry passes the registered-case test — the id exists — while claiming
+  // evidence about text that case never sent.
+  //
+  // So the check is now about PROVENANCE rather than absence. Every v0.2 case
+  // is registered in `SELECTION_MINIMA_V02_CASES`, which is the suite's only
+  // source of requests carrying the v0.2 type; citing anything else means
+  // citing a case that spoke v0.1.
+  const v02CaseIds = new Set(SELECTION_MINIMA_V02_CASES.map((c) => c.caseId));
+  const borrowed = CLAUSE_MATRIX.filter((c) => c.specVersion === "0.2").flatMap((c) =>
+    c.caseIds.filter((id) => !v02CaseIds.has(id)).map((id) => `${c.clauseId} -> ${id}`)
   );
   assert.deepEqual(
-    claiming,
+    borrowed,
     [],
-    `v0.2 clauses citing cases: ${claiming.join("; ")}. No case sends the v0.2 ` +
-      "`authorization_details` type yet, so a case id here claims evidence about " +
-      "v0.2 that was produced against v0.1. Remove this test when the first real " +
-      "v0.2 case lands."
+    `v0.2 clauses citing cases that do not send the v0.2 detail type: ${borrowed.join(", ")}. ` +
+      "Such a case is evidence about the text v0.2 replaced, not about v0.2, and " +
+      "counting it would report coverage nothing ran."
+  );
+});
+
+test("a v0.2 clause that cites a case still records what is left uncovered", () => {
+  // A partially-covered clause is the easiest place for a coverage claim to
+  // overstate itself: one of three obligations in a sentence gets a case, the
+  // `caseIds` array stops being empty, and the clause reads as done. The gap
+  // note is the only thing standing between that and an honest report, so it is
+  // required here even though the general rule only demands one when `caseIds`
+  // is empty.
+  const silent = CLAUSE_MATRIX.filter(
+    (c) => c.specVersion === "0.2" && c.caseIds.length > 0 && (c.gapNote ?? "").length === 0
+  ).map((c) => c.clauseId);
+  assert.deepEqual(
+    silent,
+    [],
+    `v0.2 clauses citing a case but recording no gap note: ${silent.join(", ")}. ` +
+      "Every v0.2 clause transcribed so far bundles several obligations, so a " +
+      "case covers part of one; the note must say which part is still unproven."
   );
 });

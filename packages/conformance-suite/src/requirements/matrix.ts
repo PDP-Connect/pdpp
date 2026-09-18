@@ -1938,9 +1938,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#introduction",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-11/v0.2-minimum-on-v0.1-request-refused"],
     gapNote:
-      "No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target.",
+      "Partially covered: `AS-11/v0.2-minimum-on-v0.1-request-refused` proves a v0.2 member on a v0.1 request is refused rather than dropped, which is one direction of resolving each type under its own revision. The reverse, a v0.1-only member on a v0.2 request, has no case.",
   },
   {
     clauseId: "v0.2/1-2",
@@ -2351,9 +2351,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#explicit-authorization-minima",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-11/v0.2-empty-minimum-refused"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      'Partially covered: `AS-11/v0.2-empty-minimum-refused` proves an empty `minimum` is refused. The "only `fields` and `time_range`" half needs a case sending an unknown member, which the adapter\'s typed `AuthorizationMinimum` cannot express; closing it needs an escape hatch for deliberately invalid shapes.',
   },
   {
     clauseId: "v0.2/6.5-2",
@@ -2365,9 +2365,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#explicit-authorization-minima",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-11/v0.2-empty-minimum-refused", "AS-11/v0.2-minimum-field-outside-request-refused"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "Partially covered: the empty-object and outside-the-request halves each have a case. Duplicate field names and unknown members have none; both need a request builder that can emit an intentionally malformed `minimum`.",
   },
   {
     clauseId: "v0.2/6.5-3",
@@ -2435,9 +2435,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#explicit-authorization-minima",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-11/v0.2-inverted-minimum-window-refused"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "Partially covered: `AS-11/v0.2-inverted-minimum-window-refused` proves `since < until` is enforced. The finite-timestamp half has no case, and the Vana target reports the covering case `unsupported` because neither seeded stream declares a `consent_time_field`.",
   },
   {
     clauseId: "v0.2/6.5-8",

@@ -19,9 +19,11 @@
 // them.
 
 import type {
+  AuthorizationMinimum,
   DeclarationOutcome,
   GrantRequest,
   IssuedGrant,
+  OwnerChoices,
   RefreshableGrant,
   SeededStream,
   SelectionOutcome,
@@ -205,6 +207,71 @@ function defaultPrimaryKey(fields: readonly string[]): string[] {
   return first === undefined ? [] : [first];
 }
 
+/**
+ * The RFC 9396 detail type for a revision.
+ *
+ * v0.2 is a SEPARATE type, not a version member inside the v0.1 one. Batch 28's
+ * receipt records why the Personal Server implements it that way: the same
+ * request body resolves to a different grant under each revision, because v0.2
+ * revokes v0.1's schema-required consent floor. A shared type with a version
+ * field would make that ambiguity unresolvable on the wire.
+ */
+function detailType(version: "0.1" | "0.2" | undefined): string {
+  return version === "0.2" ? "https://pdpp.dev/data-access/0.2" : "https://pdpp.dev/data-access";
+}
+
+/**
+ * The owner's narrowing as this server's query-string vocabulary.
+ *
+ * PR #1 constrains how the AS must RESOLVE an owner's choices but says nothing
+ * about how a choice reaches it, so this vocabulary is the Personal Server's
+ * own (batch 28's receipt states that explicitly, and marks it negotiable).
+ * Keeping the mapping here rather than in the cases is what lets a second
+ * target implement the same cases over a different surface: the case says
+ * "the owner keeps only `id`", and each adapter says how that is transmitted.
+ *
+ * Returns "" for no choices, so the URL is byte-identical to what every v0.1
+ * case has always sent.
+ */
+/**
+ * A v0.2 `minimum` on the wire.
+ *
+ * An empty object is emitted as an empty object rather than omitted: rejecting
+ * `minimum: {}` is itself an obligation (`v0.2/6.5-2`), so a case must be able
+ * to send one.
+ */
+function minimumBody(minimum: AuthorizationMinimum): Record<string, unknown> {
+  return {
+    ...(minimum.fields ? { fields: [...minimum.fields] } : {}),
+    ...(minimum.timeRange ? { time_range: { since: minimum.timeRange.since, until: minimum.timeRange.until } } : {}),
+  };
+}
+
+function ownerChoiceQuery(choices: OwnerChoices | undefined): string {
+  if (!choices) {
+    return "";
+  }
+  const params = new URLSearchParams();
+  for (const [stream, fields] of Object.entries(choices.fields ?? {})) {
+    for (const field of fields) {
+      params.append(`field[${stream}]`, field);
+    }
+  }
+  for (const [stream, window] of Object.entries(choices.timeRange ?? {})) {
+    if (window.since !== undefined) {
+      params.append(`since[${stream}]`, window.since);
+    }
+    if (window.until !== undefined) {
+      params.append(`until[${stream}]`, window.until);
+    }
+  }
+  for (const stream of choices.declineStreams ?? []) {
+    params.append(`decline[${stream}]`, "1");
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
 export class VanaPsAdapter implements TargetAdapter {
   readonly targetId: string;
   readonly targetVersion: string;
@@ -355,9 +422,20 @@ export class VanaPsAdapter implements TargetAdapter {
       return null;
     }
 
-    const reviewed = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/review`, {
-      headers: ownerAuth,
-    });
+    // The owner's narrowing must be attached to the review AND to the approval,
+    // identically. This server derives the review digest from the narrowed
+    // selection, so reviewing with choices and approving without them (or with
+    // different ones) is a genuine `stale_review` — the digest covers what the
+    // owner saw. Sending the same string to both is what makes the approval bind
+    // the selection the owner actually reviewed.
+    const choices = ownerChoiceQuery(wanted.ownerChoices);
+
+    const reviewed = await fetch(
+      `${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/review${choices}`,
+      {
+        headers: ownerAuth,
+      }
+    );
     // Kept WHOLE, not narrowed to the digest. The server's own review body is
     // the final approval artifact clauses 7.2-2 and 6.3-2 are about, and
     // reshaping it here would mean the cases inspect this adapter's summary
@@ -375,7 +453,7 @@ export class VanaPsAdapter implements TargetAdapter {
         body.explicit_ai_training_consent = explicitAiTrainingConsent;
       }
       const response = await fetch(
-        `${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/approve`,
+        `${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/approve${choices}`,
         {
           method: "POST",
           headers: { ...ownerAuth, "content-type": "application/json" },
@@ -534,7 +612,7 @@ export class VanaPsAdapter implements TargetAdapter {
       return null;
     }
     const detail: Record<string, unknown> = {
-      type: "https://pdpp.dev/data-access",
+      type: detailType(wanted.specVersion),
       source: { id: this.config.sourceId },
       purpose_code: wanted.purposeCode ?? this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
       access_mode: "continuous",
@@ -545,6 +623,10 @@ export class VanaPsAdapter implements TargetAdapter {
         // An absent `fields` is the request-time convenience AS-4 must expand,
         // so it has to reach the server absent rather than as an empty array.
         ...(s.fields ? { fields: [...s.fields] } : {}),
+        // Emitted regardless of `specVersion`; see authorizeBody for why a case
+        // must be able to put a v0.2 member on a v0.1 request on purpose.
+        ...(s.necessity ? { necessity: s.necessity } : {}),
+        ...(s.minimum ? { minimum: minimumBody(s.minimum) } : {}),
       }));
     }
     if (wanted.selectionPreset !== undefined) {
@@ -627,7 +709,7 @@ export class VanaPsAdapter implements TargetAdapter {
       client_display: { name: "pdpp-conformance-suite" },
       authorization_details: [
         {
-          type: "https://pdpp.dev/data-access",
+          type: detailType(wanted.specVersion),
           source: { id: this.config.sourceId },
           purpose_code: wanted.purposeCode ?? this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
           access_mode: wanted.accessMode ?? "continuous",
@@ -656,6 +738,13 @@ export class VanaPsAdapter implements TargetAdapter {
           streams: wanted.streams.map((s) => ({
             name: s.name,
             ...(s.fields.length > 0 ? { fields: [...s.fields] } : {}),
+            // `necessity` and `minimum` are emitted whenever the case set them,
+            // WITHOUT checking `specVersion`. A case that puts a `minimum` on a
+            // v0.1 request is exercising `v0.2/1-1` — the AS must reject it
+            // rather than ignore it — and an adapter that stripped the member
+            // would turn that case into a test of the adapter's own filtering.
+            ...(s.necessity ? { necessity: s.necessity } : {}),
+            ...(s.minimum ? { minimum: minimumBody(s.minimum) } : {}),
             ...(wanted.timeConstraint
               ? {
                   time_range: {

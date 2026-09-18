@@ -64,7 +64,7 @@ one that exists today.
 
 ## Totals
 
-Clauses enumerated: **270**. MUST-level: **240**, of which **68** have at least one case and **172** do not.
+Clauses enumerated: **270**. MUST-level: **240**, of which **72** have at least one case and **168** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -550,7 +550,7 @@ reports.
 | `8.8-1` | MAY | black-box-http | — | — |
 | `10.4-1` | MUST | review-only | — | Binds the Collection Profile's INTERACTION channel, which Core's HTTP surface does not expose; logs and persisted state are outside what a black-box client can read. |
 | `10.5-1` | SHOULD | review-only | — | — |
-| `v0.2/1-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
+| `v0.2/1-1` | MUST | black-box-http | `AS-11/v0.2-minimum-on-v0.1-request-refused` | Partially covered: `AS-11/v0.2-minimum-on-v0.1-request-refused` proves a v0.2 member on a v0.1 request is refused rather than dropped, which is one direction of resolving each type under its own revision. The reverse, a v0.1-only member on a v0.2 request, has no case. |
 | `v0.2/1-2` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
 | `v0.2/2-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
 | `v0.2/2-2` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
@@ -579,13 +579,13 @@ reports.
 | `v0.2/6.4-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.4-5` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.4-6` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Composite clause: the PR sentence carries `MAY/MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. The inventory files this under `consent-surface`; the obligation binds the AS that renders it, and the matrix has no separate consent role. |
-| `v0.2/6.5-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
-| `v0.2/6.5-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-1` | MUST | black-box-http | `AS-11/v0.2-empty-minimum-refused` | Partially covered: `AS-11/v0.2-empty-minimum-refused` proves an empty `minimum` is refused. The "only `fields` and `time_range`" half needs a case sending an unknown member, which the adapter's typed `AuthorizationMinimum` cannot express; closing it needs an escape hatch for deliberately invalid shapes. |
+| `v0.2/6.5-2` | MUST | black-box-http | `AS-11/v0.2-empty-minimum-refused`<br>`AS-11/v0.2-minimum-field-outside-request-refused` | Partially covered: the empty-object and outside-the-request halves each have a case. Duplicate field names and unknown members have none; both need a request builder that can emit an intentionally malformed `minimum`. |
 | `v0.2/6.5-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.5-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.5-5` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.5-6` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
-| `v0.2/6.5-7` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-7` | MUST | black-box-http | `AS-11/v0.2-inverted-minimum-window-refused` | Partially covered: `AS-11/v0.2-inverted-minimum-window-refused` proves `since < until` is enforced. The finite-timestamp half has no case, and the Vana target reports the covering case `unsupported` because neither seeded stream declares a `consent_time_field`. |
 | `v0.2/6.5-8` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.5-9` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.5-10` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |

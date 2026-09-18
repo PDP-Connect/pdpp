@@ -1016,6 +1016,124 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   }
 
   /**
+   * Why a v0.2 `minimum` is unacceptable, or null when every one is well-formed
+   * (or the request carries none).
+   *
+   * PR #1 `#explicit-authorization-minima` (matrix `v0.2/6.5-1`, `-2`, `-3`,
+   * `-7`, `-8`) and `#stream-selection-parameters`. The rules checked here are
+   * the ones a selection request can violate on its own, before any owner
+   * choice exists: what may appear inside `minimum`, and whether the floor is
+   * inside the ceiling the same request declares.
+   *
+   * Ordered deliberately. The v0.1 check comes FIRST, because `v0.2/1-1`
+   * ("a `minimum` on a v0.1 request MUST be rejected, never silently ignored")
+   * is about a request that would be perfectly well-formed under v0.2 — running
+   * the shape checks first would refuse it for a reason that says nothing about
+   * the revision, and the case could not tell the two refusals apart.
+   */
+  private firstBadMinimumReason(request: SelectionRequest): string | null {
+    const streams = request.streams ?? [];
+    const withMinimum = streams.filter((s) => s.minimum !== undefined);
+    if (withMinimum.length === 0) {
+      return null;
+    }
+
+    if (request.specVersion !== "0.2") {
+      return this.defects.has("ignore-minimum-on-v01-request")
+        ? null
+        : "`minimum` is not a member of the v0.1 selection request; resend under the v0.2 detail type";
+    }
+    if (this.defects.has("accept-malformed-minimum")) {
+      return null;
+    }
+
+    for (const stream of withMinimum) {
+      // Non-null: `withMinimum` selected on exactly this.
+      const minimum = stream.minimum as NonNullable<typeof stream.minimum>;
+
+      if (minimum.fields === undefined && minimum.timeRange === undefined) {
+        return `stream '${stream.name}' carries an empty minimum; minimum must contain fields or time_range`;
+      }
+      const fieldsReason = this.badMinimumFieldsReason(stream.name, stream.fields, minimum.fields);
+      if (fieldsReason) {
+        return fieldsReason;
+      }
+      const windowReason = this.badMinimumWindowReason(stream.name, minimum.timeRange, request.timeRange);
+      if (windowReason) {
+        return windowReason;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Why a `minimum.fields` floor is unacceptable, or null.
+   *
+   * Split from the window rules rather than inlined beside them because the two
+   * share nothing: this one compares a set against the request's field ceiling,
+   * the other compares instants against its time window, and a server can
+   * implement either correctly while getting the other wrong.
+   */
+  private badMinimumFieldsReason(
+    streamName: string,
+    requestedFields: readonly string[] | undefined,
+    floor: readonly string[] | undefined
+  ): string | null {
+    if (floor === undefined) {
+      return null;
+    }
+    if (floor.length === 0) {
+      return `stream '${streamName}' carries an empty minimum.fields array`;
+    }
+    if (new Set(floor).size !== floor.length) {
+      return `stream '${streamName}' repeats a field name in minimum.fields`;
+    }
+    // "fields outside the expanded request" — the ceiling this same request
+    // declares. An absent `fields` on the stream means "every declared field",
+    // so the expansion is the declaration's field list.
+    const declared = this.fixtures.find((f) => f.name === streamName);
+    const ceiling = requestedFields ?? declared?.fields ?? [];
+    const outside = floor.find((f) => !ceiling.includes(f));
+    return outside === undefined
+      ? null
+      : `stream '${streamName}' names '${outside}' in minimum.fields, which the request does not ask for`;
+  }
+
+  /** Why a `minimum.time_range` floor is unacceptable, or null. */
+  private badMinimumWindowReason(
+    streamName: string,
+    floor: { readonly since: string; readonly until: string } | undefined,
+    requested: { readonly since?: string; readonly until?: string } | undefined
+  ): string | null {
+    if (floor === undefined) {
+      return null;
+    }
+    const from = Date.parse(floor.since);
+    const to = Date.parse(floor.until);
+    if (Number.isNaN(from) || Number.isNaN(to)) {
+      return `stream '${streamName}' carries a minimum.time_range bound that is not a timestamp`;
+    }
+    // Compared as INSTANTS, not strings: "2026-01-01T00:00:00Z" and
+    // "2026-01-01T01:00:00+02:00" order one way lexically and the other way in
+    // time, and a server comparing strings would accept an inverted window
+    // written in two offsets.
+    if (from >= to) {
+      return `stream '${streamName}' carries a minimum.time_range whose since is not before its until`;
+    }
+    const declared = this.fixtures.find((f) => f.name === streamName);
+    if (declared?.consentTimeField === undefined) {
+      return `stream '${streamName}' declares no consent_time_field, so a minimum.time_range cannot apply to it`;
+    }
+    if (requested?.since !== undefined && from < Date.parse(requested.since)) {
+      return `stream '${streamName}' carries a minimum.time_range starting before the requested window`;
+    }
+    if (requested?.until !== undefined && to > Date.parse(requested.until)) {
+      return `stream '${streamName}' carries a minimum.time_range ending after the requested window`;
+    }
+    return null;
+  }
+
+  /**
    * Why the `streams` array is malformed as a LIST, or null when its shape is
    * well-formed.
    *
@@ -1174,6 +1292,11 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     const badTimeRangeReason = this.firstBadTimeRangeReason(wanted, request.timeRange !== undefined);
     if (badTimeRangeReason) {
       return reject("invalid_authorization_details", badTimeRangeReason);
+    }
+
+    const minimumReason = this.firstBadMinimumReason(request);
+    if (minimumReason) {
+      return reject("invalid_authorization_details", minimumReason);
     }
 
     // AS-6 is a MUST NOT: an unregistered purpose_code is not grounds for

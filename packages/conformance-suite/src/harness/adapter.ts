@@ -445,6 +445,46 @@ export interface UrlHostedClientOutcome {
   readonly status?: number;
 }
 
+/**
+ * A per-stream authorization minimum, as PR #1 (v0.2) defines it.
+ *
+ * The floor beneath the request's ceiling: `fields`/`time_range` on a stream
+ * say what the client may receive AT MOST, and `minimum` says what it must
+ * receive for the stream to be worth retaining at all. The AS resolves between
+ * the two, and refuses a required stream it cannot satisfy.
+ *
+ * Deliberately NOT modelled as "the request minus what the owner dropped".
+ * PR #1 makes the minimum an explicit client assertion, and the whole point of
+ * `v0.2/6.5-5` is that the AS must not infer one from a schema's `required`
+ * array. A suite that derived the minimum instead of sending it could not tell
+ * an AS that honours an explicit floor from one that invented it.
+ */
+export interface AuthorizationMinimum {
+  readonly fields?: readonly string[];
+  readonly timeRange?: { readonly since: string; readonly until: string };
+}
+
+/**
+ * Narrowing the OWNER applies at the consent step, for the v0.2 cases.
+ *
+ * v0.2's central obligation is that the owner's choices bound the grant, so a
+ * case cannot demonstrate it without a way to express a choice. PR #1 does not
+ * specify how a choice reaches the AS — batch 28's receipt records the
+ * query-string vocabulary as that implementation's own — so this is the
+ * suite's neutral description of the choice, and each adapter maps it to
+ * whatever its target accepts. An adapter with no owner-narrowing surface
+ * returns null and the case reports `skip`, not `fail`: Core does not require
+ * the affordance, only that choices are honoured when made.
+ */
+export interface OwnerChoices {
+  /** Streams the owner declines outright. */
+  readonly declineStreams?: readonly string[];
+  /** Fields the owner keeps, per stream. A stream absent here is unnarrowed. */
+  readonly fields?: Readonly<Record<string, readonly string[]>>;
+  /** Time window the owner keeps, per stream. */
+  readonly timeRange?: Readonly<Record<string, { readonly since?: string; readonly until?: string }>>;
+}
+
 /** A selection request expressed in the shapes Core Section 6 defines. */
 export interface SelectionRequest {
   /** An unsupported PDPP-Version, for AS-17. */
@@ -452,6 +492,17 @@ export interface SelectionRequest {
   readonly purposeCode?: string;
   /** Mutually exclusive with `streams` — AS-5 requires exactly one. */
   readonly selectionPreset?: string;
+  /**
+   * Send this request under a specific PDPP revision's RFC 9396 detail type.
+   *
+   * Defaults to v0.1 so every existing case keeps sending exactly the bytes it
+   * sent before. A v0.2 case sets `"0.2"`, and the adapter emits
+   * `https://pdpp.dev/data-access/0.2` instead. This is a request-shape switch,
+   * not a feature flag: v0.2 is a SEPARATE detail type, so the same body means
+   * different things under each and a target may implement one without the
+   * other.
+   */
+  readonly specVersion?: "0.1" | "0.2";
   /**
    * Omit `fields` to test AS-4 expansion; name an undeclared one to test AS-2.
    *
@@ -464,6 +515,14 @@ export interface SelectionRequest {
   readonly streams?: readonly {
     readonly name: string;
     readonly fields?: readonly string[];
+    /**
+     * The v0.2 floor for this stream. Ignored under v0.1, where the member does
+     * not exist — `v0.2/1-1` requires an AS implementing both types to resolve
+     * a v0.1 request rather than drop it, so a case can send exactly that.
+     */
+    readonly minimum?: AuthorizationMinimum;
+    /** v0.2 `necessity`. Absent means the AS applies its default, `required`. */
+    readonly necessity?: "required" | "optional";
     readonly view?: string;
   }[];
   /**
@@ -559,6 +618,13 @@ export interface GrantRequest {
    * controls request the SAME grant shape and differ only in this flag.
    */
   readonly explicitAiTrainingConsent?: boolean;
+  /**
+   * Narrowing the owner applies before approving, for the v0.2 cases.
+   *
+   * Absent means the owner approves the request as made, which is what every
+   * v0.1 case does and must keep doing.
+   */
+  readonly ownerChoices?: OwnerChoices;
   /** Purpose code for this request. Defaults to the adapter's own default when absent. */
   readonly purposeCode?: string;
   /**
@@ -575,9 +641,20 @@ export interface GrantRequest {
    * data when it elapses.
    */
   readonly retention?: { readonly maxDuration: string; readonly onExpiry: "delete" | "anonymize" };
+  /**
+   * Request this grant under a specific PDPP revision's detail type.
+   *
+   * Defaults to v0.1, so existing cases are byte-identical. See
+   * `SelectionRequest.specVersion` — the same switch, on the grant path.
+   */
+  readonly specVersion?: "0.1" | "0.2";
   readonly streams: readonly {
     readonly name: string;
     readonly fields: readonly string[];
+    /** The v0.2 floor for this stream. */
+    readonly minimum?: AuthorizationMinimum;
+    /** v0.2 `necessity`. Absent means the AS applies its default, `required`. */
+    readonly necessity?: "required" | "optional";
     /**
      * Request this stream's field set BY VIEW NAME instead of by `fields`.
      *

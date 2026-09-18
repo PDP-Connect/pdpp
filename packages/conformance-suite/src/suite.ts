@@ -18,6 +18,7 @@ import { GRANT_INTEGRITY_CASES } from "./tests/grant-integrity.ts";
 import { GRANT_LIFECYCLE_CASES } from "./tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "./tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "./tests/resource-server.ts";
+import { SELECTION_MINIMA_V02_CASES } from "./tests/selection-minima-v02.ts";
 import { SELECTION_VALIDATION_CASES } from "./tests/selection-validation.ts";
 import { VIEW_CASES } from "./tests/views.ts";
 
@@ -35,6 +36,13 @@ export const ALL_CASES: readonly ConformanceCase[] = [
   ...GRANT_LIFECYCLE_CASES,
   ...GRANT_INTEGRITY_CASES,
   ...SELECTION_VALIDATION_CASES,
+  // v0.2 (PR #1) cases. Registered unconditionally rather than behind the
+  // report's `--spec-version`: a case is applicable when the TARGET implements
+  // the revision, which its own positive control establishes, and gating on the
+  // reporting flag would let a v0.1 run silently skip evidence it could have
+  // collected. Against a v0.1-only target every case here reports `skip` naming
+  // the refused v0.2 control.
+  ...SELECTION_MINIMA_V02_CASES,
   ...VIEW_CASES,
   ...CLIENT_IDENTITY_CASES,
   ...CONSENT_ARTIFACT_CASES,

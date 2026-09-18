@@ -463,8 +463,13 @@ describe("a version-aware report states which revision it measured against", () 
         (c) => [c.clauseId, c.gapNote] as const
       )
     );
-    const v02Musts = CLAUSE_MATRIX.filter((c) => c.specVersion === "0.2" && c.level === "must");
-    assert.ok(v02Musts.length > 0, "Fixture expectation: this batch transcribes v0.2 MUST clauses.");
+    // Scoped to clauses with NO case. A v0.2 MUST that has one is not an
+    // uncovered gap and must not appear in this list — its own partial-coverage
+    // note is checked in normative-matrix.test.ts instead.
+    const v02Musts = CLAUSE_MATRIX.filter(
+      (c) => c.specVersion === "0.2" && c.level === "must" && c.caseIds.length === 0
+    );
+    assert.ok(v02Musts.length > 0, "Fixture expectation: this batch transcribes uncovered v0.2 MUST clauses.");
     for (const clause of v02Musts) {
       const note = disclosed.get(clause.clauseId);
       assert.ok(note, `v0.2 MUST ${clause.clauseId} never reached the report's uncovered list.`);
