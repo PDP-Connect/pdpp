@@ -16,11 +16,13 @@
 // biome-ignore-all lint/suspicious/useAwait: the TargetAdapter contract is async; this in-process target answers from memory.
 
 import type {
+  DeclarationOutcome,
   GrantRequest,
   IssuedGrant,
   SeededStream,
   SelectionOutcome,
   SelectionRequest,
+  SourceDeclarationSubmission,
   StagedApproval,
   TargetAdapter,
   TargetCapabilities,
@@ -162,6 +164,40 @@ const DEFAULT_RETENTION = "P30D";
 const GRANT_EXPIRY = "2027-01-01T00:00:00Z";
 const INSTANCE_ID = "instance_reference_1";
 
+/**
+ * The source this target was onboarded with, and the only one it accepts
+ * declarations under (Core Section 5 "Declaration trust").
+ *
+ * `ACCEPTED_AUTHORITY` stands for the operator onboarding that put this
+ * declaration in place. A declaration arriving under any other authority was
+ * introduced by the requester rather than onboarded, which is what clause
+ * 5.8-1 forbids. `ACCEPTED_RESOURCE_ID` is the protected-resource identifier a
+ * `provider_native` declaration's `source.id` must equal (clause 5.8-2).
+ */
+const ACCEPTED_AUTHORITY = "https://operator.example/onboarded";
+const ACCEPTED_RESOURCE_ID = "https://rs.example/pdpp/reference";
+
+/**
+ * Whether two declaration bodies carry the same parsed content.
+ *
+ * Clause 5.8-4 turns on "different parsed content", so this compares content
+ * rather than serialization: field ORDER is not content, and a server treating
+ * a reordered field list as equivocation would refuse a legitimate idempotent
+ * resubmission.
+ */
+function sameStreams(
+  a: readonly { readonly name: string; readonly fields: readonly string[] }[],
+  b: readonly { readonly name: string; readonly fields: readonly string[] }[]
+): boolean {
+  const normalize = (streams: readonly { readonly name: string; readonly fields: readonly string[] }[]) =>
+    JSON.stringify(
+      [...streams]
+        .map((s) => ({ name: s.name, fields: [...s.fields].sort() }))
+        .sort((x, y) => x.name.localeCompare(y.name))
+    );
+  return normalize(a) === normalize(b);
+}
+
 export class ReferenceTargetAdapter implements TargetAdapter {
   readonly targetId: string;
   readonly targetVersion = "0.1.0";
@@ -172,6 +208,17 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   private readonly defects: ReadonlySet<Defect>;
   /** Monotonic handle/revision source for staged approvals. */
   private stagedCounter = 0;
+  /**
+   * Declarations accepted so far, keyed by the accepted authority binding,
+   * `source.id` and `declaration_version` — exactly the key Core Section 5
+   * names. Clause 5.8-4's obligation is stated against this key, and holding
+   * the retained CONTENT (not merely the key) is what lets a case check that a
+   * refused equivocation left the previous content in place.
+   */
+  private readonly acceptedDeclarations = new Map<
+    string,
+    readonly { readonly name: string; readonly fields: readonly string[] }[]
+  >();
 
   constructor(fixtures: readonly StreamFixture[] = DEFAULT_FIXTURES, defects: ReadonlySet<Defect> = new Set()) {
     // Clause 5.6-2 binds the AS's view DEFINITIONS, so the violating target is
@@ -267,6 +314,79 @@ export class ReferenceTargetAdapter implements TargetAdapter {
 
   async widenView(stream: string, view: string, addField: string): Promise<readonly string[] | null> {
     return this.server.widenView(stream, view, addField);
+  }
+
+  /**
+   * The AS's declaration-onboarding decision (Core Section 5, "Declaration
+   * trust"), and what it retains for the key afterwards.
+   *
+   * Three refusals, checked in the order the spec states them, each gated by
+   * its own defect so the oracles can be shown to discriminate independently:
+   *
+   * 1. An authority this AS never onboarded (5.8-1). Checked first because
+   *    nothing else about the document matters if the requester chose who
+   *    speaks for the source.
+   * 2. A `provider_native` `source.id` that is not the accepted
+   *    protected-resource identifier (5.8-2). Refused "before consent or grant
+   *    issuance", which is here.
+   * 3. Different parsed content under an already-accepted key (5.8-4). Both
+   *    halves are implemented: the new content is refused, and the retained
+   *    content is left exactly as it was. `declaration_version` is deliberately
+   *    NOT consulted for ordering — Core says an AS "MUST NOT infer ordering or
+   *    freshness from `declaration_version`", so a repeat of an accepted
+   *    version is equivocation rather than an update.
+   *
+   * An identical resubmission under an accepted key is accepted and idempotent:
+   * the content matches, so there is nothing equivocal about it, and treating
+   * it as a violation would make the positive control impossible.
+   */
+  async submitDeclaration(declaration: SourceDeclarationSubmission): Promise<DeclarationOutcome> {
+    const authority = declaration.authority ?? ACCEPTED_AUTHORITY;
+    const key = `${authority}\u0000${declaration.source.id}\u0000${declaration.declarationVersion}`;
+    const retained = () => {
+      const held = this.acceptedDeclarations.get(key);
+      return held === undefined ? {} : { retainedContent: held };
+    };
+    const refuse = (errorCode: string, message: string): DeclarationOutcome => ({
+      accepted: false,
+      status: 400,
+      errorCode,
+      body: JSON.stringify({ error: errorCode, error_description: message }),
+      ...retained(),
+    });
+
+    if (authority !== ACCEPTED_AUTHORITY && !this.defects.has("accept-unonboarded-source-authority")) {
+      return refuse(
+        "invalid_source_authority",
+        `authority '${authority}' was never onboarded; a client may not introduce a source authority during authorization`
+      );
+    }
+
+    if (
+      declaration.source.kind === "provider_native" &&
+      declaration.source.id !== ACCEPTED_RESOURCE_ID &&
+      !this.defects.has("accept-provider-native-id-mismatch")
+    ) {
+      return refuse(
+        "invalid_source_id",
+        `provider_native source.id '${declaration.source.id}' is not the accepted protected-resource identifier '${ACCEPTED_RESOURCE_ID}'`
+      );
+    }
+
+    const held = this.acceptedDeclarations.get(key);
+    if (held !== undefined && !sameStreams(held, declaration.streams)) {
+      if (this.defects.has("accept-declaration-equivocation")) {
+        this.acceptedDeclarations.set(key, declaration.streams);
+        return { accepted: true, status: 200, retainedContent: declaration.streams };
+      }
+      return refuse(
+        "declaration_equivocation",
+        "different content was already accepted under this (authority, source.id, declaration_version) key"
+      );
+    }
+
+    this.acceptedDeclarations.set(key, declaration.streams);
+    return { accepted: true, status: 200, retainedContent: declaration.streams };
   }
 
   /**

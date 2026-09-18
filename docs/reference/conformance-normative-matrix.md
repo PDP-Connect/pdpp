@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **51** have at least one case and **55** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **54** have at least one case and **52** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -214,10 +214,10 @@ Retains one exact SourceDeclaration snapshot through validation, consent, narrow
 | --- | --- | --- | --- | --- |
 | `5.2-1` | MUST | review-only | — | What the AS treated as authenticated is an internal trust decision; from outside, an accepted and a rejected declaration differ only by whether consent proceeded, which does not discriminate this clause. |
 | `5.2-5` | MUST | declaration-static | — | Needs a declaration-acceptance hook on TargetAdapter that submits a candidate declaration and reports accept/reject; the suite can only seed streams a target already accepted. |
-| `5.8-1` | MUST | black-box-http | — | Needs a selection request naming a declaration URI the target never accepted, plus a positive control using the accepted one; the adapter has no hook to name an arbitrary source authority in a request. |
-| `5.8-2` | MUST | black-box-http | — | Needs a declaration-submission hook so a mismatched `source.id` can be offered and refused; the suite can only use declarations a target already holds. |
+| `5.8-1` | MUST | black-box-http | `AS-16/unonboarded-source-authority-refused` | — |
+| `5.8-2` | MUST | black-box-http | `AS-16/provider-native-source-id-mismatch-refused` | — |
 | `5.8-3` | MUST | review-only | — | Restates 5.2-1 as an acceptance obligation; what the AS relied on internally is not observable from a request outcome. |
-| `5.8-4` | MUST | black-box-http | — | Needs a declaration-submission hook that can offer two different documents under one `(authority, source.id, declaration_version)` key and observe the second being refused. |
+| `5.8-4` | MUST | black-box-http | `AS-16/declaration-equivocation-refused-and-prior-content-retained` | — |
 | `5.8-5` | MUST | review-only | — | Retrieval hygiene is observed from the AS's outbound side; the suite has no way to host a declaration and watch how the AS fetches it, which would need an inbound HTTP fixture the harness does not provide. |
 | `5.8-6` | MUST | review-only | — | A DNS-rebinding defence stated as a connection-time ordering obligation; distinguishing it from a URL-time check needs control of the AS's resolver, not an HTTP client. |
 | `5.8-7` | MUST | review-only | — | The obligation is on rendered output in an unspecified output context; asserting on it means asserting on a deployment's HTML, which is outside what this suite judges. |

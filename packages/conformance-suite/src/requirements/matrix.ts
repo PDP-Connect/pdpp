@@ -433,9 +433,7 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#declaration-acceptance",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs a selection request naming a declaration URI the target never accepted, plus a positive control using the accepted one; the adapter has no hook to name an arbitrary source authority in a request.",
+    caseIds: ["AS-16/unonboarded-source-authority-refused"],
   },
   {
     clauseId: "5.8-2",
@@ -446,9 +444,7 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#declaration-acceptance",
     applicability: "the source kind is `provider_native`",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs a declaration-submission hook so a mismatched `source.id` can be offered and refused; the suite can only use declarations a target already holds.",
+    caseIds: ["AS-16/provider-native-source-id-mismatch-refused"],
   },
   {
     clauseId: "5.8-3",
@@ -472,9 +468,7 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#declaration-acceptance",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs a declaration-submission hook that can offer two different documents under one `(authority, source.id, declaration_version)` key and observe the second being refused.",
+    caseIds: ["AS-16/declaration-equivocation-refused-and-prior-content-retained"],
   },
   {
     clauseId: "5.8-5",

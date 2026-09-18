@@ -33,6 +33,7 @@ import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/referen
 import type { Defect } from "../src/targets/reference-server.ts";
 import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
 import { CONSENT_ARTIFACT_CASES } from "../src/tests/consent-artifact.ts";
+import { DECLARATION_TRUST_CASES } from "../src/tests/declaration-trust.ts";
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
@@ -47,6 +48,7 @@ const CASES: readonly ConformanceCase[] = [
   ...SELECTION_VALIDATION_CASES,
   ...VIEW_CASES,
   ...CONSENT_ARTIFACT_CASES,
+  ...DECLARATION_TRUST_CASES,
 ];
 
 function caseById(caseId: string): ConformanceCase {
@@ -312,6 +314,28 @@ const DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "AS-3/client-claims-stay-outside-the-resolved-grant",
     defect: "leak-client-claims-into-grant",
+  },
+  // ---- Declaration trust (clauses 5.8-1, 5.8-2, 5.8-4) ----
+  //
+  // One defect per clause, each confirmed to fail its own case and no other.
+  // They have to be separate: the three obligations are checked in sequence, so
+  // a shared defect would let the first refusal mask the others and leave the
+  // later oracles passing against a server that never implements them.
+  {
+    caseId: "AS-16/unonboarded-source-authority-refused",
+    defect: "accept-unonboarded-source-authority",
+  },
+  {
+    caseId: "AS-16/provider-native-source-id-mismatch-refused",
+    defect: "accept-provider-native-id-mismatch",
+  },
+  // The equivocation defect does the opposite of BOTH halves of 5.8-4: it
+  // accepts the second document and overwrites what was retained. The oracle
+  // checks both, so a server that refuses correctly but has already clobbered
+  // its retained copy still fails.
+  {
+    caseId: "AS-16/declaration-equivocation-refused-and-prior-content-retained",
+    defect: "accept-declaration-equivocation",
   },
   {
     caseId: "AS-5/both-streams-and-preset-refused",

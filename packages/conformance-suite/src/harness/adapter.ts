@@ -229,6 +229,49 @@ export interface SelectionOutcome {
   readonly status: number;
 }
 
+/**
+ * A source declaration offered to the AS's onboarding surface.
+ *
+ * Deliberately only the fields Core Section 5's trust rules turn on. A fuller
+ * declaration type would invite cases to assert on content the clauses do not
+ * govern, and the point here is the acceptance decision, not schema validation.
+ */
+export interface SourceDeclarationSubmission {
+  /**
+   * The authority binding the AS onboarded this declaration under, when the
+   * caller wants to name one the AS never accepted (clause 5.8-1). Absent means
+   * the adapter's own accepted authority.
+   */
+  readonly authority?: string;
+  /** Opaque, non-empty revision id. Core assigns it NO ordering meaning. */
+  readonly declarationVersion: string;
+  readonly source: { readonly kind: "connector" | "provider_native"; readonly id: string };
+  /**
+   * The declaration's parsed content, as whatever shape the target onboards.
+   *
+   * Clause 5.8-4 is about DIFFERENT content under one accepted key, so the
+   * cases submit the same key twice with this differing, and the target must
+   * refuse the second.
+   */
+  readonly streams: readonly { readonly name: string; readonly fields: readonly string[] }[];
+}
+
+/** What the AS did with an offered declaration. */
+export interface DeclarationOutcome {
+  readonly accepted: boolean;
+  /** Raw body, for report evidence. */
+  readonly body?: unknown;
+  /** Machine-readable error code, when the refusal carried one. */
+  readonly errorCode?: string;
+  /**
+   * The content the AS retains for this key AFTER the call, when the target can
+   * report it. Clause 5.8-4 requires the PREVIOUSLY accepted content to survive
+   * a refused equivocation, and only this makes that half observable.
+   */
+  readonly retainedContent?: readonly { readonly name: string; readonly fields: readonly string[] }[];
+  readonly status?: number;
+}
+
 /** A selection request expressed in the shapes Core Section 6 defines. */
 export interface SelectionRequest {
   /** An unsupported PDPP-Version, for AS-17. */
@@ -449,6 +492,7 @@ export interface TargetAdapter {
   >;
 
   /**
+   * An access token whose bound grant has expired.  /**
    * An access token whose bound grant has expired. Exercised by the
    * expired-grant oracle. Optional: not every target can fabricate one.
    */
@@ -565,6 +609,38 @@ export interface TargetAdapter {
    * separable review step reports those cases `skip` rather than `fail`.
    */
   stageApproval?: (request: GrantRequest) => Promise<StagedApproval | null>;
+
+  /**
+   * Offer a source declaration to the AS's onboarding surface and report
+   * whether it was accepted, WITHOUT approving anything.
+   *
+   * Core Section 5 "Declaration trust" governs what an AS may accept as a
+   * declaration and when it must refuse, and none of it is observable from a
+   * grant: the suite can otherwise only use declarations a target already
+   * holds, so a server that accepts anything looks exactly like one that
+   * validated carefully.
+   *
+   * Three clauses need this, and each needs a different thing offered:
+   * - 5.8-1: a declaration naming a source authority the AS never onboarded
+   *   (a client MUST NOT introduce a new source authority during
+   *   authorization).
+   * - 5.8-2: a `provider_native` declaration whose `source.id` differs from the
+   *   protected-resource identifier the AS already accepted.
+   * - 5.8-4: a SECOND, different document under an accepted
+   *   (authority, source.id, declaration_version) key. That is equivocation:
+   *   the AS must refuse it AND retain the previously accepted content.
+   *
+   * `accepted` is the decision. `retainedContent` is what the AS holds for that
+   * key AFTER the call, which 5.8-4 needs: refusing the second document is only
+   * half the obligation, and a server that refused but then overwrote its
+   * retained copy has still lost the content the owner consented against.
+   * Absent when the target cannot report what it retained, which reports the
+   * retention half `skip` rather than assuming it.
+   *
+   * Optional: a target with no onboarding surface reports these cases `skip`
+   * naming this hook.
+   */
+  submitDeclaration?: (declaration: SourceDeclarationSubmission) => Promise<DeclarationOutcome | null>;
 
   /**
    * Submit a selection request and report what the AS did, without approving.

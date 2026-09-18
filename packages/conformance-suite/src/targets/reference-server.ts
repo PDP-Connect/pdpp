@@ -215,7 +215,39 @@ export type Defect =
    * resolved instance ids — so the owner approves a screen that does not say
    * how long the access lasts or which instance it reaches.
    */
-  | "thin-approval-artifact";
+  | "thin-approval-artifact"
+  /**
+   * Accepts a declaration naming a source authority the AS never onboarded
+   * (clause 5.8-1).
+   *
+   * Core: "An authorization server accepts a source declaration only through
+   * explicit owner or operator onboarding, an installed catalog, an accepted
+   * registry entry, or explicit local provisioning. A client MUST NOT introduce
+   * a new source authority or declaration URI during authorization." A server
+   * that takes the authority from the request lets a client define what the
+   * owner is consenting about.
+   */
+  | "accept-unonboarded-source-authority"
+  /**
+   * Accepts a `provider_native` declaration whose `source.id` differs from the
+   * protected-resource identifier already accepted for that resource (clause
+   * 5.8-2).
+   *
+   * The binding is what ties a declaration to the resource server that will
+   * serve it. Broken, the owner consents against a description of one surface
+   * while the grant reaches another.
+   */
+  | "accept-provider-native-id-mismatch"
+  /**
+   * Accepts DIFFERENT parsed content under an already-accepted
+   * (authority, source.id, declaration_version) key, overwriting what was
+   * retained (clause 5.8-4).
+   *
+   * This is equivocation, and Core requires both halves: refuse the new content
+   * AND retain the old. The defect does the opposite of both, which is how the
+   * oracle can tell a server that merely refuses from one that also preserves.
+   */
+  | "accept-declaration-equivocation";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
