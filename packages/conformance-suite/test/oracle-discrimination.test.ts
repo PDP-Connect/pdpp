@@ -84,6 +84,10 @@ const DISCRIMINATION_MATRIX: readonly {
   },
   { caseId: "RS-10/unknown-parameter-rejected", defect: "ignore-unknown-params" },
   {
+    caseId: "RS-10/owner-filter-unknown-field-rejected",
+    defect: "ignore-owner-filter-unknown-field",
+  },
+  {
     caseId: "RS-14/owner-metadata-full-current-document",
     defect: "truncate-owner-metadata",
   },

@@ -63,7 +63,11 @@ set -euo pipefail
 # optional pdpp.clients[].grantLifetimeSeconds operator policy, which
 # expiring_widget below exercises for AS-8's expired-grant oracle. It carries
 # def4ff7's explicit_ai_training_consent enforcement (AS-14) as an ancestor.
-VANA_REF="${PDPP_VANA_REF:-69816450a3fbfc9effbf037ce16dae239bc018e9}"
+# 24802bbd0bff5d47524fa6b42697385f64dda529 (feat/pdpp-as-grants tip, descendant
+# of 6981645) fixes the query validator to reject an owner-token filter[...] on
+# an unsupported/malformed shape instead of silently serving unfiltered data --
+# the fix RS-10/owner-filter-unknown-field-rejected checks for.
+VANA_REF="${PDPP_VANA_REF:-24802bbd0bff5d47524fa6b42697385f64dda529}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
 COMPOSED_BRANCH="pdpp-conformance-composed"

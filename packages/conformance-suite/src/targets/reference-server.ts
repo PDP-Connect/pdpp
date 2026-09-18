@@ -80,7 +80,11 @@ export type Defect =
   /** Proceeds on an unsupported PDPP-Version instead of 400 (AS-17). */
   | "accept-unsupported-version"
   /** Issues an ai_training grant without explicit affirmative consent (AS-14). */
-  | "bypass-ai-training-consent";
+  | "bypass-ai-training-consent"
+  /** Silently ignores an owner-token filter[...] naming an undeclared field instead of 400 (RS-10). */
+  | "ignore-owner-filter-unknown-field"
+  /** Rejects every owner record read, despite issuing a valid owner token. */
+  | "deny-owner-records";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -395,6 +399,10 @@ export class ReferenceServer {
 
     // --- GET /v1/streams/{stream}/records (RS-2, RS-5, RS-9, RS-10) ---
     if (recordsMatch) {
+      if (principal.kind === "owner" && this.has("deny-owner-records")) {
+        error(403, "access_denied", "authorization_error", "Owner reads denied by fixture.");
+        return;
+      }
       const rejection = this.rejectUnsupportedParams([...parsed.searchParams.keys()], principal.kind);
       if (rejection) {
         error(400, "invalid_request", "invalid_request_error", rejection);
@@ -572,6 +580,11 @@ export class ReferenceServer {
       if (offending) {
         return `Parameter '${offending}' is not part of the v0.1 client-token query surface.`;
       }
+    }
+    // This fixture does not implement owner predicate filters.
+    if (kind === "owner" && !this.has("ignore-owner-filter-unknown-field")) {
+      const offending = params.find((p) => p.startsWith("filter["));
+      if (offending) return `Parameter '${offending}' is unsupported.`;
     }
     if (!this.has("ignore-unknown-params")) {
       const unknown = params.find((p) => !(KNOWN_PARAMS.has(p) || p.startsWith("filter[") || p.startsWith("expand")));

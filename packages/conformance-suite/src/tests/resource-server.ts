@@ -103,7 +103,7 @@ function verifyDirectBlobHeaders(
   const contentLength = headers.get("content-length");
   if (contentLength !== null) {
     const declared = Number(contentLength);
-    if (!/^[0-9]+$/.test(contentLength) || !Number.isSafeInteger(declared) || declared !== body.length) {
+    if (!(/^[0-9]+$/.test(contentLength) && Number.isSafeInteger(declared)) || declared !== body.length) {
       return fail(`Content-Length declared ${contentLength} bytes but the response body was ${body.length} bytes.`, [
         evidence,
       ]);
@@ -785,6 +785,119 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
         return fail(`Expected 400 for a client-token expand[] parameter, got ${response.status}.`, [response.evidence]);
       }
       return pass([response.evidence]);
+    },
+  },
+
+  // Depth on RS-10 (unknown parameters / unsupported query shapes): an
+  // owner-token filter[...] naming a field absent from the target's own
+  // metadata document must also 400, not be silently ignored.
+  {
+    caseId: "RS-10/owner-filter-unknown-field-rejected",
+    requirementId: "RS-10",
+    appliesWhen: (adapter) => adapter.capabilities.ownerTokens,
+    assertion:
+      "An owner-token filter[...] on a field absent from the target's own declared schema is rejected with 400.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream || stream.recordCount < 1) {
+        return skip("A seeded stream with at least one record is required.");
+      }
+      const owner = await adapter.ownerToken();
+      if (!owner) {
+        return skip("The target declares owner tokens but the adapter produced none.");
+      }
+      const ownerQuery = adapter.ownerReadParams ? { ...adapter.ownerReadParams } : {};
+
+      const metadata = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}`), {
+        token: owner,
+        query: { ...ownerQuery },
+      });
+      if (metadata.status !== 200) {
+        return fail(`An owner token could not read stream metadata for "${stream.name}": got ${metadata.status}.`, [
+          metadata.evidence,
+        ]);
+      }
+      const properties = (metadata.json as StreamMetadataBody | undefined)?.schema?.properties;
+      if (
+        !properties ||
+        typeof properties !== "object" ||
+        Array.isArray(properties) ||
+        Object.keys(properties).length === 0
+      ) {
+        return fail("Owner metadata did not expose a usable schema for choosing an absent filter field.", [
+          metadata.evidence,
+        ]);
+      }
+      const declaredFields = Object.keys(properties);
+
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const control = await request(adapter.baseUrl, recordsPath, { token: owner, query: { ...ownerQuery } });
+      if (control.status !== 200) {
+        return fail(
+          `An unfiltered owner-token read returned ${control.status}, so this run cannot distinguish filter rejection from a target that refuses this read entirely.`,
+          [control.evidence]
+        );
+      }
+      const controlRecords = asList(control.json)?.data ?? [];
+      if (controlRecords.length === 0) {
+        return fail(
+          "The unfiltered owner-token read returned no records for an available owner token, so the seeded stream is not observably populated.",
+          [control.evidence]
+        );
+      }
+
+      let absentField = "pdpp_conformance_absent_field__c7e2f9a1";
+      while (declaredFields.includes(absentField)) {
+        absentField = `${absentField}_`;
+      }
+
+      const exactFiltered = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, [`filter[${absentField}]`]: "any-value" },
+      });
+      if (exactFiltered.status === 200) {
+        return fail(
+          `An owner-token filter[${absentField}] on a field absent from the declared schema was served (200) instead of rejected. Section 8 requires 400 invalid_request or unknown_field for an unknown filter field.`,
+          [control.evidence, exactFiltered.evidence]
+        );
+      }
+      if (exactFiltered.status !== 400) {
+        return fail(`Expected 400 for an owner-token filter on an unknown field, got ${exactFiltered.status}.`, [
+          exactFiltered.evidence,
+        ]);
+      }
+      const exactError = errorBody(exactFiltered);
+      if (exactError?.code !== "invalid_request" && exactError?.code !== "unknown_field") {
+        return fail(
+          `Expected error code invalid_request or unknown_field, got ${exactError?.code ?? "no structured error"}.`,
+          [exactFiltered.evidence]
+        );
+      }
+
+      const rangeFiltered = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, [`filter[${absentField}][gte]`]: "0" },
+      });
+      if (rangeFiltered.status === 200) {
+        return fail(
+          `An owner-token filter[${absentField}][gte] on a field absent from the declared schema was served (200) instead of rejected.`,
+          [control.evidence, rangeFiltered.evidence]
+        );
+      }
+      if (rangeFiltered.status !== 400) {
+        return fail(`Expected 400 for an owner-token range filter on an unknown field, got ${rangeFiltered.status}.`, [
+          rangeFiltered.evidence,
+        ]);
+      }
+      const rangeError = errorBody(rangeFiltered);
+      if (rangeError?.code !== "invalid_request" && rangeError?.code !== "unknown_field") {
+        return fail(
+          `Expected error code invalid_request or unknown_field, got ${rangeError?.code ?? "no structured error"}.`,
+          [rangeFiltered.evidence]
+        );
+      }
+
+      return pass([control.evidence, exactFiltered.evidence, rangeFiltered.evidence]);
     },
   },
 
