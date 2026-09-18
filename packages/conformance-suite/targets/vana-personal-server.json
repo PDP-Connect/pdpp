@@ -61,7 +61,19 @@
     "second token issuance against the SAME consumed grant id, and this",
     "adapter implements no such hook yet. That is a harness-coverage gap, not",
     "an unsupported target feature -- do not read the skip as a capability",
-    "claim walked back."
+    "claim walked back.",
+    "",
+    "expiryFixture registers a SECOND, dedicated client (expiring_widget) with",
+    "an operator-configured pdpp.clients[].grantLifetimeSeconds, so AS-8's",
+    "expired-grant oracle exercises this deployment's real operator policy",
+    "rather than a fabricated token. music_recommendations above is untouched",
+    "and keeps its ordinary, non-expiring grant -- the pagination/refresh cases",
+    "that expect a grant to stay usable partway through a run are unaffected.",
+    "grantLifetimeSeconds here MUST match the value vana-target.sh registers",
+    "for expiring_widget at boot. expectedRecord is a subset of the first",
+    "seeded top_artists record (vana-target.sh ingest_stream, art_1/Artist 1)",
+    "the pre-expiry positive control must find before the oracle trusts the",
+    "token -- a 200 with no matching record throws rather than skipping."
   ],
   "kind": "vana-ps",
   "targetId": "vana-personal-server",
@@ -70,6 +82,12 @@
   "ownerBootstrapToken": "${PDPP_VANA_OWNER_TOKEN}",
   "clientId": "music_recommendations",
   "redirectUri": "https://app.example.com/callback",
+  "expiryFixture": {
+    "clientId": "expiring_widget",
+    "redirectUri": "https://app.example.com/callback",
+    "grantLifetimeSeconds": 3,
+    "expectedRecord": { "id": "art_1", "name": "Artist 1" }
+  },
   "sourceId": "https://registry.pdpp.dev/connectors/spotify",
   "purposeCode": "https://pdpp.dev/purpose/personalization",
   "roles": ["resource-server", "authorization-server"],

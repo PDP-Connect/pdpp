@@ -38,6 +38,33 @@ export interface VanaPsConfig {
   readonly capabilities: TargetCapabilities;
   /** Client the server has pre-registered, with an exactly-matching redirect URI. */
   readonly clientId: string;
+  /**
+   * A SECOND, dedicated client the server has pre-registered with an
+   * operator-configured `grantLifetimeSeconds`, for AS-8's expired-grant
+   * oracle (`expiredGrantToken`).
+   *
+   * Deliberately a distinct client from `clientId`, never the same one with a
+   * flag: `expiredGrantToken` must not shrink the lifetime of grants the
+   * other cases issue to `clientId`, and a short deployment-wide default
+   * would silently break the pagination/refresh cases that expect an
+   * ordinary, non-expiring grant to still be usable partway through a run.
+   * Absent means this deployment has no such client configured, and AS-8's
+   * expiry case reports `skip` naming this hook rather than fabricating one.
+   */
+  readonly expiryFixture?: {
+    readonly clientId: string;
+    /** Must match a redirect URI this deployment pre-registered for `clientId` above. */
+    readonly redirectUri: string;
+    /** The lifetime the deployment's config bound to this client, in seconds. */
+    readonly grantLifetimeSeconds: number;
+    /**
+     * A subset of fields the pre-expiry read's record for `streams[0]` must
+     * match, e.g. `{ id: "artist_1", name: "Artist 1" }`. Required so the
+     * positive control proves the token reads the seeded record rather than
+     * merely getting a 200 with an empty or unrelated body.
+     */
+    readonly expectedRecord: Readonly<Record<string, unknown>>;
+  };
   readonly introspectionCredentials?: { readonly clientId: string; readonly clientSecret: string };
   /** Owner credential the server accepts at /pdpp/v1/owner/token. */
   readonly ownerBootstrapToken: string;
@@ -51,6 +78,11 @@ export interface VanaPsConfig {
   readonly targetId: string;
   readonly targetVersion: string;
 }
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 /**
  * PKCE verifier/challenge pair.
@@ -158,7 +190,13 @@ export class VanaPsAdapter implements TargetAdapter {
    * Open an authorization session and review it, stopping short of approval, so
    * the approval-binding and replay cases can drive the final step themselves.
    */
-  async stageApproval(wanted: GrantRequest): Promise<StagedApproval | null> {
+  async stageApproval(
+    wanted: GrantRequest,
+    client: { readonly clientId: string; readonly redirectUri: string } = {
+      clientId: this.config.clientId,
+      redirectUri: this.config.redirectUri,
+    }
+  ): Promise<StagedApproval | null> {
     const owner = await this.ownerToken();
     if (!owner) {
       return null;
@@ -168,7 +206,7 @@ export class VanaPsAdapter implements TargetAdapter {
     const authorized = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize`, {
       method: "POST",
       headers: { ...ownerAuth, "content-type": "application/json" },
-      body: JSON.stringify(await this.authorizeBody(wanted)),
+      body: JSON.stringify(await this.authorizeBody(wanted, client)),
     });
     if (authorized.status !== 201) {
       return null;
@@ -220,7 +258,7 @@ export class VanaPsAdapter implements TargetAdapter {
         return null;
       }
       lastRedeemedCode = new URL(approval.redirect_uri).searchParams.get("code");
-      const token = await this.exchangeCode(approval.redirect_uri);
+      const token = await this.exchangeCode(approval.redirect_uri, client);
       if (!token) {
         return null;
       }
@@ -256,8 +294,8 @@ export class VanaPsAdapter implements TargetAdapter {
           body: new URLSearchParams({
             grant_type: "authorization_code",
             code: lastRedeemedCode,
-            client_id: this.config.clientId,
-            redirect_uri: this.config.redirectUri,
+            client_id: client.clientId,
+            redirect_uri: client.redirectUri,
             code_verifier: PKCE_VERIFIER,
           }).toString(),
         });
@@ -372,10 +410,16 @@ export class VanaPsAdapter implements TargetAdapter {
   }
 
   /** The RFC 9396 selection request this server expects, for both entry points. */
-  private async authorizeBody(wanted: GrantRequest): Promise<Record<string, unknown>> {
+  private async authorizeBody(
+    wanted: GrantRequest,
+    client: { readonly clientId: string; readonly redirectUri: string } = {
+      clientId: this.config.clientId,
+      redirectUri: this.config.redirectUri,
+    }
+  ): Promise<Record<string, unknown>> {
     return {
-      client_id: this.config.clientId,
-      redirect_uri: this.config.redirectUri,
+      client_id: client.clientId,
+      redirect_uri: client.redirectUri,
       code_challenge: await s256Challenge(PKCE_VERIFIER),
       code_challenge_method: "S256",
       client_display: { name: "pdpp-conformance-suite" },
@@ -403,7 +447,13 @@ export class VanaPsAdapter implements TargetAdapter {
   }
 
   /** Redeem the authorization code the approval redirect carries, with PKCE. */
-  private async exchangeCode(redirectUri: string): Promise<string | null> {
+  private async exchangeCode(
+    redirectUri: string,
+    client: { readonly clientId: string; readonly redirectUri: string } = {
+      clientId: this.config.clientId,
+      redirectUri: this.config.redirectUri,
+    }
+  ): Promise<string | null> {
     const code = new URL(redirectUri).searchParams.get("code");
     if (!code) {
       return null;
@@ -414,8 +464,8 @@ export class VanaPsAdapter implements TargetAdapter {
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code,
-        client_id: this.config.clientId,
-        redirect_uri: this.config.redirectUri,
+        client_id: client.clientId,
+        redirect_uri: client.redirectUri,
         code_verifier: PKCE_VERIFIER,
       }).toString(),
     });
@@ -529,5 +579,74 @@ export class VanaPsAdapter implements TargetAdapter {
    */
   async foreignSubjectOwnerToken(): Promise<string | null> {
     return null;
+  }
+
+  /**
+   * A token bound to a grant that has genuinely expired under this
+   * deployment's own operator policy — never a fabricated token, a shortened
+   * global default, or a different issuer.
+   *
+   * Drives the real authorize → review → approve → PKCE-redeem journey for
+   * `expiryFixture.clientId`, the SAME journey every other case uses, just
+   * against the dedicated short-lived client. Before returning, it proves the
+   * SAME token reads the expected seeded record (the positive control AS-8's
+   * case needs to isolate expiry as the cause of the later refusal, mirroring
+   * the revocation case's before/after pair), then sleeps past the
+   * deployment-configured lifetime and returns that SAME token unchanged.
+   *
+   * Returns null only when the fixture is not configured. For configured fixtures, the
+   * positive control is a hard precondition: a denied, malformed, empty, or
+   * mismatched pre-expiry read throws, so a broken fixture surfaces as AS-8
+   * `fail` rather than a silent `skip` that would look identical to "no
+   * expiry support configured".
+   */
+  async expiredGrantToken(): Promise<string | null> {
+    const fixture = this.config.expiryFixture;
+    const [stream] = this.config.streams;
+    if (!fixture) return null;
+    if (!stream || !fixture.expectedRecord?.id) {
+      throw new Error("Configured expiry fixture requires a seeded stream and expected record ID.");
+    }
+
+    const staged = await this.stageApproval(
+      { streams: [{ name: stream.name, fields: [...stream.fields] }] },
+      { clientId: fixture.clientId, redirectUri: fixture.redirectUri }
+    );
+    if (!staged) {
+      throw new Error("Configured expiry fixture could not establish authorization.");
+    }
+    const grant = await staged.approve(staged.reviewRevision);
+    if (!grant) {
+      throw new Error("Configured expiry fixture could not obtain a grant token.");
+    }
+
+    const before = await fetch(`${this.config.baseUrl}/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      headers: { authorization: `Bearer ${grant.accessToken}` },
+    });
+    if (before.status !== 200) {
+      throw new Error(
+        `expiryFixture is configured but the pre-expiry read of stream "${stream.name}" returned ${before.status}, not 200. The positive control this oracle needs (proof the token worked before expiry) did not hold.`
+      );
+    }
+    const body = (await before.json().catch(() => undefined)) as { data?: unknown } | undefined;
+    const records = Array.isArray(body?.data) ? (body.data as { id?: unknown; data?: Record<string, unknown> }[]) : [];
+    const expected = Object.entries(fixture.expectedRecord);
+    // The RS record envelope (`toRecordJson`) carries the record key as the
+    // top-level `id` and every other seeded field nested under `data` — the
+    // same shape every other stream-reading case in this suite reads
+    // (resource-server.ts, query-surface.ts). expectedRecord's keys are
+    // matched against whichever level actually carries them.
+    const matched = records.find((record) =>
+      expected.every(([key, value]) => (key === "id" ? record.id === value : record.data?.[key] === value))
+    );
+    if (!matched) {
+      throw new Error(
+        `expiryFixture is configured but the pre-expiry read of stream "${stream.name}" did not contain a record matching expectedRecord. Got ${records.length} record(s). The positive control this oracle needs (proof the token reads the seeded record before expiry) did not hold.`
+      );
+    }
+
+    await sleep((fixture.grantLifetimeSeconds + 2) * 1000);
+
+    return grant.accessToken;
   }
 }

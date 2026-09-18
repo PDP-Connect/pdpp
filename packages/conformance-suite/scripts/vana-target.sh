@@ -59,9 +59,11 @@ set -euo pipefail
 # The integration owner's composed tree in vana-com/personal-server-ts:
 # origin/main + feat/pdpp-as-grants + feat/pdpp-record-storage-rs + integration
 # work, carrying both PDPP halves and all three conformance fixes.
-# def4ff7 additionally carries explicit_ai_training_consent enforcement on
-# /approve (AS-14), which is why this ref moved past 5e98085.
-VANA_REF="${PDPP_VANA_REF:-def4ff7}"
+# 69816450a3fbfc9effbf037ce16dae239bc018e9 (feat/pdpp-as-grants tip) adds
+# optional pdpp.clients[].grantLifetimeSeconds operator policy, which
+# expiring_widget below exercises for AS-8's expired-grant oracle. It carries
+# def4ff7's explicit_ai_training_consent enforcement (AS-14) as an ancestor.
+VANA_REF="${PDPP_VANA_REF:-69816450a3fbfc9effbf037ce16dae239bc018e9}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
 COMPOSED_BRANCH="pdpp-conformance-composed"
@@ -79,6 +81,15 @@ SOURCE_ID="https://registry.pdpp.dev/connectors/spotify"
 CLIENT_ID="music_recommendations"
 REDIRECT_URI="https://app.example.com/callback"
 BASE_URL="http://127.0.0.1:$PORT"
+
+# A SECOND, dedicated client registered with an operator-configured
+# grantLifetimeSeconds, for AS-8's expired-grant oracle. Kept separate from
+# CLIENT_ID above so the ordinary client's grants never expire mid-run — only
+# grants issued to expiring_widget carry the short AS-imposed lifetime. This
+# value must match packages/conformance-suite/targets/vana-personal-server.json's
+# expiryFixture.grantLifetimeSeconds.
+EXPIRY_CLIENT_ID="expiring_widget"
+EXPIRY_GRANT_LIFETIME_SECONDS=3
 
 # Both streams are declared and seeded on purpose. The stream-membership
 # oracles (RS-2 enforcement, RS-6 error classification) work by holding one
@@ -199,6 +210,8 @@ process.env.VANA_MASTER_KEY_SIGNATURE =
 const SOURCE_ID = "$SOURCE_ID";
 const CLIENT_ID = "$CLIENT_ID";
 const REDIRECT = "$REDIRECT_URI";
+const EXPIRY_CLIENT_ID = "$EXPIRY_CLIENT_ID";
+const EXPIRY_GRANT_LIFETIME_SECONDS = $EXPIRY_GRANT_LIFETIME_SECONDS;
 // One scope row per declared stream: declaration trust is derived from what the
 // server actually serves, so a declaration is refused without a matching row.
 const SCOPES = ["spotify.$GRANTED_STREAM", "spotify.$UNGRANTED_STREAM"];
@@ -296,7 +309,19 @@ const config = ServerConfigSchema.parse({
   pdpp: {
     enabled: true,
     declarationPaths: [declarationPath],
-    clients: [{ clientId: CLIENT_ID, redirectUris: [REDIRECT] }],
+    // expiring_widget is registered alongside CLIENT_ID and given an
+    // operator-configured grantLifetimeSeconds. CLIENT_ID has none, so its
+    // grants are unaffected -- AS-8's expiry oracle exercises the SAME real
+    // config-boundary policy PS's own bootstrap tests cover, not a suite-side
+    // fabrication.
+    clients: [
+      { clientId: CLIENT_ID, redirectUris: [REDIRECT] },
+      {
+        clientId: EXPIRY_CLIENT_ID,
+        redirectUris: [REDIRECT],
+        grantLifetimeSeconds: EXPIRY_GRANT_LIFETIME_SECONDS,
+      },
+    ],
   },
 });
 
