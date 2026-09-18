@@ -382,8 +382,14 @@ cmd_up() {
   dev_token=$(grep -o '{"ready":true.*}' "$LOG_FILE" | tail -1 |
     python3 -c 'import json,sys;print(json.load(sys.stdin)["devToken"])') ||
     die "could not read the dev token from $LOG_FILE"
+  local target_version
+  target_version="personal-server-ts@waspflow/pdpp-integrated-journey-0917 $(git -C "$PDPP_VANA_PS" rev-parse --short HEAD)"
+
   umask 077
-  printf 'export PDPP_VANA_OWNER_TOKEN=%s\n' "$dev_token" > "$ENV_FILE"
+  {
+    printf 'export PDPP_VANA_OWNER_TOKEN=%s\n' "$dev_token"
+    printf "export PDPP_VANA_TARGET_VERSION='%s'\n" "$target_version"
+  } > "$ENV_FILE"
 
   cmd_seed
   log "run:  eval \"\$($0 env)\" && npx tsx src/cli.ts --target targets/vana-personal-server.json"

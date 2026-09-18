@@ -49,7 +49,7 @@
   ],
   "kind": "vana-ps",
   "targetId": "vana-personal-server",
-  "targetVersion": "personal-server-ts@waspflow/pdpp-integrated-journey-0917 5e98085",
+  "targetVersion": "${PDPP_VANA_TARGET_VERSION}",
   "baseUrl": "http://127.0.0.1:8420",
   "ownerBootstrapToken": "${PDPP_VANA_OWNER_TOKEN}",
   "clientId": "music_recommendations",
