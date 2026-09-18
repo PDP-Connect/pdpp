@@ -331,23 +331,34 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       }
 
       // Establish that introspection reports this token active first; otherwise a
-      // later active:false proves nothing about revocation.
+      // later active:false proves nothing about revocation. Like AS-9, a
+      // co-located AS with no RFC 8414 metadata may still expose the same
+      // obligation through `coLocatedIntrospect` (Core Section 8's local
+      // equivalent), so try that before giving up on missing evidence.
       const endpoint = adapter.authorizationServerUrl
         ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
         : null;
-      if (!endpoint) {
+      const doIntrospect = (token: string) =>
+        endpoint ? introspect(endpoint, token, adapter.introspectionCredentials) : adapter.coLocatedIntrospect?.(token);
+
+      const before = await doIntrospect(grant.accessToken);
+      if (!before) {
         return skip(
-          "AS-8 applies to this target regardless of topology, but it publishes no RFC 8414 introspection_endpoint, so this suite has no mechanism to observe revocation reflection here. Missing evidence, not an inapplicable requirement."
+          "AS-8 applies to this target regardless of topology, but it publishes no RFC 8414 introspection_endpoint and the adapter names no known co-located equivalent, so this suite has no mechanism to observe revocation reflection here. Missing evidence, not an inapplicable requirement."
         );
       }
-      const before = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
       if (before.status !== 200 || (before.json as IntrospectionBody | undefined)?.active !== true) {
         return skip("Introspection did not report the fresh token as active, so revocation cannot be isolated.");
       }
 
       await adapter.revokeGrant(grant.grantId);
 
-      const after = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
+      const after = await doIntrospect(grant.accessToken);
+      if (!after) {
+        return fail("The introspection mechanism used for the pre-revocation check disappeared after revocation.", [
+          before.evidence,
+        ]);
+      }
       if (after.status !== 200) {
         return fail(`Expected 200 from introspection after revocation, got ${after.status}.`, [
           before.evidence,
