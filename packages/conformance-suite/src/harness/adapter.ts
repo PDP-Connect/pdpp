@@ -40,8 +40,12 @@ export interface SeededStream {
   readonly expectedOwnerMetadata?: {
     readonly query?: Readonly<Record<string, unknown>>;
     readonly relationships?: readonly unknown[];
+    /** Declared item type for array-typed fields (JSON Schema `items.type`), a nested constraint distinct from flat field type. */
+    readonly schemaFieldItemTypes?: Readonly<Record<string, string>>;
     /** Per-field JSON Schema type, for detecting a corrupted (not just missing) schema. */
     readonly schemaFieldTypes?: Readonly<Record<string, string>>;
+    /** Fields the schema's `required` array must name (Core Section 5), independent of field presence. */
+    readonly schemaRequired?: readonly string[];
     readonly views?: readonly unknown[];
   };
   /** Field names present in the declared schema. */

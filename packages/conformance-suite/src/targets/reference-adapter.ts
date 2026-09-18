@@ -35,8 +35,15 @@ import { type Defect, PDPP_VERSION, ReferenceServer, type StreamFixture } from "
 export const DEFAULT_FIXTURES: readonly StreamFixture[] = [
   {
     name: "conversations",
-    fields: ["id", "title", "source_created_at"],
-    fieldTypes: { id: "string", title: "string", source_created_at: "string" },
+    fields: ["id", "title", "source_created_at", "tags"],
+    fieldTypes: { id: "string", title: "string", source_created_at: "string", tags: "array" },
+    // A declared array-typed field, so RS-14's nested-constraint checks
+    // (JSON Schema `items.type`) have real content to check beyond flat type.
+    fieldItemTypes: { tags: "string" },
+    // Declared required fields (Core Section 5), independent of field
+    // presence: RS-14's required-omission case needs a field that is present
+    // in the schema but expected to be marked required.
+    requiredFields: ["id", "title"],
     primaryKey: ["id"],
     cursorField: "source_created_at",
     semantics: "mutable_state",
@@ -132,6 +139,8 @@ export class ReferenceTargetAdapter implements TargetAdapter {
           type: r.type,
         })),
         schemaFieldTypes: { ...(f.fieldTypes ?? Object.fromEntries(f.fields.map((field) => [field, "string"]))) },
+        ...(f.fieldItemTypes ? { schemaFieldItemTypes: { ...f.fieldItemTypes } } : {}),
+        ...(f.requiredFields ? { schemaRequired: [...f.requiredFields] } : {}),
       },
     }));
     return { streams };

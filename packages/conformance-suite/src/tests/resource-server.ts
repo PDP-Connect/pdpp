@@ -43,7 +43,7 @@ function asList(json: unknown): ListBody | undefined {
 interface StreamMetadataBody {
   query?: Record<string, unknown>;
   relationships?: unknown[];
-  schema?: { properties?: Record<string, { type?: unknown }> };
+  schema?: { properties?: Record<string, { items?: { type?: unknown }; type?: unknown }>; required?: unknown };
   views?: unknown[];
 }
 
@@ -75,6 +75,44 @@ function corruptedSchemaFields(
   return Object.entries(declared)
     .filter(([field, type]) => exposedProperties?.[field]?.type !== type)
     .map(([field]) => field);
+}
+
+/**
+ * Declared nested per-field constraints (e.g. array `items.type`) that the
+ * exposed schema states differently, against the fixture's own retained
+ * declaration. Separate from `corruptedSchemaFields`: a target can keep a
+ * field's own flat `type` correct while still narrowing or dropping what it
+ * declares about that field's nested content (Core Section 5's stream schema
+ * is JSON Schema, not just a flat field/type map).
+ */
+function corruptedNestedConstraints(
+  declared: Readonly<Record<string, string>> | undefined,
+  exposedProperties: Record<string, { items?: { type?: unknown } }> | undefined
+): readonly string[] {
+  if (!declared) {
+    return [];
+  }
+  return Object.entries(declared)
+    .filter(([field, itemType]) => exposedProperties?.[field]?.items?.type !== itemType)
+    .map(([field]) => field);
+}
+
+/**
+ * Declared required fields the exposed schema's `required` array omits,
+ * order-independent (Core Section 5 requires the field set, not a specific
+ * array ordering) and restricted to fields this read actually exposes (a
+ * field outside the exposed schema cannot be required by it).
+ */
+function missingRequiredFields(
+  declared: readonly string[] | undefined,
+  exposedFields: readonly string[],
+  exposedRequired: unknown
+): readonly string[] {
+  if (!declared || declared.length === 0) {
+    return [];
+  }
+  const required = new Set(Array.isArray(exposedRequired) ? exposedRequired : []);
+  return declared.filter((f) => exposedFields.includes(f) && !required.has(f));
 }
 
 export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
@@ -649,6 +687,25 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (corruptedFields.length > 0) {
         return fail(
           `Owner-token stream metadata declared schema field(s) with the wrong type: ${corruptedFields.join(", ")}. Section 9 item 14 requires the full CURRENT schema, and this target's declaration of ${corruptedFields.join(", ")} does not match its own retained schema.`,
+          [response.evidence]
+        );
+      }
+
+      // Nested per-field constraints (e.g. array items.type) are part of the
+      // current schema too; a target can keep a field's flat type correct
+      // while still narrowing or dropping what it declares about its content.
+      const corruptedNested = corruptedNestedConstraints(expected.schemaFieldItemTypes, exposedProperties);
+      if (corruptedNested.length > 0) {
+        return fail(
+          `Owner-token stream metadata declared schema field(s) with the wrong nested constraint: ${corruptedNested.join(", ")}. Section 9 item 14 requires the full CURRENT schema, and this target's declaration of ${corruptedNested.join(", ")}'s nested content does not match its own retained schema.`,
+          [response.evidence]
+        );
+      }
+
+      const missingRequired = missingRequiredFields(expected.schemaRequired, exposed, body?.schema?.required);
+      if (missingRequired.length > 0) {
+        return fail(
+          `Owner-token stream metadata's schema omitted declared required field(s) from \`required\`: ${missingRequired.join(", ")}. Section 9 item 14 requires the full current schema, and this target's own retained declaration marks ${missingRequired.join(", ")} required.`,
           [response.evidence]
         );
       }

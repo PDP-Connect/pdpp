@@ -55,6 +55,10 @@ export type Defect =
   | "omit-owner-query"
   /** Keeps query capability but with the wrong range-filter operators (RS-14). */
   | "corrupt-owner-query"
+  /** Omits a declared required field from the schema's `required` array (RS-14). */
+  | "omit-owner-schema-required-field"
+  /** Keeps every schema field's type but drops a declared nested constraint (array `items.type`) (RS-14). */
+  | "corrupt-owner-schema-nested-constraint"
   /** Refuses an ungranted stream, but with 401 instead of 403 (RS-6). */
   | "misclassify-stream-denial"
   /** Crashes on a malformed cursor instead of returning 400 (RS-6). */
@@ -80,6 +84,8 @@ export type Record_ = { readonly id: string } & Record<string, unknown>;
 
 export interface StreamFixture {
   readonly cursorField?: string;
+  /** Declared item type for array-typed fields (JSON Schema `items.type`), a nested constraint RS-14 checks. */
+  readonly fieldItemTypes?: Readonly<Record<string, string>>;
   readonly fields: readonly string[];
   /** Per-field JSON Schema type, so RS-14 has real schema content to check (not just field names). */
   readonly fieldTypes?: Readonly<Record<string, string>>;
@@ -88,6 +94,8 @@ export interface StreamFixture {
   readonly records: readonly Record_[];
   /** Declared relationships to other streams, for RS-14's relationship-corruption cases. */
   readonly relationships?: readonly { readonly id: string; readonly targetStream: string; readonly type: string }[];
+  /** Fields that must be present per the schema's `required` array (Core Section 5). */
+  readonly requiredFields?: readonly string[];
   readonly semantics: "append_only" | "mutable_state";
 }
 
@@ -459,10 +467,18 @@ export class ReferenceServer {
     const isOwner = kind === "owner";
     const declareCapabilities = wholeDocument && !ownerTruncated;
 
+    // required is reported within whatever field set this read exposes: a
+    // client-token projection cannot require a field it does not expose, and
+    // the truncation defect above already narrows `fields` to model that.
+    const requiredOmitted = isOwner && this.has("omit-owner-schema-required-field");
+    const required = (fixture.requiredFields ?? []).filter(
+      (f) => fields.includes(f) && !(requiredOmitted && f === fixture.requiredFields?.[0])
+    );
+
     return {
       object: "stream_metadata",
       name: fixture.name,
-      schema: { properties: this.schemaProperties(fixture, fields, isOwner) },
+      schema: { properties: this.schemaProperties(fixture, fields, isOwner), required },
       primary_key: [...fixture.primaryKey],
       ...(fixture.cursorField && { cursor_field: fixture.cursorField }),
       query: declareCapabilities ? this.queryCapability(fixture, isOwner) : {},
@@ -471,13 +487,14 @@ export class ReferenceServer {
     };
   }
 
-  /** Per-field JSON Schema properties, optionally corrupting the first field's declared type. */
+  /** Per-field JSON Schema properties, optionally corrupting the first field's declared type or a nested constraint. */
   private schemaProperties(
     fixture: StreamFixture,
     fields: readonly string[],
     isOwner: boolean
-  ): Record<string, { type: string }> {
+  ): Record<string, { type: string; items?: { type: string } }> {
     const corrupt = isOwner && this.has("corrupt-owner-schema-field-type");
+    const corruptNested = isOwner && this.has("corrupt-owner-schema-nested-constraint");
     return Object.fromEntries(
       fields.map((f, i) => {
         const declaredType = fixture.fieldTypes?.[f] ?? "string";
@@ -485,7 +502,9 @@ export class ReferenceServer {
         // the field set itself) untouched, so this defect is distinguishable
         // from truncate-owner-metadata: same fields present, wrong content.
         const type = corrupt && i === 0 ? `${declaredType}-corrupted` : declaredType;
-        return [f, { type }];
+        const itemType = fixture.fieldItemTypes?.[f];
+        const items = itemType ? { type: corruptNested ? `${itemType}-corrupted` : itemType } : undefined;
+        return [f, { type, ...(items ? { items } : {}) }];
       })
     );
   }

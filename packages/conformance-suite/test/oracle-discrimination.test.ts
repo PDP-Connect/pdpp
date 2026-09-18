@@ -119,6 +119,14 @@ const DISCRIMINATION_MATRIX: readonly {
     defect: "corrupt-owner-query",
   },
   {
+    caseId: "RS-14/owner-metadata-full-current-document",
+    defect: "omit-owner-schema-required-field",
+  },
+  {
+    caseId: "RS-14/owner-metadata-full-current-document",
+    defect: "corrupt-owner-schema-nested-constraint",
+  },
+  {
     caseId: "RS-15/client-metadata-projection-closed",
     defect: "leak-current-metadata",
   },
@@ -240,6 +248,31 @@ it("RS-14 accepts equivalent metadata with reordered object keys", async () => {
       makeContext(adapter, reordered)
     );
     assert.equal(result.outcome, "pass", result.detail ?? "RS-14 rejected reordered metadata");
+  } finally {
+    await adapter.teardown();
+  }
+});
+
+it("RS-14 accepts equivalent metadata with a reordered required array", async () => {
+  const adapter = new ReferenceTargetAdapter();
+  const { streams } = await adapter.setup();
+  try {
+    const reordered = streams.map((s) => ({
+      ...s,
+      ...(s.expectedOwnerMetadata && {
+        expectedOwnerMetadata: {
+          ...s.expectedOwnerMetadata,
+          ...(s.expectedOwnerMetadata.schemaRequired && {
+            schemaRequired: [...s.expectedOwnerMetadata.schemaRequired].reverse(),
+          }),
+        },
+      }),
+    }));
+    const result = await runCase(
+      caseById("RS-14/owner-metadata-full-current-document"),
+      makeContext(adapter, reordered)
+    );
+    assert.equal(result.outcome, "pass", result.detail ?? "RS-14 rejected a reordered required array");
   } finally {
     await adapter.teardown();
   }
