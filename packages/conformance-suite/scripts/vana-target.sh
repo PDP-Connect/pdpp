@@ -83,7 +83,7 @@ set -euo pipefail
 # face9fc rejects unsupported bracketed query shapes and owner expansion.
 # The target declares no expandable relations; owner expansion therefore
 # returns invalid_expand. RS-10 exercises these rejection paths over HTTP.
-VANA_REF="${PDPP_VANA_REF:-face9fc81fc8fd47e6b730fd4b12651a17f3e78f}"
+VANA_REF="${PDPP_VANA_REF:-face9fc46238af298c6b619a380a060445d0eb86}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
 
