@@ -149,3 +149,14 @@ describe("RS-7/RS-8 applicability derives from seeded stream semantics, not the 
     );
   });
 });
+
+it("an empty fixture inventory is missing evidence, not append-only inapplicability", async () => {
+  const outcomes = await Promise.all(
+    [
+      "RS-7/deletion-surfaces-as-a-tombstone",
+      "RS-8/terminal-page-carries-next-changes-since",
+      "RS-6/cursor-not-accepted-as-changes-since",
+    ].map(async (caseId) => (await runAgainst(caseId, [])).outcome)
+  );
+  assert.deepEqual(outcomes, ["skip", "skip", "skip"]);
+});

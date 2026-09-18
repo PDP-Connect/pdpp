@@ -186,7 +186,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-8/terminal-page-carries-next-changes-since",
     requirementId: "RS-8",
-    appliesWhen: (_adapter, streams) => hasMutableStateStream(streams),
+    appliesWhen: (_adapter, streams) => streams.length === 0 || hasMutableStateStream(streams),
     assertion:
       "The terminal page of a changes_since response carries next_changes_since so the next session can resume.",
     async run({ adapter, streams, path }) {
@@ -231,7 +231,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-6/cursor-not-accepted-as-changes-since",
     requirementId: "RS-6",
-    appliesWhen: (_adapter, streams) => hasMutableStateStream(streams),
+    appliesWhen: (_adapter, streams) => streams.length === 0 || hasMutableStateStream(streams),
     assertion:
       "A page cursor presented as changes_since is rejected rather than silently accepted (distinct token spaces).",
     async run({ adapter, streams, path }) {
@@ -388,7 +388,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-7/deletion-surfaces-as-a-tombstone",
     requirementId: "RS-7",
-    appliesWhen: (_adapter, streams) => hasMutableStateStream(streams),
+    appliesWhen: (_adapter, streams) => streams.length === 0 || hasMutableStateStream(streams),
     assertion: "A record deleted after a sync cursor was issued appears as a tombstone when that cursor resumes.",
     async run({ adapter, streams, path }) {
       // Owner token: deletion is an owner operation, and the sync leg must run
