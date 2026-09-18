@@ -1261,9 +1261,9 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-9/client-token-view-rejected"],
     gapNote:
-      "No case sends `view` on a client-token records request; the hook exists (RS-9 cases already drive client-token queries) so this is an unwritten case rather than a missing capability.",
+      "The client-token rejection half is covered. The sentence's second half — `view` and `fields` being mutually exclusive — is an owner-token concern (a client token must reject `view` outright, so the pair can never both be honoured there) and is tracked at 6.8-1, which needs a view-declaring target.",
   },
   {
     clauseId: "8.9-4",
@@ -1285,9 +1285,7 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "This is the `expand_limit[{relation}]` row, distinct from the `expand[]` row at 8.9-4; no case sends `expand_limit[...]` on a client token. An unwritten case, not a missing hook.",
+    caseIds: ["RS-9/client-token-expand-limit-rejected"],
   },
   {
     clauseId: "8.9-6",

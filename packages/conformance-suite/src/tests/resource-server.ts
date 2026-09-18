@@ -884,6 +884,134 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // Section 8's client-token parameter table, the `view` row (clause 8.9-3):
+  // "Client-token records requests MUST reject `view`; clients use explicit
+  // `fields` or the field projection already frozen into the grant."
+  //
+  // Distinct from the filter and expand rows above, and the distinction is the
+  // point. A view is a NAMED projection resolved against CURRENT serving
+  // metadata, while a client grant froze its field set at issuance. A server
+  // that honours `view` on a client token therefore serves whatever that view
+  // means today — which may be wider than the field list the owner approved,
+  // and grows silently every time the view definition gains a field. That is
+  // the same widening Section 5 forbids at issuance, arriving through the query
+  // surface instead.
+  //
+  // The positive control is the identical request with `view` removed: without
+  // it, a server that refuses every client-token read passes the refusal
+  // assertion while being unusable.
+  {
+    caseId: "RS-9/client-token-view-rejected",
+    requirementId: "RS-9",
+    assertion:
+      "A client-token view parameter is rejected with 400 invalid_request, while the same read without it succeeds.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+
+      const response = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { view: "pdpp_conformance_any_view" },
+      });
+      if (response.status === 200) {
+        return fail(
+          "A client-token request carrying `view` was served instead of rejected. Section 8's parameter table makes `view` an owner-token current-capability request and requires client-token records requests to reject it: a view resolves against current serving metadata, so honouring one serves whatever the view means now rather than the field projection frozen into the grant at issuance.",
+          [response.evidence]
+        );
+      }
+      if (response.status !== 400) {
+        return fail(`Expected 400 for a client-token view parameter, got ${response.status}.`, [response.evidence]);
+      }
+      const error = errorBody(response);
+      if (error?.code !== "invalid_request") {
+        return fail(`Expected error code invalid_request, got ${error?.code ?? "no structured error"}.`, [
+          response.evidence,
+        ]);
+      }
+
+      // Positive control: the same read without `view` must succeed, so a
+      // blanket refusal of client-token reads cannot masquerade as enforcement.
+      const control = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+      if (control.status !== 200) {
+        return skip(
+          `The control read without \`view\` was also refused (${control.status}), so this run cannot distinguish rejection of the parameter from a target that refuses every client-token read.`
+        );
+      }
+      return pass([response.evidence, control.evidence]);
+    },
+  },
+
+  // Section 8 clause 8.9-5, the `expand_limit[{relation}]` row: "Client-token
+  // requests MUST reject this parameter in v0.1."
+  //
+  // A separate row from `expand[]` (covered above) and a separate case, because
+  // a server can reject the one and accept the other: `expand[]` names what to
+  // expand, `expand_limit[...]` only bounds how much. Section 8 states the
+  // reason they are both out of the client surface — "a v0.1 resolved grant
+  // does not freeze relationship identity, target stream, foreign-key join
+  // semantics, cardinality, or expansion limits", so current relationship
+  // metadata cannot interpret client grant rights at all. A server that accepts
+  // a limit while rejecting the selector is reading a parameter it has no
+  // frozen basis to honour.
+  {
+    caseId: "RS-9/client-token-expand-limit-rejected",
+    requirementId: "RS-9",
+    assertion:
+      "A client-token expand_limit[...] parameter is rejected with 400 invalid_request, while the same read without it succeeds.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+
+      const response = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { "expand_limit[pdpp_conformance_relation]": "5" },
+      });
+      if (response.status === 200) {
+        return fail(
+          "A client-token request carrying expand_limit[...] was served instead of rejected. Section 8 requires client-token requests containing `expand[]` or `expand_limit[...]` to be rejected with 400 invalid_request before the RS consults current metadata, because a v0.1 resolved grant freezes no expansion limits for that metadata to be read against.",
+          [response.evidence]
+        );
+      }
+      if (response.status !== 400) {
+        return fail(`Expected 400 for a client-token expand_limit[...] parameter, got ${response.status}.`, [
+          response.evidence,
+        ]);
+      }
+      const error = errorBody(response);
+      if (error?.code !== "invalid_request") {
+        return fail(`Expected error code invalid_request, got ${error?.code ?? "no structured error"}.`, [
+          response.evidence,
+        ]);
+      }
+
+      const control = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+      if (control.status !== 200) {
+        return skip(
+          `The control read without expand_limit[...] was also refused (${control.status}), so this run cannot distinguish rejection of the parameter from a target that refuses every client-token read.`
+        );
+      }
+      return pass([response.evidence, control.evidence]);
+    },
+  },
+
   // Depth on RS-10 (unknown parameters / unsupported query shapes): an
   // owner-token filter[...] naming a field absent from the target's own
   // metadata document must also 400, not be silently ignored.

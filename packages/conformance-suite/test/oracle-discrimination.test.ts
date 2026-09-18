@@ -82,6 +82,25 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "RS-9/client-token-exact-filter-rejected",
     defect: "accept-client-filters",
   },
+  // The `view` and `expand_limit[...]` rows of Section 8's client-token
+  // parameter table are separate clauses (8.9-3 and 8.9-5) from the filter row
+  // above, and a server can honour one while rejecting another.
+  //
+  // `view` pairs with `serve-client-token-view`, not `accept-client-filters`,
+  // and the difference was found by this test rather than reasoned about: under
+  // `accept-client-filters` the reference server still refuses `view` through
+  // its GENERIC unknown-parameter branch (`view` is not in KNOWN_PARAMS), so
+  // the first version of this row passed a target that had never implemented
+  // the client-token `view` rule. The defect below serves the view instead,
+  // which is the violation clause 8.9-3 actually describes.
+  {
+    caseId: "RS-9/client-token-view-rejected",
+    defect: "serve-client-token-view",
+  },
+  {
+    caseId: "RS-9/client-token-expand-limit-rejected",
+    defect: "accept-client-filters",
+  },
   { caseId: "RS-10/unknown-parameter-rejected", defect: "ignore-unknown-params" },
   {
     caseId: "RS-10/owner-filter-unknown-field-rejected",

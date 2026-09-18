@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **38** have at least one case and **68** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **40** have at least one case and **66** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -356,9 +356,9 @@ Rejects client-token exact and range `filter[...]` parameters with 400 `invalid_
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
 | `8.9-2` | MUST | black-box-http | `RS-9/client-token-exact-filter-rejected` | — |
-| `8.9-3` | MUST | black-box-http | — | No case sends `view` on a client-token records request; the hook exists (RS-9 cases already drive client-token queries) so this is an unwritten case rather than a missing capability. |
+| `8.9-3` | MUST | black-box-http | `RS-9/client-token-view-rejected` | The client-token rejection half is covered. The sentence's second half — `view` and `fields` being mutually exclusive — is an owner-token concern (a client token must reject `view` outright, so the pair can never both be honoured there) and is tracked at 6.8-1, which needs a view-declaring target. |
 | `8.9-4` | MUST | black-box-http | `RS-9/client-token-expand-rejected` | — |
-| `8.9-5` | MUST | black-box-http | — | This is the `expand_limit[{relation}]` row, distinct from the `expand[]` row at 8.9-4; no case sends `expand_limit[...]` on a client token. An unwritten case, not a missing hook. |
+| `8.9-5` | MUST | black-box-http | `RS-9/client-token-expand-limit-rejected` | — |
 | `8.9-9` | MUST | black-box-http | `RS-9/client-token-exact-filter-rejected` | The status and code are tested; the ordering half ("before the RS consults ... metadata") is not, and black-box observation cannot establish it. |
 | `8.9-10` | MUST | black-box-http | `RS-9/client-token-expand-rejected` | — |
 
@@ -368,7 +368,7 @@ Rejects unknown query parameters and unsupported query shapes with 400 instead o
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `8.9-5` | MUST | black-box-http | — | This is the `expand_limit[{relation}]` row, distinct from the `expand[]` row at 8.9-4; no case sends `expand_limit[...]` on a client token. An unwritten case, not a missing hook. |
+| `8.9-5` | MUST | black-box-http | `RS-9/client-token-expand-limit-rejected` | — |
 | `8.9-7` | MUST | black-box-http | `RS-10/unknown-parameter-rejected`<br>`RS-10/unsupported-bracketed-shape-rejected`<br>`RS-10/owner-filter-unknown-field-rejected`<br>`RS-10/owner-expand-undeclared-relation-rejected` | — |
 | `8.9-8` | MUST | black-box-http | `RS-10/oversized-limit-clamped-with-warning` | — |
 

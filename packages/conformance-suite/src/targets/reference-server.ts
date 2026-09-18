@@ -86,7 +86,22 @@ export type Defect =
   /** Silently serves an owner-token expand[] naming a relation absent from the stream's declared relationships (RS-10). */
   | "ignore-owner-expand-undeclared-relation"
   /** Rejects every owner record read, despite issuing a valid owner token. */
-  | "deny-owner-records";
+  | "deny-owner-records"
+  /**
+   * Honours `view` on a client token as if it were an owner-token
+   * current-capability read, serving the page instead of rejecting it (RS-9,
+   * clause 8.9-3).
+   *
+   * Distinct from `accept-client-filters`, and the distinction is what makes
+   * the `view` oracle discriminating. Under `accept-client-filters` this server
+   * still rejects `view` — just through the GENERIC unknown-parameter branch,
+   * because `view` is not in `KNOWN_PARAMS`. A case asserting only "400
+   * invalid_request" therefore passes against a server that never implemented
+   * the client-token `view` rule at all. The violation the clause actually
+   * describes is a server that SERVES the view, so that is what this defect
+   * does.
+   */
+  | "serve-client-token-view";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -575,6 +590,13 @@ export class ReferenceServer {
     fixture: StreamFixture
   ): { code: string; message: string } | undefined {
     const params = [...searchParams.keys()];
+    // Under `serve-client-token-view` the server pretends `view` is a
+    // parameter it implements for every caller: it is neither rejected as
+    // outside the client surface below nor caught by the generic
+    // unknown-parameter branch, so the page is served. That is the shape of the
+    // violation clause 8.9-3 names, and the only one a case asserting on the
+    // status alone can be shown to catch.
+    const servesClientView = this.has("serve-client-token-view");
     if (kind === "client" && !this.has("accept-client-filters")) {
       const offending = params.find(
         (p) =>
@@ -582,7 +604,7 @@ export class ReferenceServer {
           p === "expand[]" ||
           p.startsWith("expand[") ||
           p.startsWith("expand_limit[") ||
-          p === "view"
+          (p === "view" && !servesClientView)
       );
       if (offending) {
         return {
@@ -611,7 +633,15 @@ export class ReferenceServer {
       }
     }
     if (!this.has("ignore-unknown-params")) {
-      const unknown = params.find((p) => !(KNOWN_PARAMS.has(p) || p.startsWith("filter[") || p.startsWith("expand")));
+      const unknown = params.find(
+        (p) =>
+          !(
+            KNOWN_PARAMS.has(p) ||
+            p.startsWith("filter[") ||
+            p.startsWith("expand") ||
+            (p === "view" && servesClientView)
+          )
+      );
       if (unknown) {
         return { code: "invalid_request", message: `Unknown query parameter '${unknown}'.` };
       }
