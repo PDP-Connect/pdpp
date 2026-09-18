@@ -91,6 +91,65 @@ export const GRANT_INTEGRITY_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // ----------------------------------------------------------------- AS-4 ---
+  // The other half of item 4: a wildcard STREAM name, not an omitted field list.
+  //
+  // Oracle is `reviewedStreams`, which reads the target's own resolved review
+  // body (`review.data.streams`). That matters: `IssuedGrant.streams` is built
+  // by mapping the suite's own `GrantRequest`, so a wildcard asserted against it
+  // would survive by construction and the case would pass or fail on adapter
+  // bookkeeping rather than target behaviour. The review body is the target's
+  // output, so a literal `"*"` appearing there is the target's doing.
+  //
+  // Requirement: either the target refuses the wildcard request outright (also
+  // conformant — Section 7 permits a wildcard as a request-time convenience but
+  // does not require supporting it), or it resolves it into concrete declared
+  // stream names. Carrying `"*"` through to the reviewed grant is the defect:
+  // the owner then reviews, and the RS later enforces, a name that means "the
+  // current declaration" rather than a frozen set.
+  {
+    caseId: "AS-4/wildcard-stream-name-expanded-before-issuance",
+    requirementId: "AS-4",
+    assertion:
+      'A selection request naming the wildcard stream "*" is resolved into concrete declared stream names before the grant is reviewed, or refused outright.',
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream to compare an expansion against.");
+      }
+      if (!adapter.stageApproval) {
+        return skip("The adapter has no stageApproval hook, so the resolved grant cannot be read before approval.");
+      }
+      const staged = await adapter.stageApproval({ streams: [{ name: "*", fields: [] }] });
+      if (!staged) {
+        return skip(
+          'The target refused to stage a selection request naming the wildcard stream "*". Section 7 makes wildcards an optional request-time convenience, so refusing one is conformant and leaves nothing to expand.'
+        );
+      }
+
+      const reviewed = await adapter.reviewedStreams?.(staged.handle);
+      if (!reviewed) {
+        return skip(
+          "The adapter cannot read the reviewed grant for a staged request, so wildcard expansion is not observable."
+        );
+      }
+      const literal = reviewed.filter((s) => s.name.includes("*"));
+      if (literal.length > 0) {
+        return fail(
+          `The reviewed grant still names ${literal.map((s) => `"${s.name}"`).join(", ")}. Section 9 AS item 4 requires wildcards to be expanded into explicit stream names before issuance, and Section 7's StreamGrant table requires \`name\` to be concrete: a wildcard reaching the grant is a live reference to the current declaration, so the grant widens whenever the declaration does.`,
+          [resolvedGrantEvidence(reviewed)]
+        );
+      }
+      if (reviewed.length === 0) {
+        return fail(
+          "The target staged a wildcard stream request and then reviewed a grant naming no streams at all, so the wildcard resolved to nothing rather than to the declared streams.",
+          [resolvedGrantEvidence(reviewed)]
+        );
+      }
+      return pass([resolvedGrantEvidence(reviewed)]);
+    },
+  },
+
   // ---------------------------------------------------------------- AS-20 ---
   // Section 9 AS item 20 and Core "Token security": refresh tokens rotate by
   // family, and reuse of a superseded token revokes the family AND every access

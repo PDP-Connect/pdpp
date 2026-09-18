@@ -19,6 +19,7 @@
 // there is no introspection endpoint to call and the requirement is unsupported
 // rather than failed.
 
+import { grantSchemaViolations } from "../harness/grant-schema.ts";
 import { request } from "../harness/http.ts";
 import { advisory, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 
@@ -202,15 +203,13 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   // keep out of RS enforcement context) — and the flat `grant_id`/`client_id`/
   // `subject_id` introspection carries live outside `authorization_details`,
   // in a different shape (`client.client_id`, `subject.id`) than the Section 7
-  // grant table. Neither the AS-9/AS-3 introspection response nor the
-  // `TargetAdapter` contract's `IssuedGrant` exposes the whole grant body
-  // anywhere this suite can read it. So this case validates every StreamGrant
-  // sub-field the projection DOES carry (`name`, `instance_ids`, `fields`,
-  // `time_constraint`, `resources` — Section 7's StreamGrant table) plus the
-  // detail-level fields it carries (`source`, `purpose_code`, `access_mode`),
-  // and reports the remaining top-level grant fields as unobserved evidence
-  // rather than silently passing on a partial check. It does not claim full
-  // Section 7 schema coverage.
+  // grant table. So this case validates every StreamGrant sub-field the
+  // projection DOES carry (`name`, `instance_ids`, `fields`, `time_constraint`,
+  // `resources` — Section 7's StreamGrant table) plus the detail-level fields it
+  // carries (`source`, `purpose_code`, `access_mode`). It does not claim full
+  // Section 7 schema coverage; the sibling
+  // `AS-3/issued-grant-artifact-matches-section-7-schema` case takes the whole
+  // grant when a target's approval surface returns one.
   // AS-3 is `applicability: "always"` (every grant, co-located or separated,
   // must conform to the Section 7 grant schema); only this case's MECHANISM —
   // reading the resolved grant back over RFC 7662 introspection — is
@@ -611,61 +610,65 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   },
 
   // ---------------------------------------------------------------- AS-3 ---
-  // A malformed-grant mutant, independent of the shape-check case above: that
-  // case only ever inspects a grant the target already agreed to issue for a
-  // legitimately seeded stream, so it cannot catch a target that issues a
-  // grant AT ALL for a stream name it should have refused. Section 7's
-  // StreamGrant table requires `name` to be "always concrete; no wildcards in
-  // issued grants" — this drives a literal `"*"` stream name (not a declared
-  // stream) through the real staging/approval path and requires the AS to
-  // never turn it into an issued grant, at either the request-validation step
-  // (AS-2 territory) or issuance. Uses the real adapter path rather than
-  // asserting against a hand-built body, so this only exercises what the
-  // target's own HTTP surface actually does with the input.
+  // The whole Section 7 grant, when the target's approval surface returns one.
+  //
+  // The introspection case above can only see the RFC 9396 projection, which
+  // structurally omits `version`, `grant_id`, `issued_at`, `subject`, `client`,
+  // `source_declaration`, `retention` and `expires_at`. Those rows are half of
+  // Section 7's table and Section 9 item 3 requires them, so the projection
+  // cannot be the whole oracle. The one boundary that can carry them is the
+  // approval response itself, so `IssuedGrant.rawGrant` passes that body through
+  // verbatim and this case validates it.
+  //
+  // Oracle: `grantSchemaViolations`, transcribed from the spec's normative field
+  // tables, NOT from any target's validator — an implementation cannot be its
+  // own conformance oracle. Its discrimination is proved by the independent
+  // mutant matrix in `test/grant-schema-oracle.test.ts`.
+  //
+  // Scope: the field tables' SHAPE obligations — required rows present, types,
+  // enums, exact-key objects, uniqueness, no wildcards. NOT every Section 7
+  // semantic obligation. Specifically out of scope, and so still partial for
+  // AS-3: ISO 8601 lexical form (the tables say only "ISO 8601"; narrowing that
+  // would fail targets for an unwritten rule), whether each field was correctly
+  // DERIVED from the selection request / client registration / AS policy, and
+  // whether `source_declaration.version` names the snapshot actually consented
+  // to. Those need provenance the wire does not carry.
+  //
+  // No artifact means SKIP (missing evidence), never pass: an adapter that
+  // cannot read the grant back must not be scored as if the grant conformed. The
+  // adapters deliberately do not synthesize one, because a body rebuilt from
+  // `GrantRequest` would echo the suite's own request and this case would be
+  // measuring itself. As of personal-server-ts def4ff7 the Vana approval route
+  // returns `{ redirect_uri, grant_id }` only (packages/server/src/routes/
+  // pdpp-auth.ts), so this case skips against that target.
   {
-    caseId: "AS-3/wildcard-stream-name-request-never-issues",
+    caseId: "AS-3/issued-grant-artifact-matches-section-7-schema",
     requirementId: "AS-3",
     assertion:
-      'A selection request naming a literal wildcard stream ("*", not a declared stream) never results in an issued grant naming that wildcard.',
+      "The issued grant artifact the approval response returns satisfies the shape obligations of every row of Section 7's grant and StreamGrant field tables (required rows, types, enums, exact-key objects, uniqueness, no wildcards). ISO 8601 lexical form and per-field derivation provenance are out of scope and remain unverified.",
     async run({ adapter, streams }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
       }
-      if (!adapter.stageApproval) {
-        return skip("The adapter does not implement stageApproval.");
-      }
-      const staged = await adapter.stageApproval({ streams: [{ name: "*", fields: [...stream.fields] }] });
-      if (!staged) {
-        // Refused before an approval handle even existed. Section 9 item 3 is
-        // satisfied: no grant was, or could be, issued for this request.
-        return pass();
-      }
-      const grant = await staged.approve(staged.reviewRevision);
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
       if (!grant) {
-        const error = staged.lastApproveError?.();
-        if (error && error.status >= 400 && error.status < 500) {
-          // Refused at approval with a structured client error: also satisfies
-          // the requirement — no wildcard-named grant was issued.
-          return pass();
-        }
+        return skip("The target issued no grant, so there is no artifact to validate.");
+      }
+      if (grant.rawGrant === undefined) {
         return skip(
-          "The target neither issued a grant nor returned a structured client-error refusal for a wildcard stream name request. Cannot distinguish enforcement from transport/harness failure."
+          "The target's approval response carried no grant artifact, so Section 7's full field tables are unobserved. The suite will not synthesize a grant body from its own request to stand in for one."
         );
       }
-      const wildcardIssued = grant.streams.some((s) => s.name === "*" || s.name.includes("*"));
-      if (wildcardIssued) {
+      const violations = grantSchemaViolations(grant.rawGrant);
+      if (violations.length > 0) {
         return fail(
-          `The target issued grant ${grant.grantId} naming a wildcard stream. Section 7's StreamGrant table requires \`name\` to be concrete in every issued grant — a request for a non-declared wildcard stream must be refused, not resolved into an issued grant that still carries the wildcard.`
+          `The issued grant artifact violates Section 7's field tables: ${violations
+            .map((v) => `${v.path || "<root>"}: ${v.message}`)
+            .join(" ")}`
         );
       }
-      // The target issued A grant, but not one naming the wildcard verbatim —
-      // e.g. it silently dropped or substituted the stream. That is not the
-      // failure this case targets (a wildcard reaching an RS's enforcement
-      // context); it is undersupported evidence for this specific mutant.
-      return skip(
-        `The target issued grant ${grant.grantId} for a wildcard stream-name request without naming the wildcard verbatim in the result (streams: ${JSON.stringify(grant.streams.map((s) => s.name))}). This case cannot tell whether that reflects correct rejection-and-substitution or an untested resolution path.`
-      );
+      return pass();
     },
   },
 ];
