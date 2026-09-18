@@ -96,19 +96,10 @@ export class VanaPsAdapter implements TargetAdapter {
   }
 
   /**
-   * This deployment's real co-located introspection route: `POST
-   * /pdpp/v1/introspect`, owner-bearer authenticated. It publishes no RFC
-   * 8414 `introspection_endpoint` (there is no separate AS to discover), but
-   * the route exists and answers the same `PdppTokenService.introspect` the
-   * co-located RS enforcement path reads — Core Section 8's "local
-   * equivalent" allowance for this exact shape. Distinct from
-   * `introspectionCredentials`: that is RS client-credential Basic auth for a
-   * genuinely separated deployment, which this one is not.
-   *
-   * Returns null only on transport failure (no owner token, network error),
-   * matching every other adapter hook's "no evidence" contract; an
-   * authentication or introspection-content failure is a real 401/inactive
-   * response for the AS-9 case to assert on, not a null.
+   * The Vana test deployment exposes owner-authenticated token inspection.
+   * Its introspect method uses the same token authority as the co-located RS.
+   * This does not establish separated-RS authentication support. A missing
+   * owner credential returns null; HTTP failures remain observable responses.
    */
   async coLocatedIntrospect(accessToken: string): Promise<PdppResponse | null> {
     const owner = await this.ownerToken();

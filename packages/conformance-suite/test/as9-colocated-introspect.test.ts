@@ -51,7 +51,12 @@ const OWNER_TOKEN = "owner-stub-token";
  * has a server that genuinely produces the wrong answer rather than a stub
  * the test merely asserts on.
  */
-type Deviate = "accept-client-token-as-caller" | "wrong-token-kind" | "wrong-grant-id";
+type Deviate =
+  | "accept-client-token-as-caller"
+  | "wrong-token-kind"
+  | "wrong-grant-id"
+  | "missing-subject"
+  | "missing-client";
 
 class StubIntrospectServer {
   private server?: Server;
@@ -141,7 +146,8 @@ class StubIntrospectServer {
       active: true,
       pdpp_token_kind: this.deviate === "wrong-token-kind" ? "owner" : "client",
       grant_id: this.deviate === "wrong-grant-id" ? `${resolved.grantId}-wrong` : resolved.grantId,
-      client_id: "stub-client",
+      ...(this.deviate === "missing-client" ? {} : { client_id: "stub-client" }),
+      ...(this.deviate === "missing-subject" ? {} : { subject_id: "stub-subject" }),
     });
   }
 }
@@ -306,3 +312,16 @@ describe("AS-9 co-located introspection fallback (coLocatedIntrospect)", () => {
     }
   });
 });
+
+for (const defect of ["missing-subject", "missing-client"] as const) {
+  it(`AS-9 rejects ${defect} in resolved client-token context`, async () => {
+    const adapter = new StubbedAdapter(defect);
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(AS9_CASE, makeContext(adapter, streams));
+      assert.equal(result.outcome, "fail");
+    } finally {
+      await adapter.teardown();
+    }
+  });
+}

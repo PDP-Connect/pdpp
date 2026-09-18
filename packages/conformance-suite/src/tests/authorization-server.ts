@@ -127,6 +127,11 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
           [response.evidence]
         );
       }
+      if (typeof body.subject_id !== "string" || typeof body.client_id !== "string") {
+        return fail("Client token context must include string subject_id and client_id fields (Core Section 8).", [
+          response.evidence,
+        ]);
+      }
       if (body.grant_id !== grant.grantId) {
         return fail(
           `Introspection reported grant_id ${JSON.stringify(body.grant_id)} for a token bound to grant ${grant.grantId}. Section 9 item 9 requires access tokens to be bound to a specific grant.`,
