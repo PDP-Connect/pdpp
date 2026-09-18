@@ -29,6 +29,9 @@ import { makeContext, runCase } from "../src/harness/runner.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
 
+/** Hoisted per useTopLevelRegex: the missing-version mutant must name the field. */
+const VERSION_MENTIONED = /version/;
+
 /**
  * spec-core.md Section 7 "### Grant fields", the normative example, transcribed
  * verbatim. Every mutant below is this object with one rule broken.
@@ -456,7 +459,7 @@ describe("AS-3 consumes the returned artifact", () => {
         }
         const rawGrant = conformingGrant();
         if (variant === "missing-version") {
-          delete rawGrant.version;
+          rawGrant.version = undefined;
         }
         return { ...issued, rawGrant };
       };
@@ -469,7 +472,7 @@ describe("AS-3 consumes the returned artifact", () => {
         const result = await runCase(testCase, makeContext(adapter, streams));
         assert.equal(result.outcome, expected, result.detail ?? "unexpected outcome");
         if (variant === "missing-version") {
-          assert.match(result.detail ?? "", /version/);
+          assert.match(result.detail ?? "", VERSION_MENTIONED);
         }
       } finally {
         await adapter.teardown();

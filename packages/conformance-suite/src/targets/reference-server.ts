@@ -988,6 +988,7 @@ export class ReferenceServer {
     }
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is the HTTP router, and its branches ARE the Section 8 request pipeline in the order the spec applies them — metadata, authentication, token kind, version, grant lifecycle, subject scope, route, parameters, then projection. Splitting it to move the number would relocate that order into call sites without simplifying it, and the ordering is load-bearing: several cases (RS-6 vs RS-11, 8.2-3 vs 8.9-x) exist precisely to check that an earlier gate fires before a later one. A behaviour-preserving decomposition is worth doing, but it is a refactor with its own verification, not part of a lint commit that must change nothing.
   private handle(
     url: string,
     headers: NodeJS.Dict<string | string[]>,

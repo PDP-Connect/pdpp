@@ -41,6 +41,10 @@ import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
 import { SELECTION_VALIDATION_CASES } from "../src/tests/selection-validation.ts";
 import { VIEW_CASES } from "../src/tests/views.ts";
 
+/** Detail-text patterns the blob cases match on, hoisted per useTopLevelRegex. */
+const BYTES_DO_NOT_MATCH = /do not match/;
+const OUT_OF_GRANT_BLOB_HOOK = /outOfGrantBlobId/;
+
 const CASES: readonly ConformanceCase[] = [
   ...RESOURCE_SERVER_CASES,
   ...AUTHORIZATION_SERVER_CASES,
@@ -1086,7 +1090,11 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
         // Modes reaching here need a real authorized read of the fixture blob
         // to succeed (enforces-out-of-grant-blob, enforces-unauthenticated
         // with a Bearer token) alongside the original byte-fidelity modes.
-        const body = mode === "wrong-bytes" ? WRONG_BYTES : mode === "empty-200" ? Buffer.alloc(0) : UPLOAD_BYTES;
+        const overrides: Partial<Record<Mode, Buffer>> = {
+          "wrong-bytes": WRONG_BYTES,
+          "empty-200": Buffer.alloc(0),
+        };
+        const body = overrides[mode] ?? UPLOAD_BYTES;
         const headers: Record<string, string> = { "content-type": MIME_TYPE, "content-length": String(body.length) };
         if (mode !== "missing-cache-control") {
           headers["cache-control"] = "private, no-store";
@@ -1111,11 +1119,14 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
     readonly roles: TargetAdapter["roles"];
     readonly targetId = "blob-fixture-test-target";
     readonly targetVersion = "0.0.0";
-    constructor(
-      private readonly inner: TargetAdapter,
-      readonly baseUrl: string,
-      private readonly fixture: BlobFixture
-    ) {
+    private readonly inner: TargetAdapter;
+    readonly baseUrl: string;
+    private readonly fixture: BlobFixture;
+
+    constructor(inner: TargetAdapter, baseUrl: string, fixture: BlobFixture) {
+      this.inner = inner;
+      this.baseUrl = baseUrl;
+      this.fixture = fixture;
       this.capabilities = { ...inner.capabilities, blobs: true };
       this.roles = inner.roles;
     }
@@ -1124,8 +1135,10 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
     issueGrant = (r: GrantRequest) => this.inner.issueGrant(r);
     revokeGrant = (id: string) => this.inner.revokeGrant(id);
     ownerToken = () => this.inner.ownerToken();
-    async blobFixture(): Promise<BlobFixture | null> {
-      return this.fixture;
+    // Not `async` without an await: the adapter contract is async because a
+    // real adapter does I/O, and this stub answers from memory.
+    blobFixture(): Promise<BlobFixture | null> {
+      return Promise.resolve(this.fixture);
     }
   }
 
@@ -1160,13 +1173,13 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
   it("fails when the server returns different bytes than were stored", async () => {
     const result = await runBlobCase("wrong-bytes");
     assert.equal(result.outcome, "fail");
-    assert.match(result.detail ?? "", /do not match/);
+    assert.match(result.detail ?? "", BYTES_DO_NOT_MATCH);
   });
 
   it("fails when the server returns an empty 200 instead of the blob", async () => {
     const result = await runBlobCase("empty-200");
     assert.equal(result.outcome, "fail");
-    assert.match(result.detail ?? "", /do not match/);
+    assert.match(result.detail ?? "", BYTES_DO_NOT_MATCH);
   });
 
   it("passes using an independent sha256 digest + length instead of retained rawBytes", async () => {
@@ -1227,7 +1240,7 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
       try {
         const result = await runCase(caseById(CASE_ID), makeContext(adapter, streams));
         assert.equal(result.outcome, "skip");
-        assert.match(result.detail ?? "", /outOfGrantBlobId/);
+        assert.match(result.detail ?? "", OUT_OF_GRANT_BLOB_HOOK);
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
         await inner.teardown();

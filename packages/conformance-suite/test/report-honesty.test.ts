@@ -271,31 +271,19 @@ describe("SHOULD-level observations are never reported as failed MUSTs", () => {
 
     const markdown = renderMarkdown(report);
 
-    const advisoriesSection = markdown.slice(
-      markdown.indexOf("## Advisories"),
-      markdown.indexOf("## Not tested")
-    );
+    const advisoriesSection = markdown.slice(markdown.indexOf("## Advisories"), markdown.indexOf("## Not tested"));
     assert.ok(
       advisoriesSection.includes("AS-8"),
       "The Advisories section must name the requirement carrying the observation."
     );
-    assert.ok(
-      advisoriesSection.includes("AS-8/advisory-case"),
-      "The Advisories section must show the case ID."
-    );
+    assert.ok(advisoriesSection.includes("AS-8/advisory-case"), "The Advisories section must show the case ID.");
     assert.ok(
       advisoriesSection.includes("RFC SHOULD NOT, not strengthened by Core."),
       "The Advisories section must show the case detail, not just the requirement ID."
     );
 
-    const failuresSection = markdown.slice(
-      markdown.indexOf("## Failures"),
-      markdown.indexOf("## Advisories")
-    );
-    assert.ok(
-      !failuresSection.includes("AS-8"),
-      "An advisory-only requirement must not appear under Failures."
-    );
+    const failuresSection = markdown.slice(markdown.indexOf("## Failures"), markdown.indexOf("## Advisories"));
+    assert.ok(!failuresSection.includes("AS-8"), "An advisory-only requirement must not appear under Failures.");
     assert.ok(
       failuresSection.includes("No failed requirements in this run."),
       "MUST-failure rendering must be unchanged: zero fails still reports as none."

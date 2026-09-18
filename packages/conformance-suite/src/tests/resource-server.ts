@@ -22,6 +22,22 @@ import { errorBody, request, requestBytes } from "../harness/http.ts";
 import { type CaseVerdict, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 
+/**
+ * The field names a stream's owner-metadata schema declares, or null when the
+ * document exposes no usable `schema.properties`.
+ *
+ * Extracted so the RS-10 owner-filter case reads as its steps rather than
+ * interleaving shape validation with them; the checks are unchanged.
+ */
+function declaredSchemaFields(metadataJson: unknown): readonly string[] | null {
+  const properties = (metadataJson as StreamMetadataBody | undefined)?.schema?.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+    return null;
+  }
+  const fields = Object.keys(properties);
+  return fields.length === 0 ? null : fields;
+}
+
 /** Records as returned in a Section 8 list envelope. */
 interface ListBody {
   data?: { id?: string; data?: Record<string, unknown> }[];
@@ -35,6 +51,8 @@ interface ListBody {
 // The challenge shape RS-16 checks. The Bearer scheme and the challenge itself
 // come from RFC 6750 Section 3; the `error="invalid_token"` requirement is
 // PDPP's own strengthening in Core Section 8, not something RFC 6750 mandates.
+/** A Content-Length header must be digits only, hoisted per useTopLevelRegex. */
+const DIGITS_ONLY = /^[0-9]+$/;
 const BEARER_SCHEME = /^Bearer\b/i;
 const INVALID_TOKEN_ERROR = /error="?invalid_token"?/;
 
@@ -103,7 +121,7 @@ function verifyDirectBlobHeaders(
   const contentLength = headers.get("content-length");
   if (contentLength !== null) {
     const declared = Number(contentLength);
-    if (!(/^[0-9]+$/.test(contentLength) && Number.isSafeInteger(declared)) || declared !== body.length) {
+    if (!(DIGITS_ONLY.test(contentLength) && Number.isSafeInteger(declared)) || declared !== body.length) {
       return fail(`Content-Length declared ${contentLength} bytes but the response body was ${body.length} bytes.`, [
         evidence,
       ]);
@@ -256,7 +274,7 @@ export function declaredRelationNames(
   if (body.query !== undefined && (!body.query || typeof body.query !== "object" || Array.isArray(body.query))) {
     return { malformed: "`query` is present but not an object." };
   }
-  const relationships = body.relationships;
+  const { relationships } = body;
   if (relationships !== undefined && !Array.isArray(relationships)) {
     return { malformed: "`relationships` is present but not an array." };
   }
@@ -1125,18 +1143,12 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
           metadata.evidence,
         ]);
       }
-      const properties = (metadata.json as StreamMetadataBody | undefined)?.schema?.properties;
-      if (
-        !properties ||
-        typeof properties !== "object" ||
-        Array.isArray(properties) ||
-        Object.keys(properties).length === 0
-      ) {
+      const declaredFields = declaredSchemaFields(metadata.json);
+      if (!declaredFields) {
         return fail("Owner metadata did not expose a usable schema for choosing an absent filter field.", [
           metadata.evidence,
         ]);
       }
-      const declaredFields = Object.keys(properties);
 
       const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
       const control = await request(adapter.baseUrl, recordsPath, { token: owner, query: { ...ownerQuery } });

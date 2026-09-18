@@ -29,6 +29,10 @@ import { makeContext, runCase } from "../src/harness/runner.ts";
 import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
 
+/** Detail-text patterns the cases below match on, hoisted per useTopLevelRegex. */
+const REVOKED_AS_ACTIVE = /revoked token as active/;
+const MISSING_INTROSPECTION_FIELDS = /grant_id, subject_id|subject_id, grant_id/;
+
 const AS8_CASE = AUTHORIZATION_SERVER_CASES.find((c) => c.caseId === "AS-8/revoked-token-introspects-inactive");
 assert.ok(AS8_CASE, "AS-8/revoked-token-introspects-inactive must exist");
 
@@ -117,7 +121,7 @@ class RevocableIntrospectServer {
     }
     const token = new URLSearchParams(body).get("token") ?? "";
     const resolved = this.tokens.get(token);
-    if (!(resolved && resolved.active)) {
+    if (!resolved?.active) {
       send(200, {
         active: false,
         ...(this.deviate === "discloses-extra-fields-when-inactive"
@@ -208,7 +212,10 @@ describe("AS-8 co-located introspection fallback (coLocatedIntrospect)", () => {
     const adapter = new StubbedAdapter();
     const introspect = adapter.coLocatedIntrospect.bind(adapter);
     let calls = 0;
-    adapter.coLocatedIntrospect = (token) => (++calls === 1 ? introspect(token) : Promise.resolve(null));
+    adapter.coLocatedIntrospect = (token) => {
+      calls += 1;
+      return calls === 1 ? introspect(token) : Promise.resolve(null);
+    };
     const { streams } = await adapter.setup();
     try {
       const result = await runCase(AS8_CASE, makeContext(adapter, streams));
@@ -252,7 +259,7 @@ describe("AS-8 co-located introspection fallback (coLocatedIntrospect)", () => {
     try {
       const result = await runCase(AS8_CASE, makeContext(adapter, streams));
       assert.equal(result.outcome, "fail");
-      assert.match(result.outcome === "fail" ? (result.detail ?? "") : "", /revoked token as active/);
+      assert.match(result.outcome === "fail" ? (result.detail ?? "") : "", REVOKED_AS_ACTIVE);
     } finally {
       await adapter.teardown();
     }
@@ -268,10 +275,7 @@ describe("AS-8 co-located introspection fallback (coLocatedIntrospect)", () => {
     try {
       const result = await runCase(AS8_CASE, makeContext(adapter, streams));
       assert.equal(result.outcome, "advisory");
-      assert.match(
-        result.outcome === "advisory" ? (result.detail ?? "") : "",
-        /grant_id, subject_id|subject_id, grant_id/
-      );
+      assert.match(result.outcome === "advisory" ? (result.detail ?? "") : "", MISSING_INTROSPECTION_FIELDS);
     } finally {
       await adapter.teardown();
     }

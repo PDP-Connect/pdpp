@@ -627,8 +627,10 @@ export class VanaPsAdapter implements TargetAdapter {
    * reports `skip` naming that, which is honest — the requirement is untested
    * here, not satisfied.
    */
-  async foreignSubjectOwnerToken(): Promise<string | null> {
-    return null;
+  // Not `async` without an await: the adapter contract is async because a real
+  // adapter does I/O to mint a token. This deployment has no second subject.
+  foreignSubjectOwnerToken(): Promise<string | null> {
+    return Promise.resolve(null);
   }
 
   /**
@@ -653,8 +655,10 @@ export class VanaPsAdapter implements TargetAdapter {
   async expiredGrantToken(): Promise<string | null> {
     const fixture = this.config.expiryFixture;
     const [stream] = this.config.streams;
-    if (!fixture) return null;
-    if (!stream || !fixture.expectedRecord?.id) {
+    if (!fixture) {
+      return null;
+    }
+    if (!(stream && fixture.expectedRecord.id)) {
       throw new Error("Configured expiry fixture requires a seeded stream and expected record ID.");
     }
 
