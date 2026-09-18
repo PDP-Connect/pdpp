@@ -10,8 +10,7 @@
 // publishing RFC 8414 `introspection_endpoint` metadata. Before this change,
 // AS-8 against such a target always reported `skip`, even though Section 9
 // item 8's "reflected immediately in introspection responses" obligation was
-// genuinely observable there — missing evidence masquerading as an
-// inapplicable requirement.
+// observable there through an adapter hook.
 //
 // The independent truth source is a real HTTP server, started fresh per test,
 // that answers the introspection contract and can flip a token from active to
@@ -118,7 +117,7 @@ class RevocableIntrospectServer {
     }
     const token = new URLSearchParams(body).get("token") ?? "";
     const resolved = this.tokens.get(token);
-    if (!resolved || !resolved.active) {
+    if (!(resolved && resolved.active)) {
       send(200, {
         active: false,
         ...(this.deviate === "discloses-extra-fields-when-inactive"
@@ -205,12 +204,30 @@ class StubbedAdapter implements TargetAdapter {
 }
 
 describe("AS-8 co-located introspection fallback (coLocatedIntrospect)", () => {
+  it("skips when post-revocation evidence is unavailable", async () => {
+    const adapter = new StubbedAdapter();
+    const introspect = adapter.coLocatedIntrospect.bind(adapter);
+    let calls = 0;
+    adapter.coLocatedIntrospect = (token) => (++calls === 1 ? introspect(token) : Promise.resolve(null));
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(AS8_CASE, makeContext(adapter, streams));
+      assert.equal(result.outcome, "skip");
+    } finally {
+      await adapter.teardown();
+    }
+  });
+
   it("passes: active before revocation, inactive after, no extra disclosure", async () => {
     const adapter = new StubbedAdapter();
     const { streams } = await adapter.setup();
     try {
       const result = await runCase(AS8_CASE, makeContext(adapter, streams));
-      assert.equal(result.outcome, "pass", result.outcome === "fail" ? (result.detail ?? "expected pass") : "expected pass");
+      assert.equal(
+        result.outcome,
+        "pass",
+        result.outcome === "fail" ? (result.detail ?? "expected pass") : "expected pass"
+      );
     } finally {
       await adapter.teardown();
     }

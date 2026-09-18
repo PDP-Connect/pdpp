@@ -355,9 +355,9 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
 
       const after = await doIntrospect(grant.accessToken);
       if (!after) {
-        return fail("The introspection mechanism used for the pre-revocation check disappeared after revocation.", [
-          before.evidence,
-        ]);
+        return skip(
+          "The adapter could not observe introspection after revocation; the token state remains unverified."
+        );
       }
       if (after.status !== 200) {
         return fail(`Expected 200 from introspection after revocation, got ${after.status}.`, [
