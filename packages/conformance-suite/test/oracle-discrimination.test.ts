@@ -32,6 +32,7 @@ import { makeContext, runCase } from "../src/harness/runner.ts";
 import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import type { Defect } from "../src/targets/reference-server.ts";
 import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
+import { CLIENT_IDENTITY_CASES } from "../src/tests/client-identity.ts";
 import { CONSENT_ARTIFACT_CASES } from "../src/tests/consent-artifact.ts";
 import { DECLARATION_TRUST_CASES } from "../src/tests/declaration-trust.ts";
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
@@ -47,6 +48,7 @@ const CASES: readonly ConformanceCase[] = [
   ...QUERY_SURFACE_CASES,
   ...SELECTION_VALIDATION_CASES,
   ...VIEW_CASES,
+  ...CLIENT_IDENTITY_CASES,
   ...CONSENT_ARTIFACT_CASES,
   ...DECLARATION_TRUST_CASES,
 ];
@@ -401,6 +403,22 @@ const DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "RS-4/unrecognized-token-kind-is-unauthorized",
     defect: "honour-unrecognized-token-kind",
+  },
+  // Clauses 6.1-2 / 6.1-4. The defect refuses a document that is fetched,
+  // valid, and asserts its own URL — for the one reason Core names as
+  // insufficient. It deliberately does NOT model a local-policy denial, which
+  // clause 6.1-3 expressly permits and which the case reports as `skip`: an
+  // oracle that failed on any refusal would call a conforming server broken.
+  {
+    caseId: "AS-7/valid-url-hosted-client-identity-accepted",
+    defect: "reject-unregistered-url-hosted-client",
+  },
+  // The mirror. Without this row, "accept unregistered clients" could be
+  // satisfied by an AS that validates nothing — which replaces a closed door
+  // with an open one rather than fixing the interoperability failure.
+  {
+    caseId: "AS-7/malformed-url-hosted-client-identity-refused",
+    defect: "accept-unbound-url-hosted-client-document",
   },
 ];
 

@@ -291,6 +291,60 @@ export interface DeclarationOutcome {
   readonly status?: number;
 }
 
+/**
+ * A URL-hosted client identity document offered to an AS, for clauses 6.1-2
+ * and 6.1-4.
+ *
+ * Deliberately carries the document as a raw string rather than a typed
+ * object: the malformed case must offer something that is NOT a valid document,
+ * and a typed field could not express it.
+ */
+export interface UrlHostedClientOffer {
+  /**
+   * The exact bytes to serve at `documentUrl`.
+   *
+   * The suite serves this itself, so the AS performs a real outbound fetch and
+   * the case observes what it does with a document it genuinely retrieved.
+   */
+  readonly document: string;
+  /**
+   * The `client_id` the authorization attempt carries, which is also the URL
+   * the document is served from. The two being the same is the whole identity
+   * check.
+   */
+  readonly documentUrl: string;
+  /** A redirect URI the document declares, for the AS to validate against. */
+  readonly redirectUri: string;
+}
+
+/** What an AS did with an offered URL-hosted client identity. */
+export interface UrlHostedClientOutcome {
+  /**
+   * Whether the AS ACCEPTED the identity — resolved the document and admitted
+   * the client. False means it refused the identity itself.
+   */
+  readonly accepted: boolean;
+  /** Raw body, for report evidence. */
+  readonly body?: unknown;
+  /** Whether the AS actually fetched the document the suite served. */
+  readonly documentFetched?: boolean;
+  /** Machine-readable error code, when the refusal carried one. */
+  readonly errorCode?: string;
+  /**
+   * True when the AS resolved the identity successfully and then declined
+   * authorization under LOCAL POLICY.
+   *
+   * Clause 6.1-3 permits exactly this: the server "MAY still deny
+   * authorization, rate-limit the client, or require a registry-derived trust
+   * or admission result, under local policy and for any reason other than the
+   * absence of preregistration". Without this flag a permitted denial and a
+   * forbidden rejection are the same observation, and the cases would report a
+   * conforming server as non-conformant.
+   */
+  readonly policyDenied?: boolean;
+  readonly status?: number;
+}
+
 /** A selection request expressed in the shapes Core Section 6 defines. */
 export interface SelectionRequest {
   /** An unsupported PDPP-Version, for AS-17. */
@@ -583,6 +637,36 @@ export interface TargetAdapter {
   issueRefreshableGrant?: (request: GrantRequest) => Promise<RefreshableGrant | null>;
 
   /**
+   * Offer a URL-hosted client identity document as the `client_id` of an
+   * authorization attempt, and report what the AS did — clauses 6.1-2, 6.1-4.
+   *
+   * Core Section 6 "Client display": "a conforming authorization server MUST
+   * NOT reject a valid client ID metadata document solely because the client is
+   * not preregistered" (6.1-2), and "a conforming authorization server MUST
+   * accept a valid URL-hosted client identity unless local policy denies
+   * authorization" (6.1-4).
+   *
+   * `documentUrl` is BOTH the `client_id` and where the document is served
+   * from. That identity is what the check turns on: the document must assert
+   * the URL it was retrieved from, or any host could publish a document
+   * claiming to be someone else's client.
+   *
+   * The AS is handed a URL by an untrusted caller and asked to fetch it, which
+   * is an SSRF primitive, so every real implementation bounds it with a host
+   * allowlist. The suite must therefore serve its document from a host the
+   * deployment trusts — otherwise every case here observes a policy denial
+   * (which clause 6.1-3 explicitly permits) and concludes nothing about 6.1-2
+   * or 6.1-4.
+   *
+   * `accepted` is the IDENTITY decision alone. A target that resolved the
+   * document and then denied authorization under local policy reports
+   * `accepted: true` with `policyDenied: true` — the distinction 6.1-3 draws,
+   * and the only thing keeping these cases from reading a permitted denial as a
+   * violation.
+   */
+  offerUrlHostedClientIdentity?: (offer: UrlHostedClientOffer) => Promise<UrlHostedClientOutcome | null>;
+
+  /**
    * Query parameters this deployment requires on owner-token reads.
    *
    * Core scopes an owner token to one subject's data store but does not say how
@@ -744,6 +828,18 @@ export interface TargetAdapter {
    * such seam, which reports the case `skip` naming this hook.
    */
   tokenWithIntrospectedKind?: (kind: string, request: GrantRequest) => Promise<{ readonly accessToken: string } | null>;
+
+  /**
+   * Hosts this deployment will fetch a URL-hosted client identity document
+   * from, as the ADAPTER's own statement of its configured allowlist.
+   *
+   * A refusal is only attributable to these clauses when the host was trusted
+   * in the first place. Empty or absent means the deployment performs no
+   * outbound client-document fetch at all, which reports the cases `skip`
+   * rather than `fail`: declining to implement an optional discovery path is
+   * not rejecting a valid identity.
+   */
+  readonly urlHostedClientHosts?: readonly string[];
 
   /**
    * Location of the RFC 9728 protected resource metadata document.

@@ -540,16 +540,14 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-2",
-    requirementIds: [],
+    requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
     text: "a conforming authorization server MUST NOT reject a valid client ID metadata document solely because the client is not preregistered.",
     specAnchor: "#client-display",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "No Section 9 item covers the unregistered-client interoperability obligation; needs an adapter hook that presents a URL-hosted client identity document the target has never seen, plus a positive control distinguishing a policy denial from an identity-form rejection.",
+    caseIds: ["AS-7/valid-url-hosted-client-identity-accepted", "AS-7/malformed-url-hosted-client-identity-refused"],
   },
   {
     clauseId: "6.1-3",
@@ -564,16 +562,14 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-4",
-    requirementIds: [],
+    requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
     text: "For PDPP Core v0.1 interoperability, a conforming authorization server MUST accept a valid URL-hosted client identity unless local policy denies authorization.",
     specAnchor: "#client-display",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Same missing hook as 6.1-2: the adapter registers clients through the target's own flow and cannot offer a URL-hosted identity document instead.",
+    caseIds: ["AS-7/valid-url-hosted-client-identity-accepted", "AS-7/malformed-url-hosted-client-identity-refused"],
   },
   {
     clauseId: "6.1-5",

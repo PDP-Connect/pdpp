@@ -9,6 +9,7 @@ import { makeContext, runCases } from "./harness/runner.ts";
 import { buildReport, type ConformanceReport } from "./report/result.ts";
 import { AUTHORIZATION_SERVER_CASES } from "./tests/authorization-server.ts";
 import { CLIENT_CASES } from "./tests/client.ts";
+import { CLIENT_IDENTITY_CASES } from "./tests/client-identity.ts";
 import { CONSENT_ARTIFACT_CASES } from "./tests/consent-artifact.ts";
 import { DECLARATION_TRUST_CASES } from "./tests/declaration-trust.ts";
 import { GRANT_INTEGRITY_CASES } from "./tests/grant-integrity.ts";
@@ -33,6 +34,7 @@ export const ALL_CASES: readonly ConformanceCase[] = [
   ...GRANT_INTEGRITY_CASES,
   ...SELECTION_VALIDATION_CASES,
   ...VIEW_CASES,
+  ...CLIENT_IDENTITY_CASES,
   ...CONSENT_ARTIFACT_CASES,
   ...DECLARATION_TRUST_CASES,
   ...QUERY_SURFACE_CASES,

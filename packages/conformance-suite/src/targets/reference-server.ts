@@ -292,7 +292,29 @@ export type Defect =
    * defined is enforced under the rules for one it did — and the grant the
    * server reaches for is whatever the token happens to be bound to.
    */
-  | "honour-unrecognized-token-kind";
+  | "honour-unrecognized-token-kind"
+  /**
+   * Refuses a valid URL-hosted client identity document solely because the
+   * client is not preregistered (clauses 6.1-2, 6.1-4).
+   *
+   * The document is fetched, valid, and asserts the URL it came from — the
+   * client has done everything the spec asks. The refusal is for the one reason
+   * Core names as insufficient, which is what makes this the violation rather
+   * than the local-policy denial clause 6.1-3 expressly permits.
+   */
+  | "reject-unregistered-url-hosted-client"
+  /**
+   * Accepts a client identity document that asserts a DIFFERENT `client_id`
+   * than the URL it was retrieved from (clauses 6.1-2, 6.1-4).
+   *
+   * The mirror of the defect above, and it is what keeps "accept unregistered
+   * clients" from collapsing into "accept anything". Without the identity
+   * binding, any host able to serve a document can claim to be someone else's
+   * client and inherit whatever trust that client has earned — so an AS that
+   * satisfies 6.1-2 by skipping validation altogether has replaced a closed
+   * door with an open one.
+   */
+  | "accept-unbound-url-hosted-client-document";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";

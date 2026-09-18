@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **58** have at least one case and **48** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **60** have at least one case and **46** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -121,6 +121,8 @@ Renders requester identity, declaration-authored descriptions, policy declaratio
 | `5.4-2` | MUST | review-only | — | A rendering obligation on the consent surface, which black-box HTTP cannot observe; the suite can see what the AS bound, not what it showed. |
 | `5.8-7` | MUST | review-only | — | The obligation is on rendered output in an unspecified output context; asserting on it means asserting on a deployment's HTML, which is outside what this suite judges. |
 | `6.1-1` | MAY | review-only | — | — |
+| `6.1-2` | MUST | black-box-http | `AS-7/valid-url-hosted-client-identity-accepted`<br>`AS-7/malformed-url-hosted-client-identity-refused` | — |
+| `6.1-4` | MUST | black-box-http | `AS-7/valid-url-hosted-client-identity-accepted`<br>`AS-7/malformed-url-hosted-client-identity-refused` | — |
 | `6.1-5` | MUST | review-only | — | Which source the AS resolved from is visible only on the consent surface it renders, which is not black-box observable. |
 | `6.1-6` | MUST | review-only | — | A display obligation on the consent surface; a case can see what the AS bound into the grant, not what it rendered. |
 | `6.1-7` | MAY | review-only | — | — |
@@ -520,9 +522,7 @@ reports.
 | `5.4-1` | MUST | declaration-static | — | No Section 9 item covers it; needs the declaration-validation harness described at 5.2-2. |
 | `5.6-1` | MAY | declaration-static | — | — |
 | `5.6-3` | MUST | black-box-http | `AS-13/unrecognized-view-uri-treated-as-opaque` | — |
-| `6.1-2` | MUST | black-box-http | — | No Section 9 item covers the unregistered-client interoperability obligation; needs an adapter hook that presents a URL-hosted client identity document the target has never seen, plus a positive control distinguishing a policy denial from an identity-form rejection. |
 | `6.1-3` | MAY | black-box-http | — | — |
-| `6.1-4` | MUST | black-box-http | — | Same missing hook as 6.1-2: the adapter registers clients through the target's own flow and cannot offer a URL-hosted identity document instead. |
 | `6.2-1` | MAY | black-box-http | — | — |
 | `7.4-1` | MUST | review-only | — | A design constraint on implementations rather than a checkable wire behaviour; its observable consequences are the three axis rows, recorded separately as 7.4-2, AS-17, and RS-11. |
 | `7.8-1` | SHOULD | review-only | — | — |

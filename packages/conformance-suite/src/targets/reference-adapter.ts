@@ -26,6 +26,8 @@ import type {
   StagedApproval,
   TargetAdapter,
   TargetCapabilities,
+  UrlHostedClientOffer,
+  UrlHostedClientOutcome,
 } from "../harness/adapter.ts";
 import type { Role } from "../requirements/catalog.ts";
 import {
@@ -184,6 +186,20 @@ const ACCEPTED_AUTHORITY = "https://operator.example/onboarded";
 const ACCEPTED_RESOURCE_ID = "https://rs.example/pdpp/reference";
 
 /**
+ * Hosts this target will fetch a URL-hosted client identity document from
+ * (clauses 6.1-2, 6.1-4).
+ *
+ * Loopback, because the suite's document server is necessarily on loopback.
+ * A deployment reachable from a network must not trust these; the Personal
+ * Server's equivalent concession is its `allowInsecureForTesting` switch.
+ *
+ * Both spellings are listed because the matching rule is an exact hostname
+ * comparison — as in personal-server-ts `checkDeclarationUrl` — and Node's
+ * document server may be addressed by either.
+ */
+const URL_HOSTED_TRUSTED_HOSTS: readonly string[] = ["127.0.0.1", "localhost"];
+
+/**
  * Whether two declaration bodies carry the same parsed content.
  *
  * Clause 5.8-4 turns on "different parsed content", so this compares content
@@ -211,6 +227,8 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   readonly capabilities = CAPABILITIES;
   /** This target's grant schema version (clause 7.4-2's positive control). */
   readonly supportedGrantSchemaVersion = GRANT_SCHEMA_VERSION;
+  /** Hosts this target fetches URL-hosted client documents from (6.1-2, 6.1-4). */
+  readonly urlHostedClientHosts = URL_HOSTED_TRUSTED_HOSTS;
   private readonly server: ReferenceServer;
   private readonly fixtures: readonly StreamFixture[];
   private readonly defects: ReadonlySet<Defect>;
@@ -903,6 +921,119 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     }
     const accessToken = this.server.mintTokenWithKind(kind, issued.grantId);
     return accessToken === null ? null : { accessToken };
+  }
+
+  /**
+   * Resolve an offered URL-hosted client identity, under the same bounds the
+   * Personal Server applies (clauses 6.1-2, 6.1-4).
+   *
+   * The allowlist semantics deliberately match `checkDeclarationUrl` in
+   * personal-server-ts (`packages/core/src/pdpp/declaration.ts`, read
+   * read-only): an EXACT hostname match against a configured trusted-host list.
+   * They match so that a target passing here and a target passing there are
+   * being held to the same rule — a suite whose reference target enforced a
+   * looser or stricter allowlist would report the two implementations
+   * differently for reasons that have nothing to do with the clause.
+   *
+   * The suite serves the document over real HTTP (`documentUrl`), so this
+   * performs a genuine outbound fetch rather than being handed a body. That is
+   * what makes the malformed case mean anything: a document the AS never
+   * retrieved cannot be a document it wrongly accepted.
+   *
+   * Loopback is permitted here and ONLY here, because the suite's document
+   * server is necessarily on loopback. The Personal Server's equivalent switch
+   * is `allowInsecureForTesting`; naming the same concession explicitly keeps
+   * this from looking like a missing SSRF guard.
+   */
+  async offerUrlHostedClientIdentity(offer: UrlHostedClientOffer): Promise<UrlHostedClientOutcome> {
+    const refuse = (errorCode: string, message: string): UrlHostedClientOutcome => ({
+      accepted: false,
+      status: 400,
+      errorCode,
+      body: JSON.stringify({ error: errorCode, error_description: message }),
+      documentFetched: false,
+    });
+
+    let parsed: URL;
+    try {
+      parsed = new URL(offer.documentUrl);
+    } catch {
+      return refuse("invalid_client", "client_id is not a URL-hosted identity");
+    }
+
+    // The SSRF gate, before any network call — exact hostname match, as the
+    // Personal Server does.
+    if (!URL_HOSTED_TRUSTED_HOSTS.includes(parsed.hostname)) {
+      return refuse(
+        "untrusted_client_url",
+        `client_id host '${parsed.hostname}' is not in this deployment's client trust policy`
+      );
+    }
+
+    let body: string;
+    let status: number;
+    try {
+      const { status: fetched, text } = await fetch(parsed.toString()).then(async (response) => ({
+        status: response.status,
+        text: await response.text(),
+      }));
+      status = fetched;
+      body = text;
+    } catch (error) {
+      return refuse("fetch_failed", error instanceof Error ? error.message : String(error));
+    }
+    if (status !== 200) {
+      return { ...refuse("fetch_failed", `client_id document returned ${status}`), documentFetched: true };
+    }
+
+    const invalid = (message: string): UrlHostedClientOutcome => ({
+      ...refuse("invalid_client", message),
+      documentFetched: true,
+    });
+
+    let document: unknown;
+    try {
+      document = JSON.parse(body);
+    } catch {
+      return invalid("client_id document is not valid JSON");
+    }
+    if (typeof document !== "object" || document === null) {
+      return invalid("client_id document is not a JSON object");
+    }
+    const fields = document as { client_id?: unknown; redirect_uris?: unknown };
+
+    // The identity check: the document must assert the URL it came from.
+    // Without it, any trusted host could publish a document claiming to be
+    // someone else's client.
+    if (fields.client_id !== offer.documentUrl && !this.defects.has("accept-unbound-url-hosted-client-document")) {
+      return invalid("client_id document does not assert the URL it was retrieved from");
+    }
+    const redirectUris = Array.isArray(fields.redirect_uris)
+      ? fields.redirect_uris.filter((uri): uri is string => typeof uri === "string" && uri.length > 0)
+      : [];
+    if (redirectUris.length === 0) {
+      return invalid("client_id document declares no usable redirect_uris");
+    }
+    if (!redirectUris.includes(offer.redirectUri)) {
+      return invalid(`redirect_uri '${offer.redirectUri}' is not declared by the client_id document`);
+    }
+
+    // Accepted on identity. `reject-unregistered-url-hosted-client` is the
+    // 6.1-2 violation: the document is valid and the ONLY thing wrong with the
+    // client is that this AS never preregistered it.
+    if (this.defects.has("reject-unregistered-url-hosted-client")) {
+      return {
+        accepted: false,
+        status: 400,
+        errorCode: "unregistered_client",
+        body: JSON.stringify({
+          error: "unregistered_client",
+          error_description: "client is not preregistered with this authorization server",
+        }),
+        documentFetched: true,
+      };
+    }
+    return { accepted: true, status: 200, documentFetched: true };
   }
 
   async expiredGrantToken(): Promise<string | null> {
