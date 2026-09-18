@@ -223,3 +223,24 @@ describe("positive controls hold", () => {
     });
   }
 });
+
+it("RS-14 accepts equivalent metadata with reordered object keys", async () => {
+  const adapter = new ReferenceTargetAdapter();
+  const { streams } = await adapter.setup();
+  try {
+    // Reverse fixture object keys independently of the HTTP response.
+    const reordered = JSON.parse(JSON.stringify(streams), (_key, value: unknown) => {
+      if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+        return Object.fromEntries(Object.entries(value).reverse());
+      }
+      return value;
+    });
+    const result = await runCase(
+      caseById("RS-14/owner-metadata-full-current-document"),
+      makeContext(adapter, reordered)
+    );
+    assert.equal(result.outcome, "pass", result.detail ?? "RS-14 rejected reordered metadata");
+  } finally {
+    await adapter.teardown();
+  }
+});

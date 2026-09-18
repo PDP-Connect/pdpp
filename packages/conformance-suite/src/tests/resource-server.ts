@@ -15,6 +15,7 @@
 // surface where one exists, so that "rejected everything" cannot pass either:
 // RS-2 asserts the granted stream is readable AND the ungranted one is refused.
 
+import { isDeepStrictEqual } from "node:util";
 import { errorBody, request } from "../harness/http.ts";
 import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 
@@ -46,27 +47,7 @@ interface StreamMetadataBody {
   views?: unknown[];
 }
 
-/**
- * A category ("views", "relationships", or "query") is missing or wrong,
- * against the fixture's own retained declaration.
- *
- * This is a small, explicit equality check on the exact shapes this suite's
- * fixtures produce (arrays of plain objects, or a `range_filters` record), NOT
- * a general schema-equivalence framework: it does not canonicalize key order
- * within an object, does not do partial/subset matching, and a target that
- * declares the same capability in an structurally different but equivalent
- * shape (e.g. a semantically-identical but differently-nested `query` object)
- * would be reported as a mismatch here. That limit is acceptable for v0.1
- * because both fixtures in this suite (the in-process reference and the
- * seeded Vana adapter) emit one fixed shape per category; a target adapter
- * populating `expectedOwnerMetadata` from a source with a different but
- * equivalent shape would need a wider comparator, which this deliberately
- * does not attempt.
- *
- * Returns `undefined` when the fixture declares nothing in this category,
- * since RS-14 cannot fault a target for omitting a capability the stream
- * never had.
- */
+/** Compare declared capabilities without treating JSON object-key order as meaningful. */
 function declaredCapabilityMismatch(
   declared: readonly unknown[] | Readonly<Record<string, unknown>> | undefined,
   exposed: unknown
@@ -75,7 +56,7 @@ function declaredCapabilityMismatch(
   if (declaredIsEmpty) {
     return false;
   }
-  return JSON.stringify(exposed) !== JSON.stringify(declared);
+  return !isDeepStrictEqual(exposed, declared);
 }
 
 /**
