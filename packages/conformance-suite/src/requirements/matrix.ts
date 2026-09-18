@@ -400,9 +400,7 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#views",
     applicability: "the AS supports views",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs a target that declares view support and an adapter hook naming a view; no current target declares `views`, so the clause cannot be exercised rather than being untested by oversight.",
+    caseIds: ["AS-12/view-within-declared-schema"],
   },
   {
     clauseId: "5.6-2a",
@@ -413,9 +411,9 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#views",
     applicability: "the AS supports views",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-13/view-evolution-does-not-widen-an-issued-grant"],
     gapNote:
-      "Recorded as MUST-equivalent because Section 9 AS item 13 states it as one; the spec's own sentence here carries no RFC 2119 keyword, so the binding level is the conformance list's rather than this subsection's. Testing it needs a view-declaring target plus a declaration change after issuance.",
+      "Recorded as MUST-equivalent because Section 9 AS item 13 states it as one; the spec's own sentence here carries no RFC 2119 keyword, so the binding level is the conformance list's rather than this subsection's. The covering case exercises the field-widening half against a target whose view evolves after issuance; the re-consent half binds a consent flow the suite cannot drive.",
   },
   {
     clauseId: "5.6-3",
@@ -426,8 +424,7 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#views",
     applicability: "the AS supports views",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote: "No Section 9 item covers opaque-view-URI handling; needs a target declaring view support, as at 5.6-2.",
+    caseIds: ["AS-13/unrecognized-view-uri-treated-as-opaque"],
   },
   {
     clauseId: "5.8-1",
@@ -803,9 +800,7 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#stream-selection-parameters",
     applicability: "the AS supports views",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs a target declaring view support so a request can name both `view` and `fields`; no current target declares views.",
+    caseIds: ["AS-2/view-and-fields-mutually-exclusive"],
   },
   {
     clauseId: "6.8-2",

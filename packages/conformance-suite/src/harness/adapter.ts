@@ -201,8 +201,20 @@ export interface SelectionRequest {
   readonly purposeCode?: string;
   /** Mutually exclusive with `streams` — AS-5 requires exactly one. */
   readonly selectionPreset?: string;
-  /** Omit `fields` to test AS-4 expansion; name an undeclared one to test AS-2. */
-  readonly streams?: readonly { readonly name: string; readonly fields?: readonly string[] }[];
+  /**
+   * Omit `fields` to test AS-4 expansion; name an undeclared one to test AS-2.
+   *
+   * `view` names a view at request scope (Core Section 6 request parameters).
+   * It is mutually exclusive with `fields`, and a request setting both is
+   * exactly the 6.8-1 negative: the AS must answer 400 `invalid_request`. The
+   * suite can therefore send an invalid combination on purpose, which is why
+   * both are optional and independently settable rather than a union.
+   */
+  readonly streams?: readonly {
+    readonly name: string;
+    readonly fields?: readonly string[];
+    readonly view?: string;
+  }[];
 }
 
 /**
@@ -277,6 +289,18 @@ export interface GrantRequest {
   readonly streams: readonly {
     readonly name: string;
     readonly fields: readonly string[];
+    /**
+     * Request this stream's field set BY VIEW NAME instead of by `fields`.
+     *
+     * Core Section 5 "View evolution": the grant is bound to the field set
+     * resolved at issuance, and `fields` in the StreamGrant is authoritative,
+     * not the view name. Clause 5.6-2a is precisely that a later widening of
+     * the view must not widen an already-issued grant — which is only
+     * observable if a grant can be obtained by view name in the first place.
+     * `fields` above stays required so a caller always records what it expects
+     * the view to resolve to; the case compares that against the issued grant.
+     */
+    readonly view?: string;
   }[];
   /** Frozen time constraint, when the test exercises time-bound enforcement. */
   readonly timeConstraint?: {
@@ -334,6 +358,36 @@ export interface TargetAdapter {
    * AS-9 reports `skip` (missing evidence), not `fail`.
    */
   coLocatedIntrospect?: (accessToken: string) => Promise<PdppResponse | null>;
+
+  /**
+   * The views this deployment's AS defines, per stream, as the ADAPTER's own
+   * record of what it declared — never read back from the target.
+   *
+   * Core Section 5 "Views" makes the AS authoritative for views used in consent
+   * and issued grants, and declaration-published views merely advisory. So the
+   * suite cannot discover a view to test with: asking the target what views it
+   * has and then checking the answer against itself measures nothing. The
+   * adapter states what it arranged, and the cases check the target's behaviour
+   * against that statement.
+   *
+   * `fields` is what the view is expected to resolve to. A view naming a field
+   * absent from the stream's declared schema is the 5.6-2 violation, so the
+   * adapter may deliberately declare one for a negative case — this is a
+   * record of intent, not a promise of validity.
+   *
+   * Optional: a target that defines no views reports the view cases `skip`
+   * naming this hook. Returning an empty array is the same thing said
+   * explicitly. Gated on `capabilities.views`: a target declaring the
+   * capability and then offering no view fails RS-14's honesty check rather
+   * than silently skipping.
+   */
+  declaredViews?: () => Promise<
+    readonly {
+      readonly stream: string;
+      readonly view: string;
+      readonly fields: readonly string[];
+    }[]
+  >;
 
   /**
    * An access token whose bound grant has expired. Exercised by the
@@ -479,4 +533,22 @@ export interface TargetAdapter {
    * so RS-16 checks the document where the target actually publishes it.
    */
   readonly wellKnownPath?: string | undefined;
+
+  /**
+   * Add a field to an already-defined view, AFTER a grant has been issued
+   * against it. Returns the view's new field list, or null when the target
+   * cannot evolve a view.
+   *
+   * This is the only way to observe clause 5.6-2a. The obligation is that view
+   * evolution never silently widens an existing grant, and an unevolved view
+   * cannot demonstrate it: a grant that still serves its original fields is
+   * consistent both with a correct server and with one that would have widened
+   * had the view ever changed. The case issues a grant by view name, widens the
+   * view here, and then re-reads with the ORIGINAL token.
+   *
+   * The added field must be one the stream's schema declares, so that a server
+   * refusing to widen is doing so because the grant is frozen and not because
+   * the field was invalid — otherwise the case would pass for the wrong reason.
+   */
+  widenView?: (stream: string, view: string, addField: string) => Promise<readonly string[] | null>;
 }

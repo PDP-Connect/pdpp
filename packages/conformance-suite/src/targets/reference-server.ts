@@ -123,7 +123,49 @@ export type Defect =
    * wildcard, which is always well-formed on its own), so a server can validate
    * every name successfully and still fail this clause.
    */
-  | "accept-malformed-stream-list";
+  | "accept-malformed-stream-list"
+  /**
+   * Accepts a selection request carrying BOTH `view` and `fields` on one
+   * stream, instead of 400 `invalid_request` (clause 6.8-1).
+   *
+   * Distinct from every field-validation defect: both halves of the request are
+   * individually valid here — a real view name and real declared fields — so a
+   * server that validates each part and never checks their combination accepts
+   * it. That is exactly the server the 6.8-1 oracle must be able to catch, and
+   * no existing defect produces it.
+   */
+  | "accept-view-and-fields-together"
+  /**
+   * Defines a view naming a field absent from the stream's declared schema,
+   * and lets it be used (clause 5.6-2).
+   *
+   * The AS is authoritative for views, so nothing else in the system will
+   * refuse this: the violation is the AS's own definition, which is why the
+   * defect has to inject the bad definition rather than a bad request.
+   */
+  | "define-view-with-undeclared-field"
+  /**
+   * Widens an already-issued grant when the view it was resolved from later
+   * gains a field (clause 5.6-2a).
+   *
+   * Models the server that stored the view NAME on the grant and re-resolves it
+   * at read time, rather than freezing the resolved field list at issuance.
+   * Without this defect a grant's projection never changes and the widening
+   * case passes against a target that has no view evolution at all.
+   */
+  | "widen-existing-grants-on-view-change"
+  /**
+   * Resolves an unrecognized view URI by looking for a known view name INSIDE
+   * it, instead of treating the URI as opaque (clause 5.6-3).
+   *
+   * This is the realistic shape of the violation: nobody writes a server that
+   * deliberately mis-resolves view URIs, but plenty of servers "helpfully"
+   * normalize an identifier — strip a namespace prefix, take the last path
+   * segment, match a fragment — and that is exactly what treating an opaque
+   * identifier as structured means. The result is a grant issued for a view the
+   * AS never defined, under a name the owner never saw.
+   */
+  | "resolve-view-uri-by-substring";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -145,6 +187,15 @@ export interface StreamFixture {
   /** Fields that must be present per the schema's `required` array (Core Section 5). */
   readonly requiredFields?: readonly string[];
   readonly semantics: "append_only" | "mutable_state";
+  /**
+   * Named views this AS defines over the stream (Core Section 5 "Views").
+   *
+   * The AS is authoritative for views, so these are the server's own
+   * definitions rather than anything a declaration publisher suggested. A view
+   * whose `fields` name something outside `fields` above is the 5.6-2
+   * violation and is only ever declared by a defect-injected fixture.
+   */
+  readonly views?: readonly { readonly id: string; readonly fields: readonly string[] }[];
 }
 
 interface GrantState {
@@ -156,6 +207,18 @@ interface GrantState {
     fields: readonly string[];
     /** Frozen consent window, when the grant carries one (Core Section 7). */
     timeConstraint?: { field: string; from?: string; to?: string };
+    /**
+     * The view name this stream's `fields` were resolved FROM, when the request
+     * named one.
+     *
+     * Retained as provenance only. A conforming read never consults it —
+     * `fields` above is authoritative per Core Section 5 "View evolution" — and
+     * the ONLY code that reads it is the `widen-existing-grants-on-view-change`
+     * defect, which re-resolves from it to model the server that got this
+     * wrong. Keeping it here rather than in the defect lets the defect be a
+     * read-time behaviour change instead of a different issuance path.
+     */
+    resolvedFromView?: string;
   }[];
   readonly subjectId: string;
 }
@@ -166,6 +229,20 @@ type Principal = { kind: "client"; grantId: string } | { kind: "owner"; subjectI
 export const PDPP_VERSION = "2026-04-06";
 const SUPPORTED_VERSION = PDPP_VERSION;
 const KNOWN_PARAMS = new Set(["limit", "cursor", "order", "fields", "changes_since"]);
+
+/**
+ * Map key for a view definition.
+ *
+ * A composed key needs a separator that cannot occur in either component.
+ * Clause 5.6-3 requires unrecognized view URIs to be treated as opaque
+ * identifiers, so a view id may contain spaces, slashes, colons — anything. A
+ * newline cannot appear in a stream name or a view id supplied through the
+ * adapter contract, and nothing ever parses this key back apart (`allViews`
+ * walks the fixtures instead), so the separator only has to be collision-free.
+ */
+function viewKey(stream: string, view: string): string {
+  return `${stream}\n${view}`;
+}
 
 const RECORDS_PATH = /^\/v1\/streams\/([^/]+)\/records$/;
 const SINGLE_RECORD_PATH = /^\/v1\/streams\/([^/]+)\/records\/([^/]+)$/;
@@ -184,9 +261,85 @@ export class ReferenceServer {
   private readonly streams: readonly StreamFixture[];
   private readonly defects: ReadonlySet<Defect>;
 
+  /**
+   * The AS's current view definitions, keyed by the `viewKey` helper below.
+   *
+   * Held apart from the readonly fixtures because views EVOLVE: clause 5.6-2a
+   * is about what happens to an already-issued grant when a view later gains a
+   * field, so the current definition must be mutable while the grant's frozen
+   * field list is not. Seeded from the fixtures at construction.
+   */
+  private readonly views = new Map<string, string[]>();
+
   constructor(streams: readonly StreamFixture[], defects: ReadonlySet<Defect> = new Set()) {
     this.streams = streams;
     this.defects = defects;
+    for (const stream of streams) {
+      for (const view of stream.views ?? []) {
+        this.views.set(viewKey(stream.name, view.id), [...view.fields]);
+      }
+    }
+  }
+
+  /** Current field list for a view, or undefined when the AS defines no such view. */
+  viewFields(stream: string, view: string): readonly string[] | undefined {
+    return this.views.get(viewKey(stream, view));
+  }
+
+  /**
+   * The field set a client token may see for one granted stream.
+   *
+   * Conforming behaviour is to return the grant's OWN frozen `fields`, which is
+   * what Core Section 5 "View evolution" makes authoritative. Under
+   * `widen-existing-grants-on-view-change` the server instead re-resolves the
+   * view the grant was issued from, so a view that has since gained a field
+   * silently widens an already-approved grant — the violation clause 5.6-2a
+   * names. A grant not issued from a view is unaffected either way, which is
+   * why the defect cannot disturb any other case.
+   */
+  private grantedFields(granted: GrantState["streams"][number] | undefined): readonly string[] {
+    if (!granted) {
+      return [];
+    }
+    if (this.has("widen-existing-grants-on-view-change") && granted.resolvedFromView !== undefined) {
+      return this.views.get(viewKey(granted.name, granted.resolvedFromView)) ?? granted.fields;
+    }
+    return granted.fields;
+  }
+
+  /**
+   * Every view this AS currently defines, as the adapter's `declaredViews`
+   * record.
+   *
+   * Rebuilt by walking the fixtures rather than by splitting the map key:
+   * clause 5.6-3 makes view URIs opaque identifiers, so a view id may contain
+   * any character, and parsing one back out of a composed key is a bug waiting
+   * for the first URI-shaped view name.
+   */
+  allViews(): readonly { readonly stream: string; readonly view: string; readonly fields: readonly string[] }[] {
+    return this.streams.flatMap((stream) =>
+      (stream.views ?? []).map((view) => ({
+        stream: stream.name,
+        view: view.id,
+        fields: [...(this.views.get(viewKey(stream.name, view.id)) ?? view.fields)],
+      }))
+    );
+  }
+
+  /**
+   * Add a field to a view's CURRENT definition. Issued grants are untouched by
+   * design — that separation is the whole of clause 5.6-2a.
+   */
+  widenView(stream: string, view: string, addField: string): readonly string[] | null {
+    const key = viewKey(stream, view);
+    const fields = this.views.get(key);
+    if (!fields) {
+      return null;
+    }
+    if (!fields.includes(addField)) {
+      fields.push(addField);
+    }
+    return [...fields];
   }
 
   get baseUrl(): string {
@@ -258,6 +411,8 @@ export class ReferenceServer {
       name: string;
       fields: readonly string[];
       timeConstraint?: { field: string; from?: string; to?: string };
+      /** The view the fields were resolved from, when the request named one. */
+      resolvedFromView?: string;
     }[],
     options: { expired?: boolean; purposeCode?: string; explicitAiTrainingConsent?: boolean } = {}
   ): { grantId: string; accessToken: string } | { deniedReason: "ai_training_consent_required" } | null {
@@ -289,6 +444,7 @@ export class ReferenceServer {
         name: s.name,
         fields: [...s.fields],
         ...(s.timeConstraint ? { timeConstraint: s.timeConstraint } : {}),
+        ...(s.resolvedFromView === undefined ? {} : { resolvedFromView: s.resolvedFromView }),
       })),
       revoked: false,
       expired: options.expired ?? false,
@@ -425,7 +581,7 @@ export class ReferenceServer {
       }
       const projection =
         principal.kind === "client" && !this.has("ignore-field-projection")
-          ? (grantedStream?.fields ?? [])
+          ? this.grantedFields(grantedStream)
           : fixture.fields;
       send(200, {
         object: "record",
@@ -513,7 +669,7 @@ export class ReferenceServer {
 
       const projection =
         principal.kind === "client" && !this.has("ignore-field-projection")
-          ? (grantedStream?.fields ?? [])
+          ? this.grantedFields(grantedStream)
           : fixture.fields;
 
       // Enforce the grant's frozen time constraint (Section 8 "Grant

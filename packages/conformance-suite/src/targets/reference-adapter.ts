@@ -51,6 +51,12 @@ export const DEFAULT_FIXTURES: readonly StreamFixture[] = [
     // relationship-corruption cases have non-empty content to check against
     // (an always-empty relationships array could never distinguish either).
     relationships: [{ id: "conversation_messages", targetStream: "messages", type: "has_many" }],
+    // A named view over a STRICT SUBSET of the declared fields (Core Section 5
+    // "Views"). It must be a proper subset for the view cases to mean anything:
+    // a view covering every field cannot show that a grant resolved by view
+    // name is narrower than the schema, and the 5.6-2a widening case needs a
+    // declared field left over to widen the view WITH.
+    views: [{ id: "summary", fields: ["id", "title"] }],
     records: [
       {
         id: "conv_1",
@@ -85,17 +91,30 @@ const CAPABILITIES: TargetCapabilities = {
   separatedDeployment: false,
   ownerTokens: true,
   selfExport: true,
-  // The reference target does not implement incremental sync, views, single-use
+  // The reference target does not implement incremental sync, single-use
   // grants, refresh tokens, or blobs. Declaring them absent is what turns the
   // dependent requirements into `unsupported` rather than false passes.
   incrementalSync: false,
-  views: false,
+  // Views ARE implemented: the `summary` view on `conversations`, resolved at
+  // issuance and frozen into the grant. This is what makes the Section 5 view
+  // clauses reachable at all; every target declaring `views: false` reports
+  // them `skip` naming the missing capability, which is where they sat before.
+  views: true,
   singleUseGrants: false,
   refreshTokens: false,
   blobs: false,
 };
 
 const ROLES: readonly Role[] = ["resource-server", "authorization-server"];
+
+/**
+ * The field the `define-view-with-undeclared-field` defect adds to every view.
+ *
+ * Deliberately a name no fixture schema declares, so the resulting view is a
+ * clause 5.6-2 violation on its face: it includes a field absent from the
+ * retained SourceDeclaration schema for its stream.
+ */
+const UNDECLARED_VIEW_FIELD = "pdpp_conformance_field_absent_from_schema";
 
 export class ReferenceTargetAdapter implements TargetAdapter {
   readonly targetId: string;
@@ -107,9 +126,28 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   private readonly defects: ReadonlySet<Defect>;
 
   constructor(fixtures: readonly StreamFixture[] = DEFAULT_FIXTURES, defects: ReadonlySet<Defect> = new Set()) {
-    this.fixtures = fixtures;
+    // Clause 5.6-2 binds the AS's view DEFINITIONS, so the violating target is
+    // one whose definitions are already bad before any request arrives. The
+    // defect therefore rewrites the fixtures the server is built from, adding a
+    // field no stream schema declares to every view. Injecting it at the
+    // request would be a different (and untested) defect: a bad request, which
+    // a conforming server refuses for an unrelated reason.
+    const effective = defects.has("define-view-with-undeclared-field")
+      ? fixtures.map((f) => ({
+          ...f,
+          ...(f.views
+            ? {
+                views: f.views.map((v) => ({
+                  ...v,
+                  fields: [...v.fields, UNDECLARED_VIEW_FIELD],
+                })),
+              }
+            : {}),
+        }))
+      : fixtures;
+    this.fixtures = effective;
     this.defects = defects;
-    this.server = new ReferenceServer(fixtures, defects);
+    this.server = new ReferenceServer(effective, defects);
     this.targetId =
       defects.size === 0 ? "pdpp-reference-target" : `pdpp-reference-target+defects(${[...defects].sort().join(",")})`;
   }
@@ -150,16 +188,68 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     await this.server.stop();
   }
 
+  async declaredViews(): Promise<
+    readonly { readonly stream: string; readonly view: string; readonly fields: readonly string[] }[]
+  > {
+    return this.server.allViews();
+  }
+
+  /**
+   * The field list for a view name, or null when this AS defines no such view.
+   *
+   * Conforming behaviour is an EXACT lookup, because clause 5.6-3 requires an
+   * unrecognized view URI to be treated as an opaque identifier — not parsed,
+   * not normalized, not prefix- or substring-matched. Under
+   * `resolve-view-uri-by-substring` the lookup instead searches for a known
+   * view name inside the supplied string, which is the "helpful normalization"
+   * shape of the violation and what the 5.6-3 oracle must be able to catch.
+   */
+  private resolveView(stream: string, view: string): readonly string[] | null {
+    const exact = this.server.viewFields(stream, view);
+    if (exact) {
+      return exact;
+    }
+    if (!this.defects.has("resolve-view-uri-by-substring")) {
+      return null;
+    }
+    const known = this.server.allViews().find((v) => v.stream === stream && view.includes(v.view));
+    return known ? (this.server.viewFields(stream, known.view) ?? null) : null;
+  }
+
+  async widenView(stream: string, view: string, addField: string): Promise<readonly string[] | null> {
+    return this.server.widenView(stream, view, addField);
+  }
+
   async issueGrant(request: GrantRequest): Promise<IssuedGrant | null> {
     if (request.accessMode === "single_use") {
       // Not supported; declared absent in capabilities, so AS-10 is unsupported.
       return null;
     }
+    // Core Section 5 "View evolution": a view name in a request is resolved to
+    // a field list AT ISSUANCE, and the resolved list is what the grant is
+    // bound to. Resolving here — rather than storing the view name on the
+    // grant — is what makes clause 5.6-2a true of this target: a later
+    // `widenView` cannot reach a grant that never retained the name.
+    const resolved: { name: string; fields: readonly string[]; view?: string }[] = [];
+    for (const s of request.streams) {
+      if (s.view === undefined) {
+        resolved.push({ name: s.name, fields: [...s.fields] });
+        continue;
+      }
+      const viewFields = this.resolveView(s.name, s.view);
+      if (!viewFields) {
+        // An unrecognized view is not a field list. Refusing is correct and
+        // reports `unsupported` rather than inventing a projection.
+        return null;
+      }
+      resolved.push({ name: s.name, fields: [...viewFields], view: s.view });
+    }
     const issued = this.server.issueGrant(
-      request.streams.map((s) => ({
+      resolved.map((s) => ({
         name: s.name,
         fields: [...s.fields],
         ...(request.timeConstraint ? { timeConstraint: request.timeConstraint } : {}),
+        ...(s.view === undefined ? {} : { resolvedFromView: s.view }),
       })),
       {
         ...(request.purposeCode ? { purposeCode: request.purposeCode } : {}),
@@ -174,7 +264,11 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     return {
       grantId: issued.grantId,
       accessToken: issued.accessToken,
-      streams: request.streams.map((s) => ({
+      // The RESOLVED field set, not the requested one. For a request naming a
+      // view these differ, and Core Section 5 makes the resolved list the
+      // authoritative content of the grant; echoing the request here would
+      // report a `view` name as if it were a field.
+      streams: resolved.map((s) => ({
         name: s.name,
         fields: [...s.fields],
       })),
@@ -203,6 +297,67 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       const undeclared = (wanted.fields ?? []).filter((f) => !declared.fields.includes(f));
       if (undeclared.length > 0) {
         return `stream '${wanted.name}' requests fields absent from the retained schema: ${undeclared.join(", ")}`;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Why the `streams` array is malformed as a LIST, or null when its shape is
+   * well-formed.
+   *
+   * Core Section 6 (clause 6.8-3): "A wildcard entry MUST be the only entry in
+   * `streams`. Otherwise stream names MUST be unique within the request."
+   *
+   * Called BEFORE names are validated against the snapshot, because both
+   * malformed shapes are built from names the snapshot declares: a server that
+   * validated names first and stopped there would accept them. The wildcard
+   * itself is not a declared stream name, so this check is also what keeps
+   * `firstUndeclaredReason` from refusing a lone `"*"` for the wrong reason.
+   */
+  private malformedStreamListReason(wantedStreams: readonly { readonly name: string }[]): string | null {
+    if (this.defects.has("accept-malformed-stream-list")) {
+      return null;
+    }
+    const wildcards = wantedStreams.filter((s) => s.name === "*");
+    if (wildcards.length > 0 && wantedStreams.length > 1) {
+      return "a wildcard entry must be the only entry in streams";
+    }
+    const names = wantedStreams.map((s) => s.name);
+    const duplicate = names.find((name, index) => names.indexOf(name) !== index);
+    return duplicate === undefined ? null : `stream name '${duplicate}' appears more than once`;
+  }
+
+  /**
+   * Why the first view named in the request is unusable, or null when every one
+   * of them resolves within its stream's declared schema.
+   *
+   * Two Section 5 obligations, both about view DEFINITIONS rather than the
+   * request that names them:
+   *
+   * - 5.6-2: "The AS MUST NOT define a view that includes fields absent from
+   *   the retained SourceDeclaration schema for the relevant stream." A
+   *   definition that exceeds the schema is refused rather than resolved, which
+   *   is the only way an AS holds the line once a bad view exists.
+   * - 5.6-3: an unrecognized view URI is an opaque identifier, so it is simply
+   *   not a view this AS defines. It is refused as unrecognized, never parsed
+   *   for meaning or matched by prefix (see `resolveView`).
+   */
+  private firstBadViewReason(
+    wantedStreams: readonly { readonly name: string; readonly view?: string }[]
+  ): string | null {
+    for (const wanted of wantedStreams) {
+      if (wanted.view === undefined) {
+        continue;
+      }
+      const viewFields = this.resolveView(wanted.name, wanted.view);
+      if (!viewFields) {
+        return `view '${wanted.view}' is not defined by this authorization server for stream '${wanted.name}'`;
+      }
+      const declared = this.fixtures.find((f) => f.name === wanted.name);
+      const outsideSchema = viewFields.filter((f) => !(declared?.fields ?? []).includes(f));
+      if (outsideSchema.length > 0) {
+        return `view '${wanted.view}' includes fields absent from the retained schema for '${wanted.name}': ${outsideSchema.join(", ")}`;
       }
     }
     return null;
@@ -263,16 +418,32 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     // keeps `firstUndeclaredReason` below from refusing a lone `"*"` as
     // undeclared for the wrong reason.
     const wanted = request.streams ?? [];
-    if (!this.defects.has("accept-malformed-stream-list")) {
-      const wildcards = wanted.filter((s) => s.name === "*");
-      if (wildcards.length > 0 && wanted.length > 1) {
-        return reject("invalid_authorization_details", "a wildcard entry must be the only entry in streams");
-      }
-      const names = wanted.map((s) => s.name);
-      const duplicate = names.find((name, index) => names.indexOf(name) !== index);
-      if (duplicate !== undefined) {
-        return reject("invalid_authorization_details", `stream name '${duplicate}' appears more than once`);
-      }
+    const malformedListReason = this.malformedStreamListReason(wanted);
+    if (malformedListReason) {
+      return reject("invalid_authorization_details", malformedListReason);
+    }
+
+    // Core Section 6 request parameters (clause 6.8-1): `view` is "mutually
+    // exclusive with `fields` in a request; both MUST NOT be present
+    // simultaneously. AS returns 400 `invalid_request` if both are present."
+    //
+    // Note the error code: `invalid_request`, NOT the `invalid_authorization_details`
+    // that the other refusals in this function use. That is the spec's own
+    // wording for this clause and the cases assert it exactly, because a client
+    // correcting a malformed request needs to tell "your request shape is
+    // wrong" apart from "your selection failed validation".
+    //
+    // Checked before the fields are validated against the snapshot: both parts
+    // are individually valid in the case that matters, so a server validating
+    // each in turn never reaches a contradiction.
+    const bothPresent = this.defects.has("accept-view-and-fields-together")
+      ? undefined
+      : wanted.find((s) => s.view !== undefined && s.fields !== undefined);
+    if (bothPresent) {
+      return reject(
+        "invalid_request",
+        `stream '${bothPresent.name}' names both view and fields, which are mutually exclusive`
+      );
     }
 
     // A lone wildcard is well-formed and resolves against the retained snapshot
@@ -280,6 +451,11 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     const undeclaredReason = this.firstUndeclaredReason(wanted.filter((s) => s.name !== "*"));
     if (undeclaredReason) {
       return reject("invalid_authorization_details", undeclaredReason);
+    }
+
+    const badViewReason = this.firstBadViewReason(wanted);
+    if (badViewReason) {
+      return reject("invalid_authorization_details", badViewReason);
     }
 
     // AS-6 is a MUST NOT: an unregistered purpose_code is not grounds for

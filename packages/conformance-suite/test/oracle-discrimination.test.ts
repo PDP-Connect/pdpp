@@ -36,6 +36,7 @@ import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
 import { SELECTION_VALIDATION_CASES } from "../src/tests/selection-validation.ts";
+import { VIEW_CASES } from "../src/tests/views.ts";
 
 const CASES: readonly ConformanceCase[] = [
   ...RESOURCE_SERVER_CASES,
@@ -43,6 +44,7 @@ const CASES: readonly ConformanceCase[] = [
   ...GRANT_LIFECYCLE_CASES,
   ...QUERY_SURFACE_CASES,
   ...SELECTION_VALIDATION_CASES,
+  ...VIEW_CASES,
 ];
 
 function caseById(caseId: string): ConformanceCase {
@@ -227,6 +229,46 @@ const DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "AS-2/duplicate-stream-name-refused",
     defect: "accept-malformed-stream-list",
+  },
+  // ---- Core Section 5 views (clauses 5.6-2, 5.6-2a, 5.6-3, 6.8-1) ----
+  //
+  // Each view oracle pairs with a defect that violates ITS clause and no other.
+  // That separation was checked rather than assumed: the four defects were run
+  // against all four cases, and each case failed only under its own. A shared
+  // defect would have left the narrower oracles passing against a target that
+  // violates only the clause they are supposed to own.
+  //
+  // Clause 5.6-2 binds the AS's view DEFINITIONS, not a request, so its defect
+  // corrupts the definition (adding a field no schema declares) rather than
+  // sending a bad request — a bad request is refused for an unrelated reason
+  // and would prove nothing about view validation.
+  {
+    caseId: "AS-12/view-within-declared-schema",
+    defect: "define-view-with-undeclared-field",
+  },
+  // Clause 5.6-2a. The defect re-resolves the view at READ time instead of
+  // serving the field list frozen at issuance, which is the only way an
+  // already-approved grant can silently widen. Without it a grant's projection
+  // never changes and the case would pass against a target that has no view
+  // evolution at all.
+  {
+    caseId: "AS-13/view-evolution-does-not-widen-an-issued-grant",
+    defect: "widen-existing-grants-on-view-change",
+  },
+  // Clause 5.6-3. The defect searches for a known view name INSIDE the supplied
+  // URI — the "helpful normalization" shape of treating an opaque identifier as
+  // structured. A defect that simply rejected everything would leave this
+  // oracle passing for the wrong reason.
+  {
+    caseId: "AS-13/unrecognized-view-uri-treated-as-opaque",
+    defect: "resolve-view-uri-by-substring",
+  },
+  // Clause 6.8-1. Both halves of the request are individually valid (a real
+  // view, real declared fields), so only a server checking the COMBINATION
+  // refuses it; no existing field- or name-validation defect produces this.
+  {
+    caseId: "AS-2/view-and-fields-mutually-exclusive",
+    defect: "accept-view-and-fields-together",
   },
   {
     caseId: "AS-5/both-streams-and-preset-refused",

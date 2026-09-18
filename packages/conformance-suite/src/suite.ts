@@ -14,6 +14,7 @@ import { GRANT_LIFECYCLE_CASES } from "./tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "./tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "./tests/resource-server.ts";
 import { SELECTION_VALIDATION_CASES } from "./tests/selection-validation.ts";
+import { VIEW_CASES } from "./tests/views.ts";
 
 /**
  * Suite version. Distinct from the spec version: the same spec revision can be
@@ -29,6 +30,7 @@ export const ALL_CASES: readonly ConformanceCase[] = [
   ...GRANT_LIFECYCLE_CASES,
   ...GRANT_INTEGRITY_CASES,
   ...SELECTION_VALIDATION_CASES,
+  ...VIEW_CASES,
   ...QUERY_SURFACE_CASES,
   ...CLIENT_CASES,
 ];

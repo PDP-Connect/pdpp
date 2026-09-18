@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **42** have at least one case and **64** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **46** have at least one case and **60** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -68,7 +68,7 @@ Validates selection requests against one retained SourceDeclaration snapshot: re
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
 | `5.2-4` | MUST | black-box-http | — | Needs a seeded stream that declares NO `consent_time_field` plus a selection request carrying `time_range` against it; every target config currently declares the field on every stream, so the negative cannot be constructed. |
-| `6.8-1` | MUST | black-box-http | — | Needs a target declaring view support so a request can name both `view` and `fields`; no current target declares views. |
+| `6.8-1` | MUST | black-box-http | `AS-2/view-and-fields-mutually-exclusive` | — |
 | `6.8-2` | MUST | black-box-http | — | Same missing fixture as 5.2-4: needs a seeded stream declaring no `consent_time_field`, which no target config provides. |
 | `6.8-3` | MUST | black-box-http | `AS-2/wildcard-beside-named-stream-refused`<br>`AS-2/duplicate-stream-name-refused` | — |
 | `6.9-1` | MUST | black-box-http | — | Binds the preset definition rather than a request, so testing it needs an adapter hook that registers a malformed preset and observes refusal; the suite can only name presets a target already defines. |
@@ -99,7 +99,7 @@ Produces a Source validation failure when a request contains both or neither of 
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `6.8-1` | MUST | black-box-http | — | Needs a target declaring view support so a request can name both `view` and `fields`; no current target declares views. |
+| `6.8-1` | MUST | black-box-http | `AS-2/view-and-fields-mutually-exclusive` | — |
 
 ### AS-6 (authorization-server, MUST)
 
@@ -175,7 +175,7 @@ MUST NOT define a view including fields absent from the retained SourceDeclarati
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `5.6-2` | MUST | black-box-http | — | Needs a target that declares view support and an adapter hook naming a view; no current target declares `views`, so the clause cannot be exercised rather than being untested by oversight. |
+| `5.6-2` | MUST | black-box-http | `AS-12/view-within-declared-schema` | — |
 
 ### AS-13 (authorization-server, MUST)
 
@@ -183,7 +183,7 @@ Resolves view names to field lists at issuance time and stores resolved `fields`
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `5.6-2a` | MUST | black-box-http | — | Recorded as MUST-equivalent because Section 9 AS item 13 states it as one; the spec's own sentence here carries no RFC 2119 keyword, so the binding level is the conformance list's rather than this subsection's. Testing it needs a view-declaring target plus a declaration change after issuance. |
+| `5.6-2a` | MUST | black-box-http | `AS-13/view-evolution-does-not-widen-an-issued-grant` | Recorded as MUST-equivalent because Section 9 AS item 13 states it as one; the spec's own sentence here carries no RFC 2119 keyword, so the binding level is the conformance list's rather than this subsection's. The covering case exercises the field-widening half against a target whose view evolves after issuance; the re-consent half binds a consent flow the suite cannot drive. |
 
 ### AS-14 (authorization-server, MUST)
 
@@ -518,7 +518,7 @@ reports.
 | `5.3-1` | MAY | declaration-static | — | — |
 | `5.4-1` | MUST | declaration-static | — | No Section 9 item covers it; needs the declaration-validation harness described at 5.2-2. |
 | `5.6-1` | MAY | declaration-static | — | — |
-| `5.6-3` | MUST | black-box-http | — | No Section 9 item covers opaque-view-URI handling; needs a target declaring view support, as at 5.6-2. |
+| `5.6-3` | MUST | black-box-http | `AS-13/unrecognized-view-uri-treated-as-opaque` | — |
 | `6.1-2` | MUST | black-box-http | — | No Section 9 item covers the unregistered-client interoperability obligation; needs an adapter hook that presents a URL-hosted client identity document the target has never seen, plus a positive control distinguishing a policy denial from an identity-form rejection. |
 | `6.1-3` | MAY | black-box-http | — | — |
 | `6.1-4` | MUST | black-box-http | — | Same missing hook as 6.1-2: the adapter registers clients through the target's own flow and cannot offer a URL-hosted identity document instead. |
