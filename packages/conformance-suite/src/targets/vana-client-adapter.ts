@@ -22,22 +22,34 @@
 // (`scripts/provision-client-target.mjs` in the Context Gateway worktree)
 // seeds that row and starts a real CG server.
 //
-// WHAT THIS ADAPTER CANNOT DO, AND WHY THAT IS A FINDING
+// HOW THE SYNC ACTIONS MAP ONTO CG
 //
-// `syncAgain` and the cursor argument of `readPage` have no CG behaviour to
-// drive. CG's public read route accepts only `scope` and `fileId`; it exposes
-// no `changes_since`, no cursor, and no sync-state handle. Below the route,
-// `readScopeViaPdpp` drains every page and discards `next_cursor` when it is
-// done, and no CG code path anywhere sets `changes_since`, reads
-// `next_changes_since`, or handles a `cursor_expired` response — the strings
-// appear only in type declarations and unit tests.
+// When this adapter was first written CG had no incremental sync at all, and
+// `syncAgain` plus the cursor argument of `readPage` returned HTTP 501 without
+// touching the fixture — the honest report of a client that did not implement
+// the behaviour. CG now does (`sync=incremental` and `cursor` on the read
+// route), so those actions drive it for real.
 //
-// That is a real conformance finding about CG, so this adapter reports it as
-// one rather than faking the behaviour. The unsupported actions return
-// `CG_INCREMENTAL_SYNC_UNSUPPORTED` (HTTP 501) without touching the fixture,
-// which makes the affected cases FAIL with a reviewable receipt: the fixture's
-// request log shows the follow-up request CG never sent. A case that needs a
-// behaviour the client does not implement must not be able to pass.
+// The mapping is not one-to-one with the reference adapter, because CG holds
+// the sync position server-side. A builder never sees or supplies a
+// `changes_since` value: it asks for an incremental read and CG sends whatever
+// position it stored for that connection and stream. So:
+//
+//   syncOnce(stream)   -> sync=restart: read the stream whole ignoring any
+//                         stored position, then record where it ended. That is
+//                         what "initial sync" means for a client keeping the
+//                         position server-side, and it is what makes the cases
+//                         independent — under plain `incremental`, a case's
+//                         syncOnce would resume from the position the PREVIOUS
+//                         case left behind and would not be an initial sync.
+//   syncAgain(stream)  -> sync=incremental. CG holds the `next_changes_since`
+//                         the first sync's terminal page carried, and sends it.
+//   readPage(s, c)     -> scope read with `cursor=c` forwarded opaquely.
+//
+// `authorize` still returns 501: CG performs its authorization handshake
+// during the connect flow, before a grant exists, which is the state this
+// adapter starts after. That remains a real gap in what this channel can
+// observe, not a CG defect — see the receipt.
 
 import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
@@ -58,9 +70,9 @@ export interface VanaClientTargetDescriptor {
 /**
  * The status this adapter returns for an action Context Gateway has no client
  * behaviour for. Not an HTTP status CG produced — CG was never asked, because
- * there is no route to ask.
+ * there is no route to ask. Now used only by `authorize`.
  */
-export const CG_INCREMENTAL_SYNC_UNSUPPORTED = {
+export const CG_ACTION_UNSUPPORTED = {
   errorCode: "not_implemented_by_client",
   ok: false,
   status: 501,
@@ -93,9 +105,19 @@ export async function readVanaClientTargetDescriptor(stateFile: string): Promise
  * against the connection's `canonical_scopes`, and the provisioning script
  * seeds that list with the stream the grant covers.
  */
-async function readScope(descriptor: VanaClientTargetDescriptor, stream: string): Promise<ClientActionResult> {
+async function readScope(
+  descriptor: VanaClientTargetDescriptor,
+  stream: string,
+  options: { readonly cursor?: string; readonly sync?: "incremental" | "restart" } = {}
+): Promise<ClientActionResult> {
   const url = new URL(`/api/v1/connections/${encodeURIComponent(descriptor.connectionId)}/data`, descriptor.cgOrigin);
   url.searchParams.set("scope", stream);
+  if (options.cursor !== undefined) {
+    url.searchParams.set("cursor", options.cursor);
+  }
+  if (options.sync !== undefined) {
+    url.searchParams.set("sync", options.sync);
+  }
 
   const response = await fetch(url, {
     headers: { Accept: "application/json", Authorization: `Bearer ${descriptor.apiKey}` },
@@ -114,12 +136,34 @@ async function readScope(descriptor: VanaClientTargetDescriptor, stream: string)
   const envelope = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const nested =
     envelope.error && typeof envelope.error === "object" ? (envelope.error as Record<string, unknown>) : {};
+  // `resourceServerCode`/`resourceServerType` are the Section 8 identifiers CG
+  // received, forwarded unexamined. Read FIRST because the clauses under test
+  // are about what the RESOURCE SERVER said; `envelope.error` is CG's own
+  // vocabulary for the same refusal (`pdpp_read_failed`), which is the right
+  // fallback only for a refusal CG decided locally and no RS ever saw.
   return {
-    errorCode: nested.code ?? envelope.code ?? envelope.error,
-    errorType: nested.type ?? envelope.type,
+    errorCode: envelope.resourceServerCode ?? nested.code ?? envelope.code ?? envelope.error,
+    errorType: envelope.resourceServerType ?? nested.type ?? envelope.type,
     ok: false,
     status: response.status,
   };
+}
+
+/**
+ * A read plus the settle the fixture log needs.
+ *
+ * CG's route finalizes usage AFTER the upstream read returns, so a case that
+ * inspects the fixture log the instant this resolves can otherwise race a
+ * request CG has already sent but not yet finished accounting for.
+ */
+async function syncedRead(
+  descriptor: VanaClientTargetDescriptor,
+  stream: string,
+  options: { readonly cursor?: string; readonly sync?: "incremental" | "restart" }
+): Promise<ClientActionResult> {
+  const result = await readScope(descriptor, stream, options);
+  await delay(0);
+  return result;
 }
 
 /**
@@ -148,38 +192,32 @@ export function createVanaContextGatewayClientUnderTest(
      * read the fixture log for a selection body fail rather than pass on an
      * assumption. See the receipt's per-clause table.
      */
-    authorize: async (_selection: ClientSelection) => CG_INCREMENTAL_SYNC_UNSUPPORTED,
+    authorize: async (_selection: ClientSelection) => CG_ACTION_UNSUPPORTED,
 
     fixture,
 
     /**
-     * A cursor argument has nowhere to go: CG's read route takes no cursor,
-     * and `readScopeViaPdpp` drains pages internally. Passing one and reading
-     * the whole stream anyway would report a cursor CG never forwarded, so a
-     * cursored read is refused and an uncursored one is a real CG read.
+     * A page cursor, forwarded through CG's read route. CG hands it to the
+     * resource server byte for byte and never parses or constructs one, which
+     * is what clause 8.9-1 observes in the fixture log.
      */
-    readPage: async (stream, cursor) =>
-      cursor === undefined ? await readScope(descriptor, stream) : CG_INCREMENTAL_SYNC_UNSUPPORTED,
+    readPage: async (stream, cursor) => await syncedRead(descriptor, stream, cursor === undefined ? {} : { cursor }),
 
     /**
-     * Incremental sync is not implemented by Context Gateway. Returning
-     * `501` without calling CG is the honest observation: the fixture log
-     * will show no follow-up request, which is precisely the defect the
-     * CL-3/CL-4/CL-5 cases exist to detect.
+     * A follow-up incremental sync. Identical to `syncOnce` on the wire,
+     * because the sync position is CG's to hold: the builder asks for an
+     * incremental read and CG sends the `next_changes_since` the previous
+     * sync's terminal page carried. A builder never constructs one.
      */
-    syncAgain: async (_stream) => CG_INCREMENTAL_SYNC_UNSUPPORTED,
+    syncAgain: async (stream) => await syncedRead(descriptor, stream, { sync: "incremental" }),
 
     /**
-     * The initial sync IS a plain read of the whole stream, which is what CG
-     * does, so this is a real request through CG's real client path.
+     * The initial sync of the stream. `restart`, not `incremental`: CG keeps
+     * the sync position server-side and it survives between cases, so a plain
+     * incremental read here would resume from whatever the previous case left
+     * behind rather than starting fresh. `restart` reads the stream whole and
+     * records where it ended, which is exactly what an initial sync is.
      */
-    syncOnce: async (stream) => {
-      const result = await readScope(descriptor, stream);
-      // CG's route finalizes usage after the upstream read returns; a case
-      // that immediately inspects the fixture log can otherwise race the
-      // request CG has already sent but not yet finished accounting for.
-      await delay(0);
-      return result;
-    },
+    syncOnce: async (stream) => await syncedRead(descriptor, stream, { sync: "restart" }),
   };
 }
