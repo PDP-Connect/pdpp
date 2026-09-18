@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **62** have at least one case and **44** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **65** have at least one case and **41** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -71,7 +71,7 @@ Validates selection requests against one retained SourceDeclaration snapshot: re
 | `6.8-1` | MUST | black-box-http | `AS-2/view-and-fields-mutually-exclusive` | — |
 | `6.8-2` | MUST | black-box-http | `AS-2/time-range-without-consent-time-field-refused` | — |
 | `6.8-3` | MUST | black-box-http | `AS-2/wildcard-beside-named-stream-refused`<br>`AS-2/duplicate-stream-name-refused` | — |
-| `6.9-1` | MUST | black-box-http | — | Binds the preset definition rather than a request, so testing it needs an adapter hook that registers a malformed preset and observes refusal; the suite can only name presets a target already defines. |
+| `6.9-1` | MUST | black-box-http | `AS-16/duplicate-stream-in-a-selection-preset-refused` | — |
 
 ### AS-3 (authorization-server, MUST)
 
@@ -336,7 +336,7 @@ Supports incremental sync via `changes_since` for `mutable_state` streams, inclu
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
 | `4.3-1` | MAY | black-box-http | — | — |
-| `4.3-2` | MUST | black-box-http | — | No adapter hook can force a cursor to expire: the suite would need a TargetAdapter method that ages or invalidates an issued `changes_since` token, or a target that accepts an obviously stale token. |
+| `4.3-2` | MUST | black-box-http | `RS-7/expired-sync-cursor-reported-as-gone` | — |
 | `4.3-6` | MUST | black-box-http | `RS-7/deletion-surfaces-as-a-tombstone` | — |
 | `4.3-7` | SHOULD | review-only | — | Not observable: whether the source deletion time was known is internal state, so a `deleted_at` value cannot be judged against this clause from outside. |
 | `8.9-13` | MUST | black-box-http | `RS-7/sync-eligibility-computed-on-the-authorized-projection` | — |
@@ -512,7 +512,7 @@ reports.
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `4.5-1` | MUST | black-box-http | — | No Section 9 item covers compound-key canonical encoding; testing it needs a seeded stream whose `primary_key` has two or more fields, which no target config currently declares. |
+| `4.5-1` | MUST | black-box-http | `RS-1/compound-primary-key-canonically-encoded` | — |
 | `4.5-2` | MUST | review-only | — | The rejection half binds a write interface the Collection Profile defines, which Core's read-only query surface cannot reach; the read half could be checked but no Section 9 item claims it. |
 | `4.6-1` | SHOULD | declaration-static | — | — |
 | `4.8-1` | MUST | declaration-static | — | No Section 9 item covers declaration field validity; checking it needs a declaration-validation harness, which this suite does not have — it only speaks HTTP to a running target. |

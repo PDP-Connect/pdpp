@@ -489,6 +489,224 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // ------------------------------------------------------------------ 4.5-1 ---
+  // Compound primary-key encoding. Core Section 4: "The canonical string form
+  // of a compound key is the minified JSON array of key values (e.g.,
+  // `["user_123","2026-04-01"]`). Each primary-key component MUST be serialized
+  // as a string in the canonical encoding. Non-string primary-key field values
+  // (e.g., integers, dates) MUST be converted to their string representation
+  // before encoding."
+  //
+  // The stringification half is the one servers get wrong, and it is invisible
+  // until two implementations meet: a server emitting `["session_a",1]` and one
+  // emitting `["session_a","1"]` disagree about the identity of the same
+  // record. Since this id is what `resources[]` entries and URL path parameters
+  // are built from, the disagreement propagates into authorization — a grant
+  // naming one form does not match a record keyed the other.
+  //
+  // The expected form is DERIVED from the record's own field values against the
+  // stream's declared `primary_key`, never compared against an id the suite
+  // wrote down: the latter would test the fixture's bookkeeping rather than the
+  // target's encoder.
+  {
+    caseId: "RS-1/compound-primary-key-canonically-encoded",
+    requirementId: "RS-1",
+    appliesWhen: (_adapter, streams) => streams.length === 0 || streams.some((s) => s.primaryKey.length > 1),
+    assertion:
+      "A record whose stream declares a compound primary key is identified by the minified JSON array of its key components, each serialized as a string.",
+    async run({ adapter, streams, path }) {
+      const stream = streams.find((s) => s.primaryKey.length > 1);
+      if (!stream) {
+        return skip(
+          "No seeded stream declares a compound primary key, so the array encoding this clause governs has nothing to act on."
+        );
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip(`The target issued no grant over '${stream.name}'.`);
+      }
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
+        token: grant.accessToken,
+      });
+      if (response.status !== 200) {
+        return fail(`Reading '${stream.name}' returned ${response.status}.`, [response.evidence]);
+      }
+      const records = asList(response.json)?.data ?? [];
+      const [record] = records;
+      if (!record?.data) {
+        return skip(`The read of '${stream.name}' returned no record carrying data to derive a key from.`);
+      }
+
+      // Derived from what the record actually carries, so this checks the
+      // target's encoder rather than the suite's expectation of it.
+      const components = stream.primaryKey.map((field) => record.data?.[field]);
+      if (components.some((value) => value === undefined)) {
+        return skip(
+          `The returned record does not carry every declared primary-key field (${stream.primaryKey.join(", ")}), so its canonical key cannot be derived from it.`
+        );
+      }
+      const expected = JSON.stringify(components.map((value) => String(value)));
+      if (record.id === expected) {
+        return pass([response.evidence]);
+      }
+      // Distinguish the two failure shapes, because they have different causes
+      // and a reader fixing one needs to know which.
+      const unstringified = JSON.stringify(components);
+      if (record.id === unstringified) {
+        return fail(
+          `Record id ${JSON.stringify(record.id)} encodes its compound key without stringifying every component; Core requires ${expected}. "Non-string primary-key field values (e.g., integers, dates) MUST be converted to their string representation before encoding." Two servers disagreeing on this disagree about the identity of the same record, and since \`resources[]\` entries and URL path parameters are built from this string the disagreement reaches authorization: a grant naming one form does not match a record keyed the other.`,
+          [response.evidence]
+        );
+      }
+      return fail(
+        `Record id ${JSON.stringify(record.id)} is not the canonical encoding of its declared compound primary key (${stream.primaryKey.join(", ")}); Core requires the minified JSON array ${expected}.`,
+        [response.evidence]
+      );
+    },
+  },
+
+  // ------------------------------------------------------------------ 4.3-2 ---
+  // Core Section 4 "Cursor expiry": expiring historical version data is a MAY,
+  // but a server that DOES expire a cursor "MUST return HTTP 410 Gone with
+  // error code `cursor_expired`", and the client "MUST perform a full re-sync".
+  //
+  // The status code is the whole obligation, and it is load-bearing. A 400
+  // reads as a malformed request and invites a retry with a corrected token —
+  // which cannot exist, because the token was never malformed, only old. Only
+  // the 410 tells the client the one thing it can act on: the baseline is
+  // unrecoverable, start over. A client that never learns this silently stops
+  // syncing and keeps serving data that drifts further from the source.
+  {
+    caseId: "RS-7/expired-sync-cursor-reported-as-gone",
+    requirementId: "RS-7",
+    appliesWhen: (_adapter, streams) => streams.length === 0 || hasMutableStateStream(streams),
+    assertion:
+      "An expired changes_since cursor is answered with 410 cursor_expired, while a live cursor from the same session still resumes.",
+    async run({ adapter, streams, path }) {
+      const got = await grantForMutableStream(adapter, streams);
+      if ("skip" in got) {
+        return skip(got.skip);
+      }
+      if (!adapter.expireSyncCursor) {
+        return skip(
+          "The adapter has no expireSyncCursor hook, so no cursor can be aged. Sleeping out a real retention period is not a test, and faking the clock tests the fake — so the target has to be asked to retire a token it issued."
+        );
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(got.stream.name)}/records`);
+
+      // Advance the stream before opening the session this case will expire.
+      //
+      // Cases share one target by design (see runCases), so this one must not
+      // retire a cursor another case is still holding. A sync token names a
+      // position in the stream's history, and two sessions opened with nothing
+      // in between name the SAME position — so expiring "this case's token"
+      // would expire the identical token any later case obtains. Found exactly
+      // that way: the tombstone case began failing with "Resuming a sync from a
+      // valid next_changes_since returned 410".
+      //
+      // Writing first moves the position, so the token opened below is this
+      // case's alone. A target that cannot write reports skip rather than
+      // damaging the rest of the run.
+      const writable = got.stream.fields.find((f) => !got.stream.primaryKey.includes(f));
+      if (!(adapter.writeRecordField && writable)) {
+        return skip(
+          "This case needs writeRecordField and a non-primary-key field, so it can open a sync session at a position no other case shares. Without that, expiring its cursor would retire the identical token a later case obtains, and this case would corrupt the run rather than test it."
+        );
+      }
+      const opening = await request(adapter.baseUrl, recordsPath, {
+        token: got.grant.accessToken,
+        query: { changes_since: "" },
+      });
+      const seed = asList(opening.json)?.data?.find((r) => typeof r.id === "string" && !r.deleted)?.id;
+      if (seed === undefined) {
+        return skip("The opening sync session returned no record to advance the stream with.");
+      }
+      const advanced = await adapter.writeRecordField(
+        got.stream.name,
+        seed,
+        writable,
+        `pdpp-conformance-expiry-${Date.now()}`
+      );
+      if (!advanced) {
+        return skip(`The target could not write field '${writable}', so this case cannot isolate its own cursor.`);
+      }
+
+      const opened = await request(adapter.baseUrl, recordsPath, {
+        token: got.grant.accessToken,
+        query: { changes_since: "" },
+      });
+      if (opened.status !== 200) {
+        return fail(`Opening a changes_since session returned ${opened.status}.`, [opened.evidence]);
+      }
+      const openedBody = asList(opened.json);
+      if (openedBody?.has_more === true) {
+        return skip("The opening sync page was not terminal, and this case does not page to the end.");
+      }
+      const resumeToken = openedBody?.next_changes_since;
+      if (typeof resumeToken !== "string" || resumeToken.length === 0) {
+        return skip(
+          "The terminal page carried no next_changes_since, so there is no cursor to expire. RS-8 covers that."
+        );
+      }
+
+      // The positive control FIRST, while the token is still live. Without it,
+      // a target that refused every changes_since request would satisfy the
+      // negative below while implementing no resumption at all.
+      const live = await request(adapter.baseUrl, recordsPath, {
+        token: got.grant.accessToken,
+        query: { changes_since: resumeToken },
+      });
+      if (live.status !== 200) {
+        return skip(
+          `Resuming with a freshly issued cursor returned ${live.status}, so this target does not resume sessions at all and a later refusal could not be attributed to expiry.`
+        );
+      }
+
+      const expired = await adapter.expireSyncCursor(got.stream.name, resumeToken);
+      if (!expired) {
+        return skip(
+          "This deployment does not expire sync cursors. Core makes expiry a MAY, so declining to retire historical version data is conforming and there is no obligation to observe."
+        );
+      }
+      const response = await request(adapter.baseUrl, recordsPath, {
+        token: got.grant.accessToken,
+        query: { changes_since: resumeToken },
+      });
+      const evidence = [opened.evidence, live.evidence, response.evidence];
+
+      if (response.status === 200) {
+        return fail(
+          "A cursor the target reported as expired was still served a delta. A client resuming from a cursor the server can no longer honour receives an incomplete change set and has no way to detect the gap.",
+          evidence
+        );
+      }
+      if (response.status !== 410) {
+        return fail(
+          `An expired changes_since cursor was answered with ${response.status} rather than 410. Core Section 4: "If a client's cursor has expired, the resource server MUST return HTTP 410 Gone with error code cursor_expired." Any other status reads as a client error and invites a retry with a corrected token, which cannot exist — the token was never malformed, only old. Only the 410 tells the client to discard its baseline and full re-sync.`,
+          evidence
+        );
+      }
+      const error = errorBody(response);
+      if (error?.code !== "cursor_expired") {
+        return fail(
+          `The expired cursor was answered 410 but classified as "${error?.code ?? "no structured error"}" rather than cursor_expired. Clients branch on the code, not the status alone.`,
+          evidence
+        );
+      }
+
+      // Leave the stream past the position that was just retired.
+      //
+      // A sync token names a position in the stream's history, so a later case
+      // opening a session while the stream sits where it does now would be
+      // handed the very token this case expired — and would see a 410 it has no
+      // way to explain. Advancing once restores a usable position for everyone
+      // after us. Cases share one target by design (runCases), and a case that
+      // retires a cursor owes the run this cleanup.
+      await adapter.writeRecordField(got.stream.name, seed, writable, `pdpp-conformance-expiry-done-${Date.now()}`);
+      return pass(evidence);
+    },
+  },
+
   // ---------------------------------------------------------------- RS-8 ---
   // Section 9 RS item 8: the terminal page of every `changes_since` response
   // carries `next_changes_since`. Without it a client has no way to resume and

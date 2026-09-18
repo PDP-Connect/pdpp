@@ -355,7 +355,40 @@ export type Defect =
    * keeps serving data the owner deleted — and nothing in the exchange ever
    * says otherwise.
    */
-  | "omit-tombstones";
+  | "omit-tombstones"
+  /**
+   * Answers an expired `changes_since` cursor with an ordinary refusal instead
+   * of 410 `cursor_expired` (clause 4.3-2).
+   *
+   * A 400 `invalid_cursor` looks like a client bug and invites a retry with a
+   * corrected token, which cannot exist. Only the 410 tells the client the
+   * thing it must act on: its baseline is unrecoverable and a full re-sync is
+   * the only way forward. A client that never learns this silently stops
+   * syncing.
+   */
+  | "misclassify-expired-sync-cursor"
+  /**
+   * Encodes a compound primary key without stringifying non-string components
+   * (clause 4.5-1).
+   *
+   * `["session_a",1]` instead of `["session_a","1"]`. The record is otherwise
+   * correct and every other case passes against it, which is the point: this
+   * disagreement is invisible within one implementation and only surfaces when
+   * two meet — or when a grant's `resources[]` entry, built from one form, is
+   * matched against a record keyed the other.
+   */
+  | "unstringified-compound-key"
+  /**
+   * Accepts a declaration whose selection preset names the same stream twice
+   * (clause 6.9-1).
+   *
+   * Models the server that defers the problem to issuance and deduplicates
+   * there. Core forecloses that explicitly — "They are not deferred to grant
+   * issuance" — because the retained declaration is what the owner's consent is
+   * written against, and a document whose preset means two different things
+   * depending on who expands it cannot support that consent.
+   */
+  | "accept-duplicate-preset-stream";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -590,6 +623,22 @@ export class ReferenceServer {
    * delta. Merging the two would make every ordinary read have to remember to
    * filter deletions out.
    */
+  /**
+   * Individual `changes_since` tokens this server has retired (clause 4.3-2).
+   *
+   * Deliberately a set of exact tokens rather than a horizon below which
+   * everything is expired. A horizon would retroactively expire every token
+   * issued at or before it — including ones a later, unrelated session is still
+   * legitimately holding — so one case's expiry would leak into another's
+   * resume and surface as a spurious 410. Found exactly that way: the tombstone
+   * case began failing with "Resuming a sync from a valid next_changes_since
+   * returned 410" once the expiry case ran before it.
+   *
+   * Empty by default: expiry is a MAY and this server retires nothing on its
+   * own.
+   */
+  private readonly expiredSyncTokens = new Set<string>();
+
   private readonly tombstones = new Map<
     string,
     { readonly stream: string; readonly recordId: string; readonly version: number; readonly deletedAt: string }
@@ -643,6 +692,24 @@ export class ReferenceServer {
     const key = recordKey(stream, recordId);
     this.recordVersions.set(key, this.versionClock);
     this.changedFields.set(key, new Set([field]));
+    return true;
+  }
+
+  /**
+   * Retire a `changes_since` token, so a later session presenting it is past
+   * this server's retention horizon (clause 4.3-2).
+   *
+   * Models a retention policy without a clock: the horizon moves, rather than
+   * time passing. That keeps the case deterministic — a test that slept out a
+   * real retention period would be slow and flaky, and a faked clock would test
+   * the fake.
+   */
+  expireSyncCursor(token: string): boolean {
+    const horizon = parseSyncToken(token);
+    if (horizon === null) {
+      return false;
+    }
+    this.expiredSyncTokens.add(token);
     return true;
   }
 
@@ -1203,6 +1270,21 @@ export class ReferenceServer {
         error(400, "invalid_cursor", "invalid_request_error", "changes_since token is malformed or unrecognized.");
         return;
       }
+      // Clause 4.3-2: a cursor past this server's retention horizon is 410
+      // `cursor_expired`, which is the only answer that tells the client to
+      // discard its baseline and full re-sync. Checked after the malformed
+      // branch above, because an unparseable token is a different condition
+      // with a different remedy. A well-formed token that is merely too old is
+      // NOT a client error, and reporting it as one invites a retry that can
+      // never succeed.
+      if (syncCursor !== null && syncCursor !== "" && this.expiredSyncTokens.has(syncCursor)) {
+        if (this.has("misclassify-expired-sync-cursor")) {
+          error(400, "invalid_cursor", "invalid_request_error", "changes_since token is malformed or unrecognized.");
+          return;
+        }
+        error(410, "cursor_expired", "gone_error", "changes_since cursor is too old; full re-sync required.");
+        return;
+      }
 
       // Section 8 "Stable sort": page cursors are direction-bound. This server
       // mints `ok:<order>:<offset>`, so the direction a cursor was produced
@@ -1307,7 +1389,7 @@ export class ReferenceServer {
         .filter(eligibleForSync)
         .map((record) => ({
           object: "record",
-          id: record.id,
+          id: this.canonicalKey(fixture, record),
           stream: fixture.name,
           data: Object.fromEntries(Object.entries(record).filter(([k]) => projection.includes(k))),
         }));
@@ -1597,6 +1679,33 @@ export class ReferenceServer {
           : []),
       ],
     };
+  }
+
+  /**
+   * The canonical string identity of a record (Core Section 4 "Compound key
+   * encoding").
+   *
+   * A single-field key is the value itself; a compound key is "the minified
+   * JSON array of key values", with every component serialized as a string.
+   * The stringification is the half that matters: without it an integer
+   * component encodes as `1` rather than `"1"`, and two implementations
+   * disagree about the identity of the same record.
+   *
+   * Falls back to the record's own `id` when the stream declares a key the
+   * record does not carry, so a malformed fixture surfaces as itself rather
+   * than as a key-encoding failure.
+   */
+  private canonicalKey(fixture: StreamFixture, record: Record_): string {
+    if (fixture.primaryKey.length <= 1) {
+      return record.id;
+    }
+    const components = fixture.primaryKey.map((field) => record[field]);
+    if (components.some((value) => value === undefined)) {
+      return record.id;
+    }
+    return this.has("unstringified-compound-key")
+      ? JSON.stringify(components)
+      : JSON.stringify(components.map((value) => String(value)));
   }
 
   /** Resolve a Bearer credential to its principal, as introspection would. */

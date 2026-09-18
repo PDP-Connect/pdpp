@@ -455,6 +455,31 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "RS-7/paginated-sync-session-anchored-to-one-horizon",
     defect: "re-anchor-sync-session-per-page",
   },
+  // Clause 4.3-2. The defect answers an expired cursor 400 `invalid_cursor`
+  // rather than 410 `cursor_expired` — it still REFUSES, so an oracle checking
+  // only "not 200" would pass it. The status is the whole obligation: 400 reads
+  // as a client error and invites a retry that cannot succeed, where 410 tells
+  // the client to discard its baseline.
+  {
+    caseId: "RS-7/expired-sync-cursor-reported-as-gone",
+    defect: "misclassify-expired-sync-cursor",
+  },
+  // Clause 4.5-1. The defect drops only the stringification, so the id is still
+  // a well-formed minified JSON array and every other case passes against it.
+  // An oracle checking "the id looks like an array" would not catch it.
+  {
+    caseId: "RS-1/compound-primary-key-canonically-encoded",
+    defect: "unstringified-compound-key",
+  },
+  // Clause 6.9-1. The defect ACCEPTS the duplicate-bearing declaration, which
+  // is the deferral Core forecloses ("They are not deferred to grant
+  // issuance"). Not paired with `accept-undeclared-selection`: the preset here
+  // names a stream the snapshot really declares, so name validation passes and
+  // only a check on the preset's own shape refuses it.
+  {
+    caseId: "AS-16/duplicate-stream-in-a-selection-preset-refused",
+    defect: "accept-duplicate-preset-stream",
+  },
 ];
 
 describe("negative oracles discriminate conforming from violating targets", () => {

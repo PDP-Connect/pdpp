@@ -100,6 +100,30 @@ export const DEFAULT_FIXTURES: readonly StreamFixture[] = [
       },
     ],
   },
+  // A stream with a COMPOUND primary key, one component of which is not a
+  // string (clause 4.5-1).
+  //
+  // Both properties are load-bearing and neither alone suffices. A single-field
+  // key has no array encoding to get wrong; an all-string compound key hides
+  // the stringification half, because the values are already strings and a
+  // server that skipped the conversion would produce the same output. The
+  // `sequence` component is a number, so `["session_a","1"]` (correct) and
+  // `["session_a",1]` (not) are visibly different.
+  {
+    name: "session_events",
+    fields: ["session_id", "sequence", "kind"],
+    fieldTypes: { session_id: "string", sequence: "integer", kind: "string" },
+    primaryKey: ["session_id", "sequence"],
+    semantics: "append_only",
+    records: [
+      {
+        id: '["session_a","1"]',
+        session_id: "session_a",
+        sequence: 1,
+        kind: "opened",
+      },
+    ],
+  },
   // A stream that declares NO consent_time_field, and therefore is not
   // time-range-capable. Core Section 5: "Streams that cannot define a stable
   // `consent_time_field` simply omit it. The absence of `consent_time_field` is
@@ -411,6 +435,22 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       return refuse(
         "invalid_source_id",
         `provider_native source.id '${declaration.source.id}' is not the accepted protected-resource identifier '${ACCEPTED_RESOURCE_ID}'`
+      );
+    }
+
+    // Clause 6.9-1: "Each selection preset MUST NOT contain the same stream
+    // name more than once. Duplicate stream names make the declaration
+    // invalid. They are not deferred to grant issuance." So the refusal is on
+    // the DOCUMENT, before anything is retained — a server that accepted it and
+    // deduplicated at issuance would have retained a declaration the owner's
+    // consent is then written against, whose meaning nobody agreed on.
+    const duplicatePreset = this.defects.has("accept-duplicate-preset-stream")
+      ? undefined
+      : (declaration.selectionPresets ?? []).find((preset) => new Set(preset.streams).size !== preset.streams.length);
+    if (duplicatePreset) {
+      return refuse(
+        "invalid_declaration",
+        `selection preset '${duplicatePreset.name}' names the same stream more than once, which makes the declaration invalid`
       );
     }
 
@@ -1038,6 +1078,11 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       };
     }
     return { accepted: true, status: 200, documentFetched: true };
+  }
+
+  /** Retire a changes_since token, so presenting it is past retention (4.3-2). */
+  async expireSyncCursor(_stream: string, token: string): Promise<boolean> {
+    return this.server.expireSyncCursor(token);
   }
 
   /** Write one field of a seeded record, stamping a new version (8.9-13, 8.9-14). */

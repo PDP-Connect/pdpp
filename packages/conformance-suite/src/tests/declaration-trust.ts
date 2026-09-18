@@ -239,4 +239,66 @@ export const DECLARATION_TRUST_CASES: readonly ConformanceCase[] = [
       return pass(evidence);
     },
   },
+
+  // ------------------------------------------------------------------ 6.9-1 ---
+  // Core Section 6 "Selection presets": "Each selection preset MUST NOT contain
+  // the same stream name more than once. Duplicate stream names make the
+  // declaration invalid. They are not deferred to grant issuance."
+  //
+  // That last sentence is what makes this a declaration-trust case rather than
+  // a selection-validation one. The obvious implementation — accept the
+  // document, deduplicate when the preset is expanded — is explicitly
+  // foreclosed, and for a reason the clause does not spell out but the
+  // architecture does: the retained declaration is what the owner's consent is
+  // written against. A preset whose meaning depends on who expands it, and how
+  // they handle the repeat, cannot support that consent.
+  //
+  // Distinct from 6.8-3 (`AS-2/duplicate-stream-name-refused`), which is about
+  // a duplicate in a REQUEST. A server can refuse one and accept the other:
+  // they are different documents validated on different surfaces.
+  {
+    caseId: "AS-16/duplicate-stream-in-a-selection-preset-refused",
+    requirementId: "AS-16",
+    assertion:
+      "A declaration whose selection preset names the same stream twice is refused, while the same declaration with a well-formed preset is accepted.",
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("The adapter seeded no streams, so no preset can name one.");
+      }
+      const version = `preset-${Date.now()}`;
+      const base = baselineDeclaration(seeded.name, seeded.fields, version);
+
+      // The positive control carries a preset too, and a well-formed one. A
+      // control with NO preset would leave a refusal attributable to the target
+      // simply not supporting presets at all.
+      const control = await acceptedControl(adapter, {
+        ...base,
+        selectionPresets: [{ name: "conformance_ok", streams: [seeded.name] }],
+      });
+      if ("reason" in control) {
+        return skip(control.reason);
+      }
+
+      const duplicate = await adapter.submitDeclaration?.({
+        ...base,
+        declarationVersion: `${version}-dup`,
+        selectionPresets: [{ name: "conformance_dup", streams: [seeded.name, seeded.name] }],
+      });
+      if (!duplicate) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [
+        outcomeEvidence("declaration: well-formed preset (control)", control.outcome),
+        outcomeEvidence("declaration: preset naming one stream twice", duplicate),
+      ];
+      if (duplicate.accepted) {
+        return fail(
+          `A declaration whose selection preset 'conformance_dup' names stream '${seeded.name}' twice was accepted. Core Section 6: "Each selection preset MUST NOT contain the same stream name more than once. Duplicate stream names make the declaration invalid. They are not deferred to grant issuance." Retaining such a document means the owner later consents against a preset whose expansion is ambiguous, and every party may resolve the repeat differently.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
 ];

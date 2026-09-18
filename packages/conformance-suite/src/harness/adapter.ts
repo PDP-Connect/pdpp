@@ -264,6 +264,21 @@ export interface SourceDeclarationSubmission {
   readonly authority?: string;
   /** Opaque, non-empty revision id. Core assigns it NO ordering meaning. */
   readonly declarationVersion: string;
+  /**
+   * Selection presets this declaration defines (Core Section 6 "Selection
+   * presets"), for clause 6.9-1.
+   *
+   * Carried on the DECLARATION rather than on a request because that is where
+   * the obligation sits: "Each selection preset MUST NOT contain the same
+   * stream name more than once. Duplicate stream names make the declaration
+   * invalid. They are not deferred to grant issuance." So the AS must refuse
+   * the document, and a case that sent a duplicate-bearing REQUEST would be
+   * testing a different rule (6.8-3) against a different surface.
+   *
+   * Absent means the declaration defines none, which is the ordinary case and
+   * the shape every existing declaration-trust case submits.
+   */
+  readonly selectionPresets?: readonly { readonly name: string; readonly streams: readonly string[] }[];
   readonly source: { readonly kind: "connector" | "provider_native"; readonly id: string };
   /**
    * The declaration's parsed content, as whatever shape the target onboards.
@@ -570,6 +585,26 @@ export interface TargetAdapter {
    * expired-grant oracle. Optional: not every target can fabricate one.
    */
   expiredGrantToken?: () => Promise<string | null>;
+
+  /**
+   * Expire a `changes_since` token this target issued, for clause 4.3-2.
+   *
+   * Core Section 4 "Cursor expiry": expiring historical version data is a MAY,
+   * but a server that DOES expire a cursor "MUST return HTTP 410 Gone with
+   * error code `cursor_expired`" — a client's correctness depends on telling
+   * "your cursor is too old, re-sync" apart from every other refusal, because
+   * only the first calls for discarding its baseline and starting over.
+   *
+   * Aging a cursor is the one thing a black-box client cannot do for itself:
+   * the alternative is sleeping out a real retention period, which is not a
+   * test, or faking a clock, which tests the fake. So the target is asked to
+   * retire a token it issued.
+   *
+   * Returns false when this deployment never expires cursors, which reports the
+   * case `skip`: declining an optional retention policy is not a violation, and
+   * the suite must not read it as one.
+   */
+  expireSyncCursor?: (stream: string, token: string) => Promise<boolean>;
 
   /**
    * A token for a DIFFERENT subject than the seeded one. Powers the

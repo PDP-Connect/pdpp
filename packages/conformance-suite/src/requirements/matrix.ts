@@ -120,9 +120,7 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#incremental-sync-for-mutable-streams",
     applicability: "the target serves at least one `mutable_state` stream",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "No adapter hook can force a cursor to expire: the suite would need a TargetAdapter method that ages or invalidates an issued `changes_since` token, or a target that accepts an obviously stale token.",
+    caseIds: ["RS-7/expired-sync-cursor-reported-as-gone"],
   },
   {
     clauseId: "4.3-3",
@@ -194,9 +192,7 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#the-record-envelope",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "No Section 9 item covers compound-key canonical encoding; testing it needs a seeded stream whose `primary_key` has two or more fields, which no target config currently declares.",
+    caseIds: ["RS-1/compound-primary-key-canonically-encoded"],
   },
   {
     clauseId: "4.5-2",
@@ -828,9 +824,7 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#selection-presets",
     applicability: "the AS supports selection presets",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Binds the preset definition rather than a request, so testing it needs an adapter hook that registers a malformed preset and observes refusal; the suite can only name presets a target already defines.",
+    caseIds: ["AS-16/duplicate-stream-in-a-selection-preset-refused"],
   },
 ];
 
