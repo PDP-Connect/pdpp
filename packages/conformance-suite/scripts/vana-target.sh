@@ -36,9 +36,22 @@
 # a result about a tree that exists only on the runner's disk, and the report
 # must say so.
 #
-# Lifecycle safety: `stop` kills ONLY the PID recorded in the state directory.
-# It never pattern-matches process names — a broad `pkill -f tsx` twice took out
-# the caller's own shell during development of the sibling reference target.
+# Lifecycle safety, two rules, both learned the hard way:
+#
+# 1. `stop` kills ONLY the PID recorded in the state directory. It never
+#    pattern-matches process names — a broad `pkill -f tsx` twice took out the
+#    caller's own shell during development of the sibling reference target.
+#
+# 2. This script NEVER writes to the checkout it is pointed at. PDPP_VANA_PS is
+#    read as a source of git objects and nothing else. The tree that is built
+#    and booted is a private detached worktree under the state directory,
+#    removed on `stop`. Before this rule existed, `compose` ran
+#    `git checkout -B pdpp-conformance-composed <ref>` inside PDPP_VANA_PS; on
+#    2026-09-18 that reset a live development branch three times and dropped a
+#    pushed commit. `compose` now verifies the caller's HEAD and branch are
+#    unchanged when it finishes, and test/vana-target-script.test.ts fails if
+#    the script regains the ability to move a branch in a directory it does not
+#    own.
 #
 # Usage:
 #   vana-target.sh up      # compose, install, build, boot, seed, wait for ready
@@ -73,7 +86,6 @@ set -euo pipefail
 VANA_REF="${PDPP_VANA_REF:-b7ec22681fc8fd47e6b730fd4b12651a17f3e78f}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
-COMPOSED_BRANCH="pdpp-conformance-composed"
 
 PORT="${PDPP_VANA_PORT:-8420}"
 # A temp dir by default: this target's state is disposable, and a fixed path
@@ -83,6 +95,14 @@ PID_FILE="$STATE_DIR/server.pid"
 LOG_FILE="$STATE_DIR/server.log"
 ENV_FILE="$STATE_DIR/target.env"
 BOOT_FILE_NAME="pdpp-conformance-boot.mts"
+
+# The tree this script builds and boots: a private detached worktree of
+# $PDPP_VANA_PS at $VANA_REF, created by `compose` and removed by `stop`.
+# Everything that writes — npm install, the native rebuild, the generated boot
+# file — writes HERE, never into the caller's checkout. See cmd_compose.
+RUN_DIR="$STATE_DIR/tree"
+# Full sha of the tree under test, set by cmd_compose and recorded in the report.
+RUN_HEAD=""
 
 SOURCE_ID="https://registry.pdpp.dev/connectors/spotify"
 CLIENT_ID="music_recommendations"
@@ -125,24 +145,59 @@ require_checkout() {
     die "$PDPP_VANA_PS has no packages/server directory."
 }
 
-# Check out the ref under test. On the supported path this is one checkout of
-# the integration owner's published composition and nothing more.
+# Check out the ref under test INTO A DIRECTORY THIS SCRIPT OWNS.
+#
+# This script used to run `git checkout -B pdpp-conformance-composed $VANA_REF`
+# directly inside $PDPP_VANA_PS. That is a destructive write to a directory the
+# caller owns: it moves whatever branch the caller had checked out onto a ref
+# this script chose. On 2026-09-18 it reset a live development branch three
+# times and dropped a pushed commit from the local branch. A conformance runner
+# has no business rewriting the history of the thing it is measuring.
+#
+# So: $PDPP_VANA_PS is now read ONLY as a source of git objects, never written.
+# The tree that gets built and booted is $RUN_DIR, a private worktree under the
+# state directory, removed on teardown. The caller's HEAD, branch, index and
+# working tree are untouched, and `compose` verifies that afterwards.
 cmd_compose() {
   require_checkout
   local git="git -C $PDPP_VANA_PS"
+
+  # Everything below reads from the caller's object database. Record the exact
+  # state we must not disturb, so the post-condition check has something real to
+  # compare against rather than trusting that we wrote nothing.
+  local before_head before_branch
+  before_head=$($git rev-parse HEAD) || die "cannot read HEAD in $PDPP_VANA_PS"
+  before_branch=$($git symbolic-ref --quiet HEAD || echo "DETACHED")
 
   $git rev-parse --verify --quiet "$VANA_REF^{commit}" >/dev/null ||
     die "ref $VANA_REF not found in $PDPP_VANA_PS. Fetch it first:
   git -C $PDPP_VANA_PS fetch origin waspflow/pdpp-integrated-journey-0917"
 
-  # Refuse to discard uncommitted work in someone else's checkout.
+  # Uncommitted work in the caller's tree is no longer an obstacle — we do not
+  # touch that tree — but it IS a correctness warning: those edits are not in
+  # any commit, so they are not in the worktree we build from, and a caller
+  # expecting to test them would otherwise get a silently different result.
   if [ -n "$($git status --porcelain --untracked-files=no)" ]; then
-    die "$PDPP_VANA_PS has uncommitted changes; commit or stash them first."
+    log "NOTE: $PDPP_VANA_PS has uncommitted changes. They are NOT under test:"
+    log "NOTE: this run builds $VANA_REF from a private worktree. Commit them"
+    log "NOTE: and point PDPP_VANA_REF at the commit to include them."
   fi
 
-  log "checking out $VANA_REF -> $COMPOSED_BRANCH"
-  $git checkout -B "$COMPOSED_BRANCH" "$VANA_REF" >/dev/null 2>&1 ||
-    die "could not check out $VANA_REF"
+  # Clear any worktree left by an earlier run THROUGH GIT, not with rm -rf: a
+  # bare rm deletes the files and leaves the registration in the caller's
+  # .git/worktrees, and the next `worktree add` then fails on a path git still
+  # believes is in use. `compose` must be re-runnable against the same state dir.
+  remove_run_worktree
+  mkdir -p "$(dirname "$RUN_DIR")"
+
+  # --detach, never -B: a detached worktree creates no branch and moves none.
+  # The composed branch NAME is deliberately gone from the supported path; the
+  # ref under test is identified by its sha, which is what the report records.
+  log "checking out $VANA_REF into a private worktree"
+  $git worktree add --detach "$RUN_DIR" "$VANA_REF" >/dev/null 2>&1 ||
+    die "could not create a worktree for $VANA_REF under $RUN_DIR"
+
+  local run_git="git -C $RUN_DIR"
 
   if [ -n "$EXTRA_REF" ]; then
     log "WARNING: merging $EXTRA_REF on top of $VANA_REF."
@@ -150,24 +205,42 @@ cmd_compose() {
     log "WARNING: any report from this run must say so."
     $git rev-parse --verify --quiet "$EXTRA_REF^{commit}" >/dev/null ||
       die "extra ref $EXTRA_REF not found in $PDPP_VANA_PS."
-    $git merge --no-edit "$EXTRA_REF" >/dev/null 2>&1 ||
+    # Merged inside OUR worktree, onto a detached HEAD. The merge commit lands
+    # on no branch and disappears with the worktree.
+    $run_git -c user.email=conformance@pdpp.invalid -c user.name=conformance \
+      merge --no-edit "$EXTRA_REF" >/dev/null 2>&1 ||
       die "merging $EXTRA_REF into $VANA_REF conflicts. Resolve it by hand and
 re-run with PDPP_VANA_REF pointed at your merge commit, so the ref under test
 names exactly what was tested."
   fi
 
+  RUN_HEAD=$($run_git rev-parse HEAD)
   local head
-  head=$($git rev-parse --short HEAD)
-  log "  tree under test: $head"
+  head=$($run_git rev-parse --short HEAD)
+  log "  tree under test: $head (worktree $RUN_DIR)"
 
   # Fail closed if the AS is absent. A ref carrying only the RS passes every
   # check above and then produces a report full of skips that reads like a thin
   # result rather than the wrong target.
-  [ -f "$PDPP_VANA_PS/packages/server/src/routes/pdpp-auth.ts" ] ||
+  [ -f "$RUN_DIR/packages/server/src/routes/pdpp-auth.ts" ] ||
     die "$head has no packages/server/src/routes/pdpp-auth.ts, so it serves no
 authorization server and the consent journey cannot run. A resource-server-only
 ref (e.g. feat/pdpp-record-storage-rs) is not a conformance target on its own --
 use the integration owner's composed ref."
+
+  # The post-condition, checked rather than asserted in a comment: the caller's
+  # checkout is exactly where it was. If a future edit reintroduces a write to
+  # $PDPP_VANA_PS, this fails loudly here instead of silently eating a commit.
+  local after_head after_branch
+  after_head=$($git rev-parse HEAD)
+  after_branch=$($git symbolic-ref --quiet HEAD || echo "DETACHED")
+  if [ "$before_head" != "$after_head" ] || [ "$before_branch" != "$after_branch" ]; then
+    die "BUG: this script moved the caller's checkout $PDPP_VANA_PS
+  from $before_branch @ $before_head
+  to   $after_branch @ $after_head
+That is exactly what it must never do. Restore with:
+  git -C $PDPP_VANA_PS checkout $before_branch && git -C $PDPP_VANA_PS reset --hard $before_head"
+  fi
 }
 
 cmd_build() {
@@ -179,7 +252,7 @@ cmd_build() {
   # `--ignore-scripts` first because workspace `prepare` scripts build one
   # another before the links they need exist; native modules are built after.
   log "installing dependencies"
-  (cd "$PDPP_VANA_PS" && npm install --allow-git=root --no-audit --no-fund --ignore-scripts) ||
+  (cd "$RUN_DIR" && npm install --allow-git=root --no-audit --no-fund --ignore-scripts) ||
     die "dependency install failed; see the npm output above."
 
   # npm 12's install-script policy blocks preinstall/install/postinstall for
@@ -190,22 +263,22 @@ cmd_build() {
   # scoped here to only the three named packages this command rebuilds.
   # Verified below rather than trusted, since the exit code cannot tell us.
   log "building native modules"
-  (cd "$PDPP_VANA_PS" && npm rebuild better-sqlite3 secp256k1 esbuild --dangerously-allow-all-scripts) ||
+  (cd "$RUN_DIR" && npm rebuild better-sqlite3 secp256k1 esbuild --dangerously-allow-all-scripts) ||
     die "native module build failed."
 
-  (cd "$PDPP_VANA_PS" && node -e "require('better-sqlite3')(':memory:')") ||
+  (cd "$RUN_DIR" && node -e "require('better-sqlite3')(':memory:')") ||
     die "better-sqlite3 native binding did not build; npm rebuild exits 0 even
 when its install scripts are blocked, so this checks the binding loads."
 
   log "building @opendatalabs/personal-server-ts-core"
-  (cd "$PDPP_VANA_PS/packages/core" && npm run build) ||
+  (cd "$RUN_DIR/packages/core" && npm run build) ||
     die "core build failed."
 }
 
 # The boot entrypoint is generated rather than committed to the server repo, so
 # this script owns every input that shapes the run.
 write_boot_file() {
-  cat > "$PDPP_VANA_PS/$BOOT_FILE_NAME" <<BOOT
+  cat > "$RUN_DIR/$BOOT_FILE_NAME" <<BOOT
 // Generated by packages/conformance-suite/scripts/vana-target.sh. Do not edit.
 //
 // Boots the composed PDPP AS + RS over plain HTTP. Configuration mirrors
@@ -413,7 +486,7 @@ cmd_up() {
 
   log "starting server (state $STATE_DIR)"
   (
-    cd "$PDPP_VANA_PS"
+    cd "$RUN_DIR"
     setsid nohup npx tsx "$BOOT_FILE_NAME" > "$LOG_FILE" 2>&1 < /dev/null &
     echo $! > "$PID_FILE"
   )
@@ -427,8 +500,13 @@ cmd_up() {
   dev_token=$(grep -o '{"ready":true.*}' "$LOG_FILE" | tail -1 |
     python3 -c 'import json,sys;print(json.load(sys.stdin)["devToken"])') ||
     die "could not read the dev token from $LOG_FILE"
+  # The version recorded in the report is the HEAD of the tree we BUILT, read
+  # from our own worktree. It used to be read from $PDPP_VANA_PS, which was only
+  # ever correct because the script had just rewritten that checkout to match --
+  # i.e. the report's provenance depended on the destructive behaviour removed
+  # above. Now the two are independent and this names the tree actually booted.
   local target_version
-  target_version="personal-server-ts@waspflow/pdpp-integrated-journey-0917 $(git -C "$PDPP_VANA_PS" rev-parse --short HEAD)"
+  target_version="personal-server-ts@$VANA_REF $(git -C "$RUN_DIR" rev-parse --short HEAD)"
 
   umask 077
   {
@@ -556,6 +634,21 @@ cmd_status() {
   return 1
 }
 
+# Drop the private worktree, including its registration in the caller's
+# .git/worktrees. A plain `rm -rf` of the state dir would delete the files and
+# leave the caller's repository carrying a stale worktree entry — still not a
+# branch move, but still litter this script put in someone else's checkout.
+# `--force` because the tree is dirty by construction (node_modules, the built
+# core package, the generated boot file); that force applies to OUR worktree.
+remove_run_worktree() {
+  [ -d "$RUN_DIR" ] || return 0
+  [ -n "${PDPP_VANA_PS:-}" ] || return 0
+  log "removing private worktree $RUN_DIR"
+  git -C "$PDPP_VANA_PS" worktree remove --force "$RUN_DIR" >/dev/null 2>&1 ||
+    rm -rf "$RUN_DIR"
+  git -C "$PDPP_VANA_PS" worktree prune >/dev/null 2>&1 || true
+}
+
 # Terminate only the PID this script started. Never a pattern match.
 cmd_stop() {
   if [ -f "$PID_FILE" ]; then
@@ -579,8 +672,9 @@ cmd_stop() {
 
   # Remove the generated boot file and the credential-bearing state, so a run
   # leaves neither an untracked file in the server checkout nor a token on disk.
-  rm -f "$PDPP_VANA_PS/$BOOT_FILE_NAME" 2>/dev/null || true
+  rm -f "$RUN_DIR/$BOOT_FILE_NAME" 2>/dev/null || true
   rm -f "$ENV_FILE" 2>/dev/null || true
+  remove_run_worktree
   case "$STATE_DIR" in
     */pdpp-vana-target-*) rm -rf "$STATE_DIR" && log "removed $STATE_DIR" ;;
     *) log "state dir $STATE_DIR was caller-supplied; leaving it in place" ;;
@@ -593,8 +687,18 @@ case "${1:-}" in
   seed) cmd_seed ;;
   status) cmd_status ;;
   stop) cmd_stop ;;
+  # `compose` is the checkout step alone, with no install, build or boot. It is
+  # separable so the non-destructiveness rule can be tested directly: the guard
+  # in test/vana-target-script.test.ts runs THIS verb against a throwaway
+  # repository and asserts the branch and HEAD did not move. Testing it through
+  # `up` would mean an npm install and a server boot per assertion, which is
+  # slow enough that the guard would not be run.
+  compose)
+    cmd_compose
+    printf '%s\n' "$RUN_HEAD"
+    ;;
   *)
-    printf 'usage: %s {up|env|seed|status|stop}\n' "$0" >&2
+    printf 'usage: %s {up|env|seed|status|stop|compose}\n' "$0" >&2
     exit 2
     ;;
 esac
