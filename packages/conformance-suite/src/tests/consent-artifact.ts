@@ -105,43 +105,78 @@ function containsText(structure: unknown, text: string): boolean {
 }
 
 /**
+ * Find a key anywhere in the artifact, at any depth, and return its value.
+ *
+ * Core Section 7.2 says WHICH facts the final approval artifact must carry. It
+ * fixes no JSON layout for them, and real servers nest: the Personal Server
+ * groups the selection under `data` and the purpose under `policy`. An oracle
+ * that assumed a flat object would report "omits streams" about an artifact
+ * whose `data.streams` is correct and complete — a false finding, and exactly
+ * the kind this suite exists not to produce. So presence is searched for
+ * structurally, and only genuine absence is reported.
+ */
+function findKey(structure: unknown, key: string): { readonly value: unknown } | null {
+  if (Array.isArray(structure)) {
+    for (const item of structure) {
+      const found = findKey(item, key);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+  if (typeof structure === "object" && structure !== null) {
+    const record = structure as Record<string, unknown>;
+    if (Object.hasOwn(record, key)) {
+      return { value: record[key] };
+    }
+    for (const item of Object.values(record)) {
+      const found = findKey(item, key);
+      if (found) {
+        return found;
+      }
+    }
+  }
+  return null;
+}
+
+/** Whether the artifact states this fact anywhere, under any of these names. */
+function statesFact(artifact: unknown, names: readonly string[]): boolean {
+  return names.some((name) => {
+    const found = findKey(artifact, name);
+    return found !== null && found.value !== null && found.value !== undefined;
+  });
+}
+
+/**
  * Which Section 7.2 facts the artifact does not state.
  *
- * Checked individually rather than as "an artifact exists", because the
+ * Checked fact by fact rather than as "an artifact exists", because the
  * realistic defect is an artifact that names the streams and fields — the facts
  * an implementer thinks of first — and drops the lifecycle ones.
  *
- * `temporal_field`, `since` and `until` are checked for KEY PRESENCE, not for a
- * non-null value: an explicit null is a legitimate statement that there is no
- * temporal constraint, whereas an absent key means the artifact simply does not
- * say. The others must carry a value, since "purpose: null" states nothing.
+ * Each fact carries the alternative key names a conforming server may use, so
+ * the case tests the OBLIGATION (the owner is told this) rather than one
+ * server's vocabulary. Temporal facts are exempted when the staged request
+ * carried no time constraint: Core requires the artifact to state the resolved
+ * terms, and "there is no temporal constraint" is fully stated by the absence
+ * of a time range from a request that asked for none.
  */
-function missingArtifactFacts(
-  artifact: Record<string, unknown>,
-  streamRows: readonly Record<string, unknown>[]
-): readonly string[] {
-  const missing: string[] = [];
-  for (const key of ["purpose", "retention", "grant_expiry", "client"]) {
-    if (artifact[key] === undefined || artifact[key] === null) {
-      missing.push(key);
-    }
+function missingArtifactFacts(artifact: unknown, expectTemporal: boolean): readonly string[] {
+  const required: readonly (readonly [string, readonly string[]])[] = [
+    ["purpose", ["purpose", "purpose_code"]],
+    ["retention", ["retention", "retention_policy"]],
+    ["grant expiry", ["grant_expiry", "expires_at", "grant_expires_at"]],
+    ["client identity", ["client", "requester", "client_id"]],
+    ["streams", ["streams"]],
+    ["fields", ["fields"]],
+    ["instance ids", ["instance_ids"]],
+  ];
+  const missing = required.filter(([, names]) => !statesFact(artifact, names)).map(([label]) => label);
+  if (expectTemporal && !statesFact(artifact, ["time_range", "temporal_field", "since"])) {
+    missing.push("temporal field / since / until");
   }
-  if (streamRows.length === 0) {
-    missing.push("streams");
-  }
-  for (const row of streamRows) {
-    for (const key of ["name", "fields", "instance_ids", "resources"]) {
-      if (row[key] === undefined || row[key] === null) {
-        missing.push(`streams[].${key}`);
-      }
-    }
-    for (const key of ["temporal_field", "since", "until"]) {
-      if (!Object.hasOwn(row, key)) {
-        missing.push(`streams[].${key}`);
-      }
-    }
-  }
-  return [...new Set(missing)];
+  return missing;
 }
 
 export const CONSENT_ARTIFACT_CASES: readonly ConformanceCase[] = [
@@ -171,31 +206,20 @@ export const CONSENT_ARTIFACT_CASES: readonly ConformanceCase[] = [
       // individually: an artifact carrying the streams but not the retention is
       // the realistic defect, and a case asserting only "an artifact exists"
       // would pass against it.
-      const artifact = staged.artifact as Record<string, unknown>;
-      const streamRows = Array.isArray(artifact.streams) ? (artifact.streams as Record<string, unknown>[]) : [];
-      const missing = missingArtifactFacts(artifact, streamRows);
+      const missing = missingArtifactFacts(staged.artifact, seeded.consentTimeField !== undefined);
       if (missing.length > 0) {
         return fail(
-          `The final approval artifact omits ${missing.join(", ")}. Core Section 7.2: the artifact MUST include the exact resolved instance_ids, stream names, fields, resources, temporal field, since, until, purpose, retention, client identity and grant expiry. What is missing here is what the owner was not shown before approving — an artifact without retention or grant expiry records a consent whose duration nobody stated.`,
+          `The final approval artifact does not state ${missing.join(", ")}. Core Section 7.2: the artifact MUST include the exact resolved instance_ids, stream names, fields, resources, temporal field, since, until, purpose, retention, client identity and grant expiry. What is missing is what the owner was not shown before approving — an artifact without retention or grant expiry records a consent whose duration nobody stated. (Presence is searched at any depth and under the usual alternative names, so a nested layout is not itself a finding.)`,
           evidence
         );
       }
 
-      // Present is not the same as correct: the fields must be the RESOLVED
-      // ones. An artifact naming different fields from those requested would
-      // satisfy every presence check above while describing another grant.
-      const row = streamRows[0] as { name?: unknown; fields?: unknown };
-      if (row.name !== seeded.name) {
+      // Present is not the same as correct: the artifact must describe THIS
+      // authorization. An artifact naming a different stream would satisfy
+      // every presence check above while describing another request.
+      if (!containsText(staged.artifact, seeded.name)) {
         return fail(
-          `The artifact names stream "${String(row.name)}" where the staged request named "${seeded.name}", so it does not describe the authorization under review.`,
-          evidence
-        );
-      }
-      const artifactFields = Array.isArray(row.fields) ? row.fields.map(String) : [];
-      const unrequested = artifactFields.filter((f) => !seeded.fields.includes(f));
-      if (unrequested.length > 0) {
-        return fail(
-          `The artifact's resolved field list carries ${unrequested.join(", ")}, which the staged request did not ask for. The artifact must state the exact resolved terms, or the owner approves a wider access than the screen described.`,
+          `The artifact never names stream "${seeded.name}", which the staged request selected, so it does not describe the authorization under review.`,
           evidence
         );
       }
