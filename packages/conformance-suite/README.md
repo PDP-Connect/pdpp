@@ -23,12 +23,14 @@ changes no spec text and no programme rule.
 
 ## Design
 
-**Black-box and adapter-driven.** Cases speak HTTP to a target's `baseUrl`. The only
-seam is [`TargetAdapter`](./src/harness/adapter.ts), which supplies the two things a
+**Black-box and adapter-driven.** Target cases speak HTTP to a target's `baseUrl`
+through [`TargetAdapter`](./src/harness/adapter.ts), which supplies the two things a
 black-box client cannot do for itself: obtain credentials (Core §8 leaves owner-token
 acquisition out of scope) and seed known records (grant enforcement against an empty
-store passes vacuously). No case imports an implementation. The bundled reference
-target under `src/targets/` implements the same contract and holds no privilege.
+store passes vacuously). Client cases use [`ClientUnderTest`](./src/harness/client-adapter.ts)
+against a local AS + RS fixture and inspect its inbound request log. No case imports
+the target implementation. The bundled reference target under `src/targets/`
+implements the target contract and holds no privilege.
 
 **Traceable to the clauses, not just the item numbers.** Section 9's 45 items are
 summaries; a pass on one says nothing about which of the normative sentences it
@@ -149,13 +151,12 @@ a co-located deployment need not expose — report `unsupported` and leave the
 applicable denominator rather than counting as passes. The gaps are deliberate and
 recorded rather than hidden:
 
-- **Client role (CL-1…CL-8): entirely untested.** Client conformance requires driving
-  a client under test and observing its outgoing requests. The adapter has no reverse
-  channel — it only lets the suite call *into* a target. Closing this needs a
-  client-adapter hook, a harness change rather than a test-authoring one. Every client
-  case returns `skip` with the specific missing hook named. The reference target does
-  not declare the client role, so those requirements are scoped out of its report
-  entirely; they appear only for a target that claims the role.
+- **Client role (CL-1…CL-8):** Batch 19 adds a separate `ClientUnderTest` contract
+  backed by a local AS + RS fixture and an inbound request log. Eleven client-capture
+  clauses now have executable cases and injected-defect receipts against the real
+  `@pdpp/mcp-server` transport client. CL-1 (the envelope-only case) and CL-6
+  (retention lifecycle) remain untested; the bundled target does not declare the
+  client role, so client cases appear only when a client adapter is supplied.
 - **Consent-surface AS requirements.** What the owner is actually *shown* — requester
   identity and client-claim attribution (AS-7), AI-training consent (AS-14), and
   declaration-snapshot retention across the whole journey (AS-16) — is not observable

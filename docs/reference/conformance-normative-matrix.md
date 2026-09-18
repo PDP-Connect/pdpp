@@ -44,7 +44,7 @@ one that exists today.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **70** have at least one case and **36** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **81** have at least one case and **25** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -143,7 +143,7 @@ Renders requester identity, declaration-authored descriptions, policy declaratio
 | --- | --- | --- | --- | --- |
 | `5.3-2` | SHOULD | review-only | — | Consent-surface rendering is not observable over HTTP; a case could only assert on a deployment's HTML, which tests the deployment rather than the protocol. |
 | `5.3-3` | MAY | review-only | — | — |
-| `5.3-4` | MUST | client-capture | — | Needs a client-adapter hook capturing the client's outgoing selection request so its payload can be inspected for declaration-display overrides. |
+| `5.3-4` | MUST | client-capture | `AS-7/client-does-not-override-display-descriptions` | — |
 | `5.4-2` | MUST | review-only | — | A rendering obligation on the consent surface, which black-box HTTP cannot observe; the suite can see what the AS bound, not what it showed. |
 | `5.8-7` | MUST | review-only | — | The obligation is on rendered output in an unspecified output context; asserting on it means asserting on a deployment's HTML, which is outside what this suite judges. |
 | `6.1-1` | MAY | review-only | — | — |
@@ -469,7 +469,7 @@ Uses access tokens (not raw grants) to authenticate with the resource server.
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `10.7-2` | MUST | client-capture | — | Needs a client-adapter hook that observes whether a client under test issues further requests after a 403; the suite drives targets, not clients. |
+| `10.7-2` | MUST | client-capture | `CL-2/grant-revocation-stops-further-requests` | — |
 
 ### CL-3 (client, MUST)
 
@@ -477,8 +477,8 @@ Treats `cursor` and `changes_since` tokens as opaque and from distinct token spa
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `4.3-4` | MUST | client-capture | — | Needs a client-adapter hook that captures the client's outgoing query parameters across two sync sessions; the RS-side mirror of this clause is tested as RS-6/cursor-not-accepted-as-changes-since. |
-| `8.9-1` | MUST | client-capture | — | Needs a client-adapter hook capturing outgoing cursor values across pages so a constructed cursor is distinguishable from an echoed one. |
+| `4.3-4` | MUST | client-capture | `CL-3/changes-since-does-not-reuse-next-cursor` | — |
+| `8.9-1` | MUST | client-capture | `CL-3/forwards-cursors-as-opaque-values` | — |
 | `8.9-11` | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected` | The resource-server half is covered. The client half — that a client follows a `next_cursor` with the same `order` and restarts pagination to change direction — binds the client's outgoing requests and stays `client-capture`: the adapter has no reverse channel onto a client under test. |
 
 ### CL-4 (client, MUST)
@@ -487,7 +487,7 @@ Stores `next_changes_since` from the terminal page of a `changes_since` response
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `8.9-16` | MUST | client-capture | — | Stated without an RFC 2119 keyword in Section 4's sync narrative; its MUST level is Section 9 CL item 4's. Needs a client-adapter hook observing what the client persists between two sync sessions. |
+| `8.9-16` | MUST | client-capture | `CL-4/stores-terminal-next-changes-since` | — |
 
 ### CL-5 (client, MUST)
 
@@ -495,8 +495,8 @@ Respects HTTP 410 `cursor_expired` by performing a full re-sync rather than retr
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `4.3-3` | MUST | client-capture | — | Client conformance needs a reverse channel: the adapter can only call into a target, so there is no way to observe a client-under-test's outgoing requests after a 410. |
-| `8.9-12` | MUST | client-capture | — | Restates 4.3-3 in the endpoint section; needs the same client reverse channel. |
+| `4.3-3` | MUST | client-capture | `CL-5/full-resync-after-cursor-expired` | — |
+| `8.9-12` | MUST | client-capture | `CL-5/endpoint-cursor-expiry-also-full-resyncs` | — |
 
 ### CL-6 (client, MUST)
 
@@ -512,10 +512,10 @@ Treats unrecognized error codes as opaque, falling back to the actual HTTP statu
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `8.13-1` | MUST | client-capture | — | Needs a client under test plus a way to serve it an unknown error code; the adapter drives targets, not clients. |
+| `8.13-1` | MUST | client-capture | `CL-7/unknown-error-code-keeps-http-status-authoritative` | — |
 | `8.13-2` | MAY | client-capture | — | — |
-| `8.13-3` | MUST | client-capture | — | Same missing client reverse channel as 8.13-1. |
-| `8.13-4` | MUST | client-capture | — | Same missing client reverse channel as 8.13-1. |
+| `8.13-3` | MUST | client-capture | `CL-7/status-incompatible-code-does-not-override-status` | — |
+| `8.13-4` | MUST | client-capture | `CL-7/unknown-error-identifiers-do-not-break-parser` | — |
 | `8.13-5` | MAY | client-capture | — | — |
 
 ### CL-8 (client, MUST)
@@ -524,7 +524,7 @@ Reads `source.kind` from the issued grant and applies provenance policy before f
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `6.6-1` | MUST | client-capture | — | The subsection is descriptive and carries no RFC 2119 keyword; its MUST level is Section 9 CL item 8's, not this text's. Testing the client half needs the client reverse channel the adapter lacks. |
+| `6.6-1` | MUST | client-capture | `CL-8/reads-source-kind-from-grant` | — |
 
 
 ## Clauses no Section 9 item covers

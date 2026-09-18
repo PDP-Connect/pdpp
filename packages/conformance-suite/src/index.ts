@@ -15,6 +15,14 @@ export type {
   TargetCapabilities,
 } from "./harness/adapter.ts";
 export type {
+  ClientActionResult,
+  ClientFixture,
+  ClientFixtureResponse,
+  ClientRequest,
+  ClientSelection,
+  ClientUnderTest,
+} from "./harness/client-adapter.ts";
+export type {
   CaseContext,
   CaseVerdict,
   ConformanceCase,

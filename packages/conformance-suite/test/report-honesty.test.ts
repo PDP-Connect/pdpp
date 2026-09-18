@@ -26,6 +26,7 @@ import { promisify } from "node:util";
 import { renderMarkdown } from "../src/report/markdown.ts";
 import { buildReport } from "../src/report/result.ts";
 import { REQUIREMENTS } from "../src/requirements/catalog.ts";
+import { CLAUSE_MATRIX } from "../src/requirements/matrix.ts";
 import { ALL_CASES, coveredRequirementIds, runSuite } from "../src/suite.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 
@@ -33,6 +34,15 @@ const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 describe("the report cannot present a partial run as complete", () => {
+  it("does not leave the newly observable client-capture MUST clauses unregistered", () => {
+    const clientCaptureMusts = CLAUSE_MATRIX.filter(
+      (clause) => clause.level === "must" && clause.observable === "client-capture"
+    );
+    assert.equal(clientCaptureMusts.length, 11, "Batch 19 must account for all eleven client-capture MUST clauses.");
+    for (const clause of clientCaptureMusts) {
+      assert.ok(clause.caseIds.length > 0, `Client-capture MUST ${clause.clauseId} has no registered case.`);
+    }
+  });
   it("keeps the full Section 9 catalogue as the denominator, not the executed cases", async () => {
     const report = await runSuite(new ReferenceTargetAdapter());
 
