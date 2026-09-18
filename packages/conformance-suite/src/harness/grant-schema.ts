@@ -52,18 +52,35 @@ function isTemporalScalar(value: unknown): boolean {
 }
 
 /**
- * A unique non-empty array of non-empty strings — the shape Section 7 requires
- * of `instance_ids`, `fields`, and (when present) `resources`.
+ * A `string[]` row.
+ *
+ * `uniqueNonEmpty` is opt-in because only two rows carry that rule: the
+ * `instance_ids` and `fields` rows say "Unique non-empty" in the table text.
+ * The `resources` row says only "string[] ... Authorized record IDs in canonical
+ * key string encoding. Absent means all records." — it states no cardinality or
+ * uniqueness constraint, so an empty or repeating `resources` is not a violation
+ * this validator has authority to report.
  */
-function stringListViolation(value: unknown, path: string, rule: string): GrantSchemaViolation | null {
+function stringListViolation(
+  value: unknown,
+  path: string,
+  rule: string,
+  uniqueNonEmpty: boolean
+): GrantSchemaViolation | null {
   if (!Array.isArray(value)) {
     return { path, message: `${rule} Got ${JSON.stringify(value)}.` };
+  }
+  if (!value.every((member) => typeof member === "string")) {
+    return { path, message: `${rule} Got a non-string member: ${JSON.stringify(value)}.` };
+  }
+  if (!uniqueNonEmpty) {
+    return null;
   }
   if (value.length === 0) {
     return { path, message: `${rule} Got an empty array.` };
   }
   if (!value.every(isNonEmptyString)) {
-    return { path, message: `${rule} Got a non-string or empty-string member: ${JSON.stringify(value)}.` };
+    return { path, message: `${rule} Got an empty-string member: ${JSON.stringify(value)}.` };
   }
   if (new Set(value).size !== value.length) {
     return { path, message: `${rule} Got duplicate members: ${JSON.stringify(value)}.` };
@@ -147,7 +164,8 @@ function streamFieldsViolations(fields: unknown, at: string): GrantSchemaViolati
   const shape = stringListViolation(
     fields,
     at,
-    "StreamGrant `fields` is required: a unique non-empty resolved allowlist of top-level field names, authoritative for RS enforcement."
+    "StreamGrant `fields` is required: a unique non-empty resolved allowlist of top-level field names, authoritative for RS enforcement.",
+    true
   );
   if (shape) {
     return [shape];
@@ -161,6 +179,26 @@ function streamFieldsViolations(fields: unknown, at: string): GrantSchemaViolati
     ];
   }
   return [];
+}
+
+/**
+ * `client_display` is "the requester identity metadata resolved by the AS, not
+ * unverified inline input". The row names no field layout for it, so only its
+ * container type is checkable: a scalar cannot be resolved identity metadata.
+ * Its INTERNAL shape, and the "resolved by the AS rather than echoed from the
+ * request" obligation, are unverifiable from the artifact alone and are reported
+ * as gaps on `grantSchemaViolations` rather than guessed at.
+ */
+function clientDisplayViolations(client: unknown): GrantSchemaViolation[] {
+  if (!isRecord(client) || client.client_display === undefined || isRecord(client.client_display)) {
+    return [];
+  }
+  return [
+    {
+      path: "client.client_display",
+      message: `Section 7's \`client_display\`, when retained, is requester identity metadata resolved by the AS. Got ${JSON.stringify(client.client_display)}, which is not an object.`,
+    },
+  ];
 }
 
 const RETENTION_RULE =
@@ -204,7 +242,8 @@ function streamViolations(stream: unknown, index: number): GrantSchemaViolation[
   const instances = stringListViolation(
     stream.instance_ids,
     `${at}.instance_ids`,
-    "StreamGrant `instance_ids` is required: unique non-empty opaque instance handles. Multiple handles authorize fan-in only when explicitly listed."
+    "StreamGrant `instance_ids` is required: unique non-empty opaque instance handles. Multiple handles authorize fan-in only when explicitly listed.",
+    true
   );
   if (instances) {
     violations.push(instances);
@@ -218,7 +257,13 @@ function streamViolations(stream: unknown, index: number): GrantSchemaViolation[
     const resources = stringListViolation(
       stream.resources,
       `${at}.resources`,
-      "StreamGrant `resources`, when present, is a non-empty list of authorized record IDs in canonical key string encoding; absent means all records."
+      // The row states type only. Empty is NOT forbidden here: nothing normative
+      // says an empty `resources` is invalid, and reading it as "no records" is a
+      // coherent reading the spec leaves open. Canonical key string encoding is
+      // unchecked — the encoding is defined elsewhere and is a semantic rule, not
+      // a shape one.
+      "StreamGrant `resources`, when present, is a `string[]` of authorized record IDs; absent means all records.",
+      false
     );
     if (resources) {
       violations.push(resources);
@@ -229,12 +274,31 @@ function streamViolations(stream: unknown, index: number): GrantSchemaViolation[
 }
 
 /**
- * Every way `artifact` departs from Section 7's grant field tables.
+ * Shape violations of Section 7's grant field tables that `artifact` exhibits.
  *
- * Empty means conforming. Only the normative tables are checked: `purpose_code`
- * is required to be a URI-shaped non-empty string but its registry membership is
- * display-only (AS-6), and `client_claims` is deliberately NOT accepted here
- * because Section 7 requires it to stay outside the resolved grant.
+ * An empty result means the artifact passes THESE checks — required rows
+ * present, declared types, enum membership, exact-key objects, the two rows that
+ * state uniqueness/non-emptiness, no wildcards, and `client_claims` excluded from
+ * the grant. It does NOT mean the grant is Section 7 conforming.
+ *
+ * Known gaps, each because the constraint is semantic or the table states no
+ * rule to enforce:
+ * - ISO 8601 lexical form of `issued_at`, `expires_at`, `retention.max_duration`
+ *   and the `time_constraint` bounds (see `isTemporalScalar`).
+ * - Whether each field was DERIVED from the selection request, client
+ *   registration, or AS policy, as AS-3's statement requires.
+ * - `purpose_code` URI syntax and registry membership (membership is display-only
+ *   per AS-6); only presence and string-ness are checked.
+ * - `resources` canonical key string encoding.
+ * - The internal layout of `client_display`, and whether it was resolved by the
+ *   AS rather than echoed from unverified inline input.
+ * - `source_declaration.version` naming the snapshot actually consented to, and
+ *   `source.id` being the accepted SourceDeclaration.
+ * - Cross-field rules, e.g. `time_constraint.field` naming a declared
+ *   `consent_time_field`.
+ *
+ * Callers must report these as unverified rather than implying full coverage;
+ * AS-3's case comment and assertion do so.
  */
 export function grantSchemaViolations(artifact: unknown): readonly GrantSchemaViolation[] {
   if (!isRecord(artifact)) {
@@ -281,6 +345,7 @@ export function grantSchemaViolations(artifact: unknown): readonly GrantSchemaVi
       "Section 7 requires `client` to be exactly `{ client_id }` or `{ client_id, client_display }`."
     )
   );
+  violations.push(...clientDisplayViolations(artifact.client));
   violations.push(
     ...exactObjectViolation(
       artifact.source,
@@ -306,7 +371,9 @@ export function grantSchemaViolations(artifact: unknown): readonly GrantSchemaVi
       message: `Section 7 requires \`purpose_code\` as a URI. Got ${JSON.stringify(artifact.purpose_code)}.`,
     });
   }
-  if (artifact.purpose_description !== undefined && !isNonEmptyString(artifact.purpose_description)) {
+  // Type only. The row is `string | no | Human-readable purpose.` — it imposes no
+  // non-empty rule, so an empty string is not a violation to report.
+  if (artifact.purpose_description !== undefined && typeof artifact.purpose_description !== "string") {
     violations.push({
       path: "purpose_description",
       message: `Section 7's optional \`purpose_description\` is a string when present. Got ${JSON.stringify(artifact.purpose_description)}.`,
@@ -337,7 +404,8 @@ export function grantSchemaViolations(artifact: unknown): readonly GrantSchemaVi
     }
   }
 
-  if (artifact.selection_preset !== undefined && !isNonEmptyString(artifact.selection_preset)) {
+  // Type only, as with `purpose_description`: the row is `string | no`.
+  if (artifact.selection_preset !== undefined && typeof artifact.selection_preset !== "string") {
     violations.push({
       path: "selection_preset",
       message: `Section 7's optional \`selection_preset\` is a string when present. Got ${JSON.stringify(artifact.selection_preset)}.`,

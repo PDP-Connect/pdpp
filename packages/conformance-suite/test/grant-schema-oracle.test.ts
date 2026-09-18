@@ -295,10 +295,24 @@ const MUTANTS: readonly {
     },
   },
   {
-    rule: "`resources`, when present, is a non-empty list",
+    rule: "`resources`, when present, is a `string[]` — not a bare string",
     path: "streams[0].resources",
     mutate: (g) => {
-      firstStream(g).resources = [];
+      firstStream(g).resources = "record-1";
+    },
+  },
+  {
+    rule: "`resources` members are strings",
+    path: "streams[0].resources",
+    mutate: (g) => {
+      firstStream(g).resources = [7];
+    },
+  },
+  {
+    rule: "`client_display`, when retained, is resolved identity metadata — not a scalar",
+    path: "client.client_display",
+    mutate: (g) => {
+      g.client = { client_id: "music_recommendations", client_display: "Music" };
     },
   },
   {
@@ -366,6 +380,38 @@ describe("Section 7 grant schema oracle", () => {
         grantSchemaViolations(grant),
         [],
         "Temporal lexical form is out of scope; a violation here means the validator quietly narrowed the spec."
+      );
+    }
+  });
+
+  // Restrictions the spec does NOT state, pinned as accepted so the validator
+  // cannot drift into failing a conformant target for an unwritten rule. Unlike
+  // `instance_ids` and `fields`, whose rows say "Unique non-empty" in so many
+  // words, the `resources` row states type only ("string[] ... Absent means all
+  // records"), and `purpose_description`/`selection_preset` are plain `string`
+  // rows with no non-empty requirement.
+  it("does not invent constraints the field tables omit", () => {
+    for (const grant of [
+      mutate((g) => {
+        firstStream(g).resources = [];
+      }),
+      mutate((g) => {
+        firstStream(g).resources = ["record-1", "record-1"];
+      }),
+      mutate((g) => {
+        firstStream(g).resources = [""];
+      }),
+      mutate((g) => {
+        g.purpose_description = "";
+      }),
+      mutate((g) => {
+        g.selection_preset = "";
+      }),
+    ]) {
+      assert.deepEqual(
+        grantSchemaViolations(grant),
+        [],
+        "Section 7 states no such rule, so reporting a violation here would fail a conformant target."
       );
     }
   });
