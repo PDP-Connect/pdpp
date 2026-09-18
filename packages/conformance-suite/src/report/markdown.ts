@@ -179,10 +179,8 @@ function renderAdvisories(requirements: readonly RequirementResult[]): string {
 	const lines = [
 		"## Advisories",
 		"",
-		"A requirement below met every MUST a case checked, but a case also " +
-			"recorded a SHOULD-level observation. This is not a conformance " +
-			"failure; it is listed separately from Failures so it cannot be read " +
-			"as one.",
+		"These cases record SHOULD-level observations. Other cases for the same " +
+			"requirement may fail; those appear under Failures.",
 		"",
 	];
 
