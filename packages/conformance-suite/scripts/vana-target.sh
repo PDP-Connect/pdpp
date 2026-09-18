@@ -83,7 +83,14 @@ set -euo pipefail
 # face9fc rejects unsupported bracketed query shapes and owner expansion.
 # The target declares no expandable relations; owner expansion therefore
 # returns invalid_expand. RS-10 exercises these rejection paths over HTTP.
-VANA_REF="${PDPP_VANA_REF:-face9fc46238af298c6b619a380a060445d0eb86}"
+# e3a7142e8c009b2b22371828860ab9047f6d88ee (descendant of face9fc) adds
+# `POST /pdpp/declarations`, an operator-authenticated acceptance surface for a
+# CANDIDATE declaration. Before it, the only way to offer one was to edit
+# `declarationPaths` and restart, which put a case's control and its negative in
+# two different server lifetimes -- measuring what survives a reboot rather than
+# what the AS refuses. The nine AS-16 declaration cases need that surface; see
+# submitDeclaration in src/targets/vana-ps-adapter.ts.
+VANA_REF="${PDPP_VANA_REF:-e3a7142e8c009b2b22371828860ab9047f6d88ee}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
 
@@ -131,6 +138,31 @@ GRANTED_STREAM="top_artists"
 UNGRANTED_STREAM="saved_tracks"
 TOP_ARTISTS_COUNT=5
 SAVED_TRACKS_COUNT=3
+
+# The connector the AS-16 declaration cases submit candidate declarations for,
+# and a fixed operator credential for the route that accepts them.
+#
+# Both exist because of how this server decides what it will accept. Its
+# connector gate is derived from the scopes it actually holds
+# (deriveSupportedConnectors, packages/server/src/pdpp/deployment.ts), so a
+# declaration naming a source this deployment serves no data for is refused
+# `untrusted_source` -- correctly, since a grant over data that cannot exist
+# here is at best useless. The cases offer declarations for
+# https://registry.pdpp.dev/connectors/conformance, so without a scope row under
+# that connector every case's POSITIVE CONTROL is refused and all nine report
+# skip. Seeding the scope row is what makes the deployment able to answer the
+# question, and it is a deployment fact rather than a suite fiction: this server
+# really does hold that scope.
+#
+# The row is a scope only -- no records are ingested under it, and no stream of
+# it is declared. The seeded streams the RS oracles read are unchanged.
+DECLARATION_CONNECTOR="conformance"
+# Operator/control-plane credential (PS_ACCESS_TOKEN). The declaration route is
+# mounted only when one is configured and gated on it, because a client able to
+# submit its own declaration could declare itself authority over any source.
+# Fixed rather than minted so the suite can be handed it: it is a throwaway
+# local server's credential and authorizes nothing beyond this process.
+OPERATOR_TOKEN="pdpp-conformance-operator-0000000000000000"
 
 READY_TIMEOUT_SECONDS=180
 
@@ -301,6 +333,12 @@ const PORT = $PORT;
 process.env.VANA_MASTER_KEY_SIGNATURE =
   "0xedbb7743cce459345238442dcfb291f234a321d253485eaa58251aa0f28ea8f1410ab988bae2657b689cd24417b41e315efc22ba333024f4a6269c424ded8d361b";
 
+// The operator credential the declaration-submission route is gated on. Read
+// from the environment by bootstrap.ts, which mounts POST /pdpp/declarations
+// only when one is present -- a submission surface with no credential fails
+// open, so the server declines to offer it at all.
+process.env.PS_ACCESS_TOKEN = "$OPERATOR_TOKEN";
+
 const SOURCE_ID = "$SOURCE_ID";
 const CLIENT_ID = "$CLIENT_ID";
 const REDIRECT = "$REDIRECT_URI";
@@ -309,7 +347,17 @@ const EXPIRY_GRANT_LIFETIME_SECONDS = $EXPIRY_GRANT_LIFETIME_SECONDS;
 const MAIN_GRANT_LIFETIME_SECONDS = $MAIN_GRANT_LIFETIME_SECONDS;
 // One scope row per declared stream: declaration trust is derived from what the
 // server actually serves, so a declaration is refused without a matching row.
-const SCOPES = ["spotify.$GRANTED_STREAM", "spotify.$UNGRANTED_STREAM"];
+// The third row is the AS-16 declaration cases' connector. This server derives
+// its connector gate from the scopes it holds, so without a row here every
+// candidate declaration those cases submit is refused as an untrusted source --
+// including their positive controls, which turns nine cases into skips. No
+// records are ingested under it and no stream of it is declared: the seeded
+// streams the RS oracles read are exactly the two above.
+const SCOPES = [
+  "spotify.$GRANTED_STREAM",
+  "spotify.$UNGRANTED_STREAM",
+  "$DECLARATION_CONNECTOR.declarations",
+];
 
 const { ServerConfigSchema } = await import(
   "@opendatalabs/personal-server-ts-core/schemas"
@@ -529,6 +577,10 @@ cmd_up() {
   {
     printf 'export PDPP_VANA_OWNER_TOKEN=%s\n' "$dev_token"
     printf "export PDPP_VANA_TARGET_VERSION='%s'\n" "$target_version"
+    # The operator credential, exported rather than committed for the same
+    # reason as the owner token: a target config carries the NAME of the
+    # variable, never the value.
+    printf 'export PDPP_VANA_OPERATOR_TOKEN=%s\n' "$OPERATOR_TOKEN"
   } > "$ENV_FILE"
 
   cmd_seed

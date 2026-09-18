@@ -19,12 +19,14 @@
 // them.
 
 import type {
+  DeclarationOutcome,
   GrantRequest,
   IssuedGrant,
   RefreshableGrant,
   SeededStream,
   SelectionOutcome,
   SelectionRequest,
+  SourceDeclarationSubmission,
   StagedApproval,
   TargetAdapter,
   TargetCapabilities,
@@ -67,6 +69,18 @@ export interface VanaPsConfig {
     readonly expectedRecord: Readonly<Record<string, unknown>>;
   };
   readonly introspectionCredentials?: { readonly clientId: string; readonly clientSecret: string };
+  /**
+   * Operator credential for `POST /pdpp/declarations`, the declaration
+   * acceptance surface (`submitDeclaration`).
+   *
+   * Deliberately NOT the owner token and never a client token: the route is
+   * mounted only when the deployment configures an operator credential, and
+   * gated on it, because a client that can submit its own declaration can
+   * declare itself authority over any source. Absent means this deployment
+   * exposes no acceptance surface, and the declaration cases report `skip`
+   * naming the hook rather than a failure.
+   */
+  readonly operatorToken?: string;
   /** Owner credential the server accepts at /pdpp/v1/owner/token. */
   readonly ownerBootstrapToken: string;
   readonly ownerReadParams?: Readonly<Record<string, string>>;
@@ -97,6 +111,98 @@ const PKCE_VERIFIER = "pdpp-conformance-verifier-0000000000000000000000000000";
 async function s256Challenge(verifier: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
   return Buffer.from(digest).toString("base64url");
+}
+
+/** The dialect Core Section 5 fixes for an embedded stream schema. */
+const SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
+
+/**
+ * Translate a `SourceDeclarationSubmission` into the normative §5
+ * SourceDeclaration document this server parses.
+ *
+ * The hook's type is deliberately the minimal shape Core's declaration clauses
+ * turn on, not a whole declaration: a case must be able to submit a document
+ * that carries only the property under test. This fills in the rest of what the
+ * published schema requires -- `protocol_version`, `publisher`, `display`, a
+ * per-stream `semantics` and `selection` -- with fixed, uninteresting values.
+ *
+ * Nothing here repairs a case's document. A stream whose `cursor_field` names
+ * an undeclared field is emitted naming that field, a schema carrying a remote
+ * `$ref` is emitted with it. The only thing synthesized is what no clause under
+ * test governs, because a missing required member would make the server refuse
+ * for a reason the case is not asking about -- and a refusal that reads as a
+ * pass for the wrong reason is worse than a skip.
+ */
+function normativeDeclarationDocument(declaration: SourceDeclarationSubmission): Record<string, unknown> {
+  return {
+    protocol_version: "0.1.0",
+    source: { kind: declaration.source.kind, id: declaration.source.id },
+    declaration_version: declaration.declarationVersion,
+    // The authority a case names is carried on the document rather than
+    // dropped. This server derives trust from `source.id` alone, so a foreign
+    // authority does not by itself change its answer -- and that is the
+    // observation clause 5.8-1 asks for, not something for the adapter to
+    // arrange. Dropping the field would hide the submission's own claim from
+    // the server's logs and from the report's evidence.
+    ...(declaration.authority === undefined ? {} : { authority: declaration.authority }),
+    publisher: { id: "https://pdpp.dev/conformance-suite" },
+    display: { name: "PDPP conformance suite" },
+    streams: declaration.streams.map((stream) => ({
+      name: stream.name,
+      description: `Candidate declaration stream '${stream.name}' offered by the conformance suite.`,
+      display: { label: stream.name },
+      semantics: "mutable_state",
+      // A case that carries no schema still needs one: this server reads a
+      // stream's field list out of `schema.properties`, so a schema-less
+      // stream declares no fields and is refused for that rather than for the
+      // property under test. The synthesized schema declares exactly the
+      // `fields` the submission named, so it adds no field the case did not.
+      schema: stream.schema ?? schemaOver(stream.fields),
+      primary_key: stream.primaryKey ? [...stream.primaryKey] : defaultPrimaryKey(stream.fields),
+      ...(stream.cursorField === undefined ? {} : { cursor_field: stream.cursorField }),
+      ...(stream.consentTimeField === undefined ? {} : { consent_time_field: stream.consentTimeField }),
+      ...(stream.blobFields === undefined
+        ? {}
+        : {
+            blob_fields: stream.blobFields.map((blob) => ({ name: blob.name, mime_type: blob.mimeType })),
+          }),
+      ...(stream.timeRangeCapable === undefined ? {} : { time_range_capable: stream.timeRangeCapable }),
+      selection: { fields: true, resources: false },
+    })),
+    ...(declaration.selectionPresets === undefined
+      ? {}
+      : {
+          selection_presets: declaration.selectionPresets.map((preset) => ({
+            name: preset.name,
+            streams: [...preset.streams],
+          })),
+        }),
+    extensions: {},
+  };
+}
+
+/** A well-formed embedded schema declaring exactly `fields`, in Core's dialect. */
+function schemaOver(fields: readonly string[]): Record<string, unknown> {
+  return {
+    $schema: SCHEMA_DIALECT,
+    type: "object",
+    properties: Object.fromEntries(fields.map((field) => [field, { type: "string" }])),
+    additionalProperties: false,
+  };
+}
+
+/**
+ * A primary key for a submission that declares none.
+ *
+ * This server requires a non-empty `primary_key` on every stream, and no clause
+ * under test is about its absence, so a submission that omits one would be
+ * refused `invalid_document` for a reason its case never asked about. The first
+ * declared field is the least surprising choice and is always one the schema
+ * declares, so it cannot itself trip clause 5.2-2.
+ */
+function defaultPrimaryKey(fields: readonly string[]): string[] {
+  const [first] = fields;
+  return first === undefined ? [] : [first];
 }
 
 export class VanaPsAdapter implements TargetAdapter {
@@ -361,6 +467,59 @@ export class VanaPsAdapter implements TargetAdapter {
       approve,
       lastApproveError: () => lastError,
       replayLastCode,
+    };
+  }
+
+  /**
+   * Offer a candidate source declaration and report the AS's decision, without
+   * approving anything (clauses 4.8-1, 5.2-2, 5.2-3, 5.2-5, 5.4-1, 5.8-1,
+   * 5.8-2, 5.8-4, 6.9-1).
+   *
+   * `POST /pdpp/declarations`, added in personal-server-ts e3a7142. Before it
+   * this deployment had a real validator that ran only at construction, so
+   * offering a candidate meant editing `declarationPaths` and restarting --
+   * which puts a case's control and its negative in two different server
+   * lifetimes and measures what survives a reboot rather than what the AS
+   * refuses.
+   *
+   * The route is operator-authenticated, never client-authenticated, which is
+   * the clause 5.8-1 property itself: a client able to submit its own
+   * declaration could declare itself authority over any source. So this sends
+   * the operator credential, not a grant token and not the owner token.
+   *
+   * WHAT THIS ADAPTER DOES NOT DECIDE. The submission is translated into the
+   * normative §5 document and posted as-is; every refusal in the result is the
+   * server's. In particular `source.id` is submitted verbatim, including the
+   * values the negative cases choose, because this server's trust decision IS a
+   * check on that id (its connector gate) and rewriting it would mean the
+   * adapter answering a question the AS is supposed to answer.
+   */
+  async submitDeclaration(declaration: SourceDeclarationSubmission): Promise<DeclarationOutcome | null> {
+    if (!this.config.operatorToken) {
+      return null;
+    }
+    const response = await fetch(`${this.config.baseUrl}/pdpp/declarations`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.config.operatorToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(normativeDeclarationDocument(declaration)),
+    });
+    const body: unknown = await response.json().catch(() => undefined);
+    const errorCode = (body as { error?: unknown } | undefined)?.error;
+    // `retainedContent` is deliberately never reported. The acceptance response
+    // carries stream NAMES only, and this deployment exposes no route that
+    // reads back a retained declaration's fields -- so clause 5.8-4's retention
+    // half has no observation behind it here and reports skip. Reporting the
+    // submitted streams as "retained" would be the suite asserting its own
+    // input, which is exactly the failure mode that half of the clause exists
+    // to catch.
+    return {
+      accepted: response.ok,
+      status: response.status,
+      ...(typeof errorCode === "string" ? { errorCode } : {}),
+      body,
     };
   }
 
