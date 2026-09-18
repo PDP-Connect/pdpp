@@ -128,7 +128,7 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
       await client.syncOnce(STREAM);
       await client.syncAgain(STREAM);
       const [, , recovery] = requestAfter(client, before);
-      return recovery?.query.changes_since === undefined && recovery?.query.cursor === undefined
+      return recovery && recovery.query.changes_since === undefined && recovery.query.cursor === undefined
         ? pass()
         : fail(
             `Expected the recovery request to omit both cursor spaces; observed ${JSON.stringify(recovery?.query ?? {})}.`
