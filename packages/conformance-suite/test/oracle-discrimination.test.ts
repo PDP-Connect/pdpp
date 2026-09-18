@@ -540,3 +540,163 @@ it("AS-14 does not require a policy to allow AI-training grants", async () => {
     await adapter.teardown();
   }
 });
+
+/**
+ * A minimal stageable adapter with its own in-memory code/token ledger,
+ * independent of `ReferenceTargetAdapter`'s grant issuance (which mints
+ * tokens directly and has no separable code-redemption step). It exists only
+ * to drive AS-19's `replayLastCode` oracle against controllable redemption
+ * behaviour: `onReplay` decides what a second redemption of the same code
+ * does, which is exactly the fact AS-19 must discriminate on.
+ */
+class CodeReplayStageableAdapter implements Omit<TargetAdapter, "stageApproval"> {
+  private readonly inner: TargetAdapter;
+  private readonly onReplay: (grantId: string) => { status: number; errorCode?: string; accessToken?: string } | null;
+
+  readonly capabilities: TargetAdapter["capabilities"];
+
+  constructor(
+    inner: TargetAdapter,
+    onReplay: (grantId: string) => { status: number; errorCode?: string; accessToken?: string } | null
+  ) {
+    this.inner = inner;
+    this.onReplay = onReplay;
+    this.capabilities = inner.capabilities;
+  }
+
+  get baseUrl(): string {
+    return this.inner.baseUrl;
+  }
+  get targetId(): string {
+    return this.inner.targetId;
+  }
+  get targetVersion(): string {
+    return this.inner.targetVersion;
+  }
+  get roles(): TargetAdapter["roles"] {
+    return this.inner.roles;
+  }
+  setup(): ReturnType<TargetAdapter["setup"]> {
+    return this.inner.setup();
+  }
+  teardown(): Promise<void> {
+    return this.inner.teardown();
+  }
+  ownerToken(): ReturnType<TargetAdapter["ownerToken"]> {
+    return this.inner.ownerToken();
+  }
+  issueGrant: TargetAdapter["issueGrant"] = (request) => this.inner.issueGrant(request);
+  revokeGrant(grantId: string): Promise<void> {
+    return this.inner.revokeGrant(grantId);
+  }
+
+  stageApproval = (wanted: GrantRequest): Promise<StagedApproval | null> => {
+    let redeemedGrantId: string | null = null;
+    let redeemedOnce = false;
+    const approve = async (): Promise<IssuedGrant | null> => {
+      if (redeemedOnce) {
+        return null;
+      }
+      const issued = await this.inner.issueGrant(wanted);
+      if (!issued) {
+        return null;
+      }
+      redeemedGrantId = issued.grantId;
+      redeemedOnce = true;
+      return issued;
+    };
+    const replayLastCode = (): Promise<{ status: number; errorCode?: string; accessToken?: string } | null> => {
+      if (!redeemedGrantId) {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve(this.onReplay(redeemedGrantId));
+    };
+    return Promise.resolve({ handle: "code-replay-stage", approve, replayLastCode });
+  };
+}
+
+describe("AS-19 replay oracle discriminates genuine token-endpoint code replay", () => {
+  it("passes when the token endpoint refuses replay with a structured invalid_grant", async () => {
+    const inner = new ReferenceTargetAdapter();
+    const adapter = new CodeReplayStageableAdapter(inner, () => ({ status: 400, errorCode: "invalid_grant" }));
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(
+        caseById("AS-19/authorization-code-redemption-is-not-replayable"),
+        makeContext(adapter as TargetAdapter, streams)
+      );
+      assert.equal(result.outcome, "pass", `expected pass, got ${result.outcome}: ${result.detail ?? ""}`);
+    } finally {
+      await adapter.teardown();
+    }
+  });
+
+  it("fails when replaying the same code issues a further access token, even under the same grant id", async () => {
+    const inner = new ReferenceTargetAdapter();
+    const adapter = new CodeReplayStageableAdapter(inner, () => ({ status: 200, accessToken: "second-live-token" }));
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(
+        caseById("AS-19/authorization-code-redemption-is-not-replayable"),
+        makeContext(adapter as TargetAdapter, streams)
+      );
+      assert.equal(result.outcome, "fail", `expected fail, got ${result.outcome}: ${result.detail ?? ""}`);
+      assert.ok(result.detail && result.detail.length > 0, "failure must carry a detail");
+    } finally {
+      await adapter.teardown();
+    }
+  });
+
+  it("fails on an unstructured or wrongly-coded refusal, not just any non-200", async () => {
+    const inner = new ReferenceTargetAdapter();
+    const adapter = new CodeReplayStageableAdapter(inner, () => ({ status: 500 }));
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(
+        caseById("AS-19/authorization-code-redemption-is-not-replayable"),
+        makeContext(adapter as TargetAdapter, streams)
+      );
+      assert.equal(result.outcome, "fail", `expected fail, got ${result.outcome}: ${result.detail ?? ""}`);
+    } finally {
+      await adapter.teardown();
+    }
+  });
+
+  it("skips when the adapter has no replayLastCode hook", async () => {
+    const inner = new ReferenceTargetAdapter();
+    const adapter = new CodeReplayStageableAdapter(inner, () => ({ status: 400, errorCode: "invalid_grant" }));
+    const { streams } = await adapter.setup();
+    const original = adapter.stageApproval;
+    adapter.stageApproval = async (request) => {
+      const result = await original(request);
+      if (!result) {
+        return result;
+      }
+      return { handle: result.handle, approve: result.approve };
+    };
+    try {
+      const result = await runCase(
+        caseById("AS-19/authorization-code-redemption-is-not-replayable"),
+        makeContext(adapter as TargetAdapter, streams)
+      );
+      assert.equal(result.outcome, "skip");
+    } finally {
+      await adapter.teardown();
+    }
+  });
+
+  it("skips when the replay attempt is a transport failure rather than a refusal", async () => {
+    const inner = new ReferenceTargetAdapter();
+    const adapter = new CodeReplayStageableAdapter(inner, () => null);
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(
+        caseById("AS-19/authorization-code-redemption-is-not-replayable"),
+        makeContext(adapter as TargetAdapter, streams)
+      );
+      assert.equal(result.outcome, "skip");
+    } finally {
+      await adapter.teardown();
+    }
+  });
+});

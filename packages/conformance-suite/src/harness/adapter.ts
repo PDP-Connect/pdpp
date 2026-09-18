@@ -133,6 +133,26 @@ export interface StagedApproval {
    */
   readonly lastApproveError?: () => { readonly status: number; readonly errorCode?: string } | null;
   /**
+   * Replay the token-endpoint redemption of the authorization code from the
+   * most recent successful `approve`, with the same PKCE verifier, so AS-19
+   * can observe what the token endpoint does on a genuine second redemption
+   * rather than on a second approval of the staged request (a different step:
+   * Section 9 AS item 19 governs code consumption at the token endpoint, not
+   * approval idempotency).
+   *
+   * The code itself is never exposed outside the adapter — this method is the
+   * only way to act on it a second time. Returns null if no code has been
+   * redeemed yet (`approve` was never called or never succeeded), or on a
+   * transport failure the case cannot distinguish from a real refusal;
+   * `errorCode`/`status` on a non-null result carry the classification a real
+   * refusal needs.
+   */
+  readonly replayLastCode?: () => Promise<{
+    readonly status: number;
+    readonly errorCode?: string;
+    readonly accessToken?: string;
+  } | null>;
+  /**
    * The revision or digest the server bound the reviewed facts to, if it
    * publishes one. Absent when the server has no such concept.
    */

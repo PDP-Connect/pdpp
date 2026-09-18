@@ -184,6 +184,9 @@ export class VanaPsAdapter implements TargetAdapter {
     const review = reviewed.ok ? ((await reviewed.json()) as { review?: { review_digest?: string } }) : undefined;
 
     let lastError: { status: number; errorCode?: string } | null = null;
+    // Retained only inside this closure so no case body can see or reuse the
+    // code directly — `replayLastCode` is the sole way to act on it again.
+    let lastRedeemedCode: string | null = null;
 
     const approve = async (revision?: string, explicitAiTrainingConsent?: boolean): Promise<IssuedGrant | null> => {
       const body: Record<string, unknown> = revision ? { review_digest: revision } : {};
@@ -216,6 +219,7 @@ export class VanaPsAdapter implements TargetAdapter {
       if (!(approval.redirect_uri && approval.grant_id)) {
         return null;
       }
+      lastRedeemedCode = new URL(approval.redirect_uri).searchParams.get("code");
       const token = await this.exchangeCode(approval.redirect_uri);
       if (!token) {
         return null;
@@ -231,12 +235,42 @@ export class VanaPsAdapter implements TargetAdapter {
       };
     };
 
+    /**
+     * Redeem the SAME code from the most recent `approve`, with the SAME PKCE
+     * verifier, a second time at the token endpoint. AS-19's replay oracle
+     * (Section 9 AS item 19).
+     */
+    const replayLastCode = async (): Promise<{ status: number; errorCode?: string; accessToken?: string } | null> => {
+      if (!lastRedeemedCode) {
+        return null;
+      }
+      const response = await fetch(`${this.config.baseUrl}/pdpp/v1/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: lastRedeemedCode,
+          client_id: this.config.clientId,
+          redirect_uri: this.config.redirectUri,
+          code_verifier: PKCE_VERIFIER,
+        }).toString(),
+      });
+      const responseBody: unknown = await response.json().catch(() => undefined);
+      if (response.ok) {
+        const accessToken = (responseBody as { access_token?: unknown } | undefined)?.access_token;
+        return { status: response.status, ...(typeof accessToken === "string" ? { accessToken } : {}) };
+      }
+      const errorCode = (responseBody as { error?: unknown } | undefined)?.error;
+      return { status: response.status, ...(typeof errorCode === "string" ? { errorCode } : {}) };
+    };
+
     const digest = review?.review?.review_digest;
     return {
       handle: sessionId,
       ...(digest ? { reviewRevision: digest } : {}),
       approve,
       lastApproveError: () => lastError,
+      replayLastCode,
     };
   }
 

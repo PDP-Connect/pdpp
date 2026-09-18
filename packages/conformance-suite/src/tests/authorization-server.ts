@@ -364,14 +364,21 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   },
 
   // --------------------------------------------------------------- AS-19 ---
-  // Section 9 AS item 19: each authorization code is consumed atomically on its
-  // first successful redemption, and every later redemption is rejected. A
-  // replayable code is a credential an attacker who observes one redirect can
-  // reuse to mint their own token.
+  // Section 9 AS item 19: each OAuth authorization code is consumed atomically
+  // on its first successful redemption, and every later redemption at the
+  // TOKEN endpoint is rejected with `invalid_grant`. That is a claim about
+  // code redemption, not about approval idempotency — a second `approve` of
+  // the same staged request is a different step (the review/consent screen),
+  // and a server that merely memoizes approval while still letting the code be
+  // redeemed twice at `/token` violates this item while passing an
+  // approval-only check. The case therefore drives a real second redemption of
+  // the SAME code with the SAME PKCE verifier, through `replayLastCode`, which
+  // keeps the code itself private to the adapter.
   {
-    caseId: "AS-19/authorization-approval-is-not-replayable",
+    caseId: "AS-19/authorization-code-redemption-is-not-replayable",
     requirementId: "AS-19",
-    assertion: "A second approval of the same staged request does not mint a second grant.",
+    assertion:
+      "Replaying the same authorization code and PKCE verifier at the token endpoint is refused with invalid_grant.",
     async run({ adapter, streams }) {
       const [stream] = streams;
       if (!stream) {
@@ -379,7 +386,7 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       }
       if (!adapter.stageApproval) {
         return skip(
-          "The adapter cannot stage an authorization request short of approval, so replay is not observable."
+          "The adapter cannot stage an authorization request short of approval, so code redemption is not observable."
         );
       }
       const staged = await adapter.stageApproval({
@@ -388,15 +395,31 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       if (!staged) {
         return skip("The target could not stage an authorization request.");
       }
+      if (!staged.replayLastCode) {
+        return skip(
+          "The adapter has no replayLastCode hook, so a genuine second token-endpoint redemption of the same code cannot be observed."
+        );
+      }
 
       const first = await staged.approve(staged.reviewRevision);
       if (!first) {
-        return skip("The first approval did not succeed, so replay cannot be isolated.");
+        return skip("The first approval did not succeed, so code redemption cannot be isolated.");
       }
-      const second = await staged.approve(staged.reviewRevision);
-      if (second && second.grantId !== first.grantId) {
+
+      const replayed = await staged.replayLastCode();
+      if (!replayed) {
+        return skip(
+          "The replay attempt did not reach the token endpoint intelligibly (transport failure), so it cannot be distinguished from a correct refusal."
+        );
+      }
+      if (replayed.accessToken) {
         return fail(
-          `Replaying the same approval minted a second, distinct grant (${first.grantId} then ${second.grantId}). Section 9 AS item 19 requires the authorization to be consumed atomically on first redemption and every later attempt rejected, so an observed redirect cannot be replayed into another token.`
+          `Replaying the same authorization code at the token endpoint issued a further access token (grant ${first.grantId}) instead of being refused. Section 9 AS item 19 requires the code to be consumed atomically on first redemption and every later redemption rejected with invalid_grant — an attacker who observes one authorization code can otherwise redeem it again for their own live token, even when the grant id matches the legitimate one.`
+        );
+      }
+      if (!(replayed.status === 400 && replayed.errorCode === "invalid_grant")) {
+        return fail(
+          `Replaying the same authorization code at the token endpoint returned status ${replayed.status}${replayed.errorCode ? ` with error "${replayed.errorCode}"` : " with no machine-readable error code"}, not a structured 400 invalid_grant refusal. Section 9 AS item 19 requires that exact refusal so a client can distinguish code replay from any other failure.`
         );
       }
       return pass();
