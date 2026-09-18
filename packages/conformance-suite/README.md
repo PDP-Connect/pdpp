@@ -30,6 +30,17 @@ acquisition out of scope) and seed known records (grant enforcement against an e
 store passes vacuously). No case imports an implementation. The bundled reference
 target under `src/targets/` implements the same contract and holds no privilege.
 
+**Traceable to the clauses, not just the item numbers.** Section 9's 45 items are
+summaries; a pass on one says nothing about which of the normative sentences it
+summarizes was exercised. [`matrix.ts`](./src/requirements/matrix.ts) enumerates
+those sentences for Core sections 4-8 and 10 — 131 clauses, each with its
+verbatim text, level, role, observable boundary, the items that roll it up, the
+cases that exercise it, and for every uncovered MUST the exact missing hook.
+[`docs/reference/conformance-normative-matrix.md`](../../docs/reference/conformance-normative-matrix.md)
+is the generated view; regenerate it with `pnpm matrix:md`. Every report now
+lists each requirement's clauses and names the MUST clauses its cases did not
+reach, so a `PASS` cannot be read as covering the whole item.
+
 **Traceable to numbered requirements.** [`catalog.ts`](./src/requirements/catalog.ts)
 transcribes all 45 numbered Section 9 items — AS 1–21, RS 1–16, Client 1–8 — keeping
 the spec's own numbering, so `RS-9` is Section 9 "Resource Server conformance" item 9.

@@ -25,6 +25,7 @@ import {
 	SPEC_SOURCE,
 	requirementById,
 } from "../requirements/catalog.ts";
+import { clausesForRequirement } from "../requirements/matrix.ts";
 
 /**
  * The outcome of a single conformance case.
@@ -86,11 +87,34 @@ export type CaseResult = {
 	readonly durationMs?: number;
 };
 
+/**
+ * A MUST-level clause under a requirement that no case exercises.
+ *
+ * Carried in the report so a reader of a PASSING requirement sees what that pass
+ * does NOT establish. A requirement rolls up to `pass` on the strength of its
+ * cases; if those cases reach three of the seven clauses the item summarizes,
+ * the other four are absence of evidence hiding inside a green result. Listing
+ * them is the clause-level analogue of reporting `not-tested` requirements.
+ */
+export type UncoveredClause = {
+	readonly clauseId: string;
+	/** The missing hook, fixture, or capability. Never empty for a MUST. */
+	readonly gapNote: string;
+};
+
 /** Per-requirement roll-up: the worst outcome across its cases. */
 export type RequirementResult = {
 	readonly requirement: Requirement;
 	readonly outcome: Outcome;
 	readonly cases: readonly CaseResult[];
+	/**
+	 * Every clause in sections 4-8/10 this requirement summarizes, in matrix
+	 * order. Added, never replacing anything: the JSON report's existing fields
+	 * keep their shape and meaning.
+	 */
+	readonly clauseIds: readonly string[];
+	/** The subset of `clauseIds` that are MUST-level with no case. */
+	readonly uncoveredMustClauses: readonly UncoveredClause[];
 };
 
 export type RoleCoverage = {
@@ -231,7 +255,16 @@ export function buildReport(input: {
 		scopedRoles.has(r.role),
 	).map((requirement) => {
 		const cases = byRequirement.get(requirement.id) ?? [];
-		return { requirement, outcome: rollUpOutcome(cases), cases };
+		const clauses = clausesForRequirement(requirement.id);
+		return {
+			requirement,
+			outcome: rollUpOutcome(cases),
+			cases,
+			clauseIds: clauses.map((c) => c.clauseId),
+			uncoveredMustClauses: clauses
+				.filter((c) => c.level === "must" && c.caseIds.length === 0)
+				.map((c) => ({ clauseId: c.clauseId, gapNote: c.gapNote ?? "" })),
+		};
 	});
 
 	const coverage = [...scopedRoles].map((role) =>

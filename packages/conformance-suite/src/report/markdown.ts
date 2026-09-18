@@ -234,6 +234,51 @@ function renderAllResults(requirements: readonly RequirementResult[]): string {
 }
 
 /**
+ * Per-requirement clause inventory.
+ *
+ * This is the section that stops a green requirement from overclaiming. A
+ * requirement rolls up from its cases, but the Section 9 item it names is a
+ * summary of several clauses; where cases reach some of them and not others, a
+ * `PASS` marker alone invites the reader to assume the whole item was
+ * exercised. Listing the clause IDs, and naming every uncovered MUST with the
+ * gap that blocks it, makes the unexercised remainder as visible as the result.
+ */
+function renderClauseInventory(
+	requirements: readonly RequirementResult[],
+): string {
+	const lines = [
+		"## Clause coverage",
+		"",
+		"Each Section 9 item summarizes normative clauses in Core sections 4-8 and " +
+			"10. The clauses behind each item are listed here, and any MUST-level " +
+			"clause with no case is named with the gap that blocks it. A requirement " +
+			"marked `PASS` may still have uncovered clauses: the marker describes the " +
+			"cases that ran, not the whole item.",
+		"",
+		"Full inventory: `docs/reference/conformance-normative-matrix.md`.",
+		"",
+	];
+	for (const r of requirements) {
+		lines.push(`### ${r.requirement.id} (${OUTCOME_MARKER[r.outcome]})`, "");
+		if (r.clauseIds.length === 0) {
+			lines.push("No clause in sections 4-8 or 10 maps to this item.", "");
+			continue;
+		}
+		lines.push(`Clauses: ${r.clauseIds.map((id) => `\`${id}\``).join(", ")}`, "");
+		if (r.uncoveredMustClauses.length === 0) {
+			lines.push("Every MUST-level clause under this item has at least one case.", "");
+			continue;
+		}
+		lines.push("Uncovered MUST clauses:", "");
+		for (const clause of r.uncoveredMustClauses) {
+			lines.push(`- \`${clause.clauseId}\`: ${clause.gapNote}`);
+		}
+		lines.push("");
+	}
+	return lines.join("\n");
+}
+
+/**
  * Render a ConformanceReport as GitHub-flavored markdown.
  *
  * Pure function: no file I/O, no console output. Section order is deliberate —
@@ -251,6 +296,7 @@ export function renderMarkdown(report: ConformanceReport): string {
 		renderAdvisories(report.requirements),
 		renderNotTested(report.requirements),
 		renderAllResults(report.requirements),
+		renderClauseInventory(report.requirements),
 	];
 	return `${sections.join("\n\n")}\n`;
 }

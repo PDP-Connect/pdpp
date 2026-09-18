@@ -16,6 +16,7 @@
   "scripts": {
     "check": "ultracite check",
     "fix": "ultracite fix",
+    "matrix:md": "node --import tsx scripts/render-matrix-md.ts",
     "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm check && pnpm test"
