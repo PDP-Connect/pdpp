@@ -67,7 +67,10 @@ set -euo pipefail
 # of 6981645) fixes the query validator to reject an owner-token filter[...] on
 # an unsupported/malformed shape instead of silently serving unfiltered data --
 # the fix RS-10/owner-filter-unknown-field-rejected checks for.
-VANA_REF="${PDPP_VANA_REF:-24802bbd0bff5d47524fa6b42697385f64dda529}"
+# b7ec226 rejects unsupported bracketed query shapes and owner expansion.
+# The target declares no expandable relations; owner expansion therefore
+# returns invalid_expand. RS-10 exercises these rejection paths over HTTP.
+VANA_REF="${PDPP_VANA_REF:-b7ec22681fc8fd47e6b730fd4b12651a17f3e78f}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
 COMPOSED_BRANCH="pdpp-conformance-composed"

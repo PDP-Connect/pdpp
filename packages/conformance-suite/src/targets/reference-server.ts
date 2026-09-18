@@ -83,6 +83,8 @@ export type Defect =
   | "bypass-ai-training-consent"
   /** Silently ignores an owner-token filter[...] naming an undeclared field instead of 400 (RS-10). */
   | "ignore-owner-filter-unknown-field"
+  /** Silently serves an owner-token expand[] naming a relation absent from the stream's declared relationships (RS-10). */
+  | "ignore-owner-expand-undeclared-relation"
   /** Rejects every owner record read, despite issuing a valid owner token. */
   | "deny-owner-records";
 
@@ -403,9 +405,9 @@ export class ReferenceServer {
         error(403, "access_denied", "authorization_error", "Owner reads denied by fixture.");
         return;
       }
-      const rejection = this.rejectUnsupportedParams([...parsed.searchParams.keys()], principal.kind);
+      const rejection = this.rejectUnsupportedParams(parsed.searchParams, principal.kind, fixture);
       if (rejection) {
-        error(400, "invalid_request", "invalid_request_error", rejection);
+        error(400, rejection.code, "invalid_request_error", rejection.message);
         return;
       }
 
@@ -567,7 +569,12 @@ export class ReferenceServer {
    * expansion parameters are off the v0.1 client surface (RS-9), and unknown
    * parameters are rejected rather than ignored for any caller (RS-10).
    */
-  private rejectUnsupportedParams(params: readonly string[], kind: Principal["kind"]): string | undefined {
+  private rejectUnsupportedParams(
+    searchParams: URLSearchParams,
+    kind: Principal["kind"],
+    fixture: StreamFixture
+  ): { code: string; message: string } | undefined {
+    const params = [...searchParams.keys()];
     if (kind === "client" && !this.has("accept-client-filters")) {
       const offending = params.find(
         (p) =>
@@ -578,18 +585,35 @@ export class ReferenceServer {
           p === "view"
       );
       if (offending) {
-        return `Parameter '${offending}' is not part of the v0.1 client-token query surface.`;
+        return {
+          code: "invalid_request",
+          message: `Parameter '${offending}' is not part of the v0.1 client-token query surface.`,
+        };
       }
     }
     // This fixture does not implement owner predicate filters.
     if (kind === "owner" && !this.has("ignore-owner-filter-unknown-field")) {
       const offending = params.find((p) => p.startsWith("filter["));
-      if (offending) return `Parameter '${offending}' is unsupported.`;
+      if (offending) {
+        return { code: "invalid_request", message: `Parameter '${offending}' is unsupported.` };
+      }
+    }
+    // Section 8 "Relationships": an owner-token expand[] naming a relation
+    // absent from the stream's own declared relationships MUST 400
+    // invalid_expand, not be silently served. A relation is structurally
+    // present only if this fixture actually declared it.
+    if (kind === "owner" && !this.has("ignore-owner-expand-undeclared-relation") && params.includes("expand[]")) {
+      const declared = new Set((fixture.relationships ?? []).map((r) => r.id));
+      const requested = searchParams.getAll("expand[]");
+      const undeclaredRequested = requested.find((name) => !declared.has(name));
+      if (undeclaredRequested !== undefined) {
+        return { code: "invalid_expand", message: `Relation '${undeclaredRequested}' is not declared as expandable.` };
+      }
     }
     if (!this.has("ignore-unknown-params")) {
       const unknown = params.find((p) => !(KNOWN_PARAMS.has(p) || p.startsWith("filter[") || p.startsWith("expand")));
       if (unknown) {
-        return `Unknown query parameter '${unknown}'.`;
+        return { code: "invalid_request", message: `Unknown query parameter '${unknown}'.` };
       }
     }
     return undefined;

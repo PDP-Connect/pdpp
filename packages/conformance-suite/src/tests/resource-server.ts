@@ -150,6 +150,38 @@ function verifyBlobBytes(evidence: Evidence, body: Uint8Array, fixture: BlobFixt
 }
 
 /**
+ * Proves `token` reads real, populated, structurally valid records on
+ * `recordsPath` before a negative case trusts a rejection on the same path.
+ * Without this, a target that denies (or 400s) every read would pass a
+ * negative oracle by refusing everything rather than by enforcing the rule
+ * under test.
+ */
+async function verifyPositiveRecordsRead(
+  adapter: TargetAdapter,
+  recordsPath: string,
+  token: string,
+  query?: Record<string, string>
+): Promise<CaseVerdict> {
+  const response = await request(adapter.baseUrl, recordsPath, { token, ...(query ? { query } : {}) });
+  if (response.status !== 200) {
+    return fail(
+      `A positive read on the same path/token returned ${response.status} instead of 200, so this run cannot distinguish a real rejection from a target that denies this read entirely.`,
+      [response.evidence]
+    );
+  }
+  const body = asList(response.json);
+  if (body?.object !== "list" || !Array.isArray(body.data)) {
+    return fail("The positive read did not return a well-formed Section 8 list envelope.", [response.evidence]);
+  }
+  if (body.data.length === 0) {
+    return fail("The positive read returned zero records, so the seeded stream is not observably populated.", [
+      response.evidence,
+    ]);
+  }
+  return pass([response.evidence]);
+}
+
+/**
  * Fetches `fixture.blobId` with `token` and verifies it against the fixture's
  * headers and bytes, exactly as RS-1/get-blob-bytes does. Negative blob cases
  * call this first: without proving the issued token actually reads the
@@ -187,6 +219,70 @@ interface StreamMetadataBody {
   relationships?: unknown[];
   schema?: { properties?: Record<string, { items?: { type?: unknown }; type?: unknown }>; required?: unknown };
   views?: unknown[];
+}
+
+/** Prefer the protocol name; tolerate the bundled fixture's legacy id field. */
+function relationIdentifier(entry: unknown): string | undefined {
+  if (typeof entry !== "object" || entry === null) {
+    return undefined;
+  }
+  const { id, name } = entry as Record<string, unknown>;
+  if (typeof name === "string") {
+    return name;
+  }
+  return typeof id === "string" ? id : undefined;
+}
+
+/**
+ * Relation names this owner-token metadata read structurally declares
+ * (`relationships`) and names it declares expandable (`query.expand`),
+ * derived from the ACTUAL HTTP response body, never from a fixture's
+ * retained expectation. Fails on malformed metadata (present but not an
+ * array of identifiable entries) rather than silently treating it as empty,
+ * since an empty result must mean "declares nothing", not "could not read".
+ */
+export function declaredRelationNames(
+  input: unknown
+): { declared: ReadonlySet<string>; expandable: ReadonlySet<string> } | { malformed: string } {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    (input as Record<string, unknown>).object !== "stream_metadata"
+  ) {
+    return { malformed: "Expected a stream_metadata object." };
+  }
+  const body = input as StreamMetadataBody;
+  if (body.query !== undefined && (!body.query || typeof body.query !== "object" || Array.isArray(body.query))) {
+    return { malformed: "`query` is present but not an object." };
+  }
+  const relationships = body.relationships;
+  if (relationships !== undefined && !Array.isArray(relationships)) {
+    return { malformed: "`relationships` is present but not an array." };
+  }
+  const declared = new Set<string>();
+  for (const entry of relationships ?? []) {
+    const id = relationIdentifier(entry);
+    if (id === undefined) {
+      return { malformed: "`relationships` contains an entry with no string `id` or `name`." };
+    }
+    declared.add(id);
+  }
+
+  const expand = body.query?.expand;
+  if (expand !== undefined && !Array.isArray(expand)) {
+    return { malformed: "`query.expand` is present but not an array." };
+  }
+  const expandable = new Set<string>();
+  for (const entry of expand ?? []) {
+    const id = relationIdentifier(entry);
+    if (id === undefined) {
+      return { malformed: "`query.expand` contains an entry with no string `id` or `name`." };
+    }
+    expandable.add(id);
+  }
+
+  return { declared, expandable };
 }
 
 /** Compare declared capabilities without treating JSON object-key order as meaningful. */
@@ -898,6 +994,156 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
 
       return pass([control.evidence, exactFiltered.evidence, rangeFiltered.evidence]);
+    },
+  },
+
+  // Prove each token can read before checking unsupported query rejection.
+  {
+    caseId: "RS-10/unsupported-bracketed-shape-rejected",
+    requirementId: "RS-10",
+    assertion:
+      "limit[x], an unsupported bracketed shape of a known parameter, is rejected with 400 on both client-token and owner-token reads, each proved live by a populated positive read first.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream || stream.recordCount < 1) {
+        return skip("A seeded stream with at least one record is required.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+      });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+
+      const clientPositive = await verifyPositiveRecordsRead(adapter, recordsPath, grant.accessToken);
+      if (clientPositive.outcome !== "pass") {
+        return clientPositive;
+      }
+      const evidence = [...(clientPositive.evidence ?? [])];
+
+      const clientResponse = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { "limit[x]": "5" },
+      });
+      evidence.push(clientResponse.evidence);
+      if (clientResponse.status === 200) {
+        return fail(
+          "A client-token request with limit[x] (an unsupported bracketed shape of the known 'limit' parameter) was served (200) instead of rejected. Section 8 requires unsupported query shapes to be rejected with 400, not silently ignored.",
+          evidence
+        );
+      }
+      if (clientResponse.status !== 400) {
+        return fail(`Expected 400 for a client-token limit[x], got ${clientResponse.status}.`, evidence);
+      }
+
+      if (!adapter.capabilities.ownerTokens) {
+        return pass(evidence);
+      }
+
+      // The capability is advertised, so owner coverage is required, not
+      // optional: an owner token that fails to materialize is incomplete
+      // evidence, not grounds to pass on the client leg alone.
+      const owner = await adapter.ownerToken();
+      if (!owner) {
+        return skip(
+          "The target declares owner tokens but the adapter produced none, so owner-token coverage of this requirement is incomplete. The client-token leg passed: see evidence."
+        );
+      }
+      const ownerQuery = adapter.ownerReadParams ? { ...adapter.ownerReadParams } : {};
+
+      const ownerPositive = await verifyPositiveRecordsRead(adapter, recordsPath, owner, ownerQuery);
+      if (ownerPositive.outcome !== "pass") {
+        return ownerPositive;
+      }
+      evidence.push(...(ownerPositive.evidence ?? []));
+
+      const ownerResponse = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, "limit[x]": "5" },
+      });
+      evidence.push(ownerResponse.evidence);
+      if (ownerResponse.status === 200) {
+        return fail(
+          "An owner-token request with limit[x] was served (200) instead of rejected. Section 8 binds the unsupported-shape rejection to both token kinds.",
+          evidence
+        );
+      }
+      if (ownerResponse.status !== 400) {
+        return fail(`Expected 400 for an owner-token limit[x], got ${ownerResponse.status}.`, evidence);
+      }
+
+      return pass(evidence);
+    },
+  },
+
+  // Choose an undeclared relation from metadata returned by this target.
+  {
+    caseId: "RS-10/owner-expand-undeclared-relation-rejected",
+    requirementId: "RS-10",
+    appliesWhen: (adapter) => adapter.capabilities.ownerTokens,
+    assertion:
+      "An owner-token expand[] naming a relation absent from the target's ACTUAL returned metadata (relationships and query.expand) is rejected with 400 invalid_expand.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream || stream.recordCount < 1) {
+        return skip("A seeded stream with at least one record is required.");
+      }
+      const owner = await adapter.ownerToken();
+      if (!owner) {
+        return skip("The target declares owner tokens but the adapter produced none.");
+      }
+      const ownerQuery = adapter.ownerReadParams ? { ...adapter.ownerReadParams } : {};
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const metadataPath = path(`/streams/${encodeURIComponent(stream.name)}`);
+
+      const positive = await verifyPositiveRecordsRead(adapter, recordsPath, owner, ownerQuery);
+      if (positive.outcome !== "pass") {
+        return positive;
+      }
+      const evidence = [...(positive.evidence ?? [])];
+
+      const metadataResponse = await request(adapter.baseUrl, metadataPath, { token: owner, query: { ...ownerQuery } });
+      evidence.push(metadataResponse.evidence);
+      if (metadataResponse.status !== 200) {
+        return fail(
+          `An owner token could not read stream metadata for "${stream.name}": got ${metadataResponse.status}.`,
+          evidence
+        );
+      }
+      const relations = declaredRelationNames(metadataResponse.json as StreamMetadataBody | undefined);
+      if ("malformed" in relations) {
+        return fail(`Owner-token stream metadata is malformed: ${relations.malformed}`, evidence);
+      }
+
+      let undeclaredRelation = "pdpp_conformance_undeclared_relation__c7e2f9a1";
+      while (relations.declared.has(undeclaredRelation) || relations.expandable.has(undeclaredRelation)) {
+        undeclaredRelation = `${undeclaredRelation}_`;
+      }
+
+      const expanded = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, "expand[]": undeclaredRelation },
+      });
+      evidence.push(expanded.evidence);
+      if (expanded.status === 200) {
+        return fail(
+          `An owner-token expand[]=${undeclaredRelation} naming a relation absent from the target's returned metadata was served (200) instead of rejected. Section 8 makes structural presence under 'relationships' distinct from expandability under 'query.expand'; a relation this stream's own metadata never declared cannot be expanded.`,
+          evidence
+        );
+      }
+      if (expanded.status !== 400) {
+        return fail(
+          `Expected 400 for an owner-token expand[] naming an undeclared relation, got ${expanded.status}.`,
+          evidence
+        );
+      }
+      const expandError = errorBody(expanded);
+      if (expandError?.code !== "invalid_expand") {
+        return fail(`Expected error code invalid_expand, got ${expandError?.code ?? "no structured error"}.`, evidence);
+      }
+
+      return pass(evidence);
     },
   },
 

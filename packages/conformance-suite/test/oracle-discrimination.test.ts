@@ -88,6 +88,14 @@ const DISCRIMINATION_MATRIX: readonly {
     defect: "ignore-owner-filter-unknown-field",
   },
   {
+    caseId: "RS-10/unsupported-bracketed-shape-rejected",
+    defect: "ignore-unknown-params",
+  },
+  {
+    caseId: "RS-10/owner-expand-undeclared-relation-rejected",
+    defect: "ignore-owner-expand-undeclared-relation",
+  },
+  {
     caseId: "RS-14/owner-metadata-full-current-document",
     defect: "truncate-owner-metadata",
   },
