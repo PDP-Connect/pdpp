@@ -24,9 +24,10 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { TargetAdapter } from "../src/harness/adapter.ts";
 import type { ConformanceCase } from "../src/harness/runner.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
-import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
+import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import type { Defect } from "../src/targets/reference-server.ts";
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
@@ -276,4 +277,127 @@ it("RS-14 accepts equivalent metadata with a reordered required array", async ()
   } finally {
     await adapter.teardown();
   }
+});
+
+/**
+ * Wraps a real adapter to declare singleUseGrants and optionally add a
+ * `reissueAgainstConsumedGrant` hook, without losing the wrapped adapter's
+ * prototype methods (a `{...adapter}` object spread drops them).
+ */
+class SingleUseCapableAdapter implements Omit<TargetAdapter, "reissueAgainstConsumedGrant"> {
+  readonly capabilities: TargetAdapter["capabilities"];
+  readonly reissueAgainstConsumedGrant?: NonNullable<TargetAdapter["reissueAgainstConsumedGrant"]>;
+  private readonly inner: TargetAdapter;
+
+  constructor(
+    inner: TargetAdapter,
+    reissueAgainstConsumedGrant?: NonNullable<TargetAdapter["reissueAgainstConsumedGrant"]>
+  ) {
+    this.inner = inner;
+    this.capabilities = { ...inner.capabilities, singleUseGrants: true };
+    if (reissueAgainstConsumedGrant) {
+      this.reissueAgainstConsumedGrant = reissueAgainstConsumedGrant;
+    }
+  }
+
+  get baseUrl(): string {
+    return this.inner.baseUrl;
+  }
+  get targetId(): string {
+    return this.inner.targetId;
+  }
+  get targetVersion(): string {
+    return this.inner.targetVersion;
+  }
+  get roles(): TargetAdapter["roles"] {
+    return this.inner.roles;
+  }
+  setup(): ReturnType<TargetAdapter["setup"]> {
+    return this.inner.setup();
+  }
+  teardown(): Promise<void> {
+    return this.inner.teardown();
+  }
+  ownerToken(): ReturnType<TargetAdapter["ownerToken"]> {
+    return this.inner.ownerToken();
+  }
+  // The wrapped reference adapter refuses accessMode "single_use" outright
+  // (it declares no such support). Stripping the field lets it issue a real
+  // grant so these tests can exercise the case's reuse logic in isolation,
+  // independent of whether the reference target itself supports single_use.
+  issueGrant: TargetAdapter["issueGrant"] = (request) => {
+    const { accessMode: _accessMode, ...rest } = request;
+    return this.inner.issueGrant(rest);
+  };
+  revokeGrant(grantId: string): Promise<void> {
+    return this.inner.revokeGrant(grantId);
+  }
+}
+
+const REISSUE_HOOK_NAME_PATTERN = /reissueAgainstConsumedGrant/;
+
+describe("AS-10 cannot be satisfied by an unrelated new grant", () => {
+  // AS-10 used to issue a second single_use grant and pass if its id differed
+  // from the first, which cannot distinguish a target that atomically
+  // consumes a grant from one that just mints a fresh grant every time. These
+  // cases prove the corrected oracle: no evidence still means skip, and a
+  // hook that reissues against a DIFFERENT grant instead of honestly
+  // refusing the SAME consumed one must not pass.
+
+  it("reports skip when the adapter has no reissueAgainstConsumedGrant hook", async () => {
+    const inner = new ReferenceTargetAdapter(undefined, new Set());
+    const adapter = new SingleUseCapableAdapter(inner);
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(
+        caseById("AS-10/single-use-grant-consumed"),
+        makeContext(adapter as TargetAdapter, streams)
+      );
+      assert.equal(result.outcome, "skip", `expected skip, got ${result.outcome}: ${result.detail ?? ""}`);
+      assert.ok(result.detail, "skip must carry a detail");
+      assert.match(result.detail, REISSUE_HOOK_NAME_PATTERN);
+    } finally {
+      await adapter.teardown();
+    }
+  });
+
+  it("fails when the hook issues an unrelated new grant instead of refusing the consumed one", async () => {
+    const inner = new ReferenceTargetAdapter(undefined, new Set());
+    const adapter = new SingleUseCapableAdapter(inner, (_grantId: string) =>
+      // Models the pre-fix defect: instead of proving the SAME grant id is
+      // refused, this hook mints an unrelated new grant and returns it — the
+      // shape a target that never atomically consumes anything can satisfy
+      // trivially.
+      inner.issueGrant({
+        streams: DEFAULT_FIXTURES[0]
+          ? [{ name: DEFAULT_FIXTURES[0].name, fields: [...DEFAULT_FIXTURES[0].fields] }]
+          : [],
+      })
+    );
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(
+        caseById("AS-10/single-use-grant-consumed"),
+        makeContext(adapter as TargetAdapter, streams)
+      );
+      assert.equal(result.outcome, "fail", `expected fail, got ${result.outcome}: ${result.detail ?? ""}`);
+    } finally {
+      await adapter.teardown();
+    }
+  });
+
+  it("passes when the hook proves the SAME consumed grant id is refused", async () => {
+    const inner = new ReferenceTargetAdapter(undefined, new Set());
+    const adapter = new SingleUseCapableAdapter(inner, (_grantId: string) => Promise.resolve(null));
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(
+        caseById("AS-10/single-use-grant-consumed"),
+        makeContext(adapter as TargetAdapter, streams)
+      );
+      assert.equal(result.outcome, "pass", `expected pass, got ${result.outcome}: ${result.detail ?? ""}`);
+    } finally {
+      await adapter.teardown();
+    }
+  });
 });

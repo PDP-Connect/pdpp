@@ -53,7 +53,15 @@
     "declares no query.range_filters, views, or relationships for either stream,",
     "so query/views/relationships are left absent here rather than invented --",
     "RS-14 then checks schema completeness/content only, which is what this",
-    "deployment actually declares."
+    "deployment actually declares.",
+    "",
+    "singleUseGrants is true because this server supports single_use grants.",
+    "AS-10/single-use-grant-consumed will still report skip against this",
+    "adapter: the case needs a reissueAgainstConsumedGrant hook to attempt a",
+    "second token issuance against the SAME consumed grant id, and this",
+    "adapter implements no such hook yet. That is a harness-coverage gap, not",
+    "an unsupported target feature -- do not read the skip as a capability",
+    "claim walked back."
   ],
   "kind": "vana-ps",
   "targetId": "vana-personal-server",
@@ -71,7 +79,7 @@
     "selfExport": true,
     "incrementalSync": true,
     "views": false,
-    "singleUseGrants": false,
+    "singleUseGrants": true,
     "refreshTokens": true,
     "blobs": true
   },

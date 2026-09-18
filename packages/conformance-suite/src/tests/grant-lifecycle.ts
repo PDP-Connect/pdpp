@@ -154,11 +154,23 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
     caseId: "AS-10/single-use-grant-consumed",
     requirementId: "AS-10",
     appliesWhen: (adapter) => adapter.capabilities.singleUseGrants,
-    assertion: "A single_use grant cannot issue a second client access token after the first.",
+    assertion: "A second client access token attempted against the SAME already-consumed single_use grant is refused.",
     async run({ adapter, streams }) {
       const [stream] = streams;
       if (!stream) {
         return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.reissueAgainstConsumedGrant) {
+        // Issuing a second, DIFFERENT grant does not test reuse of the first:
+        // a target that always mints a fresh grant would pass that check
+        // vacuously. Only an attempt against the SAME grant id isolates
+        // atomic consumption, and this harness has no hook to drive that
+        // attempt yet. This is a harness-coverage gap, not a target defect —
+        // the target's declared singleUseGrants capability is not in
+        // question here.
+        return skip(
+          "The adapter declares singleUseGrants but implements no reissueAgainstConsumedGrant hook, so the suite cannot attempt a second token issuance against the SAME consumed grant. A second, different grant would not prove reuse of the first is refused."
+        );
       }
       const first = await adapter.issueGrant({
         streams: [{ name: stream.name, fields: [...stream.fields] }],
@@ -167,13 +179,10 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
       if (!first) {
         return skip("The target declares single_use support but could not issue such a grant.");
       }
-      // A second issuance against a consumed single_use grant must fail. The
-      // adapter returning null IS the conformant outcome here.
-      const second = await adapter.issueGrant({
-        streams: [{ name: stream.name, fields: [...stream.fields] }],
-        accessMode: "single_use",
-      });
-      if (second && second.grantId === first.grantId) {
+      // A reissuance attempt against the SAME consumed grant id must be
+      // refused. The hook returning null IS the conformant outcome here.
+      const replay = await adapter.reissueAgainstConsumedGrant(first.grantId);
+      if (replay) {
         return fail(
           `A second access token was issued against the already-consumed single_use grant ${first.grantId}. Section 9 AS item 10 requires atomic consumption with first issuance.`
         );

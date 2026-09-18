@@ -267,6 +267,20 @@ export interface TargetAdapter {
   readonly queryBase?: string | undefined;
 
   /**
+   * Attempt to issue a client access token against a SPECIFIC already-consumed
+   * `single_use` grant, identified by `grantId`. Returns the token if the
+   * target (incorrectly) issued one, or null if it refused.
+   *
+   * This exists because issuing a second, DIFFERENT grant proves nothing about
+   * whether the first one can be reused: only an attempt to reissue against the
+   * exact consumed `grantId` isolates AS-10's atomic-consumption requirement.
+   * Optional: a target whose issuance path cannot be redirected at a specific
+   * grant id reports the case `skip` naming this hook rather than passing on no
+   * evidence.
+   */
+  reissueAgainstConsumedGrant?: (grantId: string) => Promise<IssuedGrant | null>;
+
+  /**
    * The streams and fields a staged request resolved to, before approval.
    *
    * Section 9 AS item 4 requires request-time conveniences (an omitted field
