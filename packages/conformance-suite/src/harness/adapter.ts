@@ -27,6 +27,21 @@ import type { Role } from "../requirements/catalog.ts";
 export interface SeededStream {
   /** Cursor field used for stable sort, if the stream declares one. */
   readonly cursorField?: string;
+  /**
+   * The current query/view/relationship capabilities this stream's own
+   * retained declaration advertises, independent of any grant.
+   *
+   * This is what RS-14 checks an owner-token metadata read against. It MUST
+   * come from the adapter's own record of what it declared/seeded — never by
+   * calling the metadata endpoint under test and treating the response as its
+   * own oracle. Absent means the adapter declares no such capability for this
+   * stream, in which case RS-14 can only check schema completeness.
+   */
+  readonly expectedOwnerMetadata?: {
+    readonly query?: Readonly<Record<string, unknown>>;
+    readonly relationships?: readonly unknown[];
+    readonly views?: readonly unknown[];
+  };
   /** Field names present in the declared schema. */
   readonly fields: readonly string[];
   readonly name: string;

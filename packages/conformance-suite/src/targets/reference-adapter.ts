@@ -114,6 +114,14 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       ...(f.cursorField && { cursorField: f.cursorField }),
       semantics: f.semantics,
       recordCount: f.records.length,
+      // The declared capabilities RS-14 checks an owner-token metadata read
+      // against, derived from this fixture directly rather than from anything
+      // the metadata endpoint under test returns.
+      expectedOwnerMetadata: {
+        query: { range_filters: { [f.cursorField ?? "id"]: ["gte"] } },
+        views: [{ id: "basic", label: "Basic", fields: [...f.fields] }],
+        relationships: [],
+      },
     }));
     return { streams };
   }

@@ -38,6 +38,34 @@ function asList(json: unknown): ListBody | undefined {
   return typeof json === "object" && json !== null ? (json as ListBody) : undefined;
 }
 
+/** Owner-token stream metadata, the shape RS-14 and RS-15 both read. */
+interface StreamMetadataBody {
+  query?: Record<string, unknown>;
+  relationships?: unknown[];
+  schema?: { properties?: Record<string, unknown> };
+  views?: unknown[];
+}
+
+/**
+ * Whether a declared capability (views, relationships, or query) that the
+ * fixture says exists is missing from the owner-metadata response. Returns
+ * `undefined` when the fixture declares nothing in this category, since RS-14
+ * cannot fault a target for omitting a capability the stream never had.
+ */
+function declaredCapabilityMissing(
+  declared: readonly unknown[] | Readonly<Record<string, unknown>> | undefined,
+  exposed: unknown
+): boolean {
+  const declaredCount = Array.isArray(declared) ? declared.length : Object.keys(declared ?? {}).length;
+  if (declaredCount === 0) {
+    return false;
+  }
+  const exposedCount = Array.isArray(exposed)
+    ? exposed.length
+    : Object.keys((exposed as object | undefined) ?? {}).length;
+  return exposedCount === 0;
+}
+
 export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
   // ---------------------------------------------------------------- RS-1 ---
   {
@@ -538,6 +566,89 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
           [response.evidence]
         );
       }
+      return pass([response.evidence]);
+    },
+  },
+
+  // --------------------------------------------------------------- RS-14 ---
+  // The owner-metadata completeness oracle: the mirror image of RS-15. An
+  // owner token carries no grant, so Section 9 item 14 requires the WHOLE
+  // current document back — schema, and current query/view/relationship
+  // capability — never truncated as if a grant were being projected against.
+  //
+  // The expectation is the adapter's own retained declaration
+  // (`expectedOwnerMetadata`), not the metadata endpoint under test: a case
+  // that compared the endpoint to itself could never observe truncation.
+  {
+    caseId: "RS-14/owner-metadata-full-current-document",
+    requirementId: "RS-14",
+    appliesWhen: (adapter) => adapter.capabilities.ownerTokens,
+    assertion:
+      "An owner-token stream-metadata read returns the full current schema and declared query/view/relationship capabilities, not a grant-projected subset.",
+    async run({ adapter, streams, path }) {
+      const stream = streams.find((s) => s.fields.length >= 2);
+      if (!stream) {
+        return skip("A stream with at least two declared fields is required to detect schema truncation.");
+      }
+      const owner = await adapter.ownerToken();
+      if (!owner) {
+        return skip("The target declares owner tokens but the adapter produced none.");
+      }
+      const expected = stream.expectedOwnerMetadata;
+      if (!expected) {
+        return skip(
+          `The adapter supplied no retained declaration of "${stream.name}"'s query/view/relationship capabilities to check against.`
+        );
+      }
+
+      // Arrange a client grant that narrows the field projection, so the
+      // fixture also proves the owner read is not merely echoing whatever a
+      // concurrent grant happens to allow: a field outside the grant, plus the
+      // stream's actual declared capabilities, are both in the known fixture.
+      const keep = [...new Set([...stream.primaryKey, stream.fields[0]])].filter(
+        (f): f is string => typeof f === "string"
+      );
+      await adapter.issueGrant({ streams: [{ name: stream.name, fields: keep }] });
+
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}`), {
+        token: owner,
+        ...(adapter.ownerReadParams ? { query: { ...adapter.ownerReadParams } } : {}),
+      });
+      if (response.status !== 200) {
+        return fail(`An owner token could not read stream metadata for "${stream.name}": got ${response.status}.`, [
+          response.evidence,
+        ]);
+      }
+      const body = response.json as StreamMetadataBody | undefined;
+
+      const exposed = Object.keys(body?.schema?.properties ?? {});
+      const missingFields = stream.fields.filter((f) => !exposed.includes(f));
+      if (missingFields.length > 0) {
+        return fail(
+          `Owner-token stream metadata omitted declared schema field(s): ${missingFields.join(", ")}. Section 9 item 14 requires the full current schema, not a client-grant projection (a concurrent client grant narrowed to ${keep.join(", ")} does not authorize this shortfall).`,
+          [response.evidence]
+        );
+      }
+
+      if (declaredCapabilityMissing(expected.views, body?.views)) {
+        return fail(
+          "Owner-token stream metadata omitted the stream's declared views. Section 9 item 14 requires current view capability to be included for an owner-token read.",
+          [response.evidence]
+        );
+      }
+      if (declaredCapabilityMissing(expected.relationships, body?.relationships)) {
+        return fail(
+          "Owner-token stream metadata omitted the stream's declared relationships. Section 9 item 14 requires current relationship capability to be included for an owner-token read.",
+          [response.evidence]
+        );
+      }
+      if (declaredCapabilityMissing(expected.query, body?.query)) {
+        return fail(
+          "Owner-token stream metadata omitted the stream's declared query capability. Section 9 item 14 requires current query capability to be included for an owner-token read.",
+          [response.evidence]
+        );
+      }
+
       return pass([response.evidence]);
     },
   },

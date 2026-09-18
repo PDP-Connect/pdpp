@@ -39,6 +39,8 @@ export type Defect =
   | "weak-401-challenge"
   /** Discloses current views/relationships to a client token (RS-15). */
   | "leak-current-metadata"
+  /** Truncates schema/omits a declared capability from owner metadata (RS-14). */
+  | "truncate-owner-metadata"
   /** Refuses an ungranted stream, but with 401 instead of 403 (RS-6). */
   | "misclassify-stream-denial"
   /** Crashes on a malformed cursor instead of returning 400 (RS-6). */
@@ -430,15 +432,20 @@ export class ReferenceServer {
     grantedFields: readonly string[]
   ): Record<string, unknown> {
     const wholeDocument = kind === "owner" || this.has("leak-current-metadata");
-    const fields = wholeDocument ? [...fixture.fields] : [...grantedFields];
+    // The defect models an owner-token read that projects the document as if a
+    // grant existed: it truncates the schema to the field set a client-token
+    // caller would see, and drops the views capability outright. Owner tokens
+    // carry no grant to project against (Section 8), so either is a violation.
+    const ownerTruncated = kind === "owner" && this.has("truncate-owner-metadata");
+    const fields = ownerTruncated ? fixture.fields.slice(0, 1) : [...(wholeDocument ? fixture.fields : grantedFields)];
     return {
       object: "stream_metadata",
       name: fixture.name,
       schema: { properties: Object.fromEntries(fields.map((f) => [f, {}])) },
       primary_key: [...fixture.primaryKey],
       ...(fixture.cursorField && { cursor_field: fixture.cursorField }),
-      query: wholeDocument ? { range_filters: { [fixture.cursorField ?? "id"]: ["gte"] } } : {},
-      views: wholeDocument ? [{ id: "basic", label: "Basic", fields: [...fixture.fields] }] : [],
+      query: wholeDocument && !ownerTruncated ? { range_filters: { [fixture.cursorField ?? "id"]: ["gte"] } } : {},
+      views: wholeDocument && !ownerTruncated ? [{ id: "basic", label: "Basic", fields: [...fixture.fields] }] : [],
       relationships: [],
     };
   }
