@@ -713,9 +713,7 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#client-claims",
     applicability: "`client_claims` are rendered on the final review surface",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs an adapter hook exposing the final approval artifact so the bound claims can be compared against what was submitted; AS-15/approval-requires-the-issued-revision checks revision binding but not claim binding.",
+    caseIds: ["AS-15/rendered-client-claims-bound-with-attribution"],
   },
   {
     clauseId: "6.3-3",
@@ -900,9 +898,7 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#streamgrant-fields",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs an adapter hook returning the final approval artifact; AS-15/approval-requires-the-issued-revision observes only that a stale revision is refused, not the artifact's field inventory.",
+    caseIds: ["AS-15/final-approval-artifact-carries-resolved-terms"],
   },
   {
     clauseId: "7.2-3",
@@ -924,9 +920,7 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#streamgrant-fields",
     applicability: "the selection request carries `client_claims`",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs a selection request carrying `client_claims` plus inspection of the issued grant; the adapter has no hook to attach claims to a request.",
+    caseIds: ["AS-3/client-claims-stay-outside-the-resolved-grant"],
   },
   {
     clauseId: "7.2-5",

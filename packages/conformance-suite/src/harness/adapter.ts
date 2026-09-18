@@ -145,6 +145,25 @@ export interface IssuedGrant {
  */
 export interface StagedApproval {
   /**
+   * The final approval artifact the server would bind this approval to, exactly
+   * as it publishes it — unparsed and unreshaped.
+   *
+   * Core Section 7.2 requires that artifact to carry the exact resolved
+   * `instance_ids`, stream names, fields, resources, temporal field, `since`,
+   * `until`, purpose, retention, client identity and grant expiry (clause
+   * 7.2-2), and, when `client_claims` were rendered, the normalized claims with
+   * client attribution (clause 6.3-2). None of that is visible from a finished
+   * grant: by then the artifact either carried the right facts or the grant is
+   * wrong, and both look the same from outside.
+   *
+   * `unknown` rather than a typed artifact BECAUSE the case under test is
+   * whether the artifact has the right shape. Typing it here would let the
+   * adapter's own reshaping supply the fields the case is meant to find, and
+   * the case would then be measuring the adapter. Absent when the server
+   * publishes no separable artifact, which reports the cases `skip`.
+   */
+  readonly approvalArtifact?: () => Promise<unknown>;
+  /**
    * Approve this staged request. Returns the grant, or null if refused.
    *
    * `explicitAiTrainingConsent` is separate from the review revision because
@@ -305,6 +324,19 @@ export interface BlobFixture {
 /** The grant shape a test needs. The adapter arranges consent out of band. */
 export interface GrantRequest {
   readonly accessMode?: "single_use" | "continuous" | "recurring";
+  /**
+   * Client-authored, non-enforceable statements about THIS authorization
+   * request (Core Section 6 "Client claims").
+   *
+   * Carried here because the clauses about them are all about what happens to
+   * claims a client actually submitted: 7.2-4 (they stay outside the resolved
+   * grant and RS enforcement) and 6.3-2 (if rendered, they are bound exactly,
+   * with attribution, into the final approval artifact). Neither is observable
+   * against a request that carried none — an absent claim is trivially outside
+   * the grant, so the negative would pass against a server that silently
+   * dropped every claim it was given.
+   */
+  readonly clientClaims?: { readonly commitments?: readonly string[] };
   /**
    * Explicit affirmative consent to the `ai_training` purpose code, carried
    * separately from the ordinary approval so AS-14's positive and negative

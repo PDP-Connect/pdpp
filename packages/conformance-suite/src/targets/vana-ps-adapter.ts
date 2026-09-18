@@ -219,7 +219,11 @@ export class VanaPsAdapter implements TargetAdapter {
     const reviewed = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/review`, {
       headers: ownerAuth,
     });
-    const review = reviewed.ok ? ((await reviewed.json()) as { review?: { review_digest?: string } }) : undefined;
+    // Kept WHOLE, not narrowed to the digest. The server's own review body is
+    // the final approval artifact clauses 7.2-2 and 6.3-2 are about, and
+    // reshaping it here would mean the cases inspect this adapter's summary
+    // rather than what the Personal Server actually publishes.
+    const review = reviewed.ok ? ((await reviewed.json()) as { review?: Record<string, unknown> }) : undefined;
 
     let lastError: { status: number; errorCode?: string } | null = null;
     // Retained only inside this closure so no case body can see or reuse the
@@ -311,10 +315,15 @@ export class VanaPsAdapter implements TargetAdapter {
       return { status: response.status, ...(typeof errorCode === "string" ? { errorCode } : {}) };
     };
 
-    const digest = review?.review?.review_digest;
+    const reviewBody = review?.review;
+    const digest = typeof reviewBody?.review_digest === "string" ? reviewBody.review_digest : undefined;
     return {
       handle: sessionId,
       ...(digest ? { reviewRevision: digest } : {}),
+      // The server's review body verbatim, when it published one. A target that
+      // returns no review body offers no artifact, and the cases report `skip`
+      // rather than the suite reconstructing one from its own request.
+      ...(reviewBody === undefined ? {} : { approvalArtifact: async () => reviewBody }),
       approve,
       lastApproveError: () => lastError,
       replayLastCode,
@@ -429,6 +438,16 @@ export class VanaPsAdapter implements TargetAdapter {
           source: { id: this.config.sourceId },
           purpose_code: wanted.purposeCode ?? this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
           access_mode: wanted.accessMode ?? "continuous",
+          // Core Section 6 places `client_claims` inside each
+          // authorization_details entry. Sent only when the case supplied any,
+          // so no existing request shape changes. If this deployment ignores
+          // them, the 6.3-2 case sees no bound claims in the review body and
+          // reports `skip` (the clause is conditional on claims being
+          // rendered) rather than failing the server for a capability Core
+          // does not require it to have.
+          ...(wanted.clientClaims?.commitments?.length
+            ? { client_claims: { commitments: [...wanted.clientClaims.commitments] } }
+            : {}),
           streams: wanted.streams.map((s) => ({
             name: s.name,
             ...(s.fields.length > 0 ? { fields: [...s.fields] } : {}),

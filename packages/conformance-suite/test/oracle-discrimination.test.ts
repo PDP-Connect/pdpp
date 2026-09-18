@@ -32,6 +32,7 @@ import { makeContext, runCase } from "../src/harness/runner.ts";
 import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import type { Defect } from "../src/targets/reference-server.ts";
 import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
+import { CONSENT_ARTIFACT_CASES } from "../src/tests/consent-artifact.ts";
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
@@ -45,6 +46,7 @@ const CASES: readonly ConformanceCase[] = [
   ...QUERY_SURFACE_CASES,
   ...SELECTION_VALIDATION_CASES,
   ...VIEW_CASES,
+  ...CONSENT_ARTIFACT_CASES,
 ];
 
 function caseById(caseId: string): ConformanceCase {
@@ -278,6 +280,38 @@ const DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "AS-2/time-range-without-consent-time-field-refused",
     defect: "accept-time-range-without-consent-time-field",
+  },
+  // ---- The final approval artifact (clauses 7.2-2, 6.3-2, 7.2-4) ----
+  //
+  // Clause 7.2-2. The defect keeps the streams and fields — the facts an
+  // implementer thinks of first — and drops retention, grant expiry and the
+  // resolved instance ids. A case asserting only that an artifact EXISTS passes
+  // against that, which is why the oracle checks the whole field inventory.
+  {
+    caseId: "AS-15/final-approval-artifact-carries-resolved-terms",
+    defect: "thin-approval-artifact",
+  },
+  // Clause 6.3-2 has two halves and a server can fail either alone, so the
+  // oracle is paired with a defect for each. `mutate-bound-client-claims`
+  // paraphrases the claims (violating "bound exactly");
+  // `drop-client-claim-attribution` keeps them verbatim but unattributed, which
+  // is the subtler failure: the text survives, and what is lost is the signal
+  // that these are the client's unverifiable promises rather than enforced
+  // terms. Both were confirmed to fail this case and no other.
+  {
+    caseId: "AS-15/rendered-client-claims-bound-with-attribution",
+    defect: "mutate-bound-client-claims",
+  },
+  {
+    caseId: "AS-15/rendered-client-claims-bound-with-attribution",
+    defect: "drop-client-claim-attribution",
+  },
+  // Clause 7.2-4. The oracle searches the grant by claim CONTENT at any depth
+  // rather than for a `client_claims` key, so a server that leaked the claims
+  // under another name or nested in a stream row is caught too.
+  {
+    caseId: "AS-3/client-claims-stay-outside-the-resolved-grant",
+    defect: "leak-client-claims-into-grant",
   },
   {
     caseId: "AS-5/both-streams-and-preset-refused",

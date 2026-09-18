@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **48** have at least one case and **58** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **51** have at least one case and **55** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -81,7 +81,7 @@ Issues grants conforming to the Section 7 grant schema, with all fields derived 
 | --- | --- | --- | --- | --- |
 | `6.3-3` | SHOULD | review-only | — | — |
 | `7.1-1` | MUST | black-box-http | `AS-3/issued-grant-artifact-matches-section-7-schema`<br>`AS-3/resolved-grant-matches-observable-schema-fields` | — |
-| `7.2-4` | MUST | black-box-http | — | Needs a selection request carrying `client_claims` plus inspection of the issued grant; the adapter has no hook to attach claims to a request. |
+| `7.2-4` | MUST | black-box-http | `AS-3/client-claims-stay-outside-the-resolved-grant` | — |
 | `10.3-1` | MUST | review-only | — | "Tamper-sensitive" names a design posture, not a wire behaviour; the spec defers grant signing and a formal token format to a future version, so there is no observable artifact to check. |
 
 ### AS-4 (authorization-server, MUST)
@@ -199,11 +199,11 @@ Resolves omitted instance IDs before final approval, binds resolved instances an
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `6.3-2` | MUST | black-box-http | — | Needs an adapter hook exposing the final approval artifact so the bound claims can be compared against what was submitted; AS-15/approval-requires-the-issued-revision checks revision binding but not claim binding. |
+| `6.3-2` | MUST | black-box-http | `AS-15/rendered-client-claims-bound-with-attribution` | — |
 | `7.2-1` | MUST | black-box-http | `AS-4/omitted-fields-expanded-before-issuance` | — |
-| `7.2-2` | MUST | black-box-http | — | Needs an adapter hook returning the final approval artifact; AS-15/approval-requires-the-issued-revision observes only that a stale revision is refused, not the artifact's field inventory. |
+| `7.2-2` | MUST | black-box-http | `AS-15/final-approval-artifact-carries-resolved-terms` | — |
 | `7.2-3` | MUST | black-box-http | `AS-15/approval-requires-the-issued-revision` | — |
-| `7.2-4` | MUST | black-box-http | — | Needs a selection request carrying `client_claims` plus inspection of the issued grant; the adapter has no hook to attach claims to a request. |
+| `7.2-4` | MUST | black-box-http | `AS-3/client-claims-stay-outside-the-resolved-grant` | — |
 | `7.2-5` | MUST | black-box-http | `AS-15/approval-requires-the-issued-revision` | — |
 
 ### AS-16 (authorization-server, MUST)

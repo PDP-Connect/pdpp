@@ -177,7 +177,45 @@ export type Defect =
    * phrase, and every party then believes a temporal limit is in force that
    * nothing actually evaluates.
    */
-  | "accept-time-range-without-consent-time-field";
+  | "accept-time-range-without-consent-time-field"
+  /**
+   * Binds client claims into the final approval artifact WITHOUT client
+   * attribution (clause 6.3-2).
+   *
+   * The claims are all present and unaltered, so a case checking only that the
+   * text survived passes. What is lost is the thing the attribution requirement
+   * exists for: an unattributed commitment reads on the review surface as a
+   * term the protocol enforces, when in fact it is an unverifiable promise by
+   * the requesting client.
+   */
+  | "drop-client-claim-attribution"
+  /**
+   * Paraphrases client claims when binding them into the final approval
+   * artifact, instead of binding them exactly (clause 6.3-2).
+   *
+   * Separate from dropping attribution because a server can do either alone.
+   * "Bound exactly" is the obligation: retained consent evidence that says
+   * something the client did not say cannot support the consent it records.
+   */
+  | "mutate-bound-client-claims"
+  /**
+   * Leaks `client_claims` into the resolved grant (clause 7.2-4).
+   *
+   * Core places claims outside authorization equality, the resolved grant,
+   * introspection rights and RS enforcement. A server that copies them into the
+   * grant turns an unenforceable promise into something downstream components
+   * may read as an authorization term.
+   */
+  | "leak-client-claims-into-grant"
+  /**
+   * Omits resolved facts from the final approval artifact (clause 7.2-2).
+   *
+   * Models the common shape: an artifact that names the streams and fields but
+   * drops the temporal and lifecycle facts — retention, grant expiry, the
+   * resolved instance ids — so the owner approves a screen that does not say
+   * how long the access lasts or which instance it reaches.
+   */
+  | "thin-approval-artifact";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";

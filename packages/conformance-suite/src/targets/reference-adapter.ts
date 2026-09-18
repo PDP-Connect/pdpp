@@ -21,6 +21,7 @@ import type {
   SeededStream,
   SelectionOutcome,
   SelectionRequest,
+  StagedApproval,
   TargetAdapter,
   TargetCapabilities,
 } from "../harness/adapter.ts";
@@ -150,6 +151,17 @@ const ROLES: readonly Role[] = ["resource-server", "authorization-server"];
  */
 const UNDECLARED_VIEW_FIELD = "pdpp_conformance_field_absent_from_schema";
 
+/**
+ * Facts the final approval artifact must carry (clause 7.2-2) that this target
+ * has no other reason to model. They are constants rather than configuration
+ * because the case checks that the artifact CARRIES them, not what they are.
+ */
+const CLIENT_IDENTITY = "pdpp-conformance-client";
+const DEFAULT_PURPOSE = "https://pdpp.dev/purpose/personalization";
+const DEFAULT_RETENTION = "P30D";
+const GRANT_EXPIRY = "2027-01-01T00:00:00Z";
+const INSTANCE_ID = "instance_reference_1";
+
 export class ReferenceTargetAdapter implements TargetAdapter {
   readonly targetId: string;
   readonly targetVersion = "0.1.0";
@@ -158,6 +170,8 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   private readonly server: ReferenceServer;
   private readonly fixtures: readonly StreamFixture[];
   private readonly defects: ReadonlySet<Defect>;
+  /** Monotonic handle/revision source for staged approvals. */
+  private stagedCounter = 0;
 
   constructor(fixtures: readonly StreamFixture[] = DEFAULT_FIXTURES, defects: ReadonlySet<Defect> = new Set()) {
     // Clause 5.6-2 binds the AS's view DEFINITIONS, so the violating target is
@@ -255,16 +269,18 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     return this.server.widenView(stream, view, addField);
   }
 
-  async issueGrant(request: GrantRequest): Promise<IssuedGrant | null> {
-    if (request.accessMode === "single_use") {
-      // Not supported; declared absent in capabilities, so AS-10 is unsupported.
-      return null;
-    }
-    // Core Section 5 "View evolution": a view name in a request is resolved to
-    // a field list AT ISSUANCE, and the resolved list is what the grant is
-    // bound to. Resolving here — rather than storing the view name on the
-    // grant — is what makes clause 5.6-2a true of this target: a later
-    // `widenView` cannot reach a grant that never retained the name.
+  /**
+   * The request's streams with every `view` name resolved to a field list, or
+   * null when a named view is one this AS does not define.
+   *
+   * Core Section 5 "View evolution": a view name is resolved AT ISSUANCE and
+   * the resolved list is what the grant binds to. Resolving here — rather than
+   * storing the view name on the grant — is what makes clause 5.6-2a true of
+   * this target: a later `widenView` cannot reach a grant that never retained
+   * the name. Shared with `stageApproval` so the artifact the owner reviews
+   * describes exactly the fields the grant will carry.
+   */
+  private resolveStreams(request: GrantRequest): { name: string; fields: readonly string[]; view?: string }[] | null {
     const resolved: { name: string; fields: readonly string[]; view?: string }[] = [];
     for (const s of request.streams) {
       if (s.view === undefined) {
@@ -273,11 +289,106 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       }
       const viewFields = this.resolveView(s.name, s.view);
       if (!viewFields) {
-        // An unrecognized view is not a field list. Refusing is correct and
-        // reports `unsupported` rather than inventing a projection.
         return null;
       }
       resolved.push({ name: s.name, fields: [...viewFields], view: s.view });
+    }
+    return resolved;
+  }
+
+  /**
+   * The `client_claims` block the final approval artifact carries.
+   *
+   * Clause 6.3-2: rendered claims are "normalized and bound exactly, with
+   * client attribution, into the immutable final approval artifact". Two things
+   * are therefore checkable and each has its own defect, because a server can
+   * get either wrong on its own: the claims must be the client's own words
+   * unaltered (`mutate-bound-client-claims` paraphrases them), and they must
+   * carry attribution (`drop-client-claim-attribution` omits it, which is how a
+   * claim stops being "the client says" and starts reading as a term the
+   * protocol enforces).
+   */
+  private bindClaims(commitments: readonly string[]): Record<string, unknown> {
+    const bound = this.defects.has("mutate-bound-client-claims")
+      ? commitments.map((c) => `${c} (edited)`)
+      : [...commitments];
+    return this.defects.has("drop-client-claim-attribution")
+      ? { commitments: bound }
+      : { attributed_to: CLIENT_IDENTITY, commitments: bound };
+  }
+
+  /**
+   * Stage an authorization request, stopping before approval, and publish the
+   * final approval artifact the approval would be bound to.
+   *
+   * The artifact is built HERE, from the resolved request, rather than derived
+   * from the eventual grant: clause 7.2-2 is about what the owner is shown and
+   * what the approval binds to, which by definition exists before the grant
+   * does. Building it from the grant afterwards would make the case unable to
+   * detect the very thing it is looking for — an artifact missing facts the
+   * owner needed in order to consent.
+   *
+   * `clientClaims` are carried into the artifact under their own key with
+   * explicit attribution (clause 6.3-2), and deliberately NOT into the grant
+   * (clause 7.2-4): Core places them outside authorization equality, the
+   * resolved grant, introspection rights and RS enforcement.
+   */
+  async stageApproval(request: GrantRequest): Promise<StagedApproval | null> {
+    const resolved = this.resolveStreams(request);
+    if (!resolved) {
+      return null;
+    }
+    this.stagedCounter += 1;
+    const handle = `staged_${this.stagedCounter}`;
+    const revision = `rev_${this.stagedCounter}`;
+    const claims = request.clientClaims;
+
+    // `thin-approval-artifact` keeps the streams and fields — the facts an
+    // implementer thinks of first — and drops the lifecycle ones. That is the
+    // realistic shape of a 7.2-2 violation, and it is why the case checks the
+    // whole field inventory rather than just that an artifact exists.
+    const thin = this.defects.has("thin-approval-artifact");
+    const artifact = {
+      review_revision: revision,
+      client: { client_id: CLIENT_IDENTITY },
+      purpose: request.purposeCode ?? DEFAULT_PURPOSE,
+      ...(thin ? {} : { retention: DEFAULT_RETENTION, grant_expiry: GRANT_EXPIRY }),
+      streams: resolved.map((stream) => ({
+        name: stream.name,
+        fields: [...stream.fields],
+        ...(thin ? {} : { instance_ids: [INSTANCE_ID] }),
+        resources: [],
+        temporal_field: request.timeConstraint?.field ?? null,
+        since: request.timeConstraint?.from ?? null,
+        until: request.timeConstraint?.to ?? null,
+      })),
+      // Rendered on the review surface, so bound exactly and attributed. The
+      // `attributed_to` key is what makes the binding checkable: a bare copy of
+      // the strings would satisfy "present" without satisfying "attributed".
+      ...(claims?.commitments?.length ? { client_claims: this.bindClaims(claims.commitments) } : {}),
+    };
+
+    return {
+      handle,
+      reviewRevision: revision,
+      approvalArtifact: async () => artifact,
+      approve: async (approveRevision?: string) => {
+        if (approveRevision !== undefined && approveRevision !== revision) {
+          return null;
+        }
+        return await this.issueGrant(request);
+      },
+    };
+  }
+
+  async issueGrant(request: GrantRequest): Promise<IssuedGrant | null> {
+    if (request.accessMode === "single_use") {
+      // Not supported; declared absent in capabilities, so AS-10 is unsupported.
+      return null;
+    }
+    const resolved = this.resolveStreams(request);
+    if (!resolved) {
+      return null;
     }
     const issued = this.server.issueGrant(
       resolved.map((s) => ({
@@ -296,9 +407,38 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     if (!issued || "deniedReason" in issued) {
       return null;
     }
+    // The resolved grant artifact, published ONLY for a request that carried
+    // client claims.
+    //
+    // Clause 7.2-4 places `client_claims` outside the resolved grant, and the
+    // case checking that needs to see the grant to confirm their absence. But
+    // this target deliberately publishes no Section 7 grant otherwise: AS-3
+    // reports `skip` against it, and the suite's own tests assert that skip as
+    // the honest report of missing evidence. Publishing a hand-built artifact
+    // unconditionally would silently convert that `skip` into a claim about a
+    // grant body this target does not really produce. So the artifact appears
+    // exactly where the 7.2-4 oracle needs it and nowhere else.
+    //
+    // `leak-client-claims-into-grant` copies the claims in, which is the
+    // violation: an unenforceable client promise becomes something a downstream
+    // component may read as an authorization term.
+    const claims = request.clientClaims?.commitments ?? [];
+    const rawGrant =
+      claims.length === 0
+        ? undefined
+        : {
+            grant_id: issued.grantId,
+            purpose: request.purposeCode ?? DEFAULT_PURPOSE,
+            streams: resolved.map((s) => ({ name: s.name, fields: [...s.fields] })),
+            ...(this.defects.has("leak-client-claims-into-grant")
+              ? { client_claims: { commitments: [...claims] } }
+              : {}),
+          };
+
     return {
       grantId: issued.grantId,
       accessToken: issued.accessToken,
+      ...(rawGrant === undefined ? {} : { rawGrant }),
       // The RESOLVED field set, not the requested one. For a request naming a
       // view these differ, and Core Section 5 makes the resolved list the
       // authoritative content of the grant; echoing the request here would
