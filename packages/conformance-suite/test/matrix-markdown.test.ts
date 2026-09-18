@@ -4,12 +4,12 @@
 // Freshness tests for the generated normative-matrix markdown and for the
 // clause fields the report writer now carries.
 //
-// WHAT THIS PROTECTS. docs/reference/conformance-normative-matrix.md is checked
-// in so a reader can see the clause inventory without running anything. A
-// checked-in generated file has one failure mode: someone edits matrix.ts,
-// does not rerun the generator, and the published table quietly describes an
-// inventory the suite no longer has. Nothing crashes; the document is simply
-// wrong, and it is wrong in the direction of the old, smaller gap list.
+// WHAT THIS PROTECTS. The per-revision docs/reference/conformance-normative-matrix*.md
+// files are checked in so a reader can see the clause inventory without running
+// anything. A checked-in generated file has one failure mode: someone edits
+// matrix.ts, does not rerun the generator, and the published table quietly
+// describes an inventory the suite no longer has. Nothing crashes; the document
+// is simply wrong, and it is wrong in the direction of the old, smaller gap list.
 //
 // THE PLAUSIBLE DEFECT is therefore a forgotten `pnpm matrix:md` after any
 // matrix edit. The oracle is byte equality against a fresh render, which is the
@@ -22,19 +22,26 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { MATRIX_MARKDOWN_PATH, renderMatrixMarkdown } from "../scripts/render-matrix-md.ts";
+import { matrixMarkdownPath, renderMatrixMarkdown } from "../scripts/render-matrix-md.ts";
 import { renderMarkdown } from "../src/report/markdown.ts";
 import { buildReport } from "../src/report/result.ts";
-import { CLAUSE_MATRIX } from "../src/requirements/matrix.ts";
+import { CLAUSE_MATRIX, SPEC_VERSIONS } from "../src/requirements/matrix.ts";
 
-test("the checked-in matrix markdown matches the matrix data", () => {
-  const onDisk = readFileSync(MATRIX_MARKDOWN_PATH, "utf8");
-  assert.equal(
-    onDisk,
-    renderMatrixMarkdown(),
-    "docs/reference/conformance-normative-matrix.md is stale. Run " +
-      "`pnpm --filter @pdpp/conformance-suite matrix:md` and commit the result."
-  );
+test("the checked-in matrix markdown matches the matrix data, at every revision", () => {
+  // Every revision, not just v0.1: the generator writes one file per revision,
+  // so a forgotten regenerate leaves the OTHER file stale just as silently. The
+  // v0.2 file is the likelier casualty — a v0.1 edit that changes a clause the
+  // proposal does not supersede changes both files, and only one is the one an
+  // editor was looking at.
+  for (const version of SPEC_VERSIONS) {
+    const target = matrixMarkdownPath(version);
+    assert.equal(
+      readFileSync(target, "utf8"),
+      renderMatrixMarkdown(version),
+      `${target} is stale. Run \`pnpm --filter @pdpp/conformance-suite matrix:md\` ` +
+        "and commit every file it writes."
+    );
+  }
 });
 
 test("a requirement result carries the clauses its item summarizes", () => {
@@ -54,8 +61,10 @@ test("a requirement result carries the clauses its item summarizes", () => {
   assert.ok(rs10, "RS-10 must appear in a resource-server report.");
   assert.deepEqual(
     rs10.clauseIds,
-    CLAUSE_MATRIX.filter((c) => c.requirementIds.includes("RS-10")).map((c) => c.clauseId),
-    "A requirement's clause list must be exactly the matrix's clauses for it."
+    // The report defaults to v0.1, so the expectation is the v0.1 view — not the
+    // whole inventory, which mixes revisions.
+    CLAUSE_MATRIX.filter((c) => c.specVersion === "0.1" && c.requirementIds.includes("RS-10")).map((c) => c.clauseId),
+    "A requirement's clause list must be exactly the matrix's clauses for it, at the reported revision."
   );
 });
 

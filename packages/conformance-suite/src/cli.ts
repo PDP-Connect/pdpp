@@ -21,7 +21,8 @@ import { parseArgs } from "node:util";
 
 import type { TargetAdapter } from "./harness/adapter.ts";
 import { renderMarkdown } from "./report/markdown.ts";
-import { runSuite } from "./suite.ts";
+import { parseSpecVersion } from "./requirements/matrix.ts";
+import { ALL_CASES, runSuite } from "./suite.ts";
 import { type HttpTargetConfig, httpTargetFromConfig } from "./targets/http-target.ts";
 import { ReferenceTargetAdapter } from "./targets/reference-adapter.ts";
 import { ReferenceAsAdapter, type ReferenceAsConfig } from "./targets/reference-as-adapter.ts";
@@ -36,6 +37,10 @@ Options:
                        a module path whose default export returns a TargetAdapter
   --json <path>      Write the machine-readable report to this path.
   --markdown <path>  Write the human-readable report to this path.
+  --spec-version <v> Clause inventory to report against: "0.1" (default, the
+                     adopted draft) or "0.2" (the private normative proposal in
+                     vana-com/pdpp PR #1). Selects what the report MEASURES
+                     against; it does not change which cases run.
   --quiet            Do not print the markdown report to stdout.
 
 Exit codes: 0 all applicable MUSTs tested and passed; 1 failures present;
@@ -122,6 +127,7 @@ async function main(): Promise<number> {
       target: { type: "string" },
       json: { type: "string" },
       markdown: { type: "string" },
+      "spec-version": { type: "string" },
       quiet: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
@@ -132,8 +138,12 @@ async function main(): Promise<number> {
     return values.help ? 0 : 1;
   }
 
+  // Parsed before the target is loaded so a typo'd version fails immediately
+  // rather than after a full run against a real deployment.
+  const specVersion = values["spec-version"] ? parseSpecVersion(values["spec-version"]) : undefined;
+
   const adapter = await loadAdapter(values.target);
-  const report = await runSuite(adapter);
+  const report = await runSuite(adapter, ALL_CASES, { ...(specVersion ? { specVersion } : {}) });
 
   if (values.json) {
     writeFileSync(values.json, `${JSON.stringify(report, null, 2)}\n`);

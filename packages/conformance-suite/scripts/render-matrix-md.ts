@@ -1,7 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 //
-// Renders docs/reference/conformance-normative-matrix.md from matrix.ts.
+// Renders docs/reference/conformance-normative-matrix*.md from matrix.ts, one
+// file per spec revision.
 //
 // The markdown is a GENERATED VIEW, never an independent source. It is checked
 // in so a reader can see the inventory without running anything, and a self-test
@@ -16,16 +17,33 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REQUIREMENTS } from "../src/requirements/catalog.ts";
 import {
-  CLAUSE_MATRIX,
   type ClauseEntry,
   clausesForRequirement,
+  clausesForVersion,
   clausesWithoutRequirement,
+  SPEC_VERSIONS,
+  type SpecVersion,
 } from "../src/requirements/matrix.ts";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 
-export const MATRIX_MARKDOWN_PATH = join(REPO_ROOT, "docs", "reference", "conformance-normative-matrix.md");
+/**
+ * One rendered file per revision.
+ *
+ * Separate files rather than one file with two halves: the reader of a matrix
+ * is asking "what does a conformant implementation owe", and that question has
+ * a different answer per revision. Interleaving them in one document would make
+ * every row require a version column to read correctly, and the v0.1 file — the
+ * adopted one — would grow proposal text a v0.1 implementer does not owe.
+ */
+export function matrixMarkdownPath(version: SpecVersion): string {
+  const suffix = version === "0.1" ? "" : `-v${version}`;
+  return join(REPO_ROOT, "docs", "reference", `conformance-normative-matrix${suffix}.md`);
+}
+
+/** The v0.1 path, kept under its original name so existing links still resolve. */
+export const MATRIX_MARKDOWN_PATH = matrixMarkdownPath("0.1");
 
 /** Escapes the one character that would break out of a markdown table cell. */
 function cell(text: string): string {
@@ -46,9 +64,12 @@ function clauseTable(clauses: readonly ClauseEntry[]): readonly string[] {
   ];
 }
 
-function countsByKey<T extends string>(keyOf: (clause: ClauseEntry) => readonly T[] | T): ReadonlyMap<T, number> {
+function countsByKey<T extends string>(
+  clauses: readonly ClauseEntry[],
+  keyOf: (clause: ClauseEntry) => readonly T[] | T
+): ReadonlyMap<T, number> {
   const counts = new Map<T, number>();
-  for (const clause of CLAUSE_MATRIX) {
+  for (const clause of clauses) {
     const value = keyOf(clause);
     for (const key of Array.isArray(value) ? value : [value as T]) {
       counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -57,17 +78,17 @@ function countsByKey<T extends string>(keyOf: (clause: ClauseEntry) => readonly 
   return counts;
 }
 
-function renderTotals(): readonly string[] {
-  const musts = CLAUSE_MATRIX.filter((c) => c.level === "must");
+function renderTotals(clauses: readonly ClauseEntry[]): readonly string[] {
+  const musts = clauses.filter((c) => c.level === "must");
   const coveredMusts = musts.filter((c) => c.caseIds.length > 0);
-  const byLevel = countsByKey((c) => c.level);
-  const byRole = countsByKey((c) => c.role);
-  const byObservable = countsByKey((c) => c.observable);
+  const byLevel = countsByKey(clauses, (c) => c.level);
+  const byRole = countsByKey(clauses, (c) => c.role);
+  const byObservable = countsByKey(clauses, (c) => c.observable);
 
   return [
     "## Totals",
     "",
-    `Clauses enumerated: **${CLAUSE_MATRIX.length}**. ` +
+    `Clauses enumerated: **${clauses.length}**. ` +
       `MUST-level: **${musts.length}**, of which **${coveredMusts.length}** have at least one case ` +
       `and **${musts.length - coveredMusts.length}** do not.`,
     "",
@@ -92,7 +113,7 @@ function renderTotals(): readonly string[] {
   ];
 }
 
-function renderRequirementSections(): readonly string[] {
+function renderRequirementSections(version: SpecVersion): readonly string[] {
   const lines = [
     "## Clauses by Section 9 item",
     "",
@@ -102,7 +123,7 @@ function renderRequirementSections(): readonly string[] {
     "",
   ];
   for (const requirement of REQUIREMENTS) {
-    const clauses = clausesForRequirement(requirement.id);
+    const clauses = clausesForRequirement(requirement.id, version);
     lines.push(
       `### ${requirement.id} (${requirement.role}, ${requirement.level.toUpperCase()})`,
       "",
@@ -118,8 +139,8 @@ function renderRequirementSections(): readonly string[] {
   return lines;
 }
 
-function renderUnmapped(): readonly string[] {
-  const orphans = clausesWithoutRequirement();
+function renderUnmapped(version: SpecVersion): readonly string[] {
+  const orphans = clausesWithoutRequirement(version);
   const lines = [
     "## Clauses no Section 9 item covers",
     "",
@@ -139,17 +160,53 @@ function renderUnmapped(): readonly string[] {
   return lines;
 }
 
-export function renderMatrixMarkdown(): string {
+/** The per-revision preamble, stating what the file is and is not. */
+function renderRevisionNote(version: SpecVersion): readonly string[] {
+  if (version === "0.1") {
+    return [
+      "This file is the **v0.1** inventory: the adopted normative draft at",
+      "`spec-core.md`. The proposal's inventory is a separate file,",
+      "`conformance-normative-matrix-v0.2.md`.",
+      "",
+      "Every normative clause in Core sections 4, 5, 6, 7, 8 and 10, mapped to the",
+    ];
+  }
+  return [
+    "This file is the **v0.2** inventory. v0.2 is the private normative proposal in",
+    "vana-com/pdpp PR #1, *not an adopted revision*: a conformance claim made today",
+    "is a claim against v0.1, and this file exists so the suite's mechanics are ready",
+    "when the proposal lands.",
+    "",
+    "It lists the clauses in force at v0.2: the v0.2 entries transcribed so far, plus",
+    "every v0.1 clause the proposal does not supersede. A clause carrying",
+    "`supersedes` replaces the v0.1 clause it names, and that v0.1 clause is absent",
+    "here — which is why this file is not a superset of the v0.1 one.",
+    "",
+    "Transcription from v0.2 is **partial**. This batch covers the black-box-observable",
+    "authorization-server clauses of Section 6 on required/optional streams and",
+    "explicit authorization minima. Clauses of other sections still appear at their",
+    "v0.1 text, and a reader must not read their presence as evidence the proposal",
+    "left them unchanged.",
+    "",
+    "Every v0.2 clause below has an EMPTY case list. No case exercises v0.2 text yet;",
+    "each carries the gap note naming what is missing.",
+    "",
+    "Clauses mapped to the",
+  ];
+}
+
+export function renderMatrixMarkdown(version: SpecVersion = "0.1"): string {
+  const clauses = clausesForVersion(version);
   const sections = [
     [
-      "# PDPP Core normative matrix",
+      `# PDPP Core normative matrix (v${version})`,
       "",
       "GENERATED FILE — do not edit by hand. Source:",
       "`packages/conformance-suite/src/requirements/matrix.ts`. Regenerate with",
       "`pnpm --filter @pdpp/conformance-suite matrix:md`;",
       "`test/matrix-markdown.test.ts` fails when this file and the data disagree.",
       "",
-      "Every normative clause in Core sections 4, 5, 6, 7, 8 and 10, mapped to the",
+      ...renderRevisionNote(version),
       "Section 9 conformance items that summarize it and to the suite cases that",
       "exercise it. Section 9 is the index here, not the authority: its 45 numbered",
       "items are one-line precis of the clauses below.",
@@ -163,8 +220,9 @@ export function renderMatrixMarkdown(): string {
       "## Obligations from referenced standards",
       "",
       "This matrix enumerates clauses of **spec-core.md only**. Every row carries a",
-      "`clauseId` of the form `<section>.<subsection>-<n>` and a `specAnchor` that a",
-      "self-test verifies against the file, so a row that is not in Core cannot be",
+      "`clauseId` of the form `<section>.<subsection>-<n>`, prefixed `v0.2/` for a",
+      "clause transcribed from the proposal, and a `specAnchor` that a self-test",
+      "verifies against the revision's own file. A row that is not in Core cannot be",
       "added without inventing an identifier Core does not define — which would make",
       "the matrix a worse record of what Core says, not a better one.",
       "",
@@ -186,16 +244,19 @@ export function renderMatrixMarkdown(): string {
       "find them; `AS-9/token-response-carries-granted-authorization-details` is the",
       "one that exists today.",
     ].join("\n"),
-    renderTotals().join("\n"),
-    renderRequirementSections().join("\n"),
-    renderUnmapped().join("\n"),
+    renderTotals(clauses).join("\n"),
+    renderRequirementSections(version).join("\n"),
+    renderUnmapped(version).join("\n"),
   ];
   return `${sections.join("\n\n")}\n`;
 }
 
 function main(): void {
-  writeFileSync(MATRIX_MARKDOWN_PATH, renderMatrixMarkdown(), "utf8");
-  process.stdout.write(`Wrote ${MATRIX_MARKDOWN_PATH}\n`);
+  for (const version of SPEC_VERSIONS) {
+    const target = matrixMarkdownPath(version);
+    writeFileSync(target, renderMatrixMarkdown(version), "utf8");
+    process.stdout.write(`Wrote ${target}\n`);
+  }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

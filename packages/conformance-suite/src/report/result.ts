@@ -26,6 +26,7 @@ import {
 	requirementById,
 } from "../requirements/catalog.ts";
 import { clausesForRequirement } from "../requirements/matrix.ts";
+import { validateReviewEvidence, type ReviewEvidence } from "./review-evidence.ts";
 
 /**
  * The outcome of a single conformance case.
@@ -107,6 +108,7 @@ export type RequirementResult = {
 	readonly requirement: Requirement;
 	readonly outcome: Outcome;
 	readonly cases: readonly CaseResult[];
+	readonly reviewEvidence?: readonly ReviewEvidence[];
 	/**
 	 * Every clause in sections 4-8/10 this requirement summarizes, in matrix
 	 * order. Added, never replacing anything: the JSON report's existing fields
@@ -150,7 +152,9 @@ export type ConformanceReport = {
 		/** Set from SOURCE_DATE_EPOCH when present, for reproducible reports. */
 		readonly reproducible: boolean;
 	};
-	readonly coverage: readonly RoleCoverage[];
+	readonly cover	/** Human-review evidence, kept separate from executable case results. */
+	readonly reviewEvidence: readonly ReviewEvidence[];
+age: readonly RoleCoverage[];
 	readonly requirements: readonly RequirementResult[];
 	/**
 	 * The one-line honest summary. Deliberately NOT a boolean: a caller asking
@@ -240,6 +244,8 @@ export function buildReport(input: {
 	readonly run: ConformanceReport["run"];
 	readonly cases: readonly CaseResult[];
 }): ConformanceReport {
+	const reviewEvidence = input.reviewEvidence ?? [];
+	validateReviewEvidence(reviewEvidence);
 	const byRequirement = new Map<string, CaseResult[]>();
 	for (const c of input.cases) {
 		const list = byRequirement.get(c.requirementId);
@@ -291,6 +297,7 @@ export function buildReport(input: {
 		run: input.run,
 		coverage,
 		requirements,
+		reviewEvidence,
 		summary: {
 			failedRequirements: failed
 				.filter((r) => r.requirement.level === "must")

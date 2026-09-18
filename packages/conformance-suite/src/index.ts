@@ -38,6 +38,7 @@ export type {
   RequirementResult,
   RoleCoverage,
 } from "./report/result.ts";
+export type { ReviewEvidence, ReviewEvidenceFile } from "./report/review-evidence.ts";
 export type { NormativeLevel, Requirement, Role } from "./requirements/catalog.ts";
 export {
   REQUIREMENTS,

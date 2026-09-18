@@ -53,6 +53,10 @@ function renderHeader(report: ConformanceReport): string {
 		"",
 		`Suite: ${report.suite.name} v${report.suite.version}`,
 		`Spec: ${report.spec.document} ${report.spec.version}, Section ${report.spec.section} (${report.spec.path})`,
+		`Clause inventory: spec revision v${report.specVersion}` +
+			(report.specVersion === "0.1"
+				? " (the adopted draft)"
+				: " (the private normative proposal in vana-com/pdpp PR #1, not an adopted revision)"),
 		`Target: ${report.target.id} v${report.target.version} at ${report.target.baseUrl} (roles: ${roles})`,
 		`Run: started ${report.run.startedAt}, finished ${report.run.finishedAt}` +
 			(report.run.reproducible ? " (reproducible)" : ""),
@@ -66,6 +70,16 @@ function renderHeader(report: ConformanceReport): string {
 		"A pass count alone does not describe this run. Read coverage first: a " +
 			"suite that tested a third of applicable requirements and passed all " +
 			"of them is not equivalent to a complete run.",
+		"",
+		`Clause coverage at v${report.specVersion}: ` +
+			`${report.clauseCoverage.mustCovered}/${report.clauseCoverage.mustTotal} MUST-level clauses ` +
+			`have at least one case (${formatPercent(report.clauseCoverage.mustCovered, report.clauseCoverage.mustTotal)}), ` +
+			`out of ${report.clauseCoverage.total} clauses in force at this revision.`,
+		"",
+		"The two numbers above measure different things. Requirement coverage " +
+			"counts Section 9 items, which are one-line summaries; clause coverage " +
+			"counts the normative sentences behind them. The second is always the " +
+			"harder number, and changing the spec revision changes its denominator.",
 	];
 	return lines.join("\n");
 }
@@ -243,9 +257,15 @@ function renderAllResults(requirements: readonly RequirementResult[]): string {
  * exercised. Listing the clause IDs, and naming every uncovered MUST with the
  * gap that blocks it, makes the unexercised remainder as visible as the result.
  */
-function renderClauseInventory(
-	requirements: readonly RequirementResult[],
-): string {
+function renderClauseInventory(report: ConformanceReport): string {
+	const { requirements, specVersion } = report;
+	// The generator writes one file per revision, so a pointer that ignored the
+	// revision would send a v0.2 reader to the v0.1 inventory — a document that
+	// does not contain the clause ids listed right above it.
+	const inventoryFile =
+		specVersion === "0.1"
+			? "conformance-normative-matrix.md"
+			: `conformance-normative-matrix-v${specVersion}.md`;
 	const lines = [
 		"## Clause coverage",
 		"",
@@ -255,7 +275,7 @@ function renderClauseInventory(
 			"marked `PASS` may still have uncovered clauses: the marker describes the " +
 			"cases that ran, not the whole item.",
 		"",
-		"Full inventory: `docs/reference/conformance-normative-matrix.md`.",
+		`Full inventory at this revision: \`docs/reference/${inventoryFile}\`.`,
 		"",
 	];
 	for (const r of requirements) {
@@ -278,6 +298,26 @@ function renderClauseInventory(
 	return lines.join("\n");
 }
 
+function renderReviewEvidence(report: ConformanceReport): string {
+	const lines = [
+		"## Review evidence",
+		"",
+		"These packets are human-review evidence for clauses the executable suite cannot observe. They do not create cases, change coverage, or count as tested.",
+		"",
+		"| Clause | Status | Claim | Evidence files | Reviewed by | Date |",
+		"| --- | --- | --- | --- | --- | --- |",
+	];
+	if (report.reviewEvidence.length === 0) {
+		lines.push("| — | — | No review evidence attached. | — | — | — |");
+		return lines.join("\n");
+	}
+	for (const packet of report.reviewEvidence) {
+		const files = packet.evidenceFiles.map((file) => `\`${file.path}\` — ${file.description}`).join("<br>");
+		lines.push(`| \`${packet.clauseId}\` | ${packet.status.toUpperCase()} | ${packet.claim} | ${files} | ${packet.reviewedBy} | ${packet.reviewedOn} |`);
+	}
+	return lines.join("\n");
+}
+
 /**
  * Render a ConformanceReport as GitHub-flavored markdown.
  *
@@ -296,7 +336,8 @@ export function renderMarkdown(report: ConformanceReport): string {
 		renderAdvisories(report.requirements),
 		renderNotTested(report.requirements),
 		renderAllResults(report.requirements),
-		renderClauseInventory(report.requirements),
+		renderClauseInventory(report),
+		renderReviewEvidence(report),
 	];
 	return `${sections.join("\n\n")}\n`;
 }

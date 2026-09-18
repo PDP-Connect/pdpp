@@ -37,8 +37,53 @@
 //     `observable` is `review-only` and `gapNote` says why. Ambiguity is
 //     recorded, not resolved by guessing.
 //  5. `caseIds` are real registered case IDs. The self-tests reject a typo.
+//  6. `specVersion` names the revision the `text` was transcribed FROM, and the
+//     rules above are read against THAT revision's file. A `"0.1"` entry quotes
+//     spec-core.md at v0.1.0 and anchors to its headings; a `"0.2"` entry quotes
+//     the spec files of vana-com/pdpp PR #1 and anchors to the PR's headings.
+//     Transcribing a v0.2 clause against the v0.1 file, or the reverse, is the
+//     defect this field exists to make impossible: the two revisions share
+//     heading text in many places, so an anchor that resolves in one file is not
+//     evidence it resolves in the other, and a self-test checks each entry
+//     against the file its own `specVersion` names.
+//  7. `supersedes` names the v0.1 clause a v0.2 entry REPLACES, when the revision
+//     rewrites an obligation rather than adding one. It is how a v0.2 report
+//     avoids double-counting: the superseded v0.1 entry is hidden from the v0.2
+//     view, because reporting both would state the same obligation twice under
+//     two ids and inflate every denominator that counts clauses. A v0.2 clause
+//     with no v0.1 counterpart simply omits it.
 
 import type { Applicability, NormativeLevel } from "./catalog.ts";
+
+/**
+ * A revision of the spec a clause can be transcribed from.
+ *
+ * `"0.1"` is the adopted normative draft at spec-core.md. `"0.2"` is the private
+ * normative proposal in vana-com/pdpp PR #1, which the program assumes will
+ * land. Keeping both in one inventory — rather than forking the file — is what
+ * lets a single self-test prove no v0.2 entry silently orphans a v0.1 obligation.
+ */
+export type SpecVersion = "0.1" | "0.2";
+
+/** Every revision the matrix carries entries for. */
+export const SPEC_VERSIONS: readonly SpecVersion[] = ["0.1", "0.2"];
+
+/**
+ * The revision reported when a caller names none.
+ *
+ * v0.1 is the adopted draft, so it stays the default: a run that does not ask
+ * for the proposal must not silently report against unadopted text.
+ */
+export const DEFAULT_SPEC_VERSION: SpecVersion = "0.1";
+
+/** Narrow an untrusted string to a `SpecVersion`, naming the valid set on failure. */
+export function parseSpecVersion(value: string): SpecVersion {
+  const match = SPEC_VERSIONS.find((version) => version === value);
+  if (!match) {
+    throw new Error(`Unknown spec version "${value}". Known versions: ${SPEC_VERSIONS.join(", ")}.`);
+  }
+  return match;
+}
 
 /**
  * Who a clause binds.
@@ -89,10 +134,40 @@ export interface ClauseEntry {
   /** Section 9 item(s) that summarize this clause. Empty means none does. */
   readonly requirementIds: readonly string[];
   readonly role: readonly ClauseRole[];
-  /** Heading anchor in spec-core.md. Verified against the file by a self-test. */
+  /**
+   * Heading anchor in the clause's own spec file. Verified against that file by
+   * a self-test — the v0.1 spec-core.md for a `"0.1"` entry, the PR #1 revision
+   * of `specFile` for a `"0.2"` entry.
+   */
   readonly specAnchor: string;
-  /** Verbatim clause text from spec-core.md. */
+  /**
+   * Repository-relative file the `text` was transcribed from. Defaults to
+   * `spec-core.md`. v0.2 adds `spec-access-extension.md` and
+   * `spec-mcp-profile.md`, so the field names the file rather than assuming one.
+   */
+  readonly specFile?: string;
+  /**
+   * The revision `text` is verbatim from. Required on every entry so no clause
+   * is ambiguous about which file a reader should grep.
+   */
+  readonly specVersion: SpecVersion;
+  /**
+   * The v0.1 `clauseId` this entry replaces, for a v0.2 entry that rewrites an
+   * existing obligation. The superseded entry is excluded from the v0.2 view.
+   *
+   * Only meaningful on a `"0.2"` entry: a v0.1 clause cannot supersede anything,
+   * because v0.1 is the earliest revision the matrix carries. A self-test
+   * rejects both a `supersedes` on a v0.1 entry and one naming a clause id that
+   * does not exist.
+   */
+  readonly supersedes?: string;
+  /** Verbatim clause text from the file `specFile` names, at `specVersion`. */
   readonly text: string;
+}
+
+/** The file a clause was transcribed from, applying the `spec-core.md` default. */
+export function specFileOf(clause: ClauseEntry): string {
+  return clause.specFile ?? "spec-core.md";
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +177,7 @@ export interface ClauseEntry {
 const SECTION_4: readonly ClauseEntry[] = [
   {
     clauseId: "4.3-1",
+    specVersion: "0.1",
     requirementIds: ["RS-7"],
     level: "may",
     role: ["resource-server"],
@@ -113,6 +189,7 @@ const SECTION_4: readonly ClauseEntry[] = [
   },
   {
     clauseId: "4.3-2",
+    specVersion: "0.1",
     requirementIds: ["RS-7"],
     level: "must",
     role: ["resource-server"],
@@ -124,6 +201,7 @@ const SECTION_4: readonly ClauseEntry[] = [
   },
   {
     clauseId: "4.3-3",
+    specVersion: "0.1",
     requirementIds: ["CL-5"],
     level: "must",
     role: ["client"],
@@ -131,12 +209,11 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#incremental-sync-for-mutable-streams",
     applicability: "the client performs incremental sync",
     observable: "client-capture",
-    caseIds: [],
-    gapNote:
-      "Client conformance needs a reverse channel: the adapter can only call into a target, so there is no way to observe a client-under-test's outgoing requests after a 410.",
+    caseIds: ["CL-5/full-resync-after-cursor-expired"],
   },
   {
     clauseId: "4.3-4",
+    specVersion: "0.1",
     requirementIds: ["CL-3"],
     level: "must",
     role: ["client"],
@@ -144,12 +221,11 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#incremental-sync-for-mutable-streams",
     applicability: "always",
     observable: "client-capture",
-    caseIds: [],
-    gapNote:
-      "Needs a client-adapter hook that captures the client's outgoing query parameters across two sync sessions; the RS-side mirror of this clause is tested as RS-6/cursor-not-accepted-as-changes-since.",
+    caseIds: ["CL-3/changes-since-does-not-reuse-next-cursor"],
   },
   {
     clauseId: "4.3-5",
+    specVersion: "0.1",
     requirementIds: ["RS-8"],
     level: "must",
     role: ["resource-server"],
@@ -161,6 +237,7 @@ const SECTION_4: readonly ClauseEntry[] = [
   },
   {
     clauseId: "4.3-6",
+    specVersion: "0.1",
     requirementIds: ["RS-7"],
     level: "must",
     role: ["resource-server"],
@@ -172,6 +249,7 @@ const SECTION_4: readonly ClauseEntry[] = [
   },
   {
     clauseId: "4.3-7",
+    specVersion: "0.1",
     requirementIds: ["RS-7"],
     level: "should",
     role: ["resource-server"],
@@ -185,6 +263,7 @@ const SECTION_4: readonly ClauseEntry[] = [
   },
   {
     clauseId: "4.5-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "must",
     role: ["source-declaration", "resource-server"],
@@ -196,6 +275,7 @@ const SECTION_4: readonly ClauseEntry[] = [
   },
   {
     clauseId: "4.5-2",
+    specVersion: "0.1",
     requirementIds: [],
     level: "must",
     role: ["resource-server"],
@@ -209,6 +289,7 @@ const SECTION_4: readonly ClauseEntry[] = [
   },
   {
     clauseId: "4.6-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "should",
     role: ["source-declaration"],
@@ -220,6 +301,7 @@ const SECTION_4: readonly ClauseEntry[] = [
   },
   {
     clauseId: "4.8-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "must",
     role: ["source-declaration"],
@@ -240,6 +322,7 @@ const SECTION_4: readonly ClauseEntry[] = [
 const SECTION_5: readonly ClauseEntry[] = [
   {
     clauseId: "5.2-1",
+    specVersion: "0.1",
     requirementIds: ["AS-16"],
     level: "must",
     role: ["authorization-server"],
@@ -253,6 +336,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.2-2",
+    specVersion: "0.1",
     requirementIds: [],
     level: "must",
     role: ["source-declaration"],
@@ -266,6 +350,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.2-3",
+    specVersion: "0.1",
     requirementIds: [],
     level: "must",
     role: ["source-declaration"],
@@ -279,6 +364,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.2-4",
+    specVersion: "0.1",
     requirementIds: ["AS-2"],
     level: "must",
     role: ["authorization-server"],
@@ -290,6 +376,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.2-5",
+    specVersion: "0.1",
     requirementIds: ["AS-16"],
     level: "must",
     role: ["authorization-server", "source-declaration"],
@@ -303,6 +390,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.3-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "may",
     role: ["source-declaration"],
@@ -314,6 +402,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.3-2",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "should",
     role: ["authorization-server"],
@@ -327,6 +416,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.3-3",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "may",
     role: ["authorization-server"],
@@ -338,6 +428,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.3-4",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["client"],
@@ -345,12 +436,11 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#stream-display",
     applicability: "always",
     observable: "client-capture",
-    caseIds: [],
-    gapNote:
-      "Needs a client-adapter hook capturing the client's outgoing selection request so its payload can be inspected for declaration-display overrides.",
+    caseIds: ["AS-7/client-does-not-override-display-descriptions"],
   },
   {
     clauseId: "5.4-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "must",
     role: ["source-declaration"],
@@ -364,6 +454,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.4-2",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -377,6 +468,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.6-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "may",
     role: ["source-declaration"],
@@ -388,6 +480,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.6-2",
+    specVersion: "0.1",
     requirementIds: ["AS-12"],
     level: "must",
     role: ["authorization-server"],
@@ -399,6 +492,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.6-2a",
+    specVersion: "0.1",
     requirementIds: ["AS-13"],
     level: "must",
     role: ["authorization-server"],
@@ -412,6 +506,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.6-3",
+    specVersion: "0.1",
     requirementIds: [],
     level: "must",
     role: ["authorization-server", "resource-server", "client"],
@@ -423,6 +518,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.8-1",
+    specVersion: "0.1",
     requirementIds: ["AS-16"],
     level: "must",
     role: ["client"],
@@ -434,6 +530,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.8-2",
+    specVersion: "0.1",
     requirementIds: ["AS-16"],
     level: "must",
     role: ["authorization-server"],
@@ -445,6 +542,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.8-3",
+    specVersion: "0.1",
     requirementIds: ["AS-16"],
     level: "must",
     role: ["authorization-server"],
@@ -458,6 +556,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.8-4",
+    specVersion: "0.1",
     requirementIds: ["AS-16"],
     level: "must",
     role: ["authorization-server"],
@@ -469,6 +568,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.8-5",
+    specVersion: "0.1",
     requirementIds: ["AS-16"],
     level: "must",
     role: ["authorization-server"],
@@ -482,6 +582,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.8-6",
+    specVersion: "0.1",
     requirementIds: ["AS-16"],
     level: "must",
     role: ["authorization-server"],
@@ -495,6 +596,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.8-7",
+    specVersion: "0.1",
     requirementIds: ["AS-7", "AS-16"],
     level: "must",
     role: ["authorization-server"],
@@ -508,6 +610,7 @@ const SECTION_5: readonly ClauseEntry[] = [
   },
   {
     clauseId: "5.8-8",
+    specVersion: "0.1",
     requirementIds: ["AS-16", "RS-15"],
     level: "must",
     role: ["authorization-server", "resource-server"],
@@ -526,6 +629,7 @@ const SECTION_5: readonly ClauseEntry[] = [
 const SECTION_6: readonly ClauseEntry[] = [
   {
     clauseId: "6.1-1",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "may",
     role: ["authorization-server"],
@@ -537,6 +641,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-2",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -548,6 +653,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-3",
+    specVersion: "0.1",
     requirementIds: [],
     level: "may",
     role: ["authorization-server"],
@@ -559,6 +665,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-4",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -570,6 +677,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-5",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -583,6 +691,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-6",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -596,6 +705,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-7",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "may",
     role: ["authorization-server"],
@@ -607,6 +717,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-8",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -620,6 +731,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-9",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -632,6 +744,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-10",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -645,6 +758,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.1-11",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "should",
     role: ["authorization-server"],
@@ -656,6 +770,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.2-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "may",
     role: ["authorization-server"],
@@ -667,6 +782,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.2-2",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -678,6 +794,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.3-1",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -691,6 +808,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.3-2",
+    specVersion: "0.1",
     requirementIds: ["AS-15"],
     level: "must",
     role: ["authorization-server"],
@@ -702,6 +820,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.3-3",
+    specVersion: "0.1",
     requirementIds: ["AS-3"],
     level: "should",
     role: ["authorization-server", "client"],
@@ -713,6 +832,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.4-1",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server"],
@@ -726,6 +846,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.5-1",
+    specVersion: "0.1",
     requirementIds: ["AS-6"],
     level: "must",
     role: ["authorization-server"],
@@ -737,6 +858,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.5-2",
+    specVersion: "0.1",
     requirementIds: ["AS-7"],
     level: "must",
     role: ["authorization-server", "client"],
@@ -750,6 +872,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.6-1",
+    specVersion: "0.1",
     requirementIds: ["CL-8"],
     level: "must",
     role: ["client", "authorization-server"],
@@ -757,12 +880,11 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#source-kinds",
     applicability: "the client has provenance-dependent local policy",
     observable: "client-capture",
-    caseIds: [],
-    gapNote:
-      "The subsection is descriptive and carries no RFC 2119 keyword; its MUST level is Section 9 CL item 8's, not this text's. Testing the client half needs the client reverse channel the adapter lacks.",
+    caseIds: ["CL-8/reads-source-kind-from-grant"],
   },
   {
     clauseId: "6.7-1",
+    specVersion: "0.1",
     requirementIds: ["AS-14"],
     level: "must",
     role: ["authorization-server"],
@@ -774,6 +896,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.8-1",
+    specVersion: "0.1",
     requirementIds: ["AS-2", "AS-5"],
     level: "must",
     role: ["authorization-server"],
@@ -785,6 +908,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.8-2",
+    specVersion: "0.1",
     requirementIds: ["AS-2"],
     level: "must",
     role: ["authorization-server"],
@@ -796,6 +920,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.8-3",
+    specVersion: "0.1",
     requirementIds: ["AS-2", "AS-4"],
     level: "must",
     role: ["authorization-server"],
@@ -807,6 +932,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.8-4",
+    specVersion: "0.1",
     requirementIds: ["CL-1"],
     level: "should",
     role: ["client"],
@@ -818,6 +944,7 @@ const SECTION_6: readonly ClauseEntry[] = [
   },
   {
     clauseId: "6.9-1",
+    specVersion: "0.1",
     requirementIds: ["AS-2"],
     level: "must",
     role: ["authorization-server"],
@@ -836,6 +963,7 @@ const SECTION_6: readonly ClauseEntry[] = [
 const SECTION_7: readonly ClauseEntry[] = [
   {
     clauseId: "7.1-1",
+    specVersion: "0.1",
     requirementIds: ["AS-3", "AS-11"],
     level: "must",
     role: ["authorization-server"],
@@ -850,6 +978,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.2-0",
+    specVersion: "0.1",
     requirementIds: ["AS-11"],
     level: "must",
     role: ["authorization-server"],
@@ -863,6 +992,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.2-1",
+    specVersion: "0.1",
     requirementIds: ["AS-15", "AS-4"],
     level: "must",
     role: ["authorization-server"],
@@ -874,6 +1004,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.2-2",
+    specVersion: "0.1",
     requirementIds: ["AS-15"],
     level: "must",
     role: ["authorization-server"],
@@ -885,6 +1016,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.2-3",
+    specVersion: "0.1",
     requirementIds: ["AS-15"],
     level: "must",
     role: ["authorization-server"],
@@ -896,6 +1028,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.2-4",
+    specVersion: "0.1",
     requirementIds: ["AS-3", "AS-15"],
     level: "must",
     role: ["authorization-server", "resource-server"],
@@ -907,6 +1040,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.2-5",
+    specVersion: "0.1",
     requirementIds: ["AS-15"],
     level: "must",
     role: ["authorization-server"],
@@ -918,6 +1052,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.4-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "must",
     role: ["authorization-server", "resource-server", "client"],
@@ -931,6 +1066,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.4-2",
+    specVersion: "0.1",
     requirementIds: ["RS-11"],
     level: "must",
     role: ["resource-server"],
@@ -942,6 +1078,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.4-3",
+    specVersion: "0.1",
     requirementIds: ["AS-21"],
     level: "must",
     role: ["authorization-server", "resource-server"],
@@ -955,6 +1092,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.5-1",
+    specVersion: "0.1",
     requirementIds: ["AS-10"],
     level: "must",
     role: ["authorization-server"],
@@ -966,6 +1104,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.5-2",
+    specVersion: "0.1",
     requirementIds: ["AS-10"],
     level: "may",
     role: ["client"],
@@ -977,6 +1116,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.8-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "should",
     role: ["authorization-server"],
@@ -988,6 +1128,7 @@ const SECTION_7: readonly ClauseEntry[] = [
   },
   {
     clauseId: "7.10-1",
+    specVersion: "0.1",
     requirementIds: ["CL-6"],
     level: "must",
     role: ["client"],
@@ -1008,6 +1149,7 @@ const SECTION_7: readonly ClauseEntry[] = [
 const SECTION_8: readonly ClauseEntry[] = [
   {
     clauseId: "8.1-1",
+    specVersion: "0.1",
     requirementIds: ["RS-3"],
     level: "must",
     role: ["resource-server"],
@@ -1021,6 +1163,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.1-1a",
+    specVersion: "0.1",
     requirementIds: ["RS-5"],
     level: "must",
     role: ["resource-server"],
@@ -1034,6 +1177,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.1-2",
+    specVersion: "0.1",
     requirementIds: ["RS-2", "RS-15"],
     level: "must",
     role: ["resource-server"],
@@ -1045,6 +1189,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.1-3",
+    specVersion: "0.1",
     requirementIds: ["RS-4"],
     level: "must",
     role: ["resource-server"],
@@ -1056,6 +1201,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.2-1",
+    specVersion: "0.1",
     requirementIds: ["RS-3", "AS-18"],
     level: "must",
     role: ["resource-server"],
@@ -1067,6 +1213,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.2-2",
+    specVersion: "0.1",
     requirementIds: ["AS-18", "RS-3"],
     level: "must",
     role: ["authorization-server", "resource-server"],
@@ -1080,6 +1227,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.2-3",
+    specVersion: "0.1",
     requirementIds: ["RS-4"],
     level: "must",
     role: ["resource-server"],
@@ -1091,6 +1239,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.2-4",
+    specVersion: "0.1",
     requirementIds: ["RS-3"],
     level: "must",
     role: ["resource-server"],
@@ -1102,6 +1251,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.3-1",
+    specVersion: "0.1",
     requirementIds: ["RS-12"],
     level: "must",
     role: ["resource-server"],
@@ -1113,6 +1263,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.3-2",
+    specVersion: "0.1",
     requirementIds: ["RS-13"],
     level: "should",
     role: ["resource-server"],
@@ -1124,6 +1275,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.4-1",
+    specVersion: "0.1",
     requirementIds: ["RS-16"],
     level: "must",
     role: ["resource-server"],
@@ -1135,6 +1287,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.4-2",
+    specVersion: "0.1",
     requirementIds: ["RS-16"],
     level: "must",
     role: ["resource-server"],
@@ -1146,6 +1299,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.4-3",
+    specVersion: "0.1",
     requirementIds: ["RS-16"],
     level: "should",
     role: ["resource-server"],
@@ -1157,6 +1311,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.4-4",
+    specVersion: "0.1",
     requirementIds: ["RS-16"],
     level: "must",
     role: ["resource-server"],
@@ -1170,6 +1325,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.7-1",
+    specVersion: "0.1",
     requirementIds: ["RS-15"],
     level: "must",
     role: ["resource-server"],
@@ -1181,6 +1337,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.8-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "may",
     role: ["resource-server"],
@@ -1192,6 +1349,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-1",
+    specVersion: "0.1",
     requirementIds: ["CL-3"],
     level: "must",
     role: ["client"],
@@ -1199,12 +1357,11 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "always",
     observable: "client-capture",
-    caseIds: [],
-    gapNote:
-      "Needs a client-adapter hook capturing outgoing cursor values across pages so a constructed cursor is distinguishable from an echoed one.",
+    caseIds: ["CL-3/forwards-cursors-as-opaque-values"],
   },
   {
     clauseId: "8.9-2",
+    specVersion: "0.1",
     requirementIds: ["RS-9"],
     level: "must",
     role: ["resource-server"],
@@ -1216,6 +1373,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-3",
+    specVersion: "0.1",
     requirementIds: ["RS-9"],
     level: "must",
     role: ["resource-server"],
@@ -1229,6 +1387,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-4",
+    specVersion: "0.1",
     requirementIds: ["RS-9"],
     level: "must",
     role: ["resource-server"],
@@ -1240,6 +1399,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-5",
+    specVersion: "0.1",
     requirementIds: ["RS-9", "RS-10"],
     level: "must",
     role: ["resource-server"],
@@ -1251,6 +1411,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-6",
+    specVersion: "0.1",
     requirementIds: ["RS-14"],
     level: "must",
     role: ["resource-server", "source-declaration"],
@@ -1262,6 +1423,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-7",
+    specVersion: "0.1",
     requirementIds: ["RS-10"],
     level: "must",
     role: ["resource-server"],
@@ -1278,6 +1440,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-8",
+    specVersion: "0.1",
     requirementIds: ["RS-10"],
     level: "must",
     role: ["resource-server", "client"],
@@ -1289,6 +1452,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-9",
+    specVersion: "0.1",
     requirementIds: ["RS-9"],
     level: "must",
     role: ["resource-server"],
@@ -1302,6 +1466,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-10",
+    specVersion: "0.1",
     requirementIds: ["RS-9"],
     level: "must",
     role: ["resource-server"],
@@ -1313,6 +1478,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-11",
+    specVersion: "0.1",
     requirementIds: ["RS-6", "CL-3"],
     level: "must",
     role: ["resource-server", "client"],
@@ -1326,6 +1492,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-12",
+    specVersion: "0.1",
     requirementIds: ["CL-5"],
     level: "must",
     role: ["client"],
@@ -1333,11 +1500,11 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "the client performs incremental sync",
     observable: "client-capture",
-    caseIds: [],
-    gapNote: "Restates 4.3-3 in the endpoint section; needs the same client reverse channel.",
+    caseIds: ["CL-5/endpoint-cursor-expiry-also-full-resyncs"],
   },
   {
     clauseId: "8.9-13",
+    specVersion: "0.1",
     requirementIds: ["RS-7"],
     level: "must",
     role: ["resource-server"],
@@ -1349,6 +1516,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-14",
+    specVersion: "0.1",
     requirementIds: ["RS-7", "RS-8"],
     level: "must",
     role: ["resource-server"],
@@ -1360,6 +1528,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-15",
+    specVersion: "0.1",
     requirementIds: ["RS-8"],
     level: "must",
     role: ["resource-server"],
@@ -1371,6 +1540,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.9-16",
+    specVersion: "0.1",
     requirementIds: ["CL-4"],
     level: "must",
     role: ["client"],
@@ -1378,12 +1548,11 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "the client performs incremental sync",
     observable: "client-capture",
-    caseIds: [],
-    gapNote:
-      "Stated without an RFC 2119 keyword in Section 4's sync narrative; its MUST level is Section 9 CL item 4's. Needs a client-adapter hook observing what the client persists between two sync sessions.",
+    caseIds: ["CL-4/stores-terminal-next-changes-since"],
   },
   {
     clauseId: "8.12-1",
+    specVersion: "0.1",
     requirementIds: ["RS-1", "RS-2"],
     level: "must",
     role: ["client"],
@@ -1395,6 +1564,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.12-2",
+    specVersion: "0.1",
     requirementIds: ["RS-1"],
     level: "must",
     role: ["resource-server"],
@@ -1406,6 +1576,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.12-3",
+    specVersion: "0.1",
     requirementIds: ["RS-1"],
     level: "must",
     role: ["resource-server"],
@@ -1419,6 +1590,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.13-1",
+    specVersion: "0.1",
     requirementIds: ["CL-7"],
     level: "must",
     role: ["client"],
@@ -1426,12 +1598,11 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#errors",
     applicability: "always",
     observable: "client-capture",
-    caseIds: [],
-    gapNote:
-      "Needs a client under test plus a way to serve it an unknown error code; the adapter drives targets, not clients.",
+    caseIds: ["CL-7/unknown-error-code-keeps-http-status-authoritative"],
   },
   {
     clauseId: "8.13-2",
+    specVersion: "0.1",
     requirementIds: ["CL-7"],
     level: "may",
     role: ["client"],
@@ -1443,6 +1614,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.13-3",
+    specVersion: "0.1",
     requirementIds: ["CL-7"],
     level: "must",
     role: ["client"],
@@ -1450,11 +1622,11 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#errors",
     applicability: "always",
     observable: "client-capture",
-    caseIds: [],
-    gapNote: "Same missing client reverse channel as 8.13-1.",
+    caseIds: ["CL-7/status-incompatible-code-does-not-override-status"],
   },
   {
     clauseId: "8.13-4",
+    specVersion: "0.1",
     requirementIds: ["CL-7"],
     level: "must",
     role: ["client"],
@@ -1462,11 +1634,11 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#errors",
     applicability: "always",
     observable: "client-capture",
-    caseIds: [],
-    gapNote: "Same missing client reverse channel as 8.13-1.",
+    caseIds: ["CL-7/unknown-error-identifiers-do-not-break-parser"],
   },
   {
     clauseId: "8.13-5",
+    specVersion: "0.1",
     requirementIds: ["CL-7"],
     level: "may",
     role: ["client"],
@@ -1478,6 +1650,7 @@ const SECTION_8: readonly ClauseEntry[] = [
   },
   {
     clauseId: "8.14-1",
+    specVersion: "0.1",
     requirementIds: ["AS-17", "RS-11"],
     level: "must",
     role: ["resource-server", "authorization-server"],
@@ -1498,6 +1671,7 @@ const SECTION_8: readonly ClauseEntry[] = [
 const SECTION_10: readonly ClauseEntry[] = [
   {
     clauseId: "10.1-1",
+    specVersion: "0.1",
     requirementIds: ["AS-16"],
     level: "should",
     role: ["authorization-server"],
@@ -1511,6 +1685,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.2-1",
+    specVersion: "0.1",
     requirementIds: ["RS-3", "AS-18"],
     level: "must",
     role: ["resource-server"],
@@ -1524,6 +1699,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.2-2",
+    specVersion: "0.1",
     requirementIds: ["RS-3", "AS-8"],
     level: "must",
     role: ["resource-server"],
@@ -1537,6 +1713,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.2-3",
+    specVersion: "0.1",
     requirementIds: ["AS-9", "AS-20"],
     level: "must",
     role: ["authorization-server"],
@@ -1550,6 +1727,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.2-4",
+    specVersion: "0.1",
     requirementIds: ["AS-9"],
     level: "must",
     role: ["authorization-server"],
@@ -1561,6 +1739,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.2-5",
+    specVersion: "0.1",
     requirementIds: ["AS-19"],
     level: "must",
     role: ["authorization-server"],
@@ -1572,6 +1751,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.2-6",
+    specVersion: "0.1",
     requirementIds: ["AS-20"],
     level: "must",
     role: ["authorization-server"],
@@ -1583,6 +1763,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.2-7",
+    specVersion: "0.1",
     requirementIds: ["AS-20", "AS-8"],
     level: "must",
     role: ["authorization-server"],
@@ -1596,6 +1777,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.2-8",
+    specVersion: "0.1",
     requirementIds: ["AS-21"],
     level: "must",
     role: ["authorization-server"],
@@ -1609,6 +1791,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.2-9",
+    specVersion: "0.1",
     requirementIds: [],
     level: "should",
     role: ["resource-server", "authorization-server"],
@@ -1622,6 +1805,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.3-1",
+    specVersion: "0.1",
     requirementIds: ["AS-3"],
     level: "must",
     role: ["authorization-server", "resource-server"],
@@ -1635,6 +1819,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.3-2",
+    specVersion: "0.1",
     requirementIds: ["AS-1"],
     level: "should",
     role: ["authorization-server", "client"],
@@ -1646,6 +1831,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.4-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "must",
     role: ["resource-server"],
@@ -1659,6 +1845,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.5-1",
+    specVersion: "0.1",
     requirementIds: [],
     level: "should",
     role: ["resource-server"],
@@ -1670,6 +1857,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.7-1",
+    specVersion: "0.1",
     requirementIds: ["AS-8"],
     level: "must",
     role: ["authorization-server"],
@@ -1681,6 +1869,7 @@ const SECTION_10: readonly ClauseEntry[] = [
   },
   {
     clauseId: "10.7-2",
+    specVersion: "0.1",
     requirementIds: ["CL-2"],
     level: "must",
     role: ["client"],
@@ -1688,18 +1877,234 @@ const SECTION_10: readonly ClauseEntry[] = [
     specAnchor: "#revocation",
     applicability: "always",
     observable: "client-capture",
+    caseIds: ["CL-2/grant-revocation-stops-further-requests"],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// v0.2 (vana-com/pdpp PR #1, "Define how app requests and user choices become
+// approved data access")
+//
+// WHY THESE LIVE HERE rather than in a forked file. The two revisions are not
+// disjoint: v0.2 restates some v0.1 obligations word for word, rewrites others,
+// and adds subsections v0.1 has no counterpart for. A fork would let a v0.2
+// entry silently orphan a v0.1 obligation — the reader of a v0.2 report would
+// see a shorter list and have no way to tell a dropped clause from a deleted
+// one. One inventory with an explicit `supersedes` edge makes that checkable:
+// a self-test proves every `supersedes` target exists, and the v0.2 view is
+// derived rather than hand-maintained.
+//
+// IDS ARE PREFIXED `v0.2/`. v0.2 renumbers nothing, so an unprefixed `6.8-2`
+// would name two different clauses in two revisions and every lookup would
+// return whichever the map saw last. The prefix keeps `clauseId` a primary key
+// across the whole inventory while the section-relative part stays readable.
+//
+// SCOPE OF THIS BATCH: the black-box-observable AS clauses of Section 6 on
+// required/optional streams and explicit authorization minima. `caseIds` are
+// EMPTY on every one — no case exercises v0.2 yet, and a populated case list
+// here would be a coverage claim the suite cannot back. Each carries the gap
+// note that says what is missing.
+const SECTION_6_V02: readonly ClauseEntry[] = [
+  {
+    clauseId: "v0.2/6.8-1",
+    specVersion: "0.2",
+    requirementIds: ["AS-2"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "`required` (default) or `optional`. The AS MUST retain a required stream or refuse authorization. This does not make every requested field or bound mandatory.",
+    specAnchor: "#stream-selection-parameters",
+    applicability: "always",
+    observable: "black-box-http",
     caseIds: [],
     gapNote:
-      "Needs a client-adapter hook that observes whether a client under test issues further requests after a 403; the suite drives targets, not clients.",
+      "No case drives a v0.2 selection request carrying `necessity`: the harness has no v0.2 `authorization_details` builder, and the reference AS resolves only the `https://pdpp.dev/data-access` type.",
+  },
+  {
+    clauseId: "v0.2/6.8-2",
+    specVersion: "0.2",
+    requirementIds: ["AS-11"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "The AS MUST NOT add schema-required fields to the resolved field selection unless they are independently selected and approved. The resolved selection MUST contain at least one field for each retained stream.",
+    specAnchor: "#stream-selection-parameters",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "Reverses the v0.1 consent floor, so no existing case can be reused: proving it needs a v0.2 grant whose resolved `fields` omit a schema-required field the request did not name.",
+  },
+  {
+    clauseId: "v0.2/6.8-3",
+    specVersion: "0.2",
+    supersedes: "6.8-2",
+    requirementIds: ["AS-2"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "The authorization server MUST reject selection requests that specify `time_range` on a stream without that field.",
+    specAnchor: "#stream-selection-parameters",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "Restates v0.1 6.8-2 verbatim, but a case must send the v0.2 detail type to be evidence about v0.2; the harness cannot build that request yet.",
+  },
+  {
+    clauseId: "v0.2/6.8-4",
+    specVersion: "0.2",
+    supersedes: "6.8-3",
+    requirementIds: ["AS-2"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "A wildcard entry MUST be the only entry in `streams`. Otherwise stream names MUST be unique within the request.",
+    specAnchor: "#stream-selection-parameters",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "Restates v0.1 6.8-3 verbatim, but a case must send the v0.2 detail type to be evidence about v0.2; the harness cannot build that request yet.",
+  },
+  {
+    clauseId: "v0.2/6.10-1",
+    specVersion: "0.2",
+    requirementIds: ["AS-4"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "The AS MUST expand presets, views, and wildcards against the retained declaration before applying owner choices. It MUST resolve the request into explicit grant constraints before final approval. It MUST preserve the client identity associated with the authorization request.",
+    specAnchor: "#request-resolution",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "The ordering half (expansion before owner choices) is not black-box observable; the issued grant only shows the result. Only the resolved-constraints half is reachable, and no v0.2 request builder exists to reach it.",
+  },
+  {
+    clauseId: "v0.2/6.11-1",
+    specVersion: "0.2",
+    requirementIds: ["AS-4"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "Explicit requested fields, instances, resources, and time bounds are upper limits. The AS MUST NOT resolve outside those limits.",
+    specAnchor: "#limits-and-owner-choices",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "Needs a v0.2 request whose resolved grant can be compared field by field against the request's upper limits; the harness has no v0.2 `authorization_details` builder.",
+  },
+  {
+    clauseId: "v0.2/6.11-2",
+    specVersion: "0.2",
+    requirementIds: ["AS-2"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "The AS MAY let the owner remove optional streams and narrow retained streams. The AS MUST NOT infer a client requirement from a schema-required property. It MUST retain each required stream or refuse the authorization. Narrowing a required stream does not itself constitute refusal if its explicit minimum remains satisfied.",
+    specAnchor: "#limits-and-owner-choices",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "Needs an owner journey that drops a required stream and an assertion that issuance is refused; the reference AS has no owner-narrowing surface and no v0.2 request type.",
+  },
+  {
+    clauseId: "v0.2/6.11-3",
+    specVersion: "0.2",
+    requirementIds: ["AS-2"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "The AS MUST refuse issuance when the owner approves no streams. It MUST NOT add another source, stream, instance, field, or resource to compensate for a refused selection.",
+    specAnchor: "#limits-and-owner-choices",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "Needs an owner journey that approves nothing; the reference AS's consent step has no way to express an empty approval, and no v0.2 request type exists.",
+  },
+  {
+    clauseId: "v0.2/6.12-1",
+    specVersion: "0.2",
+    requirementIds: ["AS-11"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "The AS MUST recognize only `fields` and `time_range` inside `minimum`. It MUST reject empty minimum objects, unknown minimum members, duplicate field names, and fields outside the expanded request. A supplied `minimum.fields` MUST be a non-empty array of declared top-level field names.",
+    specAnchor: "#explicit-authorization-minima",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "`minimum` does not exist in v0.1, so there is no request shape to send it in: the harness needs a v0.2 `authorization_details` builder before a rejection case can be written.",
+  },
+  {
+    clauseId: "v0.2/6.12-2",
+    specVersion: "0.2",
+    requirementIds: ["AS-11"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "For a retained stream, the AS MUST include every `minimum.fields` member in the resolved field selection. The AS MUST NOT treat a schema's `required` array as `minimum.fields`. For an optional stream, failure to satisfy its minimum permits omission of that whole stream, not a weaker retained stream.",
+    specAnchor: "#explicit-authorization-minima",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "Needs a v0.2 request carrying `minimum.fields` and an assertion over the issued grant's resolved `fields`; no v0.2 request builder exists.",
+  },
+  {
+    clauseId: "v0.2/6.12-3",
+    specVersion: "0.2",
+    requirementIds: ["AS-11"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "A supplied `minimum.time_range` MUST contain finite `since` and `until` timestamps with `since < until`. The AS MUST reject a minimum window outside the requested time window or on a stream without `consent_time_field`. It MUST resolve a retained stream to a time window containing the entire minimum window.",
+    specAnchor: "#explicit-authorization-minima",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "Needs a v0.2 request carrying `minimum.time_range` and an assertion over the issued grant's frozen `time_constraint`; no v0.2 request builder exists.",
+  },
+  {
+    clauseId: "v0.2/6.12-4",
+    specVersion: "0.2",
+    requirementIds: ["AS-11"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "The AS MUST refuse issuance if an owner-approved required stream cannot meet its minimum. The OAuth binding MUST report this refusal as `access_denied`. Malformed or unsupported authorization details instead produce `invalid_authorization_details`. Error descriptions MUST NOT reveal unapproved source, instance, record, or field existence.",
+    specAnchor: "#explicit-authorization-minima",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "The error-code half is black-box observable once a v0.2 request builder exists; the non-disclosure half needs a judgment about description text that no oracle in this suite makes.",
+  },
+  {
+    clauseId: "v0.2/6.12-5",
+    specVersion: "0.2",
+    requirementIds: ["AS-11"],
+    level: "must",
+    role: ["authorization-server"],
+    text: "An authorization minimum describes permission, not the presence, freshness, completeness, or suitability of records. The AS MUST NOT require records to exist to satisfy an authorization minimum.",
+    specAnchor: "#explicit-authorization-minima",
+    applicability: "always",
+    observable: "black-box-http",
+    caseIds: [],
+    gapNote:
+      "Needs a v0.2 request whose `minimum` names a field of an empty stream, asserting issuance still succeeds; no v0.2 request builder exists.",
   },
 ];
 
 /**
- * Every enumerated normative clause of Core sections 4-8 and 10, in document
- * order. Sections 1-3, 9, 11-13 are excluded: 1-3 and 11-13 are framing,
- * terminology, privacy discussion and type listings that carry no clause the
- * suite judges, and Section 9 is the catalogue this matrix maps INTO rather
- * than a source of independent obligations.
+ * Every enumerated normative clause the matrix carries, across every revision,
+ * in document order within each revision.
+ *
+ * SCOPE PER REVISION. v0.1 covers Core sections 4-8 and 10. Sections 1-3, 9,
+ * 11-13 are excluded: 1-3 and 11-13 are framing, terminology, privacy
+ * discussion and type listings that carry no clause the suite judges, and
+ * Section 9 is the catalogue this matrix maps INTO rather than a source of
+ * independent obligations. v0.2 is partial and says so: this batch transcribes
+ * the black-box-observable AS clauses of Section 6 only.
+ *
+ * This is the WHOLE inventory, not a view. A report selects a revision through
+ * `clausesForVersion`; reading `CLAUSE_MATRIX` directly mixes revisions and is
+ * correct only for questions about the inventory itself.
  */
 export const CLAUSE_MATRIX: readonly ClauseEntry[] = [
   ...SECTION_4,
@@ -1708,6 +2113,7 @@ export const CLAUSE_MATRIX: readonly ClauseEntry[] = [
   ...SECTION_7,
   ...SECTION_8,
   ...SECTION_10,
+  ...SECTION_6_V02,
 ];
 
 const BY_CLAUSE_ID = new Map(CLAUSE_MATRIX.map((c) => [c.clauseId, c]));
@@ -1716,24 +2122,65 @@ export function clauseById(clauseId: string): ClauseEntry | undefined {
   return BY_CLAUSE_ID.get(clauseId);
 }
 
-/** Clauses that roll up to a Section 9 requirement, in matrix order. */
-export function clausesForRequirement(requirementId: string): readonly ClauseEntry[] {
-  return CLAUSE_MATRIX.filter((c) => c.requirementIds.includes(requirementId));
+/**
+ * The clauses in force at one revision.
+ *
+ * THE SUPERSESSION RULE, and why it is subtraction rather than replacement.
+ * v0.2 does not restate every v0.1 obligation — it rewrites some, adds others,
+ * and leaves most untouched. So the v0.2 view is v0.1 MINUS the entries a v0.2
+ * entry supersedes, PLUS the v0.2 entries. Dropping unsuperseded v0.1 clauses
+ * would understate what a v0.2 implementer owes; keeping superseded ones would
+ * report the same obligation twice under two ids and inflate every count
+ * derived from this list.
+ *
+ * At `"0.1"` the result is exactly the v0.1 entries: v0.1 is the earliest
+ * revision, nothing supersedes into it, and a v0.1 run must not see proposal
+ * text. That is what keeps this change invisible to an existing caller.
+ *
+ * A CONSEQUENCE WORTH STATING, because it looks like a bug the first time it is
+ * seen: superseding a COVERED v0.1 clause LOWERS clause coverage at v0.2. The
+ * v0.1 clause leaves the view carrying its cases, and the v0.2 clause that
+ * replaced it has none. That is the honest reading, not a regression — those
+ * cases send the v0.1 `authorization_details` type, so they are evidence about
+ * the text v0.2 replaced, and carrying their ids forward onto the new clause
+ * would be a coverage claim nothing ran.
+ */
+export function clausesForVersion(version: SpecVersion = DEFAULT_SPEC_VERSION): readonly ClauseEntry[] {
+  if (version === "0.1") {
+    return CLAUSE_MATRIX.filter((c) => c.specVersion === "0.1");
+  }
+  const superseded = new Set(
+    CLAUSE_MATRIX.filter((c) => c.specVersion === version).flatMap((c) => (c.supersedes ? [c.supersedes] : []))
+  );
+  return CLAUSE_MATRIX.filter(
+    (c) => (c.specVersion === version || c.specVersion === "0.1") && !superseded.has(c.clauseId)
+  );
+}
+
+/** Clauses that roll up to a Section 9 requirement at one revision, in matrix order. */
+export function clausesForRequirement(
+  requirementId: string,
+  version: SpecVersion = DEFAULT_SPEC_VERSION
+): readonly ClauseEntry[] {
+  return clausesForVersion(version).filter((c) => c.requirementIds.includes(requirementId));
 }
 
 /**
- * Clauses no Section 9 item summarizes.
+ * Clauses no Section 9 item summarizes, at one revision.
  *
  * Not an error: Section 9 numbers conformance items for three roles and has no
  * list for a SourceDeclaration author, so declaration-static clauses have
  * nowhere to roll up. Exposed as a function because it is a finding about the
  * spec's coverage, and the report should be able to state it.
  */
-export function clausesWithoutRequirement(): readonly ClauseEntry[] {
-  return CLAUSE_MATRIX.filter((c) => c.requirementIds.length === 0);
+export function clausesWithoutRequirement(version: SpecVersion = DEFAULT_SPEC_VERSION): readonly ClauseEntry[] {
+  return clausesForVersion(version).filter((c) => c.requirementIds.length === 0);
 }
 
-/** MUST-level clauses with no case exercising them. Each carries a `gapNote`. */
-export function uncoveredMustClauses(): readonly ClauseEntry[] {
-  return CLAUSE_MATRIX.filter((c) => c.level === "must" && c.caseIds.length === 0);
+/**
+ * MUST-level clauses with no case exercising them, at one revision. Each carries
+ * a `gapNote`.
+ */
+export function uncoveredMustClauses(version: SpecVersion = DEFAULT_SPEC_VERSION): readonly ClauseEntry[] {
+  return clausesForVersion(version).filter((c) => c.level === "must" && c.caseIds.length === 0);
 }

@@ -26,7 +26,7 @@ import { promisify } from "node:util";
 import { renderMarkdown } from "../src/report/markdown.ts";
 import { buildReport } from "../src/report/result.ts";
 import { REQUIREMENTS } from "../src/requirements/catalog.ts";
-import { CLAUSE_MATRIX } from "../src/requirements/matrix.ts";
+import { CLAUSE_MATRIX, clausesForVersion } from "../src/requirements/matrix.ts";
 import { ALL_CASES, coveredRequirementIds, runSuite } from "../src/suite.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 
@@ -34,8 +34,40 @@ const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 describe("the report cannot present a partial run as complete", () => {
+  it("renders review evidence separately and never treats it as test coverage", () => {
+    const report = buildReport({
+      suite: { name: "t", version: "0" },
+      target: {
+        id: "t",
+        version: "0",
+        baseUrl: "http://127.0.0.1:1",
+        roles: ["authorization-server"],
+      },
+      run: { startedAt: "", finishedAt: "", reproducible: true },
+      cases: [],
+      reviewEvidence: [
+        {
+          clauseId: "6.3-1",
+          claim: "Claims are visually separated.",
+          evidenceFiles: [{ path: "consent.png", description: "Consent review screenshot" }],
+          reviewedBy: "reviewer",
+          reviewedOn: "2026-09-18",
+          status: "evidenced",
+        },
+      ],
+    });
+    const markdown = renderMarkdown(report);
+    assert.equal(report.reviewEvidence.length, 1);
+    assert.equal(report.summary.notTestedRequirements.includes("AS-7"), true);
+    assert.equal(report.coverage.find((coverage) => coverage.role === "authorization-server")?.tested, 0);
+    assert.ok(markdown.includes("## Review evidence"));
+    assert.ok(markdown.includes("do not create cases, change coverage, or count as tested"));
+  });
   it("does not leave the newly observable client-capture MUST clauses unregistered", () => {
-    const clientCaptureMusts = CLAUSE_MATRIX.filter(
+    // Scoped to v0.1: the count is a fact about the adopted revision's clause
+    // set, and a v0.2 entry added later must not make this test fail for a
+    // reason that has nothing to do with the client channel it protects.
+    const clientCaptureMusts = clausesForVersion("0.1").filter(
       (clause) => clause.level === "must" && clause.observable === "client-capture"
     );
     assert.equal(clientCaptureMusts.length, 11, "Batch 19 must account for all eleven client-capture MUST clauses.");
@@ -43,6 +75,7 @@ describe("the report cannot present a partial run as complete", () => {
       assert.ok(clause.caseIds.length > 0, `Client-capture MUST ${clause.clauseId} has no registered case.`);
     }
   });
+
   it("keeps the full Section 9 catalogue as the denominator, not the executed cases", async () => {
     const report = await runSuite(new ReferenceTargetAdapter());
 
@@ -298,5 +331,132 @@ describe("SHOULD-level observations are never reported as failed MUSTs", () => {
       failuresSection.includes("No failed requirements in this run."),
       "MUST-failure rendering must be unchanged: zero fails still reports as none."
     );
+  });
+});
+
+describe("a version-aware report states which revision it measured against", () => {
+  // WHAT THIS PROTECTS. Making the report version-aware creates a new way to
+  // overclaim, and it is subtler than the ones the suite already guards. The
+  // same target, the same cases and the same suite version produce DIFFERENT
+  // clause denominators at v0.1 and v0.2, because v0.2 adds obligations v0.1
+  // does not have. A report that carried clause numbers without naming the
+  // revision would be unreadable-but-plausible: a reader would compare a v0.1
+  // number against a v0.2 number and conclude coverage had changed when only
+  // the denominator moved.
+  //
+  // THE PLAUSIBLE DEFECT is a caller that threads the version into the clause
+  // selection but not into the report, or the reverse. Both leave a report that
+  // renders cleanly and states a number about the wrong revision.
+  const target = {
+    id: "t",
+    version: "0",
+    baseUrl: "http://127.0.0.1:1",
+    roles: ["authorization-server"] as const,
+  };
+  const run = { startedAt: "", finishedAt: "", reproducible: true };
+
+  it("defaults to the adopted revision when no version is asked for", () => {
+    const report = buildReport({ suite: { name: "t", version: "0" }, target, run, cases: [] });
+    assert.equal(
+      report.specVersion,
+      "0.1",
+      "A caller that names no revision must be reported against adopted text, never a proposal."
+    );
+    assert.equal(report.clauseCoverage.specVersion, "0.1");
+  });
+
+  it("measures against a larger MUST denominator at v0.2 than at v0.1", () => {
+    const v01 = buildReport({ suite: { name: "t", version: "0" }, target, run, cases: [], specVersion: "0.1" });
+    const v02 = buildReport({ suite: { name: "t", version: "0" }, target, run, cases: [], specVersion: "0.2" });
+
+    assert.ok(
+      v02.clauseCoverage.mustTotal > v01.clauseCoverage.mustTotal,
+      "This batch transcribes v0.2 MUST clauses with no v0.1 counterpart, so the " +
+        "v0.2 denominator must be strictly larger. Equal totals mean the version " +
+        "never reached the clause selection."
+    );
+    assert.ok(
+      v02.clauseCoverage.mustCovered < v01.clauseCoverage.mustCovered,
+      "Moving to v0.2 must LOSE covered MUSTs, not gain them. No case sends the " +
+        "v0.2 `authorization_details` type, so no v0.2 clause gains evidence — and " +
+        "a v0.2 clause that supersedes a COVERED v0.1 clause retires that clause's " +
+        "cases along with it, because they are evidence about the text v0.2 " +
+        "replaced. A rise here is coverage invented by a version flag; even holding " +
+        "steady would mean a supersession quietly inherited evidence it never earned."
+    );
+    assert.ok(
+      v02.clauseCoverage.mustUncovered > v01.clauseCoverage.mustUncovered,
+      "The v0.2 gap must be visibly larger, which is the honest reading of a " +
+        "revision whose obligations no case reaches yet."
+    );
+  });
+
+  it("names the revision in the rendered report, next to the clause numbers", () => {
+    for (const specVersion of ["0.1", "0.2"] as const) {
+      const report = buildReport({ suite: { name: "t", version: "0" }, target, run, cases: [], specVersion });
+      const markdown = renderMarkdown(report);
+      assert.ok(
+        markdown.includes(`Clause inventory: spec revision v${specVersion}`),
+        `The v${specVersion} report must name its revision in the header.`
+      );
+      assert.ok(
+        markdown.includes(`Clause coverage at v${specVersion}:`),
+        `The v${specVersion} report must attach the revision to the clause numbers themselves, ` +
+          "so a number cannot be quoted without it."
+      );
+    }
+  });
+
+  it("warns in the v0.2 report that the revision is not adopted", () => {
+    const markdown = renderMarkdown(
+      buildReport({ suite: { name: "t", version: "0" }, target, run, cases: [], specVersion: "0.2" })
+    );
+    assert.ok(
+      markdown.includes("not an adopted revision"),
+      "A v0.2 report states behaviour against a proposal. A reader who misses that " +
+        "would treat it as a conformance result against agreed text."
+    );
+  });
+
+  it("hides a superseded v0.1 clause from a v0.2 requirement roll-up", () => {
+    // The report-side half of the supersession rule. matrix.ts's own tests prove
+    // the view excludes the superseded id; this proves the exclusion survives the
+    // trip through buildReport, where a requirement's clause list is rebuilt.
+    const superseding = CLAUSE_MATRIX.find((c) => c.specVersion === "0.2" && c.supersedes);
+    assert.ok(superseding?.supersedes, "This batch registers at least one supersession.");
+    const [requirementId] = superseding.requirementIds;
+    assert.ok(requirementId, "The superseding clause must roll up to a Section 9 item to be visible here.");
+
+    const v02 = buildReport({ suite: { name: "t", version: "0" }, target, run, cases: [], specVersion: "0.2" });
+    const result = v02.requirements.find((r) => r.requirement.id === requirementId);
+    assert.ok(result, `${requirementId} must appear in the report.`);
+    assert.ok(
+      !result.clauseIds.includes(superseding.supersedes),
+      `${requirementId} still lists ${superseding.supersedes}, which ${superseding.clauseId} replaces. ` +
+        "The same obligation would be reported twice under two ids."
+    );
+    assert.ok(
+      result.clauseIds.includes(superseding.clauseId),
+      `${requirementId} must list the replacing clause ${superseding.clauseId}.`
+    );
+  });
+
+  it("discloses every v0.2 MUST as an uncovered gap with a named blocker", () => {
+    // The batch's central claim, asserted rather than trusted: mechanics landed,
+    // cases did not. A v0.2 MUST reaching the report without a gap note would
+    // read as an oversight instead of a recorded limit.
+    const v02 = buildReport({ suite: { name: "t", version: "0" }, target, run, cases: [], specVersion: "0.2" });
+    const disclosed = new Map(
+      v02.requirements.flatMap((r) => r.uncoveredMustClauses.map((c) => [c.clauseId, c.gapNote] as const))
+    );
+    const v02Musts = CLAUSE_MATRIX.filter(
+      (c) => c.specVersion === "0.2" && c.level === "must" && c.requirementIds.length > 0
+    );
+    assert.ok(v02Musts.length > 0, "Fixture expectation: this batch transcribes mapped v0.2 MUST clauses.");
+    for (const clause of v02Musts) {
+      const note = disclosed.get(clause.clauseId);
+      assert.ok(note, `v0.2 MUST ${clause.clauseId} never reached the report's uncovered list.`);
+      assert.ok(note.length > 0, `v0.2 MUST ${clause.clauseId} reached the report with an empty gap note.`);
+    }
   });
 });

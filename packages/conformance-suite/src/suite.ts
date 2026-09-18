@@ -7,6 +7,7 @@ import type { TargetAdapter } from "./harness/adapter.ts";
 import type { ConformanceCase } from "./harness/runner.ts";
 import { makeContext, runCases } from "./harness/runner.ts";
 import { buildReport, type ConformanceReport } from "./report/result.ts";
+import { DEFAULT_SPEC_VERSION, type SpecVersion } from "./requirements/matrix.ts";
 import { AUTHORIZATION_SERVER_CASES } from "./tests/authorization-server.ts";
 import { CLIENT_CASES } from "./tests/client.ts";
 import { CLIENT_IDENTITY_CASES } from "./tests/client-identity.ts";
@@ -61,11 +62,19 @@ export function coveredRequirementIds(cases: readonly ConformanceCase[] = ALL_CA
  * byte-reproducible for anyone re-running a published submission. The report
  * records whether that held, because a reproducible claim that was not actually
  * reproducible is worse than no claim.
+ *
+ * `options.specVersion` selects the clause inventory the report counts against.
+ * It changes no case and no outcome — the same cases run either way — only which
+ * obligations the report measures them against. It defaults to the adopted
+ * revision so a caller that does not ask cannot be reported against unadopted
+ * proposal text.
  */
 export async function runSuite(
   adapter: TargetAdapter,
-  cases: readonly ConformanceCase[] = ALL_CASES
+  cases: readonly ConformanceCase[] = ALL_CASES,
+  options: { readonly specVersion?: SpecVersion } = {}
 ): Promise<ConformanceReport> {
+  const specVersion = options.specVersion ?? DEFAULT_SPEC_VERSION;
   const sourceDateEpoch = process.env.SOURCE_DATE_EPOCH;
   const reproducible = Boolean(sourceDateEpoch);
   const fixedTime = sourceDateEpoch ? new Date(Number(sourceDateEpoch) * 1000).toISOString() : undefined;
@@ -76,12 +85,14 @@ export async function runSuite(
     const results = await runCases(cases, makeContext(adapter, streams));
     return buildReport({
       suite: SUITE,
+      specVersion,
       target: {
         id: adapter.targetId,
         version: adapter.targetVersion,
         baseUrl: adapter.baseUrl,
         roles: adapter.roles,
       },
+      ...(adapter.reviewEvidence ? { reviewEvidence: adapter.reviewEvidence } : {}),
       run: {
         startedAt,
         finishedAt: fixedTime ?? new Date().toISOString(),

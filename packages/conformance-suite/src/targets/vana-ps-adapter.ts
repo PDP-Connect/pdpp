@@ -30,6 +30,7 @@ import type {
   TargetCapabilities,
 } from "../harness/adapter.ts";
 import { type PdppResponse, request } from "../harness/http.ts";
+import type { ReviewEvidence } from "../report/review-evidence.ts";
 import type { Role } from "../requirements/catalog.ts";
 
 export interface VanaPsConfig {
@@ -71,6 +72,7 @@ export interface VanaPsConfig {
   readonly ownerReadParams?: Readonly<Record<string, string>>;
   readonly purposeCode?: string;
   readonly redirectUri: string;
+  readonly reviewEvidence?: readonly ReviewEvidence[];
   readonly roles: readonly Role[];
   /** Source the seeded streams belong to. */
   readonly sourceId: string;
@@ -103,6 +105,7 @@ export class VanaPsAdapter implements TargetAdapter {
   readonly baseUrl: string;
   readonly roles: readonly Role[];
   readonly capabilities: TargetCapabilities;
+  readonly reviewEvidence?: readonly ReviewEvidence[];
   private readonly config: VanaPsConfig;
   /**
    * Headers from the most recent successful token-endpoint redemption, for
@@ -139,6 +142,9 @@ export class VanaPsAdapter implements TargetAdapter {
     this.baseUrl = config.baseUrl;
     this.roles = config.roles;
     this.capabilities = config.capabilities;
+    if (config.reviewEvidence) {
+      this.reviewEvidence = config.reviewEvidence;
+    }
   }
 
   get ownerReadParams(): Readonly<Record<string, string>> | undefined {

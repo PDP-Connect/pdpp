@@ -35,13 +35,29 @@ implements the target contract and holds no privilege.
 **Traceable to the clauses, not just the item numbers.** Section 9's 45 items are
 summaries; a pass on one says nothing about which of the normative sentences it
 summarizes was exercised. [`matrix.ts`](./src/requirements/matrix.ts) enumerates
-those sentences for Core sections 4-8 and 10 — 131 clauses, each with its
+those sentences for Core sections 4-8 and 10 — 131 clauses at v0.1, each with its
 verbatim text, level, role, observable boundary, the items that roll it up, the
 cases that exercise it, and for every uncovered MUST the exact missing hook.
 [`docs/reference/conformance-normative-matrix.md`](../../docs/reference/conformance-normative-matrix.md)
 is the generated view; regenerate it with `pnpm matrix:md`. Every report now
 lists each requirement's clauses and names the MUST clauses its cases did not
 reach, so a `PASS` cannot be read as covering the whole item.
+
+**Version-aware, defaulting to the adopted revision.** Every clause names the spec
+revision its text is verbatim from. `--spec-version 0.1` (the default) reports
+against the adopted draft; `--spec-version 0.2` reports against the private
+normative proposal in vana-com/pdpp PR #1, adding that revision's clauses and
+hiding the v0.1 clauses they supersede. The flag changes what the report
+**measures against**, never which cases run — so the clause denominator moves and
+the case results do not. v0.2 transcription is partial today: the
+black-box-observable AS clauses of Section 6 on required/optional streams and
+explicit authorization minima, all with empty case lists and a gap note naming
+what is missing. Its generated view is
+[`conformance-normative-matrix-v0.2.md`](../../docs/reference/conformance-normative-matrix-v0.2.md).
+Moving to v0.2 **lowers** reported MUST coverage — 81/106 at v0.1 against 79/117 at
+v0.2 — because the proposal adds obligations no case reaches and retires two
+covered v0.1 clauses it supersedes. That drop is the honest reading, not a
+regression.
 
 **Traceable to numbered requirements.** [`catalog.ts`](./src/requirements/catalog.ts)
 transcribes all 45 numbered Section 9 items — AS 1–21, RS 1–16, Client 1–8 — keeping

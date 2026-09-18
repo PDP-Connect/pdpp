@@ -18,6 +18,7 @@
 // passes vacuously). Both are deployment-specific by design, so they are
 // parameters rather than assumptions.
 
+import type { ReviewEvidence } from "../report/review-evidence.ts";
 import type { Role } from "../requirements/catalog.ts";
 import type { PdppResponse } from "./http.ts";
 
@@ -839,6 +840,9 @@ export interface TargetAdapter {
    * evidence.
    */
   reissueAgainstConsumedGrant?: (grantId: string) => Promise<IssuedGrant | null>;
+
+  /** Human-review packets for clauses the executable suite cannot observe. */
+  readonly reviewEvidence?: readonly ReviewEvidence[];
 
   /**
    * The streams and fields a staged request resolved to, before approval.

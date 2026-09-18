@@ -1,15 +1,30 @@
-# PDPP Core normative matrix (v0.1)
+# PDPP Core normative matrix (v0.2)
 
 GENERATED FILE — do not edit by hand. Source:
 `packages/conformance-suite/src/requirements/matrix.ts`. Regenerate with
 `pnpm --filter @pdpp/conformance-suite matrix:md`;
 `test/matrix-markdown.test.ts` fails when this file and the data disagree.
 
-This file is the **v0.1** inventory: the adopted normative draft at
-`spec-core.md`. The proposal's inventory is a separate file,
-`conformance-normative-matrix-v0.2.md`.
+This file is the **v0.2** inventory. v0.2 is the private normative proposal in
+vana-com/pdpp PR #1, *not an adopted revision*: a conformance claim made today
+is a claim against v0.1, and this file exists so the suite's mechanics are ready
+when the proposal lands.
 
-Every normative clause in Core sections 4, 5, 6, 7, 8 and 10, mapped to the
+It lists the clauses in force at v0.2: the v0.2 entries transcribed so far, plus
+every v0.1 clause the proposal does not supersede. A clause carrying
+`supersedes` replaces the v0.1 clause it names, and that v0.1 clause is absent
+here — which is why this file is not a superset of the v0.1 one.
+
+Transcription from v0.2 is **partial**. This batch covers the black-box-observable
+authorization-server clauses of Section 6 on required/optional streams and
+explicit authorization minima. Clauses of other sections still appear at their
+v0.1 text, and a reader must not read their presence as evidence the proposal
+left them unchanged.
+
+Every v0.2 clause below has an EMPTY case list. No case exercises v0.2 text yet;
+each carries the gap note naming what is missing.
+
+Clauses mapped to the
 Section 9 conformance items that summarize it and to the suite cases that
 exercise it. Section 9 is the index here, not the authority: its 45 numbered
 items are one-line precis of the clauses below.
@@ -49,7 +64,7 @@ one that exists today.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **81** have at least one case and **25** do not.
+Clauses enumerated: **142**. MUST-level: **117**, of which **79** have at least one case and **38** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -58,7 +73,7 @@ whether it passes is a separate question a run answers.
 | Level | Clauses |
 | --- | --- |
 | MAY | 12 |
-| MUST | 106 |
+| MUST | 117 |
 | SHOULD | 13 |
 
 | Role | Clauses |
@@ -66,14 +81,14 @@ whether it passes is a separate question a run answers.
 | resource-server | 51 |
 | client | 25 |
 | source-declaration | 10 |
-| authorization-server | 65 |
+| authorization-server | 76 |
 
 A clause binding two roles is counted under each, so the role column sums
 above the clause total.
 
 | Observable | Clauses |
 | --- | --- |
-| black-box-http | 74 |
+| black-box-http | 85 |
 | client-capture | 14 |
 | review-only | 35 |
 | declaration-static | 8 |
@@ -100,9 +115,12 @@ Validates selection requests against one retained SourceDeclaration snapshot: re
 | --- | --- | --- | --- | --- |
 | `5.2-4` | MUST | black-box-http | `AS-2/time-range-without-consent-time-field-refused` | — |
 | `6.8-1` | MUST | black-box-http | `AS-2/view-and-fields-mutually-exclusive` | — |
-| `6.8-2` | MUST | black-box-http | `AS-2/time-range-without-consent-time-field-refused` | — |
-| `6.8-3` | MUST | black-box-http | `AS-2/wildcard-beside-named-stream-refused`<br>`AS-2/duplicate-stream-name-refused` | — |
 | `6.9-1` | MUST | black-box-http | `AS-16/duplicate-stream-in-a-selection-preset-refused` | — |
+| `v0.2/6.8-1` | MUST | black-box-http | — | No case drives a v0.2 selection request carrying `necessity`: the harness has no v0.2 `authorization_details` builder, and the reference AS resolves only the `https://pdpp.dev/data-access` type. |
+| `v0.2/6.8-3` | MUST | black-box-http | — | Restates v0.1 6.8-2 verbatim, but a case must send the v0.2 detail type to be evidence about v0.2; the harness cannot build that request yet. |
+| `v0.2/6.8-4` | MUST | black-box-http | — | Restates v0.1 6.8-3 verbatim, but a case must send the v0.2 detail type to be evidence about v0.2; the harness cannot build that request yet. |
+| `v0.2/6.11-2` | MUST | black-box-http | — | Needs an owner journey that drops a required stream and an assertion that issuance is refused; the reference AS has no owner-narrowing surface and no v0.2 request type. |
+| `v0.2/6.11-3` | MUST | black-box-http | — | Needs an owner journey that approves nothing; the reference AS's consent step has no way to express an empty approval, and no v0.2 request type exists. |
 
 ### AS-3 (authorization-server, MUST)
 
@@ -121,8 +139,9 @@ Expands wildcards and selection presets into explicit stream names, fields, per-
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `6.8-3` | MUST | black-box-http | `AS-2/wildcard-beside-named-stream-refused`<br>`AS-2/duplicate-stream-name-refused` | — |
 | `7.2-1` | MUST | black-box-http | `AS-4/omitted-fields-expanded-before-issuance` | — |
+| `v0.2/6.10-1` | MUST | black-box-http | — | The ordering half (expansion before owner choices) is not black-box observable; the issued grant only shows the result. Only the resolved-constraints half is reachable, and no v0.2 request builder exists to reach it. |
+| `v0.2/6.11-1` | MUST | black-box-http | — | Needs a v0.2 request whose resolved grant can be compared field by field against the request's upper limits; the harness has no v0.2 `authorization_details` builder. |
 
 ### AS-5 (authorization-server, MUST)
 
@@ -202,6 +221,12 @@ Validates stream/field/view/resource-id shape at grant issuance.
 | --- | --- | --- | --- | --- |
 | `7.1-1` | MUST | black-box-http | `AS-3/issued-grant-artifact-matches-section-7-schema`<br>`AS-3/resolved-grant-matches-observable-schema-fields` | — |
 | `7.2-0` | MUST | black-box-http | `AS-2/dotted-nested-field-refused` | The `fields` row of the normative StreamGrant table; carries no RFC 2119 keyword, so its MUST level is Section 9 AS item 11's. The top-level-only constraint is tested; uniqueness and non-emptiness of the issued allowlist are not. |
+| `v0.2/6.8-2` | MUST | black-box-http | — | Reverses the v0.1 consent floor, so no existing case can be reused: proving it needs a v0.2 grant whose resolved `fields` omit a schema-required field the request did not name. |
+| `v0.2/6.12-1` | MUST | black-box-http | — | `minimum` does not exist in v0.1, so there is no request shape to send it in: the harness needs a v0.2 `authorization_details` builder before a rejection case can be written. |
+| `v0.2/6.12-2` | MUST | black-box-http | — | Needs a v0.2 request carrying `minimum.fields` and an assertion over the issued grant's resolved `fields`; no v0.2 request builder exists. |
+| `v0.2/6.12-3` | MUST | black-box-http | — | Needs a v0.2 request carrying `minimum.time_range` and an assertion over the issued grant's frozen `time_constraint`; no v0.2 request builder exists. |
+| `v0.2/6.12-4` | MUST | black-box-http | — | The error-code half is black-box observable once a v0.2 request builder exists; the non-disclosure half needs a judgment about description text that no oracle in this suite makes. |
+| `v0.2/6.12-5` | MUST | black-box-http | — | Needs a v0.2 request whose `minimum` names a field of an empty stream, asserting issuance still succeeds; no v0.2 request builder exists. |
 
 ### AS-12 (authorization-server, MUST)
 
