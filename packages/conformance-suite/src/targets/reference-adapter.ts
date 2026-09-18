@@ -136,10 +136,14 @@ const CAPABILITIES: TargetCapabilities = {
   separatedDeployment: false,
   ownerTokens: true,
   selfExport: true,
-  // The reference target does not implement incremental sync, single-use
-  // grants, refresh tokens, or blobs. Declaring them absent is what turns the
-  // dependent requirements into `unsupported` rather than false passes.
-  incrementalSync: false,
+  // Incremental sync IS implemented. It was not, and RS-8 failed against this
+  // target from at least 0d50f01f0f: the fixture seeds a `mutable_state`
+  // stream (`conversations`), which under Core Section 4 obliges
+  // `changes_since` support, and served no `next_changes_since` at all. The
+  // case was right and the target was wrong — `appliesWhen` derives RS-7/RS-8
+  // applicability from seeded stream semantics precisely so a target cannot
+  // hide the MUST behind a false `incrementalSync: false`.
+  incrementalSync: true,
   // Views ARE implemented: the `summary` view on `conversations`, resolved at
   // issuance and frozen into the grant. This is what makes the Section 5 view
   // clauses reachable at all; every target declaring `views: false` reports
@@ -1034,6 +1038,11 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       };
     }
     return { accepted: true, status: 200, documentFetched: true };
+  }
+
+  /** Write one field of a seeded record, stamping a new version (8.9-13, 8.9-14). */
+  async writeRecordField(stream: string, recordId: string, field: string, value: unknown): Promise<boolean> {
+    return this.server.writeField(stream, recordId, field, value);
   }
 
   async expiredGrantToken(): Promise<string | null> {

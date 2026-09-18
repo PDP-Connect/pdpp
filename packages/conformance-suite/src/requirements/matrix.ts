@@ -1350,9 +1350,7 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "the target supports `changes_since`",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs an adapter hook that mutates a record field OUTSIDE the grant's projection and then resumes a cursor; the current seeding hook writes whole records and cannot target an ungranted field.",
+    caseIds: ["RS-7/sync-eligibility-computed-on-the-authorized-projection"],
   },
   {
     clauseId: "8.9-14",
@@ -1363,9 +1361,7 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "the target supports `changes_since`",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs a seeded stream large enough to paginate a `changes_since` session plus a mid-session write; current target seeding produces single-page sync results.",
+    caseIds: ["RS-7/paginated-sync-session-anchored-to-one-horizon"],
   },
   {
     clauseId: "8.9-15",

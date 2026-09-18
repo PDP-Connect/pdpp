@@ -61,24 +61,28 @@ describe("the report cannot present a partial run as complete", () => {
 
   it("does not report all-musts-passed while applicable requirements are untested", async () => {
     const report = await runSuite(new ReferenceTargetAdapter());
-    // Fixture expectation: the reference target seeds a `mutable_state`
-    // stream ("conversations") but implements no `changes_since` handling,
-    // so RS-8's terminal-page obligation is a genuine, honestly-reported
-    // failure here — the fix that made RS-7/RS-8 applicability track seeded
-    // stream semantics rather than the target's own (previously false)
-    // `incrementalSync` declaration surfaced this real gap. Asserting zero
-    // failures would require silently exempting the reference target from a
-    // requirement its own seeded data obligates.
+
+    // The property under test is the SECOND assertion: a run with no failures
+    // but incomplete coverage must not report all-musts-passed. That is the
+    // honesty rule, and it is the one a regression would break.
+    //
+    // This case previously also asserted `failedRequirements` equalled
+    // ["RS-8"], which pinned a real defect in the reference target as an
+    // expectation: the fixture seeds a `mutable_state` stream and served no
+    // `next_changes_since`, so RS-8 genuinely failed. The target now implements
+    // `changes_since` and tombstones, so that failure is gone — and an
+    // assertion that a specific requirement FAILS would have to be edited every
+    // time the target is fixed, which makes it a record of current behaviour
+    // rather than a check on anything.
     assert.deepEqual(
       report.summary.failedRequirements,
-      ["RS-8"],
-      "Fixture expectation: the reference target serves a mutable_state stream but does not implement " +
-        "changes_since, so RS-8 is its only genuine failure."
+      [],
+      "The reference target is expected to pass every requirement it is applicable for; a failure here is a real defect in it."
     );
     assert.equal(
       report.summary.allApplicableMustsTestedAndPassed,
       false,
-      "A real failure plus incomplete coverage must not set allApplicableMustsTestedAndPassed."
+      "Coverage is incomplete (requirements remain not-tested), so allApplicableMustsTestedAndPassed must stay false even with zero failures. This is the flag's whole point: a clean run with partial coverage is not a pass."
     );
   });
 

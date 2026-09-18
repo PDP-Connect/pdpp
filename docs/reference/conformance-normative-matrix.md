@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **60** have at least one case and **46** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **62** have at least one case and **44** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -339,8 +339,8 @@ Supports incremental sync via `changes_since` for `mutable_state` streams, inclu
 | `4.3-2` | MUST | black-box-http | — | No adapter hook can force a cursor to expire: the suite would need a TargetAdapter method that ages or invalidates an issued `changes_since` token, or a target that accepts an obviously stale token. |
 | `4.3-6` | MUST | black-box-http | `RS-7/deletion-surfaces-as-a-tombstone` | — |
 | `4.3-7` | SHOULD | review-only | — | Not observable: whether the source deletion time was known is internal state, so a `deleted_at` value cannot be judged against this clause from outside. |
-| `8.9-13` | MUST | black-box-http | — | Needs an adapter hook that mutates a record field OUTSIDE the grant's projection and then resumes a cursor; the current seeding hook writes whole records and cannot target an ungranted field. |
-| `8.9-14` | MUST | black-box-http | — | Needs a seeded stream large enough to paginate a `changes_since` session plus a mid-session write; current target seeding produces single-page sync results. |
+| `8.9-13` | MUST | black-box-http | `RS-7/sync-eligibility-computed-on-the-authorized-projection` | — |
+| `8.9-14` | MUST | black-box-http | `RS-7/paginated-sync-session-anchored-to-one-horizon` | — |
 
 ### RS-8 (resource-server, MUST)
 
@@ -349,7 +349,7 @@ Returns `next_changes_since` on the terminal page of every `changes_since` respo
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
 | `4.3-5` | MUST | black-box-http | `RS-8/terminal-page-carries-next-changes-since` | — |
-| `8.9-14` | MUST | black-box-http | — | Needs a seeded stream large enough to paginate a `changes_since` session plus a mid-session write; current target seeding produces single-page sync results. |
+| `8.9-14` | MUST | black-box-http | `RS-7/paginated-sync-session-anchored-to-one-horizon` | — |
 | `8.9-15` | MUST | black-box-http | `RS-8/terminal-page-carries-next-changes-since` | — |
 
 ### RS-9 (resource-server, MUST)

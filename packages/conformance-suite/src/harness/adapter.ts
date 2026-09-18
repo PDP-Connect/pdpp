@@ -867,4 +867,20 @@ export interface TargetAdapter {
    * the field was invalid — otherwise the case would pass for the wrong reason.
    */
   widenView?: (stream: string, view: string, addField: string) => Promise<readonly string[] | null>;
+
+  /**
+   * Write a single FIELD of an existing record, for clauses 8.9-13 and 8.9-14.
+   *
+   * The unit is a field rather than a record because clause 8.9-13 turns on
+   * which fields a change touched: "Eligibility for `changes_since` MUST be
+   * computed on the grant-authorized projection, not on the unprojected record.
+   * Returning a record whose authorized projection is unchanged is a protocol
+   * violation because it leaks that hidden fields changed." A whole-record
+   * write cannot express that distinction, which is why the existing seeding
+   * hook could not reach the clause.
+   *
+   * Returns false when the target cannot write (or cannot target a single
+   * field), which reports the dependent cases `skip` naming this hook.
+   */
+  writeRecordField?: (stream: string, recordId: string, field: string, value: unknown) => Promise<boolean>;
 }

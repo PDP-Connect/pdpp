@@ -420,6 +420,41 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-7/malformed-url-hosted-client-identity-refused",
     defect: "accept-unbound-url-hosted-client-document",
   },
+  // Clause 8.9-15. The reference target now implements `changes_since`, so
+  // RS-8 passes against it — which means the oracle needs a defect to be worth
+  // anything. `omit-next-changes-since` restores exactly the behaviour that
+  // made RS-8 fail before this batch, so the case is proven to catch the very
+  // defect the target was just fixed for.
+  {
+    caseId: "RS-8/terminal-page-carries-next-changes-since",
+    defect: "omit-next-changes-since",
+  },
+  // Core Section 4 "Tombstones". Paired with a defect that DROPS the tombstone
+  // rather than one that breaks sync generally: a client that stops seeing a
+  // record cannot tell deletion from "no longer matches my filter", so silence
+  // is the violation and the case must catch silence specifically.
+  {
+    caseId: "RS-7/deletion-surfaces-as-a-tombstone",
+    defect: "omit-tombstones",
+  },
+  // Clause 8.9-13. The defect computes eligibility on the UNPROJECTED record,
+  // so a record whose authorized projection is unchanged still surfaces. The
+  // payload stays correct throughout — only the record's presence leaks — which
+  // is why no field-projection defect can stand in for this one.
+  {
+    caseId: "RS-7/sync-eligibility-computed-on-the-authorized-projection",
+    defect: "ignore-projection-for-sync-eligibility",
+  },
+  // Clause 8.9-14. Under `re-anchor-sync-session-per-page` this case fails on
+  // its SECOND half — the mid-session write is withheld from its own session
+  // and then never delivered by the next one either. That is the damage the
+  // clause describes (a record the client never receives, with nothing
+  // reporting the gap), and a case checking only "no duplicate on page 2" would
+  // have passed the violating target.
+  {
+    caseId: "RS-7/paginated-sync-session-anchored-to-one-horizon",
+    defect: "re-anchor-sync-session-per-page",
+  },
 ];
 
 describe("negative oracles discriminate conforming from violating targets", () => {

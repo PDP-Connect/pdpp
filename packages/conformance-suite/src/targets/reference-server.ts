@@ -314,7 +314,48 @@ export type Defect =
    * satisfies 6.1-2 by skipping validation altogether has replaced a closed
    * door with an open one.
    */
-  | "accept-unbound-url-hosted-client-document";
+  | "accept-unbound-url-hosted-client-document"
+  /**
+   * Computes `changes_since` eligibility on the UNPROJECTED record, so a change
+   * confined to fields outside the grant's projection still surfaces the record
+   * (clause 8.9-13).
+   *
+   * The returned record looks correct — it carries only authorized fields — so
+   * a case comparing the payload against the projection cannot catch this. What
+   * leaks is not a field value but the FACT that a hidden field changed, which
+   * the client learns from the record's mere presence in the delta.
+   */
+  | "ignore-projection-for-sync-eligibility"
+  /**
+   * Re-anchors a paginated `changes_since` session on every page instead of
+   * holding the horizon chosen on page 1 (clause 8.9-14).
+   *
+   * The damage is not the duplicate: it is the RECORD THAT IS NEVER RETURNED.
+   * A write arriving mid-session appears in a later page of that session, and
+   * the terminal page then hands back a horizon at or beyond it — so the next
+   * session skips it too. The client never sees that record and nothing reports
+   * the gap.
+   */
+  | "re-anchor-sync-session-per-page"
+  /**
+   * Omits `next_changes_since` from the terminal page of a `changes_since`
+   * response (clause 8.9-15).
+   *
+   * Exactly the behaviour the reference target exhibited before this batch,
+   * kept as a defect so the RS-8 oracle is proven against the real thing rather
+   * than a stand-in. A client with no resume token must full-resync every
+   * session, which is the cost incremental sync exists to avoid.
+   */
+  | "omit-next-changes-since"
+  /**
+   * Drops tombstones from incremental sync responses (Core Section 4).
+   *
+   * Silence is the violation. A client that simply stops seeing a record cannot
+   * distinguish deletion from the record falling outside its filter, so it
+   * keeps serving data the owner deleted — and nothing in the exchange ever
+   * says otherwise.
+   */
+  | "omit-tombstones";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -434,6 +475,45 @@ function viewKey(stream: string, view: string): string {
   return `${stream}\n${view}`;
 }
 
+/** Map key for a record's version history. Same separator rationale as `viewKey`. */
+function recordKey(stream: string, recordId: string): string {
+  return `${stream}\n${recordId}`;
+}
+
+/**
+ * The `changes_since` token space, deliberately shaped so it can never be
+ * confused with a page cursor.
+ *
+ * Section 8: "`cursor`/`next_cursor` are pagination tokens within a single
+ * query execution; `changes_since`/`next_changes_since` are incremental sync
+ * tokens across sessions ... they are different token spaces and will produce a
+ * protocol error if confused." Page cursors here are `ok:<order>:<offset>`, so
+ * the two prefixes are disjoint and each can reject the other's tokens.
+ */
+const SYNC_PREFIX = "sync:";
+
+/** Encode a sync horizon as an opaque token. */
+function syncToken(version: number): string {
+  return `${SYNC_PREFIX}${version}`;
+}
+
+/**
+ * Decode a sync token to its horizon, or null when it is not one of ours.
+ *
+ * An empty token opens a fresh session from the beginning (horizon 0), which is
+ * how a client with no prior cursor establishes its baseline.
+ */
+function parseSyncToken(raw: string): number | null {
+  if (raw === "") {
+    return 0;
+  }
+  if (!raw.startsWith(SYNC_PREFIX)) {
+    return null;
+  }
+  const version = Number(raw.slice(SYNC_PREFIX.length));
+  return Number.isInteger(version) && version >= 0 ? version : null;
+}
+
 const RECORDS_PATH = /^\/v1\/streams\/([^/]+)\/records$/;
 const SINGLE_RECORD_PATH = /^\/v1\/streams\/([^/]+)\/records\/([^/]+)$/;
 const METADATA_PATH = /^\/v1\/streams\/([^/]+)$/;
@@ -473,14 +553,137 @@ export class ReferenceServer {
    */
   private readonly unrecognizedKindGrants = new Map<string, string>();
 
+  /**
+   * Monotonic version stamp per record, keyed `stream\nrecordId`, and the
+   * counter that issues them. This is the internal version history Core
+   * Section 4 says a `mutable_state` stream maintains to support incremental
+   * sync: "This is an implementation detail: the protocol surface is a standard
+   * cursor-based query."
+   *
+   * A stamp is what a `changes_since` token names, so a record is eligible for
+   * a session exactly when its stamp exceeds the token's. Seeded records all
+   * start at version 1, so an opening session returns the whole stream, which
+   * is the baseline a client syncs from.
+   */
+  private readonly recordVersions = new Map<string, number>();
+  private versionClock = 0;
+
+  /**
+   * Fields whose change is NOT visible to a given grant, recorded per record so
+   * clause 8.9-13 is observable.
+   *
+   * Core: "Eligibility for `changes_since` MUST be computed on the
+   * grant-authorized projection, not on the unprojected record. Returning a
+   * record whose authorized projection is unchanged is a protocol violation
+   * because it leaks that hidden fields changed." So a write has to record
+   * WHICH fields it touched, or the server cannot tell an in-projection change
+   * from an out-of-projection one and the clause has nothing to act on.
+   */
+  private readonly changedFields = new Map<string, Set<string>>();
+
+  /**
+   * Deleted records, retained so a sync session whose cursor predates the
+   * deletion can be told about it (Core Section 4 "Tombstones").
+   *
+   * Held separately from `streams` because a tombstone is not a record: it has
+   * no `data`, cannot be read directly, and exists only to be reported in a
+   * delta. Merging the two would make every ordinary read have to remember to
+   * filter deletions out.
+   */
+  private readonly tombstones = new Map<
+    string,
+    { readonly stream: string; readonly recordId: string; readonly version: number; readonly deletedAt: string }
+  >();
+
   constructor(streams: readonly StreamFixture[], defects: ReadonlySet<Defect> = new Set()) {
-    this.streams = streams;
+    // Copy the record set per instance. `writeField` and `deleteRecord` mutate
+    // it, and the fixtures handed in here are module-level constants shared by
+    // every adapter in the process — so without this copy one case's deletion
+    // is visible to the next server built from the same fixtures.
+    //
+    // Found by a test, not by reading: after the reference target gained
+    // `changes_since`, the RS-7 tombstone case deleted a record from
+    // DEFAULT_FIXTURES and a LATER case in the same file, running against a
+    // freshly constructed server, could no longer paginate two records. A
+    // shared-fixture bug in a suite whose whole job is isolating targets is
+    // worse than the defect it would mask.
+    this.streams = streams.map((stream) => ({ ...stream, records: stream.records.map((record) => ({ ...record })) }));
     this.defects = defects;
-    for (const stream of streams) {
+    for (const stream of this.streams) {
       for (const view of stream.views ?? []) {
         this.views.set(viewKey(stream.name, view.id), [...view.fields]);
       }
+      // Every seeded record starts at version 1, with every field counted as
+      // changed: an opening `changes_since` session must return the whole
+      // stream, because that is the baseline the client has yet to receive.
+      for (const record of stream.records) {
+        this.versionClock += 1;
+        this.recordVersions.set(recordKey(stream.name, record.id), this.versionClock);
+        this.changedFields.set(recordKey(stream.name, record.id), new Set(stream.fields));
+      }
     }
+  }
+
+  /**
+   * Write one field of an existing record, stamping a new version.
+   *
+   * The unit is a FIELD rather than a record because clause 8.9-13 turns on
+   * which fields a change touched: a write to a field outside a grant's
+   * projection must not make the record eligible for that grant's sync. A
+   * whole-record write could never express that distinction.
+   */
+  writeField(stream: string, recordId: string, field: string, value: unknown): boolean {
+    const fixture = this.streams.find((s) => s.name === stream);
+    const record = fixture?.records.find((r) => r.id === recordId);
+    if (!(fixture && record)) {
+      return false;
+    }
+    (record as Record<string, unknown>)[field] = value;
+    this.versionClock += 1;
+    const key = recordKey(stream, recordId);
+    this.recordVersions.set(key, this.versionClock);
+    this.changedFields.set(key, new Set([field]));
+    return true;
+  }
+
+  /** The current version clock, for a caller that wants to bound a session. */
+  get currentVersion(): number {
+    return this.versionClock;
+  }
+
+  /**
+   * Delete a record, retaining a tombstone.
+   *
+   * Core Section 4: "When a record is deleted from a `mutable_state` stream,
+   * the resource server MUST include a tombstone entry in incremental sync
+   * responses for clients whose cursor predates the deletion." The record is
+   * removed from the live set and a stamped tombstone takes its place, so a
+   * client that already has the record learns it is gone rather than merely
+   * ceasing to see it — which is indistinguishable from the record falling
+   * outside the client's filter.
+   *
+   * Only for `mutable_state`: an append-only stream has no deletion semantics
+   * to express.
+   */
+  deleteRecord(stream: string, recordId: string): boolean {
+    const fixture = this.streams.find((s) => s.name === stream);
+    if (fixture?.semantics !== "mutable_state") {
+      return false;
+    }
+    const index = fixture.records.findIndex((r) => r.id === recordId);
+    if (index < 0) {
+      return false;
+    }
+    (fixture.records as Record_[]).splice(index, 1);
+    this.versionClock += 1;
+    this.tombstones.set(recordKey(stream, recordId), {
+      stream,
+      recordId,
+      version: this.versionClock,
+      deletedAt: new Date().toISOString(),
+    });
+    this.recordVersions.set(recordKey(stream, recordId), this.versionClock);
+    return true;
   }
 
   /** Current field list for a view, or undefined when the AS defines no such view. */
@@ -600,7 +803,7 @@ export class ReferenceServer {
     });
 
     const server = createServer((req, res) => {
-      this.handle(req.url ?? "/", req.headers, res);
+      this.handle(req.url ?? "/", req.headers, res, req.method ?? "GET");
     });
     this.server = server;
     await new Promise<void>((resolve) => {
@@ -718,7 +921,12 @@ export class ReferenceServer {
     }
   }
 
-  private handle(url: string, headers: NodeJS.Dict<string | string[]>, res: import("node:http").ServerResponse): void {
+  private handle(
+    url: string,
+    headers: NodeJS.Dict<string | string[]>,
+    res: import("node:http").ServerResponse,
+    method: string
+  ): void {
     const parsed = new URL(url, "http://127.0.0.1");
     const path = parsed.pathname;
 
@@ -906,6 +1114,24 @@ export class ReferenceServer {
       return;
     }
 
+    // --- DELETE /v1/streams/{stream}/records/{id} (RS-7 tombstones) ---
+    //
+    // Deletion is an OWNER operation: a client token carries a read grant, and
+    // nothing in Core gives a grant the authority to destroy the owner's data.
+    if (singleMatch && method === "DELETE") {
+      if (principal.kind !== "owner") {
+        error(403, "access_denied", "permission_error", "Deletion requires an owner token.");
+        return;
+      }
+      const recordId = decodeURIComponent(singleMatch[2] ?? "");
+      if (this.deleteRecord(fixture.name, recordId)) {
+        send(204, undefined);
+        return;
+      }
+      error(404, "not_found", "not_found_error", "Record not found or stream is not mutable_state.");
+      return;
+    }
+
     // --- GET /v1/streams/{stream}/records/{id} (RS-1) ---
     if (singleMatch) {
       const recordId = decodeURIComponent(singleMatch[2] ?? "");
@@ -956,14 +1182,9 @@ export class ReferenceServer {
         return;
       }
 
-      // Section 8 makes page cursors and sync cursors distinct token spaces.
-      // This fixture does not implement changes_since (which is why RS-8 fails
-      // against it, by design), but it must still refuse a PAGE cursor offered
-      // in the changes_since slot rather than serving a full page as if the
-      // parameter were absent. Before this server paginated, no case could
-      // obtain a real page cursor to present here and
-      // RS-6/cursor-not-accepted-as-changes-since only ever skipped; once it
-      // could, the fixture's silent acceptance became visible.
+      // Section 8 makes page cursors and sync cursors distinct token spaces: a
+      // page cursor offered in the changes_since slot is refused rather than
+      // treated as an absent parameter and answered with a full page.
       const syncCursor = parsed.searchParams.get("changes_since");
       if (syncCursor?.startsWith("ok:")) {
         error(
@@ -972,6 +1193,14 @@ export class ReferenceServer {
           "invalid_request_error",
           "A page cursor is not a changes_since token; the two are distinct token spaces."
         );
+        return;
+      }
+      // A changes_since token this server did not mint is malformed, not a
+      // reason to fall back to a full read — falling back would silently return
+      // the whole stream to a client that asked for a delta.
+      const syncHorizon = syncCursor === null ? null : parseSyncToken(syncCursor);
+      if (syncCursor !== null && syncHorizon === null) {
+        error(400, "invalid_cursor", "invalid_request_error", "changes_since token is malformed or unrecognized.");
         return;
       }
 
@@ -983,8 +1212,10 @@ export class ReferenceServer {
       // is served against the wrong direction.
       const requestedOrder = parsed.searchParams.get("order") ?? "desc";
       let cursorOffset = 0;
+      /** Session horizon carried by a sync-session page cursor (clause 8.9-14). */
+      let cursorHorizon: number | null = null;
       if (rawCursor?.startsWith("ok:")) {
-        const [, cursorOrder, offsetText] = rawCursor.split(":");
+        const [, cursorOrder, offsetText, horizonText] = rawCursor.split(":");
         if (
           cursorOrder !== undefined &&
           cursorOrder !== requestedOrder &&
@@ -1000,6 +1231,18 @@ export class ReferenceServer {
         }
         const parsedOffset = Number(offsetText);
         cursorOffset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0;
+        // The fourth component, present only within a sync session, is the
+        // horizon that session was anchored to on its first page (clause
+        // 8.9-14). Carrying it in the cursor is what makes the anchoring
+        // survive across pages without the server holding session state.
+        //
+        // Under `re-anchor-sync-session-per-page` it is discarded, so each page
+        // re-reads the clock and writes that arrived mid-session leak into
+        // later pages of the session that should not contain them.
+        const parsedHorizon = Number(horizonText);
+        if (horizonText !== undefined && Number.isInteger(parsedHorizon)) {
+          cursorHorizon = this.has("re-anchor-sync-session-per-page") ? null : parsedHorizon;
+        }
       }
 
       const projection =
@@ -1025,12 +1268,73 @@ export class ReferenceServer {
         return !(constraint.to && value >= constraint.to);
       };
 
-      const data = fixture.records.filter(withinWindow).map((record) => ({
-        object: "record",
-        id: record.id,
-        stream: fixture.name,
-        data: Object.fromEntries(Object.entries(record).filter(([k]) => projection.includes(k))),
-      }));
+      // --- Incremental sync session (Section 8, clauses 8.9-13/14/15) ---
+      //
+      // The session HORIZON is chosen on the first page and then travels in the
+      // page cursor, because clause 8.9-14 requires every page of one session to
+      // be anchored to it: "New writes arriving after page 1 MUST NOT appear in
+      // later pages of that same session; they surface in the next session via
+      // the terminal-page `next_changes_since`." A server that re-read the
+      // clock on each page would leak later writes into an earlier session and
+      // hand back a cursor that skips them — the client then never sees those
+      // records at all, and nothing reports the gap.
+      const isSync = syncHorizon !== null;
+      const sessionHorizon = cursorHorizon ?? this.versionClock;
+
+      const eligibleForSync = (record: Record_): boolean => {
+        if (syncHorizon === null) {
+          return true;
+        }
+        const key = recordKey(fixture.name, record.id);
+        const version = this.recordVersions.get(key) ?? 0;
+        if (!(version > syncHorizon && version <= sessionHorizon)) {
+          return false;
+        }
+        // Clause 8.9-13: eligibility is computed on the GRANT-AUTHORIZED
+        // PROJECTION, not the unprojected record. A change confined to fields
+        // this caller cannot see must not surface the record, because doing so
+        // tells the client that something it is not authorized to read has
+        // changed.
+        if (this.has("ignore-projection-for-sync-eligibility")) {
+          return true;
+        }
+        const touched = this.changedFields.get(key);
+        return touched === undefined || [...touched].some((field) => projection.includes(field));
+      };
+
+      const live = fixture.records
+        .filter(withinWindow)
+        .filter(eligibleForSync)
+        .map((record) => ({
+          object: "record",
+          id: record.id,
+          stream: fixture.name,
+          data: Object.fromEntries(Object.entries(record).filter(([k]) => projection.includes(k))),
+        }));
+
+      // Tombstones for deletions inside this session's window (Core Section 4).
+      // Only within a sync session: an ordinary read reports what exists, and a
+      // deleted record simply does not. It is the DELTA that has to say a
+      // record went away, because a client holding that record cannot otherwise
+      // tell deletion from "no longer matches".
+      const deletions =
+        syncHorizon === null || this.has("omit-tombstones")
+          ? []
+          : [...this.tombstones.values()]
+              .filter(
+                (tombstone) =>
+                  tombstone.stream === fixture.name &&
+                  tombstone.version > syncHorizon &&
+                  tombstone.version <= sessionHorizon
+              )
+              .map((tombstone) => ({
+                object: "record",
+                id: tombstone.recordId,
+                stream: tombstone.stream,
+                deleted: true,
+                deleted_at: tombstone.deletedAt,
+              }));
+      const data = [...live, ...deletions];
 
       // An oversized limit is clamped with a non-fatal warning (Section 8). The
       // defect clamps silently, which a client reads as the end of the stream.
@@ -1045,8 +1349,16 @@ export class ReferenceServer {
         url: path,
         has_more: hasMore,
         // The cursor carries the order it was minted under, so the
-        // direction-binding check above has something to compare against.
-        ...(hasMore ? { next_cursor: `ok:${requestedOrder}:${nextOffset}` } : {}),
+        // direction-binding check above has something to compare against, and
+        // — within a sync session — the horizon that session is anchored to.
+        ...(hasMore ? { next_cursor: `ok:${requestedOrder}:${nextOffset}${isSync ? `:${sessionHorizon}` : ""}` } : {}),
+        // Clause 8.9-15: the terminal page of a changes_since response carries
+        // the token for the NEXT session. It names this session's horizon, so
+        // writes that arrived mid-session are picked up next time rather than
+        // being lost between the two.
+        ...(isSync && !hasMore && !this.has("omit-next-changes-since")
+          ? { next_changes_since: syncToken(sessionHorizon) }
+          : {}),
         ...(clamped && !this.has("silent-limit-clamp")
           ? { meta: { warnings: [{ code: "limit_clamped", message: "limit clamped to 100" }] } }
           : {}),

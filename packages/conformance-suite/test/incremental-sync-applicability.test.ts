@@ -68,35 +68,28 @@ describe("RS-7/RS-8 applicability derives from seeded stream semantics, not the 
     }
   });
 
-  it("reports RS-8 as fail (not skip, not unsupported) against the reference target's unimplemented changes_since", async () => {
-    // The reference target serves a mutable_state stream but implements no
-    // changes_since handling at all, so a changes_since read returns a plain
-    // list with no next_changes_since. That is definitive non-conformance
-    // evidence, not missing evidence: the case ran to completion and observed
-    // the terminal page lacked the required field.
-    const result = await runAgainst("RS-8/terminal-page-carries-next-changes-since", MUTABLE_PLUS_APPEND_ONLY);
-    assert.equal(
-      result.outcome,
-      "fail",
-      "A mutable_state stream is seeded and the changes_since read succeeded (200), so the missing " +
-        "next_changes_since is an observed defect, not absence of evidence."
-    );
-  });
-
-  it("reports RS-7 as skip (missing evidence) given the reference target's read", async () => {
-    // RS-7 depends on next_changes_since being present to proceed: it needs a
-    // resume token that predates a deletion. The reference target's
-    // changes_since read never produces one, so the case cannot observe its own
-    // requirement here and must say so explicitly rather than passing on no
-    // evidence or hiding as unsupported.
-    const result = await runAgainst("RS-7/deletion-surfaces-as-a-tombstone", MUTABLE_PLUS_APPEND_ONLY);
-    assert.equal(
-      result.outcome,
-      "skip",
-      'RS-7/deletion-surfaces-as-a-tombstone must report "skip": the requirement applies (a mutable_state ' +
-        "stream is seeded) but this run has no evidence to check against, which is distinct from both a " +
-        'passing result and "unsupported" (which would claim the requirement does not apply here at all).'
-    );
+  it("runs RS-7 and RS-8 to a definite verdict against a seeded mutable_state stream", async () => {
+    // Both cases previously asserted the reference target's own defect: RS-8
+    // "fail" (it served no next_changes_since) and RS-7 "skip" (it could not
+    // produce a resume token to delete against). The target now implements
+    // `changes_since` and tombstones, so both pass.
+    //
+    // What is asserted here instead is the property that survives a fix: given
+    // a seeded mutable_state stream, neither case may report `unsupported`.
+    // That outcome would claim the requirement does not bind this target at
+    // all, which is exactly the false exemption this file exists to prevent —
+    // and it is reachable only by gating `appliesWhen` on the target's own
+    // `incrementalSync` boolean instead of on the data it actually serves.
+    for (const caseId of ["RS-7/deletion-surfaces-as-a-tombstone", "RS-8/terminal-page-carries-next-changes-since"]) {
+      // biome-ignore lint/performance/noAwaitInLoops: each case runs against its own isolated adapter instance.
+      const result = await runAgainst(caseId, MUTABLE_PLUS_APPEND_ONLY);
+      assert.equal(
+        result.outcome,
+        "pass",
+        `${caseId} must pass against the reference target, which serves a mutable_state stream and implements ` +
+          `changes_since. Got "${result.outcome}": ${result.detail ?? "(no detail)"}`
+      );
+    }
   });
 
   it("reports the RS-6 cursor-space case as pass once the fixture can issue a page cursor", async () => {

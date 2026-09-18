@@ -17,6 +17,7 @@
 
 import { errorBody, request } from "../harness/http.ts";
 import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import type { Evidence } from "../report/result.ts";
 
 interface ListBody {
   data?: { id?: string; data?: Record<string, unknown>; deleted?: boolean }[];
@@ -27,8 +28,61 @@ interface ListBody {
   object?: string;
 }
 
+/**
+ * Page budget for draining a sync session.
+ *
+ * A bound rather than "until has_more is false" because a target whose cursor
+ * does not advance would otherwise hang the suite. Generous enough that no
+ * honest fixture reaches it.
+ */
+const MAX_SYNC_HOPS = 50;
+
 function asList(json: unknown): ListBody | undefined {
   return typeof json === "object" && json !== null ? (json as ListBody) : undefined;
+}
+
+/**
+ * Follow a sync session's `next_cursor` to its terminal page, collecting the
+ * record ids the later pages delivered and the resume token the session ends
+ * on.
+ *
+ * Extracted from the 8.9-14 case so that case reads as its three steps — open,
+ * write, drain — rather than interleaving pagination bookkeeping with the
+ * assertion. `evidence` is appended in place because every page fetched is part
+ * of the record, including the ones that prove nothing.
+ */
+async function drainSyncSession(options: {
+  adapter: Parameters<ConformanceCase["run"]>[0]["adapter"];
+  recordsPath: string;
+  token: string;
+  cursor: string;
+  evidence: Evidence[];
+}): Promise<{ redelivered: Set<string>; terminalToken?: string } | { fail: string }> {
+  const { adapter, recordsPath, token, evidence } = options;
+  const redelivered = new Set<string>();
+  let cursor: string | undefined = options.cursor;
+  let terminalToken: string | undefined;
+
+  for (let hop = 0; hop < MAX_SYNC_HOPS && cursor !== undefined; hop += 1) {
+    // biome-ignore lint/performance/noAwaitInLoops: pagination is inherently sequential.
+    const next = await request(adapter.baseUrl, recordsPath, {
+      token,
+      query: { changes_since: "", limit: "1", cursor },
+    });
+    evidence.push(next.evidence);
+    if (next.status !== 200) {
+      return { fail: `Following next_cursor within a changes_since session returned ${next.status}.` };
+    }
+    const body = asList(next.json);
+    for (const record of body?.data ?? []) {
+      if (record.id !== undefined) {
+        redelivered.add(record.id);
+      }
+    }
+    cursor = body?.has_more === true ? body.next_cursor : undefined;
+    terminalToken = body?.next_changes_since ?? terminalToken;
+  }
+  return terminalToken === undefined ? { redelivered } : { redelivered, terminalToken };
 }
 
 /** Obtain a grant over the whole stream, or a reason the case must skip. */
@@ -175,6 +229,263 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
         ]);
       }
       return pass([response.evidence]);
+    },
+  },
+
+  // ----------------------------------------------------------------- 8.9-13 ---
+  // Core Section 8: "Eligibility for `changes_since` MUST be computed on the
+  // grant-authorized projection, not on the unprojected record. Returning a
+  // record whose authorized projection is unchanged is a protocol violation
+  // because it leaks that hidden fields changed."
+  //
+  // The leak is not a field value — the returned record carries only authorized
+  // fields, so a case comparing the payload against the projection sees nothing
+  // wrong. What leaks is the FACT that something the client may not read has
+  // changed, which it learns from the record's mere presence in the delta.
+  // Repeated over time that is a side channel on the hidden fields' edit
+  // history: who changed, and when, without ever being allowed to see what.
+  {
+    caseId: "RS-7/sync-eligibility-computed-on-the-authorized-projection",
+    requirementId: "RS-7",
+    appliesWhen: (_adapter, streams) => streams.length === 0 || hasMutableStateStream(streams),
+    assertion:
+      "A change confined to fields outside the grant's projection does not surface the record in that grant's changes_since delta, while a change inside the projection does.",
+    async run({ adapter, streams, path }) {
+      const stream = streams.find((s) => s.semantics === "mutable_state");
+      if (!stream) {
+        return skip("The adapter seeded no mutable_state stream.");
+      }
+      if (!adapter.writeRecordField) {
+        return skip(
+          "The adapter has no writeRecordField hook, so no change can be confined to a single field and the projection/unprojected distinction this clause turns on cannot be constructed."
+        );
+      }
+      // A narrowed grant: at least one field in, at least one field out. With
+      // the whole schema granted there is no such thing as an out-of-projection
+      // change, and the case would be vacuous.
+      //
+      // Both fields must be outside the primary key. A write to a key field is
+      // not an update to the record — it identifies a different one — so using
+      // one as the positive control asks the target to do something incoherent
+      // and reads the resulting no-op as a missing delta.
+      const writable = stream.fields.filter((f) => !stream.primaryKey.includes(f));
+      const [inProjection, outOfProjection] = [writable[0], writable.at(-1)];
+      if (!(inProjection && outOfProjection) || inProjection === outOfProjection) {
+        return skip(
+          `Stream '${stream.name}' declares fewer than two non-primary-key fields, so no grant can both include and exclude one and the clause has nothing to act on.`
+        );
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [inProjection] }] });
+      if (!grant) {
+        return skip(`The target issued no narrowed grant over '${stream.name}'.`);
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+
+      const opened = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { changes_since: "" },
+      });
+      if (opened.status !== 200) {
+        return fail(`Opening a changes_since session on a mutable_state stream returned ${opened.status}.`, [
+          opened.evidence,
+        ]);
+      }
+      const openedBody = asList(opened.json);
+      if (openedBody?.has_more === true) {
+        return skip("The opening sync page was not terminal, and this case does not page to the end.");
+      }
+      const resumeToken = openedBody?.next_changes_since;
+      if (typeof resumeToken !== "string" || resumeToken.length === 0) {
+        return skip("The terminal page carried no next_changes_since, so no delta can be taken. RS-8 covers that.");
+      }
+      const subject = openedBody?.data?.find((record) => typeof record.id === "string" && !record.deleted);
+      if (!subject?.id) {
+        return skip("The opening sync session returned no live record to modify.");
+      }
+
+      // Write a field the grant does NOT cover. Nothing the client is entitled
+      // to see has changed, so the record must not appear.
+      const wroteHidden = await adapter.writeRecordField(
+        stream.name,
+        subject.id,
+        outOfProjection,
+        `pdpp-conformance-hidden-${Date.now()}`
+      );
+      if (!wroteHidden) {
+        return skip(`The target could not write field '${outOfProjection}' of record '${subject.id}'.`);
+      }
+      const afterHidden = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { changes_since: resumeToken },
+      });
+      const evidence = [opened.evidence, afterHidden.evidence];
+      const hiddenSurfaced = asList(afterHidden.json)?.data?.some((record) => record.id === subject.id);
+      if (hiddenSurfaced) {
+        return fail(
+          `Record '${subject.id}' appeared in the changes_since delta after a write to '${outOfProjection}', a field this grant does not authorize. Core Section 8: eligibility MUST be computed on the grant-authorized projection, not the unprojected record — "returning a record whose authorized projection is unchanged is a protocol violation because it leaks that hidden fields changed". The client is not shown the value, but it is told that something it may not read changed, and when.`,
+          evidence
+        );
+      }
+
+      // The positive control, and it is essential: a target that returned an
+      // empty delta for every request would satisfy the assertion above while
+      // implementing no incremental sync at all. A change INSIDE the projection
+      // must surface the record.
+      const wroteVisible = await adapter.writeRecordField(
+        stream.name,
+        subject.id,
+        inProjection,
+        `pdpp-conformance-visible-${Date.now()}`
+      );
+      if (!wroteVisible) {
+        return skip(`The target could not write field '${inProjection}', so there is no positive control.`);
+      }
+      const afterVisible = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { changes_since: resumeToken },
+      });
+      evidence.push(afterVisible.evidence);
+      const visibleSurfaced = asList(afterVisible.json)?.data?.some((record) => record.id === subject.id);
+      if (!visibleSurfaced) {
+        return skip(
+          `A change to '${inProjection}', which this grant DOES authorize, also failed to surface record '${subject.id}'. This target returns an empty delta either way, so its silence after the hidden write is not evidence that eligibility is projection-aware.`
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
+  // ----------------------------------------------------------------- 8.9-14 ---
+  // Session anchoring. Core Section 8: "If a `changes_since` response is
+  // paginated, all pages in that session MUST be anchored to the same session
+  // horizon selected on the first page. New writes arriving after page 1 MUST
+  // NOT appear in later pages of that same session; they surface in the next
+  // session via the terminal-page `next_changes_since`."
+  //
+  // The damage from getting this wrong is not a duplicate record — it is a
+  // record that is never delivered at all. A write arriving mid-session shows
+  // up in a later page of that session, and the terminal page then hands back a
+  // horizon at or past it, so the next session skips it too. The client's copy
+  // is silently wrong and nothing reports the gap.
+  {
+    caseId: "RS-7/paginated-sync-session-anchored-to-one-horizon",
+    requirementId: "RS-7",
+    appliesWhen: (_adapter, streams) => streams.length === 0 || hasMutableStateStream(streams),
+    assertion:
+      "A write arriving after page 1 of a paginated changes_since session does not appear in later pages of that session, and is delivered by the next session instead.",
+    async run({ adapter, streams, path }) {
+      const stream = streams.find((s) => s.semantics === "mutable_state");
+      if (!stream) {
+        return skip("The adapter seeded no mutable_state stream.");
+      }
+      if (!adapter.writeRecordField) {
+        return skip(
+          "The adapter has no writeRecordField hook, so no write can be made to arrive mid-session and the anchoring rule has nothing to act on."
+        );
+      }
+      if (stream.recordCount < 2) {
+        return skip(
+          `Stream '${stream.name}' seeds ${stream.recordCount} record(s); a session must paginate for this clause to bind, which needs at least two.`
+        );
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip(`The target issued no grant over '${stream.name}'.`);
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const field = stream.fields.find((f) => f !== "id") ?? stream.fields[0];
+      if (!field) {
+        return skip(`Stream '${stream.name}' declares no writable field.`);
+      }
+
+      // Page 1 of a sync session, deliberately short so the session paginates.
+      const page1 = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { changes_since: "", limit: "1" },
+      });
+      if (page1.status !== 200) {
+        return fail(`Opening a paginated changes_since session returned ${page1.status}.`, [page1.evidence]);
+      }
+      const page1Body = asList(page1.json);
+      const nextCursor = page1Body?.next_cursor;
+      if (page1Body?.has_more !== true || typeof nextCursor !== "string" || nextCursor.length === 0) {
+        return skip(
+          "The opening sync page was already terminal, so this session never paginates and the anchoring rule does not bind it."
+        );
+      }
+      const onPage1 = new Set((page1Body.data ?? []).map((record) => record.id));
+
+      // Drain the session to its terminal page, recording every record it
+      // delivered and the resume token it ends on. The mid-session write goes
+      // in BEFORE the last hop, so it is genuinely "after page 1".
+      //
+      // A single record is written, and the assertion is about where it is
+      // allowed to appear: not in this session (its horizon predates the
+      // write), and necessarily in the NEXT one (opened from the terminal
+      // token). Checking only the first half would pass a server that dropped
+      // the write entirely, which is the more damaging failure.
+      // The write goes in HERE — after page 1 was served and before any later
+      // page is fetched — which is exactly "arriving after page 1". Placing it
+      // before the drain loop rather than inside keeps the loop a plain
+      // pagination walk.
+      //
+      // The subject is a record page 1 already delivered, so the only way it
+      // can appear again within this session is a re-read clock.
+      const [writtenRecordId] = [...onPage1];
+      if (writtenRecordId === undefined) {
+        return skip("The opening sync page returned no identifiable record to write to.");
+      }
+      const wrote = await adapter.writeRecordField(
+        stream.name,
+        writtenRecordId,
+        field,
+        `pdpp-conformance-midsession-${Date.now()}`
+      );
+      if (!wrote) {
+        return skip(`The target could not write field '${field}' of record '${writtenRecordId}'.`);
+      }
+
+      const evidence = [page1.evidence];
+      const drained = await drainSyncSession({
+        adapter,
+        recordsPath,
+        token: grant.accessToken,
+        cursor: nextCursor,
+        evidence,
+      });
+      if ("fail" in drained) {
+        return fail(drained.fail, evidence);
+      }
+      if (drained.redelivered.has(writtenRecordId)) {
+        return fail(
+          `Record '${writtenRecordId}' was delivered on page 1 and then delivered AGAIN in a later page of the same changes_since session, after a write that arrived mid-session. Core Section 8: all pages in a session MUST be anchored to the horizon selected on the first page, and new writes "MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page next_changes_since". A server re-reading the clock per page also returns a terminal horizon past that write, so the next session skips it — the client never receives it and nothing reports the gap.`,
+          evidence
+        );
+      }
+      const { terminalToken } = drained;
+      if (typeof terminalToken !== "string" || terminalToken.length === 0) {
+        return skip("The session's terminal page carried no next_changes_since, so the next session cannot be opened.");
+      }
+
+      // The other half: the write must be delivered by the NEXT session. A
+      // server that simply lost it would satisfy the assertion above while
+      // leaving the client's copy permanently stale.
+      const nextSession = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { changes_since: terminalToken },
+      });
+      evidence.push(nextSession.evidence);
+      if (nextSession.status !== 200) {
+        return fail(`Opening the next changes_since session returned ${nextSession.status}.`, evidence);
+      }
+      const surfacedNext = (asList(nextSession.json)?.data ?? []).some((record) => record.id === writtenRecordId);
+      if (!surfacedNext) {
+        return fail(
+          `The mid-session write to record '${writtenRecordId}' was correctly withheld from later pages of its own session, but the NEXT session — opened with the terminal page's next_changes_since — did not deliver it either. Core Section 8 says such writes "surface in the next session via the terminal-page next_changes_since". Withholding it from both means the client never receives the change and has no way to discover it is missing.`,
+          evidence
+        );
+      }
+      return pass(evidence);
     },
   },
 
