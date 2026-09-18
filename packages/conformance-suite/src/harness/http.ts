@@ -34,6 +34,22 @@ export interface PdppResponse {
   readonly text: string;
 }
 
+/**
+ * A response captured as raw bytes rather than decoded text.
+ *
+ * `request()` always decodes the body as UTF-8 text, which corrupts binary
+ * content (a JSON `.text()` round-trip is lossy for arbitrary bytes). The
+ * RS-1 blob-fetch case needs the exact bytes the server returned to compare
+ * against a stored digest or the original upload — treating a stringified
+ * body as "actual bytes" would prove nothing about byte-for-byte fidelity.
+ */
+export interface PdppBytesResponse {
+  readonly body: Uint8Array;
+  readonly evidence: Evidence;
+  readonly headers: Headers;
+  readonly status: number;
+}
+
 export interface RequestOptions {
   /** Request body, for the provisioning calls an adapter makes. Not captured as
    * evidence: it may carry adapter credentials, and no conformance case asserts
@@ -93,6 +109,52 @@ export async function request(baseUrl: string, path: string, options: RequestOpt
         status: response.status,
         headers: redact(response.headers),
         body: text.length > EVIDENCE_BODY_LIMIT ? `${text.slice(0, EVIDENCE_BODY_LIMIT)}…[truncated]` : text,
+      },
+    },
+  };
+}
+
+/**
+ * Perform one request and capture the response body as raw bytes, for cases
+ * that must prove byte-for-byte fidelity (RS-1 blob fetch) rather than parsed
+ * JSON or decoded text. Evidence records length and a truncated preview, never
+ * raw binary, so reports stay text-safe.
+ */
+export async function requestBytes(
+  baseUrl: string,
+  path: string,
+  options: RequestOptions = {}
+): Promise<PdppBytesResponse> {
+  const url = new URL(path, baseUrl);
+  for (const [key, value] of Object.entries(options.query ?? {})) {
+    if (value !== undefined) {
+      url.searchParams.set(key, value);
+    }
+  }
+
+  const headers: Record<string, string> = { ...options.headers };
+  if (options.token) {
+    headers.Authorization = `Bearer ${options.token}`;
+  }
+
+  const method = options.method ?? "GET";
+  const response = await fetch(url, {
+    method,
+    headers,
+    ...(options.body !== undefined && { body: options.body }),
+  });
+  const body = new Uint8Array(await response.arrayBuffer());
+
+  return {
+    status: response.status,
+    headers: response.headers,
+    body,
+    evidence: {
+      request: { method, url: url.toString(), headers: redact(headers) },
+      response: {
+        status: response.status,
+        headers: redact(response.headers),
+        body: `<${body.length} bytes>`,
       },
     },
   };

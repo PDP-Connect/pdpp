@@ -217,6 +217,36 @@ export interface RefreshableGrant {
   readonly refreshToken: string;
 }
 
+/**
+ * A known, already-seeded blob and the grant needed to reach it, for the RS-1
+ * "get a blob" case.
+ *
+ * Section 8 names `GET /v1/blobs/:blob_id` as one of the RS-1 query endpoints,
+ * but the byte-fetch route needs a persisted blob and a referencing record with
+ * `blob_ref` in scope — neither of which the suite can seed itself (Core leaves
+ * blob storage deployment-specific). Optional: a target with no seeded blob
+ * fixture reports RS-1's blob case `skip` naming this hook, rather than the
+ * suite fabricating a blob or reading the byte-fetch requirement as satisfied
+ * by a target that merely declares `capabilities.blobs`.
+ */
+export interface BlobFixture {
+  /** Grant request that includes the stream/field carrying `blob_ref` for the seeded record. */
+  readonly grantRequest: GrantRequest;
+  /** Known blob id to fetch at `GET {queryBase}/blobs/:blobId`. */
+  readonly blobId: string;
+  /** Declared MIME type, expected as the fetch response's `Content-Type`. */
+  readonly mimeType: string;
+  /**
+   * The exact bytes stored at upload time, when the adapter can hold them in
+   * memory. Mutually exclusive in practice with `digest` — supply whichever is
+   * cheaper for the target to retain; the case only needs one independent way
+   * to prove the returned bytes are the ones that were stored, not both.
+   */
+  readonly rawBytes?: Uint8Array;
+  /** Independent proof of the stored bytes when the adapter does not retain them: their SHA-256 digest and exact length. */
+  readonly digest?: { readonly sha256: string; readonly length: number };
+}
+
 /** The grant shape a test needs. The adapter arranges consent out of band. */
 export interface GrantRequest {
   readonly accessMode?: "single_use" | "continuous" | "recurring";
@@ -259,6 +289,16 @@ export interface TargetAdapter {
    */
   readonly baseUrl: string;
   readonly capabilities: TargetCapabilities;
+
+  /**
+   * A known, already-seeded blob plus the grant needed to reach it, for RS-1's
+   * byte-fetch case. Returns null when this deployment has no seeded blob to
+   * offer, which reports the case `skip` rather than treating
+   * `capabilities.blobs` alone as evidence the byte-fetch endpoint works —
+   * a target can declare the capability without this suite run having a
+   * persisted blob to point at.
+   */
+  blobFixture?: () => Promise<BlobFixture | null>;
 
   /**
    * Call a known co-located introspection endpoint directly, when the target

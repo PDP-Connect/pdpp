@@ -23,8 +23,10 @@
 // from the test's expectations).
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { createServer, type Server } from "node:http";
 import { describe, it } from "node:test";
-import type { GrantRequest, IssuedGrant, StagedApproval, TargetAdapter } from "../src/harness/adapter.ts";
+import type { BlobFixture, GrantRequest, IssuedGrant, StagedApproval, TargetAdapter } from "../src/harness/adapter.ts";
 import type { ConformanceCase } from "../src/harness/runner.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
 import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
@@ -698,5 +700,115 @@ describe("AS-19 replay oracle discriminates genuine token-endpoint code replay",
     } finally {
       await adapter.teardown();
     }
+  });
+});
+
+/**
+ * RS-1's blob-fetch case (get-blob-bytes) needs a real byte-serving HTTP
+ * endpoint to discriminate against — the in-process ReferenceServer has none,
+ * and the reference-target defect matrix above only mutates JSON/status
+ * behaviour. This tiny standalone server is the independent truth source for
+ * that one case: it serves the SAME upload bytes at /v1/blobs/:id in one of
+ * three response modes, and the wrapped adapter's blobFixture hook points the
+ * real case at it. A case that cannot tell "correct bytes" from "wrong bytes"
+ * or "empty 200" would pass all three, which is exactly what this proves it
+ * does not do.
+ */
+describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
+  const UPLOAD_BYTES = Buffer.from("pdpp-conformance-blob-fixture-payload");
+  const WRONG_BYTES = Buffer.from("this is not the blob you are looking for");
+  const BLOB_ID = "blob_test_fixture";
+  const MIME_TYPE = "application/octet-stream";
+
+  type Mode = "correct" | "wrong-bytes" | "empty-200";
+
+  async function startBlobServer(mode: Mode): Promise<{ server: Server; baseUrl: string }> {
+    const server = createServer((req, res) => {
+      if (req.url === `/v1/blobs/${BLOB_ID}`) {
+        const body = mode === "correct" ? UPLOAD_BYTES : mode === "wrong-bytes" ? WRONG_BYTES : Buffer.alloc(0);
+        res.writeHead(200, { "content-type": MIME_TYPE, "content-length": String(body.length) });
+        res.end(body);
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("expected a bound TCP address");
+    }
+    return { server, baseUrl: `http://127.0.0.1:${address.port}` };
+  }
+
+  /** Wraps the reference adapter, pointing baseUrl/blobFixture at the tiny blob server. */
+  class BlobFixtureAdapter implements TargetAdapter {
+    readonly capabilities: TargetAdapter["capabilities"];
+    readonly roles: TargetAdapter["roles"];
+    readonly targetId = "blob-fixture-test-target";
+    readonly targetVersion = "0.0.0";
+    constructor(
+      private readonly inner: TargetAdapter,
+      readonly baseUrl: string,
+      private readonly fixture: BlobFixture
+    ) {
+      this.capabilities = { ...inner.capabilities, blobs: true };
+      this.roles = inner.roles;
+    }
+    setup = () => this.inner.setup();
+    teardown = () => this.inner.teardown();
+    issueGrant = (r: GrantRequest) => this.inner.issueGrant(r);
+    revokeGrant = (id: string) => this.inner.revokeGrant(id);
+    ownerToken = () => this.inner.ownerToken();
+    async blobFixture(): Promise<BlobFixture | null> {
+      return this.fixture;
+    }
+  }
+
+  async function runBlobCase(mode: Mode, useDigest = false) {
+    const { server, baseUrl } = await startBlobServer(mode);
+    const inner = new ReferenceTargetAdapter();
+    const { streams } = await inner.setup();
+    const fixture: BlobFixture = {
+      blobId: BLOB_ID,
+      mimeType: MIME_TYPE,
+      grantRequest: { streams: [{ name: streams[0]?.name ?? "", fields: [...(streams[0]?.fields ?? [])] }] },
+      ...(useDigest
+        ? { digest: { sha256: createHash("sha256").update(UPLOAD_BYTES).digest("hex"), length: UPLOAD_BYTES.length } }
+        : { rawBytes: UPLOAD_BYTES }),
+    };
+    const adapter = new BlobFixtureAdapter(inner, baseUrl, fixture);
+    try {
+      return await runCase(caseById("RS-1/get-blob-bytes"), makeContext(adapter, streams));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await inner.teardown();
+    }
+  }
+
+  it("passes when the fetched bytes match the stored upload exactly", async () => {
+    const result = await runBlobCase("correct");
+    assert.equal(result.outcome, "pass");
+  });
+
+  it("fails when the server returns different bytes than were stored", async () => {
+    const result = await runBlobCase("wrong-bytes");
+    assert.equal(result.outcome, "fail");
+    assert.match(result.detail ?? "", /do not match/);
+  });
+
+  it("fails when the server returns an empty 200 instead of the blob", async () => {
+    const result = await runBlobCase("empty-200");
+    assert.equal(result.outcome, "fail");
+    assert.match(result.detail ?? "", /do not match/);
+  });
+
+  it("passes using an independent sha256 digest + length instead of retained rawBytes", async () => {
+    const result = await runBlobCase("correct", true);
+    assert.equal(result.outcome, "pass");
+  });
+
+  it("fails a digest check when the served bytes disagree with the recorded digest", async () => {
+    const result = await runBlobCase("wrong-bytes", true);
+    assert.equal(result.outcome, "fail");
   });
 });

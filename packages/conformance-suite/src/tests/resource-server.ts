@@ -15,8 +15,9 @@
 // surface where one exists, so that "rejected everything" cannot pass either:
 // RS-2 asserts the granted stream is readable AND the ungranted one is refused.
 
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { errorBody, request } from "../harness/http.ts";
+import { errorBody, request, requestBytes } from "../harness/http.ts";
 import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 
 /** Records as returned in a Section 8 list envelope. */
@@ -144,6 +145,73 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
           response.evidence,
         ]);
       }
+      return pass([response.evidence]);
+    },
+  },
+
+  // RS-1 also names "get a blob" as a Section 8 query endpoint. It is checked
+  // separately from list-streams because it needs its own precondition: a
+  // persisted blob and a record that references it via `blob_ref`, which the
+  // suite cannot seed itself (Core leaves blob storage deployment-specific).
+  // Declaring `capabilities.blobs` is not sufficient evidence on its own — a
+  // target can declare the capability without this run having a seeded blob
+  // to point at — so the case relies on the adapter's `blobFixture` hook and
+  // reports `skip` naming it when absent, rather than reading the declared
+  // flag as proof the endpoint works.
+  {
+    caseId: "RS-1/get-blob-bytes",
+    requirementId: "RS-1",
+    assertion:
+      "GET {queryBase}/blobs/:blobId returns the exact stored bytes, mimeType, and length under a grant that can read the referencing record.",
+    async run({ adapter, path }) {
+      if (!adapter.blobFixture) {
+        return skip("The adapter implements no blobFixture hook, so RS-1's blob-fetch endpoint has no known blob to check.");
+      }
+      const fixture = await adapter.blobFixture();
+      if (!fixture) {
+        return skip("The target reported no seeded blob to check RS-1's blob-fetch endpoint against.");
+      }
+      const grant = await adapter.issueGrant(fixture.grantRequest);
+      if (!grant) {
+        return skip("The target could not issue the grant needed to read the blob's referencing record.");
+      }
+
+      const response = await requestBytes(adapter.baseUrl, path(`/blobs/${encodeURIComponent(fixture.blobId)}`), {
+        token: grant.accessToken,
+      });
+      if (response.status !== 200) {
+        return fail(`Expected 200 from the blob-fetch endpoint, got ${response.status}.`, [response.evidence]);
+      }
+
+      const contentType = response.headers.get("content-type");
+      if (contentType !== fixture.mimeType) {
+        return fail(`Expected Content-Type "${fixture.mimeType}", got "${contentType}".`, [response.evidence]);
+      }
+
+      if (fixture.rawBytes) {
+        if (!Buffer.from(response.body).equals(Buffer.from(fixture.rawBytes))) {
+          return fail(
+            `The fetched blob bytes (${response.body.length} bytes) do not match the bytes stored at upload time (${fixture.rawBytes.length} bytes).`,
+            [response.evidence]
+          );
+        }
+      } else if (fixture.digest) {
+        if (response.body.length !== fixture.digest.length) {
+          return fail(
+            `Expected ${fixture.digest.length} bytes (the length recorded at upload time), got ${response.body.length}.`,
+            [response.evidence]
+          );
+        }
+        const actualSha256 = createHash("sha256").update(response.body).digest("hex");
+        if (actualSha256 !== fixture.digest.sha256) {
+          return fail(`Expected sha256 ${fixture.digest.sha256} (recorded at upload time), got ${actualSha256}.`, [
+            response.evidence,
+          ]);
+        }
+      } else {
+        return skip("The blobFixture hook supplied neither rawBytes nor an independent digest to verify against.");
+      }
+
       return pass([response.evidence]);
     },
   },
