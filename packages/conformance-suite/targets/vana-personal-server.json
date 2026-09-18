@@ -45,7 +45,15 @@
     "into top_artists as well: a stream too short to produce a page cursor cannot",
     "exercise the cursor/changes_since token-space separation case.",
     "",
-    "Run: tsx src/cli.ts --target targets/vana-personal-server.json"
+    "Run: tsx src/cli.ts --target targets/vana-personal-server.json",
+    "",
+    "streams[].expectedOwnerMetadata is RS-14's oracle input: the schema field",
+    "types come from scripts/vana-target.sh's boot declaration (the authoritative",
+    "source), never from this server's own metadata endpoint. That declaration",
+    "declares no query.range_filters, views, or relationships for either stream,",
+    "so query/views/relationships are left absent here rather than invented --",
+    "RS-14 then checks schema completeness/content only, which is what this",
+    "deployment actually declares."
   ],
   "kind": "vana-ps",
   "targetId": "vana-personal-server",
@@ -74,7 +82,15 @@
       "primaryKey": ["id"],
       "cursorField": "source_updated_at",
       "semantics": "mutable_state",
-      "recordCount": 5
+      "recordCount": 5,
+      "expectedOwnerMetadata": {
+        "schemaFieldTypes": {
+          "id": "string",
+          "name": "string",
+          "genres": "array",
+          "source_updated_at": "string"
+        }
+      }
     },
     {
       "name": "saved_tracks",
@@ -82,7 +98,15 @@
       "primaryKey": ["id"],
       "cursorField": "source_updated_at",
       "semantics": "mutable_state",
-      "recordCount": 3
+      "recordCount": 3,
+      "expectedOwnerMetadata": {
+        "schemaFieldTypes": {
+          "id": "string",
+          "title": "string",
+          "artist": "string",
+          "source_updated_at": "string"
+        }
+      }
     }
   ]
 }

@@ -41,6 +41,20 @@ export type Defect =
   | "leak-current-metadata"
   /** Truncates schema/omits a declared capability from owner metadata (RS-14). */
   | "truncate-owner-metadata"
+  /** Keeps every schema field but changes one field's declared type (RS-14). */
+  | "corrupt-owner-schema-field-type"
+  /** Drops the views array entirely from owner metadata (RS-14). */
+  | "omit-owner-views"
+  /** Keeps a views array but with the wrong fields (RS-14). */
+  | "corrupt-owner-views"
+  /** Drops the relationships array entirely from owner metadata (RS-14). */
+  | "omit-owner-relationships"
+  /** Keeps a relationships array but points it at the wrong target stream (RS-14). */
+  | "corrupt-owner-relationships"
+  /** Drops query capability entirely from owner metadata (RS-14). */
+  | "omit-owner-query"
+  /** Keeps query capability but with the wrong range-filter operators (RS-14). */
+  | "corrupt-owner-query"
   /** Refuses an ungranted stream, but with 401 instead of 403 (RS-6). */
   | "misclassify-stream-denial"
   /** Crashes on a malformed cursor instead of returning 400 (RS-6). */
@@ -67,9 +81,13 @@ export type Record_ = { readonly id: string } & Record<string, unknown>;
 export interface StreamFixture {
   readonly cursorField?: string;
   readonly fields: readonly string[];
+  /** Per-field JSON Schema type, so RS-14 has real schema content to check (not just field names). */
+  readonly fieldTypes?: Readonly<Record<string, string>>;
   readonly name: string;
   readonly primaryKey: readonly string[];
   readonly records: readonly Record_[];
+  /** Declared relationships to other streams, for RS-14's relationship-corruption cases. */
+  readonly relationships?: readonly { readonly id: string; readonly targetStream: string; readonly type: string }[];
   readonly semantics: "append_only" | "mutable_state";
 }
 
@@ -438,16 +456,66 @@ export class ReferenceServer {
     // carry no grant to project against (Section 8), so either is a violation.
     const ownerTruncated = kind === "owner" && this.has("truncate-owner-metadata");
     const fields = ownerTruncated ? fixture.fields.slice(0, 1) : [...(wholeDocument ? fixture.fields : grantedFields)];
+    const isOwner = kind === "owner";
+    const declareCapabilities = wholeDocument && !ownerTruncated;
+
     return {
       object: "stream_metadata",
       name: fixture.name,
-      schema: { properties: Object.fromEntries(fields.map((f) => [f, {}])) },
+      schema: { properties: this.schemaProperties(fixture, fields, isOwner) },
       primary_key: [...fixture.primaryKey],
       ...(fixture.cursorField && { cursor_field: fixture.cursorField }),
-      query: wholeDocument && !ownerTruncated ? { range_filters: { [fixture.cursorField ?? "id"]: ["gte"] } } : {},
-      views: wholeDocument && !ownerTruncated ? [{ id: "basic", label: "Basic", fields: [...fixture.fields] }] : [],
-      relationships: [],
+      query: declareCapabilities ? this.queryCapability(fixture, isOwner) : {},
+      views: declareCapabilities ? this.viewsCapability(fixture, isOwner) : [],
+      relationships: declareCapabilities ? this.relationshipsCapability(fixture, isOwner) : [],
     };
+  }
+
+  /** Per-field JSON Schema properties, optionally corrupting the first field's declared type. */
+  private schemaProperties(
+    fixture: StreamFixture,
+    fields: readonly string[],
+    isOwner: boolean
+  ): Record<string, { type: string }> {
+    const corrupt = isOwner && this.has("corrupt-owner-schema-field-type");
+    return Object.fromEntries(
+      fields.map((f, i) => {
+        const declaredType = fixture.fieldTypes?.[f] ?? "string";
+        // Corrupt exactly the first field's type, leaving every other field (and
+        // the field set itself) untouched, so this defect is distinguishable
+        // from truncate-owner-metadata: same fields present, wrong content.
+        const type = corrupt && i === 0 ? `${declaredType}-corrupted` : declaredType;
+        return [f, { type }];
+      })
+    );
+  }
+
+  private viewsCapability(fixture: StreamFixture, isOwner: boolean): readonly Record<string, unknown>[] {
+    if (isOwner && this.has("omit-owner-views")) {
+      return [];
+    }
+    const corrupt = isOwner && this.has("corrupt-owner-views");
+    return [{ id: "basic", label: "Basic", fields: corrupt ? [fixture.fields[0]] : [...fixture.fields] }];
+  }
+
+  private relationshipsCapability(fixture: StreamFixture, isOwner: boolean): readonly Record<string, unknown>[] {
+    if (isOwner && this.has("omit-owner-relationships")) {
+      return [];
+    }
+    const corrupt = isOwner && this.has("corrupt-owner-relationships");
+    return (fixture.relationships ?? []).map((r) => ({
+      id: r.id,
+      target_stream: corrupt ? `${r.targetStream}-wrong` : r.targetStream,
+      type: r.type,
+    }));
+  }
+
+  private queryCapability(fixture: StreamFixture, isOwner: boolean): Record<string, unknown> {
+    if (isOwner && this.has("omit-owner-query")) {
+      return {};
+    }
+    const corrupt = isOwner && this.has("corrupt-owner-query");
+    return { range_filters: { [fixture.cursorField ?? "id"]: corrupt ? ["lt"] : ["gte"] } };
   }
 
   /**

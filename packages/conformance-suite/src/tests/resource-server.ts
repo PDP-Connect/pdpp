@@ -42,28 +42,58 @@ function asList(json: unknown): ListBody | undefined {
 interface StreamMetadataBody {
   query?: Record<string, unknown>;
   relationships?: unknown[];
-  schema?: { properties?: Record<string, unknown> };
+  schema?: { properties?: Record<string, { type?: unknown }> };
   views?: unknown[];
 }
 
 /**
- * Whether a declared capability (views, relationships, or query) that the
- * fixture says exists is missing from the owner-metadata response. Returns
- * `undefined` when the fixture declares nothing in this category, since RS-14
- * cannot fault a target for omitting a capability the stream never had.
+ * A category ("views", "relationships", or "query") is missing or wrong,
+ * against the fixture's own retained declaration.
+ *
+ * This is a small, explicit equality check on the exact shapes this suite's
+ * fixtures produce (arrays of plain objects, or a `range_filters` record), NOT
+ * a general schema-equivalence framework: it does not canonicalize key order
+ * within an object, does not do partial/subset matching, and a target that
+ * declares the same capability in an structurally different but equivalent
+ * shape (e.g. a semantically-identical but differently-nested `query` object)
+ * would be reported as a mismatch here. That limit is acceptable for v0.1
+ * because both fixtures in this suite (the in-process reference and the
+ * seeded Vana adapter) emit one fixed shape per category; a target adapter
+ * populating `expectedOwnerMetadata` from a source with a different but
+ * equivalent shape would need a wider comparator, which this deliberately
+ * does not attempt.
+ *
+ * Returns `undefined` when the fixture declares nothing in this category,
+ * since RS-14 cannot fault a target for omitting a capability the stream
+ * never had.
  */
-function declaredCapabilityMissing(
+function declaredCapabilityMismatch(
   declared: readonly unknown[] | Readonly<Record<string, unknown>> | undefined,
   exposed: unknown
 ): boolean {
-  const declaredCount = Array.isArray(declared) ? declared.length : Object.keys(declared ?? {}).length;
-  if (declaredCount === 0) {
+  const declaredIsEmpty = Array.isArray(declared) ? declared.length === 0 : Object.keys(declared ?? {}).length === 0;
+  if (declaredIsEmpty) {
     return false;
   }
-  const exposedCount = Array.isArray(exposed)
-    ? exposed.length
-    : Object.keys((exposed as object | undefined) ?? {}).length;
-  return exposedCount === 0;
+  return JSON.stringify(exposed) !== JSON.stringify(declared);
+}
+
+/**
+ * Declared schema field types that the exposed schema either omits or states
+ * differently, against the fixture's own retained per-field type declaration.
+ * Distinguishes a truncated schema (checked separately, by field presence)
+ * from one that keeps every field name but silently changes a field's type.
+ */
+function corruptedSchemaFields(
+  declared: Readonly<Record<string, string>> | undefined,
+  exposedProperties: Record<string, { type?: unknown }> | undefined
+): readonly string[] {
+  if (!declared) {
+    return [];
+  }
+  return Object.entries(declared)
+    .filter(([field, type]) => exposedProperties?.[field]?.type !== type)
+    .map(([field]) => field);
 }
 
 export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
@@ -621,7 +651,8 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
       const body = response.json as StreamMetadataBody | undefined;
 
-      const exposed = Object.keys(body?.schema?.properties ?? {});
+      const exposedProperties = body?.schema?.properties ?? {};
+      const exposed = Object.keys(exposedProperties);
       const missingFields = stream.fields.filter((f) => !exposed.includes(f));
       if (missingFields.length > 0) {
         return fail(
@@ -630,21 +661,32 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
         );
       }
 
-      if (declaredCapabilityMissing(expected.views, body?.views)) {
+      // Field presence alone cannot catch a target that keeps every field name
+      // but silently changes what one of them declares (e.g. narrows a type),
+      // which is why this checks declared per-field type content separately.
+      const corruptedFields = corruptedSchemaFields(expected.schemaFieldTypes, exposedProperties);
+      if (corruptedFields.length > 0) {
         return fail(
-          "Owner-token stream metadata omitted the stream's declared views. Section 9 item 14 requires current view capability to be included for an owner-token read.",
+          `Owner-token stream metadata declared schema field(s) with the wrong type: ${corruptedFields.join(", ")}. Section 9 item 14 requires the full CURRENT schema, and this target's declaration of ${corruptedFields.join(", ")} does not match its own retained schema.`,
           [response.evidence]
         );
       }
-      if (declaredCapabilityMissing(expected.relationships, body?.relationships)) {
+
+      if (declaredCapabilityMismatch(expected.views, body?.views)) {
         return fail(
-          "Owner-token stream metadata omitted the stream's declared relationships. Section 9 item 14 requires current relationship capability to be included for an owner-token read.",
+          "Owner-token stream metadata omitted or misstated the stream's declared views. Section 9 item 14 requires current view capability to be included, matching the stream's own retained declaration, for an owner-token read.",
           [response.evidence]
         );
       }
-      if (declaredCapabilityMissing(expected.query, body?.query)) {
+      if (declaredCapabilityMismatch(expected.relationships, body?.relationships)) {
         return fail(
-          "Owner-token stream metadata omitted the stream's declared query capability. Section 9 item 14 requires current query capability to be included for an owner-token read.",
+          "Owner-token stream metadata omitted or misstated the stream's declared relationships. Section 9 item 14 requires current relationship capability to be included, matching the stream's own retained declaration, for an owner-token read.",
+          [response.evidence]
+        );
+      }
+      if (declaredCapabilityMismatch(expected.query, body?.query)) {
+        return fail(
+          "Owner-token stream metadata omitted or misstated the stream's declared query capability. Section 9 item 14 requires current query capability to be included, matching the stream's own retained declaration, for an owner-token read.",
           [response.evidence]
         );
       }

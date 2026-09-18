@@ -82,6 +82,42 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "RS-14/owner-metadata-full-current-document",
     defect: "truncate-owner-metadata",
   },
+  // RS-14 checks five independent things (schema presence, schema content,
+  // views, relationships, query capability). truncate-owner-metadata above
+  // proves only schema-truncation-plus-everything-else-dropped; a mutation
+  // that drops everything and fails at the schema-presence check would not
+  // prove the views/relationships/query checks ever run. Each row below pairs
+  // the case with a defect that corrupts exactly one category and leaves the
+  // rest of the document (including schema field presence) intact, so each
+  // failure is independent proof of the category's own check.
+  {
+    caseId: "RS-14/owner-metadata-full-current-document",
+    defect: "corrupt-owner-schema-field-type",
+  },
+  {
+    caseId: "RS-14/owner-metadata-full-current-document",
+    defect: "omit-owner-views",
+  },
+  {
+    caseId: "RS-14/owner-metadata-full-current-document",
+    defect: "corrupt-owner-views",
+  },
+  {
+    caseId: "RS-14/owner-metadata-full-current-document",
+    defect: "omit-owner-relationships",
+  },
+  {
+    caseId: "RS-14/owner-metadata-full-current-document",
+    defect: "corrupt-owner-relationships",
+  },
+  {
+    caseId: "RS-14/owner-metadata-full-current-document",
+    defect: "omit-owner-query",
+  },
+  {
+    caseId: "RS-14/owner-metadata-full-current-document",
+    defect: "corrupt-owner-query",
+  },
   {
     caseId: "RS-15/client-metadata-projection-closed",
     defect: "leak-current-metadata",

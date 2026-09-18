@@ -40,6 +40,8 @@ export interface SeededStream {
   readonly expectedOwnerMetadata?: {
     readonly query?: Readonly<Record<string, unknown>>;
     readonly relationships?: readonly unknown[];
+    /** Per-field JSON Schema type, for detecting a corrupted (not just missing) schema. */
+    readonly schemaFieldTypes?: Readonly<Record<string, string>>;
     readonly views?: readonly unknown[];
   };
   /** Field names present in the declared schema. */

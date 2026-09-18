@@ -36,9 +36,14 @@ export const DEFAULT_FIXTURES: readonly StreamFixture[] = [
   {
     name: "conversations",
     fields: ["id", "title", "source_created_at"],
+    fieldTypes: { id: "string", title: "string", source_created_at: "string" },
     primaryKey: ["id"],
     cursorField: "source_created_at",
     semantics: "mutable_state",
+    // A real declared relationship, so RS-14's relationship-omission and
+    // relationship-corruption cases have non-empty content to check against
+    // (an always-empty relationships array could never distinguish either).
+    relationships: [{ id: "conversation_messages", targetStream: "messages", type: "has_many" }],
     records: [
       {
         id: "conv_1",
@@ -55,6 +60,7 @@ export const DEFAULT_FIXTURES: readonly StreamFixture[] = [
   {
     name: "messages",
     fields: ["id", "body", "source_created_at"],
+    fieldTypes: { id: "string", body: "string", source_created_at: "string" },
     primaryKey: ["id"],
     cursorField: "source_created_at",
     semantics: "append_only",
@@ -120,7 +126,12 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       expectedOwnerMetadata: {
         query: { range_filters: { [f.cursorField ?? "id"]: ["gte"] } },
         views: [{ id: "basic", label: "Basic", fields: [...f.fields] }],
-        relationships: [],
+        relationships: (f.relationships ?? []).map((r) => ({
+          id: r.id,
+          target_stream: r.targetStream,
+          type: r.type,
+        })),
+        schemaFieldTypes: { ...(f.fieldTypes ?? Object.fromEntries(f.fields.map((field) => [field, "string"]))) },
       },
     }));
     return { streams };
