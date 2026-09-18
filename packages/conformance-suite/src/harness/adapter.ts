@@ -26,6 +26,22 @@ import type { PdppResponse } from "./http.ts";
  * needs to build valid and invalid requests against it.
  */
 export interface SeededStream {
+  /**
+   * The field `time_range` is evaluated against, when the stream declares one.
+   *
+   * Core Section 5: "Streams that cannot define a stable `consent_time_field`
+   * simply omit it. The absence of `consent_time_field` is the normative signal
+   * that the stream does not support time-range filtering." So ABSENCE here is
+   * load-bearing rather than merely unknown — it is what makes clauses 5.2-4
+   * and 6.8-2 observable, since both are about refusing `time_range` on a
+   * stream that declares no such field. A suite with no time-range-incapable
+   * stream cannot construct that negative at all.
+   *
+   * Distinct from `cursorField`: Core requires the two to be declared
+   * separately because one governs sync order and the other governs which
+   * records fall inside the consented window.
+   */
+  readonly consentTimeField?: string;
   /** Cursor field used for stable sort, if the stream declares one. */
   readonly cursorField?: string;
   /**
@@ -215,6 +231,17 @@ export interface SelectionRequest {
     readonly fields?: readonly string[];
     readonly view?: string;
   }[];
+  /**
+   * A temporal constraint to request on every named stream.
+   *
+   * Carried on the request rather than per stream because the negative these
+   * clauses need is "ask for `time_range` on a stream that declares no
+   * `consent_time_field`", and the case names exactly one stream when it does
+   * so. A target that ignores this field entirely cannot be distinguished from
+   * one that refuses correctly, so the cases pair it with a positive control
+   * against a time-range-capable stream.
+   */
+  readonly timeRange?: { readonly since?: string; readonly until?: string };
 }
 
 /**

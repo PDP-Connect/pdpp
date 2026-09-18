@@ -578,4 +578,75 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       return pass(evidence);
     },
   },
+  // Clauses 5.2-4 and 6.8-2, the time-range consent boundary.
+  //
+  // Both say the same thing from two directions: the AS must refuse
+  // `time_range` on a stream that declares no `consent_time_field`. Core fixes
+  // the meaning of the absence — "The absence of `consent_time_field` is the
+  // normative signal that the stream does not support time-range filtering" —
+  // so accepting the request is not a lenient deployment choice. It means the
+  // window gets evaluated against a field the declaration never nominated, and
+  // the owner is shown a temporal limit that nothing enforces.
+  {
+    caseId: "AS-2/time-range-without-consent-time-field-refused",
+    requirementId: "AS-2",
+    assertion:
+      "A selection request asking for time_range on a stream that declares no consent_time_field is refused as invalid_authorization_details.",
+    async run({ adapter, streams }) {
+      const incapable = streams.find((s) => s.consentTimeField === undefined);
+      if (!incapable) {
+        return skip(
+          "Every seeded stream declares a consent_time_field, so a request asking for time_range on a time-range-incapable stream cannot be constructed. Closing this needs a target that seeds a stream omitting the field — absence is the normative signal, so it cannot be simulated by naming a bogus field."
+        );
+      }
+
+      // The positive control is a time_range request against a stream that DOES
+      // declare the field. Without it, a server refusing every time_range —
+      // including valid ones — satisfies the negative and reports conformant
+      // while supporting no temporal consent at all.
+      const capable = streams.find((s) => s.consentTimeField !== undefined);
+      if (!capable) {
+        return skip(
+          "No seeded stream declares a consent_time_field, so there is no positive control and a refusal cannot be attributed to this clause rather than to blanket rejection of time_range."
+        );
+      }
+      const control = await adapter.submitSelection?.({
+        streams: [{ name: capable.name }],
+        timeRange: { since: "2026-01-01T00:00:00Z" },
+      });
+      if (!control) {
+        return skip(NO_HOOK);
+      }
+      if (control.status >= 400) {
+        return skip(
+          `The positive control was refused (${control.status}): this target rejects time_range even on '${capable.name}', which declares consent_time_field '${capable.consentTimeField}'. A refusal on the incapable stream therefore proves nothing about this clause.`
+        );
+      }
+
+      const outcome = await adapter.submitSelection?.({
+        streams: [{ name: incapable.name }],
+        timeRange: { since: "2026-01-01T00:00:00Z" },
+      });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [
+        outcomeEvidence(`selection: time_range on ${capable.name} (control, capable)`, control),
+        outcomeEvidence(`selection: time_range on ${incapable.name} (no consent_time_field)`, outcome),
+      ];
+      if (outcome.status < 400) {
+        return fail(
+          `A selection requesting time_range on stream '${incapable.name}', which declares no consent_time_field, was accepted (${outcome.status}). Core Section 5: the AS MUST reject grants that request time_range on a stream without a consent_time_field, and the absence of that field is the normative signal that the stream does not support time-range filtering. Accepting means the consent window is evaluated against a field the declaration never nominated — the owner sees a temporal limit that nothing enforces.`,
+          evidence
+        );
+      }
+      if (outcome.errorCode !== SELECTION_ERROR) {
+        return fail(
+          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than ${SELECTION_ERROR}.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
 ];

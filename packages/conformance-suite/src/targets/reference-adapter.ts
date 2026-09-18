@@ -46,6 +46,9 @@ export const DEFAULT_FIXTURES: readonly StreamFixture[] = [
     requiredFields: ["id", "title"],
     primaryKey: ["id"],
     cursorField: "source_created_at",
+    // Declared, so this stream IS time-range-capable and can serve as the
+    // positive control for the refusals below.
+    consentTimeField: "source_created_at",
     semantics: "mutable_state",
     // A real declared relationship, so RS-14's relationship-omission and
     // relationship-corruption cases have non-empty content to check against
@@ -76,12 +79,43 @@ export const DEFAULT_FIXTURES: readonly StreamFixture[] = [
     fieldTypes: { id: "string", body: "string", source_created_at: "string" },
     primaryKey: ["id"],
     cursorField: "source_created_at",
+    consentTimeField: "source_created_at",
     semantics: "append_only",
     records: [
       {
         id: "msg_1",
         body: "Shall we go in May?",
         source_created_at: "2026-03-25T18:23:00Z",
+      },
+    ],
+  },
+  // A stream that declares NO consent_time_field, and therefore is not
+  // time-range-capable. Core Section 5: "Streams that cannot define a stable
+  // `consent_time_field` simply omit it. The absence of `consent_time_field` is
+  // the normative signal that the stream does not support time-range
+  // filtering."
+  //
+  // This fixture exists for exactly one reason: clauses 5.2-4 and 6.8-2 require
+  // the AS to REFUSE `time_range` on such a stream, and that negative cannot be
+  // constructed at all against a deployment whose every stream declares the
+  // field. Batch 4 recorded 5.2-4 as unclaimable for this reason rather than
+  // claiming it on its other half.
+  //
+  // It still carries a cursorField: the two are separate declarations in Core,
+  // and keeping sync capability here is what shows the refusal is about the
+  // consent boundary rather than about the stream being unqueryable.
+  {
+    name: "device_events",
+    fields: ["id", "kind", "observed_at"],
+    fieldTypes: { id: "string", kind: "string", observed_at: "string" },
+    primaryKey: ["id"],
+    cursorField: "observed_at",
+    semantics: "append_only",
+    records: [
+      {
+        id: "evt_1",
+        kind: "pairing",
+        observed_at: "2026-03-24T08:00:00Z",
       },
     ],
   },
@@ -165,6 +199,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       ...(f.cursorField && { cursorField: f.cursorField }),
       semantics: f.semantics,
       recordCount: f.records.length,
+      ...(f.consentTimeField ? { consentTimeField: f.consentTimeField } : {}),
       // The declared capabilities RS-14 checks an owner-token metadata read
       // against, derived from this fixture directly rather than from anything
       // the metadata endpoint under test returns.
@@ -297,6 +332,35 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       const undeclared = (wanted.fields ?? []).filter((f) => !declared.fields.includes(f));
       if (undeclared.length > 0) {
         return `stream '${wanted.name}' requests fields absent from the retained schema: ${undeclared.join(", ")}`;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Why `time_range` cannot be honoured on one of the named streams, or null
+   * when the request asks for no time range or every named stream is
+   * time-range-capable.
+   *
+   * Core Section 5: "The AS MUST reject grants that request `time_range` on a
+   * stream without a `consent_time_field`" (clause 5.2-4), restated against the
+   * request at clause 6.8-2. Core also fixes the meaning of the absent field:
+   * "The absence of `consent_time_field` is the normative signal that the
+   * stream does not support time-range filtering." So the refusal is not a
+   * deployment choice — an AS that accepts the request has to evaluate the
+   * window against something the declaration never nominated.
+   */
+  private firstBadTimeRangeReason(
+    wantedStreams: readonly { readonly name: string }[],
+    hasTimeRange: boolean
+  ): string | null {
+    if (!hasTimeRange || this.defects.has("accept-time-range-without-consent-time-field")) {
+      return null;
+    }
+    for (const wanted of wantedStreams) {
+      const declared = this.fixtures.find((f) => f.name === wanted.name);
+      if (declared && declared.consentTimeField === undefined) {
+        return `stream '${wanted.name}' declares no consent_time_field, so time_range is not applicable to it`;
       }
     }
     return null;
@@ -456,6 +520,11 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     const badViewReason = this.firstBadViewReason(wanted);
     if (badViewReason) {
       return reject("invalid_authorization_details", badViewReason);
+    }
+
+    const badTimeRangeReason = this.firstBadTimeRangeReason(wanted, request.timeRange !== undefined);
+    if (badTimeRangeReason) {
+      return reject("invalid_authorization_details", badTimeRangeReason);
     }
 
     // AS-6 is a MUST NOT: an unregistered purpose_code is not grounds for

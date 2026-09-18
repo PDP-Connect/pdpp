@@ -270,6 +270,15 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-2/view-and-fields-mutually-exclusive",
     defect: "accept-view-and-fields-together",
   },
+  // Clauses 5.2-4 and 6.8-2. The defect accepts `time_range` on a stream that
+  // declares no `consent_time_field`, which is the violation both clauses name.
+  // No existing defect produces it: every field- and name-validation defect
+  // operates on the selection's CONTENT, while this one is about a capability
+  // the stream's declaration never claimed.
+  {
+    caseId: "AS-2/time-range-without-consent-time-field-refused",
+    defect: "accept-time-range-without-consent-time-field",
+  },
   {
     caseId: "AS-5/both-streams-and-preset-refused",
     defect: "accept-malformed-selection",

@@ -165,7 +165,19 @@ export type Defect =
    * identifier as structured means. The result is a grant issued for a view the
    * AS never defined, under a name the owner never saw.
    */
-  | "resolve-view-uri-by-substring";
+  | "resolve-view-uri-by-substring"
+  /**
+   * Accepts `time_range` on a stream that declares no `consent_time_field`,
+   * instead of refusing it (clauses 5.2-4 and 6.8-2).
+   *
+   * Models the server that treats `time_range` as a generic query filter and
+   * applies it to whatever timestamp it happens to have, rather than to the
+   * declared consent boundary. The damage is quiet: the owner approves "data
+   * from the last 6 months" against a stream that has no meaning for that
+   * phrase, and every party then believes a temporal limit is in force that
+   * nothing actually evaluates.
+   */
+  | "accept-time-range-without-consent-time-field";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -173,6 +185,12 @@ export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
 export type Record_ = { readonly id: string } & Record<string, unknown>;
 
 export interface StreamFixture {
+  /**
+   * The field `time_range` is evaluated against (Core Section 5). OMITTING it
+   * is the normative signal that the stream is not time-range-capable, which is
+   * what clauses 5.2-4 and 6.8-2 need a stream to demonstrate.
+   */
+  readonly consentTimeField?: string;
   readonly cursorField?: string;
   /** Declared item type for array-typed fields (JSON Schema `items.type`), a nested constraint RS-14 checks. */
   readonly fieldItemTypes?: Readonly<Record<string, string>>;

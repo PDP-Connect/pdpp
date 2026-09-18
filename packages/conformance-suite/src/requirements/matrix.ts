@@ -290,9 +290,7 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#sourcedeclaration-fields",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs a seeded stream that declares NO `consent_time_field` plus a selection request carrying `time_range` against it; every target config currently declares the field on every stream, so the negative cannot be constructed.",
+    caseIds: ["AS-2/time-range-without-consent-time-field-refused"],
   },
   {
     clauseId: "5.2-5",
@@ -811,9 +809,7 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#stream-selection-parameters",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Same missing fixture as 5.2-4: needs a seeded stream declaring no `consent_time_field`, which no target config provides.",
+    caseIds: ["AS-2/time-range-without-consent-time-field-refused"],
   },
   {
     clauseId: "6.8-3",
