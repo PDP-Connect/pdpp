@@ -542,12 +542,12 @@ it("AS-14 does not require a policy to allow AI-training grants", async () => {
 });
 
 /**
- * A minimal stageable adapter with its own in-memory code/token ledger,
- * independent of `ReferenceTargetAdapter`'s grant issuance (which mints
- * tokens directly and has no separable code-redemption step). It exists only
- * to drive AS-19's `replayLastCode` oracle against controllable redemption
- * behaviour: `onReplay` decides what a second redemption of the same code
- * does, which is exactly the fact AS-19 must discriminate on.
+ * Fakes `replayLastCode`'s answer directly via `onReplay`, rather than
+ * driving a real second token-endpoint redemption. Proves the AS-19 case
+ * logic (pass/fail/skip branching on the returned shape) in isolation from
+ * any transport. It does not prove a real adapter's `replayLastCode`
+ * actually redeems the same code at a real token endpoint — that is
+ * `vana-ps-adapter-code-replay.test.ts`'s job.
  */
 class CodeReplayStageableAdapter implements Omit<TargetAdapter, "stageApproval"> {
   private readonly inner: TargetAdapter;

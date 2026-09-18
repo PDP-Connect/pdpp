@@ -244,17 +244,22 @@ export class VanaPsAdapter implements TargetAdapter {
       if (!lastRedeemedCode) {
         return null;
       }
-      const response = await fetch(`${this.config.baseUrl}/pdpp/v1/token`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "authorization_code",
-          code: lastRedeemedCode,
-          client_id: this.config.clientId,
-          redirect_uri: this.config.redirectUri,
-          code_verifier: PKCE_VERIFIER,
-        }).toString(),
-      });
+      let response: Response;
+      try {
+        response = await fetch(`${this.config.baseUrl}/pdpp/v1/token`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            code: lastRedeemedCode,
+            client_id: this.config.clientId,
+            redirect_uri: this.config.redirectUri,
+            code_verifier: PKCE_VERIFIER,
+          }).toString(),
+        });
+      } catch {
+        return null;
+      }
       const responseBody: unknown = await response.json().catch(() => undefined);
       if (response.ok) {
         const accessToken = (responseBody as { access_token?: unknown } | undefined)?.access_token;
