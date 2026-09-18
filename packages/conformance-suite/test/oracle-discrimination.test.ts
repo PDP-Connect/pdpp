@@ -716,6 +716,9 @@ describe("AS-19 replay oracle discriminates genuine token-endpoint code replay",
  */
 const CACHE_CONTROL_PATTERN = /Cache-Control/;
 const LOCATION_PATTERN = /Location/;
+const OVERBROAD_ACCESS_PATTERN = /Overbroad access/;
+const UNAUTHORIZED_ACCESS_PATTERN = /Unauthorized access/;
+const BEARER_TOKEN_PATTERN = /^Bearer\s+\S+/;
 
 describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
   const UPLOAD_BYTES = Buffer.from("pdpp-conformance-blob-fixture-payload");
@@ -723,13 +726,22 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
   const BLOB_ID = "blob_test_fixture";
   const MIME_TYPE = "application/octet-stream";
 
+  const OUT_OF_GRANT_BLOB_ID = "blob_test_fixture_out_of_grant";
+
   type Mode =
     | "correct"
     | "wrong-bytes"
     | "empty-200"
     | "missing-cache-control"
     | "redirect-valid"
-    | "redirect-malformed";
+    | "redirect-malformed"
+    | "leaks-out-of-grant-blob"
+    | "enforces-out-of-grant-blob"
+    | "leaks-unauthenticated"
+    | "enforces-unauthenticated"
+    | "deny-everything"
+    | "positive-empty-bytes"
+    | "rejects-issued-token";
 
   /** Set when a manual-redirect run's client follows the 302 instead of stopping at it. */
   let redirectTargetHit = false;
@@ -741,6 +753,35 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
         res.writeHead(200, { "content-type": MIME_TYPE }).end(UPLOAD_BYTES);
         return;
       }
+      const hasBearer = BEARER_TOKEN_PATTERN.test(req.headers.authorization ?? "");
+      const servePositiveBytes = () =>
+        res
+          .writeHead(200, {
+            "content-type": MIME_TYPE,
+            "content-length": String(UPLOAD_BYTES.length),
+            "cache-control": "private, no-store",
+          })
+          .end(UPLOAD_BYTES);
+
+      if (mode === "deny-everything" || mode === "rejects-issued-token") {
+        res.writeHead(mode === "rejects-issued-token" ? 401 : 403).end();
+        return;
+      }
+
+      if (req.url === `/v1/blobs/${OUT_OF_GRANT_BLOB_ID}`) {
+        // "enforces" refuses regardless of caller; "leaks" (the defect under
+        // test) serves the out-of-grant blob to the SAME valid grant token
+        // used for the in-grant fixture — Section 8 bullet 4's boundary is
+        // precisely that a valid token for a DIFFERENT authorized record is
+        // not enough.
+        if (mode === "leaks-out-of-grant-blob") {
+          servePositiveBytes();
+          return;
+        }
+        res.writeHead(403).end();
+        return;
+      }
+
       if (req.url === `/v1/blobs/${BLOB_ID}`) {
         if (mode === "redirect-valid") {
           res.writeHead(302, { location: "/signed-url-target", "cache-control": "no-store" }).end();
@@ -752,7 +793,26 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
           res.writeHead(302, { "cache-control": "no-store" }).end();
           return;
         }
-        const body = mode === "correct" ? UPLOAD_BYTES : mode === "wrong-bytes" ? WRONG_BYTES : Buffer.alloc(0);
+        // "enforces-unauthenticated" refuses a request with no Bearer token;
+        // "leaks-unauthenticated" serves the same blob without a token.
+        if (mode === "enforces-unauthenticated" && !hasBearer) {
+          res.writeHead(401).end();
+          return;
+        }
+        if (mode === "leaks-unauthenticated" && !hasBearer) {
+          servePositiveBytes();
+          return;
+        }
+        if (mode === "positive-empty-bytes") {
+          res
+            .writeHead(200, { "content-type": MIME_TYPE, "content-length": "0", "cache-control": "private, no-store" })
+            .end();
+          return;
+        }
+        // Modes reaching here need a real authorized read of the fixture blob
+        // to succeed (enforces-out-of-grant-blob, enforces-unauthenticated
+        // with a Bearer token) alongside the original byte-fidelity modes.
+        const body = mode === "wrong-bytes" ? WRONG_BYTES : mode === "empty-200" ? Buffer.alloc(0) : UPLOAD_BYTES;
         const headers: Record<string, string> = { "content-type": MIME_TYPE, "content-length": String(body.length) };
         if (mode !== "missing-cache-control") {
           headers["cache-control"] = "private, no-store";
@@ -795,7 +855,7 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
     }
   }
 
-  async function runBlobCase(mode: Mode, useDigest = false) {
+  async function runBlobCase(mode: Mode, useDigest = false, caseId = "RS-1/get-blob-bytes") {
     redirectTargetHit = false;
     const { server, baseUrl } = await startBlobServer(mode);
     const inner = new ReferenceTargetAdapter();
@@ -804,13 +864,14 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
       blobId: BLOB_ID,
       mimeType: MIME_TYPE,
       grantRequest: { streams: [{ name: streams[0]?.name ?? "", fields: [...(streams[0]?.fields ?? [])] }] },
+      outOfGrantBlobId: OUT_OF_GRANT_BLOB_ID,
       ...(useDigest
         ? { digest: { sha256: createHash("sha256").update(UPLOAD_BYTES).digest("hex"), length: UPLOAD_BYTES.length } }
         : { rawBytes: UPLOAD_BYTES }),
     };
     const adapter = new BlobFixtureAdapter(inner, baseUrl, fixture);
     try {
-      return await runCase(caseById("RS-1/get-blob-bytes"), makeContext(adapter, streams));
+      return await runCase(caseById(caseId), makeContext(adapter, streams));
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await inner.teardown();
@@ -861,5 +922,87 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
     assert.equal(result.outcome, "fail");
     assert.match(result.detail ?? "", LOCATION_PATTERN);
     assert.equal(redirectTargetHit, false);
+  });
+
+  describe("RS-1/blob-outside-grant-refused discriminates authorization scoping", () => {
+    const CASE_ID = "RS-1/blob-outside-grant-refused";
+
+    it("passes when the server refuses a real blob id the grant does not reference", async () => {
+      const result = await runBlobCase("enforces-out-of-grant-blob", false, CASE_ID);
+      assert.equal(result.outcome, "pass");
+    });
+
+    it("fails when the server serves a blob outside the grant to a valid token", async () => {
+      const result = await runBlobCase("leaks-out-of-grant-blob", false, CASE_ID);
+      assert.equal(result.outcome, "fail");
+      assert.match(result.detail ?? "", OVERBROAD_ACCESS_PATTERN);
+    });
+
+    it("skips when the adapter supplies no outOfGrantBlobId", async () => {
+      redirectTargetHit = false;
+      const { server, baseUrl } = await startBlobServer("enforces-out-of-grant-blob");
+      const inner = new ReferenceTargetAdapter();
+      const { streams } = await inner.setup();
+      const fixture: BlobFixture = {
+        blobId: BLOB_ID,
+        mimeType: MIME_TYPE,
+        grantRequest: { streams: [{ name: streams[0]?.name ?? "", fields: [...(streams[0]?.fields ?? [])] }] },
+        rawBytes: UPLOAD_BYTES,
+      };
+      const adapter = new BlobFixtureAdapter(inner, baseUrl, fixture);
+      try {
+        const result = await runCase(caseById(CASE_ID), makeContext(adapter, streams));
+        assert.equal(result.outcome, "skip");
+        assert.match(result.detail ?? "", /outOfGrantBlobId/);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await inner.teardown();
+      }
+    });
+
+    // Negative controls: a server that denies (or corrupts) the positive read
+    // must not be credited with enforcing the out-of-grant boundary — the
+    // fail this proves is the exact defect Root flagged, where a
+    // deny-everything server passed by refusing both fetches.
+    it("does not pass a server that denies every blob fetch, including the fixture blob", async () => {
+      const result = await runBlobCase("deny-everything", false, CASE_ID);
+      assert.notEqual(result.outcome, "pass");
+    });
+
+    it("does not pass a server that returns empty bytes for the fixture blob itself", async () => {
+      const result = await runBlobCase("positive-empty-bytes", false, CASE_ID);
+      assert.notEqual(result.outcome, "pass");
+    });
+  });
+
+  describe("RS-1/blob-unauthenticated-refused discriminates the authentication boundary", () => {
+    const CASE_ID = "RS-1/blob-unauthenticated-refused";
+
+    it("passes when the server refuses a blob fetch carrying no token", async () => {
+      const result = await runBlobCase("enforces-unauthenticated", false, CASE_ID);
+      assert.equal(result.outcome, "pass");
+    });
+
+    it("fails when the server serves a blob to a request carrying no token", async () => {
+      const result = await runBlobCase("leaks-unauthenticated", false, CASE_ID);
+      assert.equal(result.outcome, "fail");
+      assert.match(result.detail ?? "", UNAUTHORIZED_ACCESS_PATTERN);
+    });
+
+    // Refusal is evidence only after this token successfully reads the blob.
+    it("does not pass a server that denies every blob fetch, including the fixture blob", async () => {
+      const result = await runBlobCase("deny-everything", false, CASE_ID);
+      assert.notEqual(result.outcome, "pass");
+    });
+
+    it("does not pass a server that returns empty bytes for the fixture blob itself", async () => {
+      const result = await runBlobCase("positive-empty-bytes", false, CASE_ID);
+      assert.notEqual(result.outcome, "pass");
+    });
+
+    it("does not pass when the issued token is rejected by the positive fetch", async () => {
+      const result = await runBlobCase("rejects-issued-token", false, CASE_ID);
+      assert.notEqual(result.outcome, "pass");
+    });
   });
 });

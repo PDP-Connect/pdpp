@@ -230,12 +230,30 @@ export interface RefreshableGrant {
  * by a target that merely declares `capabilities.blobs`.
  */
 export interface BlobFixture {
-  /** Grant request that includes the stream/field carrying `blob_ref` for the seeded record. */
-  readonly grantRequest: GrantRequest;
   /** Known blob id to fetch at `GET {queryBase}/blobs/:blobId`. */
   readonly blobId: string;
+  /** Independent proof of the stored bytes when the adapter does not retain them: their SHA-256 digest and exact length. */
+  readonly digest?: { readonly sha256: string; readonly length: number };
+  /** Grant request that includes the stream/field carrying `blob_ref` for the seeded record. */
+  readonly grantRequest: GrantRequest;
   /** Declared MIME type, expected as the fetch response's `Content-Type`. */
   readonly mimeType: string;
+  /**
+   * A second, persisted blob id that exists on the target but is NOT
+   * referenced by any record in `grantRequest`'s streams — i.e. a blob the
+   * `grantRequest` grant cannot discover through an authorized record.
+   *
+   * Section 8 "Get a blob" (spec-core.md#resource-server-interface): "A
+   * `blob_id` alone does not grant access. The client MUST have discovered
+   * the blob through an authorized record." This is the fact that makes that
+   * requirement observable: without a second, out-of-grant blob that is known
+   * to exist, a 404/403 on a made-up id proves nothing (a target could 404
+   * everything and still leak real ids). Optional: a target that cannot
+   * provision a second blob outside the grant reports the negative case
+   * `skip` naming this field, rather than the suite fabricating an id or
+   * treating a bare 404 on an unknown id as proof of enforcement.
+   */
+  readonly outOfGrantBlobId?: string;
   /**
    * The exact bytes stored at upload time, when the adapter can hold them in
    * memory. Mutually exclusive in practice with `digest` — supply whichever is
@@ -243,8 +261,6 @@ export interface BlobFixture {
    * to prove the returned bytes are the ones that were stored, not both.
    */
   readonly rawBytes?: Uint8Array;
-  /** Independent proof of the stored bytes when the adapter does not retain them: their SHA-256 digest and exact length. */
-  readonly digest?: { readonly sha256: string; readonly length: number };
 }
 
 /** The grant shape a test needs. The adapter arranges consent out of band. */
@@ -288,7 +304,6 @@ export interface TargetAdapter {
    * Base URL of the resource server, e.g. "http://localhost:4000".
    */
   readonly baseUrl: string;
-  readonly capabilities: TargetCapabilities;
 
   /**
    * A known, already-seeded blob plus the grant needed to reach it, for RS-1's
@@ -299,6 +314,7 @@ export interface TargetAdapter {
    * persisted blob to point at.
    */
   blobFixture?: () => Promise<BlobFixture | null>;
+  readonly capabilities: TargetCapabilities;
 
   /**
    * Call a known co-located introspection endpoint directly, when the target

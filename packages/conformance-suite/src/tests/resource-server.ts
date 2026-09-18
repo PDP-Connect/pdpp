@@ -17,7 +17,7 @@
 
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import type { BlobFixture } from "../harness/adapter.ts";
+import type { BlobFixture, TargetAdapter } from "../harness/adapter.ts";
 import { errorBody, request, requestBytes } from "../harness/http.ts";
 import { type CaseVerdict, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
@@ -147,6 +147,38 @@ function verifyBlobBytes(evidence: Evidence, body: Uint8Array, fixture: BlobFixt
     return pass([evidence]);
   }
   return skip("The blobFixture hook supplied neither rawBytes nor an independent digest to verify against.");
+}
+
+/**
+ * Fetches `fixture.blobId` with `token` and verifies it against the fixture's
+ * headers and bytes, exactly as RS-1/get-blob-bytes does. Negative blob cases
+ * call this first: without proving the issued token actually reads the
+ * fixture blob, a server that denies every request would pass the negative
+ * assertion by refusing everything, not by enforcing the grant boundary.
+ */
+async function verifyAuthorizedBlobFetch(
+  adapter: TargetAdapter,
+  path: (suffix: string) => string,
+  fixture: BlobFixture,
+  token: string
+): Promise<CaseVerdict> {
+  const response = await requestBytes(adapter.baseUrl, path(`/blobs/${encodeURIComponent(fixture.blobId)}`), {
+    token,
+  });
+
+  if (response.status === 302) {
+    return verifyBlobRedirect(response.evidence, response.headers);
+  }
+  if (response.status !== 200) {
+    return fail(`Expected 200 (or a 302 to a signed URL) reading the fixture blob itself, got ${response.status}.`, [
+      response.evidence,
+    ]);
+  }
+  const headerFailure = verifyDirectBlobHeaders(response.evidence, response.headers, response.body, fixture.mimeType);
+  if (headerFailure) {
+    return headerFailure;
+  }
+  return verifyBlobBytes(response.evidence, response.body, fixture);
 }
 
 /** Owner-token stream metadata, the shape RS-14 and RS-15 both read. */
@@ -317,6 +349,114 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
 
       return verifyBlobBytes(response.evidence, response.body, fixture);
+    },
+  },
+
+  // Section 8 "Get a blob" bullet 4: "A `blob_id` alone does not grant
+  // access. The client MUST have discovered the blob through an authorized
+  // record." Proves the issued token actually works against `fixture.blobId`
+  // before trusting its denial on a second id — otherwise a deny-everything
+  // server would pass by refusing both. Needs `outOfGrantBlobId`, a real
+  // persisted blob the grant does not reference: a 404 on a fabricated id
+  // can't distinguish enforcement from a target that 404s every id.
+  {
+    caseId: "RS-1/blob-outside-grant-refused",
+    requirementId: "RS-1",
+    assertion:
+      "A grant that can read one blob's referencing record is still refused a second, real blob id no record in the grant references (Section 8: 'a blob_id alone does not grant access').",
+    async run({ adapter, path }) {
+      if (!adapter.blobFixture) {
+        return skip(
+          "The adapter implements no blobFixture hook, so RS-1's blob-authorization boundary has no known blob to check."
+        );
+      }
+      const fixture = await adapter.blobFixture();
+      if (!fixture) {
+        return skip("The target reported no seeded blob to check RS-1's blob-authorization boundary against.");
+      }
+      if (!fixture.outOfGrantBlobId) {
+        return skip(
+          "The adapter's blobFixture supplied no outOfGrantBlobId, so there is no second, real blob known to exist outside the grant to prove the boundary against."
+        );
+      }
+      const grant = await adapter.issueGrant(fixture.grantRequest);
+      if (!grant) {
+        return skip("The target could not issue the grant needed to read the fixture blob's referencing record.");
+      }
+
+      const positive = await verifyAuthorizedBlobFetch(adapter, path, fixture, grant.accessToken);
+      if (positive.outcome !== "pass") {
+        return positive;
+      }
+      const positiveEvidence = positive.evidence ?? [];
+
+      const response = await requestBytes(
+        adapter.baseUrl,
+        path(`/blobs/${encodeURIComponent(fixture.outOfGrantBlobId)}`),
+        { token: grant.accessToken }
+      );
+
+      if (response.status === 200 || response.status === 302) {
+        return fail(
+          `Overbroad access: a grant scoped to blob "${fixture.blobId}"'s referencing record was served blob "${fixture.outOfGrantBlobId}", which no record in that grant references. Got ${response.status}.`,
+          [...positiveEvidence, response.evidence]
+        );
+      }
+      if (response.status !== 403 && response.status !== 404) {
+        return fail(
+          `Expected 403 or 404 for a real blob id outside the grant, got ${response.status}. Section 8 binds an unknown or stale blob_id to 404 blob_not_found; a permission failure has no more specific code.`,
+          [...positiveEvidence, response.evidence]
+        );
+      }
+      return pass([...positiveEvidence, response.evidence]);
+    },
+  },
+
+  // Section 8: client operations use `Authorization: Bearer <access_token>` —
+  // the blob endpoint is not exempt from the authentication boundary RS-16
+  // already checks for record reads. Proves the SAME token reads the SAME
+  // blob successfully before trusting its absence is what triggers the
+  // refusal, so a deny-everything server cannot pass by luck.
+  {
+    caseId: "RS-1/blob-unauthenticated-refused",
+    requirementId: "RS-1",
+    assertion: "A blob fetch with no access token is refused rather than served, mirroring RS-16 for record reads.",
+    async run({ adapter, path }) {
+      if (!adapter.blobFixture) {
+        return skip(
+          "The adapter implements no blobFixture hook, so RS-1's blob-authorization boundary has no known blob to check."
+        );
+      }
+      const fixture = await adapter.blobFixture();
+      if (!fixture) {
+        return skip("The target reported no seeded blob to check RS-1's blob-authorization boundary against.");
+      }
+      const grant = await adapter.issueGrant(fixture.grantRequest);
+      if (!grant) {
+        return skip("The target could not issue the grant needed to read the fixture blob's referencing record.");
+      }
+
+      const positive = await verifyAuthorizedBlobFetch(adapter, path, fixture, grant.accessToken);
+      if (positive.outcome !== "pass") {
+        return positive;
+      }
+      const positiveEvidence = positive.evidence ?? [];
+
+      const response = await requestBytes(adapter.baseUrl, path(`/blobs/${encodeURIComponent(fixture.blobId)}`));
+
+      if (response.status === 200 || response.status === 302) {
+        return fail(
+          `Unauthorized access: blob "${fixture.blobId}" was served to a request carrying no access token. Got ${response.status}.`,
+          [...positiveEvidence, response.evidence]
+        );
+      }
+      if (response.status !== 401) {
+        return fail(`Expected 401 for a blob fetch carrying no token, got ${response.status}.`, [
+          ...positiveEvidence,
+          response.evidence,
+        ]);
+      }
+      return pass([...positiveEvidence, response.evidence]);
     },
   },
 
