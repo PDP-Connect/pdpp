@@ -25,7 +25,12 @@ import {
 	SPEC_SOURCE,
 	requirementById,
 } from "../requirements/catalog.ts";
-import { clausesForRequirement } from "../requirements/matrix.ts";
+import {
+	clausesForRequirement,
+	clausesForVersion,
+	DEFAULT_SPEC_VERSION,
+	type SpecVersion,
+} from "../requirements/matrix.ts";
 import { validateReviewEvidence, type ReviewEvidence } from "./review-evidence.ts";
 
 /**
@@ -108,7 +113,6 @@ export type RequirementResult = {
 	readonly requirement: Requirement;
 	readonly outcome: Outcome;
 	readonly cases: readonly CaseResult[];
-	readonly reviewEvidence?: readonly ReviewEvidence[];
 	/**
 	 * Every clause in sections 4-8/10 this requirement summarizes, in matrix
 	 * order. Added, never replacing anything: the JSON report's existing fields
@@ -136,10 +140,44 @@ export type RoleCoverage = {
 	readonly advisory: number;
 };
 
+/**
+ * Clause counts at the revision the run reported against.
+ *
+ * Separate from `RoleCoverage` because the two answer different questions and
+ * conflating them is the overclaim this suite exists to prevent. Role coverage
+ * counts Section 9 ITEMS, which are one-line precis; this counts the normative
+ * CLAUSES behind them. A run can test every applicable item and still have
+ * reached a minority of the clauses those items summarize, and only this number
+ * says so.
+ *
+ * It is stated per revision because the denominator itself moves: v0.2 adds
+ * obligations v0.1 does not have, so "12 of 40 MUSTs covered" is not a claim
+ * until the revision is named.
+ */
+export type ClauseCoverage = {
+	readonly specVersion: SpecVersion;
+	/** Clauses in force at this revision, after supersession. */
+	readonly total: number;
+	readonly mustTotal: number;
+	/** MUST-level clauses with at least one registered case. */
+	readonly mustCovered: number;
+	/** MUST-level clauses with no case at all. */
+	readonly mustUncovered: number;
+};
+
 export type ConformanceReport = {
 	readonly reportVersion: "1";
 	readonly suite: { readonly name: string; readonly version: string };
 	readonly spec: typeof SPEC_SOURCE;
+	/**
+	 * The spec revision this report's clause inventory was selected at. Named
+	 * explicitly because every clause count below is meaningless without it: the
+	 * same target, same cases and same suite version produce different
+	 * denominators at v0.1 and v0.2.
+	 */
+	readonly specVersion: SpecVersion;
+	/** Clause-level counts at `specVersion`. */
+	readonly clauseCoverage: ClauseCoverage;
 	readonly target: {
 		readonly id: string;
 		readonly version: string;
@@ -152,10 +190,10 @@ export type ConformanceReport = {
 		/** Set from SOURCE_DATE_EPOCH when present, for reproducible reports. */
 		readonly reproducible: boolean;
 	};
-	readonly cover	/** Human-review evidence, kept separate from executable case results. */
-	readonly reviewEvidence: readonly ReviewEvidence[];
-age: readonly RoleCoverage[];
+	readonly coverage: readonly RoleCoverage[];
 	readonly requirements: readonly RequirementResult[];
+	/** Human-review evidence, kept separate from executable case results. */
+	readonly reviewEvidence: readonly ReviewEvidence[];
 	/**
 	 * The one-line honest summary. Deliberately NOT a boolean: a caller asking
 	 * "did it pass" must confront coverage, because a run with zero failures and
@@ -243,7 +281,11 @@ export function buildReport(input: {
 	readonly target: ConformanceReport["target"];
 	readonly run: ConformanceReport["run"];
 	readonly cases: readonly CaseResult[];
+	readonly reviewEvidence?: readonly ReviewEvidence[];
+	/** Defaults to the adopted revision, so an existing caller is unaffected. */
+	readonly specVersion?: SpecVersion;
 }): ConformanceReport {
+	const specVersion = input.specVersion ?? DEFAULT_SPEC_VERSION;
 	const reviewEvidence = input.reviewEvidence ?? [];
 	validateReviewEvidence(reviewEvidence);
 	const byRequirement = new Map<string, CaseResult[]>();
@@ -261,7 +303,7 @@ export function buildReport(input: {
 		scopedRoles.has(r.role),
 	).map((requirement) => {
 		const cases = byRequirement.get(requirement.id) ?? [];
-		const clauses = clausesForRequirement(requirement.id);
+		const clauses = clausesForRequirement(requirement.id, specVersion);
 		return {
 			requirement,
 			outcome: rollUpOutcome(cases),
@@ -289,10 +331,26 @@ export function buildReport(input: {
 	// would otherwise vanish from the summary entirely.
 	const advisoryCases = input.cases.filter((c) => c.outcome === "advisory");
 
+	// Counted over the whole revision, not over the roles in scope: the question
+	// "how much of the spec does this suite reach" is about the suite, and
+	// scoping it to the target's roles would let a single-role run report a
+	// flattering clause number that says nothing about the suite's reach.
+	const clausesInForce = clausesForVersion(specVersion);
+	const mustClauses = clausesInForce.filter((c) => c.level === "must");
+	const mustCovered = mustClauses.filter((c) => c.caseIds.length > 0).length;
+
 	return {
 		reportVersion: "1",
 		suite: input.suite,
 		spec: SPEC_SOURCE,
+		specVersion,
+		clauseCoverage: {
+			specVersion,
+			total: clausesInForce.length,
+			mustTotal: mustClauses.length,
+			mustCovered,
+			mustUncovered: mustClauses.length - mustCovered,
+		},
 		target: input.target,
 		run: input.run,
 		coverage,
