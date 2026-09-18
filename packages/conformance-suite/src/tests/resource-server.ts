@@ -103,7 +103,7 @@ function verifyDirectBlobHeaders(
   const contentLength = headers.get("content-length");
   if (contentLength !== null) {
     const declared = Number(contentLength);
-    if (!Number.isNaN(declared) && declared !== body.length) {
+    if (!/^[0-9]+$/.test(contentLength) || !Number.isSafeInteger(declared) || declared !== body.length) {
       return fail(`Content-Length declared ${contentLength} bytes but the response body was ${body.length} bytes.`, [
         evidence,
       ]);
