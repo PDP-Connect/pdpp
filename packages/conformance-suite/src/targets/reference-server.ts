@@ -78,7 +78,12 @@ export type Defect =
   /** Rejects a purpose_code merely for being unregistered (AS-6). */
   | "reject-unregistered-purpose"
   /** Proceeds on an unsupported PDPP-Version instead of 400 (AS-17). */
-  | "accept-unsupported-version";
+  | "accept-unsupported-version"
+  /** Issues an ai_training grant without explicit affirmative consent (AS-14). */
+  | "bypass-ai-training-consent";
+
+/** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
+export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
 
 export type Record_ = { readonly id: string } & Record<string, unknown>;
 
@@ -211,14 +216,25 @@ export class ReferenceServer {
       fields: readonly string[];
       timeConstraint?: { field: string; from?: string; to?: string };
     }[],
-    options: { expired?: boolean } = {}
-  ): { grantId: string; accessToken: string } | null {
+    options: { expired?: boolean; purposeCode?: string; explicitAiTrainingConsent?: boolean } = {}
+  ): { grantId: string; accessToken: string } | { deniedReason: "ai_training_consent_required" } | null {
     // Reject a grant naming a stream this server does not serve: an AS must
     // validate against the retained declaration (Section 9 AS item 2).
     for (const s of requested) {
       if (!this.streams.some((fixture) => fixture.name === s.name)) {
         return null;
       }
+    }
+    // Core Section 9 AS item 14: the sole purpose code with a protocol-level
+    // consent requirement. The defect models a server that issues the grant
+    // anyway, so the oracle can prove it actually checks this rather than
+    // passing on every target regardless.
+    if (
+      options.purposeCode === AI_TRAINING_PURPOSE &&
+      !options.explicitAiTrainingConsent &&
+      !this.defects.has("bypass-ai-training-consent")
+    ) {
+      return { deniedReason: "ai_training_consent_required" };
     }
     this.counter += 1;
     const grantId = `grant_${this.counter}`;

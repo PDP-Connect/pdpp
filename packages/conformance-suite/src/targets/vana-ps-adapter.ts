@@ -163,18 +163,31 @@ export class VanaPsAdapter implements TargetAdapter {
     });
     const review = reviewed.ok ? ((await reviewed.json()) as { review?: { review_digest?: string } }) : undefined;
 
-    const approve = async (revision?: string): Promise<IssuedGrant | null> => {
+    let lastError: { status: number; errorCode?: string } | null = null;
+
+    const approve = async (revision?: string, explicitAiTrainingConsent?: boolean): Promise<IssuedGrant | null> => {
+      const body: Record<string, unknown> = revision ? { review_digest: revision } : {};
+      if (explicitAiTrainingConsent !== undefined) {
+        body.explicit_ai_training_consent = explicitAiTrainingConsent;
+      }
       const response = await fetch(
         `${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/approve`,
         {
           method: "POST",
           headers: { ...ownerAuth, "content-type": "application/json" },
-          body: JSON.stringify(revision ? { review_digest: revision } : {}),
+          body: JSON.stringify(body),
         }
       );
       if (!response.ok) {
+        const errorBody: unknown = await response.json().catch(() => undefined);
+        const errorCode = (errorBody as { error?: unknown } | undefined)?.error;
+        lastError = {
+          status: response.status,
+          ...(typeof errorCode === "string" ? { errorCode } : {}),
+        };
         return null;
       }
+      lastError = null;
       const approval = (await response.json()) as {
         redirect_uri?: string;
         grant_id?: string;
@@ -199,7 +212,12 @@ export class VanaPsAdapter implements TargetAdapter {
     };
 
     const digest = review?.review?.review_digest;
-    return { handle: sessionId, ...(digest ? { reviewRevision: digest } : {}), approve };
+    return {
+      handle: sessionId,
+      ...(digest ? { reviewRevision: digest } : {}),
+      approve,
+      lastApproveError: () => lastError,
+    };
   }
 
   /**
@@ -302,7 +320,7 @@ export class VanaPsAdapter implements TargetAdapter {
         {
           type: "https://pdpp.dev/data-access",
           source: { id: this.config.sourceId },
-          purpose_code: this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
+          purpose_code: wanted.purposeCode ?? this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
           access_mode: wanted.accessMode ?? "continuous",
           streams: wanted.streams.map((s) => ({
             name: s.name,
@@ -419,7 +437,7 @@ export class VanaPsAdapter implements TargetAdapter {
     if (!staged) {
       return null;
     }
-    return await staged.approve(staged.reviewRevision);
+    return await staged.approve(staged.reviewRevision, wanted.explicitAiTrainingConsent);
   }
 
   async revokeGrant(grantId: string): Promise<void> {

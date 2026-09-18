@@ -59,7 +59,9 @@ set -euo pipefail
 # The integration owner's composed tree in vana-com/personal-server-ts:
 # origin/main + feat/pdpp-as-grants + feat/pdpp-record-storage-rs + integration
 # work, carrying both PDPP halves and all three conformance fixes.
-VANA_REF="${PDPP_VANA_REF:-5e98085}"
+# def4ff7 additionally carries explicit_ai_training_consent enforcement on
+# /approve (AS-14), which is why this ref moved past 5e98085.
+VANA_REF="${PDPP_VANA_REF:-def4ff7}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
 COMPOSED_BRANCH="pdpp-conformance-composed"

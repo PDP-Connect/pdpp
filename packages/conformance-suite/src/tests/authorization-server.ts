@@ -423,4 +423,74 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       );
     },
   },
+
+  // --------------------------------------------------------------- AS-14 ---
+  // Section 9 AS item 14 / #ai-training-consent: the sole purpose code with a
+  // protocol-level (not merely advisory) consent requirement. An AS MUST
+  // obtain explicit affirmative consent before issuing ANY grant carrying
+  // `purpose_code: https://pdpp.dev/purpose/ai_training`; every other purpose
+  // code's consent properties remain advisory. The negative control below must
+  // therefore differ from the positive control ONLY in the consent flag, on
+  // the exact normative purpose code, so a pass cannot be read as "this AS
+  // requires extra consent for purposes in general".
+  {
+    caseId: "AS-14/explicit-consent-required-for-ai-training",
+    requirementId: "AS-14",
+    assertion:
+      "An ai_training grant is issued when explicit affirmative consent is given, and refused with zero issuance when it is not.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.stageApproval) {
+        return skip(
+          "The adapter cannot stage an authorization request short of approval, so this suite has no hook to submit explicit_ai_training_consent separately from approval. This is a harness-coverage gap, not a target defect."
+        );
+      }
+
+      const grantRequest = {
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+        purposeCode: "https://pdpp.dev/purpose/ai_training",
+      };
+
+      // Negative control first: ordinary approval, with no explicit consent
+      // signal at all, must not issue a grant carrying this purpose code.
+      const stagedForDenial = await adapter.stageApproval(grantRequest);
+      if (!stagedForDenial) {
+        return skip("The target could not stage an ai_training authorization request.");
+      }
+      const denied = await stagedForDenial.approve(stagedForDenial.reviewRevision);
+      if (denied) {
+        return fail(
+          `An ai_training grant (${denied.grantId}) was issued by an ordinary approval that gave no explicit affirmative consent. Section 9 AS item 14 requires explicit affirmative consent before issuing ANY grant with purpose_code https://pdpp.dev/purpose/ai_training — this is the sole purpose code with a protocol-level consent requirement, so a bare approval must not be sufficient for it.`
+        );
+      }
+      const deniedError = stagedForDenial.lastApproveError?.();
+      if (deniedError && deniedError.status >= 500) {
+        return fail(
+          `The ordinary approval was refused, but with a ${deniedError.status} server error rather than a structured denial. This does not distinguish a policy refusal from a transport failure, so it is not evidence the consent gate fired.`
+        );
+      }
+
+      // Positive control: the identical request shape, differing only in the
+      // consent flag, must succeed. Without this, a target that refuses
+      // ai_training grants unconditionally would pass the negative check
+      // vacuously.
+      const stagedForApproval = await adapter.stageApproval(grantRequest);
+      if (!stagedForApproval) {
+        return skip("The target could not stage a second ai_training authorization request.");
+      }
+      const approved = await stagedForApproval.approve(stagedForApproval.reviewRevision, true);
+      if (!approved) {
+        const approvedError = stagedForApproval.lastApproveError?.();
+        return fail(
+          `An ai_training grant was refused even with explicit_ai_training_consent given${
+            approvedError ? ` (${approvedError.status} ${approvedError.errorCode ?? "no error code"})` : ""
+          }. Section 9 AS item 14 requires the AS to issue the grant once explicit affirmative consent is obtained, not merely to refuse it without.`
+        );
+      }
+      return pass();
+    },
+  },
 ];

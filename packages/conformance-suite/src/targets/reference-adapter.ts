@@ -160,9 +160,15 @@ export class ReferenceTargetAdapter implements TargetAdapter {
         name: s.name,
         fields: [...s.fields],
         ...(request.timeConstraint ? { timeConstraint: request.timeConstraint } : {}),
-      }))
+      })),
+      {
+        ...(request.purposeCode ? { purposeCode: request.purposeCode } : {}),
+        ...(request.explicitAiTrainingConsent === undefined
+          ? {}
+          : { explicitAiTrainingConsent: request.explicitAiTrainingConsent }),
+      }
     );
-    if (!issued) {
+    if (!issued || "deniedReason" in issued) {
       return null;
     }
     return {
@@ -283,6 +289,6 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       this.fixtures.map((f) => ({ name: f.name, fields: [...f.fields] })),
       { expired: true }
     );
-    return issued?.accessToken ?? null;
+    return issued && "accessToken" in issued ? issued.accessToken : null;
   }
 }

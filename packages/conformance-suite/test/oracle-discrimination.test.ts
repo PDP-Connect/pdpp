@@ -24,11 +24,12 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { TargetAdapter } from "../src/harness/adapter.ts";
+import type { GrantRequest, IssuedGrant, StagedApproval, TargetAdapter } from "../src/harness/adapter.ts";
 import type { ConformanceCase } from "../src/harness/runner.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
 import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import type { Defect } from "../src/targets/reference-server.ts";
+import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
@@ -36,6 +37,7 @@ import { SELECTION_VALIDATION_CASES } from "../src/tests/selection-validation.ts
 
 const CASES: readonly ConformanceCase[] = [
   ...RESOURCE_SERVER_CASES,
+  ...AUTHORIZATION_SERVER_CASES,
   ...GRANT_LIFECYCLE_CASES,
   ...QUERY_SURFACE_CASES,
   ...SELECTION_VALIDATION_CASES,
@@ -396,6 +398,96 @@ describe("AS-10 cannot be satisfied by an unrelated new grant", () => {
         makeContext(adapter as TargetAdapter, streams)
       );
       assert.equal(result.outcome, "pass", `expected pass, got ${result.outcome}: ${result.detail ?? ""}`);
+    } finally {
+      await adapter.teardown();
+    }
+  });
+});
+
+/**
+ * Gives the reference adapter a `stageApproval`, built on its own `issueGrant`,
+ * so AS-14 can drive it: the reference adapter has no separable review step of
+ * its own (`issueGrant` resolves consent out of band in one call), but the
+ * consent gate this proves lives in the reference SERVER, not in this shim —
+ * the shim only exposes the same decision through the two-step shape AS-14
+ * needs to submit `explicitAiTrainingConsent` independently of approval.
+ */
+class AiTrainingStageableAdapter implements Omit<TargetAdapter, "stageApproval"> {
+  readonly capabilities: TargetAdapter["capabilities"];
+  private readonly inner: TargetAdapter;
+
+  constructor(inner: TargetAdapter) {
+    this.inner = inner;
+    this.capabilities = inner.capabilities;
+  }
+
+  get baseUrl(): string {
+    return this.inner.baseUrl;
+  }
+  get targetId(): string {
+    return this.inner.targetId;
+  }
+  get targetVersion(): string {
+    return this.inner.targetVersion;
+  }
+  get roles(): TargetAdapter["roles"] {
+    return this.inner.roles;
+  }
+  setup(): ReturnType<TargetAdapter["setup"]> {
+    return this.inner.setup();
+  }
+  teardown(): Promise<void> {
+    return this.inner.teardown();
+  }
+  ownerToken(): ReturnType<TargetAdapter["ownerToken"]> {
+    return this.inner.ownerToken();
+  }
+  issueGrant: TargetAdapter["issueGrant"] = (request) => this.inner.issueGrant(request);
+  revokeGrant(grantId: string): Promise<void> {
+    return this.inner.revokeGrant(grantId);
+  }
+
+  stageApproval = (wanted: GrantRequest): Promise<StagedApproval | null> => {
+    let lastError: { status: number; errorCode?: string } | null = null;
+    const approve = async (_revision?: string, explicitAiTrainingConsent?: boolean): Promise<IssuedGrant | null> => {
+      const issued = await this.inner.issueGrant({
+        ...wanted,
+        ...(explicitAiTrainingConsent === undefined ? {} : { explicitAiTrainingConsent }),
+      });
+      lastError = issued ? null : { status: 400, errorCode: "ai_training_consent_required" };
+      return issued;
+    };
+    return Promise.resolve({ handle: "ai-training-stage", approve, lastApproveError: () => lastError });
+  };
+}
+
+describe("AS-14 cannot be satisfied by silently issuing the ai_training grant", () => {
+  it("passes against a clean reference target that gates ai_training on explicit consent", async () => {
+    const inner = new ReferenceTargetAdapter(undefined, new Set());
+    const adapter = new AiTrainingStageableAdapter(inner);
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(
+        caseById("AS-14/explicit-consent-required-for-ai-training"),
+        makeContext(adapter as TargetAdapter, streams)
+      );
+      assert.equal(result.outcome, "pass", `expected pass, got ${result.outcome}: ${result.detail ?? ""}`);
+    } finally {
+      await adapter.teardown();
+    }
+  });
+
+  it("fails against a target that silently issues the ai_training grant without explicit consent", async () => {
+    const inner = new ReferenceTargetAdapter(undefined, new Set(["bypass-ai-training-consent"]));
+    const adapter = new AiTrainingStageableAdapter(inner);
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(
+        caseById("AS-14/explicit-consent-required-for-ai-training"),
+        makeContext(adapter as TargetAdapter, streams)
+      );
+      assert.equal(result.outcome, "fail", `expected fail, got ${result.outcome}: ${result.detail ?? ""}`);
+      assert.ok(result.detail && result.detail.length > 0, "failure must carry a detail");
     } finally {
       await adapter.teardown();
     }

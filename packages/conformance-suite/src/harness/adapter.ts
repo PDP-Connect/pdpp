@@ -110,10 +110,27 @@ export interface IssuedGrant {
  * to attempt approval — correctly, twice, or with a stale revision.
  */
 export interface StagedApproval {
-  /** Approve this staged request. Returns the grant, or null if refused. */
-  readonly approve: (revision?: string) => Promise<IssuedGrant | null>;
+  /**
+   * Approve this staged request. Returns the grant, or null if refused.
+   *
+   * `explicitAiTrainingConsent` is separate from the review revision because
+   * AS-14 needs to approve the identical staged request twice — once with the
+   * flag, once without — and a revision is consumed by its first use.
+   */
+  readonly approve: (revision?: string, explicitAiTrainingConsent?: boolean) => Promise<IssuedGrant | null>;
   /** Opaque handle for the pending request (a session id, request_uri, ...). */
   readonly handle: string;
+  /**
+   * The status and machine-readable error code from the most recent `approve`
+   * call that returned null, when the refusal was a structured denial rather
+   * than a transport failure (network error, non-JSON body, no error code).
+   *
+   * AS-14's negative control needs to tell "the server refused issuance
+   * because consent was missing" apart from "the request never reached the
+   * server intelligibly" — both look like `approve` returning null, and only
+   * this distinguishes them.
+   */
+  readonly lastApproveError?: () => { readonly status: number; readonly errorCode?: string } | null;
   /**
    * The revision or digest the server bound the reviewed facts to, if it
    * publishes one. Absent when the server has no such concept.
@@ -165,6 +182,14 @@ export interface RefreshableGrant {
 /** The grant shape a test needs. The adapter arranges consent out of band. */
 export interface GrantRequest {
   readonly accessMode?: "single_use" | "continuous" | "recurring";
+  /**
+   * Explicit affirmative consent to the `ai_training` purpose code, carried
+   * separately from the ordinary approval so AS-14's positive and negative
+   * controls request the SAME grant shape and differ only in this flag.
+   */
+  readonly explicitAiTrainingConsent?: boolean;
+  /** Purpose code for this request. Defaults to the adapter's own default when absent. */
+  readonly purposeCode?: string;
   readonly streams: readonly {
     readonly name: string;
     readonly fields: readonly string[];
