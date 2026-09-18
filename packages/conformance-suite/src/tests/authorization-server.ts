@@ -27,7 +27,16 @@ interface IntrospectionBody {
   active?: boolean;
   authorization_details?: {
     type?: string;
-    streams?: { name?: string; fields?: string[]; instance_ids?: string[] }[];
+    access_mode?: string;
+    purpose_code?: string;
+    source?: { kind?: string; id?: string };
+    streams?: {
+      name?: string;
+      fields?: string[];
+      instance_ids?: string[];
+      time_constraint?: { field?: string; since?: string; until?: string };
+      resources?: string[];
+    }[];
   }[];
   client_id?: string;
   exp?: number;
@@ -53,6 +62,45 @@ async function discoverIntrospectionEndpoint(asBaseUrl: string): Promise<string 
   }
   const endpoint = (metadata.json as { introspection_endpoint?: unknown } | undefined)?.introspection_endpoint;
   return typeof endpoint === "string" && endpoint.length > 0 ? endpoint : null;
+}
+
+type IntrospectedStream = NonNullable<
+  NonNullable<IntrospectionBody["authorization_details"]>[number]["streams"]
+>[number];
+
+/**
+ * Validate one StreamGrant against Section 7's StreamGrant field table.
+ * Returns a failure message, or null if the stream conforms.
+ */
+function streamGrantSchemaViolation(s: IntrospectedStream): string | null {
+  if (typeof s.name !== "string" || s.name.length === 0 || s.name.includes("*")) {
+    return `Stream name ${JSON.stringify(s.name)} is absent or still a wildcard. Section 7's StreamGrant table requires \`name\` to be a concrete, non-wildcard string in an issued grant.`;
+  }
+  if (!Array.isArray(s.instance_ids) || s.instance_ids.length === 0) {
+    return `Stream "${s.name}" carries no resolved \`instance_ids\`. Section 7's StreamGrant table requires a non-empty, unique instance-handle list in an issued grant — an empty list means fan-in was never resolved.`;
+  }
+  if (new Set(s.instance_ids).size !== s.instance_ids.length) {
+    return `Stream "${s.name}" carries duplicate \`instance_ids\`. Section 7 requires unique instance handles.`;
+  }
+  if (!Array.isArray(s.fields) || s.fields.length === 0) {
+    return `Stream "${s.name}" carries no resolved fields allowlist. The RS enforces the fields list and cannot reconstruct it, so an empty list is an authorization defect rather than an unrestricted grant.`;
+  }
+  if (s.fields.includes("*")) {
+    return `Stream "${s.name}" carries a wildcard in its fields allowlist. Section 7 requires fields to be expanded before issuance.`;
+  }
+  if (s.time_constraint !== undefined) {
+    const tc = s.time_constraint;
+    if (typeof tc.field !== "string" || tc.field.length === 0) {
+      return `Stream "${s.name}" carries a \`time_constraint\` with no \`field\`. Section 7 requires \`field\` whenever \`time_constraint\` is present.`;
+    }
+    if (tc.since === undefined && tc.until === undefined) {
+      return `Stream "${s.name}" carries a \`time_constraint\` with neither \`since\` nor \`until\`. Section 7 requires at least one bound to be present.`;
+    }
+  }
+  if (s.resources !== undefined && (!Array.isArray(s.resources) || s.resources.length === 0)) {
+    return `Stream "${s.name}" carries a \`resources\` field that is present but not a non-empty array. Section 7 says \`resources\`, when present, is a non-empty authorized-record-id list; absent means all records.`;
+  }
+  return null;
 }
 
 /**
@@ -143,10 +191,26 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   },
 
   // ---------------------------------------------------------------- AS-3 ---
-  // The introspection response carries the resolved enforcement constraints, and
-  // Section 9 item 4 requires them to be fully expanded before issuance. A
-  // wildcard or an empty field list reaching an RS is an authorization defect:
-  // the RS enforces exactly this and is forbidden from resolving anything itself.
+  // Section 9 item 3 requires an issued grant to conform to the Section 7
+  // field tables (`#grant`). This case is honest about a real observability
+  // ceiling: RFC 9396 `authorization_details` is a deliberately narrower
+  // projection of the full grant, not the grant itself. The reference
+  // implementation's own `toAuthorizationDetail` (co-located Vana adapter
+  // path) drops `version`, `grant_id`, `issued_at`, `subject`, `client`,
+  // `source_declaration`, `retention`, `expires_at`, and `selection_preset`
+  // deliberately (`client_claims`/`retention` are policy metadata Section 6/7
+  // keep out of RS enforcement context) — and the flat `grant_id`/`client_id`/
+  // `subject_id` introspection carries live outside `authorization_details`,
+  // in a different shape (`client.client_id`, `subject.id`) than the Section 7
+  // grant table. Neither the AS-9/AS-3 introspection response nor the
+  // `TargetAdapter` contract's `IssuedGrant` exposes the whole grant body
+  // anywhere this suite can read it. So this case validates every StreamGrant
+  // sub-field the projection DOES carry (`name`, `instance_ids`, `fields`,
+  // `time_constraint`, `resources` — Section 7's StreamGrant table) plus the
+  // detail-level fields it carries (`source`, `purpose_code`, `access_mode`),
+  // and reports the remaining top-level grant fields as unobserved evidence
+  // rather than silently passing on a partial check. It does not claim full
+  // Section 7 schema coverage.
   // AS-3 is `applicability: "always"` (every grant, co-located or separated,
   // must conform to the Section 7 grant schema); only this case's MECHANISM —
   // reading the resolved grant back over RFC 7662 introspection — is
@@ -154,10 +218,10 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   // endpoint is missing evidence (`skip`), not exempt from the requirement, so
   // this case must not gate on `separatedDeployment` via `appliesWhen`.
   {
-    caseId: "AS-3/resolved-grant-is-fully-expanded",
+    caseId: "AS-3/resolved-grant-matches-observable-schema-fields",
     requirementId: "AS-3",
     assertion:
-      "The authorization_details in introspection carry concrete stream names and a non-empty resolved field list, with no wildcards.",
+      "Every grant field observable through introspection (the RFC 9396 detail's source/purpose_code/access_mode, and each StreamGrant's name/instance_ids/fields/time_constraint/resources) matches Section 7's field tables. Top-level fields the projection never carries (version, grant_id, issued_at, subject, client, source_declaration, retention, expires_at) are reported as unobserved, not passed.",
     async run({ adapter, streams }) {
       const [stream] = streams;
       if (!stream) {
@@ -181,7 +245,8 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       if (response.status !== 200) {
         return fail(`Expected 200 from the introspection endpoint, got ${response.status}.`, [response.evidence]);
       }
-      const details = (response.json as IntrospectionBody | undefined)?.authorization_details;
+      const body = response.json as IntrospectionBody | undefined;
+      const details = body?.authorization_details;
       if (!Array.isArray(details) || details.length === 0) {
         return fail(
           "Introspection of a client token carried no authorization_details. Section 8 requires the response to contain the complete context needed to enforce the request.",
@@ -195,28 +260,32 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
           [response.evidence]
         );
       }
+      if (typeof detail.purpose_code !== "string" || detail.purpose_code.length === 0) {
+        return fail(
+          `Section 7 requires \`purpose_code\` as a required URI. Got ${JSON.stringify(detail.purpose_code)}.`,
+          [response.evidence]
+        );
+      }
+      if (detail.access_mode !== "single_use" && detail.access_mode !== "continuous") {
+        return fail(
+          `Section 7 requires \`access_mode\` to be exactly "single_use" or "continuous". Got ${JSON.stringify(detail.access_mode)}.`,
+          [response.evidence]
+        );
+      }
+      if (typeof detail.source?.id !== "string" || detail.source.id.length === 0) {
+        return fail(
+          `Section 7 requires \`source\` as \`{ kind, id }\` retained from the accepted SourceDeclaration. Got ${JSON.stringify(detail.source)}.`,
+          [response.evidence]
+        );
+      }
       const grantStreams = detail.streams ?? [];
       if (grantStreams.length === 0) {
         return fail("The resolved authorization detail names no streams.", [response.evidence]);
       }
       for (const s of grantStreams) {
-        if (typeof s.name !== "string" || s.name.includes("*")) {
-          return fail(
-            `Stream name ${JSON.stringify(s.name)} is absent or still a wildcard. Section 9 item 4 requires wildcards to be expanded into explicit stream names before the grant is issued, because the RS may not resolve them.`,
-            [response.evidence]
-          );
-        }
-        if (!Array.isArray(s.fields) || s.fields.length === 0) {
-          return fail(
-            `Stream "${s.name}" carries no resolved fields allowlist. The RS enforces the fields list and cannot reconstruct it, so an empty list is an authorization defect rather than an unrestricted grant.`,
-            [response.evidence]
-          );
-        }
-        if (s.fields.includes("*")) {
-          return fail(
-            `Stream "${s.name}" carries a wildcard in its fields allowlist. Section 9 item 4 requires fields to be expanded before issuance.`,
-            [response.evidence]
-          );
+        const violation = streamGrantSchemaViolation(s);
+        if (violation) {
+          return fail(violation, [response.evidence]);
         }
       }
       return pass([response.evidence]);
@@ -538,6 +607,65 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
         );
       }
       return pass();
+    },
+  },
+
+  // ---------------------------------------------------------------- AS-3 ---
+  // A malformed-grant mutant, independent of the shape-check case above: that
+  // case only ever inspects a grant the target already agreed to issue for a
+  // legitimately seeded stream, so it cannot catch a target that issues a
+  // grant AT ALL for a stream name it should have refused. Section 7's
+  // StreamGrant table requires `name` to be "always concrete; no wildcards in
+  // issued grants" — this drives a literal `"*"` stream name (not a declared
+  // stream) through the real staging/approval path and requires the AS to
+  // never turn it into an issued grant, at either the request-validation step
+  // (AS-2 territory) or issuance. Uses the real adapter path rather than
+  // asserting against a hand-built body, so this only exercises what the
+  // target's own HTTP surface actually does with the input.
+  {
+    caseId: "AS-3/wildcard-stream-name-request-never-issues",
+    requirementId: "AS-3",
+    assertion:
+      'A selection request naming a literal wildcard stream ("*", not a declared stream) never results in an issued grant naming that wildcard.',
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.stageApproval) {
+        return skip("The adapter does not implement stageApproval.");
+      }
+      const staged = await adapter.stageApproval({ streams: [{ name: "*", fields: [...stream.fields] }] });
+      if (!staged) {
+        // Refused before an approval handle even existed. Section 9 item 3 is
+        // satisfied: no grant was, or could be, issued for this request.
+        return pass();
+      }
+      const grant = await staged.approve(staged.reviewRevision);
+      if (!grant) {
+        const error = staged.lastApproveError?.();
+        if (error && error.status >= 400 && error.status < 500) {
+          // Refused at approval with a structured client error: also satisfies
+          // the requirement — no wildcard-named grant was issued.
+          return pass();
+        }
+        return skip(
+          "The target neither issued a grant nor returned a structured client-error refusal for a wildcard stream name request. Cannot distinguish enforcement from transport/harness failure."
+        );
+      }
+      const wildcardIssued = grant.streams.some((s) => s.name === "*" || s.name.includes("*"));
+      if (wildcardIssued) {
+        return fail(
+          `The target issued grant ${grant.grantId} naming a wildcard stream. Section 7's StreamGrant table requires \`name\` to be concrete in every issued grant — a request for a non-declared wildcard stream must be refused, not resolved into an issued grant that still carries the wildcard.`
+        );
+      }
+      // The target issued A grant, but not one naming the wildcard verbatim —
+      // e.g. it silently dropped or substituted the stream. That is not the
+      // failure this case targets (a wildcard reaching an RS's enforcement
+      // context); it is undersupported evidence for this specific mutant.
+      return skip(
+        `The target issued grant ${grant.grantId} for a wildcard stream-name request without naming the wildcard verbatim in the result (streams: ${JSON.stringify(grant.streams.map((s) => s.name))}). This case cannot tell whether that reflects correct rejection-and-substitution or an untested resolution path.`
+      );
     },
   },
 ];
