@@ -142,11 +142,6 @@ function renderUnmapped(): readonly string[] {
 export function renderMatrixMarkdown(): string {
   const sections = [
     [
-      "<!--",
-      "Copyright The PDP-Connect Contributors",
-      "SPDX-License-Identifier: Apache-2.0",
-      "-->",
-      "",
       "# PDPP Core normative matrix",
       "",
       "GENERATED FILE — do not edit by hand. Source:",
