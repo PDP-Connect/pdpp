@@ -182,9 +182,20 @@ cmd_build() {
   (cd "$PDPP_VANA_PS" && npm install --allow-git=root --no-audit --no-fund --ignore-scripts) ||
     die "dependency install failed; see the npm output above."
 
+  # npm 12's install-script policy blocks preinstall/install/postinstall for
+  # any dependency not covered by an `allowScripts` policy -- and blocks it as
+  # a WARNING, not an error: `npm rebuild` still exits 0 with the native build
+  # silently skipped. `--allow-scripts` can't fix this (project-scoped CLI use
+  # is a hard npm error); the escape hatch is `--dangerously-allow-all-scripts`,
+  # scoped here to only the three named packages this command rebuilds.
+  # Verified below rather than trusted, since the exit code cannot tell us.
   log "building native modules"
-  (cd "$PDPP_VANA_PS" && npm rebuild better-sqlite3 secp256k1 esbuild) ||
+  (cd "$PDPP_VANA_PS" && npm rebuild better-sqlite3 secp256k1 esbuild --dangerously-allow-all-scripts) ||
     die "native module build failed."
+
+  (cd "$PDPP_VANA_PS" && node -e "require('better-sqlite3')(':memory:')") ||
+    die "better-sqlite3 native binding did not build; npm rebuild exits 0 even
+when its install scripts are blocked, so this checks the binding loads."
 
   log "building @opendatalabs/personal-server-ts-core"
   (cd "$PDPP_VANA_PS/packages/core" && npm run build) ||
