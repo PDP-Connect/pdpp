@@ -117,8 +117,15 @@ export async function request(baseUrl: string, path: string, options: RequestOpt
 /**
  * Perform one request and capture the response body as raw bytes, for cases
  * that must prove byte-for-byte fidelity (RS-1 blob fetch) rather than parsed
- * JSON or decoded text. Evidence records length and a truncated preview, never
- * raw binary, so reports stay text-safe.
+ * JSON or decoded text. Evidence records only the byte length, never raw
+ * binary, so reports stay text-safe.
+ *
+ * Redirects are never followed (`redirect: "manual"`). Section 8 permits a
+ * blob-fetch response to be either a direct 200 or a 302 to a short-lived
+ * signed URL, and the two carry different required headers. Auto-following
+ * (the default `fetch` behaviour) would hide a bare 302 from the case and
+ * could forward the target's `Authorization` header to whatever the signed
+ * URL's host turns out to be.
  */
 export async function requestBytes(
   baseUrl: string,
@@ -141,6 +148,7 @@ export async function requestBytes(
   const response = await fetch(url, {
     method,
     headers,
+    redirect: "manual",
     ...(options.body !== undefined && { body: options.body }),
   });
   const body = new Uint8Array(await response.arrayBuffer());

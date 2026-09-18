@@ -714,19 +714,50 @@ describe("AS-19 replay oracle discriminates genuine token-endpoint code replay",
  * or "empty 200" would pass all three, which is exactly what this proves it
  * does not do.
  */
+const CACHE_CONTROL_PATTERN = /Cache-Control/;
+const LOCATION_PATTERN = /Location/;
+
 describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
   const UPLOAD_BYTES = Buffer.from("pdpp-conformance-blob-fixture-payload");
   const WRONG_BYTES = Buffer.from("this is not the blob you are looking for");
   const BLOB_ID = "blob_test_fixture";
   const MIME_TYPE = "application/octet-stream";
 
-  type Mode = "correct" | "wrong-bytes" | "empty-200";
+  type Mode =
+    | "correct"
+    | "wrong-bytes"
+    | "empty-200"
+    | "missing-cache-control"
+    | "redirect-valid"
+    | "redirect-malformed";
+
+  /** Set when a manual-redirect run's client follows the 302 instead of stopping at it. */
+  let redirectTargetHit = false;
 
   async function startBlobServer(mode: Mode): Promise<{ server: Server; baseUrl: string }> {
     const server = createServer((req, res) => {
+      if (req.url === "/signed-url-target") {
+        redirectTargetHit = true;
+        res.writeHead(200, { "content-type": MIME_TYPE }).end(UPLOAD_BYTES);
+        return;
+      }
       if (req.url === `/v1/blobs/${BLOB_ID}`) {
+        if (mode === "redirect-valid") {
+          res.writeHead(302, { location: "/signed-url-target", "cache-control": "no-store" }).end();
+          return;
+        }
+        if (mode === "redirect-malformed") {
+          // Missing Location: Section 8 requires it on every 302, so a
+          // redirect that omits it is a defect, not an untestable case.
+          res.writeHead(302, { "cache-control": "no-store" }).end();
+          return;
+        }
         const body = mode === "correct" ? UPLOAD_BYTES : mode === "wrong-bytes" ? WRONG_BYTES : Buffer.alloc(0);
-        res.writeHead(200, { "content-type": MIME_TYPE, "content-length": String(body.length) });
+        const headers: Record<string, string> = { "content-type": MIME_TYPE, "content-length": String(body.length) };
+        if (mode !== "missing-cache-control") {
+          headers["cache-control"] = "private, no-store";
+        }
+        res.writeHead(200, headers);
         res.end(body);
         return;
       }
@@ -765,6 +796,7 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
   }
 
   async function runBlobCase(mode: Mode, useDigest = false) {
+    redirectTargetHit = false;
     const { server, baseUrl } = await startBlobServer(mode);
     const inner = new ReferenceTargetAdapter();
     const { streams } = await inner.setup();
@@ -810,5 +842,24 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
   it("fails a digest check when the served bytes disagree with the recorded digest", async () => {
     const result = await runBlobCase("wrong-bytes", true);
     assert.equal(result.outcome, "fail");
+  });
+
+  it("fails a direct 200 that omits Cache-Control", async () => {
+    const result = await runBlobCase("missing-cache-control");
+    assert.equal(result.outcome, "fail");
+    assert.match(result.detail ?? "", CACHE_CONTROL_PATTERN);
+  });
+
+  it("skips a valid 302 to a signed URL without following it", async () => {
+    const result = await runBlobCase("redirect-valid");
+    assert.equal(result.outcome, "skip");
+    assert.equal(redirectTargetHit, false);
+  });
+
+  it("fails a 302 that omits Location", async () => {
+    const result = await runBlobCase("redirect-malformed");
+    assert.equal(result.outcome, "fail");
+    assert.match(result.detail ?? "", LOCATION_PATTERN);
+    assert.equal(redirectTargetHit, false);
   });
 });

@@ -17,8 +17,10 @@
 
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import type { BlobFixture } from "../harness/adapter.ts";
 import { errorBody, request, requestBytes } from "../harness/http.ts";
-import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import { type CaseVerdict, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import type { Evidence } from "../report/result.ts";
 
 /** Records as returned in a Section 8 list envelope. */
 interface ListBody {
@@ -38,6 +40,113 @@ const INVALID_TOKEN_ERROR = /error="?invalid_token"?/;
 
 function asList(json: unknown): ListBody | undefined {
   return typeof json === "object" && json !== null ? (json as ListBody) : undefined;
+}
+
+/** Parses a Cache-Control header into its lowercased directive names, ignoring directive values. */
+function cacheControlDirectives(header: string | null): ReadonlySet<string> {
+  if (!header) {
+    return new Set();
+  }
+  return new Set(
+    header
+      .split(",")
+      .map((directive) => directive.split("=")[0]?.trim().toLowerCase())
+      .filter((directive): directive is string => Boolean(directive))
+  );
+}
+
+/** The MIME type without parameters (e.g. `; charset=utf-8`), lowercased for case-insensitive comparison. */
+function mimeEssence(contentType: string | null | undefined): string | undefined {
+  return contentType?.split(";")[0]?.trim().toLowerCase();
+}
+
+/**
+ * Checks a blob-fetch 302's required headers (Section 8: `Location` and
+ * `Cache-Control: no-store`). The suite cannot follow the signed URL or know
+ * its expiry, so a well-formed redirect can only be SKIPped, never treated as
+ * a full pass.
+ */
+function verifyBlobRedirect(evidence: Evidence, headers: Headers): CaseVerdict {
+  if (!headers.get("location")) {
+    return fail("The blob-fetch 302 carries no Location header.", [evidence]);
+  }
+  if (!cacheControlDirectives(headers.get("cache-control")).has("no-store")) {
+    return fail(`The blob-fetch 302 must carry Cache-Control: no-store, got "${headers.get("cache-control") ?? ""}".`, [
+      evidence,
+    ]);
+  }
+  return skip(
+    "The blob-fetch endpoint redirected to a signed URL (valid Location and Cache-Control: no-store). Byte fidelity and signed-URL expiry are not checked: the suite does not follow the redirect."
+  );
+}
+
+/**
+ * Checks a direct 200 blob-fetch response's required headers (Section 8:
+ * `Cache-Control: private, no-store`, a `Content-Length` that matches the
+ * actual body when present, and a Content-Type matching the fixture's
+ * declared MIME type by essence, ignoring parameters like `; charset=`).
+ */
+function verifyDirectBlobHeaders(
+  evidence: Evidence,
+  headers: Headers,
+  body: Uint8Array,
+  expectedMimeType: string
+): CaseVerdict | undefined {
+  const cacheControl = cacheControlDirectives(headers.get("cache-control"));
+  if (!(cacheControl.has("private") && cacheControl.has("no-store"))) {
+    return fail(
+      `A direct blob-fetch response must carry Cache-Control: private, no-store, got "${headers.get("cache-control") ?? ""}".`,
+      [evidence]
+    );
+  }
+
+  const contentLength = headers.get("content-length");
+  if (contentLength !== null) {
+    const declared = Number(contentLength);
+    if (!Number.isNaN(declared) && declared !== body.length) {
+      return fail(`Content-Length declared ${contentLength} bytes but the response body was ${body.length} bytes.`, [
+        evidence,
+      ]);
+    }
+  }
+
+  const contentType = headers.get("content-type");
+  if (mimeEssence(contentType) !== mimeEssence(expectedMimeType)) {
+    return fail(`Expected Content-Type "${expectedMimeType}", got "${contentType}".`, [evidence]);
+  }
+
+  return undefined;
+}
+
+/**
+ * Checks the fetched bytes against whichever independent proof the fixture
+ * supplied: the exact retained bytes, or a sha256 digest plus length.
+ */
+function verifyBlobBytes(evidence: Evidence, body: Uint8Array, fixture: BlobFixture): CaseVerdict {
+  if (fixture.rawBytes) {
+    if (!Buffer.from(body).equals(Buffer.from(fixture.rawBytes))) {
+      return fail(
+        `The fetched blob bytes (${body.length} bytes) do not match the bytes stored at upload time (${fixture.rawBytes.length} bytes).`,
+        [evidence]
+      );
+    }
+    return pass([evidence]);
+  }
+  if (fixture.digest) {
+    if (body.length !== fixture.digest.length) {
+      return fail(`Expected ${fixture.digest.length} bytes (the length recorded at upload time), got ${body.length}.`, [
+        evidence,
+      ]);
+    }
+    const actualSha256 = createHash("sha256").update(body).digest("hex");
+    if (actualSha256 !== fixture.digest.sha256) {
+      return fail(`Expected sha256 ${fixture.digest.sha256} (recorded at upload time), got ${actualSha256}.`, [
+        evidence,
+      ]);
+    }
+    return pass([evidence]);
+  }
+  return skip("The blobFixture hook supplied neither rawBytes nor an independent digest to verify against.");
 }
 
 /** Owner-token stream metadata, the shape RS-14 and RS-15 both read. */
@@ -165,7 +274,9 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       "GET {queryBase}/blobs/:blobId returns the exact stored bytes, mimeType, and length under a grant that can read the referencing record.",
     async run({ adapter, path }) {
       if (!adapter.blobFixture) {
-        return skip("The adapter implements no blobFixture hook, so RS-1's blob-fetch endpoint has no known blob to check.");
+        return skip(
+          "The adapter implements no blobFixture hook, so RS-1's blob-fetch endpoint has no known blob to check."
+        );
       }
       const fixture = await adapter.blobFixture();
       if (!fixture) {
@@ -179,40 +290,33 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       const response = await requestBytes(adapter.baseUrl, path(`/blobs/${encodeURIComponent(fixture.blobId)}`), {
         token: grant.accessToken,
       });
+
+      // Section 8 permits either a direct 200 or a 302 to a short-lived signed
+      // URL. The suite has no way to fetch through a signed URL or know its
+      // expiry, so a 302 can only be checked for the headers Section 8
+      // requires on the redirect itself, never for byte fidelity — SKIP rather
+      // than fail or claim a full pass either side of that gap.
+      if (response.status === 302) {
+        return verifyBlobRedirect(response.evidence, response.headers);
+      }
+
       if (response.status !== 200) {
-        return fail(`Expected 200 from the blob-fetch endpoint, got ${response.status}.`, [response.evidence]);
+        return fail(`Expected 200 (or a 302 to a signed URL) from the blob-fetch endpoint, got ${response.status}.`, [
+          response.evidence,
+        ]);
       }
 
-      const contentType = response.headers.get("content-type");
-      if (contentType !== fixture.mimeType) {
-        return fail(`Expected Content-Type "${fixture.mimeType}", got "${contentType}".`, [response.evidence]);
+      const headerFailure = verifyDirectBlobHeaders(
+        response.evidence,
+        response.headers,
+        response.body,
+        fixture.mimeType
+      );
+      if (headerFailure) {
+        return headerFailure;
       }
 
-      if (fixture.rawBytes) {
-        if (!Buffer.from(response.body).equals(Buffer.from(fixture.rawBytes))) {
-          return fail(
-            `The fetched blob bytes (${response.body.length} bytes) do not match the bytes stored at upload time (${fixture.rawBytes.length} bytes).`,
-            [response.evidence]
-          );
-        }
-      } else if (fixture.digest) {
-        if (response.body.length !== fixture.digest.length) {
-          return fail(
-            `Expected ${fixture.digest.length} bytes (the length recorded at upload time), got ${response.body.length}.`,
-            [response.evidence]
-          );
-        }
-        const actualSha256 = createHash("sha256").update(response.body).digest("hex");
-        if (actualSha256 !== fixture.digest.sha256) {
-          return fail(`Expected sha256 ${fixture.digest.sha256} (recorded at upload time), got ${actualSha256}.`, [
-            response.evidence,
-          ]);
-        }
-      } else {
-        return skip("The blobFixture hook supplied neither rawBytes nor an independent digest to verify against.");
-      }
-
-      return pass([response.evidence]);
+      return verifyBlobBytes(response.evidence, response.body, fixture);
     },
   },
 
