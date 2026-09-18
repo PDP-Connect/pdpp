@@ -258,6 +258,8 @@ export class ReferenceAsAdapter implements TargetAdapter {
         const got = resolved.find((r) => r.name === s.name);
         return { name: s.name, fields: got?.fields ? [...got.fields] : [...s.fields] };
       }),
+      // Passed through only when the approval response carried a grant body.
+      ...(approval.grant === undefined ? {} : { rawGrant: approval.grant }),
     };
   }
 

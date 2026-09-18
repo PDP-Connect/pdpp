@@ -99,7 +99,24 @@ export interface TargetCapabilities {
 export interface IssuedGrant {
   readonly accessToken: string;
   readonly grantId: string;
-  /** Streams and the exact fields frozen into the grant. */
+  /**
+   * The issued grant artifact exactly as the target's approval response carried
+   * it, unparsed and unreshaped.
+   *
+   * Absent when the target's approval surface returns no grant body. AS-3 needs
+   * the whole Section 7 grant to validate its field tables, and the adapter must
+   * not manufacture one: a synthesized body would echo the suite's own request
+   * and the case would measure itself. `unknown` (not a typed grant) because the
+   * case under test is precisely whether the artifact has the right shape.
+   */
+  readonly rawGrant?: unknown;
+  /**
+   * Streams and the exact fields frozen into the grant.
+   *
+   * Adapters that cannot read the issued grant back fall back to the requested
+   * shape here, so this field is NOT evidence of what the target resolved. Use
+   * `rawGrant` for that.
+   */
   readonly streams: readonly {
     readonly name: string;
     readonly fields: readonly string[];

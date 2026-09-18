@@ -232,6 +232,10 @@ export class VanaPsAdapter implements TargetAdapter {
           const got = resolved.find((r) => r.name === s.name);
           return { name: s.name, fields: got?.fields ? [...got.fields] : [...s.fields] };
         }),
+        // Only when the approval response actually carried a grant body. This
+        // target's /approve returns `{ redirect_uri, grant_id }`, so in practice
+        // this is absent and AS-3's schema case skips for missing evidence.
+        ...(approval.grant === undefined ? {} : { rawGrant: approval.grant }),
       };
     };
 
