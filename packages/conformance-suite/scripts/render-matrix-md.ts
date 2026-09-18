@@ -25,12 +25,7 @@ import {
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 
-export const MATRIX_MARKDOWN_PATH = join(
-  REPO_ROOT,
-  "docs",
-  "reference",
-  "conformance-normative-matrix.md"
-);
+export const MATRIX_MARKDOWN_PATH = join(REPO_ROOT, "docs", "reference", "conformance-normative-matrix.md");
 
 /** Escapes the one character that would break out of a markdown table cell. */
 function cell(text: string): string {
@@ -51,9 +46,7 @@ function clauseTable(clauses: readonly ClauseEntry[]): readonly string[] {
   ];
 }
 
-function countsByKey<T extends string>(
-  keyOf: (clause: ClauseEntry) => readonly T[] | T
-): ReadonlyMap<T, number> {
+function countsByKey<T extends string>(keyOf: (clause: ClauseEntry) => readonly T[] | T): ReadonlyMap<T, number> {
   const counts = new Map<T, number>();
   for (const clause of CLAUSE_MATRIX) {
     const value = keyOf(clause);
