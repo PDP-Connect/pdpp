@@ -192,6 +192,18 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-17/unsupported-version-rejected",
     defect: "accept-unsupported-version",
   },
+  // AS-11 field-shape validation reuses accept-undeclared-selection: the
+  // reference server's exact-match field check (firstUndeclaredReason) is the
+  // one path both a nonexistent field name and a dotted nested-field selector
+  // fail, and that check is exactly what the defect bypasses.
+  {
+    caseId: "AS-11/nonexistent-field-refused",
+    defect: "accept-undeclared-selection",
+  },
+  {
+    caseId: "AS-11/dotted-nested-field-refused",
+    defect: "accept-undeclared-selection",
+  },
 ];
 
 describe("negative oracles discriminate conforming from violating targets", () => {

@@ -316,6 +316,138 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // ----------------------------------------------------------------- AS-11 ---
+  // Section 9 AS item 11: "Validates stream/field/view/resource-id shape at
+  // grant issuance." These three cases cover the `fields` leg only — a
+  // declared top-level field (positive control), a field name absent from the
+  // schema, and a dotted nested-field selector. Core Section 6 restricts
+  // `fields` in v0.1 to "top-level field names only", so a dotted selector is
+  // a shape violation independent of whether any field of that name exists.
+  //
+  // Boundary this can actually observe: `submitSelection` is the adapter's
+  // only hook onto field-shape validation (see adapter.ts `SelectionRequest`,
+  // which types `fields` as flat `readonly string[]` — there is no nested- or
+  // dotted-field request shape to construct, so a dotted string is sent AS a
+  // field name and must be refused on shape, not on declaration membership).
+  // Whether a target validates shape again at the grant-issuance boundary
+  // itself, after selection accepts, is not observable through this adapter
+  // contract: `issueGrant`/`stageApproval` take pre-resolved `fields:
+  // readonly string[]` from the harness, which cannot carry a malformed
+  // element either. A selection-time refusal is therefore evidence that shape
+  // is enforced before a grant would be issued for the request, not evidence
+  // that a second, independent check exists at the issuance step itself. If a
+  // target accepts a malformed selection and only rejects at issuance, that
+  // path is invisible here; closing it would need an adapter hook that can
+  // submit a pre-resolved (post-selection) field list directly to issuance.
+  {
+    caseId: "AS-11/declared-field-accepted",
+    requirementId: "AS-11",
+    assertion: "A selection request naming a declared top-level field is accepted.",
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream, so there is no declared field to select.");
+      }
+      const [field] = seeded.fields;
+      if (!field) {
+        return skip("Seeded stream declares no fields to select.");
+      }
+      const outcome = await adapter.submitSelection?.({
+        streams: [{ name: seeded.name, fields: [field] }],
+      });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [outcomeEvidence("selection: declared top-level field", outcome)];
+      if (outcome.status >= 400) {
+        return fail(
+          `A selection request naming a declared top-level field ('${field}') was refused (${outcome.status}, "${outcome.errorCode ?? "no error code"}"). This is the positive control for AS-11 field-shape validation: without it, a target that refuses every field selection would pass the negative cases below by blanket refusal rather than by validating shape.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
+  {
+    caseId: "AS-11/nonexistent-field-refused",
+    requirementId: "AS-11",
+    assertion:
+      "A selection request naming a top-level field absent from the declared schema is refused as invalid_authorization_details.",
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream, so there is no declared schema to exceed.");
+      }
+      const control = await positiveControl(adapter, seeded.name);
+      if ("reason" in control) {
+        return skip(control.reason);
+      }
+
+      const outcome = await adapter.submitSelection?.({
+        streams: [{ name: seeded.name, fields: ["pdpp_conformance_nonexistent_field"] }],
+      });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [outcomeEvidence("selection: nonexistent top-level field", outcome)];
+      if (outcome.status < 400) {
+        return fail(
+          `A selection request naming a field the declared schema does not define was accepted (${outcome.status}). Section 9 AS item 11 requires field-shape validation at issuance; a server that accepts an unknown field name would issue a grant naming a field no schema defines.`,
+          evidence
+        );
+      }
+      if (outcome.errorCode !== SELECTION_ERROR) {
+        return fail(
+          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than ${SELECTION_ERROR}.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
+  {
+    caseId: "AS-11/dotted-nested-field-refused",
+    requirementId: "AS-11",
+    assertion: "A selection request naming a dotted nested-field selector is refused as invalid_authorization_details.",
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream, so there is no field to build a nested selector from.");
+      }
+      const [field] = seeded.fields;
+      if (!field) {
+        return skip("Seeded stream declares no fields to build a nested selector from.");
+      }
+      const control = await positiveControl(adapter, seeded.name);
+      if ("reason" in control) {
+        return skip(control.reason);
+      }
+
+      const outcome = await adapter.submitSelection?.({
+        streams: [{ name: seeded.name, fields: [`${field}.nested`] }],
+      });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [outcomeEvidence("selection: dotted nested-field selector", outcome)];
+      if (outcome.status < 400) {
+        return fail(
+          `A selection request naming a dotted nested-field selector ('${field}.nested') was accepted (${outcome.status}). Core Section 6 restricts \`fields\` in v0.1 to top-level field names only; a server that accepts a dotted selector has not validated field shape and cannot honor a fields allowlist the RS can enforce.`,
+          evidence
+        );
+      }
+      if (outcome.errorCode !== SELECTION_ERROR) {
+        return fail(
+          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than ${SELECTION_ERROR}.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
   // ---------------------------------------------------------------- AS-17 ---
   // Section 9 AS item 17. The same requirement the RS carries (RS-11), on the
   // authorization server. Worth testing separately because they are different
