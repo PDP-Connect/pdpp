@@ -645,7 +645,7 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
     caseId: "AS-3/issued-grant-artifact-matches-section-7-schema",
     requirementId: "AS-3",
     assertion:
-      "The issued grant artifact the approval response returns satisfies the shape obligations of every row of Section 7's grant and StreamGrant field tables (required rows, types, enums, exact-key objects, uniqueness, no wildcards). ISO 8601 lexical form and per-field derivation provenance are out of scope and remain unverified.",
+      "The returned issued grant passes the implemented Section 7 structural checks. URI and temporal syntax, canonical resource keys, nested requester metadata and derivation provenance remain unverified.",
     async run({ adapter, streams }) {
       const [stream] = streams;
       if (!stream) {

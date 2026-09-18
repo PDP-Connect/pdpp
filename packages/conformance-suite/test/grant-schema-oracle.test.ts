@@ -25,6 +25,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { grantSchemaViolations } from "../src/harness/grant-schema.ts";
+import { makeContext, runCase } from "../src/harness/runner.ts";
+import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
+import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
 
 /**
  * spec-core.md Section 7 "### Grant fields", the normative example, transcribed
@@ -435,4 +438,42 @@ describe("Section 7 grant schema oracle", () => {
       assert.ok(paths.includes(expected), `Missing ${expected} in ${JSON.stringify(paths)}`);
     }
   });
+});
+
+describe("AS-3 consumes the returned artifact", () => {
+  for (const [variant, expected] of [
+    ["valid", "pass"],
+    ["missing-version", "fail"],
+    ["absent", "skip"],
+  ] as const) {
+    it(`${variant} artifact produces ${expected}`, async () => {
+      const adapter = new ReferenceTargetAdapter();
+      const issueGrant = adapter.issueGrant.bind(adapter);
+      adapter.issueGrant = async (request) => {
+        const issued = await issueGrant(request);
+        if (!issued || variant === "absent") {
+          return issued;
+        }
+        const rawGrant = conformingGrant();
+        if (variant === "missing-version") {
+          delete rawGrant.version;
+        }
+        return { ...issued, rawGrant };
+      };
+      const { streams } = await adapter.setup();
+      try {
+        const testCase = AUTHORIZATION_SERVER_CASES.find(
+          (c) => c.caseId === "AS-3/issued-grant-artifact-matches-section-7-schema"
+        );
+        assert.ok(testCase);
+        const result = await runCase(testCase, makeContext(adapter, streams));
+        assert.equal(result.outcome, expected, result.detail ?? "unexpected outcome");
+        if (variant === "missing-version") {
+          assert.match(result.detail ?? "", /version/);
+        }
+      } finally {
+        await adapter.teardown();
+      }
+    });
+  }
 });
