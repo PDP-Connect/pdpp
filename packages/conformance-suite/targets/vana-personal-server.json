@@ -84,6 +84,8 @@
       "semantics": "mutable_state",
       "recordCount": 5,
       "expectedOwnerMetadata": {
+        "schemaRequired": ["id"],
+        "schemaFieldItemTypes": { "genres": "string" },
         "schemaFieldTypes": {
           "id": "string",
           "name": "string",
@@ -100,6 +102,7 @@
       "semantics": "mutable_state",
       "recordCount": 3,
       "expectedOwnerMetadata": {
+        "schemaRequired": ["id"],
         "schemaFieldTypes": {
           "id": "string",
           "title": "string",
