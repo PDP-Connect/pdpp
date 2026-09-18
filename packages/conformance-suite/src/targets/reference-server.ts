@@ -111,7 +111,19 @@ export type Defect =
    * direction of the request replaying it. The cursor is genuine, so syntax
    * validation — which `crash-on-bad-cursor` exercises — cannot catch this.
    */
-  | "accept-order-mismatched-cursor";
+  | "accept-order-mismatched-cursor"
+  /**
+   * Accepts a `streams` array that pairs a wildcard entry with a named stream,
+   * or that names the same stream twice, instead of refusing it (AS-2, clause
+   * 6.8-3).
+   *
+   * Separate from `accept-undeclared-selection`, which models a server that
+   * never checks names against the retained snapshot at all. Both malformed
+   * shapes here are built from names the snapshot DOES declare (or from the
+   * wildcard, which is always well-formed on its own), so a server can validate
+   * every name successfully and still fail this clause.
+   */
+  | "accept-malformed-stream-list";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";

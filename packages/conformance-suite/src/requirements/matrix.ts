@@ -829,9 +829,7 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#stream-selection-parameters",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs two negative selection requests — a wildcard alongside a named stream, and a duplicated stream name — neither of which any current case constructs; AS-4/wildcard-stream-name-expanded-before-issuance covers only the positive wildcard path.",
+    caseIds: ["AS-2/wildcard-beside-named-stream-refused", "AS-2/duplicate-stream-name-refused"],
   },
   {
     clauseId: "6.8-4",

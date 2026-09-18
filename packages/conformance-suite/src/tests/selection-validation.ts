@@ -429,6 +429,112 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // ----------------------------------------------------------- AS-2, AS-4 ---
+  // Core Section 6, clause 6.8-3: "A wildcard entry MUST be the only entry in
+  // `streams`. Otherwise stream names MUST be unique within the request."
+  //
+  // Two obligations in one sentence, and they fail differently, so they are two
+  // cases. AS-4/wildcard-stream-name-expanded-before-issuance covers only the
+  // POSITIVE wildcard path — that `"*"` alone resolves to an explicit list
+  // before issuance. Neither malformed shape below is constructed anywhere.
+  //
+  // A wildcard beside a named stream is the shape where an AS most plausibly
+  // over-expands. The request is ambiguous by construction: does the named
+  // entry narrow the wildcard, or does the wildcard subsume the named entry's
+  // field list? A server that picks an interpretation rather than refusing can
+  // resolve to every stream the source declares while the owner reviews a
+  // screen built from the entry the server happened to favour — which is
+  // exactly the widening the wildcard rule exists to prevent.
+  {
+    caseId: "AS-2/wildcard-beside-named-stream-refused",
+    requirementId: "AS-2",
+    assertion:
+      "A selection request pairing a wildcard entry with a named stream is refused as invalid_authorization_details.",
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream to pair with a wildcard entry.");
+      }
+      const control = await positiveControl(adapter, seeded.name);
+      if ("reason" in control) {
+        return skip(control.reason);
+      }
+
+      const outcome = await adapter.submitSelection?.({
+        streams: [{ name: "*" }, { name: seeded.name }],
+      });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [outcomeEvidence("selection: wildcard beside a named stream", outcome)];
+      if (outcome.status < 400) {
+        return fail(
+          `A selection request pairing a wildcard with the named stream '${seeded.name}' was accepted (${outcome.status}). Core Section 6 requires a wildcard entry to be the only entry in \`streams\`: the paired form is ambiguous — the named entry may narrow the wildcard or the wildcard may subsume it — and a server that resolves the ambiguity instead of refusing can expand to every declared stream while the owner reviews the narrower reading.`,
+          evidence
+        );
+      }
+      if (outcome.errorCode !== SELECTION_ERROR) {
+        return fail(
+          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than ${SELECTION_ERROR}.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
+  // The second half of the same clause. A duplicate stream name is the shape
+  // where two entries disagree about the field list: the AS must either union
+  // them (widening past what either entry asked for) or silently drop one
+  // (narrowing past what the client asked for). Both are wrong, and both look
+  // like a successful grant, which is why the spec requires refusal instead of
+  // a merge rule.
+  {
+    caseId: "AS-2/duplicate-stream-name-refused",
+    requirementId: "AS-2",
+    assertion: "A selection request naming the same stream twice is refused as invalid_authorization_details.",
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream to name twice.");
+      }
+      const control = await positiveControl(adapter, seeded.name);
+      if ("reason" in control) {
+        return skip(control.reason);
+      }
+
+      // The two entries carry DIFFERENT field lists where the stream declares
+      // more than one field, so a server that merges them produces an
+      // observably different scope from either entry alone. With a
+      // single-field stream the duplicate is still malformed and still must be
+      // refused; only the merge asymmetry is unavailable.
+      const [first, second] = seeded.fields;
+      const outcome = await adapter.submitSelection?.({
+        streams: [
+          { name: seeded.name, ...(first ? { fields: [first] } : {}) },
+          { name: seeded.name, ...(second ? { fields: [second] } : {}) },
+        ],
+      });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [outcomeEvidence("selection: duplicate stream name", outcome)];
+      if (outcome.status < 400) {
+        return fail(
+          `A selection request naming the stream '${seeded.name}' twice was accepted (${outcome.status}). Core Section 6 requires stream names to be unique within a request: with two entries carrying different field lists the server must either union them (a wider scope than either entry requested) or drop one (a narrower scope than the client believes it holds), and both outcomes are indistinguishable from a correct grant once issued.`,
+          evidence
+        );
+      }
+      if (outcome.errorCode !== SELECTION_ERROR) {
+        return fail(
+          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than ${SELECTION_ERROR}.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
   // ---------------------------------------------------------------- AS-17 ---
   // Section 9 AS item 17. The same requirement the RS carries (RS-11), on the
   // authorization server. Worth testing separately because they are different

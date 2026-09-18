@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **41** have at least one case and **65** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **42** have at least one case and **64** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -70,7 +70,7 @@ Validates selection requests against one retained SourceDeclaration snapshot: re
 | `5.2-4` | MUST | black-box-http | — | Needs a seeded stream that declares NO `consent_time_field` plus a selection request carrying `time_range` against it; every target config currently declares the field on every stream, so the negative cannot be constructed. |
 | `6.8-1` | MUST | black-box-http | — | Needs a target declaring view support so a request can name both `view` and `fields`; no current target declares views. |
 | `6.8-2` | MUST | black-box-http | — | Same missing fixture as 5.2-4: needs a seeded stream declaring no `consent_time_field`, which no target config provides. |
-| `6.8-3` | MUST | black-box-http | — | Needs two negative selection requests — a wildcard alongside a named stream, and a duplicated stream name — neither of which any current case constructs; AS-4/wildcard-stream-name-expanded-before-issuance covers only the positive wildcard path. |
+| `6.8-3` | MUST | black-box-http | `AS-2/wildcard-beside-named-stream-refused`<br>`AS-2/duplicate-stream-name-refused` | — |
 | `6.9-1` | MUST | black-box-http | — | Binds the preset definition rather than a request, so testing it needs an adapter hook that registers a malformed preset and observes refusal; the suite can only name presets a target already defines. |
 
 ### AS-3 (authorization-server, MUST)
@@ -90,7 +90,7 @@ Expands wildcards and selection presets into explicit stream names, fields, per-
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `6.8-3` | MUST | black-box-http | — | Needs two negative selection requests — a wildcard alongside a named stream, and a duplicated stream name — neither of which any current case constructs; AS-4/wildcard-stream-name-expanded-before-issuance covers only the positive wildcard path. |
+| `6.8-3` | MUST | black-box-http | `AS-2/wildcard-beside-named-stream-refused`<br>`AS-2/duplicate-stream-name-refused` | — |
 | `7.2-1` | MUST | black-box-http | `AS-4/omitted-fields-expanded-before-issuance` | — |
 
 ### AS-5 (authorization-server, MUST)

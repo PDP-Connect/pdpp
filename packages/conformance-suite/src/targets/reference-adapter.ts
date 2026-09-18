@@ -253,7 +253,31 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       );
     }
 
-    const undeclaredReason = this.firstUndeclaredReason(request.streams ?? []);
+    // Core Section 6 (clause 6.8-3): "A wildcard entry MUST be the only entry
+    // in `streams`. Otherwise stream names MUST be unique within the request."
+    //
+    // Checked BEFORE names are validated against the snapshot, because both
+    // malformed shapes are built from names the snapshot declares: a server
+    // that validated names first and stopped there would accept them. The
+    // wildcard itself is not a declared stream name, so this check is also what
+    // keeps `firstUndeclaredReason` below from refusing a lone `"*"` as
+    // undeclared for the wrong reason.
+    const wanted = request.streams ?? [];
+    if (!this.defects.has("accept-malformed-stream-list")) {
+      const wildcards = wanted.filter((s) => s.name === "*");
+      if (wildcards.length > 0 && wanted.length > 1) {
+        return reject("invalid_authorization_details", "a wildcard entry must be the only entry in streams");
+      }
+      const names = wanted.map((s) => s.name);
+      const duplicate = names.find((name, index) => names.indexOf(name) !== index);
+      if (duplicate !== undefined) {
+        return reject("invalid_authorization_details", `stream name '${duplicate}' appears more than once`);
+      }
+    }
+
+    // A lone wildcard is well-formed and resolves against the retained snapshot
+    // rather than being looked up as a stream name.
+    const undeclaredReason = this.firstUndeclaredReason(wanted.filter((s) => s.name !== "*"));
     if (undeclaredReason) {
       return reject("invalid_authorization_details", undeclaredReason);
     }

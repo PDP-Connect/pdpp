@@ -215,6 +215,19 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-2/unrecognized-preset-refused",
     defect: "accept-undeclared-selection",
   },
+  // Clause 6.8-3. Paired with `accept-malformed-stream-list` rather than
+  // `accept-undeclared-selection`, because both shapes are built from names the
+  // retained snapshot DOES declare: a server that validates every name against
+  // the snapshot and stops there accepts them both, so the undeclared-selection
+  // defect would leave these oracles passing against a violating target.
+  {
+    caseId: "AS-2/wildcard-beside-named-stream-refused",
+    defect: "accept-malformed-stream-list",
+  },
+  {
+    caseId: "AS-2/duplicate-stream-name-refused",
+    defect: "accept-malformed-stream-list",
+  },
   {
     caseId: "AS-5/both-streams-and-preset-refused",
     defect: "accept-malformed-selection",
