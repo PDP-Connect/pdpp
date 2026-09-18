@@ -553,7 +553,17 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       review_revision: revision,
       client: { client_id: CLIENT_IDENTITY },
       purpose: request.purposeCode ?? DEFAULT_PURPOSE,
-      ...(thin ? {} : { retention: DEFAULT_RETENTION, grant_expiry: GRANT_EXPIRY }),
+      // Retention is a REQUESTED term: stated when the request carried one,
+      // and falling back to this target's own default otherwise. A server
+      // cannot state retention nobody asked for.
+      ...(thin
+        ? {}
+        : {
+            retention: request.retention
+              ? { max_duration: request.retention.maxDuration, on_expiry: request.retention.onExpiry }
+              : DEFAULT_RETENTION,
+            grant_expiry: GRANT_EXPIRY,
+          }),
       streams: resolved.map((stream) => ({
         name: stream.name,
         fields: [...stream.fields],

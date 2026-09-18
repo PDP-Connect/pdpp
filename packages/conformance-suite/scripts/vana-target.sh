@@ -116,6 +116,9 @@ BASE_URL="http://127.0.0.1:$PORT"
 # value must match packages/conformance-suite/targets/vana-personal-server.json's
 # expiryFixture.grantLifetimeSeconds.
 EXPIRY_CLIENT_ID="expiring_widget"
+# A year: long enough that no case in a run sees a grant expire, while still
+# giving the AS a configured lifetime to state in the approval artifact (7.2-2).
+MAIN_GRANT_LIFETIME_SECONDS=31536000
 EXPIRY_GRANT_LIFETIME_SECONDS=3
 
 # Both streams are declared and seeded on purpose. The stream-membership
@@ -303,6 +306,7 @@ const CLIENT_ID = "$CLIENT_ID";
 const REDIRECT = "$REDIRECT_URI";
 const EXPIRY_CLIENT_ID = "$EXPIRY_CLIENT_ID";
 const EXPIRY_GRANT_LIFETIME_SECONDS = $EXPIRY_GRANT_LIFETIME_SECONDS;
+const MAIN_GRANT_LIFETIME_SECONDS = $MAIN_GRANT_LIFETIME_SECONDS;
 // One scope row per declared stream: declaration trust is derived from what the
 // server actually serves, so a declaration is refused without a matching row.
 const SCOPES = ["spotify.$GRANTED_STREAM", "spotify.$UNGRANTED_STREAM"];
@@ -406,7 +410,20 @@ const config = ServerConfigSchema.parse({
     // config-boundary policy PS's own bootstrap tests cover, not a suite-side
     // fabrication.
     clients: [
-      { clientId: CLIENT_ID, redirectUris: [REDIRECT] },
+      // CLIENT_ID carries a LONG grantLifetimeSeconds, not none.
+      //
+      // Clause 7.2-2 requires the approval artifact to state grant expiry, and
+      // this server computes one only for a client whose config gives it a
+      // lifetime (grantExpiryFor, packages/server/src/pdpp/bootstrap.ts). With
+      // no lifetime the artifact honestly has no expiry to state, and the
+      // conformance run reported that absence as a server defect when it was a
+      // gap in how the target was configured.
+      //
+      // A year, so nothing else in a run is affected: every case expecting an
+      // ordinary grant to still work partway through still gets one. The SHORT
+      // lifetime that AS-8's expiry oracle needs stays on its own dedicated
+      // client below, for the reason recorded there.
+      { clientId: CLIENT_ID, redirectUris: [REDIRECT], grantLifetimeSeconds: MAIN_GRANT_LIFETIME_SECONDS },
       {
         clientId: EXPIRY_CLIENT_ID,
         redirectUris: [REDIRECT],

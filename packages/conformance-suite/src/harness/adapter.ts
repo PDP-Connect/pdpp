@@ -476,6 +476,20 @@ export interface GrantRequest {
   readonly explicitAiTrainingConsent?: boolean;
   /** Purpose code for this request. Defaults to the adapter's own default when absent. */
   readonly purposeCode?: string;
+  /**
+   * Retention terms to request (Core Section 6), for clause 7.2-2.
+   *
+   * Clause 7.2-2 requires the final approval artifact to state retention, and a
+   * server can only state what the request asked for — retention is a REQUESTED
+   * term, not something the AS invents. A suite that never sent one and then
+   * reported the artifact as missing retention would be publishing a finding
+   * against a server that behaved correctly, which is exactly the kind of false
+   * finding this suite exists not to produce.
+   *
+   * `maxDuration` is an ISO 8601 duration; `onExpiry` is what happens to the
+   * data when it elapses.
+   */
+  readonly retention?: { readonly maxDuration: string; readonly onExpiry: "delete" | "anonymize" };
   readonly streams: readonly {
     readonly name: string;
     readonly fields: readonly string[];

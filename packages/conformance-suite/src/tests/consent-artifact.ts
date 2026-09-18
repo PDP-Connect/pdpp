@@ -193,6 +193,12 @@ export const CONSENT_ARTIFACT_CASES: readonly ConformanceCase[] = [
       }
       const staged = await stagedArtifact(adapter, {
         streams: [{ name: seeded.name, fields: [...seeded.fields] }],
+        // Retention is REQUESTED, never invented by the AS, so the request has
+        // to carry one for the artifact to be able to state it. Without this
+        // the case reports "the artifact omits retention" against a server that
+        // was never asked for any — a loud false finding, and precisely the
+        // failure batch 5 caught once already on this same clause.
+        retention: { maxDuration: "P30D", onExpiry: "delete" },
         ...(seeded.consentTimeField
           ? { timeConstraint: { field: seeded.consentTimeField, from: "2026-01-01T00:00:00Z" } }
           : {}),

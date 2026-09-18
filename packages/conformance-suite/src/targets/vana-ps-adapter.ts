@@ -450,6 +450,18 @@ export class VanaPsAdapter implements TargetAdapter {
           source: { id: this.config.sourceId },
           purpose_code: wanted.purposeCode ?? this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
           access_mode: wanted.accessMode ?? "continuous",
+          // Sent only when the case asked for retention terms, so no existing
+          // request shape changes. Clause 7.2-2 requires the approval artifact
+          // to STATE retention, and a server can only state what was requested
+          // — it is a requested term, not one the AS invents.
+          ...(wanted.retention
+            ? {
+                retention: {
+                  max_duration: wanted.retention.maxDuration,
+                  on_expiry: wanted.retention.onExpiry,
+                },
+              }
+            : {}),
           // Core Section 6 places `client_claims` inside each
           // authorization_details entry. Sent only when the case supplied any,
           // so no existing request shape changes. If this deployment ignores
