@@ -19,6 +19,7 @@
 // parameters rather than assumptions.
 
 import type { Role } from "../requirements/catalog.ts";
+import type { PdppResponse } from "./http.ts";
 
 /**
  * A stream the target has provisioned for the run, with the facts the suite
@@ -221,6 +222,25 @@ export interface TargetAdapter {
    */
   readonly baseUrl: string;
   readonly capabilities: TargetCapabilities;
+
+  /**
+   * Call a known co-located introspection endpoint directly, when the target
+   * exposes one but publishes no RFC 8414 `introspection_endpoint` for
+   * `discoverIntrospectionEndpoint` to find (Core Section 8's local-equivalent
+   * allowance covers the endpoint's existence, not its discoverability).
+   *
+   * This is AS-9 evidence only — grant-bound tokens carrying the PDPP
+   * introspection extension fields — not a general substitute for RFC 7662
+   * client-credential introspection. A co-located deployment's local
+   * equivalent commonly authenticates its introspection route with the SAME
+   * owner-bearer credential used elsewhere on that deployment, which is a
+   * distinct authentication model from the RS client-credential Basic auth
+   * `introspectionCredentials` carries: this hook lets an adapter use its own
+   * auth for that specific endpoint rather than forcing it through the RFC
+   * 7662 shape. Absent means the target has no such reachable endpoint;
+   * AS-9 reports `skip` (missing evidence), not `fail`.
+   */
+  coLocatedIntrospect?: (accessToken: string) => Promise<PdppResponse | null>;
 
   /**
    * An access token whose bound grant has expired. Exercised by the

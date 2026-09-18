@@ -106,12 +106,14 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       const endpoint = adapter.authorizationServerUrl
         ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
         : null;
-      if (!endpoint) {
+      const response = endpoint
+        ? await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials)
+        : await adapter.coLocatedIntrospect?.(grant.accessToken);
+      if (!response) {
         return skip(
-          "AS-9 applies to this target regardless of topology, but it publishes no RFC 8414 introspection_endpoint, so this suite has no mechanism to observe grant-bound token claims here. Missing evidence, not an inapplicable requirement."
+          "AS-9 applies to this target regardless of topology, but it publishes no RFC 8414 introspection_endpoint and the adapter names no known co-located equivalent, so this suite has no mechanism to observe grant-bound token claims here. Missing evidence, not an inapplicable requirement."
         );
       }
-      const response = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
       if (response.status !== 200) {
         return fail(`Expected 200 from the introspection endpoint, got ${response.status}.`, [response.evidence]);
       }
