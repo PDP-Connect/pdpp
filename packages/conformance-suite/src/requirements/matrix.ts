@@ -949,9 +949,7 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#version-layering",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Needs a token bound to a grant whose `version` names an unsupported major; the adapter cannot mint a grant with an arbitrary schema version, so only the `PDPP-Version` header axis is currently tested.",
+    caseIds: ["RS-11/unsupported-grant-schema-version-rejected"],
   },
   {
     clauseId: "7.4-3",
@@ -1576,9 +1574,7 @@ const SECTION_10: readonly ClauseEntry[] = [
     specAnchor: "#token-security",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "Directly testable and not tested: the adapter obtains tokens but discards the token-endpoint response headers, so the harness needs to surface them before a case can assert on them.",
+    caseIds: ["AS-9/token-response-forbids-caching"],
   },
   {
     clauseId: "10.2-5",

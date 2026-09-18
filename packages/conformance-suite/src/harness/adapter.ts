@@ -137,6 +137,25 @@ export interface IssuedGrant {
     readonly name: string;
     readonly fields: readonly string[];
   }[];
+  /**
+   * The response headers the TOKEN ENDPOINT returned alongside this token,
+   * lower-cased, exactly as received.
+   *
+   * Clause 10.2-4: "Every successful OAuth token response that contains an
+   * access token or refresh token MUST include `Cache-Control: no-store` and
+   * `Pragma: no-cache` before the response is serialized." Those headers are the
+   * whole of the obligation, and they are discarded by every adapter that parses
+   * a token out of a body and returns the string — which is why the clause sat
+   * untested while the suite obtained tokens constantly.
+   *
+   * It must be the headers of the TOKEN response specifically, not of some later
+   * request: the requirement is about what a caching intermediary may retain of
+   * the credential-bearing response. An adapter that mints tokens by a route
+   * with no HTTP token endpoint (an in-process target, a device-code shortcut)
+   * omits this, and the case reports `skip` naming the hook rather than reading
+   * an absent header map as an absent header.
+   */
+  readonly tokenResponseHeaders?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -507,6 +526,35 @@ export interface TargetAdapter {
   foreignSubjectOwnerToken?: () => Promise<string | null>;
 
   /**
+   * Mint a token bound to a grant whose GRANT SCHEMA version is `version`,
+   * for clause 7.4-2.
+   *
+   * Core Section 7 "Version layering" keeps three version axes apart and
+   * forbids conflating them. `grant.version` is the schema of the grant
+   * artifact itself, and the RS "MUST reject grants with unsupported major
+   * versions, returning 400 `unsupported_version`". That is a different axis
+   * from the `PDPP-Version` request header, which is the only one the suite
+   * could previously reach — a target could pass every header-axis case while
+   * happily enforcing a grant whose schema it does not understand.
+   *
+   * The version is a parameter rather than a fixed "bad" constant so a case can
+   * mint BOTH halves through one hook: the target's own supported major (the
+   * positive control, which must still read) and an unsupported one (which must
+   * be refused). Without the control, a target that refuses every token
+   * produced by this hook satisfies the negative while being broken.
+   *
+   * Returns null when this deployment cannot bind a token to an arbitrary grant
+   * schema version, which reports the case `skip` naming this hook. The suite
+   * will not forge a grant body: the obligation is on the RS's handling of a
+   * grant its own AS issued, and a suite-authored artifact would test the
+   * suite's idea of the grant schema rather than the target's.
+   */
+  grantWithSchemaVersion?: (
+    version: string,
+    request: GrantRequest
+  ) => Promise<{ readonly accessToken: string; readonly grantId: string } | null>;
+
+  /**
    * Credentials a resource server uses to authenticate at the introspection
    * endpoint (RFC 7662 Section 2.1 client authentication).
    *
@@ -652,6 +700,18 @@ export interface TargetAdapter {
    * this hook reports those cases `skip` naming it.
    */
   submitSelection?: (request: SelectionRequest) => Promise<SelectionOutcome | null>;
+
+  /**
+   * The grant schema version this deployment supports, as the ADAPTER's own
+   * statement — the positive control for `grantWithSchemaVersion`.
+   *
+   * Required alongside that hook and not inferable: Core fixes no value for
+   * `grant.version`, so a suite that hardcoded one would be testing its own
+   * constant and would report a conforming target at any other version as
+   * broken. The case mints a grant at THIS version, proves it reads, then mints
+   * one at an unsupported major and requires the refusal.
+   */
+  readonly supportedGrantSchemaVersion?: string;
   /** Stable identifier recorded in the report, e.g. "acme-rs". */
   readonly targetId: string;
   /** Version string of the implementation under test, recorded in the report. */

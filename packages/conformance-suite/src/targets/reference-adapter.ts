@@ -28,7 +28,13 @@ import type {
   TargetCapabilities,
 } from "../harness/adapter.ts";
 import type { Role } from "../requirements/catalog.ts";
-import { type Defect, PDPP_VERSION, ReferenceServer, type StreamFixture } from "./reference-server.ts";
+import {
+  type Defect,
+  GRANT_SCHEMA_VERSION,
+  PDPP_VERSION,
+  ReferenceServer,
+  type StreamFixture,
+} from "./reference-server.ts";
 
 /**
  * Two streams with overlapping shape: the negative oracles need a second stream
@@ -203,6 +209,8 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   readonly targetVersion = "0.1.0";
   readonly roles = ROLES;
   readonly capabilities = CAPABILITIES;
+  /** This target's grant schema version (clause 7.4-2's positive control). */
+  readonly supportedGrantSchemaVersion = GRANT_SCHEMA_VERSION;
   private readonly server: ReferenceServer;
   private readonly fixtures: readonly StreamFixture[];
   private readonly defects: ReadonlySet<Defect>;
@@ -501,6 +509,24 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     };
   }
 
+  /**
+   * The headers this target's token endpoint returned for a successful,
+   * token-bearing response, lower-cased. Null on any transport failure, which
+   * reports the 10.2-4 case `skip` rather than reading a failed fetch as a
+   * missing header.
+   */
+  private async fetchTokenResponseHeaders(grantId: string): Promise<Record<string, string> | null> {
+    try {
+      const response = await fetch(`${this.server.tokenEndpoint}?grant_id=${encodeURIComponent(grantId)}`);
+      if (!response.ok) {
+        return null;
+      }
+      return Object.fromEntries([...response.headers].map(([k, v]) => [k.toLowerCase(), v]));
+    } catch {
+      return null;
+    }
+  }
+
   async issueGrant(request: GrantRequest): Promise<IssuedGrant | null> {
     if (request.accessMode === "single_use") {
       // Not supported; declared absent in capabilities, so AS-10 is unsupported.
@@ -555,10 +581,17 @@ export class ReferenceTargetAdapter implements TargetAdapter {
               : {}),
           };
 
+    // Redeem the issued grant at the real token endpoint so the headers the
+    // 10.2-4 case asserts on are the ones an HTTP client actually received.
+    // Building a header map here instead would be the suite testing its own
+    // constant.
+    const tokenResponseHeaders = await this.fetchTokenResponseHeaders(issued.grantId);
+
     return {
       grantId: issued.grantId,
       accessToken: issued.accessToken,
       ...(rawGrant === undefined ? {} : { rawGrant }),
+      ...(tokenResponseHeaders === null ? {} : { tokenResponseHeaders }),
       // The RESOLVED field set, not the requested one. For a request naming a
       // view these differ, and Core Section 5 makes the resolved list the
       // authoritative content of the grant; echoing the request here would
@@ -811,6 +844,34 @@ export class ReferenceTargetAdapter implements TargetAdapter {
 
   async foreignSubjectOwnerToken(): Promise<string | null> {
     return "owner-foreign";
+  }
+
+  /**
+   * A token bound to a grant carrying `version` as its GRANT SCHEMA version
+   * (clause 7.4-2), whatever that version is.
+   *
+   * Issues the grant through the ordinary path so the token is genuine and
+   * everything else about it is correct: the ONLY thing distinguishing the
+   * negative from the positive control is the schema version, which is what
+   * makes the refusal attributable to this clause rather than to a token the
+   * server was never going to honour.
+   */
+  async grantWithSchemaVersion(
+    version: string,
+    request: GrantRequest
+  ): Promise<{ accessToken: string; grantId: string } | null> {
+    const resolved = this.resolveStreams(request);
+    if (!resolved) {
+      return null;
+    }
+    const issued = this.server.issueGrant(
+      resolved.map((s) => ({ name: s.name, fields: [...s.fields] })),
+      { schemaVersion: version }
+    );
+    if (!issued || "deniedReason" in issued) {
+      return null;
+    }
+    return { accessToken: issued.accessToken, grantId: issued.grantId };
   }
 
   async expiredGrantToken(): Promise<string | null> {

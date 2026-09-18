@@ -682,4 +682,69 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       return pass();
     },
   },
+
+  // ---------------------------------------------------------------- 10.2-4 ---
+  // Core Section 10 "Token security": "Every successful OAuth token response
+  // that contains an access token or refresh token MUST include
+  // `Cache-Control: no-store` and `Pragma: no-cache` before the response is
+  // serialized."
+  //
+  // This is the cheapest MUST in the uncovered set and it stayed uncovered for
+  // a structural reason rather than a hard one: every adapter obtains tokens
+  // and every adapter threw the response headers away. The obligation is
+  // entirely in those headers.
+  //
+  // Worth testing despite looking clerical. The failure is silent at issuance
+  // and the damage is remote: a proxy or browser cache that was never told not
+  // to store a credential-bearing response can serve that credential to a later
+  // caller, and nothing in the protocol exchange looks wrong at any point.
+  {
+    caseId: "AS-9/token-response-forbids-caching",
+    requirementId: "AS-9",
+    assertion:
+      "A successful token response carrying an access token includes Cache-Control: no-store and Pragma: no-cache.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip("The target issued no grant, so there is no token response to inspect.");
+      }
+      const headers = grant.tokenResponseHeaders;
+      if (!headers) {
+        return skip(
+          "The adapter does not surface the token endpoint's response headers (IssuedGrant.tokenResponseHeaders), so this deployment's token response is unobserved. An absent header map is not an absent header, and the suite will not read one as the other."
+        );
+      }
+
+      const evidence = [
+        {
+          request: { method: "POST", url: "token endpoint", headers: {} },
+          response: { status: 200, headers: { ...headers }, body: "" },
+        },
+      ];
+
+      // Case-insensitive on the VALUE too: RFC 9111 directives are
+      // case-insensitive, and a server sending `No-Store` is conforming. The
+      // suite must not report a spelling preference as a spec violation.
+      const cacheControl = headers["cache-control"] ?? "";
+      const pragma = headers.pragma ?? "";
+      const missing: string[] = [];
+      if (!cacheControl.toLowerCase().includes("no-store")) {
+        missing.push(`Cache-Control: no-store (got ${cacheControl === "" ? "no header" : `"${cacheControl}"`})`);
+      }
+      if (!pragma.toLowerCase().includes("no-cache")) {
+        missing.push(`Pragma: no-cache (got ${pragma === "" ? "no header" : `"${pragma}"`})`);
+      }
+      if (missing.length > 0) {
+        return fail(
+          `The successful token response carrying an access token omitted ${missing.join(" and ")}. Core Section 10 "Token security" requires both on every token response that contains an access or refresh token, before the response is serialized. Without them a caching intermediary is entitled to store the credential and serve it to a later caller, which nothing later in the exchange would reveal.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
 ];

@@ -247,7 +247,28 @@ export type Defect =
    * AND retain the old. The defect does the opposite of both, which is how the
    * oracle can tell a server that merely refuses from one that also preserves.
    */
-  | "accept-declaration-equivocation";
+  | "accept-declaration-equivocation"
+  /**
+   * Serializes a successful token response WITHOUT `Cache-Control: no-store`
+   * and `Pragma: no-cache` (clause 10.2-4).
+   *
+   * The token itself is correct and everything downstream of it works, which is
+   * why this defect is invisible to every other case: the damage is done by an
+   * intermediary that was never told not to store the response, and it shows up
+   * as a credential served from a cache long after issuance.
+   */
+  | "token-response-without-no-store"
+  /**
+   * Enforces a grant whose schema major version this server does not support,
+   * instead of refusing it with 400 `unsupported_version` (clause 7.4-2).
+   *
+   * Models the server that never checks `grant.version` at all — the common
+   * shape, because the grant parses well enough to read the fields the server
+   * happens to know about. What it is then enforcing is its own guess at the
+   * meaning of an artifact written against a schema it has never seen, which is
+   * exactly the silent mis-enforcement the clause exists to prevent.
+   */
+  | "accept-unsupported-grant-schema-version";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -290,6 +311,13 @@ interface GrantState {
   expired: boolean;
   readonly grantId: string;
   revoked: boolean;
+  /**
+   * The grant SCHEMA version (Core Section 7 "Version layering",
+   * `grant.version`) — not the HTTP API contract version the `PDPP-Version`
+   * header carries. The two are separate axes that Core forbids conflating,
+   * and this field is what makes the grant axis reachable at all.
+   */
+  readonly schemaVersion: string;
   readonly streams: readonly {
     name: string;
     fields: readonly string[];
@@ -316,6 +344,22 @@ type Principal = { kind: "client"; grantId: string } | { kind: "owner"; subjectI
 
 export const PDPP_VERSION = "2026-04-06";
 const SUPPORTED_VERSION = PDPP_VERSION;
+
+/**
+ * The grant schema version this server supports, and the major it accepts.
+ *
+ * Deliberately a different shape from `PDPP_VERSION` above: Core Section 7
+ * treats the grant schema axis and the HTTP contract axis as independent, and
+ * giving them the same value here would let a conflating implementation pass by
+ * coincidence.
+ */
+export const GRANT_SCHEMA_VERSION = "1.0";
+const SUPPORTED_GRANT_MAJOR = "1";
+
+/** The major component of a grant schema version, per Core's major-version rule. */
+function grantMajor(version: string): string {
+  return version.split(".")[0] ?? version;
+}
 const KNOWN_PARAMS = new Set(["limit", "cursor", "order", "fields", "changes_since"]);
 
 /**
@@ -502,7 +546,13 @@ export class ReferenceServer {
       /** The view the fields were resolved from, when the request named one. */
       resolvedFromView?: string;
     }[],
-    options: { expired?: boolean; purposeCode?: string; explicitAiTrainingConsent?: boolean } = {}
+    options: {
+      expired?: boolean;
+      purposeCode?: string;
+      explicitAiTrainingConsent?: boolean;
+      /** Grant schema version to bind (clause 7.4-2). Defaults to the supported one. */
+      schemaVersion?: string;
+    } = {}
   ): { grantId: string; accessToken: string } | { deniedReason: "ai_training_consent_required" } | null {
     // Reject a grant naming a stream this server does not serve: an AS must
     // validate against the retained declaration (Section 9 AS item 2).
@@ -536,9 +586,28 @@ export class ReferenceServer {
       })),
       revoked: false,
       expired: options.expired ?? false,
+      schemaVersion: options.schemaVersion ?? GRANT_SCHEMA_VERSION,
     });
     this.tokens.set(accessToken, { kind: "client", grantId });
     return { grantId, accessToken };
+  }
+
+  /** The access token bound to a grant, for the token endpoint to re-serve. */
+  private tokenForGrant(grantId: string): string | null {
+    if (!this.grants.has(grantId)) {
+      return null;
+    }
+    for (const [credential, principal] of this.tokens) {
+      if (principal.kind === "client" && principal.grantId === grantId) {
+        return credential;
+      }
+    }
+    return null;
+  }
+
+  /** Base URL of this server's token endpoint, for the adapter to call. */
+  get tokenEndpoint(): string {
+    return `${this.baseUrl}/oauth/token`;
   }
 
   revokeGrant(grantId: string): void {
@@ -579,6 +648,30 @@ export class ReferenceServer {
       return;
     }
 
+    // --- OAuth token endpoint (clause 10.2-4) ---
+    //
+    // Before the bearer check, because a token endpoint is where a caller goes
+    // to GET a credential and cannot be asked to present one. The grant is
+    // already issued by the time this is called; this route exists so the
+    // headers of a real, successful, token-bearing HTTP response are observable
+    // over the wire rather than asserted about an in-process return value.
+    if (path === "/oauth/token") {
+      const grantId = parsed.searchParams.get("grant_id") ?? "";
+      const issuedToken = this.tokenForGrant(grantId);
+      if (!issuedToken) {
+        error(400, "invalid_grant", "invalid_request_error", "Unknown grant.");
+        return;
+      }
+      // RFC 6749 Section 5.1 and clause 10.2-4. Omitted under the defect, and
+      // ONLY under the defect: nothing else about the response changes, so a
+      // case asserting on the token or the status cannot detect it.
+      const cacheHeaders = this.has("token-response-without-no-store")
+        ? {}
+        : { "cache-control": "no-store", pragma: "no-cache" };
+      send(200, { access_token: issuedToken, token_type: "Bearer" }, cacheHeaders);
+      return;
+    }
+
     // --- Authentication (RS-4, RS-16) ---
     const principal = this.resolveToken(headers.authorization);
     if (!principal) {
@@ -603,6 +696,32 @@ export class ReferenceServer {
       return;
     }
     const { grant, subjectId } = resolved;
+
+    // --- Grant schema version (clause 7.4-2) ---
+    //
+    // Separate from the lifecycle denials above, and deliberately NOT routed
+    // through them: those are 403 `permission_error` (the grant is real but no
+    // longer confers access), while Core names 400 `unsupported_version` here
+    // (the server cannot validate what the grant SAYS). Folding this into the
+    // 403 path would report a comprehension failure as an authorization
+    // decision, and a client would retry forever against a grant that can never
+    // work.
+    //
+    // Checked on the grant's own `version`, never on the PDPP-Version header
+    // handled above — Core Section 7 forbids conflating the two axes.
+    if (
+      grant &&
+      grantMajor(grant.schemaVersion) !== SUPPORTED_GRANT_MAJOR &&
+      !this.has("accept-unsupported-grant-schema-version")
+    ) {
+      error(
+        400,
+        "unsupported_version",
+        "invalid_request_error",
+        `Grant schema version ${grant.schemaVersion} has an unsupported major version.`
+      );
+      return;
+    }
 
     // An owner token reaches only its own subject's store (RS-12). The seeded
     // fixtures belong to SEEDED_SUBJECT, so a foreign owner sees an empty store.

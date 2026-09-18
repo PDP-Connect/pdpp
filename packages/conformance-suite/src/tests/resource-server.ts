@@ -1341,6 +1341,93 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // ---------------------------------------------------------------- 7.4-2 ---
+  // The OTHER version axis. Core Section 7 "Version layering" names three and
+  // says they "MUST NOT be conflated": `grant.version` is the grant schema,
+  // `PDPP-Version` is the HTTP API contract, and `source_declaration.version`
+  // is opaque evidence metadata. The case above covers the header axis; this
+  // one covers the grant axis, which no case could reach until the adapter
+  // could mint a grant at an arbitrary schema version.
+  //
+  // The distinction has teeth. A server that validates only the header will
+  // pass the case above and then enforce a grant written against a schema it
+  // has never seen — reading the fields it recognizes, ignoring the ones it
+  // does not, and calling the result an authorization decision. Any constraint
+  // expressed in the part it skipped is simply not applied.
+  {
+    caseId: "RS-11/unsupported-grant-schema-version-rejected",
+    requirementId: "RS-11",
+    assertion:
+      "A token bound to a grant whose schema major version is unsupported is rejected with 400 unsupported_version, while a grant at the supported version still reads.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const supportedVersion = adapter.supportedGrantSchemaVersion;
+      if (!(adapter.grantWithSchemaVersion && supportedVersion)) {
+        return skip(
+          "The adapter has no grantWithSchemaVersion hook and supportedGrantSchemaVersion, so no token can be bound to a grant at a chosen schema version and the grant-schema axis is unobservable. The suite will not forge a grant body: the obligation is on the RS's handling of a grant its own AS issued, and a suite-authored artifact would test the suite's idea of the grant schema."
+        );
+      }
+      const grantRequest = { streams: [{ name: stream.name, fields: [...stream.fields] }] };
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      // Derived from the target's OWN supported version rather than fixed:
+      // Core pins no value for `grant.version`, so a hardcoded constant would
+      // test this suite's assumption and would call a conforming target at any
+      // other version broken. Prefixing the major keeps every other component
+      // well-formed, so the only thing wrong with the result is the major.
+      const unsupportedVersion = `${Number(supportedVersion.split(".")[0] ?? 0) + 9000}.0`;
+
+      // The positive control FIRST, and it is not optional: a target that
+      // refuses every token this hook produces would satisfy the negative below
+      // while being unable to serve anything. Minted through the same hook, so
+      // the only difference between the two tokens is the schema version.
+      const supported = await adapter.grantWithSchemaVersion(supportedVersion, grantRequest);
+      if (!supported) {
+        return skip(
+          `The target minted no grant at its own declared supported schema version '${supportedVersion}', so there is no positive control and a refusal of the unsupported version could not be attributed to the version.`
+        );
+      }
+      const control = await request(adapter.baseUrl, recordsPath, { token: supported.accessToken });
+      if (control.status !== 200) {
+        return skip(
+          `The positive control read returned ${control.status}: this target does not serve a grant minted at schema version '${supportedVersion}' at all, so a refusal of an unsupported version proves nothing about version checking.`
+        );
+      }
+
+      const unsupported_ = await adapter.grantWithSchemaVersion(unsupportedVersion, grantRequest);
+      if (!unsupported_) {
+        return skip(
+          `The target declined to mint a grant at schema version '${unsupportedVersion}'. Refusing to ISSUE such a grant is not the obligation clause 7.4-2 states, which is on the RS refusing to ENFORCE one, so this is recorded as missing evidence rather than as compliance.`
+        );
+      }
+      const response = await request(adapter.baseUrl, recordsPath, { token: unsupported_.accessToken });
+      const evidence = [control.evidence, response.evidence];
+
+      if (response.status === 200) {
+        return fail(
+          `A token bound to a grant at schema version '${unsupportedVersion}' was honoured and served records, while '${supportedVersion}' is what this target declares it supports. Core Section 7 "Version layering": the RS MUST reject grants with unsupported major versions, returning 400 unsupported_version. Enforcing a grant written against an unknown schema means applying the parts the server happens to recognize and silently ignoring the rest, including any constraint the owner relied on.`,
+          evidence
+        );
+      }
+      if (response.status !== 400) {
+        return fail(
+          `A grant at unsupported schema version '${unsupportedVersion}' was refused with ${response.status} rather than 400. Core names 400 unsupported_version for this axis specifically; a 401 or 403 tells the client its credential or permissions are at fault and invites a retry that can never succeed.`,
+          evidence
+        );
+      }
+      const error = errorBody(response);
+      if (error?.code !== "unsupported_version") {
+        return fail(
+          `The grant was refused with 400 but classified as "${error?.code ?? "no structured error"}" rather than unsupported_version.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
   // --------------------------------------------------------------- RS-12 ---
   // Cross-subject isolation. Without a second subject the target cannot
   // DEMONSTRATE scoping, so the case is skipped rather than passed: absence of

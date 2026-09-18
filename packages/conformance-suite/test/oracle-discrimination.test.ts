@@ -367,6 +367,23 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-2/dotted-nested-field-refused",
     defect: "accept-undeclared-selection",
   },
+  // Clause 10.2-4. The defect changes ONLY the two cache headers: the token is
+  // valid, the status is 200, and every other case still passes against it. So
+  // this row is the only thing standing between the clause and an oracle that
+  // would pass against a server which never set the headers at all.
+  {
+    caseId: "AS-9/token-response-forbids-caching",
+    defect: "token-response-without-no-store",
+  },
+  // Clause 7.4-2, the grant-schema version axis. Paired with a defect that
+  // ENFORCES the unknown-schema grant rather than with anything touching the
+  // PDPP-Version header: Core forbids conflating the two axes, and a defect on
+  // the header axis would let this case pass against a server that never looks
+  // at `grant.version` at all — the exact violation it exists to catch.
+  {
+    caseId: "RS-11/unsupported-grant-schema-version-rejected",
+    defect: "accept-unsupported-grant-schema-version",
+  },
 ];
 
 describe("negative oracles discriminate conforming from violating targets", () => {

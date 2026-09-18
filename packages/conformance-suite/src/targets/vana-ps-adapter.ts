@@ -104,6 +104,16 @@ export class VanaPsAdapter implements TargetAdapter {
   readonly roles: readonly Role[];
   readonly capabilities: TargetCapabilities;
   private readonly config: VanaPsConfig;
+  /**
+   * Headers from the most recent successful token-endpoint redemption, for
+   * clause 10.2-4.
+   *
+   * A field rather than a changed `exchangeCode` return type because several
+   * call sites need only the token, and widening all of them to carry headers
+   * they ignore would be noise. Set immediately before the token is returned,
+   * so a grant and its header map are always from the same exchange.
+   */
+  private lastTokenResponseHeaders: Record<string, string> | null = null;
 
   constructor(config: VanaPsConfig) {
     this.config = config;
@@ -278,6 +288,10 @@ export class VanaPsAdapter implements TargetAdapter {
         // target's /approve returns `{ redirect_uri, grant_id }`, so in practice
         // this is absent and AS-3's schema case skips for missing evidence.
         ...(approval.grant === undefined ? {} : { rawGrant: approval.grant }),
+        // The headers of the exchange that produced THIS token (clause 10.2-4).
+        ...(this.lastTokenResponseHeaders === null
+          ? {}
+          : { tokenResponseHeaders: this.lastTokenResponseHeaders }),
       };
     };
 
@@ -492,6 +506,15 @@ export class VanaPsAdapter implements TargetAdapter {
       return null;
     }
     const token = (await response.json()) as { access_token?: string };
+    if (token.access_token) {
+      // Recorded only for a response that actually carried a token: clause
+      // 10.2-4 binds "every successful token response that contains an access
+      // token or refresh token", so headers from a tokenless response would be
+      // evidence about a different obligation.
+      this.lastTokenResponseHeaders = Object.fromEntries(
+        [...response.headers].map(([k, v]) => [k.toLowerCase(), v])
+      );
+    }
     return token.access_token ?? null;
   }
 

@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **54** have at least one case and **52** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **56** have at least one case and **50** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -149,7 +149,7 @@ Issues access tokens bound to specific grants, carrying the PDPP introspection e
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
 | `10.2-3` | MUST | black-box-http | `AS-20/refresh-reuse-revokes-the-family` | Family linkage is tested through reuse revocation; the `expires_in`/`exp` derivation and omission rules are not, and would need a target that can issue a non-expiring access token. |
-| `10.2-4` | MUST | black-box-http | — | Directly testable and not tested: the adapter obtains tokens but discards the token-endpoint response headers, so the harness needs to surface them before a case can assert on them. |
+| `10.2-4` | MUST | black-box-http | `AS-9/token-response-forbids-caching` | — |
 
 ### AS-10 (authorization-server, MUST)
 
@@ -378,7 +378,7 @@ Implements `PDPP-Version` header negotiation.
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `7.4-2` | MUST | black-box-http | — | Needs a token bound to a grant whose `version` names an unsupported major; the adapter cannot mint a grant with an arbitrary schema version, so only the `PDPP-Version` header axis is currently tested. |
+| `7.4-2` | MUST | black-box-http | `RS-11/unsupported-grant-schema-version-rejected` | — |
 | `8.14-1` | MUST | black-box-http | `RS-11/unsupported-version-rejected`<br>`AS-17/unsupported-version-rejected` | Carries no RFC 2119 keyword; its MUST level is Section 9 AS item 17 and RS item 11. The unsupported-version half is tested on both roles; the absent-header half — that the response echoes the selected version in a `PDPP-Version` response header — is not asserted by any case, and needs only an unwritten case, not a new hook. |
 
 ### RS-12 (resource-server, MUST)
