@@ -81,6 +81,7 @@ function renderLegend(): string {
 		"| Marker | Meaning |",
 		"| --- | --- |",
 		"| `PASS` | The target demonstrated the required behaviour. |",
+		"| `ADVISORY` | The target met every MUST the case checks, but did not follow a SHOULD-level recommendation. Not a conformance failure; see Advisories below. |",
 		"| `FAIL` | The target demonstrated a violation. |",
 		"| `UNSUPPORTED` | The target declares the optional capability absent; the requirement does not apply. Not a pass. |",
 		"| `SKIP` | The case could not run for an environmental reason. Absence of evidence, not a pass. |",
@@ -155,6 +156,48 @@ function renderFailures(requirements: readonly RequirementResult[]): string {
 	return lines.join("\n");
 }
 
+function renderAdvisoryEntry(result: RequirementResult): string {
+	const lines = [
+		`### ${result.requirement.id} (${result.requirement.specAnchor})`,
+		"",
+	];
+	const advisoryCases = result.cases.filter((c) => c.outcome === "advisory");
+	for (const c of advisoryCases) {
+		lines.push(`- Case \`${c.caseId}\``);
+		lines.push(`  - Assertion: ${c.assertion}`);
+		lines.push(`  - Detail: ${c.detail ?? "(no detail recorded)"}`);
+	}
+	lines.push("");
+	return lines.join("\n");
+}
+
+function renderAdvisories(requirements: readonly RequirementResult[]): string {
+	const advisoryRequirements = requirements.filter(
+		(r) => r.cases.some((c) => c.outcome === "advisory"),
+	);
+
+	const lines = [
+		"## Advisories",
+		"",
+		"A requirement below met every MUST a case checked, but a case also " +
+			"recorded a SHOULD-level observation. This is not a conformance " +
+			"failure; it is listed separately from Failures so it cannot be read " +
+			"as one.",
+		"",
+	];
+
+	if (advisoryRequirements.length === 0) {
+		lines.push("No advisory observations in this run.", "");
+		return lines.join("\n");
+	}
+
+	for (const r of advisoryRequirements) {
+		lines.push(renderAdvisoryEntry(r));
+	}
+
+	return lines.join("\n");
+}
+
 function renderNotTested(requirements: readonly RequirementResult[]): string {
 	const notTested = requirements.filter((r) => r.outcome === "not-tested");
 	const lines = [
@@ -207,6 +250,7 @@ export function renderMarkdown(report: ConformanceReport): string {
 		renderLegend(),
 		renderCoverageTable(report.coverage),
 		renderFailures(report.requirements),
+		renderAdvisories(report.requirements),
 		renderNotTested(report.requirements),
 		renderAllResults(report.requirements),
 	];

@@ -235,4 +235,66 @@ describe("SHOULD-level observations are never reported as failed MUSTs", () => {
     );
     assert.ok(!report.summary.failedRequirements.includes("AS-8"));
   });
+
+  it("renders advisory case detail in markdown, separately from MUST failures", () => {
+    // Protected risk: the JSON report already carries advisoryRequirements (see
+    // the two cases above), but the markdown renderer had no legend entry or
+    // detail section for `advisory` outcomes — a human reading the rendered
+    // report, rather than the JSON, had no way to see which case produced the
+    // observation or why. The plausible defect is the inverse too: an advisory
+    // case leaking into the "## Failures" section, which would overstate a
+    // conforming implementation as non-conformant (the exact harm this
+    // describe block exists to prevent).
+    const report = buildReport({
+      suite: { name: "t", version: "0" },
+      target: {
+        id: "t",
+        version: "0",
+        baseUrl: "http://127.0.0.1:1",
+        roles: ["authorization-server"],
+      },
+      run: { startedAt: "", finishedAt: "", reproducible: true },
+      cases: [
+        {
+          caseId: "AS-8/advisory-case",
+          requirementId: "AS-8",
+          outcome: "advisory",
+          assertion: "MUST met; SHOULD-level observation recorded.",
+          detail: "RFC SHOULD NOT, not strengthened by Core.",
+        },
+      ],
+    });
+
+    const markdown = renderMarkdown(report);
+
+    const advisoriesSection = markdown.slice(
+      markdown.indexOf("## Advisories"),
+      markdown.indexOf("## Not tested")
+    );
+    assert.ok(
+      advisoriesSection.includes("AS-8"),
+      "The Advisories section must name the requirement carrying the observation."
+    );
+    assert.ok(
+      advisoriesSection.includes("AS-8/advisory-case"),
+      "The Advisories section must show the case ID."
+    );
+    assert.ok(
+      advisoriesSection.includes("RFC SHOULD NOT, not strengthened by Core."),
+      "The Advisories section must show the case detail, not just the requirement ID."
+    );
+
+    const failuresSection = markdown.slice(
+      markdown.indexOf("## Failures"),
+      markdown.indexOf("## Advisories")
+    );
+    assert.ok(
+      !failuresSection.includes("AS-8"),
+      "An advisory-only requirement must not appear under Failures."
+    );
+    assert.ok(
+      failuresSection.includes("No failed requirements in this run."),
+      "MUST-failure rendering must be unchanged: zero fails still reports as none."
+    );
+  });
 });
