@@ -44,7 +44,7 @@ one that exists today.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **65** have at least one case and **41** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **70** have at least one case and **36** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -242,7 +242,7 @@ Retains one exact SourceDeclaration snapshot through validation, consent, narrow
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
 | `5.2-1` | MUST | review-only | — | What the AS treated as authenticated is an internal trust decision; from outside, an accepted and a rejected declaration differ only by whether consent proceeded, which does not discriminate this clause. |
-| `5.2-5` | MUST | declaration-static | — | Needs a declaration-acceptance hook on TargetAdapter that submits a candidate declaration and reports accept/reject; the suite can only seed streams a target already accepted. |
+| `5.2-5` | MUST | declaration-static | `AS-16/embedded-schema-remote-reference-refused` | Partially covered. The case exercises the local-reference obligation (`$ref`/`$dynamicRef` must be local fragments), which is the half that makes consent interpretation depend on a mutable remote schema. The `$schema` dialect equality and full metaschema meta-validation are implemented by the reference target but not separately asserted: a case for each would need its own defect to discriminate, and the remote-reference oracle already fails a target that skips embedded-schema validation altogether. |
 | `5.8-1` | MUST | black-box-http | `AS-16/unonboarded-source-authority-refused` | — |
 | `5.8-2` | MUST | black-box-http | `AS-16/provider-native-source-id-mismatch-refused` | — |
 | `5.8-3` | MUST | review-only | — | Restates 5.2-1 as an acceptance obligation; what the AS relied on internally is not observable from a request outcome. |
@@ -541,11 +541,11 @@ reports.
 | `4.5-1` | MUST | black-box-http | `RS-1/compound-primary-key-canonically-encoded` | — |
 | `4.5-2` | MUST | review-only | — | The rejection half binds a write interface the Collection Profile defines, which Core's read-only query surface cannot reach; the read half could be checked but no Section 9 item claims it. |
 | `4.6-1` | SHOULD | declaration-static | — | — |
-| `4.8-1` | MUST | declaration-static | — | No Section 9 item covers declaration field validity; checking it needs a declaration-validation harness, which this suite does not have — it only speaks HTTP to a running target. |
-| `5.2-2` | MUST | declaration-static | — | No Section 9 item covers declaration internal consistency; needs a declaration-validation harness this suite does not have. |
-| `5.2-3` | MUST | declaration-static | — | No Section 9 item covers `consent_time_field` declaration validity; needs the same declaration-validation harness as 5.2-2. |
+| `4.8-1` | MUST | declaration-static | `AS-16/blob-ref-invalid-mime-type-refused` | No Section 9 item covers declaration field validity, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes. |
+| `5.2-2` | MUST | declaration-static | `AS-16/key-field-not-declared-in-schema-refused` | No Section 9 item covers declaration internal consistency, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes. |
+| `5.2-3` | MUST | declaration-static | `AS-16/consent-time-field-not-declared-in-schema-refused` | No Section 9 item covers `consent_time_field` declaration validity, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes. |
 | `5.3-1` | MAY | declaration-static | — | — |
-| `5.4-1` | MUST | declaration-static | — | No Section 9 item covers it; needs the declaration-validation harness described at 5.2-2. |
+| `5.4-1` | MUST | declaration-static | `AS-16/consent-time-field-not-inferred-from-cursor-field` | No Section 9 item covers it, so `requirementIds` stays empty. The case reads the clause's MUST as its observable consequence: a stream claiming time-range capability without declaring `consent_time_field` forces the AS to infer the consent boundary from `cursor_field`, which is what separate declaration forbids. |
 | `5.6-1` | MAY | declaration-static | — | — |
 | `5.6-3` | MUST | black-box-http | `AS-13/unrecognized-view-uri-treated-as-opaque` | — |
 | `6.1-3` | MAY | black-box-http | — | — |

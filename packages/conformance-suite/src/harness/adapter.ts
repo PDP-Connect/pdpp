@@ -303,8 +303,75 @@ export interface SourceDeclarationSubmission {
    * Clause 5.8-4 is about DIFFERENT content under one accepted key, so the
    * cases submit the same key twice with this differing, and the target must
    * refuse the second.
+   *
+   * `fields` stays the minimal shape the trust clauses (5.8-*) turn on. The
+   * optional members below are the declaration-VALIDITY surface — the clauses
+   * that ask whether the document is internally coherent, not whether its
+   * authority is accepted. They are optional because a trust case must be able
+   * to submit a declaration that carries none of them and still be judged on
+   * authority alone; a required member would make every existing case assert
+   * on content its clause does not govern.
    */
-  readonly streams: readonly { readonly name: string; readonly fields: readonly string[] }[];
+  readonly streams: readonly SourceDeclarationStream[];
+}
+
+/**
+ * One stream of an offered declaration.
+ *
+ * The optional members are exactly the fields Core's declaration-validity
+ * clauses reference, and no more:
+ *
+ * - `schema` / `primaryKey` / `cursorField` — clause 5.2-2, "`primary_key` and
+ *   `cursor_field` MUST reference fields declared here".
+ * - `consentTimeField` — clause 5.2-3, "MUST reference a field declared in the
+ *   schema", and clause 5.4-1, which requires it to be declared separately from
+ *   `cursor_field` even when it names the same field.
+ * - `blobFields` — clause 4.8-1, "`mime_type` MUST be a valid IANA media type".
+ *
+ * `schema` is carried as the embedded JSON Schema object rather than a field
+ * name list because clause 5.2-5 is about the schema DOCUMENT: its `$schema`
+ * dialect, whether it meta-validates, and whether its `$ref`/`$dynamicRef`
+ * values are local. A flattened name list could not express any of those.
+ */
+export interface SourceDeclarationStream {
+  /**
+   * `blob_ref` fields this stream declares, with the media type each claims.
+   *
+   * Only the `mime_type` is carried: clause 4.8-1 governs that value and
+   * nothing else about a `blob_ref`, and a fuller blob shape would invite a
+   * case to assert on content the clause does not reach.
+   */
+  readonly blobFields?: readonly { readonly name: string; readonly mimeType: string }[];
+  /** `consent_time_field`, when the stream declares one (clauses 5.2-3, 5.4-1). */
+  readonly consentTimeField?: string;
+  /** `cursor_field`, when the stream declares one (clauses 5.2-2, 5.4-1). */
+  readonly cursorField?: string;
+  readonly fields: readonly string[];
+  readonly name: string;
+  /** `primary_key`, when the stream declares one (clause 5.2-2). */
+  readonly primaryKey?: readonly string[];
+  /**
+   * The embedded JSON Schema for the stream's `data` field (clause 5.2-5).
+   *
+   * `unknown` rather than a typed schema object on purpose: the negative cases
+   * must offer documents that are NOT valid schemas (a bad `$schema` dialect, a
+   * remote `$ref`, a meta-invalid constraint), and a type that only admitted
+   * valid schemas could not express them.
+   */
+  readonly schema?: unknown;
+  /**
+   * Whether the declaration claims this stream supports `time_range`
+   * (clause 5.4-1).
+   *
+   * Core derives time-range capability from `consent_time_field` PRESENCE, so a
+   * stream claiming the capability without declaring the field is asking the AS
+   * to infer the consent boundary from `cursor_field` — exactly what 5.4-1
+   * forbids ("they serve different purposes and MUST be declared separately").
+   * Carried as an explicit claim rather than inferred from `selection` because
+   * the violation is the claim itself: a case must be able to make it and see
+   * whether the AS refuses.
+   */
+  readonly timeRangeCapable?: boolean;
 }
 
 /** What the AS did with an offered declaration. */
@@ -319,7 +386,7 @@ export interface DeclarationOutcome {
    * report it. Clause 5.8-4 requires the PREVIOUSLY accepted content to survive
    * a refused equivocation, and only this makes that half observable.
    */
-  readonly retainedContent?: readonly { readonly name: string; readonly fields: readonly string[] }[];
+  readonly retainedContent?: readonly SourceDeclarationStream[];
   readonly status?: number;
 }
 
@@ -818,7 +885,9 @@ export interface TargetAdapter {
    * holds, so a server that accepts anything looks exactly like one that
    * validated carefully.
    *
-   * Three clauses need this, and each needs a different thing offered:
+   * Two families of clause need this, and each needs a different thing offered.
+   *
+   * Declaration TRUST — is this document's authority accepted:
    * - 5.8-1: a declaration naming a source authority the AS never onboarded
    *   (a client MUST NOT introduce a new source authority during
    *   authorization).
@@ -827,6 +896,21 @@ export interface TargetAdapter {
    * - 5.8-4: a SECOND, different document under an accepted
    *   (authority, source.id, declaration_version) key. That is equivocation:
    *   the AS must refuse it AND retain the previously accepted content.
+   *
+   * Declaration VALIDITY — is this document internally coherent, asked of a
+   * document whose authority is already accepted:
+   * - 4.8-1: a `blob_ref` field whose `mime_type` is not a valid IANA media type.
+   * - 5.2-2: a `primary_key` or `cursor_field` naming a field the stream's
+   *   schema does not declare.
+   * - 5.2-3: a `consent_time_field` naming a field the schema does not declare.
+   * - 5.2-5: an embedded stream schema that declares the wrong `$schema`
+   *   dialect, fails meta-validation, or carries a non-local `$ref`.
+   * - 5.4-1: a `consent_time_field` left undeclared and inferred from
+   *   `cursor_field` instead.
+   *
+   * The two families share one hook because they share one surface: both ask
+   * the AS to decide about an offered document before consent, and a target
+   * that can answer one can answer the other.
    *
    * `accepted` is the decision. `retainedContent` is what the AS holds for that
    * key AFTER the call, which 5.8-4 needs: refusing the second document is only

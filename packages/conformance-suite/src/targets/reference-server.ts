@@ -390,6 +390,63 @@ export type Defect =
    */
   | "accept-duplicate-preset-stream"
   /**
+   * Accepts a declaration whose `blob_ref` field declares a `mime_type` that is
+   * not a valid IANA media type (clause 4.8-1).
+   *
+   * The damage is downstream and silent: `mime_type` is what a client uses to
+   * decide how to render fetched bytes, and a value no registry defines means
+   * every consumer guesses differently. Retaining it freezes the guess into the
+   * document the owner's consent is written against.
+   */
+  | "accept-invalid-blob-mime-type"
+  /**
+   * Accepts a declaration whose `primary_key` or `cursor_field` names a field
+   * the stream's schema does not declare (clause 5.2-2).
+   *
+   * Models the server that validates the document's shape but never
+   * cross-checks its internal references. The result is a retained declaration
+   * whose record identity and sort order name fields that do not exist, which
+   * no resource server can honour — discovered at read time, long after
+   * consent.
+   */
+  | "accept-undeclared-key-field-reference"
+  /**
+   * Accepts a declaration whose `consent_time_field` names a field the schema
+   * does not declare (clause 5.2-3).
+   *
+   * Separate from `accept-undeclared-key-field-reference` because a server can
+   * check the sync-mechanics fields and miss this one, and this is the more
+   * dangerous miss: `consent_time_field` is the field a `time_range` grant is
+   * evaluated against, so an undeclared one means the owner's time-bounded
+   * consent is filtered on nothing.
+   */
+  | "accept-undeclared-consent-time-field"
+  /**
+   * Accepts a declaration carrying an embedded stream schema that declares the
+   * wrong `$schema` dialect, fails meta-validation, or references a remote
+   * document (clause 5.2-5).
+   *
+   * Core requires the AS to "meta-validate each embedded stream schema before
+   * accepting the declaration" and confines `$ref`/`$dynamicRef` to local
+   * fragments. The remote-reference half is the one with teeth: a declaration
+   * whose meaning depends on a document the AS never retained can change after
+   * consent without anyone editing the declaration.
+   */
+  | "accept-invalid-embedded-schema"
+  /**
+   * Treats a stream as time-range-capable when it declares `cursor_field` but
+   * no `consent_time_field`, inferring the consent boundary from the cursor
+   * (clause 5.4-1).
+   *
+   * The single most natural implementation shortcut the clause forbids: the two
+   * fields are the same value in most real declarations, so reusing one for the
+   * other looks harmless. It is not — `cursor_field` tracks when a record was
+   * last MODIFIED and the consent boundary is usually when it was CREATED, so
+   * the inference silently authorizes records outside the window the owner
+   * agreed to.
+   */
+  | "infer-consent-time-field-from-cursor-field"
+  /**
    * Omits `authorization_details` from a token response for a request that
    * carried them (RFC 9396 Section 7, adopted by Core's Section 2 normative
    * reference and not restated in Core).

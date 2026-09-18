@@ -22,6 +22,7 @@ import type {
   SeededStream,
   SelectionOutcome,
   SelectionRequest,
+  SourceDeclarationStream,
   SourceDeclarationSubmission,
   StagedApproval,
   TargetAdapter,
@@ -236,17 +237,153 @@ const URL_HOSTED_TRUSTED_HOSTS: readonly string[] = ["127.0.0.1", "localhost"];
  * a reordered field list as equivocation would refuse a legitimate idempotent
  * resubmission.
  */
-function sameStreams(
-  a: readonly { readonly name: string; readonly fields: readonly string[] }[],
-  b: readonly { readonly name: string; readonly fields: readonly string[] }[]
-): boolean {
-  const normalize = (streams: readonly { readonly name: string; readonly fields: readonly string[] }[]) =>
+function sameStreams(a: readonly SourceDeclarationStream[], b: readonly SourceDeclarationStream[]): boolean {
+  const normalize = (streams: readonly SourceDeclarationStream[]) =>
     JSON.stringify(
       [...streams]
         .map((s) => ({ name: s.name, fields: [...s.fields].sort() }))
         .sort((x, y) => x.name.localeCompare(y.name))
     );
   return normalize(a) === normalize(b);
+}
+
+/**
+ * The JSON Schema dialect clause 5.2-5 fixes: "If `$schema` is present, it MUST
+ * equal `https://json-schema.org/draft/2020-12/schema`."
+ */
+const REQUIRED_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
+
+/** The `type` values a meta-valid JSON Schema may declare. */
+const JSON_SCHEMA_TYPES: ReadonlySet<string> = new Set([
+  "array",
+  "boolean",
+  "integer",
+  "null",
+  "number",
+  "object",
+  "string",
+]);
+
+/**
+ * IANA's registered top-level media types (RFC 6838 Section 4.2), plus the
+ * `x-` experimental tree RFC 6838 Section 3.4 permits.
+ *
+ * Clause 4.8-1 says `mime_type` "MUST be a valid IANA media type". Validity
+ * here is structural — a registered top-level type, a `/`, and a subtype whose
+ * characters RFC 6838 Section 4.2 allows. This target deliberately does NOT
+ * check the subtype against the live IANA registry: the registry changes
+ * without a spec revision, so a target that rejected an unregistered-but-well-
+ * formed subtype would refuse declarations that become valid tomorrow. What it
+ * catches is the failure the clause is written against — a value that is not a
+ * media type at all.
+ */
+const IANA_TOP_LEVEL_TYPES: ReadonlySet<string> = new Set([
+  "application",
+  "audio",
+  "example",
+  "font",
+  "haptics",
+  "image",
+  "message",
+  "model",
+  "multipart",
+  "text",
+  "video",
+]);
+
+/** RFC 6838 Section 4.2 `restricted-name`: an alphanumeric start, then a bounded set. */
+const MEDIA_SUBTYPE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/;
+
+/** Whether `value` is structurally a valid IANA media type (clause 4.8-1). */
+function isValidMediaType(value: string): boolean {
+  const [type, subtype, ...rest] = value.split("/");
+  if (rest.length > 0 || type === undefined || subtype === undefined) {
+    return false;
+  }
+  const lower = type.toLowerCase();
+  const registered = IANA_TOP_LEVEL_TYPES.has(lower) || lower.startsWith("x-");
+  // The subtype may carry parameters (`;charset=utf-8`); only the subtype
+  // itself is name-checked, since the clause governs the media type's identity.
+  const [bare] = subtype.split(";");
+  return registered && bare !== undefined && MEDIA_SUBTYPE.test(bare);
+}
+
+/**
+ * The top-level property names an embedded stream schema declares.
+ *
+ * Clause 5.2-2 says `primary_key` and `cursor_field` "MUST reference fields
+ * declared here" — "here" being the stream's `schema`. A stream that carries no
+ * schema falls back to its `fields` list, which is the shape the trust cases
+ * submit and the only description of the record those documents carry.
+ */
+function declaredFieldNames(stream: SourceDeclarationStream): ReadonlySet<string> {
+  const { schema } = stream;
+  const properties =
+    schema !== null && typeof schema === "object" ? (schema as { properties?: unknown }).properties : undefined;
+  if (properties !== null && typeof properties === "object" && !Array.isArray(properties)) {
+    return new Set(Object.keys(properties));
+  }
+  return new Set(stream.fields);
+}
+
+/**
+ * The clause-5.2-5 violation one key of a schema object carries, if any.
+ *
+ * Split out from the recursive walk below so each obligation reads as one
+ * condition: the dialect, the reference locality, and the metaschema's
+ * constraint on `type`.
+ */
+function schemaKeyViolation(key: string, child: unknown, childPath: string): string | undefined {
+  if (key === "$schema" && child !== REQUIRED_SCHEMA_DIALECT) {
+    return `${childPath} declares dialect '${String(child)}', but Core fixes ${REQUIRED_SCHEMA_DIALECT}`;
+  }
+  // "Embedded `$ref` and `$dynamicRef` values MUST be local fragment
+  // references." A remote reference makes consent interpretation depend on a
+  // document the AS does not retain and cannot freeze.
+  if ((key === "$ref" || key === "$dynamicRef") && (typeof child !== "string" || !child.startsWith("#"))) {
+    return `${childPath} is not a local fragment reference`;
+  }
+  // A `type` that names no JSON Schema type fails meta-validation: the
+  // metaschema constrains it to the seven core types.
+  if (key === "type" && typeof child === "string" && !JSON_SCHEMA_TYPES.has(child)) {
+    return `${childPath} declares '${child}', which is not a JSON Schema type`;
+  }
+  return undefined;
+}
+
+/**
+ * Whether an embedded stream schema meta-validates and keeps its references
+ * local (clause 5.2-5).
+ *
+ * Not a full JSON Schema meta-validator, and does not pretend to be: it checks
+ * the two properties the clause states and one structural invariant a
+ * meta-validator would catch. A real AS would run the 2020-12 metaschema; the
+ * point here is that the oracle can tell a target that checks from one that
+ * does not, and each defect is a document a metaschema genuinely rejects.
+ */
+function schemaViolation(schema: unknown, path: string): string | undefined {
+  if (schema === null || typeof schema !== "object") {
+    return `${path} is not a JSON Schema object`;
+  }
+  if (Array.isArray(schema)) {
+    for (const [index, child] of schema.entries()) {
+      const nested = schemaViolation(child, `${path}/${index}`);
+      if (nested) {
+        return nested;
+      }
+    }
+    return undefined;
+  }
+  for (const [key, child] of Object.entries(schema as Record<string, unknown>)) {
+    const childPath = `${path}/${key}`;
+    const violation =
+      schemaKeyViolation(key, child, childPath) ??
+      (child !== null && typeof child === "object" ? schemaViolation(child, childPath) : undefined);
+    if (violation) {
+      return violation;
+    }
+  }
+  return undefined;
 }
 
 export class ReferenceTargetAdapter implements TargetAdapter {
@@ -270,10 +407,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * the retained CONTENT (not merely the key) is what lets a case check that a
    * refused equivocation left the previous content in place.
    */
-  private readonly acceptedDeclarations = new Map<
-    string,
-    readonly { readonly name: string; readonly fields: readonly string[] }[]
-  >();
+  private readonly acceptedDeclarations = new Map<string, readonly SourceDeclarationStream[]>();
 
   constructor(fixtures: readonly StreamFixture[] = DEFAULT_FIXTURES, defects: ReadonlySet<Defect> = new Set()) {
     // Clause 5.6-2 binds the AS's view DEFINITIONS, so the violating target is
@@ -455,6 +589,16 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       );
     }
 
+    // Declaration VALIDITY, after trust and before retention — the order Core
+    // states. A document whose authority was never onboarded is refused
+    // whatever it says, and a document that fails validity must never reach the
+    // retained set, because the retained declaration is what the owner's
+    // consent is written against.
+    const invalid = this.declarationValidityViolation(declaration);
+    if (invalid) {
+      return refuse(invalid.errorCode, invalid.message);
+    }
+
     const held = this.acceptedDeclarations.get(key);
     if (held !== undefined && !sameStreams(held, declaration.streams)) {
       if (this.defects.has("accept-declaration-equivocation")) {
@@ -469,6 +613,115 @@ export class ReferenceTargetAdapter implements TargetAdapter {
 
     this.acceptedDeclarations.set(key, declaration.streams);
     return { accepted: true, status: 200, retainedContent: declaration.streams };
+  }
+
+  /**
+   * The first declaration-validity clause this document violates, if any
+   * (clauses 4.8-1, 5.2-2, 5.2-3, 5.2-5, 5.4-1).
+   *
+   * Separate from the trust checks in `submitDeclaration` because the questions
+   * are separate: trust asks whose document this is, validity asks whether it
+   * says anything coherent. A server can implement either without the other,
+   * and keeping them apart is what lets each clause carry its own defect.
+   *
+   * Every check is gated by its own defect, and they have to be separate: the
+   * checks run in sequence, so one shared defect would let an earlier refusal
+   * mask a later oracle and leave it passing against a server that never
+   * implements the clause it owns.
+   */
+  private declarationValidityViolation(
+    declaration: SourceDeclarationSubmission
+  ): { readonly errorCode: string; readonly message: string } | undefined {
+    for (const stream of declaration.streams) {
+      const violation = this.streamValidityViolation(stream);
+      if (violation) {
+        return violation;
+      }
+    }
+
+    // Clause 5.4-1: `consent_time_field` and `cursor_field` "serve different
+    // purposes and MUST be declared separately". The violation this catches is
+    // the inference an implementer reaches for first — a stream that declares
+    // only `cursor_field` and expects the AS to reuse it as the consent
+    // boundary. Core forecloses that: a stream with no `consent_time_field` is
+    // not time-range-capable (5.2-4), so silently supplying one would authorize
+    // a time_range the declaration never offered.
+    //
+    // Checked across the submission rather than inside the per-stream walk
+    // because it is a statement about the PAIR, and a stream declaring both and
+    // naming the same field — which Core expressly permits — must be accepted.
+    if (this.defects.has("infer-consent-time-field-from-cursor-field")) {
+      return undefined;
+    }
+    const inferred = declaration.streams.find(
+      (stream) => stream.timeRangeCapable === true && stream.consentTimeField === undefined
+    );
+    return inferred
+      ? {
+          errorCode: "invalid_declaration",
+          message: `stream '${inferred.name}' claims time-range capability without declaring consent_time_field; Core requires it to be declared separately from cursor_field '${inferred.cursorField ?? "(none)"}'`,
+        }
+      : undefined;
+  }
+
+  /** The first per-stream validity clause `stream` violates (4.8-1, 5.2-2, 5.2-3, 5.2-5). */
+  private streamValidityViolation(
+    stream: SourceDeclarationStream
+  ): { readonly errorCode: string; readonly message: string } | undefined {
+    const declared = declaredFieldNames(stream);
+
+    // Clause 5.2-5. First, because a schema that does not meta-validate cannot
+    // settle what "a field declared here" even means for 5.2-2 and 5.2-3.
+    if (stream.schema !== undefined && !this.defects.has("accept-invalid-embedded-schema")) {
+      const violation = schemaViolation(stream.schema, `/streams/${stream.name}/schema`);
+      if (violation) {
+        return { errorCode: "invalid_declaration_schema", message: violation };
+      }
+    }
+
+    // Clause 5.2-2.
+    if (!this.defects.has("accept-undeclared-key-field-reference")) {
+      const unknownKey = (stream.primaryKey ?? []).find((field) => !declared.has(field));
+      if (unknownKey !== undefined) {
+        return {
+          errorCode: "invalid_declaration",
+          message: `stream '${stream.name}' names primary_key field '${unknownKey}', which its schema does not declare`,
+        };
+      }
+      if (stream.cursorField !== undefined && !declared.has(stream.cursorField)) {
+        return {
+          errorCode: "invalid_declaration",
+          message: `stream '${stream.name}' names cursor_field '${stream.cursorField}', which its schema does not declare`,
+        };
+      }
+    }
+
+    // Clause 5.2-3. Its own defect, not 5.2-2's: `consent_time_field` is the
+    // field the owner's time_range consent is evaluated against, and a server
+    // can validate the sync-mechanics fields while leaving the consent boundary
+    // unchecked — which is the more dangerous of the two.
+    if (
+      stream.consentTimeField !== undefined &&
+      !declared.has(stream.consentTimeField) &&
+      !this.defects.has("accept-undeclared-consent-time-field")
+    ) {
+      return {
+        errorCode: "invalid_declaration",
+        message: `stream '${stream.name}' names consent_time_field '${stream.consentTimeField}', which its schema does not declare`,
+      };
+    }
+
+    // Clause 4.8-1.
+    if (this.defects.has("accept-invalid-blob-mime-type")) {
+      return undefined;
+    }
+    const badBlob = (stream.blobFields ?? []).find((blob) => !isValidMediaType(blob.mimeType));
+    return badBlob
+      ? {
+          errorCode: "invalid_declaration",
+          message: `stream '${stream.name}' declares blob_ref field '${badBlob.name}' with mime_type '${badBlob.mimeType}', which is not a valid IANA media type`,
+        }
+      : undefined;
   }
 
   /**

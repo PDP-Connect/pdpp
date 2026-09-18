@@ -12,6 +12,7 @@ import { CLIENT_CASES } from "./tests/client.ts";
 import { CLIENT_IDENTITY_CASES } from "./tests/client-identity.ts";
 import { CONSENT_ARTIFACT_CASES } from "./tests/consent-artifact.ts";
 import { DECLARATION_TRUST_CASES } from "./tests/declaration-trust.ts";
+import { DECLARATION_VALIDITY_CASES } from "./tests/declaration-validity.ts";
 import { GRANT_INTEGRITY_CASES } from "./tests/grant-integrity.ts";
 import { GRANT_LIFECYCLE_CASES } from "./tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "./tests/query-surface.ts";
@@ -37,6 +38,7 @@ export const ALL_CASES: readonly ConformanceCase[] = [
   ...CLIENT_IDENTITY_CASES,
   ...CONSENT_ARTIFACT_CASES,
   ...DECLARATION_TRUST_CASES,
+  ...DECLARATION_VALIDITY_CASES,
   ...QUERY_SURFACE_CASES,
   ...CLIENT_CASES,
 ];

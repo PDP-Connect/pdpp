@@ -227,9 +227,9 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#binary-data-blobref",
     applicability: "the declaration declares a `blob_ref` field",
     observable: "declaration-static",
-    caseIds: [],
+    caseIds: ["AS-16/blob-ref-invalid-mime-type-refused"],
     gapNote:
-      "No Section 9 item covers declaration field validity; checking it needs a declaration-validation harness, which this suite does not have — it only speaks HTTP to a running target.",
+      "No Section 9 item covers declaration field validity, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes.",
   },
 ];
 
@@ -260,9 +260,9 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#sourcedeclaration-fields",
     applicability: "always",
     observable: "declaration-static",
-    caseIds: [],
+    caseIds: ["AS-16/key-field-not-declared-in-schema-refused"],
     gapNote:
-      "No Section 9 item covers declaration internal consistency; needs a declaration-validation harness this suite does not have.",
+      "No Section 9 item covers declaration internal consistency, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes.",
   },
   {
     clauseId: "5.2-3",
@@ -273,9 +273,9 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#sourcedeclaration-fields",
     applicability: "the stream declares `consent_time_field`",
     observable: "declaration-static",
-    caseIds: [],
+    caseIds: ["AS-16/consent-time-field-not-declared-in-schema-refused"],
     gapNote:
-      "No Section 9 item covers `consent_time_field` declaration validity; needs the same declaration-validation harness as 5.2-2.",
+      "No Section 9 item covers `consent_time_field` declaration validity, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes.",
   },
   {
     clauseId: "5.2-4",
@@ -297,9 +297,9 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#sourcedeclaration-fields",
     applicability: "always",
     observable: "declaration-static",
-    caseIds: [],
+    caseIds: ["AS-16/embedded-schema-remote-reference-refused"],
     gapNote:
-      "Needs a declaration-acceptance hook on TargetAdapter that submits a candidate declaration and reports accept/reject; the suite can only seed streams a target already accepted.",
+      "Partially covered. The case exercises the local-reference obligation (`$ref`/`$dynamicRef` must be local fragments), which is the half that makes consent interpretation depend on a mutable remote schema. The `$schema` dialect equality and full metaschema meta-validation are implemented by the reference target but not separately asserted: a case for each would need its own defect to discriminate, and the remote-reference oracle already fails a target that skips embedded-schema validation altogether.",
   },
   {
     clauseId: "5.3-1",
@@ -358,8 +358,9 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#consenttimefield",
     applicability: "always",
     observable: "declaration-static",
-    caseIds: [],
-    gapNote: "No Section 9 item covers it; needs the declaration-validation harness described at 5.2-2.",
+    caseIds: ["AS-16/consent-time-field-not-inferred-from-cursor-field"],
+    gapNote:
+      "No Section 9 item covers it, so `requirementIds` stays empty. The case reads the clause's MUST as its observable consequence: a stream claiming time-range capability without declaring `consent_time_field` forces the AS to infer the consent boundary from `cursor_field`, which is what separate declaration forbids.",
   },
   {
     clauseId: "5.4-2",
