@@ -80,10 +80,16 @@ async function introspect(
 
 export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   // ---------------------------------------------------------------- AS-9 ---
+  // AS-9 is `applicability: "always"` (grant-bound tokens with PDPP extension
+  // fields apply to every AS, co-located or separated); it is only this case's
+  // MECHANISM — RFC 7662 introspection — that a co-located AS may not expose,
+  // per Core Section 8's local-equivalent allowance. So the absence of an
+  // introspection endpoint is missing evidence (`skip`), not an inapplicable
+  // requirement (`unsupported`/`appliesWhen`): the obligation still binds a
+  // co-located AS, this suite just has no hook to observe it there yet.
   {
     caseId: "AS-9/introspection-carries-pdpp-extensions",
     requirementId: "AS-9",
-    appliesWhen: (adapter) => adapter.capabilities.separatedDeployment,
     assertion:
       "Introspection of an active client token reports active, pdpp_token_kind client, and the bound grant_id.",
     async run({ adapter, streams }) {
@@ -102,7 +108,7 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
         : null;
       if (!endpoint) {
         return skip(
-          "The target declares a separated deployment but publishes no introspection_endpoint in its RFC 8414 authorization server metadata."
+          "AS-9 applies to this target regardless of topology, but it publishes no RFC 8414 introspection_endpoint, so this suite has no mechanism to observe grant-bound token claims here. Missing evidence, not an inapplicable requirement."
         );
       }
       const response = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
@@ -134,10 +140,15 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   // Section 9 item 4 requires them to be fully expanded before issuance. A
   // wildcard or an empty field list reaching an RS is an authorization defect:
   // the RS enforces exactly this and is forbidden from resolving anything itself.
+  // AS-3 is `applicability: "always"` (every grant, co-located or separated,
+  // must conform to the Section 7 grant schema); only this case's MECHANISM —
+  // reading the resolved grant back over RFC 7662 introspection — is
+  // separated-deployment-specific. A co-located AS without an introspection
+  // endpoint is missing evidence (`skip`), not exempt from the requirement, so
+  // this case must not gate on `separatedDeployment` via `appliesWhen`.
   {
     caseId: "AS-3/resolved-grant-is-fully-expanded",
     requirementId: "AS-3",
-    appliesWhen: (adapter) => adapter.capabilities.separatedDeployment,
     assertion:
       "The authorization_details in introspection carry concrete stream names and a non-empty resolved field list, with no wildcards.",
     async run({ adapter, streams }) {
@@ -156,7 +167,7 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
         : null;
       if (!endpoint) {
         return skip(
-          "The target declares a separated deployment but publishes no introspection_endpoint in its RFC 8414 authorization server metadata."
+          "AS-3 applies to this target regardless of topology, but it publishes no RFC 8414 introspection_endpoint, so this suite has no mechanism to observe the resolved grant here. Missing evidence, not an inapplicable requirement."
         );
       }
       const response = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
@@ -220,10 +231,16 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   // reported `advisory`, not `fail`. Calling it a failed MUST would mean telling
   // an implementer their conforming server is non-conformant, on a clause the
   // specification never made binding.
+  // AS-8 is `applicability: "always"`: Section 9 item 8's obligation to reflect
+  // revocation immediately applies to every AS. Item 8's own text names
+  // "introspection responses" as the mechanism, but unlike item 18 ("For a
+  // separated AS and RS...") it carries no topology qualifier, and Core Section
+  // 8 lets a co-located AS satisfy the same obligation through a local
+  // equivalent. So a missing introspection endpoint here is missing evidence
+  // (`skip`), not grounds to mark the requirement inapplicable.
   {
     caseId: "AS-8/revoked-token-introspects-inactive",
     requirementId: "AS-8",
-    appliesWhen: (adapter) => adapter.capabilities.separatedDeployment,
     assertion:
       "After revocation, introspection reports active false (MUST); extra disclosure on the inactive response is reported as advisory (RFC 7662 SHOULD NOT).",
     async run({ adapter, streams }) {
@@ -245,7 +262,7 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
         : null;
       if (!endpoint) {
         return skip(
-          "The target declares a separated deployment but publishes no introspection_endpoint in its RFC 8414 authorization server metadata."
+          "AS-8 applies to this target regardless of topology, but it publishes no RFC 8414 introspection_endpoint, so this suite has no mechanism to observe revocation reflection here. Missing evidence, not an inapplicable requirement."
         );
       }
       const before = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
