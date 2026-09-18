@@ -49,6 +49,44 @@ async function grantForFirstStream(
   return { grant, stream };
 }
 
+/**
+ * Whether the seeded inventory contains a `mutable_state` stream.
+ *
+ * RS-7's own MUST binds whenever such a stream is served (Core Section 4 and
+ * Section 9 RS item 7), independent of whether the target also declares the
+ * `incrementalSync` capability flag. A target that seeds mutable-state data
+ * but leaves that flag false still owes the behavior; gating on the flag
+ * would let a false declaration hide it as `unsupported` instead of
+ * reporting the missing evidence or failure the run actually found.
+ */
+function hasMutableStateStream(streams: Parameters<ConformanceCase["run"]>[0]["streams"]): boolean {
+  return streams.some((s) => s.semantics === "mutable_state");
+}
+
+/**
+ * Obtain a grant over a `mutable_state` stream specifically, or a reason the
+ * case must skip. Incremental-sync cases must not fall back to an arbitrary
+ * first stream when the inventory is mixed: an append-only stream can never
+ * exhibit RS-7's tombstone or RS-8's terminal-page behavior, so picking one
+ * would silently make the case vacuous instead of exercising the requirement.
+ */
+async function grantForMutableStream(
+  adapter: Parameters<ConformanceCase["run"]>[0]["adapter"],
+  streams: Parameters<ConformanceCase["run"]>[0]["streams"]
+) {
+  const stream = streams.find((s) => s.semantics === "mutable_state");
+  if (!stream) {
+    return { skip: "The adapter seeded no mutable_state stream." as const };
+  }
+  const grant = await adapter.issueGrant({
+    streams: [{ name: stream.name, fields: [...stream.fields] }],
+  });
+  if (!grant) {
+    return { skip: "The target could not issue a grant for the mutable_state stream." as const };
+  }
+  return { grant, stream };
+}
+
 export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   // --------------------------------------------------------------- RS-10 ---
   // Section 8 "List records": a limit above the maximum is the canonical
@@ -148,11 +186,11 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-8/terminal-page-carries-next-changes-since",
     requirementId: "RS-8",
-    appliesWhen: (adapter) => adapter.capabilities.incrementalSync,
+    appliesWhen: (_adapter, streams) => hasMutableStateStream(streams),
     assertion:
       "The terminal page of a changes_since response carries next_changes_since so the next session can resume.",
     async run({ adapter, streams, path }) {
-      const got = await grantForFirstStream(adapter, streams);
+      const got = await grantForMutableStream(adapter, streams);
       if ("skip" in got) {
         return skip(got.skip);
       }
@@ -163,9 +201,10 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
         { token: got.grant.accessToken, query: { changes_since: "" } }
       );
       if (response.status !== 200) {
-        return fail(`The target declares incremental sync, but a changes_since request returned ${response.status}.`, [
-          response.evidence,
-        ]);
+        return fail(
+          `The seeded inventory serves a mutable_state stream, which obliges changes_since support (RS-7), but a changes_since request returned ${response.status}.`,
+          [response.evidence]
+        );
       }
       const body = asList(response.json);
       if (body?.has_more === true) {
@@ -192,11 +231,11 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-6/cursor-not-accepted-as-changes-since",
     requirementId: "RS-6",
-    appliesWhen: (adapter) => adapter.capabilities.incrementalSync,
+    appliesWhen: (_adapter, streams) => hasMutableStateStream(streams),
     assertion:
       "A page cursor presented as changes_since is rejected rather than silently accepted (distinct token spaces).",
     async run({ adapter, streams, path }) {
-      const got = await grantForFirstStream(adapter, streams);
+      const got = await grantForMutableStream(adapter, streams);
       if ("skip" in got) {
         return skip(got.skip);
       }
@@ -349,7 +388,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-7/deletion-surfaces-as-a-tombstone",
     requirementId: "RS-7",
-    appliesWhen: (adapter) => adapter.capabilities.incrementalSync,
+    appliesWhen: (_adapter, streams) => hasMutableStateStream(streams),
     assertion: "A record deleted after a sync cursor was issued appears as a tombstone when that cursor resumes.",
     async run({ adapter, streams, path }) {
       // Owner token: deletion is an owner operation, and the sync leg must run
@@ -358,12 +397,14 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
       if (!owner) {
         return skip("The target issues no owner token, so no record can be deleted to observe.");
       }
-      // Deliberately the LAST seeded stream: the earlier ones are used by cases
-      // that assert exact record counts, and deleting from those would couple
-      // this case's side effects to their oracles.
-      const stream = streams.at(-1);
+      // Deliberately the LAST seeded mutable_state stream, not an arbitrary
+      // last stream: an append-only stream can never exhibit a tombstone, and
+      // among multiple mutable_state streams this keeps the earlier ones free
+      // for cases that assert exact record counts, so this case's deletion
+      // side effect does not couple to their oracles.
+      const stream = [...streams].reverse().find((s) => s.semantics === "mutable_state");
       if (!stream || stream.recordCount < 1) {
-        return skip("No seeded stream with a record to delete.");
+        return skip("No seeded mutable_state stream with a record to delete.");
       }
       const ownerQuery = adapter.ownerReadParams ? { ...adapter.ownerReadParams } : {};
       const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
@@ -374,9 +415,10 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
         query: { ...ownerQuery, changes_since: "" },
       });
       if (opened.status !== 200) {
-        return fail(`The target declares incremental sync, but opening a session returned ${opened.status}.`, [
-          opened.evidence,
-        ]);
+        return fail(
+          `The seeded inventory serves a mutable_state stream, which obliges changes_since support (RS-7), but opening a sync session returned ${opened.status}.`,
+          [opened.evidence]
+        );
       }
       const openedBody = asList(opened.json);
       if (openedBody?.has_more === true) {

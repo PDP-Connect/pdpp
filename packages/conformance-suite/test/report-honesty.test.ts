@@ -61,15 +61,24 @@ describe("the report cannot present a partial run as complete", () => {
 
   it("does not report all-musts-passed while applicable requirements are untested", async () => {
     const report = await runSuite(new ReferenceTargetAdapter());
-    assert.equal(
-      report.summary.failedRequirements.length,
-      0,
-      "Fixture expectation: the clean reference target fails nothing."
+    // Fixture expectation: the reference target seeds a `mutable_state`
+    // stream ("conversations") but implements no `changes_since` handling,
+    // so RS-8's terminal-page obligation is a genuine, honestly-reported
+    // failure here — the fix that made RS-7/RS-8 applicability track seeded
+    // stream semantics rather than the target's own (previously false)
+    // `incrementalSync` declaration surfaced this real gap. Asserting zero
+    // failures would require silently exempting the reference target from a
+    // requirement its own seeded data obligates.
+    assert.deepEqual(
+      report.summary.failedRequirements,
+      ["RS-8"],
+      "Fixture expectation: the reference target serves a mutable_state stream but does not implement " +
+        "changes_since, so RS-8 is its only genuine failure."
     );
     assert.equal(
       report.summary.allApplicableMustsTestedAndPassed,
       false,
-      "Zero failures plus incomplete coverage must not set allApplicableMustsTestedAndPassed."
+      "A real failure plus incomplete coverage must not set allApplicableMustsTestedAndPassed."
     );
   });
 
@@ -122,10 +131,19 @@ describe("the CLI exit code distinguishes a partial run from a complete pass", (
   it("exits 2 when nothing failed but coverage is incomplete", async () => {
     // Exit 0 here would let a CI gate treat 30% coverage as conformance, which
     // is precisely the misreading the three-valued contract exists to prevent.
+    //
+    // This uses an append-only-only fixture module, not `--target reference`:
+    // the in-repo reference target seeds a `mutable_state` stream and does
+    // not implement `changes_since`, so it now genuinely fails RS-8 (see
+    // report-honesty's "does not report all-musts-passed..." case above) and
+    // can no longer stand in for the "zero failures" half of this scenario.
     const cli = path.join(here, "..", "src", "cli.ts");
-    const result = await execFileAsync(process.execPath, ["--import", "tsx", cli, "--target", "reference", "--quiet"], {
-      env: { ...process.env, SOURCE_DATE_EPOCH: "1758153600" },
-    }).then(
+    const fixtureTarget = path.join(here, "fixtures", "append-only-only-target.ts");
+    const result = await execFileAsync(
+      process.execPath,
+      ["--import", "tsx", cli, "--target", fixtureTarget, "--quiet"],
+      { env: { ...process.env, SOURCE_DATE_EPOCH: "1758153600" } }
+    ).then(
       () => ({ code: 0 }),
       (error: { code?: number }) => ({ code: error.code ?? -1 })
     );

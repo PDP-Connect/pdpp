@@ -63,10 +63,18 @@ export type CaseVerdict =
 
 export interface ConformanceCase {
   /**
-   * Gate on declared capability. When false the case is `unsupported` and the
-   * body does not run. Absent means the case always applies.
+   * Gate on declared capability, seeded stream inventory, or both. When false
+   * the case is `unsupported` and the body does not run. Absent means the case
+   * always applies.
+   *
+   * `streams` is the second argument, not a merged capability flag, because a
+   * requirement's real applicability can depend on what data the target
+   * actually seeded (e.g. RS-7/RS-8 apply whenever a `mutable_state` stream is
+   * present) rather than on a target's self-reported feature boolean, which a
+   * target can under-declare while still serving the data that triggers the
+   * MUST.
    */
-  appliesWhen?: (adapter: TargetAdapter) => boolean;
+  appliesWhen?: (adapter: TargetAdapter, streams: readonly SeededStream[]) => boolean;
   /** One line stating what this case asserts. Appears in the report. */
   readonly assertion: string;
   /** Stable identifier, conventionally "<requirementId>/<slug>". */
@@ -118,7 +126,7 @@ export async function runCase(conformanceCase: ConformanceCase, context: CaseCon
     assertion: conformanceCase.assertion,
   };
 
-  if (conformanceCase.appliesWhen && !conformanceCase.appliesWhen(context.adapter)) {
+  if (conformanceCase.appliesWhen && !conformanceCase.appliesWhen(context.adapter, context.streams)) {
     return {
       ...base,
       outcome: "unsupported",
