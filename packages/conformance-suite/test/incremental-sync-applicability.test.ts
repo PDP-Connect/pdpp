@@ -83,24 +83,41 @@ describe("RS-7/RS-8 applicability derives from seeded stream semantics, not the 
     );
   });
 
-  it("reports RS-7 and the RS-6 cursor case as skip (missing evidence) given the reference target's read", async () => {
-    // RS-7 and the RS-6 cursor-space case both depend on next_changes_since
-    // being present to proceed (a resume token, or a page cursor to confuse
-    // with one). The reference target's changes_since read never produces
-    // one, so these cases cannot observe their own requirement here and must
-    // say so explicitly rather than passing on no evidence or hiding as
-    // unsupported.
-    for (const caseId of ["RS-7/deletion-surfaces-as-a-tombstone", "RS-6/cursor-not-accepted-as-changes-since"]) {
-      // biome-ignore lint/performance/noAwaitInLoops: each case runs against its own isolated adapter instance.
-      const result = await runAgainst(caseId, MUTABLE_PLUS_APPEND_ONLY);
-      assert.equal(
-        result.outcome,
-        "skip",
-        `${caseId} must report "skip": the requirement applies (a mutable_state stream is seeded) but this ` +
-          "run has no evidence to check against, which is distinct from both a passing result and " +
-          '"unsupported" (which would claim the requirement does not apply here at all).'
-      );
-    }
+  it("reports RS-7 as skip (missing evidence) given the reference target's read", async () => {
+    // RS-7 depends on next_changes_since being present to proceed: it needs a
+    // resume token that predates a deletion. The reference target's
+    // changes_since read never produces one, so the case cannot observe its own
+    // requirement here and must say so explicitly rather than passing on no
+    // evidence or hiding as unsupported.
+    const result = await runAgainst("RS-7/deletion-surfaces-as-a-tombstone", MUTABLE_PLUS_APPEND_ONLY);
+    assert.equal(
+      result.outcome,
+      "skip",
+      'RS-7/deletion-surfaces-as-a-tombstone must report "skip": the requirement applies (a mutable_state ' +
+        "stream is seeded) but this run has no evidence to check against, which is distinct from both a " +
+        'passing result and "unsupported" (which would claim the requirement does not apply here at all).'
+    );
+  });
+
+  it("reports the RS-6 cursor-space case as pass once the fixture can issue a page cursor", async () => {
+    // This case previously skipped alongside RS-7, for a different reason that
+    // has since stopped holding: it needs a PAGE cursor to present in the
+    // changes_since slot, and the reference server used to return has_more:
+    // false with no next_cursor, so there was never one to present. Now that
+    // the fixture paginates (for the order-mismatch case at clause 8.9-11) the
+    // cursor exists, the case runs to completion, and the fixture correctly
+    // refuses it — distinct token spaces, per Section 8.
+    //
+    // This is the assertion that would catch a regression in either half: a
+    // fixture that stopped paginating would skip here, and one that went back
+    // to serving a page cursor as a sync token would fail.
+    const result = await runAgainst("RS-6/cursor-not-accepted-as-changes-since", MUTABLE_PLUS_APPEND_ONLY);
+    assert.equal(
+      result.outcome,
+      "pass",
+      'RS-6/cursor-not-accepted-as-changes-since must report "pass": a real page cursor is now obtainable ' +
+        "from the fixture, and offering it as changes_since must be refused rather than served."
+    );
   });
 
   it("stays unsupported when the seeded inventory is genuinely append-only only", async () => {

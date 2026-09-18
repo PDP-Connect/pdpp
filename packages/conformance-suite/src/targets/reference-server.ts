@@ -101,7 +101,17 @@ export type Defect =
    * describes is a server that SERVES the view, so that is what this defect
    * does.
    */
-  | "serve-client-token-view";
+  | "serve-client-token-view"
+  /**
+   * Accepts a page cursor replayed under the opposite `order` value instead of
+   * rejecting it as `invalid_cursor` (RS-6, clause 8.9-11).
+   *
+   * Models the common shape of this defect: a server that validates the cursor
+   * decodes but never compares the direction it was minted under against the
+   * direction of the request replaying it. The cursor is genuine, so syntax
+   * validation — which `crash-on-bad-cursor` exercises — cannot catch this.
+   */
+  | "accept-order-mismatched-cursor";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -428,16 +438,65 @@ export class ReferenceServer {
 
       // A malformed cursor must be a 400, not a crash: the defect models a server
       // that lets a decode error escape as a 500.
-      if (!this.has("ignore-unknown-params")) {
-        const cursor = parsed.searchParams.get("cursor");
-        if (cursor !== null && cursor !== "" && !cursor.startsWith("ok:")) {
-          if (this.has("crash-on-bad-cursor")) {
-            error(500, "api_error", "api_error", "Internal server error.");
-            return;
-          }
-          error(400, "invalid_cursor", "invalid_request_error", "Cursor token is malformed or unrecognized.");
+      const rawCursor = parsed.searchParams.get("cursor");
+      if (
+        !this.has("ignore-unknown-params") &&
+        rawCursor !== null &&
+        rawCursor !== "" &&
+        !rawCursor.startsWith("ok:")
+      ) {
+        if (this.has("crash-on-bad-cursor")) {
+          error(500, "api_error", "api_error", "Internal server error.");
           return;
         }
+        error(400, "invalid_cursor", "invalid_request_error", "Cursor token is malformed or unrecognized.");
+        return;
+      }
+
+      // Section 8 makes page cursors and sync cursors distinct token spaces.
+      // This fixture does not implement changes_since (which is why RS-8 fails
+      // against it, by design), but it must still refuse a PAGE cursor offered
+      // in the changes_since slot rather than serving a full page as if the
+      // parameter were absent. Before this server paginated, no case could
+      // obtain a real page cursor to present here and
+      // RS-6/cursor-not-accepted-as-changes-since only ever skipped; once it
+      // could, the fixture's silent acceptance became visible.
+      const syncCursor = parsed.searchParams.get("changes_since");
+      if (syncCursor?.startsWith("ok:")) {
+        error(
+          400,
+          "invalid_cursor",
+          "invalid_request_error",
+          "A page cursor is not a changes_since token; the two are distinct token spaces."
+        );
+        return;
+      }
+
+      // Section 8 "Stable sort": page cursors are direction-bound. This server
+      // mints `ok:<order>:<offset>`, so the direction a cursor was produced
+      // under travels with it and a mismatch is detectable — which is what
+      // makes the requirement observable at all. Under
+      // `accept-order-mismatched-cursor` the comparison is skipped and the page
+      // is served against the wrong direction.
+      const requestedOrder = parsed.searchParams.get("order") ?? "desc";
+      let cursorOffset = 0;
+      if (rawCursor?.startsWith("ok:")) {
+        const [, cursorOrder, offsetText] = rawCursor.split(":");
+        if (
+          cursorOrder !== undefined &&
+          cursorOrder !== requestedOrder &&
+          !this.has("accept-order-mismatched-cursor")
+        ) {
+          error(
+            400,
+            "invalid_cursor",
+            "invalid_request_error",
+            `Cursor was issued for order=${cursorOrder} and cannot be followed with order=${requestedOrder}.`
+          );
+          return;
+        }
+        const parsedOffset = Number(offsetText);
+        cursorOffset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0;
       }
 
       const projection =
@@ -474,14 +533,21 @@ export class ReferenceServer {
       // defect clamps silently, which a client reads as the end of the stream.
       const requestedLimit = Number(parsed.searchParams.get("limit") ?? "25");
       const clamped = Number.isFinite(requestedLimit) && requestedLimit > 100;
+      const effectiveLimit = clamped ? 100 : Math.max(1, Math.trunc(requestedLimit) || 25);
+      const window_ = data.slice(cursorOffset, cursorOffset + effectiveLimit);
+      const nextOffset = cursorOffset + window_.length;
+      const hasMore = nextOffset < data.length;
       send(200, {
         object: "list",
         url: path,
-        has_more: false,
+        has_more: hasMore,
+        // The cursor carries the order it was minted under, so the
+        // direction-binding check above has something to compare against.
+        ...(hasMore ? { next_cursor: `ok:${requestedOrder}:${nextOffset}` } : {}),
         ...(clamped && !this.has("silent-limit-clamp")
           ? { meta: { warnings: [{ code: "limit_clamped", message: "limit clamped to 100" }] } }
           : {}),
-        data: clamped ? data.slice(0, 100) : data,
+        data: window_,
       });
       return;
     }

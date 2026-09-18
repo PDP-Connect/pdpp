@@ -18,7 +18,7 @@ covered.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **40** have at least one case and **66** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **41** have at least one case and **65** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -324,7 +324,7 @@ Returns structured errors as defined in the Section 8 unified error table.
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `8.9-11` | MUST | black-box-http | — | The RS half is testable today: page once, then replay the returned cursor with the opposite `order` and require 400 `invalid_cursor`. No case does it; RS-6/malformed-cursor-rejected covers a syntactically bad cursor, not an order-mismatched valid one. |
+| `8.9-11` | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected` | The resource-server half is covered. The client half — that a client follows a `next_cursor` with the same `order` and restarts pagination to change direction — binds the client's outgoing requests and stays `client-capture`: the adapter has no reverse channel onto a client under test. |
 
 ### RS-7 (resource-server, MUST)
 
@@ -450,7 +450,7 @@ Treats `cursor` and `changes_since` tokens as opaque and from distinct token spa
 | --- | --- | --- | --- | --- |
 | `4.3-4` | MUST | client-capture | — | Needs a client-adapter hook that captures the client's outgoing query parameters across two sync sessions; the RS-side mirror of this clause is tested as RS-6/cursor-not-accepted-as-changes-since. |
 | `8.9-1` | MUST | client-capture | — | Needs a client-adapter hook capturing outgoing cursor values across pages so a constructed cursor is distinguishable from an echoed one. |
-| `8.9-11` | MUST | black-box-http | — | The RS half is testable today: page once, then replay the returned cursor with the opposite `order` and require 400 `invalid_cursor`. No case does it; RS-6/malformed-cursor-rejected covers a syntactically bad cursor, not an order-mismatched valid one. |
+| `8.9-11` | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected` | The resource-server half is covered. The client half — that a client follows a `next_cursor` with the same `order` and restarts pagination to change direction — binds the client's outgoing requests and stays `client-capture`: the adapter has no reverse channel onto a client under test. |
 
 ### CL-4 (client, MUST)
 

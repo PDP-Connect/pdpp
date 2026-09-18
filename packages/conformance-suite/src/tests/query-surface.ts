@@ -222,6 +222,95 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // ---------------------------------------------------------------- RS-6 ---
+  // Section 8 "Stable sort" (clause 8.9-11): "Page cursors are direction-bound:
+  // a client MUST follow a `next_cursor` with the same `order` value that
+  // produced it. ... Resource servers MUST reject order-mismatched page cursors
+  // as `invalid_cursor`."
+  //
+  // Distinct from RS-6/malformed-cursor-rejected, which sends a string no
+  // server could have minted. This cursor is entirely valid — the server issued
+  // it moments earlier — and only the direction it is replayed under is wrong.
+  // A server that validates cursor SYNTAX passes that case and fails this one.
+  //
+  // The defect is silent and it corrupts the client's data, not its error
+  // handling. A cursor encodes a position in `(cursor_field, primary_key)`
+  // order; reading it under the opposite direction walks away from the records
+  // between that position and the end the client already consumed. Those
+  // records are never returned and never reported missing, so a client that
+  // flips `order` mid-pagination — the exact mistake this clause exists to make
+  // impossible — silently syncs a partial stream and has no way to detect it.
+  {
+    caseId: "RS-6/order-mismatched-cursor-rejected",
+    requirementId: "RS-6",
+    assertion:
+      "A valid page cursor replayed with the opposite order value is rejected with 400 invalid_cursor, while the same cursor under its original order still pages.",
+    async run({ adapter, streams, path }) {
+      const got = await grantForFirstStream(adapter, streams);
+      if ("skip" in got) {
+        return skip(got.skip);
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(got.stream.name)}/records`);
+
+      // Page once under an EXPLICIT order, so the direction the cursor was
+      // produced under is a fact of the request rather than a server default
+      // this case would be assuming.
+      const first = await request(adapter.baseUrl, recordsPath, {
+        token: got.grant.accessToken,
+        query: { limit: "1", order: "desc" },
+      });
+      if (first.status !== 200) {
+        return fail(`Paging a granted stream with order=desc returned ${first.status}.`, [first.evidence]);
+      }
+      const cursor = asList(first.json)?.next_cursor;
+      if (typeof cursor !== "string" || cursor.length === 0) {
+        return skip(
+          "The seeded stream is too short to produce a page cursor, so there is no valid cursor to replay under the opposite order."
+        );
+      }
+
+      // Positive control FIRST: the same cursor under the order that produced
+      // it must still page. Without this, a server that rejects every cursor —
+      // or every request carrying `order` — satisfies the assertion below while
+      // being unable to paginate at all.
+      const sameOrder = await request(adapter.baseUrl, recordsPath, {
+        token: got.grant.accessToken,
+        query: { limit: "1", order: "desc", cursor },
+      });
+      if (sameOrder.status !== 200) {
+        return fail(
+          `A cursor replayed under the same order value that produced it was refused (${sameOrder.status}). Section 8 binds a cursor to its direction, not against it: following next_cursor with an unchanged order is the ordinary pagination path.`,
+          [first.evidence, sameOrder.evidence]
+        );
+      }
+
+      const flipped = await request(adapter.baseUrl, recordsPath, {
+        token: got.grant.accessToken,
+        query: { limit: "1", order: "asc", cursor },
+      });
+      if (flipped.status === 200) {
+        return fail(
+          "A page cursor produced under order=desc was accepted when replayed with order=asc. Section 8 requires resource servers to reject order-mismatched page cursors as invalid_cursor: a cursor encodes a position in the (cursor_field, primary_key) ordering, so reading it under the opposite direction skips every record between that position and the end the client already consumed — silently, with has_more and next_cursor still looking well-formed.",
+          [first.evidence, flipped.evidence]
+        );
+      }
+      if (flipped.status !== 400) {
+        return fail(
+          `Expected 400 invalid_cursor for an order-mismatched cursor, got ${flipped.status}. A 5xx tells a client the server failed and the request should be retried unchanged; a 400 invalid_cursor tells it to restart pagination without the cursor, which is the recovery Section 8 specifies.`,
+          [first.evidence, flipped.evidence]
+        );
+      }
+      const error = errorBody(flipped);
+      if (error?.code !== "invalid_cursor") {
+        return fail(
+          `The order-mismatched cursor was refused with 400 but classified as "${error?.code ?? "no structured error"}" rather than invalid_cursor. Section 8 names that code as the signal to restart pagination; a client cannot recover from a refusal it cannot classify.`,
+          [first.evidence, flipped.evidence]
+        );
+      }
+      return pass([first.evidence, sameOrder.evidence, flipped.evidence]);
+    },
+  },
+
   // ---------------------------------------------------------------- CL-3 ---
   // Section 9 Client item 3 tells a CLIENT that cursor and changes_since are
   // distinct token spaces. The server-side obligation this case checks is the

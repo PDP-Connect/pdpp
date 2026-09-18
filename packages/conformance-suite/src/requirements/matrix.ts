@@ -1358,9 +1358,9 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-6/order-mismatched-cursor-rejected"],
     gapNote:
-      "The RS half is testable today: page once, then replay the returned cursor with the opposite `order` and require 400 `invalid_cursor`. No case does it; RS-6/malformed-cursor-rejected covers a syntactically bad cursor, not an order-mismatched valid one.",
+      "The resource-server half is covered. The client half — that a client follows a `next_cursor` with the same `order` and restarts pagination to change direction — binds the client's outgoing requests and stays `client-capture`: the adapter has no reverse channel onto a client under test.",
   },
   {
     clauseId: "8.9-12",

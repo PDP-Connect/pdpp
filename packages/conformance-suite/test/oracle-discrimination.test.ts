@@ -101,6 +101,14 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "RS-9/client-token-expand-limit-rejected",
     defect: "accept-client-filters",
   },
+  // Clause 8.9-11. Paired with a defect that accepts a GENUINE cursor under the
+  // wrong direction, not with `crash-on-bad-cursor`: the cursor this case
+  // replays is one the server minted moments earlier, so any oracle that only
+  // validates cursor syntax would pass both runs and prove nothing.
+  {
+    caseId: "RS-6/order-mismatched-cursor-rejected",
+    defect: "accept-order-mismatched-cursor",
+  },
   { caseId: "RS-10/unknown-parameter-rejected", defect: "ignore-unknown-params" },
   {
     caseId: "RS-10/owner-filter-unknown-field-rejected",
