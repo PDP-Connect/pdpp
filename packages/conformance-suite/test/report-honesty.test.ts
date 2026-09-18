@@ -418,26 +418,32 @@ describe("a version-aware report states which revision it measured against", () 
     );
   });
 
-  it("hides a superseded v0.1 clause from a v0.2 requirement roll-up", () => {
+  it("hides every superseded v0.1 clause from the v0.2 requirement roll-ups", () => {
     // The report-side half of the supersession rule. matrix.ts's own tests prove
     // the view excludes the superseded id; this proves the exclusion survives the
     // trip through buildReport, where a requirement's clause list is rebuilt.
-    const superseding = CLAUSE_MATRIX.find((c) => c.specVersion === "0.2" && c.supersedes);
-    assert.ok(superseding?.supersedes, "This batch registers at least one supersession.");
-    const [requirementId] = superseding.requirementIds;
-    assert.ok(requirementId, "The superseding clause must roll up to a Section 9 item to be visible here.");
+    //
+    // Asserted over EVERY roll-up rather than by picking one superseding clause
+    // and reading its `requirementIds`. No v0.2 entry carries a Section 9 item
+    // (the batch 26 inventory maps none, and Section 9 is v0.1's conformance
+    // list), so the single-clause form asserted a mapping that does not exist
+    // and failed for the wrong reason. The property that matters is unchanged
+    // and is now checked exhaustively: a retired v0.1 id must not appear in any
+    // v0.2 roll-up, whatever the replacing clause rolls up to.
+    const retired = new Set(
+      CLAUSE_MATRIX.filter((c) => c.specVersion === "0.2" && c.supersedes).map((c) => c.supersedes as string)
+    );
+    assert.ok(retired.size > 0, "This batch registers at least one supersession.");
 
     const v02 = buildReport({ suite: { name: "t", version: "0" }, target, run, cases: [], specVersion: "0.2" });
-    const result = v02.requirements.find((r) => r.requirement.id === requirementId);
-    assert.ok(result, `${requirementId} must appear in the report.`);
-    assert.ok(
-      !result.clauseIds.includes(superseding.supersedes),
-      `${requirementId} still lists ${superseding.supersedes}, which ${superseding.clauseId} replaces. ` +
-        "The same obligation would be reported twice under two ids."
+    const leaked = v02.requirements.flatMap((r) =>
+      r.clauseIds.filter((id) => retired.has(id)).map((id) => `${r.requirement.id} -> ${id}`)
     );
-    assert.ok(
-      result.clauseIds.includes(superseding.clauseId),
-      `${requirementId} must list the replacing clause ${superseding.clauseId}.`
+    assert.deepEqual(
+      leaked,
+      [],
+      `v0.2 roll-ups still list clauses a v0.2 entry replaces: ${leaked.join(", ")}. ` +
+        "The same obligation would be reported twice under two ids."
     );
   });
 
@@ -445,14 +451,20 @@ describe("a version-aware report states which revision it measured against", () 
     // The batch's central claim, asserted rather than trusted: mechanics landed,
     // cases did not. A v0.2 MUST reaching the report without a gap note would
     // read as an oversight instead of a recorded limit.
+    //
+    // Read off BOTH surfaces. The per-requirement roll-ups only reach clauses
+    // that name a Section 9 item, and no v0.2 clause does — so the roll-up form
+    // of this test would pass over an EMPTY set and assert nothing at all. The
+    // clauses that roll up nowhere reach the report through
+    // `unmappedMustClauses`, which exists for exactly this case.
     const v02 = buildReport({ suite: { name: "t", version: "0" }, target, run, cases: [], specVersion: "0.2" });
     const disclosed = new Map(
-      v02.requirements.flatMap((r) => r.uncoveredMustClauses.map((c) => [c.clauseId, c.gapNote] as const))
+      [...v02.requirements.flatMap((r) => r.uncoveredMustClauses), ...v02.unmappedMustClauses].map(
+        (c) => [c.clauseId, c.gapNote] as const
+      )
     );
-    const v02Musts = CLAUSE_MATRIX.filter(
-      (c) => c.specVersion === "0.2" && c.level === "must" && c.requirementIds.length > 0
-    );
-    assert.ok(v02Musts.length > 0, "Fixture expectation: this batch transcribes mapped v0.2 MUST clauses.");
+    const v02Musts = CLAUSE_MATRIX.filter((c) => c.specVersion === "0.2" && c.level === "must");
+    assert.ok(v02Musts.length > 0, "Fixture expectation: this batch transcribes v0.2 MUST clauses.");
     for (const clause of v02Musts) {
       const note = disclosed.get(clause.clauseId);
       assert.ok(note, `v0.2 MUST ${clause.clauseId} never reached the report's uncovered list.`);

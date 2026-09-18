@@ -295,6 +295,25 @@ function renderClauseInventory(report: ConformanceReport): string {
 		}
 		lines.push("");
 	}
+	if (report.unmappedMustClauses.length > 0) {
+		lines.push(
+			"### Uncovered MUST clauses under no Section 9 item",
+			"",
+			`${report.unmappedMustClauses.length} MUST-level clauses have no case AND ` +
+				"summarize to no Section 9 item, so no heading above lists them. They are " +
+				"counted in the clause numbers at the top of this report, so without this " +
+				"list the denominator would move for reasons the reader cannot look up. " +
+				"Two different findings are mixed here and the distinction matters: a v0.1 " +
+				"clause in this list is a gap in Section 9's conformance list, while a " +
+				"v0.2 clause is there because Section 9 describes v0.1 and has not been " +
+				"rewritten for the proposal.",
+			"",
+		);
+		for (const clause of report.unmappedMustClauses) {
+			lines.push(`- \`${clause.clauseId}\`: ${clause.gapNote}`);
+		}
+		lines.push("");
+	}
 	return lines.join("\n");
 }
 

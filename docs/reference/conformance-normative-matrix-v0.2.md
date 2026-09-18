@@ -64,7 +64,7 @@ one that exists today.
 
 ## Totals
 
-Clauses enumerated: **142**. MUST-level: **117**, of which **79** have at least one case and **38** do not.
+Clauses enumerated: **270**. MUST-level: **240**, of which **68** have at least one case and **172** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -72,25 +72,25 @@ whether it passes is a separate question a run answers.
 
 | Level | Clauses |
 | --- | --- |
-| MAY | 12 |
-| MUST | 117 |
+| MAY | 17 |
+| MUST | 240 |
 | SHOULD | 13 |
 
 | Role | Clauses |
 | --- | --- |
-| resource-server | 51 |
-| client | 25 |
-| source-declaration | 10 |
-| authorization-server | 76 |
+| resource-server | 104 |
+| client | 33 |
+| source-declaration | 16 |
+| authorization-server | 135 |
 
 A clause binding two roles is counted under each, so the role column sums
 above the clause total.
 
 | Observable | Clauses |
 | --- | --- |
-| black-box-http | 85 |
-| client-capture | 14 |
-| review-only | 35 |
+| black-box-http | 178 |
+| client-capture | 23 |
+| review-only | 61 |
 | declaration-static | 8 |
 
 ## Clauses by Section 9 item
@@ -116,11 +116,6 @@ Validates selection requests against one retained SourceDeclaration snapshot: re
 | `5.2-4` | MUST | black-box-http | `AS-2/time-range-without-consent-time-field-refused` | — |
 | `6.8-1` | MUST | black-box-http | `AS-2/view-and-fields-mutually-exclusive` | — |
 | `6.9-1` | MUST | black-box-http | `AS-16/duplicate-stream-in-a-selection-preset-refused` | — |
-| `v0.2/6.8-1` | MUST | black-box-http | — | No case drives a v0.2 selection request carrying `necessity`: the harness has no v0.2 `authorization_details` builder, and the reference AS resolves only the `https://pdpp.dev/data-access` type. |
-| `v0.2/6.8-3` | MUST | black-box-http | — | Restates v0.1 6.8-2 verbatim, but a case must send the v0.2 detail type to be evidence about v0.2; the harness cannot build that request yet. |
-| `v0.2/6.8-4` | MUST | black-box-http | — | Restates v0.1 6.8-3 verbatim, but a case must send the v0.2 detail type to be evidence about v0.2; the harness cannot build that request yet. |
-| `v0.2/6.11-2` | MUST | black-box-http | — | Needs an owner journey that drops a required stream and an assertion that issuance is refused; the reference AS has no owner-narrowing surface and no v0.2 request type. |
-| `v0.2/6.11-3` | MUST | black-box-http | — | Needs an owner journey that approves nothing; the reference AS's consent step has no way to express an empty approval, and no v0.2 request type exists. |
 
 ### AS-3 (authorization-server, MUST)
 
@@ -140,8 +135,6 @@ Expands wildcards and selection presets into explicit stream names, fields, per-
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
 | `7.2-1` | MUST | black-box-http | `AS-4/omitted-fields-expanded-before-issuance` | — |
-| `v0.2/6.10-1` | MUST | black-box-http | — | The ordering half (expansion before owner choices) is not black-box observable; the issued grant only shows the result. Only the resolved-constraints half is reachable, and no v0.2 request builder exists to reach it. |
-| `v0.2/6.11-1` | MUST | black-box-http | — | Needs a v0.2 request whose resolved grant can be compared field by field against the request's upper limits; the harness has no v0.2 `authorization_details` builder. |
 
 ### AS-5 (authorization-server, MUST)
 
@@ -172,7 +165,6 @@ Renders requester identity, declaration-authored descriptions, policy declaratio
 | `5.8-7` | MUST | review-only | — | The obligation is on rendered output in an unspecified output context; asserting on it means asserting on a deployment's HTML, which is outside what this suite judges. |
 | `6.1-1` | MAY | review-only | — | — |
 | `6.1-2` | MUST | black-box-http | `AS-7/valid-url-hosted-client-identity-accepted`<br>`AS-7/malformed-url-hosted-client-identity-refused` | — |
-| `6.1-4` | MUST | black-box-http | `AS-7/valid-url-hosted-client-identity-accepted`<br>`AS-7/malformed-url-hosted-client-identity-refused` | — |
 | `6.1-5` | MUST | review-only | — | Which source the AS resolved from is visible only on the consent surface it renders, which is not black-box observable. |
 | `6.1-6` | MUST | review-only | — | A display obligation on the consent surface; a case can see what the AS bound into the grant, not what it rendered. |
 | `6.1-7` | MAY | review-only | — | — |
@@ -193,7 +185,6 @@ Tracks grant lifecycle (active, expired, revoked) and reflects revocation immedi
 | --- | --- | --- | --- | --- |
 | `10.2-2` | MUST | black-box-http | — | Restates 8.1-1 as a revocation-propagation bound; needs a separated AS/RS target and a timed revocation observation, neither of which the current topologies support. |
 | `10.2-7` | MUST | black-box-http | `AS-20/refresh-reuse-revokes-the-family` | The introspection half is covered; the prohibition on issuing refresh tokens for a `single_use` grant is not, and needs a target supporting both `single_use` and refresh tokens at once. |
-| `10.7-1` | MUST | black-box-http | `AS-8/revoked-token-introspects-inactive`<br>`AS-8/revoked-grant-refused` | — |
 
 ### AS-9 (authorization-server, MUST)
 
@@ -221,12 +212,6 @@ Validates stream/field/view/resource-id shape at grant issuance.
 | --- | --- | --- | --- | --- |
 | `7.1-1` | MUST | black-box-http | `AS-3/issued-grant-artifact-matches-section-7-schema`<br>`AS-3/resolved-grant-matches-observable-schema-fields` | — |
 | `7.2-0` | MUST | black-box-http | `AS-2/dotted-nested-field-refused` | The `fields` row of the normative StreamGrant table; carries no RFC 2119 keyword, so its MUST level is Section 9 AS item 11's. The top-level-only constraint is tested; uniqueness and non-emptiness of the issued allowlist are not. |
-| `v0.2/6.8-2` | MUST | black-box-http | — | Reverses the v0.1 consent floor, so no existing case can be reused: proving it needs a v0.2 grant whose resolved `fields` omit a schema-required field the request did not name. |
-| `v0.2/6.12-1` | MUST | black-box-http | — | `minimum` does not exist in v0.1, so there is no request shape to send it in: the harness needs a v0.2 `authorization_details` builder before a rejection case can be written. |
-| `v0.2/6.12-2` | MUST | black-box-http | — | Needs a v0.2 request carrying `minimum.fields` and an assertion over the issued grant's resolved `fields`; no v0.2 request builder exists. |
-| `v0.2/6.12-3` | MUST | black-box-http | — | Needs a v0.2 request carrying `minimum.time_range` and an assertion over the issued grant's frozen `time_constraint`; no v0.2 request builder exists. |
-| `v0.2/6.12-4` | MUST | black-box-http | — | The error-code half is black-box observable once a v0.2 request builder exists; the non-disclosure half needs a judgment about description text that no oracle in this suite makes. |
-| `v0.2/6.12-5` | MUST | black-box-http | — | Needs a v0.2 request whose `minimum` names a field of an empty stream, asserting issuance still succeeds; no v0.2 request builder exists. |
 
 ### AS-12 (authorization-server, MUST)
 
@@ -273,7 +258,6 @@ Retains one exact SourceDeclaration snapshot through validation, consent, narrow
 | --- | --- | --- | --- | --- |
 | `5.2-1` | MUST | review-only | — | What the AS treated as authenticated is an internal trust decision; from outside, an accepted and a rejected declaration differ only by whether consent proceeded, which does not discriminate this clause. |
 | `5.2-5` | MUST | declaration-static | `AS-16/embedded-schema-remote-reference-refused` | Partially covered. The case exercises the local-reference obligation (`$ref`/`$dynamicRef` must be local fragments), which is the half that makes consent interpretation depend on a mutable remote schema. The `$schema` dialect equality and full metaschema meta-validation are implemented by the reference target but not separately asserted: a case for each would need its own defect to discriminate, and the remote-reference oracle already fails a target that skips embedded-schema validation altogether. |
-| `5.8-1` | MUST | black-box-http | `AS-16/unonboarded-source-authority-refused` | — |
 | `5.8-2` | MUST | black-box-http | `AS-16/provider-native-source-id-mismatch-refused` | — |
 | `5.8-3` | MUST | review-only | — | Restates 5.2-1 as an acceptance obligation; what the AS relied on internally is not observable from a request outcome. |
 | `5.8-4` | MUST | black-box-http | `AS-16/declaration-equivocation-refused-and-prior-content-retained` | — |
@@ -297,8 +281,6 @@ Authenticates the RS at the RFC 7662 introspection endpoint and returns the comp
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `8.2-1` | MUST | black-box-http | `AS-18/introspection-requires-authentication` | — |
-| `8.2-2` | MUST | review-only | — | The no-second-lookup half is an internal call-count obligation; black-box observation cannot distinguish one lookup from two that produced the same answer. |
 | `10.2-1` | MUST | black-box-http | `AS-18/introspection-requires-authentication` | The authentication half is tested; the no-second-lookup half is an internal call-count obligation, as at 8.2-2. |
 
 ### AS-19 (authorization-server, MUST)
@@ -353,10 +335,6 @@ Resolves access tokens through authenticated RFC 7662 introspection, enforces on
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `8.1-1` | MUST | black-box-http | — | Needs a separated AS/RS target plus a clock the case controls: the suite would have to revoke a grant and prove the RS stops serving within 60 seconds, which no current target topology supports. |
-| `8.2-1` | MUST | black-box-http | `AS-18/introspection-requires-authentication` | — |
-| `8.2-2` | MUST | review-only | — | The no-second-lookup half is an internal call-count obligation; black-box observation cannot distinguish one lookup from two that produced the same answer. |
-| `8.2-4` | MUST | black-box-http | `AS-8/revoked-grant-refused` | — |
 | `10.2-1` | MUST | black-box-http | `AS-18/introspection-requires-authentication` | The authentication half is tested; the no-second-lookup half is an internal call-count obligation, as at 8.2-2. |
 | `10.2-2` | MUST | black-box-http | — | Restates 8.1-1 as a revocation-propagation bound; needs a separated AS/RS target and a timed revocation observation, neither of which the current topologies support. |
 
@@ -366,7 +344,6 @@ Distinguishes owner tokens from client tokens via `pdpp_token_kind`, determined 
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `8.1-3` | MUST | black-box-http | `RS-4/token-kind-not-inferred-from-syntax` | — |
 | `8.2-3` | MUST | black-box-http | `RS-4/unrecognized-token-kind-is-unauthorized` | — |
 
 ### RS-5 (resource-server, MUST)
@@ -414,10 +391,7 @@ Rejects client-token exact and range `filter[...]` parameters with 400 `invalid_
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `8.9-2` | MUST | black-box-http | `RS-9/client-token-exact-filter-rejected` | — |
 | `8.9-3` | MUST | black-box-http | `RS-9/client-token-view-rejected` | The client-token rejection half is covered. The sentence's second half — `view` and `fields` being mutually exclusive — is an owner-token concern (a client token must reject `view` outright, so the pair can never both be honoured there) and is tracked at 6.8-1, which needs a view-declaring target. |
-| `8.9-4` | MUST | black-box-http | `RS-9/client-token-expand-rejected` | — |
-| `8.9-5` | MUST | black-box-http | `RS-9/client-token-expand-limit-rejected` | — |
 | `8.9-9` | MUST | black-box-http | `RS-9/client-token-exact-filter-rejected` | The status and code are tested; the ordering half ("before the RS consults ... metadata") is not, and black-box observation cannot establish it. |
 | `8.9-10` | MUST | black-box-http | `RS-9/client-token-expand-rejected` | — |
 
@@ -427,7 +401,6 @@ Rejects unknown query parameters and unsupported query shapes with 400 instead o
 
 | Clause | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- |
-| `8.9-5` | MUST | black-box-http | `RS-9/client-token-expand-limit-rejected` | — |
 | `8.9-7` | MUST | black-box-http | `RS-10/unknown-parameter-rejected`<br>`RS-10/unsupported-bracketed-shape-rejected`<br>`RS-10/owner-filter-unknown-field-rejected`<br>`RS-10/owner-expand-undeclared-relation-rejected` | — |
 | `8.9-8` | MUST | black-box-http | `RS-10/oversized-limit-clamped-with-warning` | — |
 
@@ -452,9 +425,7 @@ Scopes owner token access to a single subject's data store, deriving `subject_id
 
 SHOULD support owner-authenticated access to the record query endpoints without a client grant (self-export).
 
-| Clause | Level | Observable | Cases | Gap |
-| --- | --- | --- | --- | --- |
-| `8.3-2` | SHOULD | black-box-http | `RS-13/self-export-supported` | — |
+No clause in sections 4-8 or 10 maps to this item.
 
 ### RS-14 (resource-server, MUST)
 
@@ -472,7 +443,6 @@ For client-token stream-metadata reads, returns only a projection derived from t
 | --- | --- | --- | --- | --- |
 | `5.8-8` | MUST | black-box-http | `RS-15/client-metadata-projection-closed` | — |
 | `8.1-2` | MUST | black-box-http | `RS-15/client-metadata-projection-closed`<br>`RS-2/field-projection-not-exceeded` | — |
-| `8.7-1` | MUST | black-box-http | `RS-15/client-metadata-projection-closed` | — |
 
 ### RS-16 (resource-server, MUST)
 
@@ -489,17 +459,13 @@ Publishes RFC 9728 protected resource metadata at the RFC 9728 Section 3 locatio
 
 Submits selection requests using the RFC 9396 `authorization_details` envelope.
 
-| Clause | Level | Observable | Cases | Gap |
-| --- | --- | --- | --- | --- |
-| `6.8-4` | SHOULD | client-capture | — | — |
+No clause in sections 4-8 or 10 maps to this item.
 
 ### CL-2 (client, MUST)
 
 Uses access tokens (not raw grants) to authenticate with the resource server.
 
-| Clause | Level | Observable | Cases | Gap |
-| --- | --- | --- | --- | --- |
-| `10.7-2` | MUST | client-capture | `CL-2/grant-revocation-stops-further-requests` | — |
+No clause in sections 4-8 or 10 maps to this item.
 
 ### CL-3 (client, MUST)
 
@@ -581,9 +547,165 @@ reports.
 | `6.1-3` | MAY | black-box-http | — | — |
 | `6.2-1` | MAY | black-box-http | — | — |
 | `7.4-1` | MUST | review-only | — | A design constraint on implementations rather than a checkable wire behaviour; its observable consequences are the three axis rows, recorded separately as 7.4-2, AS-17, and RS-11. |
-| `7.8-1` | SHOULD | review-only | — | — |
 | `8.8-1` | MAY | black-box-http | — | — |
-| `10.2-9` | SHOULD | review-only | — | The spec marks this subsection non-normative guidance; recorded so the scan's keyword hit is accounted for rather than appearing as an untracked clause. |
 | `10.4-1` | MUST | review-only | — | Binds the Collection Profile's INTERACTION channel, which Core's HTTP surface does not expose; logs and persisted state are outside what a black-box client can read. |
 | `10.5-1` | SHOULD | review-only | — | — |
+| `v0.2/1-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
+| `v0.2/1-2` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
+| `v0.2/2-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
+| `v0.2/2-2` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
+| `v0.2/2-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/4-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/4-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/4-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/4-4` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
+| `v0.2/4-5` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/4-6` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/4-7` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/4-8` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/5-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
+| `v0.2/6.1-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.1-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.1-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.1-4` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
+| `v0.2/6.1-5` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
+| `v0.2/6.1-6` | SHOULD | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
+| `v0.2/6.3-1` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/6.3-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.3-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.4-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.4-2` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Composite clause: the PR sentence carries `MAY/MUST` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/6.4-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST NOT/MUST` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/6.4-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.4-5` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.4-6` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Composite clause: the PR sentence carries `MAY/MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. The inventory files this under `consent-surface`; the obligation binds the AS that renders it, and the matrix has no separate consent role. |
+| `v0.2/6.5-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-5` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-6` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-7` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-8` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-9` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-10` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/6.5-11` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/6.5-12` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.5-12a` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
+| `v0.2/6.6-1` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Composite clause: the PR sentence carries `MUST NOT/MUST` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/6.6-2` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Composite clause: the PR sentence carries `MUST NOT/MUST` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/6.6-3` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Composite clause: the PR sentence carries `MUST NOT/MUST` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/6.6-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST NOT/MAY` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/6.6-5` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. The inventory files this under `consent-surface`; the obligation binds the AS that renders it, and the matrix has no separate consent role. |
+| `v0.2/6.6-6` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. The inventory files this under `consent-surface`; the obligation binds the AS that renders it, and the matrix has no separate consent role. |
+| `v0.2/6.6-7` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. The inventory files this under `consent-surface`; the obligation binds the AS that renders it, and the matrix has no separate consent role. |
+| `v0.2/6.6-8` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/7.1-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/7.1-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/7.1-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/7.1-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/7.1-5` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/7.1-6` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/7.1-7` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
+| `v0.2/7.1-8` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/7.1-9` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/7.1-10` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/7.1-11` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/7.1-12` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/7.1-13` | SHOULD | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. The inventory files this under `consent-surface`; the obligation binds the AS that renders it, and the matrix has no separate consent role. |
+| `v0.2/8.1-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
+| `v0.2/8.2-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.2-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST/MAY` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/8.2-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/8.2-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.2-5` | MAY | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.2-5a` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.2-5b` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.2-5c` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.2-6` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/8.3-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/8.3-2` | SHOULD | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. Composite clause: the PR sentence carries `MAY/SHOULD` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/8.4-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.4-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.4-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.4-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.4-5` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Also restates v0.1 `8.9-5`; `supersedes` carries one edge, so those v0.1 clauses stay in the v0.2 view and are listed here instead. |
+| `v0.2/8.5-1` | SHOULD | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/8.6-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
+| `v0.2/8.6-2` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
+| `v0.2/8.7-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.7-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-1-1` | MAY | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
+| `v0.2/ext-1-2` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/ext-3-1` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Binds the conformance-claim document rather than a running endpoint, so the role is `source-declaration`. |
+| `v0.2/ext-3-2` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Binds the conformance-claim document rather than a running endpoint, so the role is `source-declaration`. |
+| `v0.2/ext-3-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-3-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-3-5` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
+| `v0.2/ext-3-6` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. Composite clause: the PR sentence carries `MUST/MAY` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/ext-3-7` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-3-8` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-3-9` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-3-10` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-3-11` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-4-1` | MAY | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-4-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-4-3` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
+| `v0.2/ext-4-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST/MAY` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/ext-4-5` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MAY/MUST` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/ext-4-6` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Composite clause: the PR sentence carries `MAY/MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/ext-4-7` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-4-8` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-4-9` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST/MAY/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/ext-4-10` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-4-11` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-4-12` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-4-13` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-4-14` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-4-15` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. The inventory files this under `consent-surface`; the obligation binds the AS that renders it, and the matrix has no separate consent role. |
+| `v0.2/ext-5-1` | MAY | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-2` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-3` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-4` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/ext-5-5` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-6` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-7` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-8` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-9` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-5-10` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-5-12` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-13` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-14` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-15` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-16` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-17` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-18` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-5-19` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-6-1` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. Composite clause: the PR sentence carries `MAY/MUST` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/ext-6-2` | MAY | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-6-3` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/ext-6-4` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-6-5` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-6-6` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/ext-6-7` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/ext-6-8` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/ext-7-1` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Binds the conformance-claim document rather than a running endpoint, so the role is `source-declaration`. |
+| `v0.2/ext-7-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/mcp-1-1` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Binds the conformance-claim document rather than a running endpoint, so the role is `source-declaration`. |
+| `v0.2/mcp-1-2` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Binds the conformance-claim document rather than a running endpoint, so the role is `source-declaration`. |
+| `v0.2/mcp-1-3` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Binds the conformance-claim document rather than a running endpoint, so the role is `source-declaration`. |
+| `v0.2/mcp-2-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/mcp-2-2` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/mcp-2-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/mcp-2-4` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/mcp-2-5` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
+| `v0.2/mcp-2-6` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
+| `v0.2/mcp-2-7` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
+| `v0.2/mcp-3-1` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/mcp-3-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/mcp-3-3` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
+| `v0.2/mcp-3-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/mcp-3-5` | MUST | black-box-http | — | Needs target plumbing the suite does not have: the adapters model one grant over one source and expose no package, owner-selection, or MCP result to assert on. |
+| `v0.2/mcp-3-6` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/mcp-3-7` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 

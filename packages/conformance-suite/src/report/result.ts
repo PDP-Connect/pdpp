@@ -178,6 +178,19 @@ export type ConformanceReport = {
 	readonly specVersion: SpecVersion;
 	/** Clause-level counts at `specVersion`. */
 	readonly clauseCoverage: ClauseCoverage;
+	/**
+	 * MUST-level clauses with no case that ALSO roll up to no Section 9 item, so
+	 * no `RequirementResult` lists them.
+	 *
+	 * Without this field those clauses count in `clauseCoverage.mustUncovered`
+	 * and then appear nowhere: the reader sees the denominator grow and cannot
+	 * find out which obligations moved it, and the `gapNote` naming the missing
+	 * hook is unreachable. That is the whole v0.2 inventory today — the batch 26
+	 * transcription maps no v0.2 clause to a Section 9 item, because Section 9
+	 * is v0.1's conformance list and inventing a mapping would be a guess — so
+	 * the gap this field closes is 149 clauses wide, not an edge case.
+	 */
+	readonly unmappedMustClauses: readonly UncoveredClause[];
 	readonly target: {
 		readonly id: string;
 		readonly version: string;
@@ -339,6 +352,13 @@ export function buildReport(input: {
 	const mustClauses = clausesInForce.filter((c) => c.level === "must");
 	const mustCovered = mustClauses.filter((c) => c.caseIds.length > 0).length;
 
+	// Uncovered MUSTs that no requirement roll-up will list, because they
+	// summarize to no Section 9 item. Reported here so a growing denominator is
+	// always traceable to named clauses carrying their own gap notes.
+	const unmappedMustClauses = mustClauses
+		.filter((c) => c.caseIds.length === 0 && c.requirementIds.length === 0)
+		.map((c) => ({ clauseId: c.clauseId, gapNote: c.gapNote ?? "" }));
+
 	return {
 		reportVersion: "1",
 		suite: input.suite,
@@ -351,6 +371,7 @@ export function buildReport(input: {
 			mustCovered,
 			mustUncovered: mustClauses.length - mustCovered,
 		},
+		unmappedMustClauses,
 		target: input.target,
 		run: input.run,
 		coverage,
