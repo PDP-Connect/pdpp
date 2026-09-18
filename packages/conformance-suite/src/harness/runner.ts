@@ -21,10 +21,13 @@ import { assertRequirementExists, type CaseResult, type Evidence } from "../repo
 const TRAILING_SLASH = /\/$/;
 
 import type { SeededStream, TargetAdapter } from "./adapter.ts";
+import type { ClientUnderTest } from "./client-adapter.ts";
 
 /** What a case body receives. The adapter plus what setup() provisioned. */
 export interface CaseContext {
   readonly adapter: TargetAdapter;
+  /** Present only when a client-under-test run is driving the case. */
+  readonly client?: ClientUnderTest;
   /**
    * Compose a Section 8 endpoint path under the target's query base, so a case
    * never assumes a "/v1" prefix that Core does not fix. Section 8 publishes
