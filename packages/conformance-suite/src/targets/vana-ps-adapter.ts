@@ -311,6 +311,45 @@ function ownerChoiceQuery(choices: OwnerChoices | undefined): string {
   return query ? `?${query}` : "";
 }
 
+/**
+ * The same owner choices as the body member this server's `/approve` reads.
+ *
+ * The two surfaces do NOT share a vocabulary, and assuming they did is what
+ * made every narrowed v0.2 grant unreachable: `/review` reads the choices from
+ * the query string (`field[stream]=`, `since[stream]=`, `decline[stream]=`),
+ * while `/approve` reads an `owner_choices` object from the JSON body. Sending
+ * the query string to both looks right and fails closed — `/approve` sees NO
+ * choices, re-derives the digest of the unnarrowed selection, finds it differs
+ * from the digest the owner reviewed, and answers 409 `stale_review`. The
+ * refusal is correct; it is the adapter that was speaking the wrong half.
+ *
+ * Both are emitted from one `OwnerChoices` value so a case cannot express a
+ * narrowing on one leg that it does not express on the other, which is the
+ * precise condition the digest check exists to reject.
+ */
+function ownerChoiceBody(choices: OwnerChoices | undefined): Record<string, unknown> | undefined {
+  if (!choices) {
+    return undefined;
+  }
+  const timeRanges = Object.fromEntries(
+    Object.entries(choices.timeRange ?? {}).map(([stream, window]) => [
+      stream,
+      {
+        ...(window.since === undefined ? {} : { since: window.since }),
+        ...(window.until === undefined ? {} : { until: window.until }),
+      },
+    ])
+  );
+  const body: Record<string, unknown> = {
+    ...(choices.fields && Object.keys(choices.fields).length > 0 ? { fields: choices.fields } : {}),
+    ...(Object.keys(timeRanges).length > 0 ? { time_ranges: timeRanges } : {}),
+    ...(choices.declineStreams && choices.declineStreams.length > 0
+      ? { declined_streams: [...choices.declineStreams] }
+      : {}),
+  };
+  return Object.keys(body).length > 0 ? body : undefined;
+}
+
 export class VanaPsAdapter implements TargetAdapter {
   readonly targetId: string;
   readonly targetVersion: string;
@@ -475,9 +514,11 @@ export class VanaPsAdapter implements TargetAdapter {
     // identically. This server derives the review digest from the narrowed
     // selection, so reviewing with choices and approving without them (or with
     // different ones) is a genuine `stale_review` — the digest covers what the
-    // owner saw. Sending the same string to both is what makes the approval bind
-    // the selection the owner actually reviewed.
+    // owner saw. Sending the same choices to both is what makes the approval
+    // bind the selection the owner actually reviewed; the two legs carry them in
+    // different places, which `ownerChoiceBody` explains.
     const choices = ownerChoiceQuery(wanted.ownerChoices);
+    const choicesBody = ownerChoiceBody(wanted.ownerChoices);
 
     const reviewed = await fetch(
       `${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/review${choices}`,
@@ -500,6 +541,9 @@ export class VanaPsAdapter implements TargetAdapter {
       const body: Record<string, unknown> = revision ? { review_digest: revision } : {};
       if (explicitAiTrainingConsent !== undefined) {
         body.explicit_ai_training_consent = explicitAiTrainingConsent;
+      }
+      if (choicesBody) {
+        body.owner_choices = choicesBody;
       }
       const response = await fetch(
         `${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/approve${choices}`,
