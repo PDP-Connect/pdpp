@@ -1,0 +1,84 @@
+{
+  "_comment": [
+    "The PDP-Connect reference implementation's real AS + RS, as served by",
+    "reference-implementation/server/index.ts in the data-connect repository.",
+    "",
+    "This is the full reference AS/RS, NOT the apps/site public sandbox. The",
+    "difference matters: this target authenticates, issues real grants through",
+    "PAR + owner consent, and enforces them. The sandbox is a demo with no",
+    "authorization layer at all, and its behaviour is not a product defect.",
+    "",
+    "Bring the target up (from a data-connect checkout):",
+    "  startServer({ asPort: 4401, rsPort: 4402, dbPath: <disk path>,",
+    "    dynamicClientRegistrationInitialAccessTokens: ['conformance-dcr-token'],",
+    "    ignoreAmbientPublicUrls: true, ownerAuthPassword: '', quiet: true })",
+    "",
+    "Seed records over HTTP with an owner token (NDJSON RECORD envelopes):",
+    "  POST {rsUrl}/v1/ingest/repositories?connector_id=<id>&collection_mode=full_refresh",
+    "  Content-Type: application/x-ndjson",
+    "  {\"type\":\"RECORD\",\"stream\":\"repositories\",\"key\":\"repo_1\",\"data\":{...},\"emitted_at\":\"...\"}",
+    "",
+    "Then:  tsx src/cli.ts --target targets/reference-implementation.json"
+  ],
+  "kind": "reference-as",
+  "targetId": "pdpp-reference-implementation",
+  "targetVersion": "data-connect@a707c4650 reference-implementation",
+  "asUrl": "http://127.0.0.1:4401",
+  "rsUrl": "http://127.0.0.1:4402",
+  "subjectId": "subject_conformance",
+  "foreignSubjectId": "subject_conformance_other",
+  "dcrInitialAccessToken": "conformance-dcr-token",
+  "source": {
+    "kind": "connector",
+    "id": "https://registry.pdpp.dev/connectors/github"
+  },
+  "roles": ["resource-server", "authorization-server"],
+  "capabilities": {
+    "separatedDeployment": true,
+    "ownerTokens": true,
+    "selfExport": true,
+    "incrementalSync": true,
+    "views": false,
+    "singleUseGrants": true,
+    "refreshTokens": false,
+    "blobs": false
+  },
+  "streams": [
+    {
+      "name": "repositories",
+      "fields": [
+        "id",
+        "name",
+        "full_name",
+        "description",
+        "language",
+        "stargazers_count",
+        "forks_count",
+        "is_private",
+        "is_fork",
+        "topics",
+        "source_created_at",
+        "source_updated_at"
+      ],
+      "primaryKey": ["id"],
+      "cursorField": "source_updated_at",
+      "semantics": "mutable_state",
+      "recordCount": 2
+    },
+    {
+      "name": "starred",
+      "fields": ["id", "name", "full_name", "source_created_at"],
+      "primaryKey": ["id"],
+      "cursorField": "source_created_at",
+      "semantics": "mutable_state",
+      "recordCount": 0
+    }
+  ],
+  "ownerReadParams": {
+    "connector_id": "https://registry.pdpp.dev/connectors/github"
+  },
+  "introspectionCredentials": {
+    "clientId": "conformance-rs",
+    "clientSecret": "conformance-rs-secret"
+  }
+}

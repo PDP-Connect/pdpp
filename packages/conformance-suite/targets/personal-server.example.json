@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Target config for the PDPP implementation being built in vana-com/personal-server-ts.",
+    "Shapes come from local/conformance-fleet-0917/ps-auth-contract.md and ps-records-contract.md.",
+    "This is an EXAMPLE: baseUrl and the tokens are placeholders an operator fills in.",
+    "Run: pdpp-conformance --target targets/personal-server.example.json",
+    "",
+    "As of 2026-09-17 this config cannot produce a passing run, and that is the",
+    "honest state rather than a defect in the config. Neither PDPP branch of that",
+    "repository serves the Section 8 HTTP surface: feat/pdpp-as-grants is empty",
+    "against its base, and feat/pdpp-record-storage-rs adds record storage",
+    "primitives with no /v1/streams routes. The suite reports connection failure",
+    "against a base URL with nothing listening, which is the correct result."
+  ],
+  "targetId": "vana-personal-server-ts",
+  "targetVersion": "feat/pdpp-record-storage-rs@eecdaa7",
+  "baseUrl": "http://127.0.0.1:3000",
+  "roles": ["resource-server"],
+  "capabilities": {
+    "separatedDeployment": false,
+    "ownerTokens": true,
+    "selfExport": true,
+    "incrementalSync": true,
+    "views": false,
+    "singleUseGrants": true,
+    "refreshTokens": false,
+    "blobs": true
+  },
+  "streams": [
+    {
+      "name": "conversations",
+      "fields": ["id", "title", "source_created_at"],
+      "primaryKey": ["id"],
+      "cursorField": "source_created_at",
+      "semantics": "mutable_state",
+      "recordCount": 2
+    },
+    {
+      "name": "messages",
+      "fields": ["id", "body", "source_created_at"],
+      "primaryKey": ["id"],
+      "cursorField": "source_created_at",
+      "semantics": "append_only",
+      "recordCount": 1
+    }
+  ],
+  "ownerToken": "REPLACE_WITH_OWNER_TOKEN",
+  "foreignSubjectOwnerToken": "REPLACE_WITH_SECOND_SUBJECT_OWNER_TOKEN",
+  "grants": {
+    "preprovisioned": [],
+    "issueEndpoint": "/pdpp/test/grants",
+    "revokeEndpoint": "/pdpp/test/grants/revoke",
+    "adminToken": "REPLACE_WITH_ADMIN_TOKEN"
+  }
+}

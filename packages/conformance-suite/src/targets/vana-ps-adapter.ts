@@ -1,0 +1,1202 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+//
+// An adapter for the Vana Personal Server's composed PDPP AS + RS.
+//
+// A second real target with a DIFFERENT authorization shape, which is the point:
+// the reference implementation stages a selection request with RFC 9126 PAR and
+// approves it at a consent endpoint, while this server opens an authorization
+// session, reviews it by digest, approves it, and returns a redirect carrying an
+// OAuth authorization code that the client exchanges with PKCE.
+//
+// Core does not pin either shape. Section 6 defines the selection request and
+// Section 7 the resolved grant; how a deployment gets from one to the other is
+// its own business. So both are conformant ways to reach the same place, and a
+// suite that could only drive one of them would be testing a deployment style
+// rather than the protocol. The two adapters existing side by side is the
+// evidence that the case bodies are genuinely implementation-independent: they
+// receive a token and a resolved grant, and never learn which journey produced
+// them.
+
+import type {
+  AuthorizationMinimum,
+  BlobFixture,
+  DeclarationOutcome,
+  GrantRequest,
+  IssuedGrant,
+  OwnerChoices,
+  RefreshableGrant,
+  SeededStream,
+  SelectionOutcome,
+  SelectionRequest,
+  SourceDeclarationSubmission,
+  StagedApproval,
+  TargetAdapter,
+  TargetCapabilities,
+} from "../harness/adapter.ts";
+import { type PdppResponse, request } from "../harness/http.ts";
+import type { ReviewEvidence } from "../report/review-evidence.ts";
+import type { Role } from "../requirements/catalog.ts";
+
+export interface VanaPsConfig {
+  /** Single base URL: this deployment co-locates the AS and RS. */
+  readonly baseUrl: string;
+  /**
+   * A blob this deployment has already persisted, and the stream/field through
+   * which a grant can reach it, for RS-1's byte-fetch cases.
+   *
+   * The ids are minted by the server at seed time, so they cannot be committed
+   * and arrive as `${ENV_VAR}` placeholders that `vana-target.sh` exports —
+   * the same route the owner token takes, for the same reason.
+   *
+   * `sha256` is computed by the seeder from the bytes it uploaded, NOT read
+   * back from the target: an oracle that asked the server what it stored and
+   * then checked the answer against itself would prove nothing about the bytes
+   * the fetch returns.
+   *
+   * `outOfGrantBlobId` names a second, really-persisted blob that no record in
+   * `stream` references. Absent means this deployment seeded only one, and the
+   * negative case reports `skip` rather than reading a 404 on a fabricated id
+   * as proof of enforcement.
+   */
+  readonly blobFixture?: {
+    readonly blobId: string;
+    readonly mimeType: string;
+    readonly sha256: string;
+    /**
+     * Length of the stored bytes. Typed to admit a string because it arrives
+     * through an `${ENV_VAR}` placeholder like the ids and digest beside it,
+     * and placeholder substitution yields strings; the seeder is the only
+     * honest source for it, so widening the type here is preferable to
+     * committing a constant that silently drifts from the seeded content.
+     */
+    readonly sizeBytes: number | string;
+    /** Stream whose grant carries the `blob_ref` field referencing `blobId`. */
+    readonly stream: string;
+    readonly fields: readonly string[];
+    readonly outOfGrantBlobId?: string;
+  };
+  readonly capabilities: TargetCapabilities;
+  /** Client the server has pre-registered, with an exactly-matching redirect URI. */
+  readonly clientId: string;
+  /**
+   * A SECOND, dedicated client the server has pre-registered with an
+   * operator-configured `grantLifetimeSeconds`, for AS-8's expired-grant
+   * oracle (`expiredGrantToken`).
+   *
+   * Deliberately a distinct client from `clientId`, never the same one with a
+   * flag: `expiredGrantToken` must not shrink the lifetime of grants the
+   * other cases issue to `clientId`, and a short deployment-wide default
+   * would silently break the pagination/refresh cases that expect an
+   * ordinary, non-expiring grant to still be usable partway through a run.
+   * Absent means this deployment has no such client configured, and AS-8's
+   * expiry case reports `skip` naming this hook rather than fabricating one.
+   */
+  readonly expiryFixture?: {
+    readonly clientId: string;
+    /** Must match a redirect URI this deployment pre-registered for `clientId` above. */
+    readonly redirectUri: string;
+    /** The lifetime the deployment's config bound to this client, in seconds. */
+    readonly grantLifetimeSeconds: number;
+    /**
+     * A subset of fields the pre-expiry read's record on `stream` below must
+     * match, e.g. `{ id: "artist_1", name: "Artist 1" }`. Required so the
+     * positive control proves the token reads the seeded record rather than
+     * merely getting a 200 with an empty or unrelated body.
+     */
+    readonly expectedRecord: Readonly<Record<string, unknown>>;
+    /**
+     * Stream the pre-expiry positive control reads. Defaults to `streams[0]`.
+     *
+     * Nameable because the control pins an EXACT record, and other cases write
+     * to seeded records: RS-7's projection cases rewrite a field of the first
+     * live record on the first mutable_state stream's sync page, which is a
+     * record in `streams[0]`. Whichever of the two ran first decided whether
+     * AS-8 passed. Pointing this fixture at a stream nothing mutates removes
+     * the ordering dependency rather than hiding it behind a looser match.
+     */
+    readonly stream?: string;
+  };
+  readonly introspectionCredentials?: { readonly clientId: string; readonly clientSecret: string };
+  /**
+   * Operator credential for `POST /pdpp/declarations`, the declaration
+   * acceptance surface (`submitDeclaration`).
+   *
+   * Deliberately NOT the owner token and never a client token: the route is
+   * mounted only when the deployment configures an operator credential, and
+   * gated on it, because a client that can submit its own declaration can
+   * declare itself authority over any source. Absent means this deployment
+   * exposes no acceptance surface, and the declaration cases report `skip`
+   * naming the hook rather than a failure.
+   */
+  readonly operatorToken?: string;
+  /** Owner credential the server accepts at /pdpp/v1/owner/token. */
+  readonly ownerBootstrapToken: string;
+  readonly ownerReadParams?: Readonly<Record<string, string>>;
+  readonly purposeCode?: string;
+  readonly redirectUri: string;
+  readonly reviewEvidence?: readonly ReviewEvidence[];
+  readonly roles: readonly Role[];
+  /** Source the seeded streams belong to. */
+  readonly sourceId: string;
+  readonly streams: readonly SeededStream[];
+  readonly targetId: string;
+  readonly targetVersion: string;
+}
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+/**
+ * PKCE verifier/challenge pair.
+ *
+ * Fixed rather than random so a failed run can be replayed exactly. These are
+ * test credentials for a local target and authorize nothing beyond it.
+ */
+const PKCE_VERIFIER = "pdpp-conformance-verifier-0000000000000000000000000000";
+
+async function s256Challenge(verifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return Buffer.from(digest).toString("base64url");
+}
+
+/** The dialect Core Section 5 fixes for an embedded stream schema. */
+const SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
+
+/**
+ * Translate a `SourceDeclarationSubmission` into the normative §5
+ * SourceDeclaration document this server parses.
+ *
+ * The hook's type is deliberately the minimal shape Core's declaration clauses
+ * turn on, not a whole declaration: a case must be able to submit a document
+ * that carries only the property under test. This fills in the rest of what the
+ * published schema requires -- `protocol_version`, `publisher`, `display`, a
+ * per-stream `semantics` and `selection` -- with fixed, uninteresting values.
+ *
+ * Nothing here repairs a case's document. A stream whose `cursor_field` names
+ * an undeclared field is emitted naming that field, a schema carrying a remote
+ * `$ref` is emitted with it. The only thing synthesized is what no clause under
+ * test governs, because a missing required member would make the server refuse
+ * for a reason the case is not asking about -- and a refusal that reads as a
+ * pass for the wrong reason is worse than a skip.
+ */
+function normativeDeclarationDocument(declaration: SourceDeclarationSubmission): Record<string, unknown> {
+  return {
+    protocol_version: "0.1.0",
+    source: { kind: declaration.source.kind, id: declaration.source.id },
+    declaration_version: declaration.declarationVersion,
+    publisher: { id: "https://pdpp.dev/conformance-suite" },
+    display: { name: "PDPP conformance suite" },
+    streams: declaration.streams.map((stream) => ({
+      name: stream.name,
+      description: `Candidate declaration stream '${stream.name}' offered by the conformance suite.`,
+      display: { label: stream.name },
+      semantics: "mutable_state",
+      // A case that carries no schema still needs one: this server reads a
+      // stream's field list out of `schema.properties`, so a schema-less
+      // stream declares no fields and is refused for that rather than for the
+      // property under test. The synthesized schema declares exactly the
+      // `fields` the submission named, so it adds no field the case did not.
+      schema: stream.schema ?? schemaOver(stream.fields),
+      primary_key: stream.primaryKey ? [...stream.primaryKey] : defaultPrimaryKey(stream.fields),
+      ...(stream.cursorField === undefined ? {} : { cursor_field: stream.cursorField }),
+      ...(stream.consentTimeField === undefined ? {} : { consent_time_field: stream.consentTimeField }),
+      ...(stream.blobFields === undefined
+        ? {}
+        : {
+            blob_fields: stream.blobFields.map((blob) => ({ name: blob.name, mime_type: blob.mimeType })),
+          }),
+      selection: { fields: true, resources: false },
+    })),
+    ...(declaration.selectionPresets === undefined
+      ? {}
+      : {
+          selection_presets: declaration.selectionPresets.map((preset) => ({
+            name: preset.name,
+            streams: [...preset.streams],
+          })),
+        }),
+    extensions: {},
+  };
+}
+
+/** A well-formed embedded schema declaring exactly `fields`, in Core's dialect. */
+function schemaOver(fields: readonly string[]): Record<string, unknown> {
+  return {
+    $schema: SCHEMA_DIALECT,
+    type: "object",
+    properties: Object.fromEntries(fields.map((field) => [field, { type: "string" }])),
+    additionalProperties: false,
+  };
+}
+
+/**
+ * A primary key for a submission that declares none.
+ *
+ * This server requires a non-empty `primary_key` on every stream, and no clause
+ * under test is about its absence, so a submission that omits one would be
+ * refused `invalid_document` for a reason its case never asked about. The first
+ * declared field is the least surprising choice and is always one the schema
+ * declares, so it cannot itself trip clause 5.2-2.
+ */
+function defaultPrimaryKey(fields: readonly string[]): string[] {
+  const [first] = fields;
+  return first === undefined ? [] : [first];
+}
+
+/**
+ * The RFC 9396 detail type for a revision.
+ *
+ * v0.2 is a SEPARATE type, not a version member inside the v0.1 one. Batch 28's
+ * receipt records why the Personal Server implements it that way: the same
+ * request body resolves to a different grant under each revision, because v0.2
+ * revokes v0.1's schema-required consent floor. A shared type with a version
+ * field would make that ambiguity unresolvable on the wire.
+ */
+function detailType(version: "0.1" | "0.2" | undefined): string {
+  return version === "0.2" ? "https://pdpp.dev/data-access/0.2" : "https://pdpp.dev/data-access";
+}
+
+/**
+ * The owner's narrowing as this server's query-string vocabulary.
+ *
+ * PR #1 constrains how the AS must RESOLVE an owner's choices but says nothing
+ * about how a choice reaches it, so this vocabulary is the Personal Server's
+ * own (batch 28's receipt states that explicitly, and marks it negotiable).
+ * Keeping the mapping here rather than in the cases is what lets a second
+ * target implement the same cases over a different surface: the case says
+ * "the owner keeps only `id`", and each adapter says how that is transmitted.
+ *
+ * Returns "" for no choices, so the URL is byte-identical to what every v0.1
+ * case has always sent.
+ */
+/**
+ * A v0.2 `minimum` on the wire.
+ *
+ * An empty object is emitted as an empty object rather than omitted: rejecting
+ * `minimum: {}` is itself an obligation (`v0.2/6.5-2`), so a case must be able
+ * to send one.
+ */
+function minimumBody(minimum: AuthorizationMinimum): Record<string, unknown> {
+  return {
+    ...(minimum.fields ? { fields: [...minimum.fields] } : {}),
+    ...(minimum.timeRange ? { time_range: { since: minimum.timeRange.since, until: minimum.timeRange.until } } : {}),
+  };
+}
+
+function ownerChoiceQuery(choices: OwnerChoices | undefined): string {
+  if (!choices) {
+    return "";
+  }
+  const params = new URLSearchParams();
+  for (const [stream, fields] of Object.entries(choices.fields ?? {})) {
+    for (const field of fields) {
+      params.append(`field[${stream}]`, field);
+    }
+  }
+  for (const [stream, window] of Object.entries(choices.timeRange ?? {})) {
+    if (window.since !== undefined) {
+      params.append(`since[${stream}]`, window.since);
+    }
+    if (window.until !== undefined) {
+      params.append(`until[${stream}]`, window.until);
+    }
+  }
+  for (const stream of choices.declineStreams ?? []) {
+    params.append(`decline[${stream}]`, "1");
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+/**
+ * The same owner choices as the body member this server's `/approve` reads.
+ *
+ * The two surfaces do NOT share a vocabulary, and assuming they did is what
+ * made every narrowed v0.2 grant unreachable: `/review` reads the choices from
+ * the query string (`field[stream]=`, `since[stream]=`, `decline[stream]=`),
+ * while `/approve` reads an `owner_choices` object from the JSON body. Sending
+ * the query string to both looks right and fails closed — `/approve` sees NO
+ * choices, re-derives the digest of the unnarrowed selection, finds it differs
+ * from the digest the owner reviewed, and answers 409 `stale_review`. The
+ * refusal is correct; it is the adapter that was speaking the wrong half.
+ *
+ * Both are emitted from one `OwnerChoices` value so a case cannot express a
+ * narrowing on one leg that it does not express on the other, which is the
+ * precise condition the digest check exists to reject.
+ */
+function ownerChoiceBody(choices: OwnerChoices | undefined): Record<string, unknown> | undefined {
+  if (!choices) {
+    return undefined;
+  }
+  const timeRanges = Object.fromEntries(
+    Object.entries(choices.timeRange ?? {}).map(([stream, window]) => [
+      stream,
+      {
+        ...(window.since === undefined ? {} : { since: window.since }),
+        ...(window.until === undefined ? {} : { until: window.until }),
+      },
+    ])
+  );
+  const body: Record<string, unknown> = {
+    ...(choices.fields && Object.keys(choices.fields).length > 0 ? { fields: choices.fields } : {}),
+    ...(Object.keys(timeRanges).length > 0 ? { time_ranges: timeRanges } : {}),
+    ...(choices.declineStreams && choices.declineStreams.length > 0
+      ? { declined_streams: [...choices.declineStreams] }
+      : {}),
+  };
+  return Object.keys(body).length > 0 ? body : undefined;
+}
+
+export class VanaPsAdapter implements TargetAdapter {
+  readonly targetId: string;
+  readonly targetVersion: string;
+  readonly baseUrl: string;
+  readonly roles: readonly Role[];
+  readonly capabilities: TargetCapabilities;
+  readonly reviewEvidence?: readonly ReviewEvidence[];
+  private readonly config: VanaPsConfig;
+  /**
+   * Headers from the most recent successful token-endpoint redemption, for
+   * clause 10.2-4.
+   *
+   * A field rather than a changed `exchangeCode` return type because several
+   * call sites need only the token, and widening all of them to carry headers
+   * they ignore would be noise. Set immediately before the token is returned,
+   * so a grant and its header map are always from the same exchange.
+   */
+  private lastTokenResponseHeaders: Record<string, string> | null = null;
+  /** Body of the most recent successful token-endpoint redemption (RFC 9396 §7). */
+  private lastTokenResponseBody: unknown = undefined;
+
+  /**
+   * The headers and body of the exchange that produced the current token, as
+   * the `IssuedGrant` fields clause 10.2-4 and RFC 9396 Section 7 read.
+   *
+   * One helper rather than two inline spreads at the call site: both come from
+   * the same exchange and are always reported together, and keeping them here
+   * leaves `approve` reading as the consent journey it is.
+   */
+  private lastTokenExchange(): Partial<IssuedGrant> {
+    return {
+      ...(this.lastTokenResponseHeaders === null ? {} : { tokenResponseHeaders: this.lastTokenResponseHeaders }),
+      ...(this.lastTokenResponseBody === undefined ? {} : { tokenResponseBody: this.lastTokenResponseBody }),
+    };
+  }
+
+  constructor(config: VanaPsConfig) {
+    this.config = config;
+    this.targetId = config.targetId;
+    this.targetVersion = config.targetVersion;
+    this.baseUrl = config.baseUrl;
+    this.roles = config.roles;
+    this.capabilities = config.capabilities;
+    if (config.reviewEvidence) {
+      this.reviewEvidence = config.reviewEvidence;
+    }
+  }
+
+  get ownerReadParams(): Readonly<Record<string, string>> | undefined {
+    return this.config.ownerReadParams;
+  }
+
+  /**
+   * Co-located AS and RS, so the authorization server is the same origin --
+   * and this deployment's PDPP AS is mounted under `/pdpp/v1`, which is its
+   * RFC 8414 issuer path.
+   *
+   * The path matters to discovery: RFC 8414 §3 puts the metadata document at
+   * `/.well-known/oauth-authorization-server/pdpp/v1`, well-known first with
+   * the issuer path appended. The suite's discovery helper derives that, so
+   * the full issuer URL belongs here rather than the bare origin, which would
+   * send it looking for the MCP authorization server's document instead.
+   */
+  get authorizationServerUrl(): string {
+    return `${this.config.baseUrl}/pdpp/v1`;
+  }
+
+  get introspectionCredentials(): { readonly clientId: string; readonly clientSecret: string } | undefined {
+    return this.config.introspectionCredentials;
+  }
+
+  /**
+   * The Vana test deployment exposes owner-authenticated token inspection.
+   * Its introspect method uses the same token authority as the co-located RS.
+   * This does not establish separated-RS authentication support. A missing
+   * owner credential returns null; HTTP failures remain observable responses.
+   */
+  async coLocatedIntrospect(accessToken: string): Promise<PdppResponse | null> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return null;
+    }
+    return await request(this.config.baseUrl, "/pdpp/v1/introspect", {
+      method: "POST",
+      token: owner,
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: accessToken }).toString(),
+    });
+  }
+
+  async setup(): Promise<{ readonly streams: readonly SeededStream[] }> {
+    const probe = await fetch(`${this.config.baseUrl}/.well-known/oauth-protected-resource`).catch((error: unknown) => {
+      throw new Error(
+        `Target ${this.targetId} is not reachable at ${this.config.baseUrl}: ${
+          error instanceof Error ? error.message : String(error)
+        }. Start the Personal Server before running the suite.`,
+        { cause: error }
+      );
+    });
+    if (probe.status === 0) {
+      throw new Error(`Target ${this.targetId} did not answer an HTTP probe.`);
+    }
+    return { streams: this.config.streams };
+  }
+
+  async teardown(): Promise<void> {
+    // The suite did not create this server and does not tear it down.
+    await Promise.resolve();
+  }
+
+  /** Mint an owner token. How the owner authenticates is out of Core's scope. */
+  async ownerToken(): Promise<string | null> {
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/owner/token`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.config.ownerBootstrapToken}` },
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as { access_token?: string };
+    return body.access_token ?? null;
+  }
+
+  /**
+   * Drive this server's authorization journey to a grant-bound token:
+   * authorize (owner-authenticated) → review → approve → code → PKCE exchange.
+   *
+   * Returns null at any refusal so the case reports `skip` with the reason,
+   * rather than a grant the server declined becoming a silent pass.
+   */
+  /**
+   * Open an authorization session and review it, stopping short of approval, so
+   * the approval-binding and replay cases can drive the final step themselves.
+   */
+  async stageApproval(
+    wanted: GrantRequest,
+    client: { readonly clientId: string; readonly redirectUri: string } = {
+      clientId: this.config.clientId,
+      redirectUri: this.config.redirectUri,
+    }
+  ): Promise<StagedApproval | null> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return null;
+    }
+    const ownerAuth = { authorization: `Bearer ${owner}` };
+
+    const authorized = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize`, {
+      method: "POST",
+      headers: { ...ownerAuth, "content-type": "application/json" },
+      body: JSON.stringify(await this.authorizeBody(wanted, client)),
+    });
+    if (authorized.status !== 201) {
+      return null;
+    }
+    const { session_id: sessionId } = (await authorized.json()) as { session_id?: string };
+    if (!sessionId) {
+      return null;
+    }
+
+    // The owner's narrowing must be attached to the review AND to the approval,
+    // identically. This server derives the review digest from the narrowed
+    // selection, so reviewing with choices and approving without them (or with
+    // different ones) is a genuine `stale_review` — the digest covers what the
+    // owner saw. Sending the same choices to both is what makes the approval
+    // bind the selection the owner actually reviewed; the two legs carry them in
+    // different places, which `ownerChoiceBody` explains.
+    const choices = ownerChoiceQuery(wanted.ownerChoices);
+    const choicesBody = ownerChoiceBody(wanted.ownerChoices);
+
+    const reviewed = await fetch(
+      `${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/review${choices}`,
+      {
+        headers: ownerAuth,
+      }
+    );
+    // Kept WHOLE, not narrowed to the digest. The server's own review body is
+    // the final approval artifact clauses 7.2-2 and 6.3-2 are about, and
+    // reshaping it here would mean the cases inspect this adapter's summary
+    // rather than what the Personal Server actually publishes.
+    const review = reviewed.ok ? ((await reviewed.json()) as { review?: Record<string, unknown> }) : undefined;
+
+    let lastError: { status: number; errorCode?: string } | null = null;
+    // Retained only inside this closure so no case body can see or reuse the
+    // code directly — `replayLastCode` is the sole way to act on it again.
+    let lastRedeemedCode: string | null = null;
+
+    const approve = async (revision?: string, explicitAiTrainingConsent?: boolean): Promise<IssuedGrant | null> => {
+      const body: Record<string, unknown> = revision ? { review_digest: revision } : {};
+      if (explicitAiTrainingConsent !== undefined) {
+        body.explicit_ai_training_consent = explicitAiTrainingConsent;
+      }
+      if (choicesBody) {
+        body.owner_choices = choicesBody;
+      }
+      const response = await fetch(
+        `${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/approve${choices}`,
+        {
+          method: "POST",
+          headers: { ...ownerAuth, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      );
+      if (!response.ok) {
+        const errorBody: unknown = await response.json().catch(() => undefined);
+        const errorCode = (errorBody as { error?: unknown } | undefined)?.error;
+        lastError = {
+          status: response.status,
+          ...(typeof errorCode === "string" ? { errorCode } : {}),
+        };
+        return null;
+      }
+      lastError = null;
+      const approval = (await response.json()) as {
+        redirect_uri?: string;
+        grant_id?: string;
+        grant?: { streams?: { name?: string; fields?: string[] }[] };
+      };
+      if (!(approval.redirect_uri && approval.grant_id)) {
+        return null;
+      }
+      lastRedeemedCode = new URL(approval.redirect_uri).searchParams.get("code");
+      const token = await this.exchangeCode(approval.redirect_uri, client);
+      if (!token) {
+        return null;
+      }
+      const resolved = approval.grant?.streams ?? [];
+      return {
+        grantId: approval.grant_id,
+        accessToken: token,
+        streams: wanted.streams.map((s) => {
+          const got = resolved.find((r) => r.name === s.name);
+          return { name: s.name, fields: got?.fields ? [...got.fields] : [...s.fields] };
+        }),
+        // Only when the approval response actually carried a grant body. This
+        // target's /approve returns `{ redirect_uri, grant_id }`, so in practice
+        // this is absent and AS-3's schema case skips for missing evidence.
+        ...(approval.grant === undefined ? {} : { rawGrant: approval.grant }),
+        ...this.lastTokenExchange(),
+      };
+    };
+
+    /**
+     * Redeem the SAME code from the most recent `approve`, with the SAME PKCE
+     * verifier, a second time at the token endpoint. AS-19's replay oracle
+     * (Section 9 AS item 19).
+     */
+    const replayLastCode = async (): Promise<{ status: number; errorCode?: string; accessToken?: string } | null> => {
+      if (!lastRedeemedCode) {
+        return null;
+      }
+      let response: Response;
+      try {
+        response = await fetch(`${this.config.baseUrl}/pdpp/v1/token`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            code: lastRedeemedCode,
+            client_id: client.clientId,
+            redirect_uri: client.redirectUri,
+            code_verifier: PKCE_VERIFIER,
+          }).toString(),
+        });
+      } catch {
+        return null;
+      }
+      const responseBody: unknown = await response.json().catch(() => undefined);
+      if (response.ok) {
+        const accessToken = (responseBody as { access_token?: unknown } | undefined)?.access_token;
+        return { status: response.status, ...(typeof accessToken === "string" ? { accessToken } : {}) };
+      }
+      const errorCode = (responseBody as { error?: unknown } | undefined)?.error;
+      return { status: response.status, ...(typeof errorCode === "string" ? { errorCode } : {}) };
+    };
+
+    const reviewBody = review?.review;
+    const digest = typeof reviewBody?.review_digest === "string" ? reviewBody.review_digest : undefined;
+    return {
+      handle: sessionId,
+      ...(digest ? { reviewRevision: digest } : {}),
+      // The server's review body verbatim, when it published one. A target that
+      // returns no review body offers no artifact, and the cases report `skip`
+      // rather than the suite reconstructing one from its own request.
+      ...(reviewBody === undefined ? {} : { approvalArtifact: async () => reviewBody }),
+      approve,
+      lastApproveError: () => lastError,
+      replayLastCode,
+    };
+  }
+
+  /**
+   * Offer a candidate source declaration and report the AS's decision, without
+   * approving anything (clauses 4.8-1, 5.2-2, 5.2-3, 5.2-5, 5.8-2, 5.8-4,
+   * 6.9-1).
+   *
+   * `POST /pdpp/declarations`, added in personal-server-ts e3a7142. Before it
+   * this deployment had a real validator that ran only at construction, so
+   * offering a candidate meant editing `declarationPaths` and restarting --
+   * which puts a case's control and its negative in two different server
+   * lifetimes and measures what survives a reboot rather than what the AS
+   * refuses.
+   *
+   * The route is operator-authenticated, never client-authenticated. So this
+   * sends the operator credential, not a grant token and not the owner token.
+   *
+   * WHAT THIS ADAPTER DOES NOT DECIDE. The submission is translated into the
+   * normative §5 document and posted as-is; every refusal in the result is the
+   * server's. In particular `source.id` is submitted verbatim, including the
+   * values the negative cases choose, because this server's trust decision IS a
+   * check on that id (its connector gate) and rewriting it would mean the
+   * adapter answering a question the AS is supposed to answer.
+   */
+  async submitDeclaration(declaration: SourceDeclarationSubmission): Promise<DeclarationOutcome | null> {
+    if (!this.config.operatorToken) {
+      return null;
+    }
+    const response = await fetch(`${this.config.baseUrl}/pdpp/declarations`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.config.operatorToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(normativeDeclarationDocument(declaration)),
+    });
+    const body: unknown = await response.json().catch(() => undefined);
+    const errorCode = (body as { error?: unknown } | undefined)?.error;
+    // `retainedContent` is deliberately never reported. The acceptance response
+    // carries stream NAMES only, and this deployment exposes no route that
+    // reads back a retained declaration's fields -- so clause 5.8-4's retention
+    // half has no observation behind it here and reports skip. Reporting the
+    // submitted streams as "retained" would be the suite asserting its own
+    // input, which is exactly the failure mode that half of the clause exists
+    // to catch.
+    return {
+      accepted: response.ok,
+      status: response.status,
+      ...(typeof errorCode === "string" ? { errorCode } : {}),
+      body,
+    };
+  }
+
+  /**
+   * Submit a selection request and report what the AS answered, without
+   * approving it. Used by the selection-time validation cases, which are about
+   * refusals a successful grant can never demonstrate.
+   */
+  async submitSelection(wanted: SelectionRequest): Promise<SelectionOutcome | null> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return null;
+    }
+    const detail: Record<string, unknown> = {
+      type: detailType(wanted.specVersion),
+      source: { id: this.config.sourceId },
+      purpose_code: wanted.purposeCode ?? this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
+      access_mode: "continuous",
+    };
+    if (wanted.streams) {
+      detail.streams = wanted.streams.map((s) => ({
+        name: s.name,
+        // An absent `fields` is the request-time convenience AS-4 must expand,
+        // so it has to reach the server absent rather than as an empty array.
+        ...(s.fields ? { fields: [...s.fields] } : {}),
+        // `view` at request scope, which is mutually exclusive with `fields`.
+        // Emitted independently of `fields` on purpose: clause 6.8-1's negative
+        // is a request carrying BOTH, and an adapter that dropped one could not
+        // construct it.
+        ...(s.view ? { view: s.view } : {}),
+        // Emitted regardless of `specVersion`; see authorizeBody for why a case
+        // must be able to put a v0.2 member on a v0.1 request on purpose.
+        ...(s.necessity ? { necessity: s.necessity } : {}),
+        ...(s.minimum ? { minimum: minimumBody(s.minimum) } : {}),
+        // The request-level `time_range` applies to every stream the request
+        // names (SelectionRequest.timeRange), and this server carries it per
+        // stream. Without this the constraint never left the suite: the AS-2
+        // time-range cases sent a plain request, the server accepted it
+        // correctly, and the case read its own omission as the server failing
+        // to refuse.
+        ...(wanted.timeRange ? { time_range: { ...wanted.timeRange } } : {}),
+      }));
+    }
+    if (wanted.selectionPreset !== undefined) {
+      detail.selection_preset = wanted.selectionPreset;
+    }
+
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${owner}`,
+        "content-type": "application/json",
+        ...(wanted.pdppVersion ? { "PDPP-Version": wanted.pdppVersion } : {}),
+      },
+      body: JSON.stringify({
+        client_id: this.config.clientId,
+        redirect_uri: this.config.redirectUri,
+        code_challenge: await s256Challenge(PKCE_VERIFIER),
+        code_challenge_method: "S256",
+        client_display: { name: "pdpp-conformance-suite" },
+        authorization_details: [detail],
+      }),
+    });
+    const body: unknown = await response.json().catch(() => undefined);
+    const errorCode = (body as { error?: unknown } | undefined)?.error;
+    return {
+      status: response.status,
+      ...(typeof errorCode === "string" ? { errorCode } : {}),
+      body,
+    };
+  }
+
+  /**
+   * Read the resolved grant the server bound to a staged request, so AS-4 can
+   * check that request-time conveniences were expanded before issuance.
+   */
+  async reviewedStreams(handle: string): Promise<readonly { name: string; fields: readonly string[] }[] | null> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return null;
+    }
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(handle)}/review`, {
+      headers: { authorization: `Bearer ${owner}` },
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as {
+      review?: { data?: { streams?: { name?: string; fields?: string[]; instance_ids?: string[] }[] } };
+    };
+    const streams = body.review?.data?.streams;
+    if (!streams) {
+      return null;
+    }
+    return streams.map((s) => ({ name: s.name ?? "", fields: [...(s.fields ?? [])] }));
+  }
+
+  /** Issue a grant carrying a refresh token, for the rotation/reuse oracle. */
+  async issueRefreshableGrant(wanted: GrantRequest): Promise<RefreshableGrant | null> {
+    const staged = await this.stageApproval(wanted);
+    if (!staged?.reviewRevision) {
+      return null;
+    }
+    const approved = await this.approveForTokens(staged.handle, staged.reviewRevision);
+    return approved;
+  }
+
+  /** The RFC 9396 selection request this server expects, for both entry points. */
+  private async authorizeBody(
+    wanted: GrantRequest,
+    client: { readonly clientId: string; readonly redirectUri: string } = {
+      clientId: this.config.clientId,
+      redirectUri: this.config.redirectUri,
+    }
+  ): Promise<Record<string, unknown>> {
+    return {
+      client_id: client.clientId,
+      redirect_uri: client.redirectUri,
+      code_challenge: await s256Challenge(PKCE_VERIFIER),
+      code_challenge_method: "S256",
+      client_display: { name: "pdpp-conformance-suite" },
+      authorization_details: [
+        {
+          type: detailType(wanted.specVersion),
+          source: { id: this.config.sourceId },
+          purpose_code: wanted.purposeCode ?? this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
+          access_mode: wanted.accessMode ?? "continuous",
+          // Sent only when the case asked for retention terms, so no existing
+          // request shape changes. Clause 7.2-2 requires the approval artifact
+          // to STATE retention, and a server can only state what was requested
+          // — it is a requested term, not one the AS invents.
+          ...(wanted.retention
+            ? {
+                retention: {
+                  max_duration: wanted.retention.maxDuration,
+                  on_expiry: wanted.retention.onExpiry,
+                },
+              }
+            : {}),
+          // Core Section 6 places `client_claims` inside each
+          // authorization_details entry. Sent only when the case supplied any,
+          // so no existing request shape changes. If this deployment ignores
+          // them, the 6.3-2 case sees no bound claims in the review body and
+          // reports `skip` (the clause is conditional on claims being
+          // rendered) rather than failing the server for a capability Core
+          // does not require it to have.
+          ...(wanted.clientClaims?.commitments?.length
+            ? { client_claims: { commitments: [...wanted.clientClaims.commitments] } }
+            : {}),
+          streams: wanted.streams.map((s) => ({
+            name: s.name,
+            ...(s.fields.length > 0 ? { fields: [...s.fields] } : {}),
+            // `necessity` and `minimum` are emitted whenever the case set them,
+            // WITHOUT checking `specVersion`. A case that puts a `minimum` on a
+            // v0.1 request is exercising `v0.2/1-1` — the AS must reject it
+            // rather than ignore it — and an adapter that stripped the member
+            // would turn that case into a test of the adapter's own filtering.
+            ...(s.necessity ? { necessity: s.necessity } : {}),
+            ...(s.minimum ? { minimum: minimumBody(s.minimum) } : {}),
+            ...(wanted.timeConstraint
+              ? {
+                  time_range: {
+                    ...(wanted.timeConstraint.from ? { since: wanted.timeConstraint.from } : {}),
+                    ...(wanted.timeConstraint.to ? { until: wanted.timeConstraint.to } : {}),
+                  },
+                }
+              : {}),
+          })),
+        },
+      ],
+    };
+  }
+
+  /** Redeem the authorization code the approval redirect carries, with PKCE. */
+  private async exchangeCode(
+    redirectUri: string,
+    client: { readonly clientId: string; readonly redirectUri: string } = {
+      clientId: this.config.clientId,
+      redirectUri: this.config.redirectUri,
+    }
+  ): Promise<string | null> {
+    const code = new URL(redirectUri).searchParams.get("code");
+    if (!code) {
+      return null;
+    }
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: client.clientId,
+        redirect_uri: client.redirectUri,
+        code_verifier: PKCE_VERIFIER,
+      }).toString(),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const parsedBody: unknown = await response.json();
+    const token = parsedBody as { access_token?: string };
+    if (token.access_token) {
+      this.lastTokenResponseBody = parsedBody;
+      // Recorded only for a response that actually carried a token: clause
+      // 10.2-4 binds "every successful token response that contains an access
+      // token or refresh token", so headers from a tokenless response would be
+      // evidence about a different obligation.
+      this.lastTokenResponseHeaders = Object.fromEntries([...response.headers].map(([k, v]) => [k.toLowerCase(), v]));
+    }
+    return token.access_token ?? null;
+  }
+
+  /**
+   * Approve a staged request and redeem its code, keeping the refresh token.
+   *
+   * `exchangeCode` deliberately returns only the access token, because that is
+   * all every other case should see. The rotation oracle needs the family, so it
+   * redeems here instead of widening the common path.
+   */
+  private async approveForTokens(handle: string, revision: string): Promise<RefreshableGrant | null> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return null;
+    }
+    const approved = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(handle)}/approve`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${owner}`, "content-type": "application/json" },
+      body: JSON.stringify({ review_digest: revision }),
+    });
+    if (!approved.ok) {
+      return null;
+    }
+    const { redirect_uri: redirectUri } = (await approved.json()) as { redirect_uri?: string };
+    const code = redirectUri ? new URL(redirectUri).searchParams.get("code") : null;
+    if (!code) {
+      return null;
+    }
+    return await this.redeem(
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: this.config.clientId,
+        redirect_uri: this.config.redirectUri,
+        code_verifier: PKCE_VERIFIER,
+      })
+    );
+  }
+
+  /** One token-endpoint redemption, shaped as a refreshable family member. */
+  private async redeem(form: URLSearchParams): Promise<RefreshableGrant | null> {
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as { access_token?: string; refresh_token?: string };
+    if (!(body.access_token && body.refresh_token)) {
+      return null;
+    }
+    return {
+      accessToken: body.access_token,
+      refreshToken: body.refresh_token,
+      refresh: (token: string) =>
+        this.redeem(
+          new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: token,
+            client_id: this.config.clientId,
+          })
+        ),
+    };
+  }
+
+  /**
+   * The whole journey, for cases that just need a grant: stage, then approve
+   * with the revision the server issued. Built on stageApproval so there is one
+   * implementation of the flow rather than two that can drift apart.
+   */
+  async issueGrant(wanted: GrantRequest): Promise<IssuedGrant | null> {
+    const staged = await this.stageApproval(wanted);
+    if (!staged) {
+      return null;
+    }
+    return await staged.approve(staged.reviewRevision, wanted.explicitAiTrainingConsent);
+  }
+
+  async revokeGrant(grantId: string): Promise<void> {
+    const owner = await this.ownerToken();
+    // Form-encoded, not JSON. This server splits its bodies deliberately: the
+    // consent endpoints take JSON while /token, /introspect and /revoke take
+    // form encoding, matching the OAuth endpoints they mirror. Sending JSON here
+    // returns 400 "grant_id is required", the revoke never lands, and the
+    // revocation oracle then reports a target that enforces revocation correctly
+    // as failing to — which is exactly what this adapter got wrong first time.
+    await fetch(`${this.config.baseUrl}/pdpp/v1/revoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        ...(owner ? { authorization: `Bearer ${owner}` } : {}),
+      },
+      body: new URLSearchParams({ grant_id: grantId }).toString(),
+    });
+  }
+
+  /**
+   * Absent by design rather than by omission: this deployment binds one owner to
+   * the server, so there is no second subject to prove isolation against. RS-12
+   * reports `skip` naming that, which is honest — the requirement is untested
+   * here, not satisfied.
+   */
+  // Not `async` without an await: the adapter contract is async because a real
+  // adapter does I/O to mint a token. This deployment has no second subject.
+  foreignSubjectOwnerToken(): Promise<string | null> {
+    return Promise.resolve(null);
+  }
+
+  /**
+   * Change ONE field of an existing record, for clauses 8.9-13 and 8.9-14.
+   *
+   * This server's write lane is a whole-record upsert, so the field write is
+   * done by reading the record's current `data` as the owner, replacing the one
+   * field, and re-ingesting. What reaches the store is a record differing from
+   * its predecessor in exactly the named field, which is what the clauses turn
+   * on -- they are about which fields a change touched, not about the shape of
+   * the write API.
+   *
+   * `emitted_at` is advanced deliberately. The clause under test is about
+   * `changes_since` eligibility, and a re-ingest carrying the old timestamp
+   * would be ambiguous between "the server did not register a change" and "the
+   * server registered it and correctly withheld it".
+   *
+   * Returns false rather than throwing at every refusal, so a case reports
+   * `skip` naming this hook rather than a failure that is really a deployment
+   * limitation.
+   */
+  async writeRecordField(stream: string, recordId: string, field: string, value: unknown): Promise<boolean> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return false;
+    }
+    const instance = await this.seededInstance(stream);
+    if (!instance) {
+      return false;
+    }
+
+    // Read the record's CURRENT data, so the re-ingest differs from what is
+    // stored in exactly one field. Composing a record from the adapter's own
+    // idea of the schema would silently rewrite every other field too, and the
+    // out-of-projection leg would then be writing inside the projection.
+    const read = await request(this.config.baseUrl, `/v1/streams/${encodeURIComponent(stream)}/records`, {
+      token: owner,
+      query: { limit: "100" },
+    });
+    const records = (read.json as { data?: { id?: string; data?: Record<string, unknown> }[] } | undefined)?.data;
+    const current = records?.find((r) => r.id === recordId)?.data;
+    if (!current) {
+      return false;
+    }
+
+    const emittedAt = new Date().toISOString();
+    const response = await fetch(`${this.config.baseUrl}/v1/streams/${encodeURIComponent(stream)}/records/ingest`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${owner}`, "content-type": "application/json" },
+      body: JSON.stringify([{ instance, key: recordId, emitted_at: emittedAt, data: { ...current, [field]: value } }]),
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const body = (await response.json().catch(() => undefined)) as { accepted?: number } | undefined;
+    return body?.accepted === 1;
+  }
+
+  /**
+   * The instance handle this deployment seeded `stream` under.
+   *
+   * Read from a real grant review rather than derived: the review is the only
+   * surface that publishes it, and a handle composed from a naming convention
+   * works until the server changes how it derives them and then fails as a
+   * confusing ingest rejection.
+   */
+  private async seededInstance(stream: string): Promise<string | null> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return null;
+    }
+    const seeded = this.config.streams.find((s) => s.name === stream);
+    if (!seeded) {
+      return null;
+    }
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${owner}`, "content-type": "application/json" },
+      body: JSON.stringify(await this.authorizeBody({ streams: [{ name: stream, fields: [...seeded.fields] }] })),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const sessionId = ((await response.json()) as { session_id?: string }).session_id;
+    if (!sessionId) {
+      return null;
+    }
+    const review = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/review`, {
+      headers: { authorization: `Bearer ${owner}` },
+    });
+    if (!review.ok) {
+      return null;
+    }
+    const body = (await review.json()) as {
+      review?: { data?: { streams?: { name?: string; instance_ids?: string[] }[] } };
+    };
+    return body.review?.data?.streams?.find((s) => s.name === stream)?.instance_ids?.[0] ?? null;
+  }
+
+  /**
+   * The blob `vana-target.sh` uploaded and referenced from a seeded record.
+   *
+   * Reports the digest and length the SEEDER computed from the bytes it sent,
+   * never anything read back from the target — the case's whole job is to
+   * check that what the fetch returns is what was stored, and an expectation
+   * sourced from the server under test could not fail.
+   */
+  blobFixture(): Promise<BlobFixture | null> {
+    const fixture = this.config.blobFixture;
+    if (!fixture) {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve({
+      blobId: fixture.blobId,
+      mimeType: fixture.mimeType,
+      digest: { sha256: fixture.sha256, length: Number(fixture.sizeBytes) },
+      grantRequest: {
+        streams: [{ name: fixture.stream, fields: [...fixture.fields] }],
+      },
+      ...(fixture.outOfGrantBlobId === undefined ? {} : { outOfGrantBlobId: fixture.outOfGrantBlobId }),
+    });
+  }
+
+  /**
+   * A token bound to a grant that has genuinely expired under this
+   * deployment's own operator policy — never a fabricated token, a shortened
+   * global default, or a different issuer.
+   *
+   * Drives the real authorize → review → approve → PKCE-redeem journey for
+   * `expiryFixture.clientId`, the SAME journey every other case uses, just
+   * against the dedicated short-lived client. Before returning, it proves the
+   * SAME token reads the expected seeded record (the positive control AS-8's
+   * case needs to isolate expiry as the cause of the later refusal, mirroring
+   * the revocation case's before/after pair), then sleeps past the
+   * deployment-configured lifetime and returns that SAME token unchanged.
+   *
+   * Returns null only when the fixture is not configured. For configured fixtures, the
+   * positive control is a hard precondition: a denied, malformed, empty, or
+   * mismatched pre-expiry read throws, so a broken fixture surfaces as AS-8
+   * `fail` rather than a silent `skip` that would look identical to "no
+   * expiry support configured".
+   */
+  async expiredGrantToken(): Promise<string | null> {
+    const fixture = this.config.expiryFixture;
+    if (!fixture) {
+      return null;
+    }
+    const stream = fixture.stream ? this.config.streams.find((s) => s.name === fixture.stream) : this.config.streams[0];
+    if (!(stream && fixture.expectedRecord.id)) {
+      throw new Error("Configured expiry fixture requires a seeded stream and expected record ID.");
+    }
+
+    const staged = await this.stageApproval(
+      { streams: [{ name: stream.name, fields: [...stream.fields] }] },
+      { clientId: fixture.clientId, redirectUri: fixture.redirectUri }
+    );
+    if (!staged) {
+      throw new Error("Configured expiry fixture could not establish authorization.");
+    }
+    const grant = await staged.approve(staged.reviewRevision);
+    if (!grant) {
+      throw new Error("Configured expiry fixture could not obtain a grant token.");
+    }
+
+    const before = await fetch(`${this.config.baseUrl}/v1/streams/${encodeURIComponent(stream.name)}/records`, {
+      headers: { authorization: `Bearer ${grant.accessToken}` },
+    });
+    if (before.status !== 200) {
+      throw new Error(
+        `expiryFixture is configured but the pre-expiry read of stream "${stream.name}" returned ${before.status}, not 200. The positive control this oracle needs (proof the token worked before expiry) did not hold.`
+      );
+    }
+    const body = (await before.json().catch(() => undefined)) as { data?: unknown } | undefined;
+    const records = Array.isArray(body?.data) ? (body.data as { id?: unknown; data?: Record<string, unknown> }[]) : [];
+    const expected = Object.entries(fixture.expectedRecord);
+    // The RS record envelope (`toRecordJson`) carries the record key as the
+    // top-level `id` and every other seeded field nested under `data` — the
+    // same shape every other stream-reading case in this suite reads
+    // (resource-server.ts, query-surface.ts). expectedRecord's keys are
+    // matched against whichever level actually carries them.
+    const matched = records.find((record) =>
+      expected.every(([key, value]) => (key === "id" ? record.id === value : record.data?.[key] === value))
+    );
+    if (!matched) {
+      throw new Error(
+        `expiryFixture is configured but the pre-expiry read of stream "${stream.name}" did not contain a record matching expectedRecord. Got ${records.length} record(s). The positive control this oracle needs (proof the token reads the seeded record before expiry) did not hold.`
+      );
+    }
+
+    await sleep((fixture.grantLifetimeSeconds + 2) * 1000);
+
+    return grant.accessToken;
+  }
+}

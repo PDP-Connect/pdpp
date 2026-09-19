@@ -1,0 +1,29 @@
+{
+  "name": "@pdpp/conformance-suite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Role-based executable conformance suite for PDPP Core v0.1 Section 9. Black-box and adapter-driven: target cases use TargetAdapter, and client cases use ClientUnderTest against an instrumented fixture. Produces a machine-readable report that distinguishes pass/fail/skip/unsupported/not-tested against the full Section 9 requirement denominator, and confers no status of any kind.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./adapter": "./src/harness/adapter.ts",
+    "./client-adapter": "./src/harness/client-adapter.ts",
+    "./report": "./src/report/result.ts"
+  },
+  "bin": {
+    "pdpp-conformance": "./src/cli.ts"
+  },
+  "scripts": {
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "matrix:md": "node --import tsx scripts/render-matrix-md.ts",
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm typecheck && pnpm check && pnpm test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.13",
+    "ultracite": "7.11.1"
+  }
+}
