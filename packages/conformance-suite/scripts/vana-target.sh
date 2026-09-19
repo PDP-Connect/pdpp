@@ -90,7 +90,14 @@ set -euo pipefail
 # two different server lifetimes -- measuring what survives a reboot rather than
 # what the AS refuses. The nine AS-16 declaration cases need that surface; see
 # submitDeclaration in src/targets/vana-ps-adapter.ts.
-VANA_REF="${PDPP_VANA_REF:-e3a7142e8c009b2b22371828860ab9047f6d88ee}"
+# c807fb27e2395bbb5e57ffd703cbf729da019b49 (feat/pdpp-as-grants tip, descendant
+# of e3a7142) keys the declaration registry by `(source_id, version)` instead of
+# by source alone, so a second document with different parsed content under an
+# accepted key is refused `declaration_equivocation` with the retained bytes
+# unchanged. That is the behaviour
+# AS-16/declaration-equivocation-refused-and-prior-content-retained asserts, and
+# the only MUST case still failing at the previous default ref.
+VANA_REF="${PDPP_VANA_REF:-c807fb27e2395bbb5e57ffd703cbf729da019b49}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
 
