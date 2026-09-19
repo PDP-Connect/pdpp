@@ -179,6 +179,64 @@ export type Defect =
    */
   | "accept-time-range-without-consent-time-field"
   /**
+   * Projects the record's VALUES but keeps its SHAPE, emitting `null` for every
+   * member the grant withholds (matrix `v0.2/4-3`).
+   *
+   * Not a variant of `ignore-field-projection`, which discloses the real
+   * values: this server withholds every value correctly and still tells the
+   * client which members exist and that the owner declined them. A null is a
+   * statement, and PR #1 names it specifically — "MUST NOT insert nulls or
+   * fabricated values for withheld members" — because the record still
+   * validates against the full stream schema and looks like a correct
+   * projection to any check that counts disclosed values rather than naming
+   * disclosed members.
+   */
+  | "null-withheld-members"
+  /**
+   * Serves a `fields` selection naming a member the grant withholds, instead of
+   * refusing it with 400 (matrix `v0.2/4-8`).
+   *
+   * Models the server that reads `fields` as the client's statement of what it
+   * wants and projects the stored record against it directly, never
+   * intersecting it with the grant. Distinct from `ignore-field-projection`,
+   * which leaks on EVERY read: this one honours the grant on an unqualified
+   * read and leaks only when asked, so every projection case that sends no
+   * `fields` parameter passes against it.
+   */
+  | "repair-projection-on-field-selection"
+  /**
+   * Records the owner's narrowing on the grant and then enforces the REQUESTED
+   * ceiling at read time (matrix `v0.2/4-1`, `v0.2/4-2`).
+   *
+   * The defect the v0.2 read path turns on, and the one a black-box run can
+   * actually attribute. Its cheaper-looking sibling — a server that discards
+   * the choices at issuance — is NOT usable as an oracle here: the grant it
+   * issues is honestly unnarrowed, so the cases report `skip` for a missing
+   * precondition rather than `fail`, which is correct (a target that never
+   * implemented the owner's narrowing has not violated a read-path clause) and
+   * useless for discrimination.
+   *
+   * This server instead agrees with itself everywhere a client can look — the
+   * token response and introspection both report the narrowed grant — and then
+   * serves the ceiling. That is the realistic shape: the consent surface and
+   * the query path resolve the grant through different code, and only one of
+   * them was taught about `owner_choices`.
+   */
+  | "serve-beyond-the-owners-narrowing"
+  /**
+   * Re-adds the stream's schema-required members to every disclosed record,
+   * after projecting correctly (matrix `v0.2/4-1`).
+   *
+   * Narrower than `serve-beyond-the-owners-narrowing`, and that is the point:
+   * this server honours the owner's narrowing for every OPTIONAL member and
+   * loses it only for the ones the schema marks required, so a read of a stream
+   * whose withheld members all happen to be optional is indistinguishable from
+   * a correct one. It is also the likelier bug — it is what a serializer that
+   * validates its output against the stream schema does on its own, without
+   * anyone deciding to widen a grant.
+   */
+  | "re-add-schema-required-members"
+  /**
    * Accepts a malformed v0.2 `minimum` instead of refusing it
    * (matrix `v0.2/6.5-1`, `-2`, `-3`, `-7`, `-8`).
    *
@@ -535,6 +593,21 @@ interface GrantState {
      * read-time behaviour change instead of a different issuance path.
      */
     resolvedFromView?: string;
+    /**
+     * The CEILING the client asked for, when the owner narrowed below it
+     * (PR #1's `grant.requested`).
+     *
+     * Retained as provenance only, exactly like `resolvedFromView`: the fields
+     * above are what the owner approved and what every conforming read serves.
+     * The only code that consults it is `serve-beyond-the-owners-narrowing`,
+     * which models the server whose query path resolves the grant from the
+     * request rather than from the approval. Keeping it on the grant rather
+     * than inside the defect is what lets that defect be a read-time behaviour
+     * change instead of a second issuance path — a defect that issued a
+     * different grant would be caught by the token response instead of by the
+     * records it serves, which is not the violation being modelled.
+     */
+    requested?: { fields: readonly string[]; timeConstraint?: { field: string; from?: string; to?: string } };
   }[];
   readonly subjectId: string;
 }
@@ -880,6 +953,73 @@ export class ReferenceServer {
   }
 
   /**
+   * The fields a READ serves, which a conforming server makes identical to
+   * `grantedFields`.
+   *
+   * Two functions rather than a flag because the two answers must be allowed to
+   * differ: `grantedFields` is what the grant SAYS and feeds the token response
+   * and introspection, and this is what a record read DISCLOSES. Under
+   * `serve-beyond-the-owners-narrowing` they diverge — the grant reports the
+   * owner's narrowing everywhere a client can inspect it, and the records carry
+   * the ceiling. A single function could not express that, and the defect would
+   * have to change what the grant says, which is a different (and already
+   * covered) violation.
+   */
+  private servedFields(granted: GrantState["streams"][number] | undefined): readonly string[] {
+    if (granted?.requested && this.has("serve-beyond-the-owners-narrowing")) {
+      return granted.requested.fields;
+    }
+    return this.grantedFields(granted);
+  }
+
+  /**
+   * The window a READ enforces. The temporal half of `servedFields`, and
+   * separate for the same reason: a server can lose the owner's field choices
+   * and keep their window, or the reverse.
+   */
+  private servedTimeConstraint(
+    granted: GrantState["streams"][number] | undefined
+  ): { field: string; from?: string; to?: string } | undefined {
+    if (granted?.requested && this.has("serve-beyond-the-owners-narrowing")) {
+      return granted.requested.timeConstraint;
+    }
+    return granted?.timeConstraint;
+  }
+
+  /**
+   * The disclosed `data` object for one record, under `projection`.
+   *
+   * One helper rather than a filter repeated at each read site, so the
+   * `null-withheld-members` defect is a property of DISCLOSURE rather than of
+   * one endpoint — a server that nulls withheld members does it everywhere, and
+   * a defect wired into only the list route would let the single-record case
+   * pass while the same server leaks.
+   *
+   * The defect keeps the record's SHAPE and empties its values, which is the
+   * plausible version of getting `v0.2/4-3` wrong: it is what falls out of
+   * projecting with a schema-shaped serializer, and the result still validates
+   * against the full stream schema. Nothing about the status or the member
+   * count distinguishes it from a correct projection, which is why the case
+   * has to inspect the member names and not just their values.
+   */
+  private disclose(
+    record: Record<string, unknown>,
+    projection: readonly string[],
+    fixture?: StreamFixture
+  ): Record<string, unknown> {
+    if (this.has("null-withheld-members")) {
+      return Object.fromEntries(Object.keys(record).map((key) => [key, projection.includes(key) ? record[key] : null]));
+    }
+    // The schema's `required` array is consulted ONLY here, and only under the
+    // defect: a conforming read never asks what the schema requires, which is
+    // precisely what `v0.2/4-1` says.
+    const disclosed = this.has("re-add-schema-required-members")
+      ? [...new Set([...projection, ...(fixture?.requiredFields ?? [])])]
+      : projection;
+    return Object.fromEntries(Object.entries(record).filter(([key]) => disclosed.includes(key)));
+  }
+
+  /**
    * Every view this AS currently defines, as the adapter's `declaredViews`
    * record.
    *
@@ -996,6 +1136,8 @@ export class ReferenceServer {
       timeConstraint?: { field: string; from?: string; to?: string };
       /** The view the fields were resolved from, when the request named one. */
       resolvedFromView?: string;
+      /** The requested ceiling, when the owner narrowed below it. */
+      requested?: { fields: readonly string[]; timeConstraint?: { field: string; from?: string; to?: string } };
     }[],
     options: {
       /** Core Section 7 `access_mode`. Defaults to `continuous`. */
@@ -1036,6 +1178,7 @@ export class ReferenceServer {
         fields: [...s.fields],
         ...(s.timeConstraint ? { timeConstraint: s.timeConstraint } : {}),
         ...(s.resolvedFromView === undefined ? {} : { resolvedFromView: s.resolvedFromView }),
+        ...(s.requested === undefined ? {} : { requested: s.requested }),
       })),
       revoked: false,
       expired: options.expired ?? false,
@@ -1421,13 +1564,13 @@ export class ReferenceServer {
       }
       const projection =
         principal.kind === "client" && !this.has("ignore-field-projection")
-          ? this.grantedFields(grantedStream)
+          ? this.servedFields(grantedStream)
           : fixture.fields;
       send(200, {
         object: "record",
         id: record.id,
         stream: fixture.name,
-        data: Object.fromEntries(Object.entries(record).filter(([k]) => projection.includes(k))),
+        data: this.disclose(record, projection, fixture),
       });
       return;
     }
@@ -1539,15 +1682,47 @@ export class ReferenceServer {
         }
       }
 
-      const projection =
+      const authorized =
         principal.kind === "client" && !this.has("ignore-field-projection")
-          ? this.grantedFields(grantedStream)
+          ? this.servedFields(grantedStream)
           : fixture.fields;
+
+      // --- Request-time `fields` selection, within the authorized set ---
+      //
+      // `fields` is in the v0.2 durable client-token base surface, and PR #1
+      // `v0.2/4-2` makes the disclosed object the intersection of the grant and
+      // this selection. The selection can only ever NARROW: naming a member the
+      // grant withheld is a 400, never a wider read, because `v0.2/4-8` forbids
+      // "repairing" the projection by disclosing unauthorized fields.
+      //
+      // `repair-projection-on-field-selection` serves such a request instead,
+      // which is the realistic violation — a server that treats `fields` as the
+      // client's statement of what it wants and reads it straight out of the
+      // stored record, never intersecting it with the grant.
+      const requestedFields = parsed.searchParams.get("fields");
+      let projection = authorized;
+      if (requestedFields !== null) {
+        const wanted = requestedFields
+          .split(",")
+          .map((f) => f.trim())
+          .filter((f) => f.length > 0);
+        const outside = wanted.filter((f) => !authorized.includes(f));
+        if (outside.length > 0 && !this.has("repair-projection-on-field-selection")) {
+          error(
+            400,
+            "invalid_request",
+            "invalid_request_error",
+            `Field '${outside[0]}' is not in this grant's authorized fields for the stream.`
+          );
+          return;
+        }
+        projection = wanted;
+      }
 
       // Enforce the grant's frozen time constraint (Section 8 "Grant
       // enforcement"): records outside the consented window are not the client's
       // to see, whatever the request asked for.
-      const constraint = grantedStream?.timeConstraint;
+      const constraint = this.servedTimeConstraint(grantedStream);
       const withinWindow = (record: Record_): boolean => {
         if (!constraint) {
           return true;
@@ -1603,7 +1778,7 @@ export class ReferenceServer {
           object: "record",
           id: this.canonicalKey(fixture, record),
           stream: fixture.name,
-          data: Object.fromEntries(Object.entries(record).filter(([k]) => projection.includes(k))),
+          data: this.disclose(record, projection, fixture),
         }));
 
       // Tombstones for deletions inside this session's window (Core Section 4).

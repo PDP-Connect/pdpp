@@ -385,6 +385,22 @@ function schemaViolation(schema: unknown, path: string): string | undefined {
   return undefined;
 }
 
+/**
+ * One stream of a request, after view resolution and the owner's narrowing.
+ *
+ * `ceiling` is the field set the CLIENT asked for, present only when the owner
+ * narrowed below it. It is provenance, not authority: `fields` is what the
+ * grant carries and what every conforming read serves. It exists so the
+ * reference server can model a query path that resolves the grant from the
+ * request rather than from the approval.
+ */
+interface ResolvedStream {
+  ceiling?: { fields: readonly string[] };
+  fields: readonly string[];
+  name: string;
+  view?: string;
+}
+
 export class ReferenceTargetAdapter implements TargetAdapter {
   readonly targetId: string;
   readonly targetVersion = "0.1.0";
@@ -700,20 +716,99 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * the name. Shared with `stageApproval` so the artifact the owner reviews
    * describes exactly the fields the grant will carry.
    */
-  private resolveStreams(request: GrantRequest): { name: string; fields: readonly string[]; view?: string }[] | null {
-    const resolved: { name: string; fields: readonly string[]; view?: string }[] = [];
+  private resolveStreams(request: GrantRequest): ResolvedStream[] | null {
+    const resolved: ResolvedStream[] = [];
     for (const s of request.streams) {
-      if (s.view === undefined) {
-        resolved.push({ name: s.name, fields: [...s.fields] });
+      if (request.ownerChoices?.declineStreams?.includes(s.name)) {
+        // A declined stream leaves the grant entirely. Under v0.2 the owner may
+        // decline an `optional` stream outright; declining a `required` one is
+        // the AS's refusal to make, and this target answers it by issuing no
+        // grant at all rather than a grant the client's floor cannot satisfy.
+        if (s.necessity !== "optional") {
+          return null;
+        }
         continue;
       }
-      const viewFields = this.resolveView(s.name, s.view);
-      if (!viewFields) {
+      const requested = s.view === undefined ? [...s.fields] : this.resolveView(s.name, s.view);
+      if (!requested) {
         return null;
       }
-      resolved.push({ name: s.name, fields: [...viewFields], view: s.view });
+      // The owner's narrowing applies to the RESOLVED field set, never to the
+      // request: a view resolves to fields first, and the owner chooses among
+      // those. Intersecting rather than substituting is what keeps a choice
+      // from widening the grant — an owner cannot approve a field the client
+      // never asked for, and a target that let them would hand the client
+      // access it did not request.
+      //
+      const kept = this.applyOwnerFieldChoices(requested, request.ownerChoices?.fields?.[s.name]);
+      if (kept.length === 0) {
+        return null;
+      }
+      // A minimum the narrowing falls below is the AS's refusal (PR #1's
+      // `access_denied`), not a grant issued at the floor. Checked here because
+      // this is where both bounds are known.
+      const floor = s.minimum?.fields ?? [];
+      if (floor.some((field) => !kept.includes(field))) {
+        return null;
+      }
+      // The ceiling is recorded only when the owner actually narrowed below it.
+      // Equal sets mean there is no narrowing to lose, so the read-time defect
+      // has nothing to widen to and every pre-v0.2 case is unaffected.
+      const narrowed = kept.length < requested.length;
+      resolved.push({
+        name: s.name,
+        fields: kept,
+        ...(s.view === undefined ? {} : { view: s.view }),
+        ...(narrowed ? { ceiling: { fields: [...requested] } } : {}),
+      });
     }
-    return resolved;
+    return resolved.length === 0 ? null : resolved;
+  }
+
+  /**
+   * The grant's frozen `timeConstraint` for `stream`, after the owner's window.
+   *
+   * The owner's window narrows the requested one and never widens it: clamping
+   * at the request is what stops a consent surface from handing the client a
+   * span it did not ask for. Returns the whole `{ timeConstraint }` fragment
+   * (or nothing) so the call site stays one spread rather than a conditional.
+   *
+   * The grant this produces is the narrowed one under every defect: losing the
+   * owner's window at READ time is `serve-beyond-the-owners-narrowing`, and
+   * modelling it here instead would change what the grant says rather than what
+   * the server serves.
+   */
+  private narrowedTimeConstraint(
+    request: GrantRequest,
+    stream: string
+  ): { timeConstraint: { field: string; from?: string; to?: string } } | undefined {
+    const requested = request.timeConstraint;
+    if (!requested) {
+      return undefined;
+    }
+    const chosen = request.ownerChoices?.timeRange?.[stream];
+    if (!chosen) {
+      return { timeConstraint: requested };
+    }
+    const from =
+      chosen.since !== undefined && (!requested.from || chosen.since > requested.from) ? chosen.since : requested.from;
+    const to =
+      chosen.until !== undefined && (!requested.to || chosen.until < requested.to) ? chosen.until : requested.to;
+    return {
+      timeConstraint: {
+        field: requested.field,
+        ...(from === undefined ? {} : { from }),
+        ...(to === undefined ? {} : { to }),
+      },
+    };
+  }
+
+  /** The resolved fields, narrowed to the owner's choice when they made one. */
+  private applyOwnerFieldChoices(resolved: readonly string[], chosen: readonly string[] | undefined): string[] {
+    if (!chosen) {
+      return [...resolved];
+    }
+    return resolved.filter((field) => chosen.includes(field));
   }
 
   /**
@@ -856,12 +951,32 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       return null;
     }
     const issued = this.server.issueGrant(
-      resolved.map((s) => ({
-        name: s.name,
-        fields: [...s.fields],
-        ...(request.timeConstraint ? { timeConstraint: request.timeConstraint } : {}),
-        ...(s.view === undefined ? {} : { resolvedFromView: s.view }),
-      })),
+      resolved.map((s) => {
+        const approvedWindow = this.narrowedTimeConstraint(request, s.name);
+        // The ceiling is the pair the client asked for, recorded only when the
+        // owner narrowed at least one half of it. A v0.1 grant — and any v0.2
+        // grant approved as requested — records none, so the read-time defect
+        // has nothing to widen to and every existing case is byte-identical.
+        const windowNarrowed =
+          request.timeConstraint !== undefined &&
+          approvedWindow?.timeConstraint !== undefined &&
+          (approvedWindow.timeConstraint.from !== request.timeConstraint.from ||
+            approvedWindow.timeConstraint.to !== request.timeConstraint.to);
+        const ceiling =
+          s.ceiling || windowNarrowed
+            ? {
+                fields: s.ceiling?.fields ?? [...s.fields],
+                ...(request.timeConstraint ? { timeConstraint: request.timeConstraint } : {}),
+              }
+            : undefined;
+        return {
+          name: s.name,
+          fields: [...s.fields],
+          ...(approvedWindow ?? {}),
+          ...(s.view === undefined ? {} : { resolvedFromView: s.view }),
+          ...(ceiling === undefined ? {} : { requested: ceiling }),
+        };
+      }),
       {
         ...(request.purposeCode ? { purposeCode: request.purposeCode } : {}),
         ...(request.accessMode ? { accessMode: request.accessMode } : {}),
