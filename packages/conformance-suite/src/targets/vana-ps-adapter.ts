@@ -20,6 +20,7 @@
 
 import type {
   AuthorizationMinimum,
+  BlobFixture,
   DeclarationOutcome,
   GrantRequest,
   IssuedGrant,
@@ -69,6 +70,41 @@ export interface VanaPsConfig {
      * merely getting a 200 with an empty or unrelated body.
      */
     readonly expectedRecord: Readonly<Record<string, unknown>>;
+  };
+  /**
+   * A blob this deployment has already persisted, and the stream/field through
+   * which a grant can reach it, for RS-1's byte-fetch cases.
+   *
+   * The ids are minted by the server at seed time, so they cannot be committed
+   * and arrive as `${ENV_VAR}` placeholders that `vana-target.sh` exports —
+   * the same route the owner token takes, for the same reason.
+   *
+   * `sha256` is computed by the seeder from the bytes it uploaded, NOT read
+   * back from the target: an oracle that asked the server what it stored and
+   * then checked the answer against itself would prove nothing about the bytes
+   * the fetch returns.
+   *
+   * `outOfGrantBlobId` names a second, really-persisted blob that no record in
+   * `stream` references. Absent means this deployment seeded only one, and the
+   * negative case reports `skip` rather than reading a 404 on a fabricated id
+   * as proof of enforcement.
+   */
+  readonly blobFixture?: {
+    readonly blobId: string;
+    readonly mimeType: string;
+    readonly sha256: string;
+    /**
+     * Length of the stored bytes. Typed to admit a string because it arrives
+     * through an `${ENV_VAR}` placeholder like the ids and digest beside it,
+     * and placeholder substitution yields strings; the seeder is the only
+     * honest source for it, so widening the type here is preferable to
+     * committing a constant that silently drifts from the seeded content.
+     */
+    readonly sizeBytes: number | string;
+    /** Stream whose grant carries the `blob_ref` field referencing `blobId`. */
+    readonly stream: string;
+    readonly fields: readonly string[];
+    readonly outOfGrantBlobId?: string;
   };
   readonly introspectionCredentials?: { readonly clientId: string; readonly clientSecret: string };
   /**
@@ -613,10 +649,22 @@ export class VanaPsAdapter implements TargetAdapter {
         // An absent `fields` is the request-time convenience AS-4 must expand,
         // so it has to reach the server absent rather than as an empty array.
         ...(s.fields ? { fields: [...s.fields] } : {}),
+        // `view` at request scope, which is mutually exclusive with `fields`.
+        // Emitted independently of `fields` on purpose: clause 6.8-1's negative
+        // is a request carrying BOTH, and an adapter that dropped one could not
+        // construct it.
+        ...(s.view ? { view: s.view } : {}),
         // Emitted regardless of `specVersion`; see authorizeBody for why a case
         // must be able to put a v0.2 member on a v0.1 request on purpose.
         ...(s.necessity ? { necessity: s.necessity } : {}),
         ...(s.minimum ? { minimum: minimumBody(s.minimum) } : {}),
+        // The request-level `time_range` applies to every stream the request
+        // names (SelectionRequest.timeRange), and this server carries it per
+        // stream. Without this the constraint never left the suite: the AS-2
+        // time-range cases sent a plain request, the server accepted it
+        // correctly, and the case read its own omission as the server failing
+        // to refuse.
+        ...(wanted.timeRange ? { time_range: { ...wanted.timeRange } } : {}),
       }));
     }
     if (wanted.selectionPreset !== undefined) {
@@ -893,6 +941,30 @@ export class VanaPsAdapter implements TargetAdapter {
   // adapter does I/O to mint a token. This deployment has no second subject.
   foreignSubjectOwnerToken(): Promise<string | null> {
     return Promise.resolve(null);
+  }
+
+  /**
+   * The blob `vana-target.sh` uploaded and referenced from a seeded record.
+   *
+   * Reports the digest and length the SEEDER computed from the bytes it sent,
+   * never anything read back from the target — the case's whole job is to
+   * check that what the fetch returns is what was stored, and an expectation
+   * sourced from the server under test could not fail.
+   */
+  blobFixture(): Promise<BlobFixture | null> {
+    const fixture = this.config.blobFixture;
+    if (!fixture) {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve({
+      blobId: fixture.blobId,
+      mimeType: fixture.mimeType,
+      digest: { sha256: fixture.sha256, length: Number(fixture.sizeBytes) },
+      grantRequest: {
+        streams: [{ name: fixture.stream, fields: [...fixture.fields] }],
+      },
+      ...(fixture.outOfGrantBlobId === undefined ? {} : { outOfGrantBlobId: fixture.outOfGrantBlobId }),
+    });
   }
 
   /**

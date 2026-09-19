@@ -97,7 +97,14 @@ set -euo pipefail
 # unchanged. That is the behaviour
 # AS-16/declaration-equivocation-refused-and-prior-content-retained asserts, and
 # the only MUST case still failing at the previous default ref.
-VANA_REF="${PDPP_VANA_REF:-c807fb27e2395bbb5e57ffd703cbf729da019b49}"
+# aea27f5117471247d3aa22327e26c8cded748d53 (feat/pdpp-as-grants tip, descendant
+# of c807fb2) adds `POST /v1/blobs/ingest`, an owner-authenticated write path for
+# blob bytes. The store could already hold them and GET /v1/blobs/:blob_id could
+# already serve them, but nothing could put them in over HTTP, so the deployment
+# implemented the whole Section 8 blob surface with no blob to fetch. RS-1's
+# three blob cases need a persisted blob and a record referencing it; see
+# blobFixture in src/targets/vana-ps-adapter.ts and seed_blobs below.
+VANA_REF="${PDPP_VANA_REF:-aea27f5117471247d3aa22327e26c8cded748d53}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
 
@@ -145,6 +152,41 @@ GRANTED_STREAM="top_artists"
 UNGRANTED_STREAM="saved_tracks"
 TOP_ARTISTS_COUNT=5
 SAVED_TRACKS_COUNT=3
+
+# A THIRD stream, declared and seeded for two clauses the first two cannot reach
+# between them. Both of its distinguishing properties are absences or shapes the
+# spec assigns meaning to, so neither can be simulated:
+#
+#   - it declares NO consent_time_field. Core Section 5 makes that absence the
+#     normative signal that a stream does not support time-range filtering, so
+#     AS-2 (clauses 5.2-4, 6.8-2) and AS-11's v0.2 window case need a stream that
+#     genuinely omits it. Naming a bogus field instead would test a different
+#     rule -- a field the schema does not declare is a 5.2-3 validity error, not
+#     a time-range-incapable stream.
+#   - its primary_key names TWO columns, which is what RS-1's canonical-encoding
+#     clause acts on. A single-column key is encoded as a bare string, so the
+#     JSON-array form the clause governs never appears in a run without this.
+#
+# It carries no cursor_field for the same reason it carries no consent_time_field:
+# the point is a stream that declines the optional temporal machinery, and adding
+# a cursor would make it a partial case of the other two rather than its own
+# thing. The RS sync oracles keep reading top_artists.
+NO_TIME_STREAM="playlists"
+PLAYLISTS_COUNT=3
+
+# A FOURTH stream carrying a blob_ref field, plus the two blobs RS-1's byte-fetch
+# cases need.
+#
+# Section 8 names GET /v1/blobs/:blob_id as one of the six read endpoints, but
+# reaching it needs a persisted blob AND a record referencing it through a
+# granted `blob_ref` field -- the suite can seed neither for itself, so all three
+# RS-1 blob cases reported `skip`. Two blobs, not one: the negative case ("a
+# blob_id alone does not grant access") is unobservable against a single blob,
+# because a 404 on a made-up id proves nothing about a server that 404s
+# everything. The second blob is real, persisted, and deliberately referenced by
+# NO record in the granted stream.
+BLOB_STREAM="media"
+BLOB_MIME="image/jpeg"
 
 # The connector the AS-16 declaration cases submit candidate declarations for,
 # and a fixed operator credential for the route that accepts them.
@@ -363,6 +405,8 @@ const MAIN_GRANT_LIFETIME_SECONDS = $MAIN_GRANT_LIFETIME_SECONDS;
 const SCOPES = [
   "spotify.$GRANTED_STREAM",
   "spotify.$UNGRANTED_STREAM",
+  "spotify.$NO_TIME_STREAM",
+  "spotify.$BLOB_STREAM",
   "$DECLARATION_CONNECTOR.declarations",
 ];
 
@@ -422,6 +466,61 @@ await writeFile(
             id: { type: "string" },
             title: { type: "string" },
             artist: { type: "string" },
+            source_updated_at: { type: "string", format: "date-time" },
+          },
+          required: ["id"],
+          additionalProperties: false,
+        },
+        primary_key: ["id"],
+        cursor_field: "source_updated_at",
+        consent_time_field: "source_updated_at",
+        selection: { fields: true, resources: false },
+      },
+      {
+        // Declares NO consent_time_field and NO cursor_field, and keys on two
+        // columns. See NO_TIME_STREAM above: both properties are what the
+        // clauses act on, and neither is expressible on the two streams above
+        // without changing what they are for.
+        name: "$NO_TIME_STREAM",
+        description: "Seeded Spotify playlists for conformance tests.",
+        display: { label: "Playlists" },
+        semantics: "mutable_state",
+        schema: {
+          \$schema: "https://json-schema.org/draft/2020-12/schema",
+          type: "object",
+          properties: {
+            owner_id: { type: "string" },
+            playlist_id: { type: "string" },
+            title: { type: "string" },
+          },
+          required: ["owner_id", "playlist_id"],
+          additionalProperties: false,
+        },
+        primary_key: ["owner_id", "playlist_id"],
+        selection: { fields: true, resources: false },
+      },
+      {
+        // Carries a blob_ref field so a grant over this stream can authorize a
+        // byte fetch. See BLOB_STREAM above.
+        name: "$BLOB_STREAM",
+        description: "Seeded media records referencing blobs, for conformance tests.",
+        display: { label: "Media" },
+        semantics: "mutable_state",
+        schema: {
+          \$schema: "https://json-schema.org/draft/2020-12/schema",
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            caption: { type: "string" },
+            blob_ref: {
+              type: "object",
+              properties: {
+                blob_id: { type: "string" },
+                mime_type: { type: "string", const: "$BLOB_MIME" },
+              },
+              required: ["blob_id", "mime_type"],
+              additionalProperties: false,
+            },
             source_updated_at: { type: "string", format: "date-time" },
           },
           required: ["id"],
@@ -658,7 +757,76 @@ print(review["data"]["streams"][0]["instance_ids"][0])') ||
 
   ingest_stream "$owner_token" "$instance" "$GRANTED_STREAM" "$TOP_ARTISTS_COUNT" artists
   ingest_stream "$owner_token" "$instance" "$UNGRANTED_STREAM" "$SAVED_TRACKS_COUNT" tracks
-  log "seeded $GRANTED_STREAM=$TOP_ARTISTS_COUNT $UNGRANTED_STREAM=$SAVED_TRACKS_COUNT"
+  ingest_stream "$owner_token" "$instance" "$NO_TIME_STREAM" "$PLAYLISTS_COUNT" playlists
+  log "seeded $GRANTED_STREAM=$TOP_ARTISTS_COUNT $UNGRANTED_STREAM=$SAVED_TRACKS_COUNT $NO_TIME_STREAM=$PLAYLISTS_COUNT"
+
+  seed_blobs "$owner_token" "$instance"
+}
+
+# Upload two blobs and reference the FIRST from one media record.
+#
+# The second blob is uploaded and then deliberately left unreferenced: that is
+# the fixture RS-1's "a blob_id alone does not grant access" case needs, and it
+# has to be a blob that really exists, because a refusal on an id that exists is
+# evidence of enforcement while a refusal on a made-up id is not.
+#
+# Ids are minted by the server at upload time, so they cannot be committed. They
+# are appended to target.env alongside the owner token, for the same reason.
+seed_blobs() {
+  local owner_token="$1" instance="$2"
+  local in_grant out_of_grant digest ts="2026-04-01T00:00:00Z"
+
+  in_grant=$(upload_blob "$owner_token" "conformance-blob-in-grant") ||
+    die "could not upload the in-grant blob"
+  out_of_grant=$(upload_blob "$owner_token" "conformance-blob-out-of-grant") ||
+    die "could not upload the out-of-grant blob"
+
+  # The digest the suite checks the fetched bytes against, computed here from
+  # the bytes we uploaded rather than read back from the server: an oracle that
+  # asked the server what it stored and then checked the answer against itself
+  # would prove nothing.
+  digest=$(printf '%s' "conformance-blob-in-grant" | sha256sum | cut -d' ' -f1)
+  local size
+  size=$(printf '%s' "conformance-blob-in-grant" | wc -c | tr -d ' ')
+
+  local body accepted
+  body=$(python3 - "$instance" "$in_grant" "$BLOB_MIME" "$ts" <<'PY'
+import json, sys
+instance, blob_id, mime, ts = sys.argv[1:5]
+print(json.dumps([{
+    "instance": instance,
+    "key": "med_1",
+    "emitted_at": ts,
+    "data": {"id": "med_1", "caption": "Seeded media record",
+             "blob_ref": {"blob_id": blob_id, "mime_type": mime},
+             "source_updated_at": ts},
+}]))
+PY
+  )
+  accepted=$(curl -fsS -X POST "$BASE_URL/v1/streams/$BLOB_STREAM/records/ingest" \
+    -H "authorization: Bearer $owner_token" -H 'content-type: application/json' \
+    -d "$body" | python3 -c 'import json,sys;print(json.load(sys.stdin)["accepted"])') ||
+    die "ingest into $BLOB_STREAM failed"
+  [ "$accepted" = "1" ] || die "ingest into $BLOB_STREAM accepted $accepted of 1 records"
+
+  {
+    printf 'export PDPP_VANA_BLOB_ID=%s\n' "$in_grant"
+    printf 'export PDPP_VANA_OUT_OF_GRANT_BLOB_ID=%s\n' "$out_of_grant"
+    printf 'export PDPP_VANA_BLOB_SHA256=%s\n' "$digest"
+    printf 'export PDPP_VANA_BLOB_SIZE=%s\n' "$size"
+  } >> "$ENV_FILE"
+
+  log "seeded $BLOB_STREAM=1 blob=$in_grant out-of-grant blob=$out_of_grant"
+}
+
+upload_blob() {
+  local owner_token="$1" content="$2"
+  printf '%s' "$content" |
+    curl -fsS -X POST "$BASE_URL/v1/blobs/ingest" \
+      -H "authorization: Bearer $owner_token" \
+      -H "content-type: $BLOB_MIME" \
+      --data-binary @- |
+    python3 -c 'import json,sys;print(json.load(sys.stdin)["blob_id"])'
 }
 
 ingest_stream() {
@@ -668,16 +836,26 @@ ingest_stream() {
 import json, sys
 instance, count, shape = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 records = []
+month = {"artists": "01", "tracks": "02", "playlists": "03"}[shape]
 for i in range(1, count + 1):
-    ts = f"2026-{'01' if shape == 'artists' else '02'}-{i:02d}T00:00:00Z"
+    ts = f"2026-{month}-{i:02d}T00:00:00Z"
     if shape == "artists":
         data = {"id": f"art_{i}", "name": f"Artist {i}",
                 "genres": ["indie", "rock"], "source_updated_at": ts}
         key = f"art_{i}"
-    else:
+    elif shape == "tracks":
         data = {"id": f"trk_{i}", "title": f"Track {i}",
                 "artist": f"Artist {i}", "source_updated_at": ts}
         key = f"trk_{i}"
+    else:
+        # A COMPOUND key, sent as the component ARRAY rather than a
+        # pre-encoded string. RS-1's clause is about how the server encodes a
+        # multi-column key into a record id; seeding an already-encoded string
+        # would hand the server the answer and the case would then be checking
+        # that it echoed the seeder.
+        data = {"owner_id": "owner_1", "playlist_id": f"pl_{i}",
+                "title": f"Playlist {i}"}
+        key = ["owner_1", f"pl_{i}"]
     records.append({"instance": instance, "key": key, "emitted_at": ts, "data": data})
 print(json.dumps(records))
 PY

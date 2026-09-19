@@ -52,12 +52,25 @@
     "  - one owner is bound to the server, so there is no second subject. RS-12",
     "    reports skip naming that rather than passing on no evidence.",
     "",
-    "Declare BOTH streams below in the boot declaration and give each a data_files",
-    "scope row, then seed both. The stream-membership oracles (RS-2 enforcement,",
-    "RS-6 error classification) work by holding one stream OUT of the grant, so a",
-    "single-stream deployment can only report skip on them. Seed several records",
-    "into top_artists as well: a stream too short to produce a page cursor cannot",
-    "exercise the cursor/changes_since token-space separation case.",
+    "Declare ALL THREE streams below in the boot declaration and give each a",
+    "data_files scope row, then seed all three. The stream-membership oracles",
+    "(RS-2 enforcement, RS-6 error classification) work by holding one stream OUT",
+    "of the grant, so a single-stream deployment can only report skip on them.",
+    "Seed several records into top_artists as well: a stream too short to produce",
+    "a page cursor cannot exercise the cursor/changes_since token-space",
+    "separation case.",
+    "",
+    "playlists is the third stream and exists for two clauses the other two",
+    "cannot reach between them. It declares NO consent_time_field -- Core makes",
+    "that absence the normative signal that a stream does not support time-range",
+    "filtering, so AS-2 (5.2-4, 6.8-2) and AS-11's v0.2 window case need a stream",
+    "that genuinely omits it, and a bogus field name would test 5.2-3 instead.",
+    "And its primaryKey names TWO columns, which is what RS-1's canonical",
+    "array-encoding clause acts on; a single-column key encodes as a bare string",
+    "and that clause never fires. top_artists and saved_tracks now state the",
+    "consentTimeField they have always declared in the boot declaration: without",
+    "it the suite believed no stream was time-range-capable and AS-2 skipped for",
+    "want of a positive control.",
     "",
     "Run: tsx src/cli.ts --target targets/vana-personal-server.json",
     "",
@@ -68,6 +81,17 @@
     "so query/views/relationships are left absent here rather than invented --",
     "RS-14 then checks schema completeness/content only, which is what this",
     "deployment actually declares.",
+    "",
+    "blobFixture names a blob vana-target.sh really uploaded through POST",
+    "/v1/blobs/ingest and referenced from the seeded media record, so RS-1's",
+    "byte-fetch case has a blob to fetch through an authorized record. The ids",
+    "and digest arrive as ${ENV_VAR} placeholders because the server mints ids at",
+    "upload time -- no committed value could be right. sha256/sizeBytes are what",
+    "the SEEDER computed from the bytes it sent, never read back from the target:",
+    "an expectation sourced from the server under test could not fail.",
+    "outOfGrantBlobId is a SECOND blob that really exists and that no record in",
+    "the granted stream references -- the negative case needs it, because a 404",
+    "on a fabricated id proves nothing about a server that 404s everything.",
     "",
     "singleUseGrants is true because this server supports single_use grants.",
     "AS-10/single-use-grant-consumed will still report skip against this",
@@ -103,6 +127,15 @@
     "grantLifetimeSeconds": 3,
     "expectedRecord": { "id": "art_1", "name": "Artist 1" }
   },
+  "blobFixture": {
+    "blobId": "${PDPP_VANA_BLOB_ID}",
+    "outOfGrantBlobId": "${PDPP_VANA_OUT_OF_GRANT_BLOB_ID}",
+    "sha256": "${PDPP_VANA_BLOB_SHA256}",
+    "sizeBytes": "${PDPP_VANA_BLOB_SIZE}",
+    "mimeType": "image/jpeg",
+    "stream": "media",
+    "fields": ["id", "caption", "blob_ref", "source_updated_at"]
+  },
   "sourceId": "https://registry.pdpp.dev/connectors/spotify",
   "purposeCode": "https://pdpp.dev/purpose/personalization",
   "roles": ["resource-server", "authorization-server"],
@@ -122,6 +155,7 @@
       "fields": ["id", "name", "genres", "source_updated_at"],
       "primaryKey": ["id"],
       "cursorField": "source_updated_at",
+      "consentTimeField": "source_updated_at",
       "semantics": "mutable_state",
       "recordCount": 5,
       "expectedOwnerMetadata": {
@@ -140,6 +174,7 @@
       "fields": ["id", "title", "artist", "source_updated_at"],
       "primaryKey": ["id"],
       "cursorField": "source_updated_at",
+      "consentTimeField": "source_updated_at",
       "semantics": "mutable_state",
       "recordCount": 3,
       "expectedOwnerMetadata": {
@@ -149,6 +184,39 @@
           "title": "string",
           "artist": "string",
           "source_updated_at": "string"
+        }
+      }
+    },
+    {
+      "name": "media",
+      "fields": ["id", "caption", "blob_ref", "source_updated_at"],
+      "primaryKey": ["id"],
+      "cursorField": "source_updated_at",
+      "consentTimeField": "source_updated_at",
+      "semantics": "mutable_state",
+      "recordCount": 1,
+      "expectedOwnerMetadata": {
+        "schemaRequired": ["id"],
+        "schemaFieldTypes": {
+          "id": "string",
+          "caption": "string",
+          "blob_ref": "object",
+          "source_updated_at": "string"
+        }
+      }
+    },
+    {
+      "name": "playlists",
+      "fields": ["owner_id", "playlist_id", "title"],
+      "primaryKey": ["owner_id", "playlist_id"],
+      "semantics": "mutable_state",
+      "recordCount": 3,
+      "expectedOwnerMetadata": {
+        "schemaRequired": ["owner_id", "playlist_id"],
+        "schemaFieldTypes": {
+          "owner_id": "string",
+          "playlist_id": "string",
+          "title": "string"
         }
       }
     }
