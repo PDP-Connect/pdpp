@@ -349,5 +349,4 @@ export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
       return pass(evidence);
     },
   },
-
 ];
