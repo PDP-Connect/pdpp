@@ -496,8 +496,19 @@ export interface StreamFixture {
 }
 
 interface GrantState {
+  /**
+   * Core Section 7 required grant facts, retained so the introspection
+   * projection can report them.
+   *
+   * They were absent, and nothing noticed while AS-3's schema case could not
+   * reach this target's introspection response. A grant that does not retain
+   * its own purpose, source and access mode cannot describe itself to a
+   * resource server, which is the whole job of the introspection projection.
+   */
+  readonly accessMode: string;
   expired: boolean;
   readonly grantId: string;
+  readonly purposeCode: string;
   revoked: boolean;
   /**
    * The grant SCHEMA version (Core Section 7 "Version layering",
@@ -506,6 +517,7 @@ interface GrantState {
    * and this field is what makes the grant axis reachable at all.
    */
   readonly schemaVersion: string;
+  readonly source: { readonly kind: string; readonly id: string };
   readonly streams: readonly {
     name: string;
     fields: readonly string[];
@@ -624,6 +636,23 @@ const METADATA_PATH = /^\/v1\/streams\/([^/]+)$/;
 export const CLIENT_ID = "pdpp-conformance-client";
 
 export const SEEDED_SUBJECT = "subject_seeded";
+
+/**
+ * The single connector instance this target's fixtures belong to.
+ *
+ * Core Section 7's StreamGrant table requires a non-empty `instance_ids` in an
+ * issued grant: an empty list means fan-in was never resolved. This server
+ * serves exactly one instance, so resolution is trivial here — but it still has
+ * to be STATED, because a resource server enforces from the introspected grant
+ * and cannot infer an instance the AS never named.
+ */
+const SEEDED_INSTANCE = "instance_seeded";
+
+/** Source the seeded streams belong to (Core Section 7 `source`). */
+const SEEDED_SOURCE = { kind: "connector", id: "https://registry.pdpp.dev/connectors/reference" } as const;
+
+/** Purpose bound to a grant whose request named none (Core Section 7 `purpose_code`). */
+const DEFAULT_PURPOSE = "https://pdpp.dev/purpose/personalization";
 export const FOREIGN_SUBJECT = "subject_foreign";
 
 export class ReferenceServer {
@@ -969,6 +998,8 @@ export class ReferenceServer {
       resolvedFromView?: string;
     }[],
     options: {
+      /** Core Section 7 `access_mode`. Defaults to `continuous`. */
+      accessMode?: string;
       expired?: boolean;
       purposeCode?: string;
       explicitAiTrainingConsent?: boolean;
@@ -1009,6 +1040,9 @@ export class ReferenceServer {
       revoked: false,
       expired: options.expired ?? false,
       schemaVersion: options.schemaVersion ?? GRANT_SCHEMA_VERSION,
+      purposeCode: options.purposeCode ?? DEFAULT_PURPOSE,
+      source: SEEDED_SOURCE,
+      accessMode: options.accessMode ?? "continuous",
     });
     this.tokens.set(accessToken, { kind: "client", grantId });
     return { grantId, accessToken };
@@ -1049,9 +1083,26 @@ export class ReferenceServer {
     }
     return {
       type: "https://pdpp.dev/data-access",
+      source: { ...grant.source },
+      purpose_code: grant.purposeCode,
+      access_mode: grant.accessMode,
       streams: grant.streams.map((stream) => ({
         name: stream.name,
+        // Section 7's StreamGrant table: non-empty and unique. This server
+        // serves one instance, so the resolved list is that one -- stated
+        // rather than left implicit, because an RS enforces from this and
+        // cannot infer an instance the AS never named.
+        instance_ids: [SEEDED_INSTANCE],
         fields: [...this.grantedFields(stream)],
+        ...(stream.timeConstraint
+          ? {
+              time_constraint: {
+                field: stream.timeConstraint.field,
+                ...(stream.timeConstraint.from === undefined ? {} : { since: stream.timeConstraint.from }),
+                ...(stream.timeConstraint.to === undefined ? {} : { until: stream.timeConstraint.to }),
+              },
+            }
+          : {}),
       })),
     };
   }

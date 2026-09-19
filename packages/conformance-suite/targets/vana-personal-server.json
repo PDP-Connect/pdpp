@@ -9,7 +9,8 @@
     "skips rather than findings. scripts/vana-target.sh refuses such a ref.",
     "",
     "Do not boot this by hand. scripts/vana-target.sh checks out the pinned ref,",
-    "installs, builds, boots, seeds both streams and tears the whole thing down:",
+    "installs, builds, boots, seeds every stream and its blobs, and tears the",
+    "whole thing down:",
     "",
     "  export PDPP_VANA_PS=/path/to/personal-server-ts",
     "  scripts/vana-target.sh up",
@@ -108,10 +109,18 @@
     "and keeps its ordinary, non-expiring grant -- the pagination/refresh cases",
     "that expect a grant to stay usable partway through a run are unaffected.",
     "grantLifetimeSeconds here MUST match the value vana-target.sh registers",
-    "for expiring_widget at boot. expectedRecord is a subset of the first",
-    "seeded top_artists record (vana-target.sh ingest_stream, art_1/Artist 1)",
-    "the pre-expiry positive control must find before the oracle trusts the",
-    "token -- a 200 with no matching record throws rather than skipping."
+    "for expiring_widget at boot. expectedRecord is a subset of the seeded",
+    "media record (vana-target.sh seed_blobs, med_1) the pre-expiry positive",
+    "control must find before the oracle trusts the token -- a 200 with no",
+    "matching record throws rather than skipping.",
+    "",
+    "It reads the media stream, not top_artists, and the `stream` key above is",
+    "what says so. This control pins an EXACT record, and RS-7's projection",
+    "cases rewrite a field of the first live record on the first mutable_state",
+    "stream's sync page -- a top_artists record. Whichever ran first decided",
+    "whether AS-8 passed. media is written once at seed time and by nothing",
+    "else, so the ordering dependency is gone rather than hidden behind a",
+    "looser match."
   ],
   "kind": "vana-ps",
   "targetId": "vana-personal-server",
@@ -125,7 +134,8 @@
     "clientId": "expiring_widget",
     "redirectUri": "https://app.example.com/callback",
     "grantLifetimeSeconds": 3,
-    "expectedRecord": { "id": "art_1", "name": "Artist 1" }
+    "stream": "media",
+    "expectedRecord": { "id": "med_1", "caption": "Seeded media record" }
   },
   "blobFixture": {
     "blobId": "${PDPP_VANA_BLOB_ID}",

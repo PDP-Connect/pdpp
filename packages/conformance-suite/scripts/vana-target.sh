@@ -104,7 +104,14 @@ set -euo pipefail
 # implemented the whole Section 8 blob surface with no blob to fetch. RS-1's
 # three blob cases need a persisted blob and a record referencing it; see
 # blobFixture in src/targets/vana-ps-adapter.ts and seed_blobs below.
-VANA_REF="${PDPP_VANA_REF:-aea27f5117471247d3aa22327e26c8cded748d53}"
+# 5da38d04ccde2b468d17c1a0594a2eb2bc7b0c81 (feat/pdpp-as-grants tip, descendant
+# of aea27f5) also serves the AS
+# metadata document at the RFC 8414 Section 3 location
+# (/.well-known/oauth-authorization-server/pdpp/v1 -- well-known first, issuer
+# path appended). It had been published only at the path-first, OIDC-style URL,
+# which no RFC 8414 client looks at, so AS-3's three cases and AS-7's
+# registration-mode case could not locate it and reported skip.
+VANA_REF="${PDPP_VANA_REF:-5da38d04ccde2b468d17c1a0594a2eb2bc7b0c81}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
 
@@ -555,6 +562,14 @@ db.close();
 
 const config = ServerConfigSchema.parse({
   tunnel: { enabled: false },
+  // The origin this server publishes in its own metadata document. Without it
+  // the schema default (http://localhost:8080) stands, and every endpoint URL
+  // in /pdpp/v1/.well-known/oauth-authorization-server points at a port
+  // nothing is listening on -- including introspection_endpoint, which is how
+  // the AS-3 and AS-9 cases are supposed to reach the resolved grant. That is a
+  // gap in how the target is configured, not a server defect: the server
+  // resolves its origin from config exactly as asked.
+  server: { origin: \`http://127.0.0.1:\${PORT}\` },
   pdpp: {
     enabled: true,
     declarationPaths: [declarationPath],
@@ -698,7 +713,7 @@ cmd_env() {
   cat "$ENV_FILE"
 }
 
-# Seed both declared streams over the owner-authenticated ingest route.
+# Seed every declared stream over the owner-authenticated ingest route.
 #
 # The `instance` handle is not invented: it is read from a real grant review,
 # which is the only surface that publishes it. Hardcoding a derived-looking

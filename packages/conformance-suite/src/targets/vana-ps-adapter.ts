@@ -41,36 +41,6 @@ import type { Role } from "../requirements/catalog.ts";
 export interface VanaPsConfig {
   /** Single base URL: this deployment co-locates the AS and RS. */
   readonly baseUrl: string;
-  readonly capabilities: TargetCapabilities;
-  /** Client the server has pre-registered, with an exactly-matching redirect URI. */
-  readonly clientId: string;
-  /**
-   * A SECOND, dedicated client the server has pre-registered with an
-   * operator-configured `grantLifetimeSeconds`, for AS-8's expired-grant
-   * oracle (`expiredGrantToken`).
-   *
-   * Deliberately a distinct client from `clientId`, never the same one with a
-   * flag: `expiredGrantToken` must not shrink the lifetime of grants the
-   * other cases issue to `clientId`, and a short deployment-wide default
-   * would silently break the pagination/refresh cases that expect an
-   * ordinary, non-expiring grant to still be usable partway through a run.
-   * Absent means this deployment has no such client configured, and AS-8's
-   * expiry case reports `skip` naming this hook rather than fabricating one.
-   */
-  readonly expiryFixture?: {
-    readonly clientId: string;
-    /** Must match a redirect URI this deployment pre-registered for `clientId` above. */
-    readonly redirectUri: string;
-    /** The lifetime the deployment's config bound to this client, in seconds. */
-    readonly grantLifetimeSeconds: number;
-    /**
-     * A subset of fields the pre-expiry read's record for `streams[0]` must
-     * match, e.g. `{ id: "artist_1", name: "Artist 1" }`. Required so the
-     * positive control proves the token reads the seeded record rather than
-     * merely getting a 200 with an empty or unrelated body.
-     */
-    readonly expectedRecord: Readonly<Record<string, unknown>>;
-  };
   /**
    * A blob this deployment has already persisted, and the stream/field through
    * which a grant can reach it, for RS-1's byte-fetch cases.
@@ -105,6 +75,47 @@ export interface VanaPsConfig {
     readonly stream: string;
     readonly fields: readonly string[];
     readonly outOfGrantBlobId?: string;
+  };
+  readonly capabilities: TargetCapabilities;
+  /** Client the server has pre-registered, with an exactly-matching redirect URI. */
+  readonly clientId: string;
+  /**
+   * A SECOND, dedicated client the server has pre-registered with an
+   * operator-configured `grantLifetimeSeconds`, for AS-8's expired-grant
+   * oracle (`expiredGrantToken`).
+   *
+   * Deliberately a distinct client from `clientId`, never the same one with a
+   * flag: `expiredGrantToken` must not shrink the lifetime of grants the
+   * other cases issue to `clientId`, and a short deployment-wide default
+   * would silently break the pagination/refresh cases that expect an
+   * ordinary, non-expiring grant to still be usable partway through a run.
+   * Absent means this deployment has no such client configured, and AS-8's
+   * expiry case reports `skip` naming this hook rather than fabricating one.
+   */
+  readonly expiryFixture?: {
+    readonly clientId: string;
+    /** Must match a redirect URI this deployment pre-registered for `clientId` above. */
+    readonly redirectUri: string;
+    /** The lifetime the deployment's config bound to this client, in seconds. */
+    readonly grantLifetimeSeconds: number;
+    /**
+     * A subset of fields the pre-expiry read's record on `stream` below must
+     * match, e.g. `{ id: "artist_1", name: "Artist 1" }`. Required so the
+     * positive control proves the token reads the seeded record rather than
+     * merely getting a 200 with an empty or unrelated body.
+     */
+    readonly expectedRecord: Readonly<Record<string, unknown>>;
+    /**
+     * Stream the pre-expiry positive control reads. Defaults to `streams[0]`.
+     *
+     * Nameable because the control pins an EXACT record, and other cases write
+     * to seeded records: RS-7's projection cases rewrite a field of the first
+     * live record on the first mutable_state stream's sync page, which is a
+     * record in `streams[0]`. Whichever of the two ran first decided whether
+     * AS-8 passed. Pointing this fixture at a stream nothing mutates removes
+     * the ordering dependency rather than hiding it behind a looser match.
+     */
+    readonly stream?: string;
   };
   readonly introspectionCredentials?: { readonly clientId: string; readonly clientSecret: string };
   /**
@@ -352,9 +363,19 @@ export class VanaPsAdapter implements TargetAdapter {
     return this.config.ownerReadParams;
   }
 
-  /** Co-located AS and RS, so the authorization server is the same origin. */
+  /**
+   * Co-located AS and RS, so the authorization server is the same origin --
+   * and this deployment's PDPP AS is mounted under `/pdpp/v1`, which is its
+   * RFC 8414 issuer path.
+   *
+   * The path matters to discovery: RFC 8414 §3 puts the metadata document at
+   * `/.well-known/oauth-authorization-server/pdpp/v1`, well-known first with
+   * the issuer path appended. The suite's discovery helper derives that, so
+   * the full issuer URL belongs here rather than the bare origin, which would
+   * send it looking for the MCP authorization server's document instead.
+   */
   get authorizationServerUrl(): string {
-    return this.config.baseUrl;
+    return `${this.config.baseUrl}/pdpp/v1`;
   }
 
   get introspectionCredentials(): { readonly clientId: string; readonly clientSecret: string } | undefined {
@@ -944,6 +965,103 @@ export class VanaPsAdapter implements TargetAdapter {
   }
 
   /**
+   * Change ONE field of an existing record, for clauses 8.9-13 and 8.9-14.
+   *
+   * This server's write lane is a whole-record upsert, so the field write is
+   * done by reading the record's current `data` as the owner, replacing the one
+   * field, and re-ingesting. What reaches the store is a record differing from
+   * its predecessor in exactly the named field, which is what the clauses turn
+   * on -- they are about which fields a change touched, not about the shape of
+   * the write API.
+   *
+   * `emitted_at` is advanced deliberately. The clause under test is about
+   * `changes_since` eligibility, and a re-ingest carrying the old timestamp
+   * would be ambiguous between "the server did not register a change" and "the
+   * server registered it and correctly withheld it".
+   *
+   * Returns false rather than throwing at every refusal, so a case reports
+   * `skip` naming this hook rather than a failure that is really a deployment
+   * limitation.
+   */
+  async writeRecordField(stream: string, recordId: string, field: string, value: unknown): Promise<boolean> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return false;
+    }
+    const instance = await this.seededInstance(stream);
+    if (!instance) {
+      return false;
+    }
+
+    // Read the record's CURRENT data, so the re-ingest differs from what is
+    // stored in exactly one field. Composing a record from the adapter's own
+    // idea of the schema would silently rewrite every other field too, and the
+    // out-of-projection leg would then be writing inside the projection.
+    const read = await request(this.config.baseUrl, `/v1/streams/${encodeURIComponent(stream)}/records`, {
+      token: owner,
+      query: { limit: "100" },
+    });
+    const records = (read.json as { data?: { id?: string; data?: Record<string, unknown> }[] } | undefined)?.data;
+    const current = records?.find((r) => r.id === recordId)?.data;
+    if (!current) {
+      return false;
+    }
+
+    const emittedAt = new Date().toISOString();
+    const response = await fetch(`${this.config.baseUrl}/v1/streams/${encodeURIComponent(stream)}/records/ingest`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${owner}`, "content-type": "application/json" },
+      body: JSON.stringify([{ instance, key: recordId, emitted_at: emittedAt, data: { ...current, [field]: value } }]),
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const body = (await response.json().catch(() => undefined)) as { accepted?: number } | undefined;
+    return body?.accepted === 1;
+  }
+
+  /**
+   * The instance handle this deployment seeded `stream` under.
+   *
+   * Read from a real grant review rather than derived: the review is the only
+   * surface that publishes it, and a handle composed from a naming convention
+   * works until the server changes how it derives them and then fails as a
+   * confusing ingest rejection.
+   */
+  private async seededInstance(stream: string): Promise<string | null> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return null;
+    }
+    const seeded = this.config.streams.find((s) => s.name === stream);
+    if (!seeded) {
+      return null;
+    }
+    const response = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${owner}`, "content-type": "application/json" },
+      body: JSON.stringify(await this.authorizeBody({ streams: [{ name: stream, fields: [...seeded.fields] }] })),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const sessionId = ((await response.json()) as { session_id?: string }).session_id;
+    if (!sessionId) {
+      return null;
+    }
+    const review = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/review`, {
+      headers: { authorization: `Bearer ${owner}` },
+    });
+    if (!review.ok) {
+      return null;
+    }
+    const body = (await review.json()) as {
+      review?: { data?: { streams?: { name?: string; instance_ids?: string[] }[] } };
+    };
+    return body.review?.data?.streams?.find((s) => s.name === stream)?.instance_ids?.[0] ?? null;
+  }
+
+  /**
    * The blob `vana-target.sh` uploaded and referenced from a seeded record.
    *
    * Reports the digest and length the SEEDER computed from the bytes it sent,
@@ -988,10 +1106,10 @@ export class VanaPsAdapter implements TargetAdapter {
    */
   async expiredGrantToken(): Promise<string | null> {
     const fixture = this.config.expiryFixture;
-    const [stream] = this.config.streams;
     if (!fixture) {
       return null;
     }
+    const stream = fixture.stream ? this.config.streams.find((s) => s.name === fixture.stream) : this.config.streams[0];
     if (!(stream && fixture.expectedRecord.id)) {
       throw new Error("Configured expiry fixture requires a seeded stream and expected record ID.");
     }

@@ -864,6 +864,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       })),
       {
         ...(request.purposeCode ? { purposeCode: request.purposeCode } : {}),
+        ...(request.accessMode ? { accessMode: request.accessMode } : {}),
         ...(request.explicitAiTrainingConsent === undefined
           ? {}
           : { explicitAiTrainingConsent: request.explicitAiTrainingConsent }),

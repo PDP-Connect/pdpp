@@ -19,9 +19,13 @@
 // there is no introspection endpoint to call and the requirement is unsupported
 // rather than failed.
 
+import type { TargetAdapter } from "../harness/adapter.ts";
 import { grantSchemaViolations } from "../harness/grant-schema.ts";
-import { request } from "../harness/http.ts";
+import { type PdppResponse, request } from "../harness/http.ts";
 import { advisory, type ConformanceCase, fail, pass, skip, unsupported } from "../harness/runner.ts";
+
+/** Trailing slash on an issuer path, stripped before the well-known suffix. */
+const TRAILING_SLASH = /\/$/;
 
 /** The RFC 7662 + PDPP introspection response shape (Core Section 8). */
 interface IntrospectionBody {
@@ -57,12 +61,45 @@ interface IntrospectionBody {
  * own convention, which is the same defect the query-base assumption was.
  */
 async function discoverIntrospectionEndpoint(asBaseUrl: string): Promise<string | null> {
-  const metadata = await request(asBaseUrl, "/.well-known/oauth-authorization-server");
+  const metadata = await fetchAsMetadata(asBaseUrl);
   if (metadata.status !== 200) {
     return null;
   }
   const endpoint = (metadata.json as { introspection_endpoint?: unknown } | undefined)?.introspection_endpoint;
   return typeof endpoint === "string" && endpoint.length > 0 ? endpoint : null;
+}
+
+/**
+ * The AS's RFC 8414 metadata document, looked for where RFC 8414 §3 puts it.
+ *
+ * The rule is not "append the well-known path to the base URL". For an issuer
+ * carrying a path component, §3 inserts the well-known segment BETWEEN the host
+ * and that path — `https://host/.well-known/oauth-authorization-server/tenant`,
+ * not `https://host/tenant/.well-known/...`. A suite that only probed the bare
+ * host URL could not find the document of any AS mounted under a prefix, and
+ * would report it as publishing no metadata at all. That is not a hypothetical:
+ * it is why the Vana target's AS-3 cases skipped while the server was serving
+ * the document the whole time.
+ *
+ * The bare form is tried too, because it is the §3 answer for an issuer with no
+ * path, which is the more common deployment.
+ */
+async function fetchAsMetadata(asBaseUrl: string): Promise<PdppResponse> {
+  const { origin, pathname } = new URL(asBaseUrl);
+  const issuerPath = pathname.replace(TRAILING_SLASH, "");
+  const wellKnown = "/.well-known/oauth-authorization-server";
+
+  // Probed in order, not in parallel: the path-aware form is the RFC 8414
+  // answer for an issuer WITH a path, and a deployment may legitimately serve
+  // a different authority's document at the bare URL. Asking for both at once
+  // would race two different authorization servers' metadata.
+  if (issuerPath) {
+    const pathAware = await request(origin, `${wellKnown}${issuerPath}`);
+    if (pathAware.status === 200) {
+      return pathAware;
+    }
+  }
+  return await request(origin, wellKnown);
 }
 
 type IntrospectedStream = NonNullable<
@@ -102,6 +139,42 @@ function streamGrantSchemaViolation(s: IntrospectedStream): string | null {
     return `Stream "${s.name}" carries a \`resources\` field that is present but not a non-empty array. Section 7 says \`resources\`, when present, is a non-empty authorized-record-id list; absent means all records.`;
   }
   return null;
+}
+
+/**
+ * Introspect a token by whichever route this deployment actually answers on.
+ *
+ * Discovering an `introspection_endpoint` proves the AS publishes one; it does
+ * NOT prove the suite holds credentials that endpoint accepts. Core Section 8
+ * lets a co-located deployment authenticate its local-equivalent introspection
+ * route with the same owner credential it uses elsewhere, which is a different
+ * authentication model from the RFC 7662 client-credential Basic auth
+ * `introspectionCredentials` carries.
+ *
+ * So a 401 from the discovered endpoint is answered by trying the adapter's
+ * co-located hook rather than reported as a failure. Treating it as one would
+ * publish a finding against a server that introspects correctly and merely
+ * authenticates the way its topology allows -- which is exactly what happened
+ * the first time discovery started succeeding against the Vana target.
+ *
+ * Only an AUTHENTICATION refusal falls back. Any other status is the endpoint's
+ * real answer about the token and is returned for the case to judge.
+ */
+async function introspectByAnyRoute(
+  adapter: TargetAdapter,
+  accessToken: string
+): Promise<PdppResponse | null | undefined> {
+  const endpoint = adapter.authorizationServerUrl
+    ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
+    : null;
+  if (!endpoint) {
+    return await adapter.coLocatedIntrospect?.(accessToken);
+  }
+  const response = await introspect(endpoint, accessToken, adapter.introspectionCredentials);
+  if (response.status !== 401 && response.status !== 403) {
+    return response;
+  }
+  return (await adapter.coLocatedIntrospect?.(accessToken)) ?? response;
 }
 
 /**
@@ -179,12 +252,7 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a grant for a seeded stream.");
       }
-      const endpoint = adapter.authorizationServerUrl
-        ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
-        : null;
-      const response = endpoint
-        ? await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials)
-        : await adapter.coLocatedIntrospect?.(grant.accessToken);
+      const response = await introspectByAnyRoute(adapter, grant.accessToken);
       if (!response) {
         return skip(
           "AS-9 applies to this target regardless of topology, but it publishes no RFC 8414 introspection_endpoint and the adapter names no known co-located equivalent, so this suite has no mechanism to observe grant-bound token claims here. Missing evidence, not an inapplicable requirement."
@@ -259,15 +327,12 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       if (!grant) {
         return skip("The target could not issue a grant for a seeded stream.");
       }
-      const endpoint = adapter.authorizationServerUrl
-        ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
-        : null;
-      if (!endpoint) {
+      const response = await introspectByAnyRoute(adapter, grant.accessToken);
+      if (!response) {
         return skip(
-          "AS-3 applies to this target regardless of topology, but it publishes no RFC 8414 introspection_endpoint, so this suite has no mechanism to observe the resolved grant here. Missing evidence, not an inapplicable requirement."
+          "AS-3 applies to this target regardless of topology, but it publishes no RFC 8414 introspection_endpoint and the adapter names no known co-located equivalent, so this suite has no mechanism to observe the resolved grant here. Missing evidence, not an inapplicable requirement."
         );
       }
-      const response = await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials);
       if (response.status !== 200) {
         return fail(`Expected 200 from the introspection endpoint, got ${response.status}.`, [response.evidence]);
       }
@@ -362,11 +427,7 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       // co-located AS with no RFC 8414 metadata may still expose the same
       // obligation through `coLocatedIntrospect` (Core Section 8's local
       // equivalent), so try that before giving up on missing evidence.
-      const endpoint = adapter.authorizationServerUrl
-        ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
-        : null;
-      const doIntrospect = (token: string) =>
-        endpoint ? introspect(endpoint, token, adapter.introspectionCredentials) : adapter.coLocatedIntrospect?.(token);
+      const doIntrospect = (token: string) => introspectByAnyRoute(adapter, token);
 
       const before = await doIntrospect(grant.accessToken);
       if (!before) {
@@ -840,12 +901,7 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       // other place that answer is published, so it is the oracle — and a
       // target with no introspection surface reports skip rather than letting
       // the presence check alone stand in for the clause.
-      const endpoint = adapter.authorizationServerUrl
-        ? await discoverIntrospectionEndpoint(adapter.authorizationServerUrl)
-        : null;
-      const introspection = endpoint
-        ? await introspect(endpoint, grant.accessToken, adapter.introspectionCredentials)
-        : await adapter.coLocatedIntrospect?.(grant.accessToken);
+      const introspection = await introspectByAnyRoute(adapter, grant.accessToken);
       if (introspection?.status !== 200) {
         return skip(
           'The token response carries authorization_details, but this deployment publishes no introspection result to compare them against, so "as granted" is unverified. The presence check alone is not the obligation.'
@@ -901,7 +957,7 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
           "The adapter publishes no authorizationServerUrl, so the RFC 8414 metadata document cannot be located and the registration modes this clause is conditional on are unobserved."
         );
       }
-      const metadata = await request(asUrl, "/.well-known/oauth-authorization-server");
+      const metadata = await fetchAsMetadata(asUrl);
       if (metadata.status !== 200) {
         return skip(
           `The RFC 8414 metadata document returned ${metadata.status}, so whether this AS advertises pre_registered_public is unknown.`
