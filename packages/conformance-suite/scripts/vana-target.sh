@@ -111,7 +111,16 @@ set -euo pipefail
 # path appended). It had been published only at the path-first, OIDC-style URL,
 # which no RFC 8414 client looks at, so AS-3's three cases and AS-7's
 # registration-mode case could not locate it and reported skip.
-VANA_REF="${PDPP_VANA_REF:-5da38d04ccde2b468d17c1a0594a2eb2bc7b0c81}"
+# 9b19e89c348bc152927034217d26c89c975f10c2 (feat/pdpp-as-grants tip, descendant
+# of 5da38d0) carries two batches this suite has been waiting on. d8687ad adds
+# the v0.2 read-side projection: records disclose the owner's approved shape
+# rather than re-adding the declaration's required_fields, which is the clause
+# RS-2/v0.2-schema-required-field-not-re-added exists for. 9b19e89 then closes
+# the independent review's three remaining authorization defects on that work
+# -- a wildcard time_range silently dropped on time-incapable streams, a
+# selection_preset that could not reach the owner's instance-choice step, and
+# malformed selection JSON answering 500 instead of 400.
+VANA_REF="${PDPP_VANA_REF:-9b19e89c348bc152927034217d26c89c975f10c2}"
 # Empty on the supported path. See the header before setting it.
 EXTRA_REF="${PDPP_VANA_RS_REF:-}"
 
