@@ -15,14 +15,18 @@ every v0.1 clause the proposal does not supersede. A clause carrying
 `supersedes` replaces the v0.1 clause it names, and that v0.1 clause is absent
 here — which is why this file is not a superset of the v0.1 one.
 
-Transcription from v0.2 is **partial**. This batch covers the black-box-observable
+Transcription from v0.2 is **partial**. It covers the black-box-observable
 authorization-server clauses of Section 6 on required/optional streams and
-explicit authorization minima. Clauses of other sections still appear at their
-v0.1 text, and a reader must not read their presence as evidence the proposal
-left them unchanged.
+explicit authorization minima, and the resource-server clauses of Sections 4
+and 8 on disclosure to the approved shape. Clauses of other sections still
+appear at their v0.1 text, and a reader must not read their presence as
+evidence the proposal left them unchanged.
 
-Every v0.2 clause below has an EMPTY case list. No case exercises v0.2 text yet;
-each carries the gap note naming what is missing.
+Most v0.2 clauses below have an EMPTY case list, and every one of those carries
+the gap note naming what is missing. A v0.2 clause that DOES cite cases carries
+a gap note too: each transcribed sentence bundles several obligations, so a case
+proves part of one, and the note says which part is still unproven. Read the
+note before reading a non-empty case list as a settled clause.
 
 Clauses mapped to the
 Section 9 conformance items that summarize it and to the suite cases that
@@ -64,7 +68,7 @@ one that exists today.
 
 ## Totals
 
-Clauses enumerated: **270**. MUST-level: **240**, of which **71** have at least one case and **169** do not.
+Clauses enumerated: **270**. MUST-level: **240**, of which **79** have at least one case and **161** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -555,14 +559,14 @@ reports.
 | `v0.2/2-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
 | `v0.2/2-2` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
 | `v0.2/2-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
-| `v0.2/4-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
-| `v0.2/4-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
-| `v0.2/4-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/4-1` | MUST | black-box-http | `RS-2/v0.2-schema-required-field-not-re-added` | Covered only where the ADAPTER records which members the schema marks required: the case picks a narrowing that withholds one, and reports `skip` on a stream whose required members all sit inside the primary key. The clause's other justification — a member re-added for any reason other than the schema — is checked by the same case as the stronger reading, not proven separately. |
+| `v0.2/4-2` | MUST | black-box-http | `RS-2/v0.2-disclosure-limited-to-the-approved-shape`<br>`RS-2/v0.2-projection-survives-the-cursor`<br>`RS-2/v0.2-owner-narrowed-window-reads-empty` | The `grant` half is covered; the `request-time field selection` half only for a selection the grant permits. A selection NARROWER than the grant is served but never asserted on, so a server that ignores `fields` and returns the full approved projection passes. Closing that needs an assertion that the disclosed members equal the selection rather than merely sit inside the grant. |
+| `v0.2/4-3` | MUST | black-box-http | `RS-2/v0.2-disclosure-limited-to-the-approved-shape` | Covers nulls, which is the observable half. `fabricated values` is not black-box observable: a plausible value for a withheld member is indistinguishable from the real one without knowing what the record actually holds, and the suite does not seed the withheld members' values through a channel it could compare against. |
 | `v0.2/4-4` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
 | `v0.2/4-5` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
 | `v0.2/4-6` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
-| `v0.2/4-7` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
-| `v0.2/4-8` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/4-7` | MUST | black-box-http | — | NOT covered, despite RS-2/v0.2-unservable-projection-refused-as-disclosure-unavailable citing this clause and passing. That case reaches only the branch where the target CAN serve the projection, which the clause does not bind; its refusal branch has never executed, because `disclosure_unavailable` appears in no implementation the suite reaches and what makes a projection unservable is deployment-specific. Closing this needs a target that can be put into that state on demand. |
+| `v0.2/4-8` | MUST | black-box-http | `RS-2/v0.2-field-selection-outside-the-projection-refused` | Covers the `fields` route to a repaired projection, which is the one a client can request. A projection repaired internally — the RS widening its own read to satisfy a view, relation, or blob dependency — is not reachable from outside and is not proven. |
 | `v0.2/5-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
 | `v0.2/6.1-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.1-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
@@ -625,11 +629,11 @@ reports.
 | `v0.2/8.2-6` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
 | `v0.2/8.3-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. Composite clause: the PR sentence carries `MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
 | `v0.2/8.3-2` | SHOULD | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. Composite clause: the PR sentence carries `MAY/SHOULD` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
-| `v0.2/8.4-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/8.4-1` | MUST | black-box-http | `RS-9/v0.2-predicate-over-a-withheld-member-refused` | Covers the exact form (`filter[field]=value`). The RANGE forms (`filter[field][gte]` and siblings) are not sent, so a server rejecting exact filters while accepting a range one passes; v0.1 `RS-10/unsupported-bracketed-shape-rejected` exercises a bracketed shape but under a v0.1 grant and without a withheld member. |
 | `v0.2/8.4-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/8.4-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
-| `v0.2/8.4-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
-| `v0.2/8.4-5` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Also restates v0.1 `8.9-5`; `supersedes` carries one edge, so those v0.1 clauses stay in the v0.2 view and are listed here instead. |
+| `v0.2/8.4-4` | MUST | black-box-http | `RS-2/v0.2-field-selection-outside-the-projection-refused`<br>`RS-2/v0.2-projection-survives-the-cursor` | Covers `fields`, `limit` and `cursor` as members of the durable surface. `order` and `changes_since` are not exercised under a v0.2 narrowed grant, and the clause's closed-list reading — that NOTHING outside the six is durable — is only sampled by the shapes `RS-9/v0.2-predicate-over-a-withheld-member-refused` sends. |
+| `v0.2/8.4-5` | MUST | black-box-http | `RS-9/v0.2-predicate-over-a-withheld-member-refused` | Covers the refusal, its status and its error code. The `before the RS consults current SourceDeclaration or serving metadata` half is not black-box observable — ordering inside the server leaves no trace in the response — and the suite does not claim it. |
 | `v0.2/8.5-1` | SHOULD | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
 | `v0.2/8.6-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
 | `v0.2/8.6-2` | MUST | client-capture | — | Client-capture evidence: needs a client under test that speaks v0.2, and the client channel carries no v0.2 request builder. |
@@ -690,7 +694,7 @@ reports.
 | `v0.2/ext-6-7` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
 | `v0.2/ext-6-8` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. |
 | `v0.2/ext-7-1` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Binds the conformance-claim document rather than a running endpoint, so the role is `source-declaration`. |
-| `v0.2/ext-7-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/ext-7-2` | MUST | black-box-http | `RS-2/v0.2-narrowed-grant-denied-after-revocation` | Covers `status` absent, through revocation, which is the one condition a black-box run can create on demand. `authority`, `binding`, `projection` and `complete result context` absent or AMBIGUOUS each need a target that can be put into that state deliberately, and no adapter hook does so. |
 | `v0.2/mcp-1-1` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Binds the conformance-claim document rather than a running endpoint, so the role is `source-declaration`. |
 | `v0.2/mcp-1-2` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Binds the conformance-claim document rather than a running endpoint, so the role is `source-declaration`. |
 | `v0.2/mcp-1-3` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Binds the conformance-claim document rather than a running endpoint, so the role is `source-declaration`. |

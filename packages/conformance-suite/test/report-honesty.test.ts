@@ -376,19 +376,45 @@ describe("a version-aware report states which revision it measured against", () 
         "never reached the clause selection."
     );
     assert.ok(
-      v02.clauseCoverage.mustCovered < v01.clauseCoverage.mustCovered,
-      "Moving to v0.2 must LOSE covered MUSTs, not gain them. No case sends the " +
-        "v0.2 `authorization_details` type, so no v0.2 clause gains evidence — and " +
-        "a v0.2 clause that supersedes a COVERED v0.1 clause retires that clause's " +
-        "cases along with it, because they are evidence about the text v0.2 " +
-        "replaced. A rise here is coverage invented by a version flag; even holding " +
-        "steady would mean a supersession quietly inherited evidence it never earned."
-    );
-    assert.ok(
       v02.clauseCoverage.mustUncovered > v01.clauseCoverage.mustUncovered,
       "The v0.2 gap must be visibly larger, which is the honest reading of a " +
-        "revision whose obligations no case reaches yet."
+        "revision most of whose obligations no case reaches yet."
     );
+  });
+
+  // THIS REPLACED an assertion that v0.2 must report strictly FEWER covered
+  // MUSTs than v0.1. That held while no case sent the v0.2 detail type, and its
+  // stated reason said exactly that. Cases now do, so the inequality stopped
+  // being a statement about honesty and became a statement about how many v0.2
+  // clauses happen to have cases — it broke the first time real v0.2 evidence
+  // landed, and "make the number go back down" would have meant deleting
+  // evidence to satisfy a test.
+  //
+  // The invariant it was reaching for survives, and is checked directly below:
+  // coverage must never be INVENTED by the version flag. Every covered v0.2
+  // clause must name a case that is registered and exercises that revision, so
+  // a supersession cannot quietly inherit its predecessor's evidence and a
+  // clause cannot be marked covered by a case id nobody runs.
+  it("counts a v0.2 clause as covered only when a registered case names it", () => {
+    const registered = new Set(ALL_CASES.map((c) => c.caseId));
+    const coveredV02 = clausesForVersion("0.2").filter(
+      (clause) => clause.specVersion === "0.2" && clause.caseIds.length > 0
+    );
+    assert.ok(
+      coveredV02.length > 0,
+      "No v0.2-native clause carries a case id. Either the v0.2 cases were unregistered " +
+        "or their clause rows lost their `caseIds`, and the report is claiming a v0.2 " +
+        "denominator it collects no evidence against."
+    );
+    for (const clause of coveredV02) {
+      for (const caseId of clause.caseIds) {
+        assert.ok(
+          registered.has(caseId),
+          `Clause ${clause.clauseId} is reported as covered by "${caseId}", which is not a registered case. ` +
+            "A clause covered by a case nobody runs is coverage invented on paper."
+        );
+      }
+    }
   });
 
   it("names the revision in the rendered report, next to the clause numbers", () => {

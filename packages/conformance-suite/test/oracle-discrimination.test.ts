@@ -38,6 +38,7 @@ import { DECLARATION_TRUST_CASES } from "../src/tests/declaration-trust.ts";
 import { DECLARATION_VALIDITY_CASES } from "../src/tests/declaration-validity.ts";
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
+import { READ_PATH_V02_CASES } from "../src/tests/read-path-v02.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
 import { SELECTION_MINIMA_V02_CASES } from "../src/tests/selection-minima-v02.ts";
 import { SELECTION_VALIDATION_CASES } from "../src/tests/selection-validation.ts";
@@ -54,6 +55,7 @@ const CASES: readonly ConformanceCase[] = [
   ...QUERY_SURFACE_CASES,
   ...SELECTION_VALIDATION_CASES,
   ...SELECTION_MINIMA_V02_CASES,
+  ...READ_PATH_V02_CASES,
   ...VIEW_CASES,
   ...CLIENT_IDENTITY_CASES,
   ...CONSENT_ARTIFACT_CASES,
@@ -329,6 +331,78 @@ const DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "AS-11/v0.2-minimum-on-v0.1-request-refused",
     defect: "ignore-minimum-on-v01-request",
+  },
+  // ---- v0.2 read path: disclosure to the approved shape (PR #1) ----
+  //
+  // Every row here pairs with a READ-TIME defect, and none with a defect that
+  // discards the owner's narrowing at issuance. That was the first pairing
+  // tried and it does not discriminate: a target that never applied the
+  // narrowing issues an honestly unnarrowed grant, the cases report `skip` for
+  // a missing precondition rather than `fail`, and this test reads a skip as a
+  // failure to discriminate. The skip is CORRECT — a target that has not
+  // implemented the owner's narrowing has not violated a read-path clause — so
+  // the defect had to move to where the violation actually is: a server that
+  // reports the narrowed grant everywhere a client can inspect it and then
+  // serves the ceiling.
+  {
+    caseId: "RS-2/v0.2-disclosure-limited-to-the-approved-shape",
+    defect: "serve-beyond-the-owners-narrowing",
+  },
+  // The same case against the OTHER way to get disclosure wrong. Both are real
+  // and a server can do either alone: the row above discloses the withheld
+  // values, this one withholds every value and discloses the member names as
+  // nulls. A case checking only that no withheld VALUE appeared would pass the
+  // second while the client learns the owner's approved shape from the keys.
+  {
+    caseId: "RS-2/v0.2-disclosure-limited-to-the-approved-shape",
+    defect: "null-withheld-members",
+  },
+  // Clause `v0.2/4-1`, and a defect narrower than the one above on purpose.
+  // `re-add-schema-required-members` honours the narrowing for every optional
+  // member and loses it only for the schema-required ones — so it does NOT
+  // fail the two rows above (their narrowing withholds nothing required), and
+  // this case only catches it because it picks a narrowing that withholds a
+  // required member specifically. That independence is the evidence the two
+  // clauses need separate cases rather than one.
+  {
+    caseId: "RS-2/v0.2-schema-required-field-not-re-added",
+    defect: "re-add-schema-required-members",
+  },
+  // Clause `v0.2/4-8`. Its own defect, because a server can honour the
+  // projection on an unqualified read and "repair" it the moment a client asks
+  // for a field by name — which is the shape of the bug, not a variant of
+  // ignoring the projection outright.
+  {
+    caseId: "RS-2/v0.2-field-selection-outside-the-projection-refused",
+    defect: "repair-projection-on-field-selection",
+  },
+  // Clauses `v0.2/8.4-1` and `8.4-5`. `accept-client-filters` covers all three
+  // probes the case sends (filter, expand, expand_limit) because this server
+  // gates them through one branch; each probe still names a member the OWNER
+  // withheld, which is what distinguishes this case from its v0.1 sibling.
+  {
+    caseId: "RS-9/v0.2-predicate-over-a-withheld-member-refused",
+    defect: "accept-client-filters",
+  },
+  // Clause `v0.2/8.4-4`. The defect is read-time, so page one is projected
+  // correctly under it and only the resumed page leaks — which is precisely
+  // the server this case exists to catch and the reason it pages at all.
+  {
+    caseId: "RS-2/v0.2-projection-survives-the-cursor",
+    defect: "serve-beyond-the-owners-narrowing",
+  },
+  // The temporal half of the same defect: the grant carries the owner's window
+  // and the read enforces the requested one, so the page that should be empty
+  // is full.
+  {
+    caseId: "RS-2/v0.2-owner-narrowed-window-reads-empty",
+    defect: "serve-beyond-the-owners-narrowing",
+  },
+  // Clause `v0.2/ext-7-2`, reached through revocation — the one way a
+  // black-box run can make "required authority is absent" true on demand.
+  {
+    caseId: "RS-2/v0.2-narrowed-grant-denied-after-revocation",
+    defect: "ignore-revocation",
   },
   // ---- The final approval artifact (clauses 7.2-2, 6.3-2, 7.2-4) ----
   //

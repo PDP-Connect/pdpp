@@ -49,6 +49,7 @@ import {
   specFileOf,
 } from "../src/requirements/matrix.ts";
 import { ALL_CASES } from "../src/suite.ts";
+import { READ_PATH_V02_CASES } from "../src/tests/read-path-v02.ts";
 import { SELECTION_MINIMA_V02_CASES } from "../src/tests/selection-minima-v02.ts";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -447,11 +448,14 @@ test("a v0.2 clause cites only cases that actually send v0.2", () => {
   // v0.2 entry passes the registered-case test — the id exists — while claiming
   // evidence about text that case never sent.
   //
-  // So the check is now about PROVENANCE rather than absence. Every v0.2 case
-  // is registered in `SELECTION_MINIMA_V02_CASES`, which is the suite's only
-  // source of requests carrying the v0.2 type; citing anything else means
-  // citing a case that spoke v0.1.
-  const v02CaseIds = new Set(SELECTION_MINIMA_V02_CASES.map((c) => c.caseId));
+  // So the check is now about PROVENANCE rather than absence. The v0.2 case
+  // files are the suite's only sources of requests carrying the v0.2 type —
+  // `SELECTION_MINIMA_V02_CASES` at selection time and `READ_PATH_V02_CASES` on
+  // the read path — and citing anything else means citing a case that spoke
+  // v0.1. Adding a v0.2 case file without adding it here is the one way to
+  // defeat this test, which is why the set is built from the exports rather
+  // than from a list of ids.
+  const v02CaseIds = new Set([...SELECTION_MINIMA_V02_CASES, ...READ_PATH_V02_CASES].map((c) => c.caseId));
   const borrowed = CLAUSE_MATRIX.filter((c) => c.specVersion === "0.2").flatMap((c) =>
     c.caseIds.filter((id) => !v02CaseIds.has(id)).map((id) => `${c.clauseId} -> ${id}`)
   );

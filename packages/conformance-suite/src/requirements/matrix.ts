@@ -2013,9 +2013,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#full-records-and-disclosed-projections",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-2/v0.2-schema-required-field-not-re-added"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "Covered only where the ADAPTER records which members the schema marks required: the case picks a narrowing that withholds one, and reports `skip` on a stream whose required members all sit inside the primary key. The clause's other justification — a member re-added for any reason other than the schema — is checked by the same case as the stronger reading, not proven separately.",
   },
   {
     clauseId: "v0.2/4-2",
@@ -2027,9 +2027,13 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#full-records-and-disclosed-projections",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: [
+      "RS-2/v0.2-disclosure-limited-to-the-approved-shape",
+      "RS-2/v0.2-projection-survives-the-cursor",
+      "RS-2/v0.2-owner-narrowed-window-reads-empty",
+    ],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "The `grant` half is covered; the `request-time field selection` half only for a selection the grant permits. A selection NARROWER than the grant is served but never asserted on, so a server that ignores `fields` and returns the full approved projection passes. Closing that needs an assertion that the disclosed members equal the selection rather than merely sit inside the grant.",
   },
   {
     clauseId: "v0.2/4-3",
@@ -2041,9 +2045,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#full-records-and-disclosed-projections",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-2/v0.2-disclosure-limited-to-the-approved-shape"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "Covers nulls, which is the observable half. `fabricated values` is not black-box observable: a plausible value for a withheld member is indistinguishable from the real one without knowing what the record actually holds, and the suite does not seed the withheld members' values through a channel it could compare against.",
   },
   {
     clauseId: "v0.2/4-4",
@@ -2099,7 +2103,7 @@ const CORE_V02: readonly ClauseEntry[] = [
     observable: "black-box-http",
     caseIds: [],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "NOT covered, despite RS-2/v0.2-unservable-projection-refused-as-disclosure-unavailable citing this clause and passing. That case reaches only the branch where the target CAN serve the projection, which the clause does not bind; its refusal branch has never executed, because `disclosure_unavailable` appears in no implementation the suite reaches and what makes a projection unservable is deployment-specific. Closing this needs a target that can be put into that state on demand.",
   },
   {
     clauseId: "v0.2/4-8",
@@ -2111,9 +2115,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#full-records-and-disclosed-projections",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-2/v0.2-field-selection-outside-the-projection-refused"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "Covers the `fields` route to a repaired projection, which is the one a client can request. A projection repaired internally — the RS widening its own read to satisfy a view, relation, or blob dependency — is not reachable from outside and is not proven.",
   },
   {
     clauseId: "v0.2/5-1",
@@ -3000,9 +3004,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-9/v0.2-predicate-over-a-withheld-member-refused"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "Covers the exact form (`filter[field]=value`). The RANGE forms (`filter[field][gte]` and siblings) are not sent, so a server rejecting exact filters while accepting a range one passes; v0.1 `RS-10/unsupported-bracketed-shape-rejected` exercises a bracketed shape but under a v0.1 grant and without a withheld member.",
   },
   {
     clauseId: "v0.2/8.4-2",
@@ -3044,9 +3048,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-2/v0.2-field-selection-outside-the-projection-refused", "RS-2/v0.2-projection-survives-the-cursor"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "Covers `fields`, `limit` and `cursor` as members of the durable surface. `order` and `changes_since` are not exercised under a v0.2 narrowed grant, and the clause's closed-list reading — that NOTHING outside the six is durable — is only sampled by the shapes `RS-9/v0.2-predicate-over-a-withheld-member-refused` sends.",
   },
   {
     clauseId: "v0.2/8.4-5",
@@ -3059,9 +3063,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-9/v0.2-predicate-over-a-withheld-member-refused"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Also restates v0.1 `8.9-5`; `supersedes` carries one edge, so those v0.1 clauses stay in the v0.2 view and are listed here instead.",
+      "Covers the refusal, its status and its error code. The `before the RS consults current SourceDeclaration or serving metadata` half is not black-box observable — ordering inside the server leaves no trace in the response — and the suite does not claim it.",
   },
   {
     clauseId: "v0.2/8.5-1",
@@ -3987,9 +3991,9 @@ const EXT_V02: readonly ClauseEntry[] = [
     specAnchor: "#7-conformance-boundary",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-2/v0.2-narrowed-grant-denied-after-revocation"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "Covers `status` absent, through revocation, which is the one condition a black-box run can create on demand. `authority`, `binding`, `projection` and `complete result context` absent or AMBIGUOUS each need a target that can be put into that state deliberately, and no adapter hook does so.",
   },
 ];
 
