@@ -207,9 +207,8 @@ const INSTANCE_ID = "instance_reference_1";
  * declarations under (Core Section 5 "Declaration trust").
  *
  * `ACCEPTED_AUTHORITY` stands for the operator onboarding that put this
- * declaration in place. A declaration arriving under any other authority was
- * introduced by the requester rather than onboarded, which is what clause
- * 5.8-1 forbids. `ACCEPTED_RESOURCE_ID` is the protected-resource identifier a
+ * declaration in place. It is internal acceptance metadata, not a member a
+ * client may supply in a declaration document. `ACCEPTED_RESOURCE_ID` is the protected-resource identifier a
  * `provider_native` declaration's `source.id` must equal (clause 5.8-2).
  */
 const ACCEPTED_AUTHORITY = "https://operator.example/onboarded";
@@ -520,16 +519,13 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * The AS's declaration-onboarding decision (Core Section 5, "Declaration
    * trust"), and what it retains for the key afterwards.
    *
-   * Three refusals, checked in the order the spec states them, each gated by
+   * Two refusals, checked in the order the spec states them, each gated by
    * its own defect so the oracles can be shown to discriminate independently:
    *
-   * 1. An authority this AS never onboarded (5.8-1). Checked first because
-   *    nothing else about the document matters if the requester chose who
-   *    speaks for the source.
-   * 2. A `provider_native` `source.id` that is not the accepted
+   * 1. A `provider_native` `source.id` that is not the accepted
    *    protected-resource identifier (5.8-2). Refused "before consent or grant
    *    issuance", which is here.
-   * 3. Different parsed content under an already-accepted key (5.8-4). Both
+   * 2. Different parsed content under an already-accepted key (5.8-4). Both
    *    halves are implemented: the new content is refused, and the retained
    *    content is left exactly as it was. `declaration_version` is deliberately
    *    NOT consulted for ordering — Core says an AS "MUST NOT infer ordering or
@@ -541,8 +537,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * it as a violation would make the positive control impossible.
    */
   async submitDeclaration(declaration: SourceDeclarationSubmission): Promise<DeclarationOutcome> {
-    const authority = declaration.authority ?? ACCEPTED_AUTHORITY;
-    const key = `${authority}\u0000${declaration.source.id}\u0000${declaration.declarationVersion}`;
+    const key = `${ACCEPTED_AUTHORITY}\u0000${declaration.source.id}\u0000${declaration.declarationVersion}`;
     const retained = () => {
       const held = this.acceptedDeclarations.get(key);
       return held === undefined ? {} : { retainedContent: held };
@@ -554,13 +549,6 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       body: JSON.stringify({ error: errorCode, error_description: message }),
       ...retained(),
     });
-
-    if (authority !== ACCEPTED_AUTHORITY && !this.defects.has("accept-unonboarded-source-authority")) {
-      return refuse(
-        "invalid_source_authority",
-        `authority '${authority}' was never onboarded; a client may not introduce a source authority during authorization`
-      );
-    }
 
     if (
       declaration.source.kind === "provider_native" &&
@@ -590,10 +578,9 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     }
 
     // Declaration VALIDITY, after trust and before retention — the order Core
-    // states. A document whose authority was never onboarded is refused
-    // whatever it says, and a document that fails validity must never reach the
-    // retained set, because the retained declaration is what the owner's
-    // consent is written against.
+    // states. A document that fails validity must never reach the retained set,
+    // because the retained declaration is what the owner's consent is written
+    // against.
     const invalid = this.declarationValidityViolation(declaration);
     if (invalid) {
       return refuse(invalid.errorCode, invalid.message);
@@ -617,7 +604,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
 
   /**
    * The first declaration-validity clause this document violates, if any
-   * (clauses 4.8-1, 5.2-2, 5.2-3, 5.2-5, 5.4-1).
+   * (clauses 4.8-1, 5.2-2, 5.2-3, 5.2-5).
    *
    * Separate from the trust checks in `submitDeclaration` because the questions
    * are separate: trust asks whose document this is, validity asks whether it
@@ -639,29 +626,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       }
     }
 
-    // Clause 5.4-1: `consent_time_field` and `cursor_field` "serve different
-    // purposes and MUST be declared separately". The violation this catches is
-    // the inference an implementer reaches for first — a stream that declares
-    // only `cursor_field` and expects the AS to reuse it as the consent
-    // boundary. Core forecloses that: a stream with no `consent_time_field` is
-    // not time-range-capable (5.2-4), so silently supplying one would authorize
-    // a time_range the declaration never offered.
-    //
-    // Checked across the submission rather than inside the per-stream walk
-    // because it is a statement about the PAIR, and a stream declaring both and
-    // naming the same field — which Core expressly permits — must be accepted.
-    if (this.defects.has("infer-consent-time-field-from-cursor-field")) {
-      return undefined;
-    }
-    const inferred = declaration.streams.find(
-      (stream) => stream.timeRangeCapable === true && stream.consentTimeField === undefined
-    );
-    return inferred
-      ? {
-          errorCode: "invalid_declaration",
-          message: `stream '${inferred.name}' claims time-range capability without declaring consent_time_field; Core requires it to be declared separately from cursor_field '${inferred.cursorField ?? "(none)"}'`,
-        }
-      : undefined;
+    return undefined;
   }
 
   /** The first per-stream validity clause `stream` violates (4.8-1, 5.2-2, 5.2-3, 5.2-5). */

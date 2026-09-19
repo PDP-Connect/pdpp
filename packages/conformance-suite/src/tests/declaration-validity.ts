@@ -11,7 +11,7 @@
 // here ask whether the document SAYS anything coherent: do its key and cursor
 // fields exist, does its consent boundary exist, does its embedded schema
 // meta-validate, is its blob media type a media type at all. A server can pass
-// every trust clause and fail all five of these, because they are checked at
+// every trust clause and fail all four of these, because they are checked at
 // different points for different reasons.
 //
 //   4.8-1  "`mime_type` MUST be a valid IANA media type."
@@ -23,10 +23,8 @@
 //          meta-validate each embedded stream schema before accepting the
 //          declaration. Embedded `$ref` and `$dynamicRef` values MUST be local
 //          fragment references."
-//   5.4-1  `consent_time_field` "may be the same field as `cursor_field`, but
-//          they serve different purposes and MUST be declared separately".
 //
-// WHY THESE ARE NOT OBSERVABLE FROM A GRANT. All five are properties of a
+// WHY THESE ARE NOT OBSERVABLE FROM A GRANT. All four are properties of a
 // document, and a target only ever shows the suite declarations it has already
 // accepted. An AS that validates nothing looks identical to one that validates
 // carefully, because every declaration it happens to hold is well-formed. So
@@ -34,7 +32,7 @@
 // positive control differing in exactly the one property under test — a server
 // that refuses everything fails rather than passes.
 //
-// WHY THE CONTROL IS NOT OPTIONAL. Four of these five clauses have no Section 9
+// WHY THE CONTROL IS NOT OPTIONAL. Three of these four clauses have no Section 9
 // conformance item behind them, so a refusal is the only signal there is. A
 // case that reported `pass` on any refusal would credit a target that rejects
 // all declarations, which is not conformance — it is an AS that onboards
@@ -352,74 +350,4 @@ export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
     },
   },
 
-  // ----------------------------------------------------------------- 5.4-1 ---
-  // The clause reads like prose about authoring style ("they serve different
-  // purposes"), but it carries a MUST and the violation is concrete: a stream
-  // that claims time-range capability while declaring only `cursor_field`, so
-  // the AS must infer the consent boundary from the sync cursor. Core forbids
-  // that, and 5.2-4 explains why it matters — consent_time_field PRESENCE is
-  // the authoritative signal that a stream is time-range-capable, so inferring
-  // one authorizes a time_range the declaration never offered.
-  //
-  // The control declares BOTH fields naming the SAME field, which Core
-  // expressly permits ("may be the same field as `cursor_field`"). That is what
-  // makes the oracle test separate declaration rather than distinct values: a
-  // target refusing the control would be refusing a document the spec allows.
-  {
-    caseId: "AS-16/consent-time-field-not-inferred-from-cursor-field",
-    requirementId: "AS-16",
-    assertion:
-      "A stream claiming time-range capability without declaring consent_time_field is refused, while the same stream declaring it separately — even naming the same field as cursor_field — is accepted.",
-    async run({ adapter, streams }) {
-      const [seeded] = streams;
-      if (!seeded) {
-        return skip("No seeded stream to build a declaration from.");
-      }
-      const [firstField] = seeded.fields;
-      if (firstField === undefined) {
-        return skip(`Stream '${seeded.name}' declares no fields, so neither field can be declared.`);
-      }
-      const version = `separate-declaration-${Date.now()}`;
-      const base = validDeclaration(seeded.name, seeded.fields, version);
-      const [stream] = base.streams;
-      if (!stream) {
-        return skip("The baseline declaration carries no stream.");
-      }
-
-      const control = await acceptedControl(adapter, {
-        ...base,
-        streams: [{ ...stream, cursorField: firstField, consentTimeField: firstField, timeRangeCapable: true }],
-      });
-      if ("reason" in control) {
-        return skip(control.reason);
-      }
-
-      // The same claim, with consent_time_field left out. Everything else is
-      // identical, including cursor_field — so the only thing the AS could be
-      // doing to accept this is inferring the consent boundary from the cursor.
-      const { consentTimeField: _omitted, ...withoutConsentTimeField } = stream;
-      const outcome = await adapter.submitDeclaration?.({
-        ...base,
-        declarationVersion: `${version}-negative`,
-        streams: [{ ...withoutConsentTimeField, cursorField: firstField, timeRangeCapable: true }],
-      });
-      if (!outcome) {
-        return skip(NO_HOOK);
-      }
-      const evidence = [
-        outcomeEvidence(
-          `declaration: cursor_field and consent_time_field both '${firstField}' (control)`,
-          control.outcome
-        ),
-        outcomeEvidence("declaration: time-range capability claimed with no consent_time_field", outcome),
-      ];
-      if (outcome.accepted) {
-        return fail(
-          `A stream claiming time-range capability while declaring only cursor_field '${firstField}' was accepted, so this AS infers the consent boundary from the sync cursor. Core Section 5: consent_time_field "may be the same field as cursor_field, but they serve different purposes and MUST be declared separately" — cursor_field governs incremental sync, consent_time_field governs consent-time filtering. The two coincide in many declarations and differ in exactly the cases that matter: a stream cursored on when a record was last modified, whose owner consented to records CREATED in a window. Inferring one from the other silently authorizes records outside that window.`,
-          evidence
-        );
-      }
-      return pass(evidence);
-    },
-  },
 ];

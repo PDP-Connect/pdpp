@@ -64,7 +64,7 @@ one that exists today.
 
 ## Totals
 
-Clauses enumerated: **270**. MUST-level: **240**, of which **72** have at least one case and **168** do not.
+Clauses enumerated: **270**. MUST-level: **240**, of which **71** have at least one case and **169** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -541,7 +541,7 @@ reports.
 | `5.2-2` | MUST | declaration-static | `AS-16/key-field-not-declared-in-schema-refused` | No Section 9 item covers declaration internal consistency, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes. |
 | `5.2-3` | MUST | declaration-static | `AS-16/consent-time-field-not-declared-in-schema-refused` | No Section 9 item covers `consent_time_field` declaration validity, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes. |
 | `5.3-1` | MAY | declaration-static | — | — |
-| `5.4-1` | MUST | declaration-static | `AS-16/consent-time-field-not-inferred-from-cursor-field` | No Section 9 item covers it, so `requirementIds` stays empty. The case reads the clause's MUST as its observable consequence: a stream claiming time-range capability without declaring `consent_time_field` forces the AS to infer the consent boundary from `cursor_field`, which is what separate declaration forbids. |
+| `5.4-1` | MUST | declaration-static | — | No Section 9 item covers it, so `requirementIds` stays empty. Core explicitly permits streams that cannot define a stable `consent_time_field` to omit it, so the former negative fixture (`time_range_capable` with no consent field) did not violate this clause. A valid black-box fixture would need to observe the AS deriving a consent boundary from `cursor_field`; the declaration submission surface exposes neither that derived state nor a normative capability member. |
 | `5.6-1` | MAY | declaration-static | — | — |
 | `5.6-3` | MUST | black-box-http | `AS-13/unrecognized-view-uri-treated-as-opaque` | — |
 | `6.1-3` | MAY | black-box-http | — | — |

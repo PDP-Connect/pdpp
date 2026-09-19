@@ -274,12 +274,6 @@ export interface SelectionOutcome {
  * govern, and the point here is the acceptance decision, not schema validation.
  */
 export interface SourceDeclarationSubmission {
-  /**
-   * The authority binding the AS onboarded this declaration under, when the
-   * caller wants to name one the AS never accepted (clause 5.8-1). Absent means
-   * the adapter's own accepted authority.
-   */
-  readonly authority?: string;
   /** Opaque, non-empty revision id. Core assigns it NO ordering meaning. */
   readonly declarationVersion: string;
   /**
@@ -325,8 +319,7 @@ export interface SourceDeclarationSubmission {
  * - `schema` / `primaryKey` / `cursorField` — clause 5.2-2, "`primary_key` and
  *   `cursor_field` MUST reference fields declared here".
  * - `consentTimeField` — clause 5.2-3, "MUST reference a field declared in the
- *   schema", and clause 5.4-1, which requires it to be declared separately from
- *   `cursor_field` even when it names the same field.
+ *   schema".
  * - `blobFields` — clause 4.8-1, "`mime_type` MUST be a valid IANA media type".
  *
  * `schema` is carried as the embedded JSON Schema object rather than a field
@@ -343,9 +336,9 @@ export interface SourceDeclarationStream {
    * case to assert on content the clause does not reach.
    */
   readonly blobFields?: readonly { readonly name: string; readonly mimeType: string }[];
-  /** `consent_time_field`, when the stream declares one (clauses 5.2-3, 5.4-1). */
+  /** `consent_time_field`, when the stream declares one (clause 5.2-3). */
   readonly consentTimeField?: string;
-  /** `cursor_field`, when the stream declares one (clauses 5.2-2, 5.4-1). */
+  /** `cursor_field`, when the stream declares one (clause 5.2-2). */
   readonly cursorField?: string;
   readonly fields: readonly string[];
   readonly name: string;
@@ -360,19 +353,6 @@ export interface SourceDeclarationStream {
    * valid schemas could not express them.
    */
   readonly schema?: unknown;
-  /**
-   * Whether the declaration claims this stream supports `time_range`
-   * (clause 5.4-1).
-   *
-   * Core derives time-range capability from `consent_time_field` PRESENCE, so a
-   * stream claiming the capability without declaring the field is asking the AS
-   * to infer the consent boundary from `cursor_field` — exactly what 5.4-1
-   * forbids ("they serve different purposes and MUST be declared separately").
-   * Carried as an explicit claim rather than inferred from `selection` because
-   * the violation is the claim itself: a case must be able to make it and see
-   * whether the AS refuses.
-   */
-  readonly timeRangeCapable?: boolean;
 }
 
 /** What the AS did with an offered declaration. */
@@ -969,9 +949,6 @@ export interface TargetAdapter {
    * Two families of clause need this, and each needs a different thing offered.
    *
    * Declaration TRUST — is this document's authority accepted:
-   * - 5.8-1: a declaration naming a source authority the AS never onboarded
-   *   (a client MUST NOT introduce a new source authority during
-   *   authorization).
    * - 5.8-2: a `provider_native` declaration whose `source.id` differs from the
    *   protected-resource identifier the AS already accepted.
    * - 5.8-4: a SECOND, different document under an accepted
@@ -986,8 +963,6 @@ export interface TargetAdapter {
    * - 5.2-3: a `consent_time_field` naming a field the schema does not declare.
    * - 5.2-5: an embedded stream schema that declares the wrong `$schema`
    *   dialect, fails meta-validation, or carries a non-local `$ref`.
-   * - 5.4-1: a `consent_time_field` left undeclared and inferred from
-   *   `cursor_field` instead.
    *
    * The two families share one hook because they share one surface: both ask
    * the AS to decide about an offered document before consent, and a target

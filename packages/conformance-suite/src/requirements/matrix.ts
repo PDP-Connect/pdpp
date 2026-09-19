@@ -448,9 +448,9 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#consenttimefield",
     applicability: "always",
     observable: "declaration-static",
-    caseIds: ["AS-16/consent-time-field-not-inferred-from-cursor-field"],
+    caseIds: [],
     gapNote:
-      "No Section 9 item covers it, so `requirementIds` stays empty. The case reads the clause's MUST as its observable consequence: a stream claiming time-range capability without declaring `consent_time_field` forces the AS to infer the consent boundary from `cursor_field`, which is what separate declaration forbids.",
+      "No Section 9 item covers it, so `requirementIds` stays empty. Core explicitly permits streams that cannot define a stable `consent_time_field` to omit it, so the former negative fixture (`time_range_capable` with no consent field) did not violate this clause. A valid black-box fixture would need to observe the AS deriving a consent boundary from `cursor_field`; the declaration submission surface exposes neither that derived state nor a normative capability member.",
   },
   {
     clauseId: "5.4-2",
@@ -526,7 +526,9 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#declaration-acceptance",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: ["AS-16/unonboarded-source-authority-refused"],
+    caseIds: [],
+    gapNote:
+      "The former case submitted a non-normative top-level `authority` member to an operator declaration-onboarding hook. Core defines the accepted authority as AS-side acceptance metadata and gives `SourceDeclaration` no such document member; this surface cannot observe a client introducing authority during authorization. A client-authorization fixture with an overridable source identifier is required.",
   },
   {
     clauseId: "5.8-2",

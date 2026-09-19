@@ -362,16 +362,12 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-3/client-claims-stay-outside-the-resolved-grant",
     defect: "leak-client-claims-into-grant",
   },
-  // ---- Declaration trust (clauses 5.8-1, 5.8-2, 5.8-4) ----
+  // ---- Declaration trust (clauses 5.8-2, 5.8-4) ----
   //
   // One defect per clause, each confirmed to fail its own case and no other.
-  // They have to be separate: the three obligations are checked in sequence, so
+  // They have to be separate: the two obligations are checked in sequence, so
   // a shared defect would let the first refusal mask the others and leave the
   // later oracles passing against a server that never implements them.
-  {
-    caseId: "AS-16/unonboarded-source-authority-refused",
-    defect: "accept-unonboarded-source-authority",
-  },
   {
     caseId: "AS-16/provider-native-source-id-mismatch-refused",
     defect: "accept-provider-native-id-mismatch",
@@ -525,17 +521,17 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-16/duplicate-stream-in-a-selection-preset-refused",
     defect: "accept-duplicate-preset-stream",
   },
-  // ---- Declaration validity (clauses 4.8-1, 5.2-2, 5.2-3, 5.2-5, 5.4-1) ----
+  // ---- Declaration validity (clauses 4.8-1, 5.2-2, 5.2-3, 5.2-5) ----
   //
   // One defect per clause, for the same reason the trust rows above need one
   // each: the validity checks run in sequence over the submitted document, so a
   // shared defect would let an earlier refusal mask a later oracle and leave it
   // passing against a server that never implements the clause it owns. Each
-  // defect was run against all five cases and fails only its own.
+  // defect was run against all four cases and fails only its own.
   //
   // None of these pairs with an existing selection-time defect. Every one of
   // those operates on a REQUEST validated against a declaration the target
-  // already holds; these five are about the acceptance decision on the
+  // already holds; these four are about the acceptance decision on the
   // declaration itself, which happens earlier and on a different document.
   {
     caseId: "AS-16/blob-ref-invalid-mime-type-refused",
@@ -557,15 +553,6 @@ const DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "AS-16/embedded-schema-remote-reference-refused",
     defect: "accept-invalid-embedded-schema",
-  },
-  // Clause 5.4-1. The defect INFERS the consent boundary from cursor_field
-  // rather than refusing the document — the shortcut the clause exists to
-  // forbid. It is not paired with any undeclared-field defect: the negative
-  // document here declares no consent_time_field at all, so nothing about field
-  // references fires on it and those defects would leave this oracle passing.
-  {
-    caseId: "AS-16/consent-time-field-not-inferred-from-cursor-field",
-    defect: "infer-consent-time-field-from-cursor-field",
   },
   // RFC 9396 Section 7, which Core adopts by normative reference and does not
   // restate — so this row has no Core clause id, by design (see the matrix

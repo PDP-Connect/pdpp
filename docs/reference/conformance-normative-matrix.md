@@ -49,7 +49,7 @@ one that exists today.
 
 ## Totals
 
-Clauses enumerated: **131**. MUST-level: **106**, of which **81** have at least one case and **25** do not.
+Clauses enumerated: **131**. MUST-level: **106**, of which **79** have at least one case and **27** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -248,7 +248,7 @@ Retains one exact SourceDeclaration snapshot through validation, consent, narrow
 | --- | --- | --- | --- | --- |
 | `5.2-1` | MUST | review-only | — | What the AS treated as authenticated is an internal trust decision; from outside, an accepted and a rejected declaration differ only by whether consent proceeded, which does not discriminate this clause. |
 | `5.2-5` | MUST | declaration-static | `AS-16/embedded-schema-remote-reference-refused` | Partially covered. The case exercises the local-reference obligation (`$ref`/`$dynamicRef` must be local fragments), which is the half that makes consent interpretation depend on a mutable remote schema. The `$schema` dialect equality and full metaschema meta-validation are implemented by the reference target but not separately asserted: a case for each would need its own defect to discriminate, and the remote-reference oracle already fails a target that skips embedded-schema validation altogether. |
-| `5.8-1` | MUST | black-box-http | `AS-16/unonboarded-source-authority-refused` | — |
+| `5.8-1` | MUST | black-box-http | — | The former case submitted a non-normative top-level `authority` member to an operator declaration-onboarding hook. Core defines the accepted authority as AS-side acceptance metadata and gives `SourceDeclaration` no such document member; this surface cannot observe a client introducing authority during authorization. A client-authorization fixture with an overridable source identifier is required. |
 | `5.8-2` | MUST | black-box-http | `AS-16/provider-native-source-id-mismatch-refused` | — |
 | `5.8-3` | MUST | review-only | — | Restates 5.2-1 as an acceptance obligation; what the AS relied on internally is not observable from a request outcome. |
 | `5.8-4` | MUST | black-box-http | `AS-16/declaration-equivocation-refused-and-prior-content-retained` | — |
@@ -550,7 +550,7 @@ reports.
 | `5.2-2` | MUST | declaration-static | `AS-16/key-field-not-declared-in-schema-refused` | No Section 9 item covers declaration internal consistency, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes. |
 | `5.2-3` | MUST | declaration-static | `AS-16/consent-time-field-not-declared-in-schema-refused` | No Section 9 item covers `consent_time_field` declaration validity, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes. |
 | `5.3-1` | MAY | declaration-static | — | — |
-| `5.4-1` | MUST | declaration-static | `AS-16/consent-time-field-not-inferred-from-cursor-field` | No Section 9 item covers it, so `requirementIds` stays empty. The case reads the clause's MUST as its observable consequence: a stream claiming time-range capability without declaring `consent_time_field` forces the AS to infer the consent boundary from `cursor_field`, which is what separate declaration forbids. |
+| `5.4-1` | MUST | declaration-static | — | No Section 9 item covers it, so `requirementIds` stays empty. Core explicitly permits streams that cannot define a stable `consent_time_field` to omit it, so the former negative fixture (`time_range_capable` with no consent field) did not violate this clause. A valid black-box fixture would need to observe the AS deriving a consent boundary from `cursor_field`; the declaration submission surface exposes neither that derived state nor a normative capability member. |
 | `5.6-1` | MAY | declaration-static | — | — |
 | `5.6-3` | MUST | black-box-http | `AS-13/unrecognized-view-uri-treated-as-opaque` | — |
 | `6.1-3` | MAY | black-box-http | — | — |

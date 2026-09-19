@@ -140,13 +140,6 @@ function normativeDeclarationDocument(declaration: SourceDeclarationSubmission):
     protocol_version: "0.1.0",
     source: { kind: declaration.source.kind, id: declaration.source.id },
     declaration_version: declaration.declarationVersion,
-    // The authority a case names is carried on the document rather than
-    // dropped. This server derives trust from `source.id` alone, so a foreign
-    // authority does not by itself change its answer -- and that is the
-    // observation clause 5.8-1 asks for, not something for the adapter to
-    // arrange. Dropping the field would hide the submission's own claim from
-    // the server's logs and from the report's evidence.
-    ...(declaration.authority === undefined ? {} : { authority: declaration.authority }),
     publisher: { id: "https://pdpp.dev/conformance-suite" },
     display: { name: "PDPP conformance suite" },
     streams: declaration.streams.map((stream) => ({
@@ -168,7 +161,6 @@ function normativeDeclarationDocument(declaration: SourceDeclarationSubmission):
         : {
             blob_fields: stream.blobFields.map((blob) => ({ name: blob.name, mime_type: blob.mimeType })),
           }),
-      ...(stream.timeRangeCapable === undefined ? {} : { time_range_capable: stream.timeRangeCapable }),
       selection: { fields: true, resources: false },
     })),
     ...(declaration.selectionPresets === undefined
@@ -550,8 +542,8 @@ export class VanaPsAdapter implements TargetAdapter {
 
   /**
    * Offer a candidate source declaration and report the AS's decision, without
-   * approving anything (clauses 4.8-1, 5.2-2, 5.2-3, 5.2-5, 5.4-1, 5.8-1,
-   * 5.8-2, 5.8-4, 6.9-1).
+   * approving anything (clauses 4.8-1, 5.2-2, 5.2-3, 5.2-5, 5.8-2, 5.8-4,
+   * 6.9-1).
    *
    * `POST /pdpp/declarations`, added in personal-server-ts e3a7142. Before it
    * this deployment had a real validator that ran only at construction, so
@@ -560,10 +552,8 @@ export class VanaPsAdapter implements TargetAdapter {
    * lifetimes and measures what survives a reboot rather than what the AS
    * refuses.
    *
-   * The route is operator-authenticated, never client-authenticated, which is
-   * the clause 5.8-1 property itself: a client able to submit its own
-   * declaration could declare itself authority over any source. So this sends
-   * the operator credential, not a grant token and not the owner token.
+   * The route is operator-authenticated, never client-authenticated. So this
+   * sends the operator credential, not a grant token and not the owner token.
    *
    * WHAT THIS ADAPTER DOES NOT DECIDE. The submission is translated into the
    * normative §5 document and posted as-is; every refusal in the result is the

@@ -7,13 +7,8 @@
 // A source declaration is the document the owner's consent is written against.
 // It says which streams exist, what fields they carry, and what the data means.
 // If a client can choose that document, it can choose what the owner appears to
-// be agreeing to — so Core Section 5 puts three MUSTs around acceptance:
+// be agreeing to — so Core Section 5 puts two executable MUSTs around acceptance:
 //
-//   5.8-1  "An authorization server accepts a source declaration only through
-//          explicit owner or operator onboarding, an installed catalog, an
-//          accepted registry entry, or explicit local provisioning. A client
-//          MUST NOT introduce a new source authority or declaration URI during
-//          authorization."
 //   5.8-2  for a `provider_native` source, `source.id` MUST equal the
 //          protected-resource identifier the AS already accepted, and a
 //          mismatch MUST be rejected before consent or grant issuance.
@@ -28,7 +23,9 @@
 // request it sees happens to be legitimate. So each case here offers a document
 // that MUST be refused, and pairs it with a positive control that differs only
 // in the one property under test, so a server refusing everything fails rather
-// than passes.
+// than passes. The 5.8-1 authority case was removed: its fixture put an
+// invented `authority` member on an operator onboarding request, not a client
+// authorization request.
 
 import type { DeclarationOutcome, SourceDeclarationSubmission, TargetAdapter } from "../harness/adapter.ts";
 import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
@@ -87,48 +84,6 @@ async function acceptedControl(
 }
 
 export const DECLARATION_TRUST_CASES: readonly ConformanceCase[] = [
-  // ----------------------------------------------------------------- 5.8-1 ---
-  {
-    caseId: "AS-16/unonboarded-source-authority-refused",
-    requirementId: "AS-16",
-    assertion:
-      "A source declaration arriving under an authority the AS never onboarded is refused, so a client cannot introduce a source authority during authorization.",
-    async run({ adapter, streams }) {
-      const [seeded] = streams;
-      if (!seeded) {
-        return skip("No seeded stream to build a declaration from.");
-      }
-      const control = await acceptedControl(
-        adapter,
-        baselineDeclaration(seeded.name, seeded.fields, "conformance-5.8-1-control")
-      );
-      if ("reason" in control) {
-        return skip(control.reason);
-      }
-
-      // Identical to the control except for the authority: a URL the requester
-      // chose, which no onboarding ever put in place.
-      const outcome = await adapter.submitDeclaration?.({
-        ...baselineDeclaration(seeded.name, seeded.fields, "conformance-5.8-1-negative"),
-        authority: "https://attacker.example/self-asserted",
-      });
-      if (!outcome) {
-        return skip(NO_HOOK);
-      }
-      const evidence = [
-        outcomeEvidence("declaration: accepted authority (control)", control.outcome),
-        outcomeEvidence("declaration: authority never onboarded", outcome),
-      ];
-      if (outcome.accepted) {
-        return fail(
-          "A source declaration naming an authority this AS never onboarded was accepted. Core Section 5: an AS accepts a declaration only through explicit owner or operator onboarding, an installed catalog, an accepted registry entry, or explicit local provisioning, and a client MUST NOT introduce a new source authority during authorization. A server that takes the authority from the request lets the requester decide who speaks for the source — and therefore what the owner's consent is written against.",
-          evidence
-        );
-      }
-      return pass(evidence);
-    },
-  },
-
   // ----------------------------------------------------------------- 5.8-2 ---
   {
     caseId: "AS-16/provider-native-source-id-mismatch-refused",

@@ -241,18 +241,6 @@ export type Defect =
    */
   | "thin-approval-artifact"
   /**
-   * Accepts a declaration naming a source authority the AS never onboarded
-   * (clause 5.8-1).
-   *
-   * Core: "An authorization server accepts a source declaration only through
-   * explicit owner or operator onboarding, an installed catalog, an accepted
-   * registry entry, or explicit local provisioning. A client MUST NOT introduce
-   * a new source authority or declaration URI during authorization." A server
-   * that takes the authority from the request lets a client define what the
-   * owner is consenting about.
-   */
-  | "accept-unonboarded-source-authority"
-  /**
    * Accepts a `provider_native` declaration whose `source.id` differs from the
    * protected-resource identifier already accepted for that resource (clause
    * 5.8-2).
@@ -457,19 +445,6 @@ export type Defect =
    * consent without anyone editing the declaration.
    */
   | "accept-invalid-embedded-schema"
-  /**
-   * Treats a stream as time-range-capable when it declares `cursor_field` but
-   * no `consent_time_field`, inferring the consent boundary from the cursor
-   * (clause 5.4-1).
-   *
-   * The single most natural implementation shortcut the clause forbids: the two
-   * fields are the same value in most real declarations, so reusing one for the
-   * other looks harmless. It is not — `cursor_field` tracks when a record was
-   * last MODIFIED and the consent boundary is usually when it was CREATED, so
-   * the inference silently authorizes records outside the window the owner
-   * agreed to.
-   */
-  | "infer-consent-time-field-from-cursor-field"
   /**
    * Omits `authorization_details` from a token response for a request that
    * carried them (RFC 9396 Section 7, adopted by Core's Section 2 normative
