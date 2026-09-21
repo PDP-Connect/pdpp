@@ -10,3 +10,15 @@ pnpm-lock.yaml
 *.log
 tmp/
 packages/local-collector/dist-collector/
+
+# Local working directories. .worktrees/ matters most: it holds full checkouts
+# of this repository, so a tool that walks it reads every file several times
+# over, and a nested biome.jsonc in one of them makes `biome check` fail at the
+# root with a nested-configuration error.
+.worktrees/
+.turbo/
+.codex-reports/
+devspecs/
+ai/
+.source/
+.source-*/

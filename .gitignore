@@ -78,3 +78,12 @@ design-evidence/**/*.png
 /screenshots-*/
 /perf-results/
 packages/local-collector/dist-collector/
+
+# Build caches and local agent working dirs. None of these were ignored, so a
+# `git add -A` in a working tree that has them would commit build output or
+# local notes to a public repository.
+.turbo/
+.worktrees/
+.codex-reports/
+devspecs/
+/ai/

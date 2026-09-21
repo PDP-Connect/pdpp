@@ -29,7 +29,7 @@
 //
 // Runs from `predev` and `prebuild`. Vercel builds from apps/site with the
 // monorepo root available, so the relative path to the repo root resolves.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -131,6 +131,7 @@ function checkStatusDateDrift(header, root, spec) {
     }
 }
 let generated = 0;
+let staleRemoved = 0;
 for (const spec of SPECS) {
     const rootPath = path.join(repoRoot, `${spec}.md`);
     const headerPath = path.join(headerDir, `${spec}.header.md`);
@@ -147,6 +148,16 @@ for (const spec of SPECS) {
     // header (frontmatter + Callout) + blank line + normative body.
     const out = `${header}\n\n${root.body.replace(/\s*$/, "")}\n`;
     writeFileSync(outPath, out);
+    // An earlier revision of this script wrote `.md` here. A leftover from one
+    // of those runs is not overwritten by the `.mdx` write above, and fumadocs
+    // globs both, so the two resolve to the same slug and fail the build with
+    // "Duplicated slugs". Clearing it makes a stale checkout self-heal instead
+    // of failing a build that looks unrelated to anything the author changed.
+    const stalePath = path.join(contentDir, `${spec}.md`);
+    if (existsSync(stalePath)) {
+        rmSync(stalePath);
+        staleRemoved += 1;
+    }
     generated += 1;
 }
 // Programme documents are single-sourced the same way, from a DIFFERENT root
@@ -391,5 +402,8 @@ export const PRINCIPLES_PREAMBLE = ${JSON.stringify(preamble, null, 2)} as const
 export const PRINCIPLES_LIST = ${JSON.stringify(principles, null, 2)} as const;
 `);
 console.log(`[sync-spec-docs] generated ${generated} spec page(s) from root spec-*.md`);
+if (staleRemoved > 0) {
+    console.log(`[sync-spec-docs] removed ${staleRemoved} stale .md page(s) left by an earlier revision of this script`);
+}
 console.log(`[sync-spec-docs] wrote src/generated/spec-front-matter.ts (${versionMatch[1]}, ${status}, ${date}, ${editors.length} editor(s); ` +
     `governance: ${governanceFrontMatter.status}; principles: v${principlesFrontMatter.version})`);
