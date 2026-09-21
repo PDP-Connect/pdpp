@@ -1,6 +1,6 @@
 # Public site and Blume spike scratchpad
 
-Status: active investigation. This records deferred cleanup discovered while testing Blume; it is not a migration decision or protocol change.
+Status: closed, the site stayed on Next.js. See Outcome at the end. This records deferred cleanup discovered while testing Blume; it is not a migration decision or protocol change.
 
 ## Test boundary
 
@@ -71,6 +71,30 @@ Verdict: the compatibility blocker found by the spike is fixed against Blume `1.
 
 The next useful step is to turn the spike into a migration plan: define the production page set and navigation, apply PDPP theme tokens, wire standard plus legacy Agent Skill publication, and separate the sandbox from the public site.
 
+## Outcome (2026-09-21)
+
+The migration did not happen and the site stayed on Next.js. The public site was
+restructured in place instead (#313, four-intent structure, Participate and the
+registers), so the framework question was settled by what shipped rather than by a
+decision recorded here.
+
+The spike implementation has been deleted. Its one durable output was upstream: the
+heading-ID incompatibility it found was fixed in Blume itself
+([PR #215](https://github.com/haydenbleasel/blume/pull/215), merged 2026-08-28), which
+also made the vendored `blume-1.5.3` tarball redundant, since that tarball existed only
+to carry the unmerged patch. Reviving this spike means installing Blume from npm, not
+restoring the deleted directory.
+
+Two findings below outlived the spike and are unrelated to the framework choice: the
+sandbox still sits inside `apps/site` (20 page modules, 15 route handlers), and the
+Agent Skills endpoint still publishes from the site app while its content is owned by
+`docs/agent-skills`. Both survived the reference-implementation move, which took the
+server trees out of this repository but deliberately kept `apps/site`.
+
 ## Evidence location
 
-The disposable implementation is `apps/site-blume-spike`. `scripts/sync-canonical-content.mjs` makes the root-source boundary explicit; `pages/participate.astro` proves a custom public page; and `islands/SelfHostCommand.tsx` proves reuse of the existing command-building owner.
+The implementation was `apps/site-blume-spike`, removed 2026-09-21. It is recoverable
+from git history at commit `1ffcf085c6` if the framework question reopens:
+`scripts/sync-canonical-content.mjs` made the root-source boundary explicit,
+`pages/participate.astro` proved a custom public page, and `islands/SelfHostCommand.tsx`
+proved reuse of the existing command-building owner.

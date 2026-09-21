@@ -20,6 +20,12 @@
     "includes": [
       "!!**/node_modules",
       "!!**/.git",
+      // A git worktree of this repository checked out inside it carries its own
+      // biome.jsonc, and Biome refuses to run at all when it finds one nested
+      // under the root config ("Found a nested root configuration"). That makes
+      // `biome check` fail for a contributor who keeps worktrees here, on files
+      // that are themselves clean.
+      "!!**/.worktrees",
       "!!**/dist",
       "!!**/build",
       "!!**/out",
