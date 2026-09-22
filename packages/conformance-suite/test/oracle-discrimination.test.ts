@@ -412,6 +412,14 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-4/v0.2-refuse-issuance-when-owner-approves-no-streams",
     defect: "issue-empty-grant-on-full-decline",
   },
+  // Clause `v0.2/6.1-1`. Same shape of proof as 6.4-4 immediately above, for
+  // the sibling clause about a REQUIRED stream: the positive control approves
+  // the same request as made, so this row proves the refusal check reaches
+  // the required-stream-declined branch specifically.
+  {
+    caseId: "AS-4/v0.2-refuse-issuance-when-required-stream-declined",
+    defect: "ignore-required-stream-decline",
+  },
   // ---- The final approval artifact (clauses 7.2-2, 6.3-2, 7.2-4) ----
   //
   // Clause 7.2-2. The defect keeps the streams and fields — the facts an

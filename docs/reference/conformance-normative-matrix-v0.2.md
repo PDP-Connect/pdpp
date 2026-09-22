@@ -68,7 +68,7 @@ one that exists today.
 
 ## Totals
 
-Clauses enumerated: **270**. MUST-level: **240**, of which **80** have at least one case and **160** do not.
+Clauses enumerated: **270**. MUST-level: **240**, of which **81** have at least one case and **159** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -568,7 +568,7 @@ reports.
 | `v0.2/4-7` | MUST | black-box-http | — | NOT covered, despite RS-2/v0.2-unservable-projection-refused-as-disclosure-unavailable citing this clause and passing. That case reaches only the branch where the target CAN serve the projection, which the clause does not bind; its refusal branch has never executed, because `disclosure_unavailable` appears in no implementation the suite reaches and what makes a projection unservable is deployment-specific. Closing this needs a target that can be put into that state on demand. |
 | `v0.2/4-8` | MUST | black-box-http | `RS-2/v0.2-field-selection-outside-the-projection-refused` | Covers the `fields` route to a repaired projection, which is the one a client can request. A projection repaired internally — the RS widening its own read to satisfy a view, relation, or blob dependency — is not reachable from outside and is not proven. |
 | `v0.2/5-1` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |
-| `v0.2/6.1-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.1-1` | MUST | black-box-http | `AS-4/v0.2-refuse-issuance-when-required-stream-declined` | The single-obligation sentence is proven for a single-stream, single-required request: the owner declines the request's only (required) stream and issuance is refused, with a same-shape positive control proving the target can grant the request at all. Not separately proven for a request naming a required stream alongside an optional one, or for multiple required streams where only one is declined. |
 | `v0.2/6.1-2` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.1-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.1-4` | MUST | black-box-http | — | No case sends the v0.2 detail type: the harness builds only `https://pdpp.dev/data-access` requests, so nothing exercises this against a v0.2 target. |

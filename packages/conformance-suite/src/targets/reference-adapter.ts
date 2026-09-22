@@ -716,51 +716,87 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * the name. Shared with `stageApproval` so the artifact the owner reviews
    * describes exactly the fields the grant will carry.
    */
+  /**
+   * A declined stream's resolution: dropped (`undefined`), kept anyway under
+   * the defect (a `ResolvedStream`), or a whole-request refusal (`null`).
+   *
+   * A declined stream leaves the grant entirely. Under v0.2 the owner may
+   * decline an `optional` stream outright; declining a `required` one is the
+   * AS's refusal to make, and this target answers it by issuing no grant at
+   * all rather than a grant the client's floor cannot satisfy — unless
+   * `ignore-required-stream-decline` is set (matrix `v0.2/6.1-1`), in which
+   * case the stream is issued anyway, as if the decline had not happened.
+   * Issuing it rather than merely dropping it matters for the defect proof:
+   * dropping it would still resolve to zero streams and
+   * `refuseIfFullyDeclined` would refuse for an unrelated reason, masking
+   * this defect from the oracle.
+   */
+  private resolveDeclinedStream(s: GrantRequest["streams"][number]): ResolvedStream | null | undefined {
+    if (s.necessity === "optional") {
+      return undefined;
+    }
+    if (this.defects.has("ignore-required-stream-decline")) {
+      return { name: s.name, fields: [...s.fields] };
+    }
+    return null;
+  }
+
+  /**
+   * One requested stream's resolution: kept (`ResolvedStream`), dropped
+   * entirely (`undefined`, e.g. an optional stream's decline), or a
+   * whole-request refusal (`null`, e.g. a required stream's decline or an
+   * unsatisfiable minimum).
+   */
+  private resolveOneStream(
+    request: GrantRequest,
+    s: GrantRequest["streams"][number]
+  ): ResolvedStream | null | undefined {
+    if (request.ownerChoices?.declineStreams?.includes(s.name)) {
+      return this.resolveDeclinedStream(s);
+    }
+    const requested = s.view === undefined ? [...s.fields] : this.resolveView(s.name, s.view);
+    if (!requested) {
+      return null;
+    }
+    // The owner's narrowing applies to the RESOLVED field set, never to the
+    // request: a view resolves to fields first, and the owner chooses among
+    // those. Intersecting rather than substituting is what keeps a choice
+    // from widening the grant — an owner cannot approve a field the client
+    // never asked for, and a target that let them would hand the client
+    // access it did not request.
+    const kept = this.applyOwnerFieldChoices(requested, request.ownerChoices?.fields?.[s.name]);
+    if (kept.length === 0) {
+      return null;
+    }
+    // A minimum the narrowing falls below is the AS's refusal (PR #1's
+    // `access_denied`), not a grant issued at the floor. Checked here because
+    // this is where both bounds are known.
+    const floor = s.minimum?.fields ?? [];
+    if (floor.some((field) => !kept.includes(field))) {
+      return null;
+    }
+    // The ceiling is recorded only when the owner actually narrowed below it.
+    // Equal sets mean there is no narrowing to lose, so the read-time defect
+    // has nothing to widen to and every pre-v0.2 case is unaffected.
+    const narrowed = kept.length < requested.length;
+    return {
+      name: s.name,
+      fields: kept,
+      ...(s.view === undefined ? {} : { view: s.view }),
+      ...(narrowed ? { ceiling: { fields: [...requested] } } : {}),
+    };
+  }
+
   private resolveStreams(request: GrantRequest): ResolvedStream[] | null {
     const resolved: ResolvedStream[] = [];
     for (const s of request.streams) {
-      if (request.ownerChoices?.declineStreams?.includes(s.name)) {
-        // A declined stream leaves the grant entirely. Under v0.2 the owner may
-        // decline an `optional` stream outright; declining a `required` one is
-        // the AS's refusal to make, and this target answers it by issuing no
-        // grant at all rather than a grant the client's floor cannot satisfy.
-        if (s.necessity !== "optional") {
-          return null;
-        }
-        continue;
-      }
-      const requested = s.view === undefined ? [...s.fields] : this.resolveView(s.name, s.view);
-      if (!requested) {
+      const one = this.resolveOneStream(request, s);
+      if (one === null) {
         return null;
       }
-      // The owner's narrowing applies to the RESOLVED field set, never to the
-      // request: a view resolves to fields first, and the owner chooses among
-      // those. Intersecting rather than substituting is what keeps a choice
-      // from widening the grant — an owner cannot approve a field the client
-      // never asked for, and a target that let them would hand the client
-      // access it did not request.
-      //
-      const kept = this.applyOwnerFieldChoices(requested, request.ownerChoices?.fields?.[s.name]);
-      if (kept.length === 0) {
-        return null;
+      if (one !== undefined) {
+        resolved.push(one);
       }
-      // A minimum the narrowing falls below is the AS's refusal (PR #1's
-      // `access_denied`), not a grant issued at the floor. Checked here because
-      // this is where both bounds are known.
-      const floor = s.minimum?.fields ?? [];
-      if (floor.some((field) => !kept.includes(field))) {
-        return null;
-      }
-      // The ceiling is recorded only when the owner actually narrowed below it.
-      // Equal sets mean there is no narrowing to lose, so the read-time defect
-      // has nothing to widen to and every pre-v0.2 case is unaffected.
-      const narrowed = kept.length < requested.length;
-      resolved.push({
-        name: s.name,
-        fields: kept,
-        ...(s.view === undefined ? {} : { view: s.view }),
-        ...(narrowed ? { ceiling: { fields: [...requested] } } : {}),
-      });
     }
     return this.refuseIfFullyDeclined(resolved);
   }

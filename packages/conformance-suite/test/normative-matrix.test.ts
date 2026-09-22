@@ -63,6 +63,7 @@ import { SELECTION_MINIMA_V02_CASES } from "../src/tests/selection-minima-v02.ts
  */
 const V02_CASE_IDS_OUTSIDE_DEDICATED_FILES: ReadonlySet<string> = new Set([
   "AS-4/v0.2-refuse-issuance-when-owner-approves-no-streams",
+  "AS-4/v0.2-refuse-issuance-when-required-stream-declined",
 ]);
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");

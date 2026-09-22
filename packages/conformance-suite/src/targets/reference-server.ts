@@ -274,6 +274,20 @@ export type Defect =
    */
   | "issue-empty-grant-on-full-decline"
   /**
+   * Issues a grant that silently drops a REQUIRED stream the owner declined,
+   * instead of refusing issuance (matrix `v0.2/6.1-1`).
+   *
+   * Distinct from `issue-empty-grant-on-full-decline`: that flag governs the
+   * all-optional case where Core permits the decline and only the resulting
+   * empty grant is at issue. This flag governs a stream the client marked
+   * `necessity: "required"` — Core gives the AS no discretion there, only a
+   * choice between retaining the stream and refusing authorization outright.
+   * Under this defect the client receives a grant that looks satisfiable
+   * (non-empty `streams`) but is missing the one stream its floor depended
+   * on, and nothing in the response says so.
+   */
+  | "ignore-required-stream-decline"
+  /**
    * Binds client claims into the final approval artifact WITHOUT client
    * attribution (clause 6.3-2).
    *
