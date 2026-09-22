@@ -708,6 +708,89 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // ----------------------------------------------------------- v0.2/6.4-4 ---
+  // PR #1, "Limits and owner choices": "The AS MUST refuse issuance when the
+  // owner approves no streams." No Section 9 item claims this clause — it is
+  // new in the proposal, with no v0.1 counterpart to supersede — so this case
+  // is filed under AS-4 as the nearest thematic item (request resolution
+  // before issuance) rather than one that actually requires it.
+  //
+  // The request names exactly one stream, marked `necessity: "optional"` so
+  // its decline is legal under the owner's discretion clause two sentences
+  // earlier ("MAY let the owner remove optional streams") rather than
+  // colliding with the separate required-stream-refusal rule. Declining the
+  // ONLY stream is therefore "the owner approves no streams" by construction,
+  // not a side effect of some other refusal.
+  //
+  // POSITIVE CONTROL FIRST, same request shape approved without any decline:
+  // without it, a target that refuses every v0.2 approval — including one
+  // that never implements owner narrowing — satisfies the refusal check
+  // vacuously and reports conformant while unable to grant anything.
+  {
+    caseId: "AS-4/v0.2-refuse-issuance-when-owner-approves-no-streams",
+    requirementId: "AS-4",
+    assertion: "A v0.2 approval where the owner declines every requested stream is refused, not issued empty.",
+    async run({ adapter, streams }) {
+      const stream = streams.find((s) => s.fields.length > 0);
+      if (!stream) {
+        return skip("No seeded stream declares a field, so a single-stream optional request cannot be built.");
+      }
+      if (!adapter.stageApproval) {
+        return skip(
+          "The adapter cannot stage an authorization request short of approval, so owner choices cannot be attached separately from approval. This is a harness-coverage gap, not a target defect."
+        );
+      }
+
+      const grantRequest = {
+        specVersion: "0.2" as const,
+        streams: [{ name: stream.name, fields: [...stream.fields], necessity: "optional" as const }],
+      };
+
+      const stagedForControl = await adapter.stageApproval(grantRequest);
+      if (!stagedForControl) {
+        return skip("The target could not stage a v0.2 authorization request over a single optional stream.");
+      }
+      const control = await stagedForControl.approve(stagedForControl.reviewRevision);
+      if (!control) {
+        const controlError = stagedForControl.lastApproveError?.();
+        return skip(
+          `The positive control — the same request, approved as made, with no decline — could not obtain a grant${
+            controlError ? ` (${controlError.status} ${controlError.errorCode ?? "no error code"})` : ""
+          }. This target does not grant the request shape the negative below declines, so a refusal there would not be attributable to the decline.`
+        );
+      }
+
+      // A target may refuse at either boundary: some stage the request and
+      // refuse at `approve` (a structured denial), others refuse to stage a
+      // request that already resolves to zero streams. Core requires only that
+      // ISSUANCE be refused, not which of the two steps does the refusing, so
+      // a stage-time null is accepted here as evidence of refusal rather than
+      // as missing evidence — unlike the `!stagedForControl` branch above,
+      // where a null is ambiguous because the request has not yet been shown
+      // to be grantable at all.
+      const stagedForDenial = await adapter.stageApproval({
+        ...grantRequest,
+        ownerChoices: { declineStreams: [stream.name] },
+      });
+      if (!stagedForDenial) {
+        return pass();
+      }
+      const denied = await stagedForDenial.approve(stagedForDenial.reviewRevision);
+      if (denied) {
+        return fail(
+          `A grant (${denied.grantId}) was issued after the owner declined the request's only stream. PR #1 requires the AS to refuse issuance rather than issue a grant over zero streams — an empty grant is not a smaller version of the request, it is a client credential the client never asked for and cannot use.`
+        );
+      }
+      const deniedError = stagedForDenial.lastApproveError?.();
+      if (!deniedError || deniedError.status < 400 || deniedError.status >= 500) {
+        return skip(
+          "The approval returned no grant, but the adapter supplied no structured client-error denial. Refusal cannot be distinguished from transport or harness failure."
+        );
+      }
+      return pass();
+    },
+  },
+
   // ---------------------------------------------------------------- AS-3 ---
   // The whole Section 7 grant, when the target's approval surface returns one.
   //

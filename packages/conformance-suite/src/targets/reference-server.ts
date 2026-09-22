@@ -261,6 +261,19 @@ export type Defect =
    */
   | "ignore-minimum-on-v01-request"
   /**
+   * Issues a grant over zero streams when the owner declines every requested
+   * one, instead of refusing issuance (matrix `v0.2/6.4-4`).
+   *
+   * Distinct from a required stream's decline, which this target always
+   * refuses regardless of this flag: that is a different clause (the AS's
+   * refusal to narrow below a floor it must retain), and this flag governs only
+   * the all-optional, all-declined case 6.4-4 is actually about. Under this
+   * defect the client receives a syntactically valid grant carrying an empty
+   * `streams` array — a credential the client never asked for and cannot use
+   * for anything, since there is nothing left in it to read.
+   */
+  | "issue-empty-grant-on-full-decline"
+  /**
    * Binds client claims into the final approval artifact WITHOUT client
    * attribution (clause 6.3-2).
    *

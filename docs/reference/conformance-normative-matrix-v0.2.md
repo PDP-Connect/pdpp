@@ -68,7 +68,7 @@ one that exists today.
 
 ## Totals
 
-Clauses enumerated: **270**. MUST-level: **240**, of which **79** have at least one case and **161** do not.
+Clauses enumerated: **270**. MUST-level: **240**, of which **80** have at least one case and **160** do not.
 
 A clause counts as covered when a registered case exercises it. Coverage is
 not a conformance claim about any target: a case exists or it does not, and
@@ -580,7 +580,7 @@ reports.
 | `v0.2/6.4-1` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.4-2` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Composite clause: the PR sentence carries `MAY/MUST` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
 | `v0.2/6.4-3` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. Composite clause: the PR sentence carries `MUST NOT/MUST` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. |
-| `v0.2/6.4-4` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
+| `v0.2/6.4-4` | MUST | black-box-http | `AS-4/v0.2-refuse-issuance-when-owner-approves-no-streams` | The single-obligation sentence is proven for a single-stream request: the owner declines the request's only (optional) stream and issuance is refused, with a same-shape positive control proving the target can grant the request at all. Not separately proven for a multi-stream request where the owner declines every stream individually rather than there being only one to decline — the adapter's `declineStreams` takes a list, so the same mechanism should generalize, but no case exercises more than one stream. |
 | `v0.2/6.4-5` | MUST | black-box-http | — | Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither. |
 | `v0.2/6.4-6` | MUST | review-only | — | Review-only: not observable over HTTP, so this clause needs a review-evidence packet rather than an executable case. Composite clause: the PR sentence carries `MAY/MUST/MUST NOT` keywords together; `level` records the strongest binding one, so a MAY is never reported as promoted. The inventory files this under `consent-surface`; the obligation binds the AS that renders it, and the matrix has no separate consent role. |
 | `v0.2/6.5-1` | MUST | black-box-http | `AS-11/v0.2-empty-minimum-refused` | Partially covered: `AS-11/v0.2-empty-minimum-refused` proves an empty `minimum` is refused. The "only `fields` and `time_range`" half needs a case sending an unknown member, which the adapter's typed `AuthorizationMinimum` cannot express; closing it needs an escape hatch for deliberately invalid shapes. |

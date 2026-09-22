@@ -2315,9 +2315,9 @@ const CORE_V02: readonly ClauseEntry[] = [
     specAnchor: "#limits-and-owner-choices",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-4/v0.2-refuse-issuance-when-owner-approves-no-streams"],
     gapNote:
-      "Needs a v0.2 `authorization_details` builder and an assertion over the v0.2 response; the harness has neither.",
+      "The single-obligation sentence is proven for a single-stream request: the owner declines the request's only (optional) stream and issuance is refused, with a same-shape positive control proving the target can grant the request at all. Not separately proven for a multi-stream request where the owner declines every stream individually rather than there being only one to decline — the adapter's `declineStreams` takes a list, so the same mechanism should generalize, but no case exercises more than one stream.",
   },
   {
     clauseId: "v0.2/6.4-5",

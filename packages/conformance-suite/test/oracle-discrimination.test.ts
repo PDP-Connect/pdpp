@@ -404,6 +404,14 @@ const DISCRIMINATION_MATRIX: readonly {
     caseId: "RS-2/v0.2-narrowed-grant-denied-after-revocation",
     defect: "ignore-revocation",
   },
+  // Clause `v0.2/6.4-4`. The positive control approves the same request shape
+  // as made (no decline), so this row proves the case's refusal check reaches
+  // the all-declined branch specifically, not merely that the target refuses
+  // every v0.2 approval.
+  {
+    caseId: "AS-4/v0.2-refuse-issuance-when-owner-approves-no-streams",
+    defect: "issue-empty-grant-on-full-decline",
+  },
   // ---- The final approval artifact (clauses 7.2-2, 6.3-2, 7.2-4) ----
   //
   // Clause 7.2-2. The defect keeps the streams and fields — the facts an

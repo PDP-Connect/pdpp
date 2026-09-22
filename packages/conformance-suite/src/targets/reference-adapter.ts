@@ -762,7 +762,23 @@ export class ReferenceTargetAdapter implements TargetAdapter {
         ...(narrowed ? { ceiling: { fields: [...requested] } } : {}),
       });
     }
-    return resolved.length === 0 ? null : resolved;
+    return this.refuseIfFullyDeclined(resolved);
+  }
+
+  /**
+   * A request every stream of which resolved to nothing is refused, unless
+   * `issue-empty-grant-on-full-decline` is set (matrix `v0.2/6.4-4`).
+   *
+   * Distinct from the `s.necessity !== "optional"` branch in `resolveStreams`,
+   * which is a different clause (a REQUIRED stream's decline) and stays a
+   * refusal under every defect — this flag governs only the all-declined,
+   * all-optional case 6.4-4 is about.
+   */
+  private refuseIfFullyDeclined(resolved: readonly ResolvedStream[]): ResolvedStream[] | null {
+    if (resolved.length === 0 && !this.defects.has("issue-empty-grant-on-full-decline")) {
+      return null;
+    }
+    return [...resolved];
   }
 
   /**

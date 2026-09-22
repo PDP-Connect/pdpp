@@ -52,6 +52,19 @@ import { ALL_CASES } from "../src/suite.ts";
 import { READ_PATH_V02_CASES } from "../src/tests/read-path-v02.ts";
 import { SELECTION_MINIMA_V02_CASES } from "../src/tests/selection-minima-v02.ts";
 
+/**
+ * Case ids outside the dedicated v0.2 files that also send the v0.2 detail
+ * type, so the provenance test below does not have to treat "not in one of
+ * the two files named for it" as proof a case spoke v0.1. Each entry here is a
+ * case whose home file mostly exercises v0.1 (so it is not itself a v0.2
+ * case file) but that constructs one v0.2 request on purpose — named
+ * individually, not by file, so adding an unrelated v0.1 case next to it in
+ * the same file cannot silently start passing this check.
+ */
+const V02_CASE_IDS_OUTSIDE_DEDICATED_FILES: ReadonlySet<string> = new Set([
+  "AS-4/v0.2-refuse-issuance-when-owner-approves-no-streams",
+]);
+
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const SPEC_PATH = join(REPO_ROOT, "spec-core.md");
 const SPEC = readFileSync(SPEC_PATH, "utf8");
@@ -455,7 +468,11 @@ test("a v0.2 clause cites only cases that actually send v0.2", () => {
   // v0.1. Adding a v0.2 case file without adding it here is the one way to
   // defeat this test, which is why the set is built from the exports rather
   // than from a list of ids.
-  const v02CaseIds = new Set([...SELECTION_MINIMA_V02_CASES, ...READ_PATH_V02_CASES].map((c) => c.caseId));
+  const v02CaseIds = new Set([
+    ...SELECTION_MINIMA_V02_CASES.map((c) => c.caseId),
+    ...READ_PATH_V02_CASES.map((c) => c.caseId),
+    ...V02_CASE_IDS_OUTSIDE_DEDICATED_FILES,
+  ]);
   const borrowed = CLAUSE_MATRIX.filter((c) => c.specVersion === "0.2").flatMap((c) =>
     c.caseIds.filter((id) => !v02CaseIds.has(id)).map((id) => `${c.clauseId} -> ${id}`)
   );
