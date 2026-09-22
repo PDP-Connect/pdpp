@@ -30,7 +30,7 @@
     "ajv-formats": "^3.0.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.13",
-    "ultracite": "7.11.1"
+    "@biomejs/biome": "2.5.14",
+    "ultracite": "7.12.0"
   }
 }
