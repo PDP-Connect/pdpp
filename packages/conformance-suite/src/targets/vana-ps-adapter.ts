@@ -274,6 +274,40 @@ function detailType(version: "0.1" | "0.2" | undefined): string {
 }
 
 /**
+ * The streams and fields the AS actually froze into the grant, read out of a
+ * token response's RFC 9396 `authorization_details`.
+ *
+ * The element's shape differs by revision and both are read here, because the
+ * authority is the same either way -- it is what the AS says it granted:
+ *   - v0.1: core's `toAuthorizationDetail` projection carries `streams`
+ *     directly, each with the resolved `fields`.
+ *   - v0.2: the element is `{ type, grant }` and the complete grant carries
+ *     them, because v0.2 forbids substituting a lossy summary for the grant.
+ *
+ * Returns undefined when the response carried no such element, so the caller
+ * falls back to the requested shape rather than reporting an empty grant.
+ */
+function grantedStreams(
+  tokenResponseBody: unknown
+): readonly { readonly name: string; readonly fields: string[] }[] | undefined {
+  const details = (tokenResponseBody as { authorization_details?: unknown } | undefined)?.authorization_details;
+  if (!Array.isArray(details)) {
+    return undefined;
+  }
+  const entry = details[0] as { grant?: { streams?: unknown }; streams?: unknown } | undefined;
+  const streams = entry?.grant?.streams ?? entry?.streams;
+  if (!Array.isArray(streams)) {
+    return undefined;
+  }
+  const granted = (streams as { name?: unknown; fields?: unknown }[]).flatMap((stream) =>
+    typeof stream?.name === "string" && Array.isArray(stream.fields)
+      ? [{ name: stream.name, fields: stream.fields.map(String) }]
+      : []
+  );
+  return granted.length > 0 ? granted : undefined;
+}
+
+/**
  * The selection revision that produces each `grant.version` this AS stamps.
  *
  * Not a range and not a parameter the server takes: `grant.version` is derived
@@ -608,13 +642,31 @@ export class VanaPsAdapter implements TargetAdapter {
         return null;
       }
       const resolved = approval.grant?.streams ?? [];
+      // What the AS FROZE, taken from the token response's granted
+      // `authorization_details` -- not from `wanted`.
+      //
+      // Core Section 5 requires a stream's schema-required fields to be
+      // present in every resolved allowlist, so this AS legitimately widens a
+      // narrowed request (`requestedFields` unions `declared.required_fields`
+      // on v0.1). RS-2's projection case and RS-15's client-metadata case both
+      // say in as many words that they judge the RS against the fields the AS
+      // RESOLVED, and they read them from here. Reporting the REQUESTED shape
+      // made the adapter's own bookkeeping the oracle: a correct server that
+      // added a required field and then served it read as overbroad access.
+      // `IssuedGrant.streams`' own contract says the requested shape is a
+      // fallback and "NOT evidence of what the target resolved", which is
+      // exactly how it is used below -- only when the target published
+      // nothing.
+      const granted = grantedStreams(this.lastTokenResponseBody);
       return {
         grantId: approval.grant_id,
         accessToken: token,
-        streams: wanted.streams.map((s) => {
-          const got = resolved.find((r) => r.name === s.name);
-          return { name: s.name, fields: got?.fields ? [...got.fields] : [...s.fields] };
-        }),
+        streams:
+          granted ??
+          wanted.streams.map((s) => {
+            const got = resolved.find((r) => r.name === s.name);
+            return { name: s.name, fields: got?.fields ? [...got.fields] : [...s.fields] };
+          }),
         // Only when the approval response actually carried a grant body, which
         // on this target it does not: /approve returns
         // `{ redirect_uri, grant_id }` and nothing else, so in practice this is
