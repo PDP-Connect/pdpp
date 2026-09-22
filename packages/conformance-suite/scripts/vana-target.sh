@@ -484,7 +484,52 @@ await writeFile(
             artist: { type: "string" },
             source_updated_at: { type: "string", format: "date-time" },
           },
-          required: ["id"],
+          // \`title\` is schema-required and sits OUTSIDE the primary key.
+          //
+          // RS-2/v0.2-schema-required-field-not-re-added needs exactly that
+          // shape and nothing in this fixture had it: every stream's
+          // \`required\` array was its primary key, and no narrowing may
+          // withhold a key, so the case reported \`skip\` and a server that
+          // re-adds schema-required members to keep its own records
+          // validating was indistinguishable from a correct one. With
+          // \`title\` required, the case keeps (id, artist,
+          // source_updated_at) and withholds a member the schema demands.
+          //
+          // It is true of the seeded data rather than bolted onto it: every
+          // record ingest_stream writes under the "tracks" shape already
+          // carries a title, and a saved track without one is not a record
+          // this connector could produce.
+          //
+          // saved_tracks and NOT top_artists, though top_artists is where a
+          // required \`name\` would read more naturally. Declaring it there
+          // makes RS-2/field-projection-not-exceeded and
+          // RS-15/client-metadata-projection-closed report FALSE findings
+          // against a conformant server, and the reason is worth recording
+          // because the obvious fix is to move it back:
+          //
+          //   Both cases pick the first stream with two or more fields --
+          //   top_artists -- narrow a v0.1 grant to the primary key alone,
+          //   and judge the read against the fields the AS RESOLVED, since
+          //   Core Section 5 lets a conforming AS widen a narrow request with
+          //   the schema-required members. This AS does exactly that: asked
+          //   for \`fields: ["id"]\` it issues a grant whose token response
+          //   carries \`fields: ["id","name"]\`, and its RS then serves both.
+          //   Consistent and conformant. But the resolved set reaches the
+          //   cases through \`IssuedGrant.streams\`, which the Vana adapter
+          //   fills from the /approve body -- and this deployment's /approve
+          //   answers {redirect_uri, grant_id} with no grant in it, so the
+          //   adapter falls back to the REQUESTED fields. The cases then
+          //   compare a response carrying \`name\` against a frozen set of
+          //   \`["id"]\` and report overbroad access.
+          //
+          // Until the adapter reads the resolved projection from the token
+          // response's authorization_details (it already does for the v0.2
+          // read-path cases), a schema-required member outside the key on
+          // top_artists produces two fabricated failures. saved_tracks is
+          // read by no v0.1 projection oracle -- it exists to be held OUT of
+          // grants -- so the v0.2 case gets its narrowing and nothing else
+          // changes.
+          required: ["id", "title"],
           additionalProperties: false,
         },
         primary_key: ["id"],
