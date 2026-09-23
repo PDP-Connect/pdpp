@@ -25,21 +25,10 @@
         "name": "next"
       }
     ],
-    // fumadocs-mdx writes into PDPP_SITE_SOURCE_DIR (default ".source"; see
-    // scripts/site-runtime.ts), isolated per run mode so dev, verify, and
-    // build never clobber each other's generated output (see
-    // next.config.mjs's matching webpack/turbopack aliases and its
-    // typescript.tsconfigPath, which points next build's own internal
-    // type-check at the right tsconfig for the same reason this file exists).
-    // tsc has no env-var substitution in "paths", so this default config
-    // resolves only ".source" — the editor/IDE and a plain `types:check` (no
-    // PDPP_SITE_SOURCE_DIR set) both use that directory. A mode that isolates
-    // its output elsewhere (currently just "verify", via .source-verify)
-    // needs its own tsconfig with "paths" pointed at that directory instead
-    // of a fallback list here: listing every mode's directory would let tsc
-    // silently resolve a stale leftover directory ahead of the one the
-    // current run actually generated, masking a real type error in fresh
-    // output. See tsconfig.verify.json.
+    // Resolves generated docs from ".source", the default PDPP_SITE_SOURCE_DIR.
+    // tsc cannot read env vars in "paths", so a mode that writes elsewhere
+    // needs its own tsconfig; see tsconfig.verify.json. Do not list several
+    // directories here: tsc picks the first that exists, which can be stale.
     "paths": {
       "@/*": ["./src/*"],
       "@generated-docs/*": ["./.source/*"],
