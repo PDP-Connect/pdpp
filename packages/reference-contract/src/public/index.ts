@@ -100,6 +100,7 @@ function hasStrictHttpsAuthority(authority: string): boolean {
 function isStrictHttpsUri(value: string): boolean {
   const components = RFC_9728_RESOURCE_IDENTIFIER_RE.exec(value);
   if (
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: RegExp#exec returns RegExpExecArray | null per lib.d.ts; tsc --noEmit agrees this branch is reachable. Biome 2.5.14 infers exec() as never-null here, a false positive against TypeScript's own typing of the method.
     components === null ||
     FORBIDDEN_URI_CODE_POINT_RE.test(value) ||
     INVALID_PERCENT_ENCODING_RE.test(value) ||
@@ -129,6 +130,7 @@ function isStrictHttpsUri(value: string): boolean {
  */
 export function deriveProtectedResourceMetadataUrl(resourceIdentifier: string): string {
   const components = RFC_9728_RESOURCE_IDENTIFIER_RE.exec(resourceIdentifier);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: RegExp#exec returns RegExpExecArray | null per lib.d.ts; tsc --noEmit agrees this branch is reachable. Biome 2.5.14 infers exec() as never-null here, a false positive against TypeScript's own typing of the method.
   if (components === null || !isStrictHttpsUri(resourceIdentifier)) {
     throw new TypeError("RFC 9728 resource identifiers must be HTTPS URLs without fragments or user information");
   }
