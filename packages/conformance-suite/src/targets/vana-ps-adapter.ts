@@ -29,6 +29,7 @@ import type {
   SeededStream,
   SelectionOutcome,
   SelectionRequest,
+  SourceDeclarationStream,
   SourceDeclarationSubmission,
   StagedApproval,
   TargetAdapter,
@@ -140,6 +141,19 @@ export interface VanaPsConfig {
   /** Source the seeded streams belong to. */
   readonly sourceId: string;
   readonly streams: readonly SeededStream[];
+  /**
+   * The value this deployment stamps into `grant.version`, for RS-11's
+   * positive control.
+   *
+   * Not inferable and deliberately not read back from the target: Core fixes
+   * no value for `grant.version`, and asking the server which version it
+   * issues and then checking its answer against itself would measure nothing.
+   * This deployment stamps `0.1.0` on a v0.1 grant and `0.2.0` on a v0.2 one
+   * (core `types.ts`, `PDPP_GRANT_VERSION`), and `grantWithSchemaVersion`
+   * mints against exactly those two -- see there for why no third value is
+   * reachable.
+   */
+  readonly supportedGrantSchemaVersion?: string;
   readonly targetId: string;
   readonly targetVersion: string;
 }
@@ -260,6 +274,52 @@ function detailType(version: "0.1" | "0.2" | undefined): string {
 }
 
 /**
+ * The streams and fields the AS actually froze into the grant, read out of a
+ * token response's RFC 9396 `authorization_details`.
+ *
+ * The element's shape differs by revision and both are read here, because the
+ * authority is the same either way -- it is what the AS says it granted:
+ *   - v0.1: core's `toAuthorizationDetail` projection carries `streams`
+ *     directly, each with the resolved `fields`.
+ *   - v0.2: the element is `{ type, grant }` and the complete grant carries
+ *     them, because v0.2 forbids substituting a lossy summary for the grant.
+ *
+ * Returns undefined when the response carried no such element, so the caller
+ * falls back to the requested shape rather than reporting an empty grant.
+ */
+function grantedStreams(
+  tokenResponseBody: unknown
+): readonly { readonly name: string; readonly fields: string[] }[] | undefined {
+  const details = (tokenResponseBody as { authorization_details?: unknown } | undefined)?.authorization_details;
+  if (!Array.isArray(details)) {
+    return undefined;
+  }
+  const entry = details[0] as { grant?: { streams?: unknown }; streams?: unknown } | undefined;
+  const streams = entry?.grant?.streams ?? entry?.streams;
+  if (!Array.isArray(streams)) {
+    return undefined;
+  }
+  const granted = (streams as { name?: unknown; fields?: unknown }[]).flatMap((stream) =>
+    typeof stream?.name === "string" && Array.isArray(stream.fields)
+      ? [{ name: stream.name, fields: stream.fields.map(String) }]
+      : []
+  );
+  return granted.length > 0 ? granted : undefined;
+}
+
+/**
+ * The selection revision that produces each `grant.version` this AS stamps.
+ *
+ * Not a range and not a parameter the server takes: `grant.version` is derived
+ * from the request's revision, so these two values are the whole of what
+ * `grantWithSchemaVersion` can honestly mint.
+ */
+const GRANT_SCHEMA_VERSIONS: Record<string, "0.1" | "0.2" | undefined> = {
+  "0.1.0": "0.1",
+  "0.2.0": "0.2",
+};
+
+/**
  * The owner's narrowing as this server's query-string vocabulary.
  *
  * PR #1 constrains how the AS must RESOLVE an owner's choices but says nothing
@@ -357,6 +417,8 @@ export class VanaPsAdapter implements TargetAdapter {
   readonly roles: readonly Role[];
   readonly capabilities: TargetCapabilities;
   readonly reviewEvidence?: readonly ReviewEvidence[];
+  /** RS-11's positive control; see `VanaPsConfig.supportedGrantSchemaVersion`. */
+  readonly supportedGrantSchemaVersion?: string;
   private readonly config: VanaPsConfig;
   /**
    * Headers from the most recent successful token-endpoint redemption, for
@@ -395,6 +457,9 @@ export class VanaPsAdapter implements TargetAdapter {
     this.capabilities = config.capabilities;
     if (config.reviewEvidence) {
       this.reviewEvidence = config.reviewEvidence;
+    }
+    if (config.supportedGrantSchemaVersion) {
+      this.supportedGrantSchemaVersion = config.supportedGrantSchemaVersion;
     }
   }
 
@@ -577,16 +642,64 @@ export class VanaPsAdapter implements TargetAdapter {
         return null;
       }
       const resolved = approval.grant?.streams ?? [];
+      // What the AS FROZE, taken from the token response's granted
+      // `authorization_details` -- not from `wanted`.
+      //
+      // Core Section 5 requires a stream's schema-required fields to be
+      // present in every resolved allowlist, so this AS legitimately widens a
+      // narrowed request (`requestedFields` unions `declared.required_fields`
+      // on v0.1). RS-2's projection case and RS-15's client-metadata case both
+      // say in as many words that they judge the RS against the fields the AS
+      // RESOLVED, and they read them from here. Reporting the REQUESTED shape
+      // made the adapter's own bookkeeping the oracle: a correct server that
+      // added a required field and then served it read as overbroad access.
+      // `IssuedGrant.streams`' own contract says the requested shape is a
+      // fallback and "NOT evidence of what the target resolved", which is
+      // exactly how it is used below -- only when the target published
+      // nothing.
+      const granted = grantedStreams(this.lastTokenResponseBody);
       return {
         grantId: approval.grant_id,
         accessToken: token,
-        streams: wanted.streams.map((s) => {
-          const got = resolved.find((r) => r.name === s.name);
-          return { name: s.name, fields: got?.fields ? [...got.fields] : [...s.fields] };
-        }),
-        // Only when the approval response actually carried a grant body. This
-        // target's /approve returns `{ redirect_uri, grant_id }`, so in practice
-        // this is absent and AS-3's schema case skips for missing evidence.
+        streams:
+          granted ??
+          wanted.streams.map((s) => {
+            const got = resolved.find((r) => r.name === s.name);
+            return { name: s.name, fields: got?.fields ? [...got.fields] : [...s.fields] };
+          }),
+        // Only when the approval response actually carried a grant body, which
+        // on this target it does not: /approve returns
+        // `{ redirect_uri, grant_id }` and nothing else, so in practice this is
+        // absent and AS-3's two cases skip for missing evidence.
+        //
+        // Nor does any other surface here publish the v0.1 Section 7 artifact,
+        // which is why it is not fetched from one:
+        //
+        //   - The TOKEN response carries `authorization_details` as RFC 9396
+        //     Section 7 requires, but for a v0.1 grant that element is core's
+        //     `toAuthorizationDetail` projection -- type, source, purpose_code,
+        //     access_mode, streams. It drops `version`, `grant_id`,
+        //     `issued_at`, `subject`, `client` and `source_declaration`, and
+        //     the server's own comment calls it a lossy summary. Handing it to
+        //     `grantSchemaViolations` would report six absent Section 7 rows as
+        //     violations of a grant the target never claimed to publish.
+        //   - For a v0.2 grant the same element IS `{ type, grant }` carrying
+        //     the whole artifact, but its `version` is `0.2.0` while the
+        //     suite's oracle is transcribed from the v0.1 field tables
+        //     (`grant-schema.ts` requires exactly `0.1.0`), and no case asks
+        //     this adapter for a v0.2 grant. A v0.2 artifact judged by the v0.1
+        //     tables would fail for its revision, not its shape.
+        //   - `/pdpp/v1/introspect` returns the same projection as the token
+        //     response, by the same function.
+        //   - Owner-authenticated `GET /pdpp/v1/grants` is a listing summary
+        //     (grant_id, client_id, status, issued_at, access_mode,
+        //     purpose_code, and each stream's name and fields). It is missing
+        //     the same required rows as the token projection, so it is a
+        //     summary in exactly the sense AS-3 warns against.
+        //
+        // `tokenResponseBody` below carries whichever of those elements the
+        // exchange really returned, so the RFC 9396 Section 7 case still has
+        // its evidence; what stays unreported is the Section 7 ARTIFACT.
         ...(approval.grant === undefined ? {} : { rawGrant: approval.grant }),
         ...this.lastTokenExchange(),
       };
@@ -677,19 +790,117 @@ export class VanaPsAdapter implements TargetAdapter {
     });
     const body: unknown = await response.json().catch(() => undefined);
     const errorCode = (body as { error?: unknown } | undefined)?.error;
-    // `retainedContent` is deliberately never reported. The acceptance response
-    // carries stream NAMES only, and this deployment exposes no route that
-    // reads back a retained declaration's fields -- so clause 5.8-4's retention
-    // half has no observation behind it here and reports skip. Reporting the
-    // submitted streams as "retained" would be the suite asserting its own
-    // input, which is exactly the failure mode that half of the clause exists
-    // to catch.
+    // Read back AFTER the submission, from the server, never restated from
+    // what was submitted -- see `retainedDeclarationStreams`. Absent when this
+    // server cannot be made to show what it holds for THIS key, which reports
+    // clause 5.8-4's retention half `skip` rather than assuming it.
+    const retainedContent = await this.retainedDeclarationStreams(declaration);
     return {
       accepted: response.ok,
       status: response.status,
       ...(typeof errorCode === "string" ? { errorCode } : {}),
+      ...(retainedContent === undefined ? {} : { retainedContent }),
       body,
     };
+  }
+
+  /**
+   * The streams and fields this AS still holds for a declaration key, read
+   * back from the server after a submission (clause 5.8-4's retention half).
+   *
+   * WHY THIS ROUTE. The acceptance response carries stream NAMES only, and a
+   * refusal carries no retained content at all, so neither answers "what is
+   * held now". The resource server's `GET /v1/streams/:stream` owner metadata
+   * does carry a stream's declared schema, but its registry is built once at
+   * boot from the snapshots that existed then (`records-bootstrap.ts` takes a
+   * `DeclarationSnapshot[]`, and `bootstrap.ts` fills it from
+   * `declarationRegistry.list()` at construction), so a declaration submitted
+   * in this lifetime never reaches it. The AS's own `resolveDeclaration` IS
+   * live, and the consent review is where it surfaces: opening an
+   * authorization session for the source and fetching its review returns
+   * `data.streams[].fields` resolved against the RETAINED SNAPSHOT.
+   *
+   * WHY THE REQUEST NAMES NO FIELDS. Core Section 6 "Note on defaults": a
+   * stream request that omits `fields` asks the AS to resolve all permitted
+   * fields from the retained snapshot. So the field list that comes back is
+   * the server's copy of the declaration, not an echo of this adapter's
+   * input -- which is the whole point, since the clause is about content the
+   * suite must not be able to supply.
+   *
+   * WHY THE VERSION IS CHECKED. `resolveDeclaration` answers for the source's
+   * CURRENT declaration, and the key clause 5.8-4 is about is (authority,
+   * source.id, declaration_version). The review publishes
+   * `data.source_declaration_version`, so when it differs from the version
+   * just submitted this returns undefined rather than reporting some other
+   * revision's content as the key's.
+   *
+   * Nothing is approved: the session is opened and reviewed only. No grant is
+   * issued, and the session expires on its own.
+   */
+  private async retainedDeclarationStreams(
+    declaration: SourceDeclarationSubmission
+  ): Promise<readonly SourceDeclarationStream[] | undefined> {
+    const owner = await this.ownerToken();
+    if (!owner) {
+      return undefined;
+    }
+    const ownerAuth = { authorization: `Bearer ${owner}` };
+    const opened = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize`, {
+      method: "POST",
+      headers: { ...ownerAuth, "content-type": "application/json" },
+      body: JSON.stringify({
+        client_id: this.config.clientId,
+        redirect_uri: this.config.redirectUri,
+        code_challenge: await s256Challenge(PKCE_VERIFIER),
+        code_challenge_method: "S256",
+        client_display: { name: "pdpp-conformance-suite" },
+        authorization_details: [
+          {
+            type: detailType("0.1"),
+            source: { id: declaration.source.id },
+            purpose_code: this.config.purposeCode ?? "https://pdpp.dev/purpose/personal_analytics",
+            access_mode: "continuous",
+            streams: declaration.streams.map((stream) => ({ name: stream.name })),
+          },
+        ],
+      }),
+    });
+    if (opened.status !== 201) {
+      return undefined;
+    }
+    const { session_id: sessionId } = (await opened.json()) as { session_id?: string };
+    if (!sessionId) {
+      return undefined;
+    }
+    const reviewed = await fetch(`${this.config.baseUrl}/pdpp/v1/authorize/${encodeURIComponent(sessionId)}/review`, {
+      headers: ownerAuth,
+    });
+    if (!reviewed.ok) {
+      return undefined;
+    }
+    const data = (
+      (await reviewed.json().catch(() => undefined)) as
+        | {
+            review?: {
+              data?: {
+                source_declaration_version?: unknown;
+                streams?: { name?: unknown; fields?: unknown }[];
+              };
+            };
+          }
+        | undefined
+    )?.review?.data;
+    if (data?.source_declaration_version !== declaration.declarationVersion) {
+      return undefined;
+    }
+    if (!Array.isArray(data.streams)) {
+      return undefined;
+    }
+    return data.streams.flatMap((stream) =>
+      typeof stream.name === "string" && Array.isArray(stream.fields)
+        ? [{ name: stream.name, fields: stream.fields.map(String) }]
+        : []
+    );
   }
 
   /**
@@ -978,6 +1189,34 @@ export class VanaPsAdapter implements TargetAdapter {
     return await staged.approve(staged.reviewRevision, wanted.explicitAiTrainingConsent);
   }
 
+  /**
+   * Mint a token bound to a grant at a CHOSEN grant-schema version (clause
+   * 7.4-2), through the ordinary consent journey.
+   *
+   * This AS stamps `grant.version` from the revision the selection request
+   * asks for and from nothing else: the v0.1 detail type yields `0.1.0`, the
+   * v0.2 type yields `0.2.0` (core `tokens.ts` / `types.ts`). So exactly two
+   * versions are mintable, and this maps each to the request that produces
+   * it rather than editing a grant body -- a suite-authored artifact would
+   * test the suite's idea of the grant schema instead of the target's.
+   *
+   * Any other version returns null, which reports RS-11 `skip`. That is the
+   * honest outcome: refusing to ISSUE a grant at an unknown major is not the
+   * obligation 7.4-2 states (which is on the RS refusing to ENFORCE one), and
+   * the only way to hand the RS such a grant here would be to forge it.
+   */
+  async grantWithSchemaVersion(
+    version: string,
+    wanted: GrantRequest
+  ): Promise<{ readonly accessToken: string; readonly grantId: string } | null> {
+    const revision = GRANT_SCHEMA_VERSIONS[version];
+    if (!revision) {
+      return null;
+    }
+    const issued = await this.issueGrant({ ...wanted, specVersion: revision });
+    return issued ? { accessToken: issued.accessToken, grantId: issued.grantId } : null;
+  }
+
   async revokeGrant(grantId: string): Promise<void> {
     const owner = await this.ownerToken();
     // Form-encoded, not JSON. This server splits its bodies deliberately: the
@@ -1199,4 +1438,46 @@ export class VanaPsAdapter implements TargetAdapter {
 
     return grant.accessToken;
   }
+
+  // HOOKS THIS DEPLOYMENT CANNOT SUPPLY, and why each is absent rather than
+  // faked. Every one of them reports its case `skip`; none of the three is a
+  // finding against the target, and none can be closed from the adapter
+  // without manufacturing an artifact the server never issued.
+  //
+  // `tokenWithIntrospectedKind` (RS-4, clause 8.2-3). This server defines
+  // exactly the two kinds Core does. `pdpp_token_kind` is written by
+  // `PdppTokenService.issueAccessToken` as `owner` or `client` and read back
+  // by `introspect` from the token row, and no route, parameter or
+  // configuration reaches that column. A co-located target's local
+  // introspection equivalent is what the hook's contract points at, and here
+  // it is an in-process call on the same service -- there is no seam between
+  // issuance and resolution to inject a third kind at. Writing the column
+  // directly in the server's SQLite file would not be the AS issuing such a
+  // token, and a suite-minted string is a token of NO kind, which this server
+  // rejects at authentication for an entirely different reason.
+  //
+  // `expireSyncCursor` (RS-7, clause 4.3-2). This deployment never retires a
+  // cursor it issued. `CursorExpiredError` is thrown from exactly one place in
+  // `pdpp-records-sqlite-store.ts`: a `changes_since` token that does not
+  // decode as base64url JSON at all. There is no retention window over
+  // `pdpp_record_changes`, no pruning pass and no operator route that ages a
+  // token, so there is nothing to ask the target to do. Expiry is a MAY, and
+  // declining it is not a violation -- but the ONE honest way to reach this
+  // clause would be to hand the server a token it did not issue, which is
+  // exactly what the hook exists to avoid.
+  //
+  // `reissueAgainstConsumedGrant` (AS-10). A `single_use` grant is consumed
+  // atomically at its first client-token issuance
+  // (`issueAccessToken(consumeSingleUse)`), and this server offers no second
+  // way to aim the token endpoint at an already-issued grant id: an
+  // authorization code is minted once, at approve time, for one grant;
+  // `redeemAuthorizationCode` burns it via `consumeAuthCode` before it reads
+  // anything else; a second approve on the same session is refused as already
+  // decided; and a `single_use` grant is issued no refresh token. So replaying
+  // the code is refused at the CODE layer ("authorization code is invalid,
+  // expired, or already redeemed") and never reaches the consumption check.
+  // Implementing the hook that way would return null -- which the case reads
+  // as the conformant outcome -- for a reason that has nothing to do with
+  // grant consumption, so the case would pass on evidence about something
+  // else. Absent is the honest state.
 }
