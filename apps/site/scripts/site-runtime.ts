@@ -5,6 +5,7 @@ interface SiteRuntimeEnvironment {
   NODE_ENV?: string;
   PDPP_SITE_NEXT_DIST_DIR?: string;
   PDPP_SITE_SOURCE_DIR?: string;
+  PDPP_SITE_TSCONFIG?: string;
   PDPP_WEB_BUILD_WORKERS?: string;
 }
 
@@ -27,5 +28,11 @@ export function resolveSiteRuntime(environment: SiteRuntimeEnvironment = process
     distDir: environment.PDPP_SITE_NEXT_DIST_DIR ?? ".next",
     isProduction,
     sourceDir: environment.PDPP_SITE_SOURCE_DIR ?? ".source",
+    // Same PDPP_SITE_TSCONFIG that package.json's "types:check" script
+    // passes to `tsc -p`, so `next build`'s own internal type-check pass
+    // (which reads tsconfig.json directly, not through the webpack/
+    // turbopack "@generated-docs" aliases) resolves against the same
+    // directory as the rest of the current run. See next.config.mjs.
+    tsconfigPath: environment.PDPP_SITE_TSCONFIG ?? "tsconfig.json",
   };
 }

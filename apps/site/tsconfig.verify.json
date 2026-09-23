@@ -1,0 +1,20 @@
+{
+  // Used only by `types:check`/`verify` (PDPP_SITE_SOURCE_DIR=.source-verify;
+  // see scripts/site-runtime.ts and package.json's "verify" script). Extends
+  // the base tsconfig but resolves "@generated-docs/*" against
+  // ".source-verify" ONLY, not the multi-directory fallback list in the base
+  // config. That fallback let tsc silently resolve a stale ".source" left
+  // over from an unrelated `next build`/`next dev` run instead of the
+  // ".source-verify" output verify just generated, so a type error in fresh
+  // output could pass unnoticed. The editor/IDE and a plain `types:check`
+  // (no PDPP_SITE_SOURCE_DIR set) keep using tsconfig.json's default
+  // ".source" directly.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"],
+      "@generated-docs/*": ["./.source-verify/*"],
+      "collections/*": ["./.source-verify/*"]
+    }
+  }
+}

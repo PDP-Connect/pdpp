@@ -9,7 +9,7 @@ import { collectAllowedDevOrigins } from "./scripts/dev-origins.ts";
 import { resolveSiteRuntime } from "./scripts/site-runtime.ts";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
-const { buildWorkers, distDir, isProduction, sourceDir } = resolveSiteRuntime();
+const { buildWorkers, distDir, isProduction, sourceDir, tsconfigPath } = resolveSiteRuntime();
 const withMDX = createMDX({ outDir: sourceDir });
 const allowedDevOrigins = isProduction ? [] : collectAllowedDevOrigins();
 
@@ -27,6 +27,17 @@ const nextConfig = {
   },
   output: "standalone",
   serverExternalPackages: ["fumadocs-mdx", "satteri"],
+  // `next build`'s own internal type-check pass reads tsconfig.json's
+  // "paths" directly — it does not go through the webpack/turbopack
+  // aliases below, which the bundler itself uses instead. Point it at the
+  // same per-mode tsconfig apps/site/package.json's "types:check" script
+  // selects via PDPP_SITE_TSCONFIG (see scripts/site-runtime.ts), so a
+  // `verify` build's typecheck resolves "@generated-docs/*" against
+  // ".source-verify" like `verify`'s own separate `tsc -p` pass does, not
+  // against the base config's ".source".
+  typescript: {
+    tsconfigPath,
+  },
   turbopack: {
     resolveAlias: {
       "@generated-docs/*": `./${sourceDir}/*`,
