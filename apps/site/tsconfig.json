@@ -25,10 +25,20 @@
         "name": "next"
       }
     ],
+    // fumadocs-mdx writes into PDPP_SITE_SOURCE_DIR (default ".source"; see
+    // scripts/site-runtime.ts), isolated per run mode so dev, verify, and
+    // build never clobber each other's generated output (see next.config.ts's
+    // matching webpack/turbopack aliases). tsc has no env-var substitution in
+    // "paths", so list every mode's directory; tsc resolves the first one that
+    // exists.
     "paths": {
       "@/*": ["./src/*"],
-      "@generated-docs/*": ["./.source/*"],
-      "collections/*": ["./.source/*"]
+      "@generated-docs/*": [
+        "./.source/*",
+        "./.source-verify/*",
+        "./.source-dev/*"
+      ],
+      "collections/*": ["./.source/*", "./.source-verify/*", "./.source-dev/*"]
     }
   },
   "include": [
