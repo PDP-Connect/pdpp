@@ -1,0 +1,14 @@
+{
+  // Used by `verify` (PDPP_SITE_SOURCE_DIR=.source-verify, selected through
+  // PDPP_SITE_TSCONFIG). Resolves generated docs only from the output that
+  // verify just wrote, so a stale ".source" from a dev or build run cannot
+  // hide a type error.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"],
+      "@generated-docs/*": ["./.source-verify/*"],
+      "collections/*": ["./.source-verify/*"]
+    }
+  }
+}

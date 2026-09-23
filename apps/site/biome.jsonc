@@ -90,6 +90,32 @@
       }
     },
     {
+      // Upstream Biome resolver false-positive waiver — NOT a doctrine change.
+      //
+      // scripts/style-differ.mjs does `import { chromium } from "playwright"`.
+      // playwright's index.d.ts is `export * from 'playwright-core'`, and
+      // playwright-core is an indirect dependency here (pulled in
+      // transitively, not listed in this package's own package.json), so
+      // under pnpm's isolated node_modules it has no symlink inside
+      // apps/site/node_modules for Biome's resolver to follow. The import
+      // resolves cleanly under TypeScript (moduleResolution: "bundler") and
+      // at runtime (verified: `node -e "require('playwright').chromium"`
+      // and the ESM equivalent both return the launcher). Same upstream gap
+      // as the src/** waiver above (biomejs/biome#9143, #6464); this file
+      // sits outside src/** so that override does not reach it.
+      //
+      // Exit condition: same as the src/** override above — drop once
+      // Biome's resolver follows re-exports through transitive dependencies.
+      "includes": ["scripts/style-differ.mjs"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          }
+        }
+      }
+    },
+    {
       // Architectural shim waiver — NOT a barrel-file pattern.
       //
       // src/components/ui/*, five sections/*.tsx PDPP-surface files,

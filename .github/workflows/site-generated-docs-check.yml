@@ -1,0 +1,84 @@
+name: site-generated-docs-check
+
+# PR gate for apps/site's generated-docs pipeline: verify's own `tsc` pass
+# (types:check) and the root generated-artifacts drift check
+# (generated-artifacts:check), both of which currently run ONLY post-merge
+# (generated-artifacts:check in semantic-release.yml, gated on a version
+# actually publishing) or not at all in CI (types:check/verify are never
+# invoked by any workflow). That gap let two separate defects reach main
+# undetected: a stale tsconfig path mapping that broke `pnpm --dir apps/site
+# run verify` on a fresh checkout, and hand-edited generated output
+# (apps/site/scripts/sync-spec-docs.mjs) that drifted from the TypeScript
+# source it's compiled from. Neither is caught by spec-check.yml's "root/site
+# spec drift" job, which only diffs generated markdown against the root
+# specs.
+#
+# Deliberately NOT the full `verify` script: `verify` also runs the test
+# suite and a production `next build`, which is real coverage but not what
+# closes this specific gap and would roughly double this job's wall time for
+# no additional defect coverage here. `types:check` alone reproduces the
+# tsconfig defect (TS2307/TS2305-class failures); generated-artifacts:check
+# alone reproduces the compiled-output drift. Both run in well under the
+# `pnpm install` time this job already pays.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/site-generated-docs-check.yml"
+      - "apps/site/**"
+      - "docs/design-system/ink-carbon/project/**"
+      - "scripts/check-generated-artifacts.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  pull_request:
+    paths:
+      - ".github/workflows/site-generated-docs-check.yml"
+      - "apps/site/**"
+      - "docs/design-system/ink-carbon/project/**"
+      - "scripts/check-generated-artifacts.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: site-generated-docs-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: site types:check + generated-artifacts:check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      # Runs with the same PDPP_SITE_SOURCE_DIR/PDPP_SITE_TSCONFIG isolation
+      # as `pnpm --dir apps/site run verify`, so this job exercises the exact
+      # tsconfig this gate exists to protect (tsconfig.verify.json), not the
+      # default tsconfig.json a plain `types:check` would use.
+      - name: Site types:check (verify mode)
+        env:
+          PDPP_SITE_SOURCE_DIR: .source-verify
+          PDPP_SITE_TSCONFIG: tsconfig.verify.json
+        run: pnpm --dir apps/site run types:check
+
+      - name: Generated artifacts are not drifted
+        run: pnpm generated-artifacts:check

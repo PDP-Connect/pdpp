@@ -25,6 +25,10 @@
         "name": "next"
       }
     ],
+    // Resolves generated docs from ".source", the default PDPP_SITE_SOURCE_DIR.
+    // tsc cannot read env vars in "paths", so a mode that writes elsewhere
+    // needs its own tsconfig; see tsconfig.verify.json. Do not list several
+    // directories here: tsc picks the first that exists, which can be stale.
     "paths": {
       "@/*": ["./src/*"],
       "@generated-docs/*": ["./.source/*"],

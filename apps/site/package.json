@@ -8,6 +8,7 @@
     "//dev-node-options": "NODE_OPTIONS adds Node.js diagnostic reports on fatal V8 errors and uncaught exceptions. Reports land in tmp/node-reports/ at the repo root (gitignored), excluding env/network sections so reports do not persist secrets.",
     "//dev-port": "Public site defaults to :3001 (design.md §5). PDPP_SITE_PORT overrides; PDPP_WEB_PORT kept as a fallback for existing contributor env files.",
     "//sync-specs": "Generates content/docs/spec-*.md from the normative root spec-*.md (single source). The generated files are gitignored; predev/prebuild regenerate them. See scripts/sync-spec-docs.mjs.",
+    "//types-check-tsconfig": "PDPP_SITE_TSCONFIG selects which tsconfig types:check's tsc pass uses; default tsconfig.json resolves @generated-docs/* against .source only. A mode whose PDPP_SITE_SOURCE_DIR points elsewhere (currently just verify, via .source-verify) must also set PDPP_SITE_TSCONFIG to a config whose paths match that directory, or tsc can silently resolve a stale .source left by an unrelated dev/build run instead of the output this run just generated. See tsconfig.verify.json.",
     "prebuild": "node scripts/sync-spec-docs.mjs",
     "build": "next build --webpack",
     "check": "ultracite check && pnpm --dir ../.. generated-artifacts:check",
@@ -19,8 +20,8 @@
     "start": "next start",
     "sync:specs": "node scripts/sync-spec-docs.mjs",
     "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx --import ../../packages/operator-ui/css-stub-register.ts \"scripts/*.test.ts\" \"src/**/*.test.ts\"",
-    "types:check": "node scripts/sync-spec-docs.mjs && fumadocs-mdx source.config.ts \"${PDPP_SITE_SOURCE_DIR:-.source}\" && next typegen && tsc --noEmit",
-    "verify": "sh -c 'export PDPP_SITE_NEXT_DIST_DIR=.next-verify PDPP_SITE_SOURCE_DIR=.source-verify; pnpm types:check && pnpm test && pnpm check && pnpm build'"
+    "types:check": "node scripts/sync-spec-docs.mjs && fumadocs-mdx source.config.ts \"${PDPP_SITE_SOURCE_DIR:-.source}\" && next typegen && tsc -p \"${PDPP_SITE_TSCONFIG:-tsconfig.json}\" --noEmit",
+    "verify": "sh -c 'export PDPP_SITE_NEXT_DIST_DIR=.next-verify PDPP_SITE_SOURCE_DIR=.source-verify PDPP_SITE_TSCONFIG=tsconfig.verify.json; pnpm types:check && pnpm test && pnpm check && pnpm build'"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
