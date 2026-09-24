@@ -1,0 +1,328 @@
+{
+	"protocol_version": "0.1.0",
+	"connector_id": "https://registry.pdpp.dev/connectors/meta",
+	"connector_key": "meta",
+	"manifest_uri": "https://registry.pdpp.dev/connectors/meta",
+	"version": "0.4.0",
+	"display_name": "Instagram (Meta)",
+	"brand": {
+		"icon": "icon.svg",
+		"background_color": "#E1306C"
+	},
+	"runtime_requirements": {
+		"bindings": {
+			"network": {
+				"required": true
+			},
+			"browser": {
+				"required": true
+			}
+		}
+	},
+	"capabilities": {
+		"human_interaction": ["manual_action"],
+		"refresh_policy": {
+			"recommended_mode": "manual",
+			"minimum_interval_seconds": 3600,
+			"interaction_posture": "manual_action_likely",
+			"rate_limit_sensitivity": "medium",
+			"bot_detection_sensitivity": "high",
+			"background_safe": false,
+			"rationale": "Instagram (Meta) blocks repeated automated access; refresh manually."
+		},
+		"public_listing": {
+			"tier": "development"
+		}
+	},
+	"streams": [
+		{
+			"name": "profile",
+			"required": true,
+			"description": "The user's Instagram profile.",
+			"display": {
+				"label": "Your Instagram profile",
+				"detail": "Username, name, bio, follower/following counts, post count."
+			},
+			"semantics": "mutable_state",
+			"schema": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"username": {
+						"type": "string",
+						"x_pdpp_role": "actor"
+					},
+					"full_name": {
+						"type": ["string", "null"],
+						"x_pdpp_role": "primary-title"
+					},
+					"bio": {
+						"type": ["string", "null"],
+						"x_pdpp_role": "secondary"
+					},
+					"profile_pic_url": {
+						"type": ["string", "null"]
+					},
+					"external_url": {
+						"type": ["string", "null"]
+					},
+					"follower_count": {
+						"type": ["integer", "null"]
+					},
+					"following_count": {
+						"type": ["integer", "null"]
+					},
+					"post_count": {
+						"type": ["integer", "null"]
+					},
+					"is_private": {
+						"type": ["boolean", "null"]
+					},
+					"is_verified": {
+						"type": ["boolean", "null"]
+					},
+					"is_business": {
+						"type": ["boolean", "null"]
+					}
+				},
+				"required": ["id", "username"]
+			},
+			"primary_key": ["id"],
+			"selection": {
+				"fields": true,
+				"resources": true
+			},
+			"incremental": false,
+			"query": {
+				"search": {
+					"lexical_fields": ["username", "full_name", "bio"],
+					"semantic_fields": ["bio"]
+				}
+			},
+			"coverage_strategy": "singleton_presence",
+			"freshness_strategy": "manual_as_of"
+		},
+		{
+			"name": "posts",
+			"required": false,
+			"description": "Posts on the user's own timeline.",
+			"display": {
+				"label": "Your posts",
+				"detail": "Caption, media type, timestamp, like/comment counts, location if tagged."
+			},
+			"semantics": "mutable_state",
+			"schema": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"caption": {
+						"type": ["string", "null"],
+						"x_pdpp_role": "primary-title"
+					},
+					"media_type": {
+						"type": ["string", "null"],
+						"enum": ["IMAGE", "VIDEO", "CAROUSEL_ALBUM", null]
+					},
+					"media_url": {
+						"type": ["string", "null"]
+					},
+					"like_count": {
+						"type": ["integer", "null"]
+					},
+					"comment_count": {
+						"type": ["integer", "null"]
+					},
+					"location_name": {
+						"type": ["string", "null"]
+					},
+					"taken_at": {
+						"type": ["string", "null"],
+						"format": "date-time",
+						"x_pdpp_role": "event-time"
+					}
+				},
+				"required": ["id"]
+			},
+			"primary_key": ["id"],
+			"consent_time_field": "taken_at",
+			"selection": {
+				"fields": true,
+				"resources": true
+			},
+			"incremental": false,
+			"query": {
+				"search": {
+					"lexical_fields": ["caption", "location_name"],
+					"semantic_fields": ["caption"]
+				},
+				"range_filters": {
+					"taken_at": ["gte", "gt", "lte", "lt"]
+				},
+				"aggregations": {
+					"count": true,
+					"group_by_time": ["taken_at"]
+				}
+			},
+			"coverage_strategy": "full_inventory",
+			"freshness_strategy": "manual_as_of"
+		},
+		{
+			"name": "post_likes",
+			"required": false,
+			"description": "Likers of the user's own posts (bounded top-likers sample per post; Instagram exposes no full-likers listing endpoint from a logged-in web session).",
+			"display": {
+				"label": "Likes on your posts",
+				"detail": "Post id, liker id, username and profile picture. Sample, not a full likers list."
+			},
+			"semantics": "mutable_state",
+			"schema": {
+				"type": "object",
+				"properties": {
+					"liker_ordinal": {
+						"type": "integer"
+					},
+					"post_id": {
+						"type": "string"
+					},
+					"profile_pic_url": {
+						"type": ["string", "null"]
+					},
+					"pk": {
+						"type": "string"
+					},
+					"id": {
+						"type": "string"
+					},
+					"user_id": {
+						"type": "string"
+					},
+					"username": {
+						"type": "string",
+						"x_pdpp_role": "actor"
+					}
+				},
+				"required": ["liker_ordinal", "post_id", "user_id", "username"]
+			},
+			"primary_key": ["post_id", "liker_ordinal"],
+			"selection": {
+				"fields": true,
+				"resources": true
+			},
+			"incremental": false,
+			"state_stream": "posts",
+			"query": {
+				"search": {
+					"lexical_fields": ["username"]
+				}
+			},
+			"coverage_strategy": "checkpoint_window",
+			"freshness_strategy": "manual_as_of"
+		},
+		{
+			"name": "following",
+			"required": false,
+			"description": "Accounts the user follows.",
+			"display": {
+				"label": "Accounts you follow",
+				"detail": "Username, name, private/verified status."
+			},
+			"semantics": "mutable_state",
+			"schema": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"username": {
+						"type": "string",
+						"x_pdpp_role": "actor"
+					},
+					"full_name": {
+						"type": ["string", "null"]
+					},
+					"is_private": {
+						"type": ["boolean", "null"]
+					},
+					"is_verified": {
+						"type": ["boolean", "null"]
+					},
+					"profile_pic_url": {
+						"type": ["string", "null"]
+					}
+				},
+				"required": ["id", "username"]
+			},
+			"primary_key": ["id"],
+			"selection": {
+				"fields": true,
+				"resources": true
+			},
+			"incremental": false,
+			"query": {
+				"search": {
+					"lexical_fields": ["username", "full_name"]
+				}
+			},
+			"coverage_strategy": "full_inventory",
+			"freshness_strategy": "manual_as_of"
+		},
+		{
+			"name": "ads",
+			"required": false,
+			"description": "Advertisers, ad topics, and targeting categories from Meta Accounts Center.",
+			"display": {
+				"label": "Your Instagram ad preferences",
+				"detail": "Advertisers who have your info, ad topics, and categories used to reach you."
+			},
+			"semantics": "mutable_state",
+			"schema": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"kind": {
+						"type": "string",
+						"enum": ["advertiser", "ad_topic", "ad_category"]
+					},
+					"name": {
+						"type": "string",
+						"x_pdpp_role": "primary-title"
+					},
+					"description": {
+						"type": ["string", "null"],
+						"x_pdpp_role": "secondary"
+					}
+				},
+				"required": ["id", "kind", "name"]
+			},
+			"primary_key": ["id"],
+			"selection": {
+				"fields": true,
+				"resources": true
+			},
+			"incremental": false,
+			"query": {
+				"search": {
+					"lexical_fields": ["name", "description"],
+					"semantic_fields": ["description"]
+				},
+				"aggregations": {
+					"count": true,
+					"group_by": ["kind"]
+				}
+			},
+			"coverage_strategy": "full_inventory",
+			"freshness_strategy": "manual_as_of"
+		}
+	],
+	"reason_display_messages": {
+		"ads_surfaces_unavailable": "We reached only part of Meta Accounts Center's ad preferences screen, so this ads run is incomplete. Try again after opening Accounts Center in your browser.",
+		"following_pages_deferred_page_budget": "We stopped after reading a set number of pages of your following list, so it isn't complete yet. Nothing was lost — the next run picks up where this one stopped",
+		"posts_pages_deferred_page_budget": "We stopped after reading a set number of pages of your posts, so recent history isn't complete yet. Nothing was lost — the next run picks up where this one stopped"
+	}
+}
