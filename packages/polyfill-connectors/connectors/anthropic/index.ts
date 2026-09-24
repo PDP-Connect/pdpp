@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,8 +14,10 @@
  * /api/organizations/{org_uuid}/chat_conversations + tree endpoints.
  */
 
+import { ensureAnthropicSession } from "../../src/auto-login/anthropic.ts";
 import {
   type BrowserCollectContext,
+  type EnsureSessionArgs,
   type ProbeSessionArgs,
   politeDelay,
   runConnector,
@@ -30,6 +33,28 @@ runConnector({
   async probeSession({ context }: ProbeSessionArgs): Promise<boolean> {
     const cookies = await context.cookies("https://claude.ai/");
     return cookies.some((c) => SESSION_COOKIE.test(c.name) && Boolean(c.value));
+  },
+  async ensureSession({
+    assist,
+    capture,
+    checkpoint,
+    completeAssistance,
+    context,
+    page,
+    progress,
+  }: EnsureSessionArgs): Promise<void> {
+    await ensureAnthropicSession({
+      assist,
+      ...(capture ? { capture } : {}),
+      checkpoint,
+      completeAssistance,
+      page,
+      probe: async () => {
+        const cookies = await context.cookies("https://claude.ai/");
+        return cookies.some((c) => SESSION_COOKIE.test(c.name) && Boolean(c.value));
+      },
+      progress,
+    });
   },
   async collect({ page, emit }: BrowserCollectContext): Promise<void> {
     await page

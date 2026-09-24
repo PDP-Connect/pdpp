@@ -2196,6 +2196,13 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
     note: "emitRecord(): Collection Profile protocol emission requiring in-order delivery",
   },
   {
+    path: "src/auto-login/anthropic.ts",
+    line: 81,
+    column: 5,
+    category: "bounded_retry_polling",
+    note: "waitForAnthropicSessionReadiness(): bounded readiness poll depends on each prior probe outcome",
+  },
+  {
     path: "src/auto-login/venmo.test.ts",
     line: 748,
     column: 9,
