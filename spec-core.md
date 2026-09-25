@@ -928,7 +928,7 @@ The current persisted-authorization-state reader MUST reject any persisted autho
 
 | Mode | Behavior |
 |------|----------|
-| `single_use` | The grant is consumed at first token issuance. The AS marks the grant consumed atomically with issuance of the first client access token. The AS MUST reject subsequent attempts to issue new client access tokens against the same consumed grant. The RS honors all tokens issued against the grant until token expiry or revocation. The client MAY retry or resume pagination using the same access token. Failure to complete retrieval before token expiry does not un-consume the grant. |
+| `single_use` | The grant permits one initial client access token issuance. It does not limit that token to one request. The AS marks the grant consumed atomically with issuance of the first client access token. The AS MUST reject subsequent attempts to issue new client access tokens against the same consumed grant. An access token issued against a `single_use` grant MUST have a finite expiration, set by AS local policy and, when the grant has `expires_at`, no later than `expires_at`. That expiration SHOULD be short. The RS honors that token until its expiry or revocation. The client MAY use it for repeated reads, retries, and pagination until then. Failure to complete retrieval before token expiry does not un-consume the grant. |
 | `continuous` | The grant is fulfilled repeatedly. The client may query the resource server incrementally over time. Active until expiry or revocation. |
 
 ### Time constraint semantics
@@ -1093,7 +1093,7 @@ For separated AS/RS deployments, the RS MUST authenticate to the AS introspectio
 | `subject_id` | string | The subject (user) identifier. |
 | `grant_id` | string | The associated grant identifier. Present for client tokens. |
 | `client_id` | string | The client identifier. Present for client tokens. |
-| `exp` | integer | Optional expiry timestamp (Unix epoch). Omitted when the token has no expiration. |
+| `exp` | integer | Expiry timestamp (Unix epoch). Present in every positive response for a token that has an expiration, including every client token issued against a `single_use` grant. Omitted when the token has no expiration. |
 | `authorization_details` | array | The approved RFC 9396 detail for a client token. It carries the resolved grant enforcement constraints defined in Section 7. |
 
 The introspection response MUST contain the complete context needed to enforce the request. The separated RS MUST enforce only from that response and MUST NOT make a second AS lookup while handling the request. A co-located AS and RS MAY resolve the same context through a local equivalent.
@@ -1484,7 +1484,7 @@ A conformant authorization server:
 7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms. If `client_claims` are rendered during final review, binds the normalized exact claims into the immutable final approval artifact and review revision, and preserves that binding in retained consent evidence, without adding them to the resolved grant or RS enforcement.
 8. Tracks grant lifecycle (active, expired, revoked). Reflects revocation immediately in introspection responses (`active: false`).
 9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
-10. For `single_use` grants, consumes the grant atomically with first client-token issuance and rejects subsequent attempts to issue new client access tokens against that grant.
+10. For `single_use` grants, consumes the grant atomically with first client-token issuance and rejects subsequent attempts to issue new client access tokens against that grant. Gives that access token a finite expiration set by local policy and, when the grant has `expires_at`, no later than `expires_at`.
 11. Validates stream/field/view/resource-id shape at grant issuance.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
 13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
@@ -1561,7 +1561,7 @@ For separated AS/RS deployments, the RS MUST authenticate to the AS introspectio
 
 Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. This bounds the propagation window for revocation.
 
-An access token issued with or from a refresh-token family MUST be linked to that family and MUST have a short, token-specific expiration no later than the family or grant expiration. A token response MUST derive `expires_in` from the access token's persisted expiration. It MUST omit `expires_in` when the access token has no expiration. An RFC 7662 response MUST likewise omit `exp` when no expiration exists.
+An access token issued with or from a refresh-token family MUST be linked to that family and MUST have a short, token-specific expiration no later than the family or grant expiration. A token response MUST derive `expires_in` from the access token's persisted expiration. It MUST omit `expires_in` when the access token has no expiration, which Section 7 does not permit for a `single_use` grant. An RFC 7662 response MUST likewise omit `exp` when no expiration exists.
 
 Every successful OAuth token response that contains an access token or refresh token MUST include `Cache-Control: no-store` and `Pragma: no-cache` before the response is serialized. This applies to authorization-code, refresh-token, and device-code exchanges, including package-scoped variants.
 
