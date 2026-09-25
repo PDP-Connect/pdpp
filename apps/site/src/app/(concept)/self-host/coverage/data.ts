@@ -69,6 +69,13 @@ const referenceSource = (file: string, label: string): CoverageEvidence => ({
   href: dataConnectBlobUrl(`reference-implementation/${file}`),
 });
 
+// Core Section 12 "Out of scope" holds one row per deferred protocol topic. Collection runtime TODOs live in the Collection Profile's open issues.
+const coreOutOfScope = (label: string): CoverageEvidence => ({
+  label,
+  href: "/specification#out-of-scope",
+  sourcePath: "spec-core.md",
+});
+
 const siteSource = (sourcePath: string, label: string): CoverageEvidence => ({
   label,
   href: repoBlobUrl(sourcePath),
@@ -337,7 +344,7 @@ export const coverageRows = [
     tested: "not-applicable",
     demonstrated: "not-applicable",
     status: "deferred",
-    evidence: [docs("spec-deferred", "Deferred scope")],
+    evidence: [coreOutOfScope("Deferred scope")],
     notes: "Intentionally excluded from v0.1 to avoid unreviewable consent predicates.",
   },
   {
@@ -349,7 +356,7 @@ export const coverageRows = [
     tested: "not-applicable",
     demonstrated: "not-applicable",
     status: "deferred",
-    evidence: [docs("spec-deferred", "Deferred source lifecycle and webhooks")],
+    evidence: [coreOutOfScope("Deferred source lifecycle and webhooks")],
     notes: "Future profiles may add these capabilities without changing current read-oriented grants.",
   },
   {
@@ -361,7 +368,7 @@ export const coverageRows = [
     tested: "not-applicable",
     demonstrated: "not-applicable",
     status: "deferred",
-    evidence: [docs("spec-deferred", "Deferred standardized views")],
+    evidence: [coreOutOfScope("Deferred standardized views")],
     notes: "Current manifests may define views, but portable cross-connector view semantics are not standardized.",
   },
 ] as const satisfies readonly CoverageRow[];

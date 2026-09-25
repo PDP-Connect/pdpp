@@ -7,8 +7,8 @@ description: "Open design questions for PDPP, ordered by importance. Consolidate
 
 Status: Informative · consolidated June 2026 · ordered by importance.
 
-Each item is undecided. Decided items
-and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred).
+Each item is undecided. [Core §12](https://www.pdpp.dev/docs/spec-core#out-of-scope)
+lists protocol topics deferred from v0.1; this page also tracks broader open questions.
 
 1. When a selection request omits a selector, should the default be all available data
    or none? OAuth deployments typically default broad; Open Banking requires explicit
@@ -26,7 +26,7 @@ and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev
 
 4. Should grants support manifest-declared subset templates, so consent can be bounded
    semantically ("only messages from this sender") rather than only by stream, fields,
-   time range, and record ID? ([Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred))
+   time range, and record ID? ([spec-core §12](https://www.pdpp.dev/docs/spec-core#out-of-scope))
 
 5. Which freshness mechanism should signed grants use: short expiry, a published status
    list, or introspection? A signature proves what was approved, not that the grant is
@@ -91,7 +91,7 @@ and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev
 
 19. Should the protocol define a signal that a connection requires user interaction
     (expired source-side login, MFA), distinct from revocation?
-    ([Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred))
+    ([spec-core §12](https://www.pdpp.dev/docs/spec-core#out-of-scope))
 
 20. If source lifecycle actions such as delete-after-export are added later, should
     they form a separately authorized action class in the grant?

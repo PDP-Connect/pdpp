@@ -33,7 +33,6 @@ protocol but define no conformance requirements of their own:
 - [`spec-auth-design.md`](spec-auth-design.md) — authorization and consent design (*Informative*)
 - [`spec-connector-ecosystem.md`](spec-connector-ecosystem.md) — the connector model and runtime landscape (*Informative*)
 - [`spec-change-tracking.md`](spec-change-tracking.md) — change-tracking design; the normative surface lives in Core (*Informative*)
-- [`spec-deferred.md`](spec-deferred.md) — deferred and out-of-scope items (*Informative*)
 
 **Illustrative** — worked examples, not a normative source for wire shapes:
 
