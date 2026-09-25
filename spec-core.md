@@ -936,7 +936,7 @@ record[time_constraint.field] >= time_constraint.since  (if since is present)
 record[time_constraint.field] <  time_constraint.until  (if until is present)
 ```
 
-`time_constraint.until` is a hard cap. It applies equally to records that existed at grant issuance and to records created afterward. A `continuous` grant with `time_constraint.until` set to a past date is valid: it is a historical-only grant that will never disclose new records. This is not an error.
+`time_constraint.until` is a hard cap. It applies equally to records that existed at grant issuance and to records created afterward. A `continuous` grant with `time_constraint.until` set to a past date is valid. It never discloses a record whose `time_constraint.field` value is at or after `until`. It can still disclose a qualifying record that the RS learns of after issuance, and a later full current state of a `mutable_state` record if its time field still qualifies. This is not an error.
 
 For `continuous` grants without `time_constraint.until`, future records in a granted stream are included as they are collected, provided the frozen field falls within any `since` constraint. Stream names and fields are frozen at consent time; future stream types or fields require a new grant.
 
