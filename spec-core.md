@@ -1378,13 +1378,15 @@ GET /v1/blobs/{blob_id}
 Authorization: Bearer <access_token>
 ```
 
-The resource server authorizes blob access by verifying that:
+The resource server MUST NOT serve a blob unless a record that the requesting token is currently authorized to read references it. It evaluates this on each request. For a client token, it verifies that:
 
 1. The grant includes a stream containing a record that references this `blob_id`.
 2. The referencing record passes all grant filters.
 3. The `blob_ref` field is included in the grant's authorized field projection.
 
-A `blob_id` alone does not grant access. The client MUST have discovered the blob through an authorized record.
+For an owner token authorized for blob fetch, the RS applies its subject, source, connection, and operation scope and verifies that a record readable under that scope references the blob.
+
+A `blob_id` alone does not grant access. When no such record exists, the RS returns 404 `blob_not_found`, the same response as for an unknown or stale `blob_id`.
 
 **Direct response** MUST include:
 - `Content-Type` (IANA media type)
@@ -1393,10 +1395,12 @@ A `blob_id` alone does not grant access. The client MUST have discovered the blo
 - `Accept-Ranges: bytes` if range requests are supported
 
 **Redirect response** (HTTP 302) MUST include:
-- `Location` header pointing to a short-lived signed URL (valid for at least 60 seconds)
+- `Location` header pointing to a signed URL
 - `Cache-Control: no-store`
 
-A stale or unknown `blob_id` returns 404 `blob_not_found`.
+The signed URL MUST expire no later than the positive-status cache expiry, or, if no result was cached, 60 seconds after token validation; it MUST also expire no later than the access token or grant expiration when present. The AS MUST include `exp` in every positive introspection response for an expiring PDPP token. A signed URL may remain usable after grant revocation until it expires; its lifetime is bounded by the preceding rule.
+
+Redirect URLs may be valid for less than 60 seconds; clients cannot rely on the former 60-second minimum.
 
 `HEAD` is supported for size checks. `Range` headers are recommended for large files.
 
@@ -1445,7 +1449,7 @@ This makes a future error code safe to introduce: an older client keeps handling
 | `grant_expired` | 403 | `permission_error` | Grant has expired. |
 | `grant_revoked` | 403 | `permission_error` | Grant has been revoked. |
 | `grant_invalid` | 403 | `permission_error` | Resolved grant is malformed or cannot be served without changing its authorization meaning. |
-| `blob_not_found` | 404 | `not_found_error` | `blob_id` is unknown or stale. |
+| `blob_not_found` | 404 | `not_found_error` | `blob_id` is unknown or stale, or no record the token may read references it. |
 | `not_found` | 404 | `not_found_error` | Stream or record not found. |
 | `cursor_expired` | 410 | `gone_error` | `changes_since` cursor is too old; full re-sync required. |
 | `rate_limit_exceeded` | 429 | `rate_limit_error` | Too many requests. Includes `Retry-After` header. |
@@ -1523,6 +1527,7 @@ A conformant Core RS:
 15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
 16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource`, the four `pdpp_`-prefixed members defined in Section 8, and `authorization_servers` when its issuer set is enumerable. Returns a `WWW-Authenticate: Bearer` challenge on 401 per RFC 6750 Section 3, carrying the RFC 9728 `resource_metadata` parameter.
 17. Does not interpret an unrecognized stream semantic as `append_only` or `mutable_state`, or an unrecognized grant `source.kind` as a known provenance class.
+18. Serves a blob only when a record the requesting token may currently read, including its field projection, references it. Otherwise returns 404 `blob_not_found`. Gives a redirect's signed URL an expiry no later than the positive-status cache expiry, or 60 seconds after token validation when no result was cached, and no later than the token or grant expiration when present.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
