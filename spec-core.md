@@ -1440,20 +1440,22 @@ This makes a future error code safe to introduce: an older client keeps handling
 | `invalid_expand` | 400 | `invalid_request_error` | Relation is not declared as expandable. |
 | `unknown_field` | 400 | `invalid_request_error` | Requested field not in stream schema. |
 | `unsupported_version` | 400 | `invalid_request_error` | `PDPP-Version` header specifies unsupported version, or grant references unsupported schema version. |
-| `authentication_error` | 401 | `authentication_error` | Missing or invalid access token. |
+| `authentication_error` | 401 | `authentication_error` | Missing, invalid, or inactive access token. |
 | `authorization_state.unsupported_legacy_shape` | 401 | `authentication_error` | Persisted authorization state does not match a supported shape. Fresh consent is required when no migration applies. |
 | `field_not_granted` | 403 | `permission_error` | Requested client field exceeds the grant's authorized field projection. |
 | `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
 | `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
 | `grant_time_range_exceeded` | 403 | `permission_error` | Request filters exceed the grant's frozen `time_constraint`. |
-| `grant_expired` | 403 | `permission_error` | Grant has expired. |
-| `grant_revoked` | 403 | `permission_error` | Grant has been revoked. |
+| `grant_expired` | 401 | `authentication_error` | Token is inactive because its grant has expired, and authenticated context establishes this cause. See Inactive tokens below. |
+| `grant_revoked` | 401 | `authentication_error` | Token is inactive because its grant has been revoked, and authenticated context establishes this cause. See Inactive tokens below. |
 | `grant_invalid` | 403 | `permission_error` | Resolved grant is malformed or cannot be served without changing its authorization meaning. |
 | `blob_not_found` | 404 | `not_found_error` | `blob_id` is unknown or stale, or no record the token may read references it. |
 | `not_found` | 404 | `not_found_error` | Stream or record not found. |
 | `cursor_expired` | 410 | `gone_error` | `changes_since` cursor is too old; full re-sync required. |
 | `rate_limit_exceeded` | 429 | `rate_limit_error` | Too many requests. Includes `Retry-After` header. |
 | `api_error` | 500 | `api_error` | Internal server error. |
+
+**Inactive tokens.** An RFC 7662 response with `active: false` need not say why the token is inactive (RFC 7662 Section 2.2). Every inactive access token produces HTTP 401 with `WWW-Authenticate: Bearer error="invalid_token"`. `invalid_token` is the Bearer challenge value (RFC 6750 Section 3.1), not a structured error code. The structured error code is `authentication_error`. When authenticated context establishes the cause, the structured error MAY use `grant_expired` or `grant_revoked`; those codes have HTTP status 401 and type `authentication_error`. A co-located RS that reads grant lifecycle state is one example of such context.
 
 ### API versioning
 
@@ -1528,6 +1530,7 @@ A conformant Core RS:
 16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource`, the four `pdpp_`-prefixed members defined in Section 8, and `authorization_servers` when its issuer set is enumerable. Returns a `WWW-Authenticate: Bearer` challenge on 401 per RFC 6750 Section 3, carrying the RFC 9728 `resource_metadata` parameter.
 17. Does not interpret an unrecognized stream semantic as `append_only` or `mutable_state`, or an unrecognized grant `source.kind` as a known provenance class.
 18. Serves a blob only when a record the requesting token may currently read, including its field projection, references it. Otherwise returns 404 `blob_not_found`. Gives a redirect's signed URL an expiry no later than the positive-status cache expiry, or 60 seconds after token validation when no result was cached, and no later than the token or grant expiration when present.
+19. Returns 401 with `WWW-Authenticate: Bearer error="invalid_token"` for every inactive access token. Uses the structured code `grant_expired` or `grant_revoked` only when authenticated context establishes that cause, otherwise `authentication_error`.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
@@ -1543,6 +1546,7 @@ A conformant client:
 6. Honors retention commitments declared in the grant.
 7. Treats unrecognized error codes as opaque, falling back to the exact HTTP status code and applicable response headers rather than failing on an unknown code. Takes the actual status code and headers as the authoritative outcome. Uses a recognized `error.type` only to refine category or presentation, and only when compatible with that outcome. Ignores an absent, unrecognized, or status-incompatible `type` for control flow, and never fails to parse on an unknown `code` or `type`.
 8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant, and MUST NOT treat an unrecognized `source.kind` as either known value. A client with no provenance-dependent policy has nothing to check.
+9. Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`. Does not treat an inactive token as proof of revocation.
 
 ### Conformance test suite
 
@@ -1607,9 +1611,9 @@ A client that gives records to an automated agent SHOULD treat them as untrusted
 
 ### Revocation {#revocation}
 
-There is no push revocation channel in v0.1. Revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds). The AS MUST reflect revocation immediately in introspection responses (`active: false`). A client will receive a 403 `grant_revoked` response no later than 60 seconds after revocation.
+There is no push revocation channel in v0.1. Revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds). The AS MUST reflect revocation immediately in introspection responses (`active: false`). No later than 60 seconds after revocation, a request with a token bound to the revoked grant fails with HTTP 401 and Bearer error `invalid_token`. The structured error code is `grant_revoked` when authenticated context establishes the cause, otherwise `authentication_error` (see Section 8, Errors).
 
-Upon receiving any 403 `grant_revoked` response, the client MUST stop further requests against that grant. Companion profiles define how their active work is terminated.
+On a 401 response with Bearer error `invalid_token`, the client MUST stop using that access token. On a `grant_revoked` error, the client MUST stop further requests against that grant. A client MUST NOT treat an inactive token as proof of revocation: the token may instead have expired or lost its refresh-token family. The HTTP status governs over an unknown error code, as Section 8 states. Companion profiles define how their active work is terminated.
 
 Revocation stops future access only. Data already delivered to the client before revocation is governed by the grant's `retention` policy and applicable legal obligations.
 
