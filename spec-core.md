@@ -1586,6 +1586,12 @@ INTERACTION_RESPONSE messages in the Collection Profile may contain passwords an
 
 In the Collection Profile, connectors receive credentials via the INTERACTION channel. A malicious connector could exfiltrate credentials. Production deployments SHOULD mitigate this by sandboxing connector processes (restricting network egress), using connectors from trusted registries only, or having the runtime authenticate on behalf of the connector and pass only session tokens. A formal connector trust model is deferred.
 
+### Record content and automated agents
+
+A record's `data` may contain content authored by the owner, another party, or the source. That content does not itself authorize client actions. An email or message body can contain text written to steer a language model that reads it (prompt injection; see [OWASP LLM01: Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)). Core does not require resource servers to detect or remove prompt-injection text from records.
+
+A client that gives records to an automated agent SHOULD treat them as untrusted data. For example, it can keep record content separate from its instructions, and it can refuse to let record content trigger tool calls or further disclosures that the owner's or the client's own policy does not allow.
+
 ### Trust boundary responsibilities
 
 | Role | Responsibilities |
