@@ -16,7 +16,7 @@ manifest-backed consent surface, and the introspection contract — and defers
 the questions that cannot be answered well without implementation experience
 or community agreement. Those deferred questions are enumerated in the
 [Open Questions](https://www.pdpp.dev/docs/open-questions) list and in
-[Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred). This agenda
+[Core §12 Out of scope](https://www.pdpp.dev/docs/spec-core#out-of-scope). This agenda
 selects the items where community input most changes the outcome and states,
 for each, what v0.1 does today and what response would move the question
 toward resolution.
@@ -34,10 +34,9 @@ Every agenda item follows the same structure:
 - **What input helps** — the specific evidence, preference, or prior-art
   argument that would let the working group resolve the item.
 
-An item's presence in this agenda means it is undecided. Items already
-resolved by a v0.1 design constraint are recorded, with rationale, under
-"Decided" in [Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred) and
-are not reopened here.
+An item's presence in this agenda means it is undecided. Operative v0.1
+constraints appear in the specification; resolved historical discussion is not
+tracked here.
 
 ### Scope of this consultation
 
@@ -326,7 +325,7 @@ test vectors are welcome.
 The items above are the questions where community input most changes the
 outcome. The following are also open and are tracked in full in
 [Open Questions](https://www.pdpp.dev/docs/open-questions) and
-[Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred). They are grouped
+[Core §12 Out of scope](https://www.pdpp.dev/docs/spec-core#out-of-scope). They are grouped
 here so that responses can reference them, and follow the same structure in
 condensed form.
 
@@ -337,11 +336,11 @@ condensed form.
   from this sender") rather than only by stream, fields, time range, and record
   ID? v0.1 narrows access by stream, view/field, time range, and explicit
   resource IDs only; semantically bounded subsets are modeled as named streams
-  in the manifest, and request-time `filter[]` parameters narrow results but not
-  grant scope. The recommended future direction — manifest-declared parameterized
-  subset templates with typed bound parameters — and the open questions that must
-  be resolved before specifying it are detailed in
-  [Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred). *Input helps:*
+  in the manifest, and owner-token request-time `filter[]` parameters may narrow
+  owner reads but do not narrow a client grant; client-token filters are rejected
+  in v0.1. The recommended future direction — manifest-declared parameterized
+  subset templates with typed bound parameters — is stated in
+  [Core §12](https://www.pdpp.dev/docs/spec-core#predicate-based-grant-scoping). *Input helps:*
   real consent cases the named-stream approach cannot express well.
 
 - **AI-training consent exception.** Should the protocol-level consent
@@ -390,7 +389,7 @@ condensed form.
   MFA), distinct from revocation? A `continuous` grant may stay valid while
   collection fails because source-side session state decayed; v0.1 asks that
   this be surfaced honestly as operational failure, not revocation
-  ([Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred)).
+  ([Core §12 Out of scope](https://www.pdpp.dev/docs/spec-core#out-of-scope)).
 
 - **Evidence strategy per stream.** What evidence strategy should each stream
   declare, so that complete coverage, accepted partial coverage, retryable
@@ -468,17 +467,16 @@ When responding, reference the agenda item and state which of the item's
 requested inputs you are addressing. Positions grounded in a concrete use case,
 an ecosystem precedent, or implementation experience are the most actionable.
 
-Items resolved through this consultation move to the "Decided" record in
-[Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred), with the adopted
-constraint and its rationale, and — where they change protocol semantics — into
+When an item is resolved, update the Open Questions list and
+[Core §12 Out of scope](https://www.pdpp.dev/docs/spec-core#out-of-scope) as appropriate; changes to protocol semantics enter
 the normative specification through the process above.
 
 ## Related
 
 - [Open Questions](https://www.pdpp.dev/docs/open-questions) — the full ordered
   list this agenda draws from.
-- [Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred) — open questions,
-  decided items with rationale, and implementation TODOs.
+- [Core §12 Out of scope](https://www.pdpp.dev/docs/spec-core#out-of-scope) — deferred topics,
+  one row each.
 - [`spec-core.md`](../../spec-core.md) — the normative protocol.
 - [`spec-collection-profile.md`](../../spec-collection-profile.md) — the
   companion Collection Profile.

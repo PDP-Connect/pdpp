@@ -796,7 +796,7 @@ Per-stream, within the `streams` array. All are optional except `name`.
 
 **Note on `time_range`:** `time_range` is only valid for streams that declare a `consent_time_field`. The authorization server MUST reject selection requests that specify `time_range` on a stream without that field. Its presence in the retained declaration is the authoritative signal that a stream is time-range-capable.
 
-**Note on wildcards:** `"streams": [{ "name": "*" }]` requests all streams declared by the source. This is resolved against the retained snapshot and frozen as an explicit list in the grant. If the wildcard request includes `instance_ids`, the AS applies the requested handles to every expanded stream and verifies that each handle is eligible for that stream. If it omits `instance_ids`, the usual exactly-one eligible instance rule applies to every expanded stream.
+**Note on wildcards:** `"streams": [{ "name": "*" }]` requests all streams declared by the source. This is resolved against the retained snapshot and frozen as an explicit list in the grant. A stream that a later declaration adds is not part of the grant. If the wildcard request includes `instance_ids`, the AS applies the requested handles to every expanded stream and verifies that each handle is eligible for that stream. If it omits `instance_ids`, the usual exactly-one eligible instance rule applies to every expanded stream.
 
 A wildcard entry MUST be the only entry in `streams`. Otherwise stream names MUST be unique within the request.
 
@@ -1661,15 +1661,15 @@ The `retention` field is a structured policy declaration and policy commitment b
 - Self-export via owner token (SHOULD-level Core RS conformance, see Section 9 item 13)
 - Conformance definitions for all roles
 
-### Out of scope (v0.1)
+### Out of scope (v0.1) {#out-of-scope}
 
 | Concern | Status |
 |---------|--------|
 | Authorization server interface | Introspection endpoint contract defined here; full AS interface informational only in v0.1 |
 | Ingest and sync-state endpoints | Defined by the Collection Profile; not required for Core RS |
 | Conformance test suite | Planned but not defined in v0.1 |
-| Webhook / push ingestion | Deferred; see spec-deferred |
-| Source lifecycle actions | Deferred (e.g., deleting source data after export); see spec-deferred |
+| Webhook / push ingestion | Deferred |
+| Source lifecycle actions | Deferred (e.g., deleting source data after export) |
 | Event-driven collection triggers | Deferred; architecturally distinct from the pull-based Collection Profile |
 | Grant signing and token format | Deferred; current design is compatible |
 | Trust registry and connector certification | Deferred |
@@ -1678,9 +1678,17 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Interoperable audit/transparency event format | Separate companion profile if standardized |
 | Point-in-time reconstruction | Deferred (reconstructing full state at a past timestamp) |
 | Canonical view naming vocabulary | Deferred; will be informed by implementation experience |
-| Predicate-based grant scoping | Deferred; see spec-deferred for subset template design direction |
-| Derivative data | Deferred and unresolved; v0.1 authorizes reads of declared streams and states no default for the output of compute over them. See spec-deferred |
-| Cross-source category grants | Deferred; grants bind to a single `source.id` in v0.1. See spec-deferred |
+| Predicate-based grant scoping | Deferred; see [Predicate-based grant scoping](#predicate-based-grant-scoping) |
+| Derivative data | Deferred and unresolved; v0.1 authorizes reads of declared streams and states no default for the output of compute over them |
+| Cross-source category grants | Deferred; grants bind to a single `source.id` in v0.1 |
+| Active erasure signal | Deferred; revocation stops future access and is not a deletion request. No erasure signal to the recipient is defined |
+| Session refresh | Deferred; no signal asks the owner to renew source-side authentication. A `continuous` grant can stay valid while collection pauses |
+| Request-side freshness requirements | Deferred; freshness is response-side only (`captured_at`, `status`, `last_attempted_at`) |
+| Minimum-data defaults | Open; omitting `fields` and `view` requests all permitted fields of a stream, and `"name": "*"` requests all declared streams. Whether defaults should be minimal is undecided |
+| Subgrants | Deferred; access under a grant is not transferable. A second party needs its own grant |
+| Change of client ownership and undisclosed sub-processing | Deferred; no change-of-control record, revocation trigger, or recipient sub-processing disclosure mechanism. `client_claims` is not an ownership record |
+| Client bulk export | Deferred; owner self-export is SHOULD (Section 9). A client pages through the query under its grant |
+| Owner-operated authorization server (UMA-style) | Not introduced; see Section 3. |
 | Real-time streaming | Different spec needed |
 
 ### Predicate-based grant scoping {#predicate-based-grant-scoping}
@@ -1691,7 +1699,7 @@ v0.1 grants narrow access only by stream selection, named view or field projecti
 
 **Derived subset streams (non-normative).** A stream MAY represent either a source-native collection or a derived subset, provided its semantics are stable, versioned through the SourceDeclaration, and human-reviewable in consent UI. Implementations that need semantically bounded consent in v0.1 SHOULD prefer named streams with human-readable semantics (e.g., a source that exposes `amazon_messages` as a distinct stream) over ad hoc technical predicates. Stream names MUST NOT encode predicate logic or synthesize per-request subsets; derived streams MUST be statically declared in the SourceDeclaration.
 
-The recommended future direction for this capability is declaration-defined parameterized subset templates with typed bound parameters and publisher-authored consent display strings. See spec-deferred for the design constraints and open questions that must be resolved before specifying this.
+The recommended future direction for this capability is declaration-defined parameterized subset templates with typed bound parameters and publisher-authored consent display strings.
 
 ### Extensions
 
