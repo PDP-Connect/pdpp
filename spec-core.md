@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-07
+Date: 2026-09-27
 
 ---
 
@@ -233,6 +233,8 @@ Each stream has one of two semantic types:
 | `mutable_state` | Records represent current state of an entity. Records may be updated or deleted. | profile, settings, playlist_items, follow_lists | Upsert by primary key. Resource server maintains version history for incremental sync. |
 
 Approximately 95% of personal data by volume is `append_only`. The remaining 5% is `mutable_state`. Mutable state records (profiles, preferences, relationships) are often the highest-value context for AI agents.
+
+An authorization server MUST reject a declaration containing an unrecognized `streams[].semantics` value. A resource server MUST NOT interpret an unrecognized stream semantic as `append_only` or `mutable_state`. A later version can add semantic types; an implementation that predates one does not apply the wrong write and sync behavior to it.
 
 ### Incremental sync for mutable streams
 
@@ -769,6 +771,8 @@ These are the two provenance classes an authorization server derives and carries
 
 A selection request does not carry `source.kind`. The authorization server derives the provenance class from the declaration it accepted for `source.id`, and records it in consent evidence and any issued grant, where a client reads it back through introspection. A client whose policy depends on provenance therefore reads it from the issued grant rather than asserting an expectation in the request; Section 9 states that as a client requirement. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details` for invalid authorization details.
 
+An authorization server MUST reject a declaration containing an unrecognized `source.kind`. A resource server MUST NOT interpret an unrecognized grant `source.kind` as a known provenance class. A client that reads an unrecognized `source.kind` in a grant MUST NOT treat it as either known value; it MAY reject the grant as unsupported. A later version can add provenance classes; an implementation that predates one does not misread it as a known class.
+
 #### AI training consent {#ai-training-consent}
 
 The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.dev/purpose/ai_training`. This is the sole purpose code with a mandatory consent requirement at the protocol level.
@@ -936,7 +940,7 @@ record[time_constraint.field] >= time_constraint.since  (if since is present)
 record[time_constraint.field] <  time_constraint.until  (if until is present)
 ```
 
-`time_constraint.until` is a hard cap. It applies equally to records that existed at grant issuance and to records created afterward. A `continuous` grant with `time_constraint.until` set to a past date is valid: it is a historical-only grant that will never disclose new records. This is not an error.
+`time_constraint.until` is a hard cap. It applies equally to records that existed at grant issuance and to records created afterward. A `continuous` grant with `time_constraint.until` set to a past date is valid. It never discloses a record whose `time_constraint.field` value is at or after `until`. It can still disclose a qualifying record that the RS learns of after issuance, and a later full current state of a `mutable_state` record if its time field still qualifies. This is not an error.
 
 For `continuous` grants without `time_constraint.until`, future records in a granted stream are included as they are collected, provided the frozen field falls within any `since` constraint. Stream names and fields are frozen at consent time; future stream types or fields require a new grant.
 
@@ -1495,6 +1499,7 @@ A conformant authorization server:
 19. Consumes each OAuth authorization code atomically on its first successful redemption. Rejects every later redemption with `invalid_grant` and does not issue another token.
 20. Issues refresh tokens only for `continuous` grants, or for a grant package only when every child grant is `continuous`. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
 21. Rejects unsupported persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent when no migration applies.
+22. Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value.
 
 ### Resource Server conformance
 
@@ -1517,6 +1522,7 @@ A conformant Core RS:
 14. For owner-token stream-metadata reads, returns the full current stream metadata within the owner's subject/source/connection scope, including current query, view, and relationship capabilities.
 15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
 16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource`, the four `pdpp_`-prefixed members defined in Section 8, and `authorization_servers` when its issuer set is enumerable. Returns a `WWW-Authenticate: Bearer` challenge on 401 per RFC 6750 Section 3, carrying the RFC 9728 `resource_metadata` parameter.
+17. Does not interpret an unrecognized stream semantic as `append_only` or `mutable_state`, or an unrecognized grant `source.kind` as a known provenance class.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
@@ -1531,7 +1537,7 @@ A conformant client:
 5. Respects HTTP 410 `cursor_expired` responses by performing a full re-sync rather than retrying with the expired cursor.
 6. Honors retention commitments declared in the grant.
 7. Treats unrecognized error codes as opaque, falling back to the exact HTTP status code and applicable response headers rather than failing on an unknown code. Takes the actual status code and headers as the authoritative outcome. Uses a recognized `error.type` only to refine category or presentation, and only when compatible with that outcome. Ignores an absent, unrecognized, or status-incompatible `type` for control flow, and never fails to parse on an unknown `code` or `type`.
-8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant. A client with no provenance-dependent policy has nothing to check.
+8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant, and MUST NOT treat an unrecognized `source.kind` as either known value. A client with no provenance-dependent policy has nothing to check.
 
 ### Conformance test suite
 
@@ -1579,6 +1585,12 @@ INTERACTION_RESPONSE messages in the Collection Profile may contain passwords an
 ### Connector trust
 
 In the Collection Profile, connectors receive credentials via the INTERACTION channel. A malicious connector could exfiltrate credentials. Production deployments SHOULD mitigate this by sandboxing connector processes (restricting network egress), using connectors from trusted registries only, or having the runtime authenticate on behalf of the connector and pass only session tokens. A formal connector trust model is deferred.
+
+### Record content and automated agents
+
+A record's `data` may contain content authored by the owner, another party, or the source. That content does not itself authorize client actions. An email or message body can contain text written to steer a language model that reads it (prompt injection; see [OWASP LLM01: Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)). Core does not require resource servers to detect or remove prompt-injection text from records.
+
+A client that gives records to an automated agent SHOULD treat them as untrusted data. For example, it can keep record content separate from its instructions, and it can refuse to let record content trigger tool calls or further disclosures that the owner's or the client's own policy does not allow.
 
 ### Trust boundary responsibilities
 
