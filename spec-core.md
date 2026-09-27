@@ -76,11 +76,11 @@ PDPP is a data-portability profile, not a general authorization framework. It bi
 
 | Actor | Definition |
 |-------|-----------|
-| **User** | The person whose data is being accessed. Owns the data, approves grants, may revoke. |
+| **User** | The person whose data is being accessed. Owns the data, approves grants, may revoke. Another person may approve on the user's behalf only as a representative (see [Representative approval](#representative-approval)). |
 | **Client** | An application or AI agent requesting user data. Identified by `client_id`. In OAuth terms, this is the client. |
 | **Data Source** | Any external system from which a user's data originates: a consumer platform, a SaaS application, a device, a local archive, a financial institution, or other system. |
 
-The owner is the authenticated subject whose records the source holds. Typically this is a person; the protocol itself is subject-neutral, and an organization that authenticates as the account holder participates identically.
+The owner is the subject whose records the source holds. Typically this is a person; the protocol itself is subject-neutral, and an organization that authenticates as the account holder participates identically. For grant approval, the authorization server authenticates the subject or each authorized representative. A grant's `subject` identifies whose data it covers. Approval is attributed to the subject unless the grant records approval by a representative.
 
 ### Protocol roles
 
@@ -885,6 +885,8 @@ The authorization server issues an access token bound to the grant. The client u
 | `selection_preset` | string | no | Informational | Which SourceDeclaration preset was selected. The resolved streams and fields remain authoritative. |
 | `retention` | object | no | Structured policy declaration | Policy commitment by the data recipient (see below). |
 | `expires_at` | ISO 8601 | no | Protocol-enforced | Grant expiry. Absent means no expiry. |
+| `grantors` | object[] | no | Identity binding | Present only when representatives approved on the subject's behalf. When present, this is a non-empty list of distinct approving representatives. Absence means the subject approved. Core v0.1 does not encode joint approval by the subject and a representative. Each entry is exactly `{ id, capacity }`. `id` is an opaque identifier of the approving person, unique within the issuing AS's namespace. For grants returned to clients, the AS MUST use an identifier specific to that client. `capacity` is an absolute URI that names the basis on which that person approved, such as a parental or legal-representative capacity defined by a profile or deployment. See [Representative approval](#representative-approval). |
+| `extensions` | object | no | Profile data | Optional object keyed by absolute profile URI. Core preserves or ignores an unknown extension value and does not parse it. An extension cannot widen what the grant authorizes or weaken Core semantics. |
 
 ### StreamGrant fields
 
@@ -899,6 +901,22 @@ The authorization server issues an access token bound to the grant. The client u
 Request-only conveniences such as wildcard names, `view`, omitted fields, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
 
 Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since`, `until`, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
+
+### Representative approval {#representative-approval}
+
+A grant covers its `subject`'s data. Usually the subject approves it. When another person approves on the subject's behalf, for example a parent for a child or a legal representative for an adult who cannot act, the grant lists that person in `grantors`. When several people must approve together, each is listed, and each approved the same final approval artifact.
+
+An authorization server that issues a grant with `grantors` MUST:
+
+1. authenticate each listed grantor;
+2. verify, before showing a prospective grantor any subject-specific information or accepting their approval, that the grantor may approve the complete proposed disclosure under an explicit deployment or profile policy. Where that policy requires several grantors to approve together, the verification covers the complete set. The disclosure includes its selected data, client, purpose, access mode, and duration. The AS MUST reject approval when verification fails. How the AS establishes that authority, for example from a legal document or an authoritative register, is a deployment or profile choice;
+3. show each grantor, on the approval surface, that they approve on the subject's behalf and in which capacity;
+4. bind each grantor and capacity into the final approval artifact with the other decision fields;
+5. never record a grantor's identity as the subject.
+
+Appearing in `grantors` does not by itself authorize later reads, owner operations, or management of the grant. The AS establishes a person's current authority when such an operation is requested.
+
+An AS that does not support representative approval never issues a grant with `grantors`. A resource server enforces a grant with `grantors` exactly as any other grant; `grantors` records who approved and does not change what the grant authorizes. A client may use it in its own admission policy.
 
 ### Time concepts
 
@@ -1506,6 +1524,7 @@ A conformant authorization server:
 20. Issues refresh tokens only for `continuous` grants, or for a grant package only when every child grant is `continuous`. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
 21. Rejects unsupported persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent when no migration applies.
 22. Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value.
+23. Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision. Authenticates and verifies each representative before accepting approval, binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.
 
 ### Resource Server conformance
 
@@ -1817,6 +1836,8 @@ interface DataGrant {
     on_expiry: 'delete' | 'anonymize';
   };
   expires_at?: string;  // ISO 8601; absent means no expiry
+  grantors?: Array<{ id: string; capacity: string }>;  // present only for representative approval
+  extensions?: Record<string, unknown>;  // keyed by absolute profile URI
 }
 
 // --- Source Declaration ---
