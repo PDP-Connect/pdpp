@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-27
+Date: 2026-09-28
 
 ---
 
@@ -775,7 +775,7 @@ An authorization server MUST reject a declaration containing an unrecognized `so
 
 #### AI training consent {#ai-training-consent}
 
-The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.dev/purpose/ai_training`. This is the sole purpose code with a mandatory consent requirement at the protocol level.
+The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.dev/purpose/ai_training`. The owner MUST select an `ai_training` detail by a distinct affirmative action, and the AS MUST NOT present it as selected by default. When a request carries several details, the owner MUST be able to approve any other detail while declining the `ai_training` detail, and the AS MUST NOT make approval of another detail depend on it. This rule adds to the final owner approval that every grant needs (Section 7).
 
 ### Stream selection parameters
 
@@ -833,6 +833,8 @@ Every field in the issued grant is derived from either the selection request, cl
 A grant is an immutable consent artifact. It is the output of the authorization flow.
 
 The authorization server issues an access token bound to the grant. The client uses the access token (not the raw grant) to authenticate with the resource server. The resource server resolves the token to the grant and enforces its constraints on every request. Grant lifecycle (active, expired, revoked) is tracked by the authorization server, not stored in the grant itself.
+
+A grant covers one subject, one source, and one purpose. This is a granularity rule, not an identity rule: `grant_id` identifies a grant, and two grants MAY have the same subject, source, and purpose. An authorization request MAY carry several `authorization_details` entries. The owner approves or declines each entry on its own, and each approved entry yields its own grant with its own lifecycle. No permission is built by combining grants: the constraints of one grant authorize each disclosure, even when one credential covers several grants.
 
 ```json
 {
@@ -1512,7 +1514,7 @@ A conformant authorization server:
 11. Validates stream/field/view/resource-id shape at grant issuance.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
 13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
-14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.dev/purpose/ai_training"`.
+14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.dev/purpose/ai_training"`. Never presents an `ai_training` detail as selected by default. In a request with several details, lets the owner approve any other detail while declining it.
 15. Resolves omitted instance IDs before the final approval surface. Binds
     exact resolved instances and all final decision fields to an immutable
     review revision or digest. Rejects stale approval if eligibility or the
@@ -1525,13 +1527,14 @@ A conformant authorization server:
 21. Rejects unsupported persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent when no migration applies.
 22. Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value.
 23. Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision. Authenticates and verifies each representative before accepting approval, binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.
+24. Lets the owner approve or decline each detail of a request on its own. Issues one grant for each approved detail, covering one subject, one source, and one purpose, with its own lifecycle. Identifies grants by `grant_id` and does not treat subject, source, and purpose as a grant key.
 
 ### Resource Server conformance
 
 A conformant Core RS:
 
 1. Implements the query endpoints defined in Section 8: list streams, get stream metadata, list records, get a single record, get a blob, delete a record (owner-authenticated).
-2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter.
+2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter. Authorizes each disclosure under one grant and never combines the constraints of different grants.
 3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results no longer than `min(token_exp, 60 seconds)`.
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
 5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
@@ -1952,7 +1955,7 @@ Purpose codes are URIs. The following codes are defined by PDPP. Implementers ma
 | `https://pdpp.dev/purpose/analytics` | Analyzing user data to produce insights for the user. |
 | `https://pdpp.dev/purpose/export` | Exporting data for the user's own use. |
 | `https://pdpp.dev/purpose/agent_context` | Providing context to a personal AI agent. |
-| `https://pdpp.dev/purpose/ai_training` | Using data to train AI models. The AS MUST obtain explicit affirmative user consent before issuing any grant with this purpose code. This is a protocol-level requirement, not merely advisory. |
+| `https://pdpp.dev/purpose/ai_training` | Using data to train AI models. The AS MUST follow the consent rule in [AI training consent](#ai-training-consent) before issuing any grant with this purpose code. This is a protocol-level requirement, not merely advisory. |
 | `https://pdpp.dev/purpose/research` | Academic or market research. |
 
 ---
