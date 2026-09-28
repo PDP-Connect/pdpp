@@ -970,7 +970,7 @@ Grants freeze stream names, instance handles, fields, and any time constraint at
 
 ### Grant narrowing
 
-Grant narrowing (reducing the scope of an existing grant) is not supported in v0.1. Scope reduction is achieved via revoke-and-reissue: the client revokes the existing grant and the user issues a new, narrower grant. Authorization server UIs SHOULD model this flow as revocation followed by a new grant request.
+Grant narrowing (reducing the scope of an existing grant) is not supported in v0.1. Scope reduction is achieved via revoke-and-reissue: the existing grant is revoked (see [Revocation](#revocation)) and the user issues a new, narrower grant. Authorization server UIs SHOULD model this flow as revocation followed by a new grant request.
 
 ### Records from revoked grants
 
@@ -1528,6 +1528,8 @@ A conformant authorization server:
 22. Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value.
 23. Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision. Authenticates and verifies each representative before accepting approval, binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.
 24. Lets the owner approve or decline each detail of a request on its own. Issues one grant for each approved detail, covering one subject, one source, and one purpose, with its own lifecycle. Identifies grants by `grant_id` and does not treat subject, source, and purpose as a grant key.
+25. If it offers client-initiated revocation, ends grants as Section 10 defines: revoking a refresh token, current or superseded, ends every grant its family covers; revoking an access token ends its grants only when no refresh-token family covers them. In the OAuth binding, implements it as RFC 7009 token revocation and advertises `revocation_endpoint` in RFC 8414 metadata.
+26. Ends one grant among several that share a credential without revoking that credential or ending the other grants.
 
 ### Resource Server conformance
 
@@ -1633,7 +1635,11 @@ A client that gives records to an automated agent SHOULD treat them as untrusted
 
 ### Revocation {#revocation}
 
-There is no push revocation channel in v0.1. Revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds). The AS MUST reflect revocation immediately in introspection responses (`active: false`). No later than 60 seconds after revocation, a request with a token bound to the revoked grant fails with HTTP 401 and Bearer error `invalid_token`. The structured error code is `grant_revoked` when authenticated context establishes the cause, otherwise `authentication_error` (see Section 8, Errors).
+The owner MAY revoke a grant at the AS by a deployment-defined means. A binding MAY also let a client revoke a credential it holds. When a client revokes a refresh token, the AS MUST end every grant that the token's family covers, and every access token issued under those grants. Revoking a superseded refresh token of the family has the same effect. When a client revokes an access token, the AS MUST end that token. The AS MUST also end the token's grants, but only when no refresh-token family covers them. To disconnect, a client therefore revokes its refresh token, or its access token when it holds no refresh token. Ending one grant among several that share a credential is a grant-level action at the AS. It MUST NOT revoke the shared credential or end the other grants.
+
+In the OAuth binding, client-initiated revocation is [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009) token revocation. Support is OPTIONAL. An AS that offers clients a way to disconnect SHOULD support it. An AS that supports it MUST advertise `revocation_endpoint` in its [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) metadata. RFC 7009 Section 2.1 leaves the effect on related tokens and on the grant to AS policy; the rules above fix that policy.
+
+There is no push revocation channel in v0.1. Revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds), whoever starts the revocation. The AS MUST reflect revocation immediately in introspection responses (`active: false`). No later than 60 seconds after revocation, a request that uses the revoked grant fails. When the token is bound to no other active grant, the request fails with HTTP 401 and Bearer error `invalid_token`. The structured error code is `grant_revoked` when authenticated context establishes the cause, otherwise `authentication_error` (see Section 8, Errors). A binding in which one credential covers several grants defines the failure while the credential stays active.
 
 On a 401 response with Bearer error `invalid_token`, the client MUST stop using that access token. On a `grant_revoked` error, the client MUST stop further requests against that grant. A client MUST NOT treat an inactive token as proof of revocation: the token may instead have expired or lost its refresh-token family. The HTTP status governs over an unknown error code, as Section 8 states. Companion profiles define how their active work is terminated.
 
@@ -1708,6 +1714,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Request-side freshness requirements | Deferred; freshness is response-side only (`captured_at`, `status`, `last_attempted_at`) |
 | Minimum-data defaults | Open; omitting `fields` and `view` requests all permitted fields of a stream, and `"name": "*"` requests all declared streams. Whether defaults should be minimal is undecided |
 | Subgrants | Deferred; access under a grant is not transferable. A second party needs its own grant |
+| Client grant management | Deferred; a client can revoke a credential (Section 10), but Core defines no client operation that ends one grant while other grants share its credential |
 | Change of client ownership and undisclosed sub-processing | Deferred; no change-of-control record, revocation trigger, or recipient sub-processing disclosure mechanism. `client_claims` is not an ownership record |
 | Client bulk export | Deferred; owner self-export is SHOULD (Section 9). A client pages through the query under its grant |
 | Owner-operated authorization server (UMA-style) | Not introduced; see Section 3. |
