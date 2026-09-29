@@ -1,7 +1,7 @@
 # Change Tracking Design
 
 Status: Informative
-Date: 2026-08-14 (revised from 2026-04-06)
+Date: 2026-09-29 (revised from 2026-04-06)
 
 ---
 
@@ -17,8 +17,8 @@ The consequence that shaped the normative text: eligibility for a `changes_since
 
 ## Normative surface (pointers, not restatement)
 
-- Stream semantics (`append_only`, `mutable_state`), internal version history, the snapshot model, and the tombstone envelope: [spec-core Section 4](spec-core.md#record-model).
-- The `changes_since` / `next_changes_since` token space, its separation from `cursor` / `next_cursor`, session-horizon anchoring across pages, projection-safe eligibility, and cursor expiry (HTTP 410 `cursor_expired`, full re-sync): [spec-core Section 8](spec-core.md#list-records).
+- Stream semantics (`append_only`, `mutable_state`), internal change history, the snapshot model, visibility and removal rules, the `beginning` starting token, and the client and owner tombstone shapes: [spec-core Section 4](spec-core.md#incremental-sync).
+- The `changes_since` / `next_changes_since` token space, its separation from `cursor` / `next_cursor`, query-context and grant binding, session-horizon anchoring across pages, projection-safe eligibility, and cursor expiry (HTTP 410 `cursor_expired`, restart from `beginning`): [spec-core Section 8](spec-core.md#list-records).
 
 ## Why not canonical `{stream}_changes` streams
 

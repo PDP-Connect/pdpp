@@ -175,7 +175,7 @@ Legend:
 
 ## Source Binding (3 concepts)
 
-The selection-request `source: { id, kind? }` object and the resolved-grant `source: { kind, id }` object name where authorized data comes from. The request's `source.id` is authoritative; an optional `source.kind` must match the retained declaration, and the AS derives an omitted kind. This replaced the top-level `connector_id` scalar (and the reference contract's sibling `provider_id`) in the `2026-04-30-unify-source-binding-vocabulary` change; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request` (spec-deferred §"Source-binding unification"). The former scalars survive only as kind-keyed meanings of `source.id`. This is distinct from the runtime *bindings* of concepts 62/64, which are capability requirements such as `browser_automation`.
+The selection request carries `source: { id }`; the resolved grant carries `source: { kind, id }`. The authorization server derives `kind` from the retained declaration; a request does not assert it. This replaced the top-level `connector_id` scalar (and the reference contract's sibling `provider_id`) in the `2026-04-30-unify-source-binding-vocabulary` change; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request`. The former scalars survive only as kind-keyed meanings of `source.id`. This is distinct from the runtime *bindings* of concepts 62/64, which are capability requirements such as `browser_automation`.
 
 | # | Concept | Description | Flow | Audience |
 |---|---------|-------------|------|----------|
