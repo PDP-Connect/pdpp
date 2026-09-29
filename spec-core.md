@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-27
+Date: 2026-09-28
 
 ---
 
@@ -52,6 +52,8 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | [UMA 2.0](https://docs.kantarainitiative.org/uma/wg/rec-oauth-uma-grant-2.0.html) (Kantara) | UMA is prior art for PDPP's user-managed, standing, revocable access model. PDPP applies that model to personal-data access through source declarations, grants, and enforcement by the resource server. |
 | [GNAP](https://www.rfc-editor.org/rfc/rfc9635) (RFC 9635) | GNAP is an IETF authorization protocol that revisits OAuth-style delegation with a new protocol design. Several design decisions are directly relevant to PDPP: (1) interaction modes beyond browser redirects (relevant to nonstandard authorization interaction patterns); (2) request continuation for multi-step consent negotiation (relevant to optional streams); (3) key-bound grants instead of bearer tokens (stronger security for ongoing personal data access); (4) built-in grant management with revocation and rotation (relevant to `continuous` access mode). PDPP's entity-scoped `client_display` already follows GNAP's pattern of carrying client display metadata inline in the request. PDPP separates its core artifacts from authorization-protocol bindings. OAuth 2.0 and RFC 9396 define the v0.1 binding. Other bindings, including GNAP, may be specified as adoption warrants. For key-bound tokens specifically, DPoP (RFC 9449) offers an OAuth-native path to GNAP-style sender-constrained tokens and is a candidate optional hardening profile for v0.2. |
 | [Solid](https://solidproject.org) | Solid takes the full re-architecture approach: personal data moves into user-controlled pods with RDF/Linked Data semantics, which requires source platforms to adopt the model or users to migrate off-platform. PDPP instead layers on existing OAuth infrastructure and bootstraps data supply through the Collection Profile, without requiring source platforms to adopt anything. |
+| [ODRL](https://www.w3.org/TR/odrl-model/) (W3C Recommendation) | ODRL expresses permissions, prohibitions, and duties as machine-readable policies. PDPP does not use ODRL for authorization. The resource server enforces a PDPP grant on each read. A policy that travels with disclosed data cannot by itself guarantee enforcement after disclosure, the same limit Core states for `retention` (Section 11). |
+| [DPV](https://w3id.org/dpv) (W3C Data Privacy Vocabularies and Controls Community Group) | DPV defines shared terms for purposes, legal bases, and processing. `purpose_code` accepts any absolute URI (Appendix A), so a DPV purpose IRI can be used as a purpose code. PDPP defines its own registry for the purposes its consent rules name. |
 | [Data Transfer Project](https://github.com/dtinit/data-transfer-project) (DTI) | PDPP and DTI are complementary. The Data Transfer Project handles transfer mechanics, and DTI's stated position is that there is "no silver bullet" for portability: multiple approaches coexist. DTI's Data Trust Registry (post-pilot, 2026) addresses who is trusted: it vets services seeking access to platforms' portability interfaces so that platforms can rely on shared trust signals. PDPP addresses what was consented and how it is enforced (the grant and the resource server interface); a trust registry and PDPP's consent semantics compose rather than compete. The two protocols can chain. See Appendix B. |
 | [Airbyte](https://airbyte.com) / [Singer](https://www.singer.io) | PDPP borrows the RECORD/STATE checkpoint pattern for incremental sync. This record and state-checkpoint lineage informs the Collection Profile companion specification; it appears here for reader orientation and is informative for Core. |
 | [GDPR](https://eur-lex.europa.eu/eli/reg/2016/679/oj) | PDPP implements data minimization through stream and field selection. It also carries machine-readable purpose declarations (`purpose_code`) that support consent display, local policy, and implementation-defined audit or transparency mechanisms, with an explicit protocol-level consent rule for `ai_training`. The internal version history required for incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability. |
@@ -305,7 +307,7 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 |-------|------|----------|-------------|
 | `stream` | string | yes | Stream name |
 | `key` | string or string[] | yes | Primary key value. Array for compound keys; order matches the SourceDeclaration `primary_key`. |
-| `data` | object | yes | Record payload conforming to the stream schema. |
+| `data` | object | yes | Record payload conforming to the stream schema. For `op: delete`, `data` MUST contain every primary-key field, matching `key`; other schema-required fields MAY be absent. |
 | `emitted_at` | ISO 8601 | yes | When the record was emitted by its producer (processing time, not source time). |
 | `op` | enum | no | `upsert` (default) or `delete`. This field is a directive to the resource server and is not stored as part of the record data. |
 
@@ -421,8 +423,8 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
       "id": "listening_history",
       "label": "Listening history",
       "streams": [
-        { "name": "top_artists" },
-        { "name": "play_events" }
+        { "name": "top_artists", "view": "basic" },
+        { "name": "play_events", "fields": ["*"] }
       ]
     }
   ],
@@ -518,7 +520,7 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `streams[].primary_key` | Fields that uniquely identify a record within the stream. |
 | `streams[].cursor_field` | Field used for logical record ordering in cursor-based reads and incremental sync. List reads sort by `(cursor_field, primary_key)`, with null or absent cursor values sorting after present values. A cursor is an opaque token the server issues, encoding a logical sort position in the stream. |
 | `streams[].consent_time_field` | The temporal consent boundary: the field against which `time_range` is evaluated. Absent means `time_range` is not applicable to this stream. MUST reference a field declared in the schema. |
-| `streams[].selection` | Which selection parameters this stream supports (`fields`, `resources`). Time-range capability is derived from `consent_time_field` presence; absent means not time-range-capable. The AS MUST reject grants that request `time_range` on a stream without a `consent_time_field`, or that request an unsupported selection parameter. |
+| `streams[].selection` | Which selection parameters this stream supports (`fields`, `resources`). Time-range capability is derived from `consent_time_field` presence; absent means not time-range-capable. The AS MUST reject grants that request `time_range` on a stream without a `consent_time_field`, or that request an unsupported selection parameter. The `fields: ["*"]` marker is always supported. |
 | `streams[].views` | Named field projections the declaration publisher suggests. Advisory; the AS is authoritative. Each view has `id`, `label`, and `fields` (top-level field names only). |
 | `streams[].relationships` | Declared foreign key relationships to other streams. Structural graph metadata only; does not by itself make a relation expandable in the read API. Expandability is declared separately as a query capability; see [`expand[]`](#list-records). |
 | `streams[].query` | Stream-specific query capability declaration. `range_filters` declares range-queryable fields and operators. `expand` declares expandable relations and per-relation limits. `search` and `aggregations` preserve source-neutral capability declarations used by companion query profiles; their operation semantics and conformance are not defined by Core. |
@@ -661,12 +663,14 @@ A client requests specific personal data by including `authorization_details` in
         {
           "name": "top_artists",
           "necessity": "required",
+          "view": "basic",
           "instance_ids": ["spotify-account-a"],
           "time_range": { "since": "2025-09-28T00:00:00Z" }
         },
         {
           "name": "play_events",
-          "necessity": "optional"
+          "necessity": "optional",
+          "fields": ["*"]
         }
       ],
       "client_claims": {
@@ -779,30 +783,30 @@ The AS MUST obtain explicit affirmative user consent before issuing any grant wi
 
 ### Stream selection parameters
 
-Per-stream, within the `streams` array. All are optional except `name`.
+Per-stream, within the `streams` array. `name` and exactly one of a non-empty `fields` list or a `view` are required; the other fields are optional.
 
 | Parameter | Type | Status | Description |
 |-----------|------|--------|-------------|
 | `name` | string | Protocol-enforced | Stream name, or `*` for all streams (resolved at consent time against the retained SourceDeclaration). |
-| `necessity` | enum | Consent-flow control at issuance time | `required` (default) or `optional`. Optional streams are presented as user choices during consent. |
+| `necessity` | enum | Consent-flow control at issuance time | `optional` (default) or `required`. Optional streams are presented as user choices during consent. The AS MUST omit a declined optional stream from the grant and MUST retain a `required` stream or refuse issuance. If no stream remains, the AS MUST refuse issuance with `access_denied`. |
 | `instance_ids` | string[] | Protocol-enforced | Optional opaque owner-instance handles for this stream. Handles are scoped to issuer, subject, `source.id`, and stream. Omission never means fan-in (reading across more than one connected instance of the same source). The AS resolves exactly one eligible handle or requires an explicit owner choice. |
 | `time_range.since` | ISO 8601 | Protocol-enforced | Earliest data to include (inclusive, >=), evaluated against the stream's `consent_time_field`. |
 | `time_range.until` | ISO 8601 | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. A hard cap: applies to future resources as well as past ones. |
-| `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. AS returns 400 `invalid_request` if both are present. |
-| `fields` | string[] | Protocol-enforced | Field allowlist. Schema-required fields are always included regardless of this list. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
+| `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. The OAuth/RAR binding maps a request with both to RFC 9396 `invalid_authorization_details`. |
+| `fields` | string[] | Protocol-enforced | Field allowlist. `["*"]` requests all permitted fields; `*` MUST then be the only element. Schema-required fields are always included regardless of this list. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the retained declaration's `primary_key` at grant issuance. The RS filters by exact primary-key match. |
 
 **Note on `fields`:** At consent resolution, schema-required fields are always included in the resolved field set, regardless of the requested field list, because a record missing its schema-required fields is not a valid record of that stream; the per-stream consent floor is its required fields.
 
 **Note on `time_range`:** `time_range` is only valid for streams that declare a `consent_time_field`. The authorization server MUST reject selection requests that specify `time_range` on a stream without that field. Its presence in the retained declaration is the authoritative signal that a stream is time-range-capable.
 
-**Note on wildcards:** `"streams": [{ "name": "*" }]` requests all streams declared by the source. This is resolved against the retained snapshot and frozen as an explicit list in the grant. A stream that a later declaration adds is not part of the grant. If the wildcard request includes `instance_ids`, the AS applies the requested handles to every expanded stream and verifies that each handle is eligible for that stream. If it omits `instance_ids`, the usual exactly-one eligible instance rule applies to every expanded stream.
+**Note on wildcards:** `"streams": [{ "name": "*", "fields": ["*"] }]` requests all streams declared by the source. This is resolved against the retained snapshot and frozen as an explicit list in the grant. A stream that a later declaration adds is not part of the grant. If the wildcard request includes `instance_ids`, the AS applies the requested handles to every expanded stream and verifies that each handle is eligible for that stream. If it omits `instance_ids`, the usual exactly-one eligible instance rule applies to every expanded stream.
 
 A wildcard entry MUST be the only entry in `streams`. Otherwise stream names MUST be unique within the request.
 
 **Note on `streams` vs `selection_preset`:** Exactly one is required. Source validation fails if both or neither are present. The OAuth/RAR binding maps this failure to RFC 9396 `invalid_authorization_details`.
 
-**Note on defaults:** In a request, omitting `fields` and `view` asks the AS to resolve all permitted fields from the retained snapshot. Omitting `time_range` asks for no temporal constraint. Omitting `instance_ids` never asks for fan-in. The issued grant contains explicit non-empty `fields` and `instance_ids`. Clients SHOULD request only the data they need (see [Section 11, Data Minimization](#data-minimization)).
+**Defaults:** Each stream request, including each stream in a selection preset, MUST carry either `fields` or `view`. There is no implicit "all fields" default: a client that wants every permitted field sends `fields: ["*"]`, which the AS resolves against the retained snapshot. The marker is valid even when the stream declares `selection.fields: false`. The OAuth/RAR binding maps a stream request with neither `fields` nor `view` to RFC 9396 `invalid_authorization_details`. Omitting `necessity` means `optional`. Omitting `time_range` asks for no temporal constraint. Omitting `instance_ids` never asks for fan-in. The issued grant contains explicit non-empty `fields` and `instance_ids`. Clients SHOULD request only the data they need (see [Section 11, Data Minimization](#data-minimization)).
 
 ### Selection presets
 
@@ -898,7 +902,7 @@ The authorization server issues an access token bound to the grant. The client u
 | `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, since?, until? }` resolved from the retained declaration. `field` is required and at least one bound is present. `since` is inclusive; `until` is exclusive. |
 | `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Absent means all records. |
 
-Request-only conveniences such as wildcard names, `view`, omitted fields, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
+Request-only conveniences such as wildcard names, the `*` field marker, `view`, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
 
 Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since`, `until`, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
 
@@ -1703,7 +1707,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Active erasure signal | Deferred; revocation stops future access and is not a deletion request. No erasure signal to the recipient is defined |
 | Session refresh | Deferred; no signal asks the owner to renew source-side authentication. A `continuous` grant can stay valid while collection pauses |
 | Request-side freshness requirements | Deferred; freshness is response-side only (`captured_at`, `status`, `last_attempted_at`) |
-| Minimum-data defaults | Open; omitting `fields` and `view` requests all permitted fields of a stream, and `"name": "*"` requests all declared streams. Whether defaults should be minimal is undecided |
+| Minimum-data defaults | Decided for v0.1: a stream request names `fields`, a `view`, or the explicit `fields: ["*"]` marker (Section 6); `necessity` defaults to `optional`; an omitted `time_range` means no temporal constraint; `"name": "*"` requests all declared streams |
 | Subgrants | Deferred; access under a grant is not transferable. A second party needs its own grant |
 | Change of client ownership and undisclosed sub-processing | Deferred; no change-of-control record, revocation trigger, or recipient sub-processing disclosure mechanism. `client_claims` is not an ownership record |
 | Client bulk export | Deferred; owner self-export is SHOULD (Section 9). A client pages through the query under its grant |
@@ -1760,21 +1764,22 @@ interface TimeRange {
   until?: string;          // ISO 8601, exclusive <
 }
 
-interface StreamRequest {
+// Exactly one of view or fields. fields: ["*"] requests all permitted fields.
+type FieldSelection =
+  | { view: string; fields?: never }
+  | { fields: [string, ...string[]]; view?: never };  // Non-empty; top-level field names only in v0.1
+
+type StreamRequest = FieldSelection & {
   name: string;
-  necessity?: 'required' | 'optional';
+  necessity?: 'required' | 'optional';   // Default 'optional'
   instance_ids?: string[];
   time_range?: TimeRange;
-  view?: string;           // Mutually exclusive with fields
-  fields?: string[];       // Top-level field names only in v0.1; mutually exclusive with view
   resources?: string[];    // Canonical key strings per compound key encoding
-}
+};
 
-interface PresetStreamSelection {
+type PresetStreamSelection = FieldSelection & {
   name: string;
-  view?: string;           // Mutually exclusive with fields
-  fields?: string[];       // Top-level field names only in v0.1; mutually exclusive with view
-}
+};
 
 // --- Source binding ---
 
