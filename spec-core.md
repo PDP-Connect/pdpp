@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-28
+Date: 2026-09-29
 
 ---
 
@@ -238,21 +238,55 @@ Approximately 95% of personal data by volume is `append_only`. The remaining 5% 
 
 An authorization server MUST reject a declaration containing an unrecognized `streams[].semantics` value. A resource server MUST NOT interpret an unrecognized stream semantic as `append_only` or `mutable_state`. A later version can add semantic types; an implementation that predates one does not apply the wrong write and sync behavior to it.
 
-### Incremental sync for mutable streams
+### Incremental sync {#incremental-sync}
 
-For `mutable_state` streams, the resource server maintains internal version history to support incremental sync queries. This is an implementation detail: the protocol surface is a standard cursor-based query that returns records changed since a given cursor position (see [Section 8](#resource-server-interface)). The version history is not exposed as a separate stream.
+Every stream supports incremental sync. The resource server maintains internal change history for it: the order in which it ingested and changed records, version history for `mutable_state` streams, and enough deletion information to emit tombstones. This is an implementation detail: the protocol surface is a standard cursor-based query that returns the changes since a given token (see [Section 8](#resource-server-interface)). The change history is not exposed as a separate stream.
 
-A client that has previously synced a `mutable_state` stream queries for changes by passing its last cursor. The resource server returns only records whose state has changed since that cursor, within the client's grant-authorized field projection. If no authorized fields changed on a record, that record does not appear in the response.
+A `changes_since` token is a position in the resource server's ingestion and change order, not a `cursor_field` value. A `next_changes_since` token MUST NOT reveal a readable position or time. Token equality or ordering MUST NOT signal a change that is not visible to the grant, or to the owner session's effective scope, including after a session that returns nothing. One way to meet this is to make each issued token distinct and opaque, for example by encrypting it with fresh randomness. A page cursor MUST NOT reveal a readable position, time, or field value either. An `append_only` record that arrives late with an earlier `cursor_field` value, such as a play from yesterday ingested today, therefore appears in the next session.
+
+A client that has previously synced a stream queries for changes by passing its last `next_changes_since` token. The resource server returns every record not visible at h0 and visible at h1, within the client's grant-authorized field projection. For a record visible at both horizons, it returns the record only if its grant-authorized projection changed.
 
 This design ensures that a client authorized for fields A and B cannot infer that field C changed, even if C was modified after the client's last sync. The response is a function of the grant, not of the full record state.
 
-**Snapshot model:** `changes_since` returns the full current state of each record whose grant-authorized projection changed since the cursor position, plus tombstones for deletions. It does not return field-level diffs. The client receives a complete record object for any record that changed.
+This promise covers field values, not membership. Under a time-bounded or resource-filtered grant, the client can see which records are visible. A change to a hidden time field can move a record into or out of that set. Repeated full listings reveal the same change, so no grant of this kind can hide it.
 
-**Cursor expiry:** Resource servers MAY expire historical version data after a retention period. If a client's cursor has expired, the resource server MUST return HTTP 410 Gone with error code `cursor_expired`. The client MUST perform a full re-sync to re-establish its baseline.
+**Snapshot model:** `changes_since` returns the full current state of every record not visible at h0 and visible at h1, and of every record visible at both whose grant-authorized projection changed, plus tombstones. It does not return field-level diffs. The client receives a complete record object for any record that changed.
 
-**Two distinct cursor spaces:** `cursor`/`next_cursor` are pagination tokens within a single query execution; `changes_since`/`next_changes_since` are incremental sync tokens across sessions. A client MUST NOT use a `next_cursor` value as a `changes_since` parameter; they are different token spaces and will produce a protocol error if confused. The terminal page of a `changes_since` result MUST include a `next_changes_since` field. Paginating an incremental sync: pass `changes_since` on the first request, follow `next_cursor` for subsequent pages within that session, then store `next_changes_since` from the terminal page for the next session.
+**Visibility:** A record is *visible* at a horizon if it exists at that horizon and passes every restriction of the query context at that horizon. For a client token, these are the grant's stream, `instance_ids`, `resources`, and `time_constraint`. For an owner token, they are the owner scope and any request filter. A `changes_since` session from horizon h0 to horizon h1 returns:
 
-**Tombstones:** When a record is deleted from a `mutable_state` stream, the resource server MUST include a tombstone entry in incremental sync responses for clients whose cursor predates the deletion. Tombstone format:
+| At h0 | At h1 | Result |
+|---|---|---|
+| not visible | visible | the record, projected as of h1 |
+| visible | visible | the record, projected as of h1, only if its projection changed |
+| visible | not visible (deleted, moved out of the time window, or excluded for another reason) | one tombstone |
+| not visible | not visible | nothing |
+
+The session compares only the two horizons. The resource server MUST emit a tombstone for each record visible at h0 and not visible at h1. It MUST NOT emit a tombstone for any other record. This includes a record that was never visible under the query context and a record that was visible only between h0 and h1.
+
+Visibility at h0 uses the record's version at h0. For a deleted record, the h0 version establishes visibility at h0, and deletion evidence establishes only the fact and time of the deletion; the `data` of the delete directive is never used. The resource server MUST retain the state needed to determine visibility at every unexpired horizon. If it cannot determine that state, it MUST fail the session with 410 `cursor_expired`.
+
+**Sync guarantee:** With these rules, two conforming resource servers that hold the same records produce the same synced copy. The guarantee covers only a copy that starts at `beginning` and is updated by later `changes_since` sessions. A client that also keeps records from other reads, such as a get by ID between sessions, reconciles them itself; a get by ID returns 404 once the record is not visible. A client MUST treat a tombstone for an ID it does not hold as a no-op.
+
+**Starting a sync:** A client starts incremental sync with `changes_since=beginning`. `beginning` stands for an empty horizon at which no record is visible, so the first session returns every visible record and no tombstones. It is not a retained snapshot: it never expires, and it is bound to a grant and query context only when a request uses it. After a completed `changes_since=beginning` session, the client MUST replace its copy of the stream with that session's result. This applies to every restart, not only a restart after `cursor_expired`.
+
+**Cursor expiry:** Resource servers MAY expire historical change data after a retention period. A `changes_since` token is valid while the resource server still holds the change history back to and including its horizon. If a client's token has expired, the resource server MUST return HTTP 410 Gone with error code `cursor_expired`. The client MUST start again from `beginning`.
+
+**Two distinct cursor spaces:** `cursor`/`next_cursor` are pagination tokens within a single query execution; `changes_since`/`next_changes_since` are incremental sync tokens across sessions. A client MUST NOT use a `next_cursor` value as a `changes_since` parameter; they are different token spaces and will produce a protocol error if confused. The terminal page of a `changes_since` result MUST include a `next_changes_since` field. A non-terminal page MUST NOT include it, because the resource server never issues a token for pages it has not delivered. Paginating an incremental sync: pass `changes_since` on the first request, follow `next_cursor` for subsequent pages within that session, then store `next_changes_since` from the terminal page for the next session.
+
+**Tombstones:** For a client token, a tombstone is exactly:
+
+```json
+{
+  "object": "record",
+  "id": "canonical-key-string",
+  "stream": "playlists",
+  "deleted": true
+}
+```
+
+A client tombstone has no `data`, `deleted_at`, or `emitted_at`. It tells the client only that a record visible at the previous horizon is not visible now. It does not reveal whether the record was deleted, when the change happened, or any field value.
+
+For an owner token, a tombstone also carries `removal`, and for a deletion `deleted_at` and `emitted_at`:
 
 ```json
 {
@@ -260,16 +294,19 @@ This design ensures that a client authorized for fields A and B cannot infer tha
   "id": "canonical-key-string",
   "stream": "playlists",
   "deleted": true,
+  "removal": "deleted",
   "deleted_at": "2026-04-01T10:00:00Z",
   "emitted_at": "2026-04-01T10:00:01Z"
 }
 ```
 
-Tombstones use the same `object: "record"` envelope as regular response records, with `deleted: true`. The `id` field is the canonical key string (see RECORD envelope, Compound key encoding below). Both `deleted_at` and `emitted_at` are required on tombstone objects. No `data` field is present on tombstones.
+`removal` is `deleted` when the record was deleted, and `left_query` when the record still exists but no longer passes the owner's query context, for example a range filter. `deleted_at` and `emitted_at` are present only when `removal` is `deleted`. The owner owns the data, so the reason is not hidden from them.
 
-A tombstone signals that a record left the stream. For subset or derived streams this means membership removal; it does not assert that the source record was deleted. See [Derived subset streams](#predicate-based-grant-scoping) (Section 12) for the non-normative discussion of this stream shape.
+Tombstones use the same `object: "record"` envelope as regular response records, with `deleted: true`. The `id` field is the canonical key string (see RECORD envelope, Compound key encoding below).
 
-`deleted_at` represents the time the record was deleted in the source system, if known; otherwise the time the RS processed the deletion directive. If the source system deletion time is unknown, the RS SHOULD use the `emitted_at` value of the delete directive as `deleted_at`.
+A tombstone signals that a record left the client's view of the stream. For subset or derived streams this means membership removal; it does not assert that the source record was deleted. See [Derived subset streams](#predicate-based-grant-scoping) (Section 12) for the non-normative discussion of this stream shape.
+
+`deleted_at` represents the time the record was deleted in the source system, if known; otherwise the time the RS processed the deletion directive.
 
 **Non-normative note (GDPR Article 15):** The version history maintained internally by the resource server to support `mutable_state` incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is non-normative and is not a required v0.1 capability.
 
@@ -518,8 +555,9 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `streams[].semantics` | `append_only` or `mutable_state`. |
 | `streams[].schema` | JSON Schema for the record's `data` field. `primary_key` and `cursor_field` MUST reference fields declared here. |
 | `streams[].primary_key` | Fields that uniquely identify a record within the stream. |
-| `streams[].cursor_field` | Field used for logical record ordering in cursor-based reads and incremental sync. List reads sort by `(cursor_field, primary_key)`, with null or absent cursor values sorting after present values. A cursor is an opaque token the server issues, encoding a logical sort position in the stream. |
-| `streams[].consent_time_field` | The temporal consent boundary: the field against which `time_range` is evaluated. Absent means `time_range` is not applicable to this stream. MUST reference a field declared in the schema. |
+| `streams[].cursor_field` | Field used for logical record ordering in ordinary list reads. `changes_since` uses a separate RS change-order position, not `cursor_field`. List reads sort by `(cursor_field, primary_key)`, with null or absent cursor values sorting after present values. A cursor is an opaque token the server issues, encoding a logical sort position in the stream. |
+| `streams[].consent_time_field` | The temporal consent boundary: the field against which `time_range` is evaluated. Absent means `time_range` is not applicable to this stream. MUST reference a top-level field declared in the schema with format `date` or `date-time` (see [consent_time_field](#consent-time-field)). |
+| `streams[].consent_time_content_may_exceed` | Optional boolean, default `false`. `true` means a record can contain data from outside its own `consent_time_field` value. The AS MUST reject a non-boolean value. See [consent_time_field](#consent-time-field). |
 | `streams[].selection` | Which selection parameters this stream supports (`fields`, `resources`). Time-range capability is derived from `consent_time_field` presence; absent means not time-range-capable. The AS MUST reject grants that request `time_range` on a stream without a `consent_time_field`, or that request an unsupported selection parameter. The `fields: ["*"]` marker is always supported. |
 | `streams[].views` | Named field projections the declaration publisher suggests. Advisory; the AS is authoritative. Each view has `id`, `label`, and `fields` (top-level field names only). |
 | `streams[].relationships` | Declared foreign key relationships to other streams. Structural graph metadata only; does not by itself make a relation expandable in the read API. Expandability is declared separately as a query capability; see [`expand[]`](#list-records). |
@@ -557,18 +595,28 @@ Streams MAY include a `display` object with human-readable metadata for the cons
 }
 ```
 
-### consent_time_field
+### consent_time_field {#consent-time-field}
 
 The `consent_time_field` is the field on each record that the resource server evaluates `time_range` against. It represents the stream's temporal consent boundary: when the user consents to "data from the last 6 months," the `consent_time_field` is the field that determines whether a given record falls within that window.
 
 The `consent_time_field` may be the same field as `cursor_field`, but they serve different purposes and MUST be declared separately:
 
-- `cursor_field` governs incremental sync mechanics (which records to fetch since the last run).
+- `cursor_field` orders ordinary list reads; `changes_since` uses a separate RS change-order position.
 - `consent_time_field` governs consent-time filtering (which records fall within the authorized time window).
 
-For many `append_only` streams, both fields will be the same (e.g., `played_at` for play events). For some `mutable_state` streams they may differ: a playlists stream might use `source_updated_at` as the cursor (for efficient incremental sync) but `source_created_at` as the `consent_time_field` (because the user's consent to "playlists from the last 6 months" most naturally means playlists they created in that period, not playlists they edited).
+For many `append_only` streams, both fields will be the same (e.g., `played_at` for play events). For some `mutable_state` streams they may differ. A playlists stream might use `source_updated_at` as the `cursor_field`, to order list reads by recent change, but `source_created_at` as the `consent_time_field`. The user's consent to "playlists from the last 6 months" most naturally means playlists they created in that period, not playlists they edited.
 
-The `consent_time_field` MUST be rendered in human-readable consent UX. A grant with `time_range: { since: "2026-01-01" }` on the `playlists` stream should be presented as "playlists created on or after January 1, 2026," not just "playlists in time_range."
+**Field type:** A `consent_time_field` MUST be a top-level field whose schema declares format `date` (RFC 3339 `full-date`) or `date-time` (RFC 3339 `date-time`, which always has an offset). Every non-null value is a string in that format. The schema MAY allow null. A field of any other type, such as an epoch integer or a timestamp without an offset, is not eligible. The AS MUST reject a declaration that names an ineligible `consent_time_field`; a publisher may omit the field to offer the stream without time-range selection. A producer that has only such a value can emit an RFC 3339 sibling field and declare that field instead, keeping the original.
+
+**Period and summary records:** An ordinary record, such as an event or an observation at one instant or on one day, is matched by the single value of its `consent_time_field`. Some records contain data from outside their own time value, for example a budget month, a billing cycle, a statement, or a coverage receipt. A stream whose records can do this MUST declare `consent_time_content_may_exceed: true`. For a time-bounded grant on such a stream, the AS MUST tell the owner that matched records can contain data from outside the bounds, and say what the matched value is. The AS MUST NOT present such a grant as limited to data inside the bounds. Aligning bounds to whole periods does not remove this duty, because a period record can carry figures from earlier periods. A declaration SHOULD put summary records, such as coverage receipts, in their own stream.
+
+**Rendering:** The `consent_time_field` MUST be rendered in human-readable consent UX, with the declared meaning of the field. A grant with `time_range: { since: "2026-01-01T00:00:00Z" }` on the `playlists` stream should be presented as "playlists created at or after 00:00 UTC on 1 January 2026," not just "playlists in time_range." The AS MAY use any language and phrasing that conveys the meaning. For a time-bounded stream:
+
+- The AS MAY show a relative label, such as "last 90 days", only if the AS has verified that the label is true for that stream's exact bounds. Otherwise it omits the label.
+- For a `date` field, the consent text MUST state whose day the value is, as the declaration describes it: for example "the day Oura assigns, in your local time" or "the budget date you entered in YNAB". If the declaration does not say how the source assigns dates, the consent text says "the date the source records" and claims nothing more.
+- A `continuous` grant with `since` and no `until` MUST be described as covering records since that bound, including new records as they arrive. It MUST NOT be described as a rolling window.
+- For a `continuous` grant, the AS MUST tell the owner that the client can see records leave the window when their time values change (see [Time constraint semantics](#time-constraint-semantics)).
+- If the field's schema allows null, the AS SHOULD tell the owner that records without a value are not included.
 
 Streams that cannot define a stable `consent_time_field` simply omit it. The absence of `consent_time_field` is the normative signal that the stream does not support time-range filtering.
 
@@ -790,8 +838,8 @@ Per-stream, within the `streams` array. `name` and exactly one of a non-empty `f
 | `name` | string | Protocol-enforced | Stream name, or `*` for all streams (resolved at consent time against the retained SourceDeclaration). |
 | `necessity` | enum | Consent-flow control at issuance time | `optional` (default) or `required`. Optional streams are presented as user choices during consent. The AS MUST omit a declined optional stream from the grant and MUST retain a `required` stream or refuse issuance. If no stream remains, the AS MUST refuse issuance with `access_denied`. |
 | `instance_ids` | string[] | Protocol-enforced | Optional opaque owner-instance handles for this stream. Handles are scoped to issuer, subject, `source.id`, and stream. Omission never means fan-in (reading across more than one connected instance of the same source). The AS resolves exactly one eligible handle or requires an explicit owner choice. |
-| `time_range.since` | ISO 8601 | Protocol-enforced | Earliest data to include (inclusive, >=), evaluated against the stream's `consent_time_field`. |
-| `time_range.until` | ISO 8601 | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. A hard cap: applies to future resources as well as past ones. |
+| `time_range.since` | RFC 3339 `full-date` or `date-time` | Protocol-enforced | Earliest data to include (inclusive, >=), evaluated against the stream's `consent_time_field`. Its type matches the field's format. |
+| `time_range.until` | RFC 3339 `full-date` or `date-time` | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. Its type matches the field's format. A hard cap: applies to future resources as well as past ones. |
 | `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. The OAuth/RAR binding maps a request with both to RFC 9396 `invalid_authorization_details`. |
 | `fields` | string[] | Protocol-enforced | Field allowlist. `["*"]` requests all permitted fields; `*` MUST then be the only element. Schema-required fields are always included regardless of this list. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the retained declaration's `primary_key` at grant issuance. The RS filters by exact primary-key match. |
@@ -799,6 +847,8 @@ Per-stream, within the `streams` array. `name` and exactly one of a non-empty `f
 **Note on `fields`:** At consent resolution, schema-required fields are always included in the resolved field set, regardless of the requested field list, because a record missing its schema-required fields is not a valid record of that stream; the per-stream consent floor is its required fields.
 
 **Note on `time_range`:** `time_range` is only valid for streams that declare a `consent_time_field`. The authorization server MUST reject selection requests that specify `time_range` on a stream without that field. Its presence in the retained declaration is the authoritative signal that a stream is time-range-capable.
+
+**Time range bounds:** Each bound MUST have the type of the stream's `consent_time_field`: a `full-date` for a `date` field, and a `date-time` for a `date-time` field. A `time_range` MUST contain `since`, `until`, or both. The AS MUST reject a `time_range` with no bound, a bound of the wrong type, a bound that is not valid under [Time constraint semantics](#time-constraint-semantics), or a `since` that is not before `until`. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details`, as for other invalid details; `error_description` MAY name the failed check. The AS MUST NOT convert or round a bound. A client reads each field's format from the declaration and sends bounds of that type per stream.
 
 **Note on wildcards:** `"streams": [{ "name": "*", "fields": ["*"] }]` requests all streams declared by the source. This is resolved against the retained snapshot and frozen as an explicit list in the grant. A stream that a later declaration adds is not part of the grant. If the wildcard request includes `instance_ids`, the AS applies the requested handles to every expanded stream and verifies that each handle is eligible for that stream. If it omits `instance_ids`, the usual exactly-one eligible instance rule applies to every expanded stream.
 
@@ -859,6 +909,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
       "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
       "time_constraint": {
         "field": "source_updated_at",
+        "type": "date-time",
         "since": "2025-09-28T00:00:00Z"
       }
     }
@@ -901,12 +952,12 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 | `name` | string | yes | Protocol-enforced | Unique stream name within the grant. Always concrete; no wildcards in issued grants. |
 | `instance_ids` | string[] | yes | Protocol-enforced | Unique non-empty opaque instance handles scoped to issuer, subject, source ID, and this stream. Multiple handles authorize fan-in only when explicitly listed. Example: two connected Gmail accounts are two instances of the same source kind, each with its own handle. |
 | `fields` | string[] | yes | Protocol-enforced | Unique non-empty resolved field allowlist, authoritative for RS enforcement. Top-level field names only. |
-| `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, since?, until? }` resolved from the retained declaration. `field` is required and at least one bound is present. `since` is inclusive; `until` is exclusive. |
+| `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, type, since?, until? }` resolved from the retained declaration. `field` and `type` are required and at least one bound is present. `type` is `date` or `date-time`; the AS sets it at issuance from the field's format in the retained declaration. Each bound has that type. `since` is inclusive; `until` is exclusive. |
 | `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Absent means all records. |
 
 Request-only conveniences such as wildcard names, the `*` field marker, `view`, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
 
-Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since`, `until`, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
+Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since` stated as inclusive, `until` stated as exclusive, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
 
 ### Representative approval {#representative-approval}
 
@@ -955,14 +1006,24 @@ The current persisted-authorization-state reader MUST reject any persisted autho
 | `single_use` | The grant permits one fixed read window. The window opens at the first client access token issuance for the grant and ends at that token's expiry. The AS marks the grant consumed atomically with that issuance. The first token MUST have a finite expiration, set by AS local policy and, when the grant has `expires_at`, no later than `expires_at`. That expiration SHOULD be short. The window does not limit the client to one request: the client MAY use the token for repeated reads, retries, and pagination until the window ends or the grant is revoked. A later access token in the same refresh-token family MAY carry the grant, but only inside the window. A binding that allows this MUST let the resource server enforce the window end, including under a cached introspection result and for a signed blob URL. After the window ends, no token carries the grant, and introspection MUST NOT report the grant active. After first issuance, the AS MUST reject issuance against the consumed grant, except a successor access token from the same refresh-token family issued before the window ends. A `single_use` grant never opens a second window. Failure to complete retrieval inside the window does not un-consume the grant. |
 | `continuous` | The grant is fulfilled repeatedly. The client may query the resource server incrementally over time. Active until expiry or revocation. |
 
-### Time constraint semantics
+### Time constraint semantics {#time-constraint-semantics}
 
-The selection request's `time_range` is resolved against the retained stream `consent_time_field` into the grant's `time_constraint`. The grant freezes that field with the bounds. The filter is:
+The selection request's `time_range` is resolved against the retained stream `consent_time_field` into the grant's `time_constraint`. The grant freezes that field, its type, and the bounds. The filter is:
 
 ```
 record[time_constraint.field] >= time_constraint.since  (if since is present)
 record[time_constraint.field] <  time_constraint.until  (if until is present)
 ```
+
+**Comparison:** The resource server compares values by the grant's frozen `time_constraint.type`, never by a current declaration. It compares `date` values by calendar order. It compares `date-time` values as instants at their full stated precision: it does not round, and it compares fractional seconds exactly. It MUST NOT apply a host, viewer, or owner time zone. Comparing RFC 3339 strings as text is wrong when their offsets differ.
+
+**Validity:** A value or bound is valid only if it is a valid RFC 3339 value of its type: `time_constraint.type` for a grant, or the declared format for an owner filter. Every form RFC 3339 Section 5.6 allows is accepted, including lowercase `t` and `z` and fractional seconds of any length. `-00:00` is a UTC instant with an unknown local offset; it compares as UTC. A leap second (`:60`) is valid only if, normalized to UTC, it is 23:59:60 on a date on which a leap second was inserted, per the IERS leap-second table (RFC 3339 Section 5.7). It orders after `:59` of the same minute and before the next minute. JSON Schema `format` is an annotation by default, so implementations MUST apply these rules themselves.
+
+**Missing values:** A record whose `time_constraint.field` value is absent, null, or not valid fails the filter. This applies on every read surface: list, single record, `changes_since`, and blob. The resource server SHOULD report a present but invalid stored value to the operator. Core does not require every record in a time-bounded stream to have a value.
+
+**Other time fields:** The window restricts which records are returned. It does not restrict other time fields inside a returned record. A transaction booked inside the window can carry a value date outside it, and the client sees that value date if the field is granted.
+
+**Incremental sync:** A time-bounded grant uses the visibility rules in [Incremental sync](#incremental-sync). A record outside the window at h0 and inside it at h1 is returned. A record inside the window at h0 and outside it at h1, or without a valid value at h1, produces a tombstone. The bounds are frozen, so the passage of time alone does not change which records are visible. When `time_constraint.field` is not a granted field, the tombstone still tells the client that the record crossed a bound. [Incremental sync](#incremental-sync) states that the hidden-field promise covers field values, not this membership.
 
 `time_constraint.until` is a hard cap. It applies equally to records that existed at grant issuance and to records created afterward. A `continuous` grant with `time_constraint.until` set to a past date is valid. It never discloses a record whose `time_constraint.field` value is at or after `until`. It can still disclose a qualifying record that the RS learns of after issuance, and a later full current state of a `mutable_state` record if its time field still qualifies. This is not an error.
 
@@ -1017,6 +1078,7 @@ Retention is a structured policy declaration and policy commitment by the data r
       "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
       "time_constraint": {
         "field": "source_updated_at",
+        "type": "date-time",
         "since": "2025-09-28T00:00:00Z"
       }
     }
@@ -1070,8 +1132,9 @@ Retention is a structured policy declaration and policy commitment by the data r
       "fields": ["day", "total_sleep_duration", "sleep_score"],
       "time_constraint": {
         "field": "day",
-        "since": "2026-01-01T00:00:00Z",
-        "until": "2026-04-01T00:00:00Z"
+        "type": "date",
+        "since": "2026-01-01",
+        "until": "2026-04-01"
       }
     }
   ],
@@ -1102,7 +1165,7 @@ For owner-token current-capability reads, the effective filter is the permitted 
 
 In v0.1, client-token reads do not have request-time predicate filters (see List records below); the resource server enforces the frozen grant constraints and rejects a client request-time predicate filter rather than evaluating it. A future client-filter capability may define intersection semantics.
 
-The RS MUST NOT re-validate authorization against the current SourceDeclaration. All enforcement constraints are in the resolved grant. Current serving metadata MAY route a granted instance, describe current schemas or query capabilities, or reject a request that cannot currently be served. It MUST NOT widen or reinterpret a stream, instance, field, time field, bound, or resource key.
+The RS MUST NOT re-validate authorization against the current SourceDeclaration. All enforcement constraints are in the resolved grant. Current serving metadata MAY route a granted instance, describe current schemas or query capabilities, or reject a request that cannot currently be served. It MUST NOT widen or reinterpret a stream, instance, field, time field, time type, bound, or resource key.
 
 **Token type distinction:** The format of the access token is opaque to the Resource Server. The RS MUST determine the token's properties (including `pdpp_token_kind`) solely from the introspection response, never from token syntax.
 
@@ -1313,7 +1376,7 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `fields` | comma-separated | Sparse fieldset. Schema-required fields are always included. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `expand[]` | string | Owner-token current-capability request to expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. Client-token requests MUST reject this parameter in v0.1. |
 | `expand_limit[{relation}]` | integer | Owner-token current-capability limit for an expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. Client-token requests MUST reject this parameter in v0.1. |
-| `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`). Returns only records whose grant-authorized projection changed since that cursor, plus tombstones for deletions. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the cursor has expired. |
+| `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`), or `beginning` to start a sync. Returns the changes since that token under [Incremental sync](#incremental-sync): every record not visible at h0 and visible at h1, a record visible at both only if its grant-authorized projection changed, and tombstones. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the token has expired. |
 
 The durable client-token base query surface in v0.1 is: `limit`, `cursor`, `order`, `fields`, `changes_since`, and blob fetch. Exact and range `filter[...]`, `expand[]`, and `expand_limit[...]` parameters are not part of the client-token surface. Owner-token current-capability reads MAY support exact and declared range filters, `view`, and declared expansion; those reads consult current serving metadata. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
 
@@ -1328,23 +1391,27 @@ owner token has no client grant field projection.
 
 Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be rejected with HTTP 400 `invalid_request` before the RS consults current SourceDeclaration or serving metadata. A v0.1 resolved grant does not freeze relationship identity, target stream, foreign-key join semantics, cardinality, or expansion limits. Current relationship metadata therefore cannot interpret client grant rights. Owner-token current-capability reads MAY use declared expansion against current serving metadata.
 
-For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
+For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. On a `date` or `date-time` field, they use the validity and comparison rules in [Time constraint semantics](#time-constraint-semantics), and an invalid value returns 400 `invalid_request`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
 
 For owner-token current-capability reads, expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations.
 
-**Stable sort:** Records are sorted by `(cursor_field, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values.
+**Stable sort:** Records are sorted by `(cursor_field, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values. A `changes_since` session instead orders records and tombstones together by canonical key string, in the direction `order` selects. It does not follow `cursor_field`, which a tombstone lacks, or the order of changes, which would reveal when a hidden field changed relative to other updates.
 
-Page cursors are direction-bound: a client MUST follow a `next_cursor` with the same `order` value that produced it. To change direction, the client MUST restart pagination without a cursor. Resource servers MUST reject order-mismatched page cursors as `invalid_cursor`.
+A page cursor is bound to the query context of the first page: the grant (for an owner token, the subject and effective owner scope), stream, `fields`, `view`, `expand[]`, `expand_limit[...]`, `order`, every `filter[...]`, and any `changes_since` token. A client MUST follow a `next_cursor` with the same context that produced it. To change the context, the client MUST restart pagination without a cursor. Resource servers MUST reject a page cursor used with a different context as `invalid_cursor`.
 
-**Incremental sync for mutable streams:** Pass `changes_since` to retrieve only records changed since a previous sync. The resource server returns changed records within the grant's authorized field projection. If a record was deleted, a tombstone entry is included. If the cursor has expired (HTTP 410 Gone with error code `cursor_expired`), the client MUST perform a full re-sync.
+**Incremental sync:** Pass `changes_since=beginning` to start a sync, and the stored `next_changes_since` to retrieve the changes since a previous session. The resource server returns records within the grant's authorized field projection, and tombstones under the rules in [Incremental sync](#incremental-sync). If the token has expired (HTTP 410 Gone with error code `cursor_expired`), the client MUST start again from `beginning`.
 
-Eligibility for `changes_since` MUST be computed on the grant-authorized projection, not on the unprojected record. Returning a record whose authorized projection is unchanged is a protocol violation because it leaks that hidden fields changed.
+A `changes_since` session returns every record not visible at h0 and visible at h1 (the horizons defined in [Incremental sync](#incremental-sync)). For a record visible at both horizons, eligibility MUST be computed on the grant-authorized projection, not on the unprojected record. For an owner session, the projection is the session's effective `fields` or resolved `view` projection. Returning such a record when its authorized projection is unchanged is a protocol violation because it leaks that hidden fields changed.
 
-If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`.
+A `changes_since` token is bound to the grant (for an owner token, the subject and effective owner scope) and to the query context that produced it, excluding the input `changes_since` value itself. For an owner session that uses `view`, the binding includes the resolved field set; when the view resolves to a different field set, the resource server rejects the token and the client starts a new `beginning` session. The resource server MUST reject a token used under another grant, subject, scope, or query context as `invalid_cursor`. `beginning` is bound only when a request uses it.
+
+If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`. Deletion is the exception: the resource server MUST NOT serve a record on a later page if the record was deleted after page 1. The next session under a still-active grant emits its tombstone. An ordinary edit after page 1 does not override the horizon; the next session applies it. Revocation ends access and promises no later tombstone: requests fail within the propagation bound in [Revocation](#revocation).
 
 **Invalid owner filter:** An owner-token current-capability filter on an unknown, non-scalar, or unsupported field/operator returns HTTP 400 `invalid_request` or `unknown_field`, as applicable. Client-token predicate filters are rejected earlier under the v0.1 client-filter rule.
 
 **Expansion:** A client-token expansion request is rejected with 400 `invalid_request` before declaration lookup. For an owner-token current-capability read, requesting an undeclared relation returns 400 `invalid_expand`. Expansion never widens the current owner read scope.
+
+A `changes_since` request with `expand[]` or `expand_limit[...]` is rejected with 400 `invalid_request` for every token kind. An expanded record can change when a related record changes, with no change to the parent record, so a session that compares parent versions would miss it. A client syncs each stream on its own.
 
 **Response:**
 ```json
@@ -1352,8 +1419,7 @@ If a `changes_since` response is paginated, all pages in that session MUST be an
   "object": "list",
   "url": "/v1/streams/conversations/records",
   "has_more": true,
-  "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wMy0yNVQxODoyMjoxMVoiLCJpZCI6ImNvbnZfMDFKUVc4TTJSNyJ9",
-  "next_changes_since": "eyJjaGFuZ2VzX3NpbmNlIjoiMjAyNi0wNC0wNlQxNTowMTowMFoifQ",
+  "next_cursor": "pc_Vx3q9LmT0bRk7ZwD2yNf5HsJa8GuPc4e",
   "freshness": {
     "captured_at": "2026-04-06T15:01:00Z",
     "status": "current",
@@ -1375,7 +1441,35 @@ If a `changes_since` response is paginated, all pages in that session MUST be an
 }
 ```
 
-The terminal page of a `changes_since` request (i.e., `has_more: false`) MUST include `next_changes_since`.
+The terminal page of a `changes_since` request (i.e., `has_more: false`) MUST include `next_changes_since`. A terminal `changes_since` page for a client token, with one tombstone and one changed record in the default descending key order:
+
+```json
+{
+  "object": "list",
+  "url": "/v1/streams/conversations/records",
+  "has_more": false,
+  "next_changes_since": "cs_7Rk2VqXn9LwT4pZb0HmYc8JdF3sGa1Ue",
+  "data": [
+    {
+      "object": "record",
+      "id": "conv_01JQX2P4K9",
+      "stream": "conversations",
+      "deleted": true
+    },
+    {
+      "object": "record",
+      "id": "conv_01JQW8M2R7",
+      "stream": "conversations",
+      "data": {
+        "id": "conv_01JQW8M2R7",
+        "title": "Trip planning, Lisbon",
+        "source_created_at": "2026-03-25T18:22:11Z"
+      },
+      "emitted_at": "2026-04-06T15:01:00Z"
+    }
+  ]
+}
+```
 
 #### Get a single record
 
@@ -1459,7 +1553,7 @@ This makes a future error code safe to introduce: an older client keeps handling
 
 | Code | HTTP Status | Type | Meaning |
 |------|------------|------|---------|
-| `invalid_cursor` | 400 | `invalid_request_error` | Cursor token is malformed or unrecognized. |
+| `invalid_cursor` | 400 | `invalid_request_error` | Page cursor or `changes_since` token is malformed or unrecognized, or is used with a different grant, owner scope, or query context. |
 | `invalid_request` | 400 | `invalid_request_error` | Malformed request parameter or mutually exclusive parameters. |
 | `invalid_expand` | 400 | `invalid_request_error` | Relation is not declared as expandable. |
 | `unknown_field` | 400 | `invalid_request_error` | Requested field not in stream schema. |
@@ -1475,7 +1569,7 @@ This makes a future error code safe to introduce: an older client keeps handling
 | `grant_invalid` | 403 | `permission_error` | Resolved grant is malformed or cannot be served without changing its authorization meaning. |
 | `blob_not_found` | 404 | `not_found_error` | `blob_id` is unknown or stale, or no record the token may read references it. |
 | `not_found` | 404 | `not_found_error` | Stream or record not found. |
-| `cursor_expired` | 410 | `gone_error` | `changes_since` cursor is too old; full re-sync required. |
+| `cursor_expired` | 410 | `gone_error` | `changes_since` token is too old; start again from `beginning`. |
 | `rate_limit_exceeded` | 429 | `rate_limit_error` | Too many requests. Includes `Retry-After` header. |
 | `api_error` | 500 | `api_error` | Internal server error. |
 
@@ -1534,6 +1628,8 @@ A conformant authorization server:
 24. Lets the owner approve or decline each detail of a request on its own. Issues one grant for each approved, resolved detail, covering one subject, one source, and one purpose, with its own lifecycle. Identifies grants by `grant_id` and does not treat subject, source, and purpose as a grant key.
 25. If it offers client-initiated revocation, ends grants as Section 10 defines: revoking a refresh token, current or superseded, ends every grant its family covers; revoking an access token ends its grants only when no refresh-token family covers them. In the OAuth binding, implements it as RFC 7009 token revocation and advertises `revocation_endpoint` in RFC 8414 metadata.
 26. Ends one grant among several that share a credential without revoking that credential or ending the other grants.
+27. Rejects a declaration that names an ineligible `consent_time_field` or a non-boolean `consent_time_content_may_exceed`. Rejects a `time_range` with no bound, a bound whose type does not match the field's format, an invalid bound, or a `since` not before `until`; the OAuth/RAR binding returns `invalid_authorization_details`. Never converts or rounds a bound. Sets `time_constraint.type` from the field's format in the retained declaration.
+28. For each time-bounded stream, renders the exact bounds with their inclusive and exclusive meaning and the declared meaning of the field. Shows a relative label only when it has verified it for those bounds. Discloses that matched records can contain data from outside the bounds when the stream declares `consent_time_content_may_exceed: true`. For a `continuous` grant, discloses that the client can see records leave the window.
 
 ### Resource Server conformance
 
@@ -1545,8 +1641,8 @@ A conformant Core RS:
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
 5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
 6. Returns structured errors as defined in Section 8 (unified error table).
-7. Supports incremental sync via `changes_since` for `mutable_state` streams, including tombstone entries, omission of records whose grant-authorized projection did not change, and HTTP 410 with error code `cursor_expired` on cursor expiry.
-8. Returns `next_changes_since` on the terminal page of every `changes_since` response.
+7. Supports incremental sync via `changes_since` on every stream, starting from `beginning`, with tombstone entries and HTTP 410 with error code `cursor_expired` on cursor expiry. Returns every record not visible at h0 and visible at h1, and omits a record visible at both horizons whose projection did not change. The projection is the grant-authorized projection for a client token, and the session's effective `fields` or resolved `view` projection for an owner token.
+8. Returns `next_changes_since` on the terminal page of every `changes_since` response and on no other page.
 9. Rejects client-token exact and range `filter[...]` parameters with 400
    `invalid_request` before consulting current declaration metadata; owner-token current-capability reads MAY retain declared filter behavior.
 10. Rejects unknown query parameters and unsupported query shapes with 400 instead of silently ignoring them.
@@ -1559,6 +1655,9 @@ A conformant Core RS:
 17. Does not interpret an unrecognized stream semantic as `append_only` or `mutable_state`, or an unrecognized grant `source.kind` as a known provenance class.
 18. Serves a blob only when a record the requesting token may currently read, including its field projection, references it. Otherwise returns 404 `blob_not_found`. Gives a redirect's signed URL an expiry no later than the positive-status cache expiry, or 60 seconds after token validation when no result was cached, and no later than the token or grant expiration when present.
 19. Returns 401 with `WWW-Authenticate: Bearer error="invalid_token"` for every inactive access token. Uses the structured code `grant_expired` or `grant_revoked` only when authenticated context establishes that cause, otherwise `authentication_error`.
+20. Emits a tombstone for each record visible at the previous horizon and not visible at the new one, and for no other record. Retains the state needed to determine visibility at every unexpired horizon, and otherwise fails the session with 410 `cursor_expired`. Uses the exact client tombstone shape for client tokens. For owner tokens, adds `removal`, and `deleted_at` and `emitted_at` only for a deletion.
+21. Binds each page cursor and `changes_since` token to its grant, or owner subject and scope, and to its query context, and rejects a mismatch as `invalid_cursor`. Orders a `changes_since` session by canonical key string, does not serve a record deleted after the session's first page, and rejects `expand[]` and `expand_limit[...]` on `changes_since`. Issues tokens and page cursors that reveal no readable position, time, or field value, and whose equality or ordering signals no change outside the grant or owner scope.
+22. Compares time values and bounds by the grant's frozen `time_constraint.type`, never a current declaration, as calendar dates or exact instants, without a host, viewer, or owner time zone. Validates values itself under RFC 3339, including its leap-second rule. Excludes a record whose value is absent, null, or invalid from every read surface. Applies the same rules to owner-token range filters on `date` and `date-time` fields, using the declared format.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
@@ -1570,11 +1669,12 @@ A conformant client:
 2. Uses access tokens (not raw grants) to authenticate with the resource server.
 3. Treats `cursor` and `changes_since` tokens as opaque and from distinct token spaces. MUST NOT use a `next_cursor` value as a `changes_since` parameter.
 4. Stores `next_changes_since` from the terminal page of a `changes_since` response for use in the next sync session.
-5. Respects HTTP 410 `cursor_expired` responses by performing a full re-sync rather than retrying with the expired cursor.
+5. Respects HTTP 410 `cursor_expired` responses by starting again from `beginning`, rather than retrying with the expired token. After every completed `beginning` session, replaces its copy of the stream with that session's result.
 6. Honors retention commitments declared in the grant.
 7. Treats unrecognized error codes as opaque, falling back to the exact HTTP status code and applicable response headers rather than failing on an unknown code. Takes the actual status code and headers as the authoritative outcome. Uses a recognized `error.type` only to refine category or presentation, and only when compatible with that outcome. Ignores an absent, unrecognized, or status-incompatible `type` for control flow, and never fails to parse on an unknown `code` or `type`.
 8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant, and MUST NOT treat an unrecognized `source.kind` as either known value. A client with no provenance-dependent policy has nothing to check.
 9. Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`. Does not treat an inactive token as proof of revocation.
+10. Treats a tombstone for an ID it does not hold as a no-op. Reconciles records it obtained outside sync sessions itself, because the sync guarantee covers only a copy built from sync sessions.
 
 ### Conformance test suite
 
@@ -1687,8 +1787,8 @@ The `retention` field is a structured policy declaration and policy commitment b
 - Cross-stream references within a single subject (`resource_ref`)
 - SourceDeclaration shared by connector-backed and provider-native sources
 - Resource server query API with cursor-based pagination and grant enforcement
-- Incremental sync for `mutable_state` streams via `changes_since`
-- Tombstones for deleted records
+- Incremental sync for every stream via `changes_since`
+- Tombstones for records that leave a client's view
 - Owner-authenticated user erasure (`DELETE /v1/streams/{stream}/records/{id}`)
 - Self-export via owner token (SHOULD-level Core RS conformance, see Section 9 item 13)
 - Conformance definitions for all roles
@@ -1769,10 +1869,9 @@ interface ResourceRef {
 
 // --- Selection (request-time) ---
 
-interface TimeRange {
-  since?: string;          // ISO 8601, inclusive >=
-  until?: string;          // ISO 8601, exclusive <
-}
+type TimeRange =         // At least one bound; RFC 3339 full-date or date-time matching the field's format
+  | { since: string; until?: string }   // since: inclusive >=
+  | { since?: string; until: string };  // until: exclusive <
 
 // Exactly one of view or fields. fields: ["*"] requests all permitted fields.
 type FieldSelection =
@@ -1821,9 +1920,10 @@ type SelectionRequest = {
 
 // --- Grant (post-consent, immutable) ---
 
-interface TimeConstraint extends TimeRange {
+type TimeConstraint = TimeRange & {
   field: string;
-}
+  type: 'date' | 'date-time';  // Frozen by the AS from the retained declaration
+};
 
 interface StreamGrant {
   name: string;
@@ -1901,8 +2001,9 @@ interface SourceDeclarationStream {
   semantics: 'append_only' | 'mutable_state';
   schema: Record<string, unknown>;
   primary_key: string[];
-  cursor_field?: string;           // Logical ordering field for cursor-based reads and incremental sync
-  consent_time_field?: string;     // Absent means time_range not supported for this stream
+  cursor_field?: string;           // Orders ordinary list reads; changes_since uses a separate change-order position
+  consent_time_field?: string;     // Top-level date or date-time field; absent means time_range not supported
+  consent_time_content_may_exceed?: boolean;  // Default false; true for period or summary records
   selection: {
     // time_range capability derived from consent_time_field presence
     fields: boolean;
@@ -1940,17 +2041,19 @@ interface PDPPIntrospectionResponse {
   authorization_details?: Array<Record<string, unknown>>; // Approved RFC 9396 detail with Section 7 enforcement constraints
 }
 
-// --- Tombstone (response object) ---
+// --- Tombstones (response objects) ---
 
-interface TombstoneRecord {
+interface ClientTombstone {
   object: 'record';
   id: string;              // Canonical key string
   stream: string;
   deleted: true;
-  deleted_at: string;      // ISO 8601, required
-  emitted_at: string;      // ISO 8601, required
-  // No data field
+  // No data, deleted_at, or emitted_at
 }
+
+type OwnerTombstone =
+  | (ClientTombstone & { removal: 'deleted'; deleted_at: string; emitted_at: string })
+  | (ClientTombstone & { removal: 'left_query' });  // No deleted_at or emitted_at
 ```
 
 ---
