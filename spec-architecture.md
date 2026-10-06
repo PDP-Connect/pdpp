@@ -1,7 +1,7 @@
 # System Architecture: How the Spec Components Relate
 
 Status: Informative
-Date: 2026-09-27
+Date: 2026-10-06
 
 ## Components
 
@@ -155,7 +155,7 @@ A request with `streams: [{ "name": "*" }]` is expanded at consent time into the
 
 When a client reads under a grant, how does it know whether the data is current?
 
-Core Section 8 defines response-side freshness metadata: the resource server MAY attach `captured_at`, `status` (`current`, `stale`, `unknown`), and `last_attempted_at` to stream listings, stream metadata, and record-list responses. Implementations claiming Collection Profile support publish it (Core Section 9, Tier 2). Freshness reports local observation; it does not guarantee the source has not changed since `captured_at`.
+Core Section 8 defines response-side freshness metadata: the resource server MAY attach a `freshness` array to stream listings, stream metadata, and record-list responses. The array has one entry for each instance that the grant, or the owner scope, authorizes for the stream. Each entry carries `last_success_at`, the time of the most recent successful collection or source confirmation relevant to the authorized scope. Client-token values are coarsened and carry no failure time; owner-token entries MAY carry `last_failure_at`. Freshness reports local observation; it does not guarantee the source has not changed since `last_success_at`. An empty result does not show that data is absent at the source (Core Section 8, Absence of records).
 
 Fulfillment remains an implementation choice: serve from storage, collect on a schedule, or collect before serving. The reference schedules collection per connection and serves stored records with freshness metadata.
 

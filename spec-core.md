@@ -1243,7 +1243,7 @@ A client that reaches the resource server without a usable access token learns t
 
 The `resource` member is the resource server's own identifier, as RFC 9728 Section 2 requires. For a `provider_native` source it is the same identifier as the declaration's `source.id`, which is the binding Section 5 already requires an authorization server to check before consent. A resource server that serves several sources publishes one metadata document per resource identifier rather than one document listing them.
 
-PDPP defines four additional members. RFC 9728 Section 2 permits additional parameters and RFC 9728 Section 3.2 requires a reader to ignore any parameter it does not understand, so a generic OAuth client is unaffected by their presence. Each name carries the `pdpp_` prefix to keep it distinct from a future registered parameter; RFC 9728 does not itself prescribe a naming convention.
+PDPP defines five additional members. The first four are REQUIRED. `pdpp_freshness_granularity_seconds` is REQUIRED when the resource server attaches `freshness` to a client-token response. RFC 9728 Section 2 permits additional parameters and RFC 9728 Section 3.2 requires a reader to ignore any parameter it does not understand, so a generic OAuth client is unaffected by their presence. Each name carries the `pdpp_` prefix to keep it distinct from a future registered parameter; RFC 9728 does not itself prescribe a naming convention.
 
 | Member | Meaning |
 | --- | --- |
@@ -1251,6 +1251,7 @@ PDPP defines four additional members. RFC 9728 Section 2 permits additional para
 | `pdpp_token_kinds_supported` | The `pdpp_token_kind` values this resource server accepts, drawn from the kinds Section 8 defines. |
 | `pdpp_self_export_supported` | Whether an owner token may read the owner's own data through the client query endpoints without a client grant. |
 | `pdpp_provider_connect_version` | The PDPP version this resource server's interface implements, which a client would otherwise learn only from the `PDPP-Version` negotiation on a first request. |
+| `pdpp_freshness_granularity_seconds` | An integer of at least 3600: the fixed granularity, in seconds, to which the resource server truncates `last_success_at` in client-token responses (see [Freshness metadata](#freshness)). |
 
 `resource_name` is RFC 9728's own member for a human-readable resource name, not a PDPP extension; a resource server SHOULD publish it because a consent surface has no other name to display for the resource.
 
@@ -1269,7 +1270,7 @@ Authorization: Bearer <access_token>
 
 Returns streams with record counts, scoped by token kind: for a client token, the streams present in the resolved authorization context; for an owner token, the streams in the subject-scoped data store the owner token is scoped to.
 
-**Response:**
+**Response** (client token; the grant lists two instances for each stream, and the server has never collected `inst_W8nt5Gq1`):
 ```json
 {
   "object": "list",
@@ -1278,23 +1279,19 @@ Returns streams with record counts, scoped by token kind: for a client token, th
       "object": "stream",
       "name": "conversations",
       "record_count": 2196,
-      "last_updated": "2026-04-06T15:01:00Z",
-      "freshness": {
-        "captured_at": "2026-04-06T15:01:00Z",
-        "status": "current",
-        "last_attempted_at": "2026-04-06T15:01:00Z"
-      }
+      "freshness": [
+        { "instance_id": "inst_Hc7vM3sD", "last_success_at": "2026-04-06T15:00:00Z" },
+        { "instance_id": "inst_W8nt5Gq1", "last_success_at": null }
+      ]
     },
     {
       "object": "stream",
       "name": "messages",
       "record_count": 48302,
-      "last_updated": "2026-04-06T15:01:00Z",
-      "freshness": {
-        "captured_at": "2026-04-06T15:01:00Z",
-        "status": "current",
-        "last_attempted_at": "2026-04-06T15:01:00Z"
-      }
+      "freshness": [
+        { "instance_id": "inst_Hc7vM3sD", "last_success_at": "2026-04-06T15:00:00Z" },
+        { "instance_id": "inst_W8nt5Gq1", "last_success_at": null }
+      ]
     }
   ]
 }
@@ -1310,7 +1307,7 @@ Authorization: Bearer <access_token>
 A client-token caller may fetch metadata only for a stream present in its resolved authorization context. An owner-token caller may fetch metadata for streams in the subject's data store the owner token is scoped to. Once access is authorized, the response body is actor-specific:
 
 - **Owner token:** the metadata document is returned whole — full current schema, query capabilities, views, and relationships — rather than field-projected by any grant. An owner token carries no grant, so there is nothing to project against.
-- **Client token:** the response is a closed projection derived from the resolved authorization context: only the granted stream's explicitly granted fields, and only immutable/frozen grant facts. Current query, view, relationship, filter, expansion, and aggregation capabilities MUST NOT appear unless that capability is explicitly part of a future frozen grant vocabulary. Current metadata MAY report availability/freshness or reject an unavailable operation, but MUST NOT make the grant appear broader or semantically different than what was issued. A source declaration change made after the grant was issued (e.g., a new field) MUST NOT become visible through this endpoint for that grant.
+- **Client token:** the response is a closed projection derived from the resolved authorization context: only the granted stream's explicitly granted fields, and only immutable/frozen grant facts. Current query, view, relationship, filter, expansion, and aggregation capabilities MUST NOT appear unless that capability is explicitly part of a future frozen grant vocabulary. Current metadata MAY report availability or `freshness` (see [Freshness metadata](#freshness)) or reject an unavailable operation, but MUST NOT make the grant appear broader or semantically different than what was issued. A source declaration change made after the grant was issued (e.g., a new field) MUST NOT become visible through this endpoint for that grant.
 
 **Owner-token response** (full current metadata):
 
@@ -1334,11 +1331,13 @@ A client-token caller may fetch metadata only for a stream present in its resolv
       { "name": "messages", "default_limit": 10, "max_limit": 50 }
     ]
   },
-  "freshness": {
-    "captured_at": "2026-04-06T15:01:00Z",
-    "status": "current",
-    "last_attempted_at": "2026-04-06T15:01:00Z"
-  },
+  "freshness": [
+    {
+      "instance_id": "inst_Zp5rT2mA",
+      "last_success_at": "2026-04-06T15:01:07Z",
+      "last_failure_at": "2026-04-05T09:12:40Z"
+    }
+  ],
   "views": [
     { "id": "basic", "label": "Artist names and genres", "fields": ["id", "name", "genres"] }
   ],
@@ -1369,27 +1368,45 @@ A client-token caller may fetch metadata only for a stream present in its resolv
     "resources": false
   },
   "query": { },
-  "freshness": {
-    "captured_at": "2026-04-06T15:01:00Z",
-    "status": "current",
-    "last_attempted_at": "2026-04-06T15:01:00Z"
-  },
+  "freshness": [
+    { "instance_id": "inst_K4wq8Rn2", "last_success_at": "2026-04-06T15:00:00Z" }
+  ],
   "views": [],
   "relationships": []
 }
 ```
 
-#### Freshness metadata
+#### Freshness metadata {#freshness}
 
-A resource server MAY attach a `freshness` object to stream listings, stream metadata, and record-list responses.
+A resource server MAY attach a `freshness` array to stream listings, stream metadata, and record-list responses. On `/v1/streams`, the array is a member of each stream item. On stream metadata and record lists, it is a top-level member of the response.
 
-Freshness is server-observed disclosure metadata, not a grant constraint. It reports what the server knows about the recency of the underlying data relevant to the response. It does not guarantee that the source has not changed since `captured_at`, and it does not widen or narrow access rights.
+Freshness is server-observed disclosure metadata, not a grant constraint. It reports when the server last collected or confirmed data relevant to the query. It does not guarantee that the source has not changed since that time, and it does not widen or narrow access rights.
+
+The array has one entry for each instance that the query context authorizes for the stream. For a client token, these are the instance handles that the grant lists for the stream. For an owner token, they are the instances of the stream in the owner scope. The array lists every such instance, whatever the page contains, including an instance that the server has never collected. It lists each instance once. The containing stream identifies the stream, so an entry has no `stream` member.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `captured_at` | ISO 8601 or null | Time of the most recent successful collection or source confirmation that could have affected the response. null if unknown. |
-| `status` | enum | `current`, `stale`, or `unknown`. `stale` means the server believes the stored data may no longer reflect source state based on local collection policy or failed refresh attempts. |
-| `last_attempted_at` | ISO 8601 or null | Time of the most recent attempted refresh relevant to the response, if tracked. |
+| `instance_id` | string | The instance handle, as on records: the grant's handle for a client token, and the owner's handle for an owner token. |
+| `last_success_at` | RFC 3339 date-time or null | The completion time of the most recent successful collection or source confirmation that could affect records visible under the full authorized scope of the query. |
+| `last_failure_at` | RFC 3339 date-time or null | Owner token only. The time at which the most recent failed collection or source confirmation ended, under the same scope rule. |
+
+**Scope.** The full authorized scope of the query is the stream and the instance. For a client token, the grant's `resources`, `time_constraint`, and field projection restrict it further. Request parameters such as `fields` do not narrow it. An operation qualifies when it could write, change, or confirm a record visible under this scope. A check that covers the authorized data qualifies even when it finds no change. An operation confined to data outside this scope MUST NOT change the value. The value is not clipped to the record time window: a collection in September can add records dated in March. When the resource server cannot establish safely which operations are relevant to the scope, the value is null.
+
+**Success.** An operation is successful when it completed and its writes were committed. A completed check that found no change is successful. Partial progress within a failed or unfinished operation is not a success. A failed operation is one that ended without success.
+
+**Null.** A null value means only that the server has no reportable timestamp. It does not prove that nothing was collected or that nothing failed.
+
+**Failure timing.** A client-token response MUST NOT carry `last_failure_at` or any other failure time. An owner-token response MAY carry `last_failure_at` in each entry.
+
+**Coarsening.** In a client-token response, the resource server MUST truncate each `last_success_at` value to the granularity that it declares as `pdpp_freshness_granularity_seconds` in its [protected resource metadata](#protected-resource-metadata). The granularity MUST be at least 3600 seconds. The resource server truncates the value down to a multiple of that many seconds in Unix time and expresses the result in UTC. For example, a granularity of 3600 truncates each value to the start of its hour. The resource server MUST NOT report a truncated value before its interval ends. With a granularity of 3600, a success at 10:17 UTC appears as 10:00 UTC from 11:00 UTC onward. Until then, the entry reports the most recent success in an interval that has ended, or null. One granularity applies to every entry in every client-token response. Truncation keeps order: a later success never has an earlier value. A client that polls still sees each change, but only at an interval boundary. These rules limit the precision of the freshness signal. They do not guarantee timing privacy across the whole API.
+
+**Sync sessions.** When it serves the first page of a `changes_since` session, including one that starts from `beginning`, the resource server takes a snapshot of the `freshness` array. It carries that exact snapshot through the session's page cursors and repeats it unchanged on every later page of the session.
+
+**No verdict.** Core defines no staleness verdict on the wire. A client that needs one derives it from `last_success_at` and its own policy.
+
+#### Absence of records {#absence-of-records}
+
+An empty result, the end of pagination, a tombstone, or a 404 means only that no stored record is visible under the query context. A client MUST NOT infer from these that a record does not exist at the source, or that collection is complete. This applies whatever `freshness` reports. The guarantees that Core makes about the client's synchronized copy of the authorized view still hold (see [Incremental sync](#incremental-sync)). v0.1 defines no signal that supports a claim that data does not exist at the source.
 
 #### List records {#list-records}
 
@@ -1449,18 +1466,17 @@ If a `changes_since` response is paginated, all pages in that session MUST be an
 
 A `changes_since` request with `expand[]` or `expand_limit[...]` is rejected with 400 `invalid_request` for every token kind. An expanded record can change when a related record changes, with no change to the parent record, so a session that compares parent versions would miss it. A client syncs each stream on its own.
 
-**Response:**
+**Response** (client token; the grant lists two instances for the stream):
 ```json
 {
   "object": "list",
   "url": "/v1/streams/conversations/records",
   "has_more": true,
   "next_cursor": "pc_Vx3q9LmT0bRk7ZwD2yNf5HsJa8GuPc4e",
-  "freshness": {
-    "captured_at": "2026-04-06T15:01:00Z",
-    "status": "current",
-    "last_attempted_at": "2026-04-06T15:01:00Z"
-  },
+  "freshness": [
+    { "instance_id": "inst_Hc7vM3sD", "last_success_at": "2026-04-06T15:00:00Z" },
+    { "instance_id": "inst_W8nt5Gq1", "last_success_at": null }
+  ],
   "data": [
     {
       "object": "record",
@@ -1478,7 +1494,7 @@ A `changes_since` request with `expand[]` or `expand_limit[...]` is rejected wit
 }
 ```
 
-The terminal page of a `changes_since` request (i.e., `has_more: false`) MUST include `next_changes_since`. A terminal `changes_since` page for a client token, with one tombstone and one changed record in the default descending key order:
+The terminal page of a `changes_since` request (i.e., `has_more: false`) MUST include `next_changes_since`. This terminal `changes_since` page for a client token has one tombstone and one changed record in the default descending key order. Its `freshness` array is the same on every page of the session:
 
 ```json
 {
@@ -1486,6 +1502,10 @@ The terminal page of a `changes_since` request (i.e., `has_more: false`) MUST in
   "url": "/v1/streams/conversations/records",
   "has_more": false,
   "next_changes_since": "cs_7Rk2VqXn9LwT4pZb0HmYc8JdF3sGa1Ue",
+  "freshness": [
+    { "instance_id": "inst_Hc7vM3sD", "last_success_at": "2026-04-06T15:00:00Z" },
+    { "instance_id": "inst_W8nt5Gq1", "last_success_at": null }
+  ],
   "data": [
     {
       "object": "record",
@@ -1695,7 +1715,7 @@ A conformant Core RS:
 13. SHOULD support owner-authenticated access to the `/v1/streams/{stream}/records` query endpoints without a client grant, allowing the data subject to export their own data directly (self-export).
 14. For owner-token stream-metadata reads, returns the full current stream metadata within the owner's subject/source/connection scope, including current query, view, and relationship capabilities.
 15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
-16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource`, the four `pdpp_`-prefixed members defined in Section 8, and `authorization_servers` when its issuer set is enumerable. Returns a `WWW-Authenticate: Bearer` challenge on 401 per RFC 6750 Section 3, carrying the RFC 9728 `resource_metadata` parameter.
+16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource`, the four required `pdpp_`-prefixed members defined in Section 8, and `authorization_servers` when its issuer set is enumerable. Also carries `pdpp_freshness_granularity_seconds` when it attaches `freshness` to client-token responses. Returns a `WWW-Authenticate: Bearer` challenge on 401 per RFC 6750 Section 3, carrying the RFC 9728 `resource_metadata` parameter.
 17. Does not interpret an unrecognized stream semantic as `append_only` or `mutable_state`, or an unrecognized grant `source.kind` as a known provenance class.
 18. Serves a blob only when a record the requesting token may currently read, including its field projection, references it. Otherwise returns 404 `blob_not_found`. Gives a redirect's signed URL an expiry no later than the positive-status cache expiry, or 60 seconds after token validation when no result was cached, and no later than the token or grant expiration when present.
 19. Returns 401 with `WWW-Authenticate: Bearer error="invalid_token"` for every inactive access token. Uses the structured code `grant_expired` or `grant_revoked` only when authenticated context establishes that cause, otherwise `authentication_error`.
@@ -1704,6 +1724,7 @@ A conformant Core RS:
 22. Compares time values and bounds by the grant's frozen `time_constraint.type`, never a current declaration, as calendar dates or exact instants, without a host, viewer, or owner time zone. Validates values itself under RFC 3339, including its leap-second rule. Excludes a record whose value is absent, null, or invalid from every read surface. Applies the same rules to owner-token range filters on `date` and `date-time` fields, using the declared format.
 23. Puts `instance_id` on every record and tombstone it serves: the grant's handle for a client token, and the owner's handle for an owner token. Serves each `resource_ref` in the resolved form only when the target record passes every constraint of the grant for the target stream, and otherwise in the redacted form. Identifies records within a stream by instance and canonical key in sync, removals, cursors, and single-record reads. Requires `instance_id` on a single-record read or record delete when the query context covers more than one instance of the stream, and on every blob fetch. Rejects a missing one with 400 `invalid_request`.
 24. In a separated deployment, resolves every handle through `pdpp_instance_bindings`. Fails a client request with 403 `grant_invalid` when a handle the request needs has no binding or names no stored instance. Treats an owner instance without a binding as outside the owner scope.
+25. When it attaches `freshness`, lists exactly one entry for each instance that the query context authorizes for the stream, whatever the page contains. Computes `last_success_at` over the full authorized scope of the query, counts only successful operations as Section 8 defines them, and reports null when it cannot establish relevance safely. In a client-token response, carries no failure time, truncates each value to its declared granularity of at least 3600 seconds, and reports no value before its interval ends. Takes a snapshot of the array on the first page of a `changes_since` session and repeats that exact snapshot on every later page. Reports no staleness verdict.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
@@ -1721,6 +1742,7 @@ A conformant client:
 8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant, and MUST NOT treat an unrecognized `source.kind` as either known value. A client with no provenance-dependent policy has nothing to check.
 9. Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`. Does not treat an inactive token as proof of revocation.
 10. Identifies each record within a stream by its `instance_id` and `id` together. Treats a tombstone for a record it does not hold as a no-op. Reconciles records it obtained outside sync sessions itself, because the sync guarantee covers only a copy built from sync sessions.
+11. Does not infer from an empty result, the end of pagination, a tombstone, or a 404 that a record does not exist at the source or that collection is complete. Treats a null `last_success_at` only as the absence of a reportable timestamp.
 
 ### Conformance test suite
 
@@ -1861,7 +1883,8 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Cross-source category grants | Deferred; grants bind to a single `source.id` in v0.1 |
 | Active erasure signal | Deferred; revocation stops future access and is not a deletion request. No erasure signal to the recipient is defined |
 | Session refresh | Deferred; no signal asks the owner to renew source-side authentication. A `continuous` grant can stay valid while collection pauses |
-| Request-side freshness requirements | Deferred; freshness is response-side only (`captured_at`, `status`, `last_attempted_at`) |
+| Request-side freshness requirements | Deferred; freshness is response-side only, as a per-instance `last_success_at` (Section 8) |
+| Collection coverage and degradation signals | Deferred to a future extension. Core reports no completeness (coverage) or degradation signal, and no signal that supports a claim that data does not exist at the source (Section 8) |
 | Minimum-data defaults | Decided for v0.1: a stream request names `fields`, a `view`, or the explicit `fields: ["*"]` marker (Section 6); `necessity` defaults to `optional`; an omitted `time_range` means no temporal constraint; `"name": "*"` requests all declared streams |
 | Subgrants | Deferred; access under a grant is not transferable. A second party needs its own grant |
 | Client grant management | Deferred; a client can revoke a credential (Section 10), but Core defines no client operation that ends one grant while other grants share its credential |
@@ -1931,6 +1954,18 @@ interface ResponseRecord {
   data: Record<string, unknown>;
   emitted_at: string;
 }
+
+// --- Freshness (response metadata) ---
+
+// One entry for each instance the query context authorizes for the stream
+interface FreshnessEntry {
+  instance_id: string;             // Opaque instance handle, as on records
+  last_success_at: string | null;  // RFC 3339; truncated to pdpp_freshness_granularity_seconds for client tokens; null = no reportable timestamp
+}
+
+type OwnerFreshnessEntry = FreshnessEntry & {
+  last_failure_at?: string | null; // Owner tokens only; never in a client-token response
+};
 
 // --- Selection (request-time) ---
 
