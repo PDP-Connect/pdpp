@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-06
 
 ---
 
@@ -231,8 +231,10 @@ Each stream has one of two semantic types:
 
 | Semantics | Meaning | Examples | Resource server behavior |
 |-----------|---------|----------|------------------------|
-| `append_only` | Records are immutable events. New records are added; existing records are never modified. | messages, transactions, play_events, workouts | Insert only. Duplicate keys are idempotent. |
+| `append_only` | Records are immutable events. New records are added; existing records are never modified. | messages, transactions, play_events, workouts | Insert new records only. Equal-data duplicates are idempotent; differing data is a conflict (see below). Explicit deletion is permitted. |
 | `mutable_state` | Records represent current state of an entity. Records may be updated or deleted. | profile, settings, playlist_items, follow_lists | Upsert by primary key. Resource server maintains version history for incremental sync. |
+
+**Re-emitted append-only records:** A valid `op: upsert` RECORD in an `append_only` stream is a duplicate when a record with the same canonical key is already stored for the same source, stream and instance. The record identity rule applies before duplicate handling. The resource server MUST leave the stored record, including its `emitted_at`, unchanged, and MUST NOT create a version or a change-history event. Equal `data` is an idempotent retry. Differing `data` is a conflict: a profile-defined ingest or write interface that receives one MUST report the conflict to the producer and SHOULD make it visible to the owner. Equality compares `data` as JSON values, not the new envelope's `emitted_at`: object member order and whitespace do not matter, and numbers compare by numeric value. A duplicate produces no `changes_since` result; the existing record still appears in a session that starts from `beginning`. This rule does not block `op: delete` or owner deletion; those removals produce tombstones under [Incremental sync](#incremental-sync). A source that updates existing records declares the stream `mutable_state`.
 
 Approximately 95% of personal data by volume is `append_only`. The remaining 5% is `mutable_state`. Mutable state records (profiles, preferences, relationships) are often the highest-value context for AI agents.
 
@@ -351,6 +353,10 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 **Compound key encoding:** When `primary_key` has multiple fields, `key` is an array of values in the order declared by the SourceDeclaration `primary_key`. The canonical string form of a compound key is the minified JSON array of key values (e.g., `["user_123","2026-04-01"]`). Each primary-key component MUST be serialized as a string in the canonical encoding. Non-string primary-key field values (e.g., integers, dates) MUST be converted to their string representation before encoding. URL path parameters and `resources[]` entries use percent-encoded canonical string form. The `resource_ref.record_id` field retains native `string | string[]` type.
 
 **Record identity:** For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree. The Collection Profile defines the HTTP error for its ingest endpoint.
+
+**Absent and null fields:** A response's field projection is the grant-authorized projection for a client token, and the effective `fields` or resolved `view` projection for an owner token. In a returned record (not a tombstone), omission of a top-level `data` field inside that projection means that the record version the response returns has no value for that field. Omission of a field outside that projection says nothing about stored values. A present JSON `null` is a stored null, allowed only where the stream schema allows it. Neither omission nor `null` establishes the source's current state, and neither relaxes the stream's schema-required fields. A client applies each returned record as a replacement of its copy within the same projection, not as a partial-update instruction.
+
+**Partial updates:** For `mutable_state` streams, a profile MAY define partial-update instructions, distinct from RECORD snapshots, that name the fields they set or remove and leave all other stored fields unchanged. Applying an instruction MUST atomically produce a record that satisfies the stream schema and the record identity rule above. Reads, time constraints, version history and `changes_since` continue to operate on the resulting complete record snapshots and tombstones under the rules of this specification; a partial-update instruction is never served as a record. Core defines no partial-update syntax. A profile MUST NOT use a partial-update instruction to modify an existing `append_only` record.
 
 ### Timestamps
 
@@ -1347,7 +1353,7 @@ A client-token caller may fetch metadata only for a stream present in its resolv
 
 A resource server MAY attach a `freshness` object to stream listings, stream metadata, and record-list responses.
 
-Freshness is server-observed disclosure metadata, not a grant constraint. It reports what the server knows about the recency of the underlying data relevant to the response. It does not guarantee that the source has not changed since `captured_at`, and it does not widen or narrow access rights.
+Freshness is server-observed disclosure metadata, not a grant constraint. It reports what the server knows about the recency of the underlying data relevant to the response. It does not guarantee that the source has not changed since `captured_at`, it does not establish that every returned field was observed again in the most recent collection, and it does not widen or narrow access rights.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -1801,6 +1807,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Ingest and sync-state endpoints | Defined by the Collection Profile; not required for Core RS |
 | Conformance test suite | Planned but not defined in v0.1 |
 | Webhook / push ingestion | Deferred |
+| Partial-update syntax | Deferred to a profile; Core states the constraints (Section 4) |
 | Source lifecycle actions | Deferred (e.g., deleting source data after export) |
 | Event-driven collection triggers | Deferred; architecturally distinct from the pull-based Collection Profile |
 | Grant signing and token format | Deferred; current design is compatible |
