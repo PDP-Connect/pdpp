@@ -30,7 +30,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 
 | Section | Governs | Other layers |
 | --- | --- | --- |
-| [Section 4: Record Model](#record-model) | Portable record envelopes, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. | Source collection, connector execution, and storage-engine choices. |
+| [Section 4: Record Model](#record-model) | Portable record envelopes, record evidence, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. | Source collection, connector execution, and storage-engine choices. |
 | [Section 5: Source Declaration](#source-declaration) | Common source identity, consent, record, selection, and query capabilities used by connector-backed and provider-native sources, and the conditions under which an authorization server accepts a declaration. | Connector acquisition and execution mechanics. |
 | [Section 6: Selection Request](#selection-request) | What a client asks an authorization server to approve, plus declaration-backed validation and consent rendering before a grant is issued. | Product-specific consent flows, screen layouts, and hosted authorization-server deployments. |
 | [Section 7: Grant](#grant) | The immutable consent artifact and the constraints a resource server enforces for a token-bound client. | Grant database schema, signed-token format, hosted registries, and deployment topology. |
@@ -218,7 +218,7 @@ The grant and query API are the normative core. Collection is a companion mechan
 
 ## 4. Record Model {#record-model}
 
-**Note:** This section defines portable record envelopes, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. Source collection, connector execution, and storage-engine choices are out of scope for this document (see the [PDPP Collection Profile](spec-collection-profile)).
+**Note:** This section defines portable record envelopes, record evidence, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. Source collection, connector execution, and storage-engine choices are out of scope for this document (see the [PDPP Collection Profile](spec-collection-profile)).
 
 Personal data is represented as flat relational streams. This enables streaming, pagination, incremental sync, and compatibility with DTI canonical data models.
 
@@ -358,6 +358,93 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 A resource server stores each record under exactly one instance. The canonical key is unique only within one instance of a stream: two instances can hold records with the same key, for example the same playlist in two accounts. Within a stream, a record is therefore identified by its `instance_id` and its canonical key. Core defines no ingest path, so it does not define how a record is assigned to an instance.
 
 **Response records:** A query response serves each record as an object with `object: "record"`, `id` (the canonical key string), `instance_id`, `stream`, `data`, and `emitted_at`. A tombstone uses the same object with `deleted: true` (see Tombstones above). `instance_id` is the opaque handle of the record's instance, and every served record and tombstone carries it. For a client token, it is the handle that the grant lists for that instance. For an owner token, it is the owner's handle for that instance, and every owner-token response uses the same value. A client MUST identify a record within a stream by its `instance_id` and `id` together.
+
+### Record evidence {#record-evidence}
+
+A record that the resource server serves (Section 8) MAY carry an `evidence` member. Evidence lets a client check who produced or served record values, and that the values did not change after that. The member is an array of evidence items. An empty array has the same meaning as no member. Core defines the item shape and the rules below. Core defines no proof mechanism: a profile defines each evidence `type`, and v0.1 defines none (Section 12). The RECORD envelope above carries no evidence. How evidence reaches the resource server is outside Core.
+
+| Member | Type | Required | Description |
+|---|---|---|---|
+| `type` | string | yes | Absolute URI that identifies the evidence type. The profile for the type defines `proof`, how to verify it, and the form of `attester.id`. |
+| `attester` | object | yes | The party that makes the claim. `role` (string, required) is the kind of party. `id` (string, required) identifies the party. |
+| `covers` | string[] | yes | Non-empty. Each entry is an [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901) JSON Pointer, relative to the record's `data`, to a field that the item verifies. In v0.1 each pointer has exactly one segment, such as `/amount`, and names a field present in the served `data`. |
+| `id` | string | no | Identifies the item within the array. Unique in the array. MUST NOT be an absolute URI. |
+| `refs` | string[] | no | Other evidence that the item points to. Each entry is the `id` of another item in the same array, or an absolute URI that serves as an identifier. The proof MUST cover `refs`. |
+| `proof` | any JSON value | yes | Content defined by the type, including any key reference and any profile extension. Opaque to Core. |
+
+An evidence item is closed in v0.1: it has only the members above, and a profile puts any extension inside `proof`. A resource server MUST NOT add a member to an item.
+
+Core defines three `attester.role` values. The set is open, and a profile can define more roles.
+
+| Role | Claim |
+|---|---|
+| `source` | It held the record and issued these values. |
+| `collector` | It derived these values from source data that it received, for example as a connector runtime that normalizes that data. A collector claim depends on trust in the collector and is not a source claim. |
+| `resource_server` | It served these values. |
+
+**Record binding.** The verification procedure that a profile defines MUST bind the claim to the record context as served to this client. That context is the grant's `subject.id` for this client (pairwise, or the identifier the owner chose to disclose to this client under Section 7), the record's `instance_id`, the stream, and the canonical record key. For an owner-token read, it is the subject identifier the owner token is scoped to, in the form the profile defines, and the `instance_id` served to the owner. Covering the primary-key fields alone does not bind an item to a record, because the same key and values can occur under another subject, instance, or stream.
+
+A binding MAY be composed. The attester binds its own identifier for the record, and a `resource_server` item maps that identifier to this client's record context. The mapping item's `refs` MUST name the attester's item, and its proof MUST authenticate the complete referenced item and the attester's record identifier. The profile for the mapping type defines how the referenced item is encoded for that authentication and how a client verifies it. A client infers source provenance from a composed binding only after it verifies the whole chain and trusts the mapping attester. If a client cannot verify a binding, directly or through a composed chain, the item attests only detached field values, and the client MUST NOT infer from it where the record came from.
+
+**Presence asserts nothing.** An item is a claim for the client to check. The client verifies the item under the profile for its type, or treats it as absent. Core defines no member that states that an item is verified, and a client MUST NOT treat delivery as verification. An item that the client ignores, cannot verify, or finds invalid supplies no verified claim. A client's own policy MAY reject or quarantine a record when evidence it requires is absent or invalid. The client decides whether to trust the attester.
+
+**References.** A resource server MUST NOT deliver an item whose local `refs` entries do not all name items delivered in the same array. A client treats a local entry that names no delivered item as a reference to an absent item. An absolute URI in `refs` is an identifier only. The no-widening rule applies to the URI and to everything that a client can obtain through it. A client MUST NOT retrieve the URI unless the profile defines retrieval, access control, and integrity binding for it.
+
+**Effective projection.** The effective projection is the set of fields that the response serves for the record. For a client token, it is the granted fields, narrowed by any `fields` parameter, plus the schema-required fields. For an owner token, it is the read's effective `fields` or resolved `view` projection plus the schema-required fields, or the whole record when the read names neither. The effective projection governs evidence as it governs `data`. v0.1 defines no request member or query parameter that asks for evidence or suppresses it. A resource server delivers evidence on an owner-token read only for a type whose profile supports owner reads.
+
+**No widening.** Evidence MUST NOT reveal anything outside the effective projection. It MUST NOT reveal a value, field name, or subject identifier other than one already disclosed to this caller. It MUST NOT reveal any fact about hidden data, such as whether a hidden value changed or how many hidden fields or records exist. The rule covers every signal that evidence gives: whether an item is present or absent, how many items there are, the bytes of each item, and how these change between reads. For example, a cleartext subject identifier, a signature over bytes that include a hidden field, an unsalted hash of a hidden value, and a digest count that shows how many fields are hidden all widen the disclosure. A grant could authorize a hidden-dependent signal expressly, but no v0.1 grant does.
+
+A resource server MAY decide per record whether to deliver an item only when that decision is independent of hidden data. Otherwise, the profile defines a uniform fallback, such as delivering the type for every record in the stream or for none.
+
+**Delivery.** A resource server MUST NOT deliver an evidence item unless all of these conditions are true:
+
+1. The resource server implements the item's type, including the verification and disclosure rules of its profile.
+2. The resource server has checked that the proof is valid over the served values of the covered fields, in the canonical form that the profile defines. It has also checked that the proof authenticates the item's `type`, the `attester` identity and role, and each `covers` pointer together with the served value it names. A profile's verification procedure MUST authenticate all of these, and clients MUST check them.
+3. The item's record binding verifies for this client, directly or through a composed chain.
+4. The resource server has checked that the item satisfies the no-widening rule for this response.
+
+A resource server MUST NOT pass through an item that it cannot check, and MUST NOT mark an item as verified or unverified. These checks do not make the attester trusted: that decision stays with the client. A resource server that implements no evidence type delivers no evidence and still conforms.
+
+A tombstone carries no `evidence`. Evidence is not part of the effective projection: a change in evidence alone does not make a record eligible in a `changes_since` session.
+
+**Profiles.** An evidence profile MUST define:
+
+- the canonical form that its proof covers;
+- how it meets the no-widening rule across reads, for example by reusing an item while the canonical covered values and the binding context are unchanged, and by replacing or omitting the item when validity, expiry, or revocation requires it;
+- any structure shared across records, such as a signed tree head, and how that structure meets the no-widening rule;
+- how it prevents clients from linking the same subject or record beyond what the served data already reveals;
+- whether and how an item discloses raw inputs of a derived field without widening the disclosure;
+- whether it can cover a `blob_ref` or `resource_ref` field, which the resource server rewrites at read time;
+- its holder binding and validity semantics, such as expiry and revocation;
+- whether it supports owner reads.
+
+**Unknown types and roles.** A client MUST ignore an item whose `type` it does not implement or whose `attester.role` it does not recognize.
+
+Example (non-normative). The type URI is a placeholder that PDPP does not define.
+
+```json
+{
+  "object": "record",
+  "id": "t1",
+  "instance_id": "inst_Zp5rT2mA",
+  "stream": "transactions",
+  "data": {
+    "id": "t1",
+    "amount": "-42.10",
+    "posted_at": "2026-09-01"
+  },
+  "emitted_at": "2026-09-02T08:00:00Z",
+  "evidence": [
+    {
+      "type": "https://example.org/evidence/detached-jws",
+      "id": "e1",
+      "attester": { "role": "resource_server", "id": "https://rs.example" },
+      "covers": ["/id", "/amount", "/posted_at"],
+      "proof": { "jws": "eyJhbGciOiJFUzI1NiIsImtpZCI6InJzMSJ9..c2ln" }
+    }
+  ]
+}
+```
 
 ### Timestamps
 
@@ -1258,6 +1345,10 @@ RFC 9728 Section 2 makes `authorization_servers` OPTIONAL, and notes that in som
 
 The `capabilities` member is defined by the extension profiles that advertise into it, not by Core. Core neither requires it nor constrains its contents, and a resource server that implements no extension omits it.
 
+### Response forward compatibility {#response-forward-compatibility}
+
+A client MUST ignore any member that it does not recognize in a Core-defined JSON object that a Section 8 endpoint returns. The rule does not reach inside a profile-defined object such as an evidence item's `proof`; the evidence profile defines how its members are parsed and when verification fails. This rule applies to every such object, including the list object, stream and stream metadata objects, records, tombstones, evidence items, `freshness`, `meta`, and the error object. A later version of this specification can add members to these objects. A profile can too, except where this specification fixes an exact shape, such as the client tombstone or an evidence item ([Record evidence](#record-evidence)). An added member MUST NOT change the meaning of a member that this specification defines, so a client that ignores it still reads the response correctly. This rule is for clients only. It does not let a resource server add members where this specification fixes an exact shape, such as the client tombstone or an evidence item. It does not let a resource server exceed a projection limit, such as the closed client-token stream metadata, or skip any rule that requires it to reject input. [Errors](#errors) states the rule for unknown `error.type` and `error.code` values. RFC 9728 Section 3.2 states the rule for the protected resource metadata document.
+
 ### Endpoints
 
 #### List streams
@@ -1449,6 +1540,8 @@ If a `changes_since` response is paginated, all pages in that session MUST be an
 
 A `changes_since` request with `expand[]` or `expand_limit[...]` is rejected with 400 `invalid_request` for every token kind. An expanded record can change when a related record changes, with no change to the parent record, so a session that compares parent versions would miss it. A client syncs each stream on its own.
 
+**Evidence:** A record in the response MAY carry `evidence` under [Record evidence](#record-evidence), for client and owner tokens alike.
+
 **Response:**
 ```json
 {
@@ -1517,7 +1610,7 @@ GET /v1/streams/{stream}/records/{id}
 Authorization: Bearer <access_token>
 ```
 
-Returns a single record by primary key. The `{id}` path parameter is the percent-encoded canonical key string. Owner-token current-capability reads support `expand[]`; client-token requests reject it in v0.1 before declaration lookup.
+Returns a single record by primary key. The `{id}` path parameter is the percent-encoded canonical key string. Owner-token current-capability reads support `expand[]`; client-token requests reject it in v0.1 before declaration lookup. The record MAY carry `evidence` under the same rules as in list records.
 
 The `instance_id` query parameter selects the record's instance. It is REQUIRED when the query context covers more than one instance of the stream. For a client token, that is when the grant lists more than one handle for the stream. For an owner token, it is when the owner scope covers more than one instance. Otherwise `instance_id` is OPTIONAL. The requirement depends only on the query context, not on whether two instances hold the key. The resource server MUST reject a missing required `instance_id` with 400 `invalid_request` before it looks up the record. It returns 404 `not_found` for an `instance_id` that the query context does not cover.
 
@@ -1588,7 +1681,7 @@ Clients MUST treat unrecognized error codes as opaque and fall back to the actua
 1. The actual HTTP status code and applicable response headers are authoritative for generic HTTP semantics, including success or failure, authentication challenges, redirection, and retry timing.
 2. A recognized `error.type` or `error.code` MAY refine PDPP-specific category, presentation, or recovery behavior only when its defined semantics are compatible with the actual status code and headers.
 3. An absent, unknown, malformed, or status-incompatible `type` or `code` is opaque and MUST NOT override the actual status code or relevant headers.
-4. Unknown identifiers MUST NOT cause parse failure.
+4. Unknown identifiers MUST NOT cause parse failure. Unknown members follow [Response forward compatibility](#response-forward-compatibility).
 
 Clients MAY retain unknown identifiers for diagnostics, subject to local size limits, safe rendering/escaping, and privacy policy.
 
@@ -1704,6 +1797,7 @@ A conformant Core RS:
 22. Compares time values and bounds by the grant's frozen `time_constraint.type`, never a current declaration, as calendar dates or exact instants, without a host, viewer, or owner time zone. Validates values itself under RFC 3339, including its leap-second rule. Excludes a record whose value is absent, null, or invalid from every read surface. Applies the same rules to owner-token range filters on `date` and `date-time` fields, using the declared format.
 23. Puts `instance_id` on every record and tombstone it serves: the grant's handle for a client token, and the owner's handle for an owner token. Serves each `resource_ref` in the resolved form only when the target record passes every constraint of the grant for the target stream, and otherwise in the redacted form. Identifies records within a stream by instance and canonical key in sync, removals, cursors, and single-record reads. Requires `instance_id` on a single-record read or record delete when the query context covers more than one instance of the stream, and on every blob fetch. Rejects a missing one with 400 `invalid_request`.
 24. In a separated deployment, resolves every handle through `pdpp_instance_bindings`. Fails a client request with 403 `grant_invalid` when a handle the request needs has no binding or names no stored instance. Treats an owner instance without a binding as outside the owner scope.
+25. Delivers an `evidence` item only when it implements the item's type, the proof is valid over the served values and authenticates the attester, the item's record binding verifies for the client, and the item does not widen the disclosure. Decides per record whether to deliver an item only when that decision is independent of hidden data. Adds no member to an item, delivers no item with an unresolved local reference, never passes an unchecked item through, and marks no item as verified or unverified. Sends no evidence on a tombstone, and does not return a record in a `changes_since` session only because its evidence changed. Delivers evidence on owner-token reads only for types whose profile supports them.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
@@ -1721,6 +1815,8 @@ A conformant client:
 8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant, and MUST NOT treat an unrecognized `source.kind` as either known value. A client with no provenance-dependent policy has nothing to check.
 9. Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`. Does not treat an inactive token as proof of revocation.
 10. Identifies each record within a stream by its `instance_id` and `id` together. Treats a tombstone for a record it does not hold as a no-op. Reconciles records it obtained outside sync sessions itself, because the sync guarantee covers only a copy built from sync sessions.
+11. Ignores any member that it does not recognize in an object that a Section 8 endpoint returns, and does not fail to parse because of it.
+12. Treats an evidence item as absent unless it verifies the item under the profile for its type. Ignores an item with an unknown `type` or `attester.role`. Treats a local reference to an item that the response does not carry as absent, and retrieves a URI reference only as the type's profile defines. Infers record provenance from an item only when it has verified the item's binding to its own record context. For a composed binding, it also verifies the whole chain and trusts the mapping attester. Does not treat delivery as verification, and decides itself whether to trust the attester.
 
 ### Conformance test suite
 
@@ -1837,6 +1933,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 - Tombstones for records that leave a client's view
 - Owner-authenticated user erasure (`DELETE /v1/streams/{stream}/records/{id}`)
 - Self-export via owner token (SHOULD-level Core RS conformance, see Section 9 item 13)
+- Optional typed evidence on served records (`evidence`), with no proof mechanism defined in Core
 - Conformance definitions for all roles
 
 ### Out of scope (v0.1) {#out-of-scope}
@@ -1850,6 +1947,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Source lifecycle actions | Deferred (e.g., deleting source data after export) |
 | Event-driven collection triggers | Deferred; architecturally distinct from the pull-based Collection Profile |
 | Grant signing and token format | Deferred; current design is compatible |
+| Record evidence mechanisms | Future profiles: source-issued selective disclosure, collector attestation, unlinkable proofs, resource-server signatures, and evidence over sets of records. Core defines only the `evidence` member and its rules (Section 4). Each profile also defines key discovery and any metadata or ingest format it needs. Set-level evidence can be added later as new response members, because clients ignore unknown members (Section 8) |
 | Trust registry and connector certification | Deferred |
 | Consent screen visual design | Surface-specific; semantic rendering obligations remain in scope |
 | Local audit-log schema and user-facing access history | Deployment-specific; core defines auditable protocol primitives only |
@@ -1886,7 +1984,7 @@ The recommended future direction for this capability is declaration-defined para
 
 ### Extensions
 
-PDPP capabilities beyond this specification (for example, search or aggregation interfaces) are defined in companion profiles, not by extending Core semantics. Implementations MUST NOT change the meaning of Core-granted access via extensions: a grant issued under this specification authorizes exactly what Sections 7 and 8 define, regardless of what additional capabilities a deployment offers. Optional capabilities MUST be discoverable via declared metadata rather than assumed to be present. Unrecognized declared capabilities MUST be ignorable by clients. A full capability-advertisement grammar is deliberately deferred to a future version.
+PDPP capabilities beyond this specification (for example, search or aggregation interfaces) are defined in companion profiles, not by extending Core semantics. Implementations MUST NOT change the meaning of Core-granted access via extensions: a grant issued under this specification authorizes exactly what Sections 7 and 8 define, regardless of what additional capabilities a deployment offers. Optional capabilities MUST be discoverable via declared metadata rather than assumed to be present. Unrecognized declared capabilities MUST be ignorable by clients, as unknown response members are ([Response forward compatibility](#response-forward-compatibility)). A full capability-advertisement grammar is deliberately deferred to a future version.
 
 ### Specification governance
 
@@ -1898,7 +1996,7 @@ Current active editors and maintainers are listed in `MAINTAINERS.md`. This repo
 
 ## 13. TypeScript Types {#typescript-types}
 
-**Note:** TypeScript types in this section are non-normative. The normative definitions are the prose field tables in Sections 5, 6, and 7.
+**Note:** TypeScript types in this section are non-normative. The normative definitions are the prose field tables and rules in Sections 4, 5, 6, 7, and 8.
 
 ```typescript
 // --- Record model ---
@@ -1930,6 +2028,7 @@ interface ResponseRecord {
   stream: string;
   data: Record<string, unknown>;
   emitted_at: string;
+  evidence?: EvidenceItem[];  // Absent or empty: no evidence
 }
 
 // --- Selection (request-time) ---
@@ -2112,6 +2211,20 @@ interface InstanceBinding {
   stream?: string;         // Present for client tokens; absent for owner tokens
   instance_id: string;     // The grant's handle, or the owner's handle
   rs_instance: string;     // Opaque; the RS resolves it to a stored instance
+}
+
+// --- Evidence items (response objects; closed in v0.1) ---
+
+interface EvidenceItem {
+  type: string;            // Absolute URI; its profile defines proof and verification
+  id?: string;             // Unique in the array; not an absolute URI
+  attester: {
+    role: string;          // Open set; Core defines 'source', 'collector', 'resource_server'
+    id: string;            // Form defined by the type's profile
+  };
+  covers: [string, ...string[]];  // RFC 6901 pointers into data; one segment in v0.1, e.g. '/amount'
+  refs?: string[];         // Local item ids, or absolute URIs as identifiers only; covered by the proof
+  proof: unknown;          // Opaque to Core; profile extensions go here
 }
 
 // --- Tombstones (response objects) ---
