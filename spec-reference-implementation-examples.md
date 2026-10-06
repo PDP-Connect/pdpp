@@ -1,7 +1,7 @@
 # PDPP Reference Implementation Examples
 
 Status: Illustrative
-Date: 2026-09-29
+Date: 2026-10-06
 
 These examples are illustrative sequences built from the current draft. They are not the normative source for wire shapes or role responsibilities. When an example and the live draft differ, the normative documents win:
 
@@ -146,15 +146,14 @@ PDPP-Version: 2026-04-06
   "object": "list",
   "url": "/v1/streams/top_artists/records",
   "has_more": false,
-  "freshness": {
-    "captured_at": "2026-04-11T14:58:00Z",
-    "status": "current",
-    "last_attempted_at": "2026-04-11T14:58:00Z"
-  },
+  "freshness": [
+    { "instance_id": "inst_Rb3kT9wE", "last_success_at": "2026-04-11T14:00:00Z" }
+  ],
   "data": [
     {
       "object": "record",
       "id": "4Z8W4fKeB5",
+      "instance_id": "inst_Rb3kT9wE",
       "stream": "top_artists",
       "data": {
         "id": "4Z8W4fKeB5",
@@ -169,7 +168,7 @@ PDPP-Version: 2026-04-06
 }
 ```
 
-`freshness` is response metadata. It tells the client what the server knows about recency. It is not itself a grant term.
+`freshness` is response metadata. It has one entry for each instance that the grant lists for the stream, and it tells the client when the server last succeeded in collecting data relevant to the grant. It is not itself a grant term.
 
 ### Step 5: Later attempt to mint another client token
 
@@ -363,15 +362,14 @@ PDPP-Version: 2026-04-06
   "url": "/v1/streams/conversations/records",
   "has_more": false,
   "next_changes_since": "cs_T2wPd7Kx5NqB0mRz9LyVc4HgJ1sFa8Eu",
-  "freshness": {
-    "captured_at": "2026-04-11T15:12:01Z",
-    "status": "current",
-    "last_attempted_at": "2026-04-11T15:12:01Z"
-  },
+  "freshness": [
+    { "instance_id": "inst_Jm6pX2cV", "last_success_at": "2026-04-11T14:00:00Z" }
+  ],
   "data": [
     {
       "object": "record",
       "id": "conv_003",
+      "instance_id": "inst_Jm6pX2cV",
       "stream": "conversations",
       "data": {
         "id": "conv_003",
