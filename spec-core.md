@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-06
 
 ---
 
@@ -121,6 +121,7 @@ Core does not define the registry, transport, recognition mechanism, or withdraw
 |------|-----------|
 | **Grant** | An immutable consent artifact specifying what data a client may access, under what constraints. |
 | **Stream** | A named collection of records with a schema, primary key, and optional cursor field. Stream names are source-local (e.g., `messages`). The fully qualified identifier is an ordered pair `(source.id, stream_name)`, used in cross-source references and storage. Example: `("https://registry.pdpp.dev/connectors/spotify", "top_artists")`. |
+| **Instance** | One connected account, device, or profile of the owner at a source, for example one of two Spotify accounts. A grant names instances by opaque handles (`instance_ids`). One handle names an instance in every stream of its source. Each stored record belongs to exactly one instance. |
 | **Record** | A single data object within a stream. |
 | **Connector** | A program that collects data from a data source, used when data is collected rather than served natively. One of possibly several producers of a source's streams. Defined in the Collection Profile. |
 | **Source Declaration** | A source's versioned declaration of its identity, publisher, streams, schemas, consent surface, selection capabilities, and Resource Server query capabilities. It does not define connector acquisition or execution. |
@@ -252,7 +253,7 @@ This promise covers field values, not membership. Under a time-bounded or resour
 
 **Snapshot model:** `changes_since` returns the full current state of every record not visible at h0 and visible at h1, and of every record visible at both whose grant-authorized projection changed, plus tombstones. It does not return field-level diffs. The client receives a complete record object for any record that changed.
 
-**Visibility:** A record is *visible* at a horizon if it exists at that horizon and passes every restriction of the query context at that horizon. For a client token, these are the grant's stream, `instance_ids`, `resources`, and `time_constraint`. For an owner token, they are the owner scope and any request filter. A `changes_since` session from horizon h0 to horizon h1 returns:
+**Visibility:** A record is *visible* at a horizon if it exists at that horizon and passes every restriction of the query context at that horizon. For a client token, these are the grant's stream, `instance_ids`, `resources`, and `time_constraint`. For an owner token, they are the owner scope and any request filter. Within a stream, a record is identified by its instance and its canonical key (see RECORD envelope, Record identity below). A `changes_since` session from horizon h0 to horizon h1 returns:
 
 | At h0 | At h1 | Result |
 |---|---|---|
@@ -265,7 +266,7 @@ The session compares only the two horizons. The resource server MUST emit a tomb
 
 Visibility at h0 uses the record's version at h0. For a deleted record, the h0 version establishes visibility at h0, and deletion evidence establishes only the fact and time of the deletion; the `data` of the delete directive is never used. The resource server MUST retain the state needed to determine visibility at every unexpired horizon. If it cannot determine that state, it MUST fail the session with 410 `cursor_expired`.
 
-**Sync guarantee:** With these rules, two conforming resource servers that hold the same records produce the same synced copy. The guarantee covers only a copy that starts at `beginning` and is updated by later `changes_since` sessions. A client that also keeps records from other reads, such as a get by ID between sessions, reconciles them itself; a get by ID returns 404 once the record is not visible. A client MUST treat a tombstone for an ID it does not hold as a no-op.
+**Sync guarantee:** With these rules, two conforming resource servers that hold the same records produce the same synced copy. The guarantee covers only a copy that starts at `beginning` and is updated by later `changes_since` sessions. A client that also keeps records from other reads, such as a get by ID between sessions, reconciles them itself; a get by ID returns 404 once the record is not visible. A client MUST treat a tombstone for a record it does not hold as a no-op.
 
 **Starting a sync:** A client starts incremental sync with `changes_since=beginning`. `beginning` stands for an empty horizon at which no record is visible, so the first session returns every visible record and no tombstones. It is not a retained snapshot: it never expires, and it is bound to a grant and query context only when a request uses it. After a completed `changes_since=beginning` session, the client MUST replace its copy of the stream with that session's result. This applies to every restart, not only a restart after `cursor_expired`.
 
@@ -279,6 +280,7 @@ Visibility at h0 uses the record's version at h0. For a deleted record, the h0 v
 {
   "object": "record",
   "id": "canonical-key-string",
+  "instance_id": "inst_K4wq8Rn2",
   "stream": "playlists",
   "deleted": true
 }
@@ -292,6 +294,7 @@ For an owner token, a tombstone also carries `removal`, and for a deletion `dele
 {
   "object": "record",
   "id": "canonical-key-string",
+  "instance_id": "inst_Zp5rT2mA",
   "stream": "playlists",
   "deleted": true,
   "removal": "deleted",
@@ -302,7 +305,7 @@ For an owner token, a tombstone also carries `removal`, and for a deletion `dele
 
 `removal` is `deleted` when the record was deleted, and `left_query` when the record still exists but no longer passes the owner's query context, for example a range filter. `deleted_at` and `emitted_at` are present only when `removal` is `deleted`. The owner owns the data, so the reason is not hidden from them.
 
-Tombstones use the same `object: "record"` envelope as regular response records, with `deleted: true`. The `id` field is the canonical key string (see RECORD envelope, Compound key encoding below).
+Tombstones use the same `object: "record"` envelope as regular response records, with `deleted: true`. The `id` field is the canonical key string (see RECORD envelope, Compound key encoding below), and `instance_id` names the record's instance.
 
 A tombstone signals that a record left the client's view of the stream. For subset or derived streams this means membership removal; it does not assert that the source record was deleted. See [Derived subset streams](#predicate-based-grant-scoping) (Section 12) for the non-normative discussion of this stream shape.
 
@@ -352,6 +355,10 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 
 **Record identity:** For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree. The Collection Profile defines the HTTP error for its ingest endpoint.
 
+A resource server stores each record under exactly one instance. The canonical key is unique only within one instance of a stream: two instances can hold records with the same key, for example the same playlist in two accounts. Within a stream, a record is therefore identified by its `instance_id` and its canonical key. Core defines no ingest path, so it does not define how a record is assigned to an instance.
+
+**Response records:** A query response serves each record as an object with `object: "record"`, `id` (the canonical key string), `instance_id`, `stream`, `data`, and `emitted_at`. A tombstone uses the same object with `deleted: true` (see Tombstones above). `instance_id` is the opaque handle of the record's instance, and every served record and tombstone carries it. For a client token, it is the handle that the grant lists for that instance. For an owner token, it is the owner's handle for that instance, and every owner-token response uses the same value. A client MUST identify a record within a stream by its `instance_id` and `id` together.
+
 ### Timestamps
 
 Two timestamp concepts appear in records:
@@ -385,7 +392,7 @@ Streams reference each other via foreign key fields in `data`:
 }
 ```
 
-The SourceDeclaration declares `primary_key` per stream. Foreign key relationships are declared in its `relationships` field (see [Section 5](#source-declaration)).
+The SourceDeclaration declares `primary_key` per stream. Foreign key relationships are declared in its `relationships` field (see [Section 5](#source-declaration)). A foreign key refers to a record in the same instance.
 
 ### Binary data (blob_ref)
 
@@ -410,7 +417,7 @@ Binary data (photos, videos, audio, documents) is not inlined in records. The re
 }
 ```
 
-`mime_type` MUST be a valid IANA media type (see [IANA Media Types](https://www.iana.org/assignments/media-types/)). Record producers emit `blob_ref` without a `fetch_url`. The resource server injects `fetch_url` at read time when serving records via the query API.
+`mime_type` MUST be a valid IANA media type (see [IANA Media Types](https://www.iana.org/assignments/media-types/)). Record producers emit `blob_ref` without a `fetch_url`. The resource server injects `fetch_url` at read time when serving records via the query API. A `blob_id` is unique only within one instance, so the `fetch_url` carries the blob's `instance_id` (see Get a blob in Section 8).
 
 ### Cross-stream references (resource_ref)
 
@@ -430,6 +437,20 @@ When a record references a record in a different stream on the same resource ser
   }
 }
 ```
+
+A record producer emits `resource_ref` without `instance_id`. When `source_id` is the referencing record's source, the target is in the referencing record's instance. Core does not define how to resolve the target instance of a reference to another source (Section 12).
+
+At read time, in the same way that it adds `fetch_url` to a `blob_ref`, the resource server serves each `resource_ref` in one of two forms. It serves the resolved form, the reference with `instance_id` added, only when the target record passes every constraint of the requesting token's grant for the target stream: instance, `resources`, time constraint, and field access to the target's key. The value is the target instance's handle, chosen as for response records. Otherwise it serves the redacted form, which has exactly `source_id`, `stream`, and `redacted: true`, and no `record_id` or `instance_id`:
+
+```json
+{
+  "source_id": "https://registry.pdpp.dev/connectors/instagram",
+  "stream": "media",
+  "redacted": true
+}
+```
+
+For a client token, the token may read the target's instance only when the grant lists that instance's handle for the target stream. In v0.1, the resource server serves every reference to another source in the redacted form. The redacted form replaces the reference in place, and the resource server never drops the field that holds it, even when the stream schema requires `record_id` inside that field. No other form is served. A client MUST accept a redacted form wherever a `resource_ref` can appear, and MUST treat it as a reference that it cannot follow.
 
 ---
 
@@ -554,8 +575,8 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `streams[].display` | Optional consent-surface metadata. See [Stream display metadata](#stream-display). |
 | `streams[].semantics` | `append_only` or `mutable_state`. |
 | `streams[].schema` | JSON Schema for the record's `data` field. `primary_key` and `cursor_field` MUST reference fields declared here. |
-| `streams[].primary_key` | Fields that uniquely identify a record within the stream. |
-| `streams[].cursor_field` | Field used for logical record ordering in ordinary list reads. `changes_since` uses a separate RS change-order position, not `cursor_field`. List reads sort by `(cursor_field, primary_key)`, with null or absent cursor values sorting after present values. A cursor is an opaque token the server issues, encoding a logical sort position in the stream. |
+| `streams[].primary_key` | Fields that uniquely identify a record within one instance of the stream (see Record identity in Section 4). |
+| `streams[].cursor_field` | Field used for logical record ordering in ordinary list reads. `changes_since` uses a separate RS change-order position, not `cursor_field`. List reads sort by `(cursor_field, instance_id, primary_key)`, with null or absent cursor values sorting after present values. A cursor is an opaque token the server issues, encoding a logical sort position in the stream. |
 | `streams[].consent_time_field` | The temporal consent boundary: the field against which `time_range` is evaluated. Absent means `time_range` is not applicable to this stream. MUST reference a top-level field declared in the schema with format `date` or `date-time` (see [consent_time_field](#consent-time-field)). |
 | `streams[].consent_time_content_may_exceed` | Optional boolean, default `false`. `true` means a record can contain data from outside its own `consent_time_field` value. The AS MUST reject a non-boolean value. See [consent_time_field](#consent-time-field). |
 | `streams[].selection` | Which selection parameters this stream supports (`fields`, `resources`). Time-range capability is derived from `consent_time_field` presence; absent means not time-range-capable. The AS MUST reject grants that request `time_range` on a stream without a `consent_time_field`, or that request an unsupported selection parameter. The `fields: ["*"]` marker is always supported. |
@@ -640,7 +661,7 @@ Streams that cannot define a stable `consent_time_field` simply omit it. The abs
 |-------|-------------|
 | `name` | Relation name (used in `expand[]` on the query API). |
 | `stream` | The related stream name. |
-| `foreign_key` | The field on the related stream that references this stream's primary key. |
+| `foreign_key` | The field on the related stream that references this stream's primary key in the same instance. |
 | `cardinality` | `has_many` or `has_one`. |
 
 ### Views {#views}
@@ -712,7 +733,7 @@ A client requests specific personal data by including `authorization_details` in
           "name": "top_artists",
           "necessity": "required",
           "view": "basic",
-          "instance_ids": ["spotify-account-a"],
+          "instance_ids": ["inst_K4wq8Rn2"],
           "time_range": { "since": "2025-09-28T00:00:00Z" }
         },
         {
@@ -837,12 +858,12 @@ Per-stream, within the `streams` array. `name` and exactly one of a non-empty `f
 |-----------|------|--------|-------------|
 | `name` | string | Protocol-enforced | Stream name, or `*` for all streams (resolved at consent time against the retained SourceDeclaration). |
 | `necessity` | enum | Consent-flow control at issuance time | `optional` (default) or `required`. Optional streams are presented as user choices during consent. The AS MUST omit a declined optional stream from the grant and MUST retain a `required` stream or refuse issuance. If no stream remains, the AS MUST refuse issuance with `access_denied`. |
-| `instance_ids` | string[] | Protocol-enforced | Optional opaque owner-instance handles for this stream. Handles are scoped to issuer, subject, `source.id`, and stream. Omission never means fan-in (reading across more than one connected instance of the same source). The AS resolves exactly one eligible handle or requires an explicit owner choice. |
+| `instance_ids` | string[] | Protocol-enforced | Optional opaque owner-instance handles for this stream. A handle is scoped to issuer, subject, client, and `source.id`, names one instance in every stream of that source, and is pairwise (see [Pairwise identifiers](#pairwise-identifiers)). Omission never means fan-in (reading across more than one connected instance of the same source). The AS resolves exactly one eligible handle or requires an explicit owner choice. |
 | `time_range.since` | RFC 3339 `full-date` or `date-time` | Protocol-enforced | Earliest data to include (inclusive, >=), evaluated against the stream's `consent_time_field`. Its type matches the field's format. |
 | `time_range.until` | RFC 3339 `full-date` or `date-time` | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. Its type matches the field's format. A hard cap: applies to future resources as well as past ones. |
 | `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. The OAuth/RAR binding maps a request with both to RFC 9396 `invalid_authorization_details`. |
 | `fields` | string[] | Protocol-enforced | Field allowlist. `["*"]` requests all permitted fields; `*` MUST then be the only element. Schema-required fields are always included regardless of this list. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
-| `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the retained declaration's `primary_key` at grant issuance. The RS filters by exact primary-key match. |
+| `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the retained declaration's `primary_key` at grant issuance. The RS filters by exact primary-key match. In v0.1 a stream with `resources` covers exactly one instance. The AS MUST reject a request that has `resources` and more than one `instance_ids` entry for the stream; the OAuth/RAR binding returns RFC 9396 `invalid_authorization_details`. |
 
 **Note on `fields`:** At consent resolution, schema-required fields are always included in the resolved field set, regardless of the requested field list, because a record missing its schema-required fields is not a valid record of that stream; the per-stream consent floor is its required fields.
 
@@ -895,7 +916,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
   "version": "0.1.0",
   "grant_id": "grt_8f72a1b3",
   "issued_at": "2026-04-06T15:00:00Z",
-  "subject": { "id": "user_abc123" },
+  "subject": { "id": "sub_Jq4tN8wR" },
   "client": { "client_id": "music_recommendations" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
   "source_declaration": { "version": "2026-08-11" },
@@ -905,7 +926,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
   "streams": [
     {
       "name": "top_artists",
-      "instance_ids": ["spotify-account-a"],
+      "instance_ids": ["inst_K4wq8Rn2"],
       "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
       "time_constraint": {
         "field": "source_updated_at",
@@ -931,7 +952,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 | `version` | string | yes | Protocol metadata | Tracks the version of this specification's grant schema (not a URL; there is no external schema document to resolve). This contract requires exactly `0.1.0`. |
 | `grant_id` | string | yes | Protocol metadata | Unique identifier. |
 | `issued_at` | ISO 8601 | yes | Protocol metadata | When the grant was issued. |
-| `subject` | object | yes | Identity binding | Exactly `{ id }`. The `subject.id` is an opaque string, unique within the issuing AS's namespace. No format constraint is imposed. |
+| `subject` | object | yes | Identity binding | Exactly `{ id }`. The `subject.id` is an opaque string, unique within the issuing AS's namespace. It is the subject's pairwise identifier for the grant's client (see [Pairwise identifiers](#pairwise-identifiers)). No format constraint is imposed. |
 | `client` | object | yes | Identity binding | Exactly `{ client_id }` or `{ client_id, client_display }`. `client_display`, when retained, contains requester metadata presented during consent. Inline values remain unverified unless separately validated; their presence in the grant does not attest to verification. A displayed `policy_uri` or `tos_uri` is retained as its exact URI target. |
 | `source` | object | yes | Protocol-enforced | Exact `{ kind, id }` retained from the accepted SourceDeclaration. `id` is authorization identity; `kind` is provenance metadata. |
 | `source_declaration` | object | yes | Protocol evidence | `{ version }` records the opaque revision of the exact declaration snapshot used for consent and issuance. It is evidence metadata, not a live lookup authority. |
@@ -942,7 +963,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 | `selection_preset` | string | no | Informational | Which SourceDeclaration preset was selected. The resolved streams and fields remain authoritative. |
 | `retention` | object | no | Structured policy declaration | Policy commitment by the data recipient (see below). |
 | `expires_at` | ISO 8601 | no | Protocol-enforced | Grant expiry. Absent means no expiry. |
-| `grantors` | object[] | no | Identity binding | Present only when representatives approved on the subject's behalf. When present, this is a non-empty list of distinct approving representatives. Absence means the subject approved. Core v0.1 does not encode joint approval by the subject and a representative. Each entry is exactly `{ id, capacity }`. `id` is an opaque identifier of the approving person, unique within the issuing AS's namespace. For grants returned to clients, the AS MUST use an identifier specific to that client. `capacity` is an absolute URI that names the basis on which that person approved, such as a parental or legal-representative capacity defined by a profile or deployment. See [Representative approval](#representative-approval). |
+| `grantors` | object[] | no | Identity binding | Present only when representatives approved on the subject's behalf. When present, this is a non-empty list of distinct approving representatives. Absence means the subject approved. Core v0.1 does not encode joint approval by the subject and a representative. Each entry is exactly `{ id, capacity }`. `id` is an opaque identifier of the approving person, unique within the issuing AS's namespace. Like `subject.id`, it is pairwise for the grant's client (see [Pairwise identifiers](#pairwise-identifiers)). `capacity` is an absolute URI that names the basis on which that person approved, such as a parental or legal-representative capacity defined by a profile or deployment. See [Representative approval](#representative-approval). |
 | `extensions` | object | no | Profile data | Optional object keyed by absolute profile URI. Core preserves or ignores an unknown extension value and does not parse it. An extension cannot widen what the grant authorizes or weaken Core semantics. |
 
 ### StreamGrant fields
@@ -950,14 +971,26 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 | Field | Type | Required | Status | Description |
 |-------|------|----------|--------|-------------|
 | `name` | string | yes | Protocol-enforced | Unique stream name within the grant. Always concrete; no wildcards in issued grants. |
-| `instance_ids` | string[] | yes | Protocol-enforced | Unique non-empty opaque instance handles scoped to issuer, subject, source ID, and this stream. Multiple handles authorize fan-in only when explicitly listed. Example: two connected Gmail accounts are two instances of the same source kind, each with its own handle. |
+| `instance_ids` | string[] | yes | Protocol-enforced | Unique non-empty opaque instance handles. A handle is scoped to issuer, subject, client, and source ID, names the same instance in every stream of the source, and is pairwise (see [Pairwise identifiers](#pairwise-identifiers)). Authorization stays per stream: the handles this row lists authorize this stream only. Multiple handles authorize fan-in only when explicitly listed. Example: two connected Gmail accounts are two instances of the same source kind, each with its own handle. |
 | `fields` | string[] | yes | Protocol-enforced | Unique non-empty resolved field allowlist, authoritative for RS enforcement. Top-level field names only. |
 | `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, type, since?, until? }` resolved from the retained declaration. `field` and `type` are required and at least one bound is present. `type` is `date` or `date-time`; the AS sets it at issuance from the field's format in the retained declaration. Each bound has that type. `since` is inclusive; `until` is exclusive. |
-| `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Absent means all records. |
+| `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Present only when `instance_ids` has exactly one handle. Absent means all records. |
 
 Request-only conveniences such as wildcard names, the `*` field marker, `view`, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
 
-Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since` stated as inclusive, `until` stated as exclusive, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
+Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. For a stream with `resources`, that choice is exactly one instance. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since` stated as inclusive, `until` stated as exclusive, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
+
+### Pairwise identifiers {#pairwise-identifiers}
+
+Every identifier for the subject, a grantor, or an instance that a client receives is pairwise, as [OpenID Connect Core 1.0 Section 8.1](https://openid.net/specs/openid-connect-core-1_0.html#PairwiseAlg) defines for `sub`. This covers `subject.id`, each `grantors[].id`, and each instance handle, in a grant, a record, or any other response to the client. The AS MUST give different clients different identifiers for the same subject, grantor, or instance. It MUST give one client the same identifier for that subject, grantor, or instance in every grant and response, and MUST NOT reassign the identifier to another subject, grantor, or instance. The identifier MUST NOT be reversible by clients: a client cannot derive the internal identifier, or another client's identifier, from it. A value such as `clientA:user123`, which joins a client name to an internal identifier, does not meet this rule. Clients that share an OpenID Connect sector identifier count as one client for these rules.
+
+These rules also cover the `sub` claim of an OpenID Connect ID Token that the AS issues to the client. That claim identifies the person who authenticated. When a representative listed in `grantors` authenticates, `sub` is that representative's pairwise identifier, the same value as their `grantors[].id`, and not the subject's.
+
+A per-client decentralized identifier (DID), such as a pairwise or peer DID, meets this rule and MAY serve as the pairwise identifier. The one exception is owner choice. The AS MAY use a globally resolvable identifier, such as a DID, as a client's `subject.id` only when the owner explicitly chooses to disclose it to that client. The final approval artifact MUST bind the exact identifier and the receiving client, and retained consent evidence MUST preserve that binding. Core defines no other use of such an identifier (Section 12). The choice is fixed for that subject and client before the client's first grant. The AS MUST NOT change a client's `subject.id` between the pairwise value and the chosen identifier in a later grant.
+
+The AS and RS MAY also keep an internal subject identifier, which passes only between them. In a separated deployment, the AS returns it to the RS as the introspection `subject_id`, and the RS uses it to find the subject's data (Section 8). The RS MUST NOT disclose it to a client. An introspection result or grant that the AS returns to a client carries only that client's pairwise identifiers. The RS maps a client's handles to stored instances only through `pdpp_instance_bindings` (Section 8), which the AS never returns to a client.
+
+These rules stop clients from correlating one owner through the identifiers above. They do not make disclosures unlinkable. Record keys, `blob_id` values, content hashes such as `sha256`, timestamps, and other record content can still link one owner's disclosures across clients.
 
 ### Representative approval {#representative-approval}
 
@@ -1065,7 +1098,7 @@ Retention is a structured policy declaration and policy commitment by the data r
   "version": "0.1.0",
   "grant_id": "grt_001",
   "issued_at": "2026-04-06T15:00:00Z",
-  "subject": { "id": "user_abc" },
+  "subject": { "id": "sub_x7Pd2KfL" },
   "client": { "client_id": "concert_app" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
   "source_declaration": { "version": "2026-08-11" },
@@ -1074,7 +1107,7 @@ Retention is a structured policy declaration and policy commitment by the data r
   "streams": [
     {
       "name": "top_artists",
-      "instance_ids": ["spotify-account-a"],
+      "instance_ids": ["inst_9fQ2xLp7"],
       "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
       "time_constraint": {
         "field": "source_updated_at",
@@ -1092,7 +1125,7 @@ Retention is a structured policy declaration and policy commitment by the data r
   "version": "0.1.0",
   "grant_id": "grt_002",
   "issued_at": "2026-04-06T15:00:00Z",
-  "subject": { "id": "user_abc" },
+  "subject": { "id": "sub_R3mV9cYe" },
   "client": { "client_id": "personal_agent" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/openai" },
   "source_declaration": { "version": "2026-08-11" },
@@ -1101,12 +1134,12 @@ Retention is a structured policy declaration and policy commitment by the data r
   "streams": [
     {
       "name": "conversations",
-      "instance_ids": ["openai-account-a"],
+      "instance_ids": ["inst_Hc7vM3sD"],
       "fields": ["id", "title", "source_created_at", "source_updated_at"]
     },
     {
       "name": "messages",
-      "instance_ids": ["openai-account-a"],
+      "instance_ids": ["inst_Hc7vM3sD"],
       "fields": ["id", "conversation_id", "role", "content", "source_created_at"]
     }
   ]
@@ -1119,7 +1152,7 @@ Retention is a structured policy declaration and policy commitment by the data r
   "version": "0.1.0",
   "grant_id": "grt_003",
   "issued_at": "2026-04-06T15:00:00Z",
-  "subject": { "id": "user_abc" },
+  "subject": { "id": "sub_bT6nW1qZ" },
   "client": { "client_id": "sleep_analysis" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/oura" },
   "source_declaration": { "version": "2026-08-11" },
@@ -1128,7 +1161,7 @@ Retention is a structured policy declaration and policy commitment by the data r
   "streams": [
     {
       "name": "sleep_sessions",
-      "instance_ids": ["oura-account-a"],
+      "instance_ids": ["inst_P2xf9Lb6"],
       "fields": ["day", "total_sleep_duration", "sleep_score"],
       "time_constraint": {
         "field": "day",
@@ -1177,13 +1210,16 @@ For separated AS/RS deployments, the RS MUST authenticate to the AS introspectio
 |-------|------|-------------|
 | `active` | boolean | Whether the token is currently valid. |
 | `pdpp_token_kind` | string | `"owner"` or `"client"`. |
-| `subject_id` | string | The subject (user) identifier. |
+| `subject_id` | string | The subject identifier that the RS uses to enforce the request. It MAY be an internal identifier that differs from the grant's pairwise `subject.id`, and the RS MUST NOT disclose it to a client (see [Pairwise identifiers](#pairwise-identifiers)). |
 | `grant_id` | string | The associated grant identifier. Present for client tokens. |
 | `client_id` | string | The client identifier. Present for client tokens. |
 | `exp` | integer | Expiry timestamp (Unix epoch). Present in every positive response for a token that has an expiration, including every client token issued against a `single_use` grant. Omitted when the token has no expiration. |
 | `authorization_details` | array | The approved RFC 9396 detail for a client token. It carries the resolved grant enforcement constraints defined in Section 7. |
+| `pdpp_instance_bindings` | array | RS-only. Maps each instance handle that the token can use to the instance that the RS stores. For a client token, there is one entry `{ source_id, stream, instance_id, rs_instance }` for each stream and handle in the grant. For an owner token, there is one entry `{ source_id, instance_id, rs_instance }` for each instance in the owner's connection scope, with the owner's handle. `rs_instance` is an opaque string that the RS resolves to a stored instance. Every entry for one `(source_id, instance_id)` MUST name the same `rs_instance`; the RS MUST reject conflicting entries as `grant_invalid` before serving data. |
 
 The introspection response MUST contain the complete context needed to enforce the request. The separated RS MUST enforce only from that response and MUST NOT make a second AS lookup while handling the request. A co-located AS and RS MAY resolve the same context through a local equivalent.
+
+For a client or owner token, that context includes `pdpp_instance_bindings`. A separated RS MUST resolve each handle only through this member and MUST fail closed when a binding is missing. A client request that needs a handle with no binding, or with a binding that names no stored instance, fails with 403 `grant_invalid`. For an owner token, an instance with no binding is outside the owner scope. The AS MUST NOT return `pdpp_instance_bindings` to a client.
 
 **Token kind extensibility:** This specification defines `owner` and `client`. Deployments MAY introduce additional token kinds in companion profiles. A resource server that receives a `pdpp_token_kind` value it does not recognize MUST treat the token as unauthorized for all operations defined in this specification.
 
@@ -1393,9 +1429,9 @@ Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be rej
 
 For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. On a `date` or `date-time` field, they use the validity and comparison rules in [Time constraint semantics](#time-constraint-semantics), and an invalid value returns 400 `invalid_request`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
 
-For owner-token current-capability reads, expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations.
+For owner-token current-capability reads, expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations. Expansion joins only related records in the parent record's instance.
 
-**Stable sort:** Records are sorted by `(cursor_field, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values. A `changes_since` session instead orders records and tombstones together by canonical key string, in the direction `order` selects. It does not follow `cursor_field`, which a tombstone lacks, or the order of changes, which would reveal when a hidden field changed relative to other updates.
+**Stable sort:** Records are sorted by `(cursor_field, instance_id, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values. A `changes_since` session instead orders records and tombstones together by `instance_id` and then canonical key string, in the direction `order` selects. It does not follow `cursor_field`, which a tombstone lacks, or the order of changes, which would reveal when a hidden field changed relative to other updates.
 
 A page cursor is bound to the query context of the first page: the grant (for an owner token, the subject and effective owner scope), stream, `fields`, `view`, `expand[]`, `expand_limit[...]`, `order`, every `filter[...]`, and any `changes_since` token. A client MUST follow a `next_cursor` with the same context that produced it. To change the context, the client MUST restart pagination without a cursor. Resource servers MUST reject a page cursor used with a different context as `invalid_cursor`.
 
@@ -1429,6 +1465,7 @@ A `changes_since` request with `expand[]` or `expand_limit[...]` is rejected wit
     {
       "object": "record",
       "id": "conv_01JQW8M2R7",
+      "instance_id": "inst_Hc7vM3sD",
       "stream": "conversations",
       "data": {
         "id": "conv_01JQW8M2R7",
@@ -1453,12 +1490,14 @@ The terminal page of a `changes_since` request (i.e., `has_more: false`) MUST in
     {
       "object": "record",
       "id": "conv_01JQX2P4K9",
+      "instance_id": "inst_Hc7vM3sD",
       "stream": "conversations",
       "deleted": true
     },
     {
       "object": "record",
       "id": "conv_01JQW8M2R7",
+      "instance_id": "inst_Hc7vM3sD",
       "stream": "conversations",
       "data": {
         "id": "conv_01JQW8M2R7",
@@ -1480,6 +1519,8 @@ Authorization: Bearer <access_token>
 
 Returns a single record by primary key. The `{id}` path parameter is the percent-encoded canonical key string. Owner-token current-capability reads support `expand[]`; client-token requests reject it in v0.1 before declaration lookup.
 
+The `instance_id` query parameter selects the record's instance. It is REQUIRED when the query context covers more than one instance of the stream. For a client token, that is when the grant lists more than one handle for the stream. For an owner token, it is when the owner scope covers more than one instance. Otherwise `instance_id` is OPTIONAL. The requirement depends only on the query context, not on whether two instances hold the key. The resource server MUST reject a missing required `instance_id` with 400 `invalid_request` before it looks up the record. It returns 404 `not_found` for an `instance_id` that the query context does not cover.
+
 #### Delete a record (owner-authenticated)
 
 ```
@@ -1487,22 +1528,24 @@ DELETE /v1/streams/{stream}/records/{id}
 Authorization: Bearer <owner_token>
 ```
 
-Permanently removes a record from the stream. The RS may implement this as a tombstone internally. Returns 204 No Content on success. The `{id}` path parameter is the percent-encoded canonical key string.
+Permanently removes a record from the stream. The RS may implement this as a tombstone internally. Returns 204 No Content on success. The `{id}` path parameter is the percent-encoded canonical key string. The `instance_id` query parameter follows the rule for a single-record read.
 
 #### Get a blob
 
 ```
-GET /v1/blobs/{blob_id}
+GET /v1/blobs/{blob_id}?instance_id={instance_id}
 Authorization: Bearer <access_token>
 ```
 
+A `blob_id` is unique only within one instance, and a blob request names no stream. The `instance_id` query parameter selects the blob's instance and is REQUIRED on every blob request. The resource server MUST reject a blob request without it with 400 `invalid_request`. The `fetch_url` that the resource server injects MUST include `instance_id`.
+
 The resource server MUST NOT serve a blob unless a record that the requesting token is currently authorized to read references it. It evaluates this on each request. For a client token, it verifies that:
 
-1. The grant includes a stream containing a record that references this `blob_id`.
+1. The grant lists the selected instance for a stream in which a record of that instance references this `blob_id`.
 2. The referencing record passes all grant filters.
 3. The `blob_ref` field is included in the grant's authorized field projection.
 
-For an owner token authorized for blob fetch, the RS applies its subject, source, connection, and operation scope and verifies that a record readable under that scope references the blob.
+For an owner token authorized for blob fetch, the RS applies its subject, source, connection, and operation scope and verifies that a record of the selected instance, readable under that scope, references the blob.
 
 A `blob_id` alone does not grant access. When no such record exists, the RS returns 404 `blob_not_found`, the same response as for an unknown or stale `blob_id`.
 
@@ -1568,7 +1611,7 @@ This makes a future error code safe to introduce: an older client keeps handling
 | `grant_revoked` | 401 | `authentication_error` | Token is inactive because its grant has been revoked, and authenticated context establishes this cause. See Inactive tokens below. |
 | `grant_invalid` | 403 | `permission_error` | Resolved grant is malformed or cannot be served without changing its authorization meaning. |
 | `blob_not_found` | 404 | `not_found_error` | `blob_id` is unknown or stale, or no record the token may read references it. |
-| `not_found` | 404 | `not_found_error` | Stream or record not found. |
+| `not_found` | 404 | `not_found_error` | Stream, instance, or record not found. |
 | `cursor_expired` | 410 | `gone_error` | `changes_since` token is too old; start again from `beginning`. |
 | `rate_limit_exceeded` | 429 | `rate_limit_error` | Too many requests. Includes `Retry-After` header. |
 | `api_error` | 500 | `api_error` | Internal server error. |
@@ -1609,7 +1652,7 @@ A conformant authorization server:
 8. Tracks grant lifecycle (active, expired, revoked). Reflects revocation immediately in introspection: the revoked grant is inactive at once, and a token is `active: false` when no grant it covers is active.
 9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
 10. For `single_use` grants, consumes the grant atomically with first client-token issuance. Gives that access token a finite expiration set by local policy and, when the grant has `expires_at`, no later than `expires_at`; that expiry ends the grant's one read window. Lets a later token in the same refresh-token family carry the grant only inside the window, reports the grant inactive after it, and otherwise rejects issuance against the consumed grant.
-11. Validates stream/field/view/resource-id shape at grant issuance.
+11. Validates stream/field/view/resource-id shape at grant issuance. Rejects `resources` on a stream with more than one instance.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
 13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
 14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.dev/purpose/ai_training"`. Never presents an `ai_training` detail as selected by default. In a request with several details, lets the owner approve any other detail while declining it.
@@ -1619,7 +1662,7 @@ A conformant authorization server:
     reviewed revision changes before approval.
 16. Retains one exact SourceDeclaration snapshot through request validation, consent display, narrowing, issuance, and consent evidence. A later current declaration never substitutes for it.
 17. Returns 400 `unsupported_version` if `PDPP-Version` header specifies an unsupported version.
-18. For a separated AS and RS, authenticates the RS at the RFC 7662 introspection endpoint and returns the complete grant enforcement context in one response.
+18. For a separated AS and RS, authenticates the RS at the RFC 7662 introspection endpoint and returns the complete grant enforcement context in one response, including `pdpp_instance_bindings`. Never returns `pdpp_instance_bindings` to a client.
 19. Consumes each OAuth authorization code atomically on its first successful redemption. Rejects every later redemption with `invalid_grant` and does not issue another token.
 20. Issues a refresh token only when at least one grant the token response covers is `continuous`, and never extends a `single_use` grant's read window through refresh. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
 21. Rejects unsupported persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent when no migration applies.
@@ -1630,6 +1673,7 @@ A conformant authorization server:
 26. Ends one grant among several that share a credential without revoking that credential or ending the other grants.
 27. Rejects a declaration that names an ineligible `consent_time_field` or a non-boolean `consent_time_content_may_exceed`. Rejects a `time_range` with no bound, a bound whose type does not match the field's format, an invalid bound, or a `since` not before `until`; the OAuth/RAR binding returns `invalid_authorization_details`. Never converts or rounds a bound. Sets `time_constraint.type` from the field's format in the retained declaration.
 28. For each time-bounded stream, renders the exact bounds with their inclusive and exclusive meaning and the declared meaning of the field. Shows a relative label only when it has verified it for those bounds. Discloses that matched records can contain data from outside the bounds when the stream declares `consent_time_content_may_exceed: true`. For a `continuous` grant, discloses that the client can see records leave the window.
+29. Gives each client pairwise identifiers: `subject.id`, `grantors[].id`, instance handles, and any ID Token `sub` differ between clients for the same subject, grantor, or instance. They stay the same for one client, are never reassigned, and cannot be reversed by a client. Sets ID Token `sub` to the authenticated person's identifier, which is a grantor's identifier when a representative authenticates. Uses a globally resolvable `subject.id` only when the owner explicitly chooses to disclose it to that client, and binds that identifier and the client into the final approval artifact and retained consent evidence. Returns an internal subject identifier and `pdpp_instance_bindings` only to the RS.
 
 ### Resource Server conformance
 
@@ -1647,7 +1691,7 @@ A conformant Core RS:
    `invalid_request` before consulting current declaration metadata; owner-token current-capability reads MAY retain declared filter behavior.
 10. Rejects unknown query parameters and unsupported query shapes with 400 instead of silently ignoring them.
 11. Implements the `PDPP-Version` header negotiation.
-12. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response.
+12. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response. Never discloses the introspection `subject_id` to a client.
 13. SHOULD support owner-authenticated access to the `/v1/streams/{stream}/records` query endpoints without a client grant, allowing the data subject to export their own data directly (self-export).
 14. For owner-token stream-metadata reads, returns the full current stream metadata within the owner's subject/source/connection scope, including current query, view, and relationship capabilities.
 15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
@@ -1656,8 +1700,10 @@ A conformant Core RS:
 18. Serves a blob only when a record the requesting token may currently read, including its field projection, references it. Otherwise returns 404 `blob_not_found`. Gives a redirect's signed URL an expiry no later than the positive-status cache expiry, or 60 seconds after token validation when no result was cached, and no later than the token or grant expiration when present.
 19. Returns 401 with `WWW-Authenticate: Bearer error="invalid_token"` for every inactive access token. Uses the structured code `grant_expired` or `grant_revoked` only when authenticated context establishes that cause, otherwise `authentication_error`.
 20. Emits a tombstone for each record visible at the previous horizon and not visible at the new one, and for no other record. Retains the state needed to determine visibility at every unexpired horizon, and otherwise fails the session with 410 `cursor_expired`. Uses the exact client tombstone shape for client tokens. For owner tokens, adds `removal`, and `deleted_at` and `emitted_at` only for a deletion.
-21. Binds each page cursor and `changes_since` token to its grant, or owner subject and scope, and to its query context, and rejects a mismatch as `invalid_cursor`. Orders a `changes_since` session by canonical key string, does not serve a record deleted after the session's first page, and rejects `expand[]` and `expand_limit[...]` on `changes_since`. Issues tokens and page cursors that reveal no readable position, time, or field value, and whose equality or ordering signals no change outside the grant or owner scope.
+21. Binds each page cursor and `changes_since` token to its grant, or owner subject and scope, and to its query context, and rejects a mismatch as `invalid_cursor`. Orders a `changes_since` session by `instance_id` and then canonical key string, does not serve a record deleted after the session's first page, and rejects `expand[]` and `expand_limit[...]` on `changes_since`. Issues tokens and page cursors that reveal no readable position, time, or field value, and whose equality or ordering signals no change outside the grant or owner scope.
 22. Compares time values and bounds by the grant's frozen `time_constraint.type`, never a current declaration, as calendar dates or exact instants, without a host, viewer, or owner time zone. Validates values itself under RFC 3339, including its leap-second rule. Excludes a record whose value is absent, null, or invalid from every read surface. Applies the same rules to owner-token range filters on `date` and `date-time` fields, using the declared format.
+23. Puts `instance_id` on every record and tombstone it serves: the grant's handle for a client token, and the owner's handle for an owner token. Serves each `resource_ref` in the resolved form only when the target record passes every constraint of the grant for the target stream, and otherwise in the redacted form. Identifies records within a stream by instance and canonical key in sync, removals, cursors, and single-record reads. Requires `instance_id` on a single-record read or record delete when the query context covers more than one instance of the stream, and on every blob fetch. Rejects a missing one with 400 `invalid_request`.
+24. In a separated deployment, resolves every handle through `pdpp_instance_bindings`. Fails a client request with 403 `grant_invalid` when a handle the request needs has no binding or names no stored instance. Treats an owner instance without a binding as outside the owner scope.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
@@ -1674,7 +1720,7 @@ A conformant client:
 7. Treats unrecognized error codes as opaque, falling back to the exact HTTP status code and applicable response headers rather than failing on an unknown code. Takes the actual status code and headers as the authoritative outcome. Uses a recognized `error.type` only to refine category or presentation, and only when compatible with that outcome. Ignores an absent, unrecognized, or status-incompatible `type` for control flow, and never fails to parse on an unknown `code` or `type`.
 8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant, and MUST NOT treat an unrecognized `source.kind` as either known value. A client with no provenance-dependent policy has nothing to check.
 9. Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`. Does not treat an inactive token as proof of revocation.
-10. Treats a tombstone for an ID it does not hold as a no-op. Reconciles records it obtained outside sync sessions itself, because the sync guarantee covers only a copy built from sync sessions.
+10. Identifies each record within a stream by its `instance_id` and `id` together. Treats a tombstone for a record it does not hold as a no-op. Reconciles records it obtained outside sync sessions itself, because the sync guarantee covers only a copy built from sync sessions.
 
 ### Conformance test suite
 
@@ -1822,6 +1868,10 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Change of client ownership and undisclosed sub-processing | Deferred; no change-of-control record, revocation trigger, or recipient sub-processing disclosure mechanism. `client_claims` is not an ownership record |
 | Client bulk export | Deferred; owner self-export is SHOULD (Section 9). A client pages through the query under its grant |
 | Owner-operated authorization server (UMA-style) | Not introduced; see Section 3. |
+| Cross-source reference resolution | Deferred; Core does not resolve the target instance of a `resource_ref` to another source, and a resource server serves such a reference in the redacted form (Section 4) |
+| Instance-qualified resources | Deferred; in v0.1 a stream with `resources` covers exactly one instance, and the AS rejects `resources` with more than one instance (Section 6) |
+| Globally resolvable subject identifiers | Out of scope, except as a `subject.id` that the owner explicitly chooses to disclose to a client (Section 7). Core defines no format, resolution, or proof of control for such an identifier |
+| Proof of subject control | Deferred; v0.1 defines no proof that a grant is bound to a key the subject controls. Candidate companion profiles include pairwise DIDs with proof of control and unlinkable proofs such as BBS signatures (draft-irtf-cfrg-bbs-signatures) or AnonCreds link secrets |
 | Real-time streaming | Different spec needed |
 
 ### Predicate-based grant scoping {#predicate-based-grant-scoping}
@@ -1861,10 +1911,25 @@ interface BlobRef {
   fetch_url?: string;      // Injected by resource server at read time; absent in producer output
 }
 
-interface ResourceRef {
+interface ResourceRef {   // As a producer emits it
   source_id: string;       // SourceDeclaration source.id absolute URI
   stream: string;
   record_id: string | string[];
+}
+
+// As a resource server serves it: resolved only when the target passes every grant constraint for its stream, else redacted
+type ServedResourceRef =
+  | (ResourceRef & { instance_id: string })
+  | { source_id: string; stream: string; redacted: true };  // No record_id or instance_id
+
+// Served by the query API; within a stream, (instance_id, id) identifies a record
+interface ResponseRecord {
+  object: 'record';
+  id: string;              // Canonical key string
+  instance_id: string;     // Opaque instance handle; identity is (instance_id, id)
+  stream: string;
+  data: Record<string, unknown>;
+  emitted_at: string;
 }
 
 // --- Selection (request-time) ---
@@ -1927,7 +1992,7 @@ type TimeConstraint = TimeRange & {
 
 interface StreamGrant {
   name: string;
-  instance_ids: string[];  // Non-empty, unique, and stream-scoped
+  instance_ids: string[];  // Non-empty and unique; pairwise per client; a handle names one instance across the source's streams
   fields: string[];        // Non-empty and authoritative for RS enforcement
   time_constraint?: TimeConstraint;
   resources?: string[];    // Canonical key strings per compound key encoding
@@ -1937,7 +2002,7 @@ interface DataGrant {
   version: '0.1.0';
   grant_id: string;
   issued_at: string;
-  subject: { id: string };
+  subject: { id: string };  // Pairwise identifier for this client
   client: { client_id: string; client_display?: Record<string, unknown> };
   source: SourceObject;
   source_declaration: { version: string };
@@ -1951,7 +2016,7 @@ interface DataGrant {
     on_expiry: 'delete' | 'anonymize';
   };
   expires_at?: string;  // ISO 8601; absent means no expiry
-  grantors?: Array<{ id: string; capacity: string }>;  // present only for representative approval
+  grantors?: Array<{ id: string; capacity: string }>;  // present only for representative approval; id is pairwise per client
   extensions?: Record<string, unknown>;  // keyed by absolute profile URI
 }
 
@@ -2034,11 +2099,19 @@ interface SourceDeclaration {
 interface PDPPIntrospectionResponse {
   active: boolean;
   pdpp_token_kind?: string;  // Core defines 'owner' and 'client'; companion profiles may add kinds (unknown kinds are unauthorized for Core operations)
-  subject_id?: string;
+  subject_id?: string;     // Enforcement identifier; may be internal; never disclosed to a client
   grant_id?: string;       // Present for client tokens
   client_id?: string;      // Present for client tokens
   exp?: number;            // Unix timestamp
   authorization_details?: Array<Record<string, unknown>>; // Approved RFC 9396 detail with Section 7 enforcement constraints
+  pdpp_instance_bindings?: InstanceBinding[];  // RS-only; never returned to a client
+}
+
+interface InstanceBinding {
+  source_id: string;
+  stream?: string;         // Present for client tokens; absent for owner tokens
+  instance_id: string;     // The grant's handle, or the owner's handle
+  rs_instance: string;     // Opaque; the RS resolves it to a stored instance
 }
 
 // --- Tombstones (response objects) ---
@@ -2046,6 +2119,7 @@ interface PDPPIntrospectionResponse {
 interface ClientTombstone {
   object: 'record';
   id: string;              // Canonical key string
+  instance_id: string;     // Opaque instance handle
   stream: string;
   deleted: true;
   // No data, deleted_at, or emitted_at
