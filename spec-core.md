@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-06
 
 ---
 
@@ -1004,7 +1004,7 @@ The current persisted-authorization-state reader MUST reject any persisted autho
 | Mode | Behavior |
 |------|----------|
 | `single_use` | The grant permits one fixed read window. The window opens at the first client access token issuance for the grant and ends at that token's expiry. The AS marks the grant consumed atomically with that issuance. The first token MUST have a finite expiration, set by AS local policy and, when the grant has `expires_at`, no later than `expires_at`. That expiration SHOULD be short. The window does not limit the client to one request: the client MAY use the token for repeated reads, retries, and pagination until the window ends or the grant is revoked. A later access token in the same refresh-token family MAY carry the grant, but only inside the window. A binding that allows this MUST let the resource server enforce the window end, including under a cached introspection result and for a signed blob URL. After the window ends, no token carries the grant, and introspection MUST NOT report the grant active. After first issuance, the AS MUST reject issuance against the consumed grant, except a successor access token from the same refresh-token family issued before the window ends. A `single_use` grant never opens a second window. Failure to complete retrieval inside the window does not un-consume the grant. |
-| `continuous` | The grant is fulfilled repeatedly. The client may query the resource server incrementally over time. Active until expiry or revocation. |
+| `continuous` | The grant is fulfilled repeatedly. The client may query the resource server incrementally over time. Active until expiry or revocation. Each client access token issued against it SHOULD have a finite expiration; the AS SHOULD issue such a token from a refresh-token family, which allows renewal without re-consent while the family remains valid. |
 
 ### Time constraint semantics {#time-constraint-semantics}
 
@@ -1154,7 +1154,7 @@ The resource server stores records and serves them to clients filtered by grants
 
 On every request, the resource server:
 
-1. Resolves the access token through authenticated RFC 7662 introspection or a local equivalent for co-located deployments. Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`.
+1. Resolves the access token through authenticated RFC 7662 introspection or a local equivalent for co-located deployments. Positive introspection results MUST NOT be cached for more than 60 seconds, and never past `exp` when present.
 2. Determines `pdpp_token_kind` from the introspection response, then branches:
    - **Client:** requires an active resolved authorization context (`active: true`, a resolved grant). Verifies that the requested stream appears in the grant's `streams` list. Selects records only from the explicitly granted `instance_ids` and enforces the grant's `time_constraint`, `fields`, and `resources` constraints.
    - **Owner:** enforces subject, source, connection, and operation scope derived from the introspection response. Does not require or synthesize a client grant — an owner token carries none.
@@ -1187,7 +1187,7 @@ The introspection response MUST contain the complete context needed to enforce t
 
 **Token kind extensibility:** This specification defines `owner` and `client`. Deployments MAY introduce additional token kinds in companion profiles. A resource server that receives a `pdpp_token_kind` value it does not recognize MUST treat the token as unauthorized for all operations defined in this specification.
 
-Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. Self-contained JWTs (e.g., signed JWTs) are allowed as an optimization but MUST NOT be the sole revocation mechanism; the RS MUST still be able to check active status through introspection or local equivalent.
+Positive introspection results MUST NOT be cached for more than 60 seconds, and never past `exp` when present. Self-contained JWTs (e.g., signed JWTs) are allowed as an optimization but MUST NOT be the sole revocation mechanism; the RS MUST still be able to check active status through introspection or local equivalent.
 
 ### Authentication
 
@@ -1630,6 +1630,7 @@ A conformant authorization server:
 26. Ends one grant among several that share a credential without revoking that credential or ending the other grants.
 27. Rejects a declaration that names an ineligible `consent_time_field` or a non-boolean `consent_time_content_may_exceed`. Rejects a `time_range` with no bound, a bound whose type does not match the field's format, an invalid bound, or a `since` not before `until`; the OAuth/RAR binding returns `invalid_authorization_details`. Never converts or rounds a bound. Sets `time_constraint.type` from the field's format in the retained declaration.
 28. For each time-bounded stream, renders the exact bounds with their inclusive and exclusive meaning and the declared meaning of the field. Shows a relative label only when it has verified it for those bounds. Discloses that matched records can contain data from outside the bounds when the stream declares `consent_time_content_may_exceed: true`. For a `continuous` grant, discloses that the client can see records leave the window.
+29. SHOULD give every client access token a finite expiration and SHOULD issue it from a refresh-token family for a `continuous` grant, which allows renewal without re-consent while the family remains valid.
 
 ### Resource Server conformance
 
@@ -1637,7 +1638,7 @@ A conformant Core RS:
 
 1. Implements the query endpoints defined in Section 8: list streams, get stream metadata, list records, get a single record, get a blob, delete a record (owner-authenticated).
 2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter. Authorizes each disclosure under one grant and never combines the constraints of different grants.
-3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results no longer than `min(token_exp, 60 seconds)`.
+3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results for no more than 60 seconds and never past `exp` when present.
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
 5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
 6. Returns structured errors as defined in Section 8 (unified error table).
@@ -1696,7 +1697,9 @@ PDPP defines two token kinds at the resource server boundary: owner tokens and c
 
 For separated AS/RS deployments, the RS MUST authenticate to the AS introspection endpoint (RFC 7662) and enforce only from its response. It MUST NOT make a second AS lookup while handling the request. For co-located deployments, a local equivalent (shared database lookup or function call) is acceptable. Self-contained JWTs are allowed as an optimization but MUST NOT be the sole revocation mechanism.
 
-Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. This bounds the propagation window for revocation.
+Positive introspection results MUST NOT be cached for more than 60 seconds, and never past `exp` when present. This bounds the propagation window for revocation.
+
+Section 7 recommends a finite expiration for each client access token of a `continuous` grant, issued from a refresh-token family so that renewal does not force re-consent, and already requires one for the first token of a `single_use` grant. Live introspection bounds a detected leak, but expiry also bounds a token a client has left behind after it silently stops using a grant.
 
 An access token issued with or from a refresh-token family MUST be linked to that family and MUST have a short, token-specific expiration no later than the family or grant expiration. A token response MUST derive `expires_in` from the access token's persisted expiration. It MUST omit `expires_in` when the access token has no expiration, which Section 7 does not permit for a `single_use` grant. An RFC 7662 response MUST likewise omit `exp` when no expiration exists.
 
@@ -1707,7 +1710,7 @@ An authorization code MUST be consumed atomically on its first successful redemp
 When an authorization server issues refresh tokens, each token MUST belong to a family and MUST rotate after successful use. Refresh issuance and family revocation MUST be serialized, or use equivalent atomic checks, so that a refresh cannot issue a usable token after the family is revoked. The AS MUST atomically supersede the presented token and issue one active successor. Reuse of any superseded token, including a retry after a lost successful response, MUST revoke the token family and every access token linked to that family, return `invalid_grant`, and require fresh authorization.
 Introspection MUST report every family-linked access token inactive after the replay is detected. An AS MUST NOT issue a refresh token unless at least one grant the token response covers is `continuous`. An access token issued from a family MAY carry a `single_use` grant only inside that grant's read window (Section 7); a refresh never extends the window or opens a second one. A binding in which one credential covers several grants, such as a grant package, defines how refresh covers those grants within these rules. On upgrade, an implementation MUST NOT infer family linkage for an existing bearer. Any live refresh family without persisted bearer linkage MUST be revoked together with its grant- or package-bound bearer tokens and MUST require fresh authorization. This behavior follows [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700), Section 4.14.2.
 
-**Sender-constrained tokens (non-normative):** Bearer tokens (RFC 6750) are the v0.1 baseline. Deployments handling sensitive standing access SHOULD consider sender-constrained tokens, which bind a token to a client-held key so that possession of the token alone is not sufficient to use it. DPoP (RFC 9449) and mutual-TLS certificate binding (RFC 8705) are both compatible with PDPP's introspection-based design. A formal optional hardening profile is a candidate for a future version.
+**Sender-constrained tokens (non-normative):** Bearer tokens (RFC 6750) are the v0.1 baseline. Deployments handling sensitive standing access SHOULD consider sender-constrained tokens, which bind a token to a client-held key so that possession of the token alone is not sufficient to use it. DPoP (RFC 9449) and mutual-TLS certificate binding (RFC 8705) are both compatible with PDPP's introspection-based design. A formal optional hardening profile is a candidate for a future version. A future version that makes sender-constrained tokens mandatory is expected to make finite access-token expiry a MUST at the same time.
 
 ### Grant integrity
 
