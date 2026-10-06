@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-06
 
 ---
 
@@ -41,7 +41,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | Standard | Relationship |
 |----------|-------------|
 | [OAuth 2.0](https://www.rfc-editor.org/rfc/rfc6749) (RFC 6749) | PDPP is a profile of OAuth 2.0, carrying selection requests in RFC 9396 authorization_details. The grant is issued as the result of an OAuth authorization flow. |
-| [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396) (RAR) | PDPP uses the `authorization_details` envelope for selection requests. The `type` URI is `https://pdpp.dev/data-access`. |
+| [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396) (RAR) | PDPP uses the `authorization_details` envelope for selection requests. Core defines the `https://pdpp.dev/data-access` type URI; a companion profile can define others. |
 | [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (Bearer Token) | PDPP transports both owner tokens and client tokens as RFC 6750 Bearer Tokens on the wire. The resource server distinguishes token kind via `pdpp_token_kind` in the introspection response, not by token syntax. |
 | [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (Token Introspection) | PDPP uses authenticated RFC 7662 token introspection where the authorization server and resource server are separated, so the resource server can resolve grant-bound tokens. Co-located deployments may use a local equivalent. |
 | [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) (Protected Resource Metadata) | PDPP resource servers publish RFC 9728 protected resource metadata, so a client discovers the authorization server, the query base, and the supported token kinds from the resource itself rather than from prior configuration. Core defines four `pdpp_`-prefixed additional members (Section 8); the extension profiles define `capabilities`. |
@@ -211,7 +211,7 @@ PDPP separates three concerns that other systems conflate:
 
 The grant and query API are the normative core. Collection is a companion mechanism.
 
-**Ingest and sync-state are Collection Profile concerns.** The core protocol defines the query API (disclosure) and grant semantics. The Collection Profile defines record ingest and sync-state management endpoints for implementations that claim Collection Profile support.
+**Ingest and sync-state are outside Core.** The core protocol defines the query API (disclosure) and grant semantics. The Collection Profile defines connector collection. A profile that defines an ingest or write interface also defines its endpoints, its errors, and any sync-state interface it uses.
 
 ---
 
@@ -350,7 +350,7 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 
 **Compound key encoding:** When `primary_key` has multiple fields, `key` is an array of values in the order declared by the SourceDeclaration `primary_key`. The canonical string form of a compound key is the minified JSON array of key values (e.g., `["user_123","2026-04-01"]`). Each primary-key component MUST be serialized as a string in the canonical encoding. Non-string primary-key field values (e.g., integers, dates) MUST be converted to their string representation before encoding. URL path parameters and `resources[]` entries use percent-encoded canonical string form. The `resource_ref.record_id` field retains native `string | string[]` type.
 
-**Record identity:** For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree. The Collection Profile defines the HTTP error for its ingest endpoint.
+**Record identity:** For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree. The profile that defines the interface defines the error.
 
 ### Timestamps
 
@@ -544,7 +544,7 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | Field | Description |
 |-------|-------------|
 | `protocol_version` | Version of the PDPP SourceDeclaration schema. This contract requires exactly `0.1.0`. |
-| `source` | Exactly `{ kind, id }`. `kind` is `connector` or `provider_native`; `id` is the absolute URI authorization identity for the source's data surface. |
+| `source` | Exactly `{ kind, id }`. `kind` is `connector`, `provider_native`, or a provenance class that a profile defines; `id` is the absolute URI authorization identity for the source's data surface. |
 | `declaration_version` | Opaque, non-empty revision identifier for this source declaration. It is not the connector software version and has no implied ordering. |
 | `publisher.id` | Absolute URI identifying the declaration publisher. It is an attribution claim, not an authenticated identity. The authorization server MUST treat `publisher.id` as authenticated only where an accepted channel or configured mapping binds that publisher to the declaration; absent that binding it MUST NOT support source acceptance, redirect policy, attribution, or any other trust decision. |
 | `display.name` | Human-readable source name for consent UIs. It is display metadata, not source identity. |
@@ -814,7 +814,7 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 
 #### Source kinds {#source-kinds}
 
-These are the two provenance classes an authorization server derives and carries forward. They are defined here because this is where a reader meets the source binding, not because a client sends one.
+These are the two provenance classes Core defines. An authorization server derives the class and carries it forward. They are defined here because this is where a reader meets the source binding, not because a client sends one.
 
 | `source.kind` | Meaning |
 |---|---|
@@ -823,7 +823,7 @@ These are the two provenance classes an authorization server derives and carries
 
 A selection request does not carry `source.kind`. The authorization server derives the provenance class from the declaration it accepted for `source.id`, and records it in consent evidence and any issued grant, where a client reads it back through introspection. A client whose policy depends on provenance therefore reads it from the issued grant rather than asserting an expectation in the request; Section 9 states that as a client requirement. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details` for invalid authorization details.
 
-An authorization server MUST reject a declaration containing an unrecognized `source.kind`. A resource server MUST NOT interpret an unrecognized grant `source.kind` as a known provenance class. A client that reads an unrecognized `source.kind` in a grant MUST NOT treat it as either known value; it MAY reject the grant as unsupported. A later version can add provenance classes; an implementation that predates one does not misread it as a known class.
+An authorization server MUST reject a declaration containing an unrecognized `source.kind`. A resource server MUST NOT interpret an unrecognized grant `source.kind` as a known provenance class. A client that reads an unrecognized `source.kind` in a grant MUST NOT treat it as either known value; it MAY reject the grant as unsupported. A later version or a profile can add a provenance class. An authorization server recognizes a profile-defined class only when it implements that profile. An implementation that does not recognize a class does not misread it as a known one.
 
 #### AI training consent {#ai-training-consent}
 
@@ -884,7 +884,7 @@ Every field in the issued grant is derived from either the selection request, cl
 
 **Note:** This section defines the immutable consent artifact and the constraints a resource server enforces for a token-bound client. Grant database schema, signed-token format, hosted registries, and deployment topology are out of scope for this document.
 
-A grant is an immutable consent artifact. It is the output of the authorization flow.
+A grant is an immutable consent artifact. It is the output of the authorization flow. This section applies to grants issued for Core `data-access` authorization details. A companion profile that defines another authorization-details type defines the grant and consent contracts for that type.
 
 The authorization server issues an access token bound to the grant. The client uses the access token (not the raw grant) to authenticate with the resource server. The resource server resolves the token to the grant and enforces its constraints on every request. Grant lifecycle (active, expired, revoked) is tracked by the authorization server, not stored in the grant itself.
 
@@ -1158,6 +1158,7 @@ On every request, the resource server:
 2. Determines `pdpp_token_kind` from the introspection response, then branches:
    - **Client:** requires an active resolved authorization context (`active: true`, a resolved grant). Verifies that the requested stream appears in the grant's `streams` list. Selects records only from the explicitly granted `instance_ids` and enforces the grant's `time_constraint`, `fields`, and `resources` constraints.
    - **Owner:** enforces subject, source, connection, and operation scope derived from the introspection response. Does not require or synthesize a client grant — an owner token carries none.
+   - **Any other kind:** unauthorized for Core operations.
 3. If all checks pass, returns records filtered accordingly.
 4. If any check fails, returns a structured error (see Errors below).
 
@@ -1176,16 +1177,16 @@ For separated AS/RS deployments, the RS MUST authenticate to the AS introspectio
 | Field | Type | Description |
 |-------|------|-------------|
 | `active` | boolean | Whether the token is currently valid. |
-| `pdpp_token_kind` | string | `"owner"` or `"client"`. |
+| `pdpp_token_kind` | string | `"owner"`, `"client"`, or a kind that a companion profile defines. |
 | `subject_id` | string | The subject (user) identifier. |
 | `grant_id` | string | The associated grant identifier. Present for client tokens. |
 | `client_id` | string | The client identifier. Present for client tokens. |
 | `exp` | integer | Expiry timestamp (Unix epoch). Present in every positive response for a token that has an expiration, including every client token issued against a `single_use` grant. Omitted when the token has no expiration. |
-| `authorization_details` | array | The approved RFC 9396 detail for a client token. It carries the resolved grant enforcement constraints defined in Section 7. |
+| `authorization_details` | array | For a Core client token, the approved `data-access` detail. It carries the resolved grant enforcement constraints defined in Section 7. A profile defines this member's use for its own token kind. |
 
 The introspection response MUST contain the complete context needed to enforce the request. The separated RS MUST enforce only from that response and MUST NOT make a second AS lookup while handling the request. A co-located AS and RS MAY resolve the same context through a local equivalent.
 
-**Token kind extensibility:** This specification defines `owner` and `client`. Deployments MAY introduce additional token kinds in companion profiles. A resource server that receives a `pdpp_token_kind` value it does not recognize MUST treat the token as unauthorized for all operations defined in this specification.
+**Token kind extensibility:** This specification defines `owner` and `client`. Deployments MAY introduce additional token kinds in companion profiles. A resource server that receives a `pdpp_token_kind` value it does not recognize MUST treat the token as unauthorized for all operations defined in this specification. A profile-defined token kind is neither an owner token nor a client token, and requirements this specification states for those kinds do not apply to it. The profile defines its grant shape, its token response, and the introspection members a resource server needs.
 
 Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. Self-contained JWTs (e.g., signed JWTs) are allowed as an optimization but MUST NOT be the sole revocation mechanism; the RS MUST still be able to check active status through introspection or local equivalent.
 
@@ -1212,7 +1213,7 @@ PDPP defines four additional members. RFC 9728 Section 2 permits additional para
 | Member | Meaning |
 | --- | --- |
 | `pdpp_core_query_base` | The base path the Section 8 endpoint paths extend, so a client composes a record query without assuming a version segment. |
-| `pdpp_token_kinds_supported` | The `pdpp_token_kind` values this resource server accepts, drawn from the kinds Section 8 defines. |
+| `pdpp_token_kinds_supported` | The `pdpp_token_kind` values this resource server accepts: the kinds Section 8 defines, plus any kind defined by a profile that the resource server implements. |
 | `pdpp_self_export_supported` | Whether an owner token may read the owner's own data through the client query endpoints without a client grant. |
 | `pdpp_provider_connect_version` | The PDPP version this resource server's interface implements, which a client would otherwise learn only from the `PDPP-Version` negotiation on a first request. |
 
@@ -1601,19 +1602,19 @@ A conformant authorization server:
 
 1. Accepts selection requests using the RFC 9396 `authorization_details` envelope with `type: "https://pdpp.dev/data-access"`.
 2. Validates selection requests against one retained SourceDeclaration snapshot: rejects unknown streams, unsupported selection parameters (e.g., `time_range` on a stream without `consent_time_field`), and unrecognized selection presets.
-3. Issues grants that conform to the grant schema defined in Section 7 (normative field tables). The AS generates `grant_id` and `issued_at`; it resolves other grant fields from authenticated identities, the selection request, the accepted source declaration, eligible instance handles, user approval, AS policy, or AS-resolved client metadata.
+3. For Core `data-access` details, issues grants that conform to the grant schema defined in Section 7 (normative field tables). The AS generates `grant_id` and `issued_at`; it resolves other grant fields from authenticated identities, the selection request, the accepted source declaration, eligible instance handles, user approval, AS policy, or AS-resolved client metadata.
 4. Expands wildcards and selection presets into explicit stream names, fields, per-stream instance handles, resources, and frozen time constraints before issuing the grant.
 5. Produces a binding-neutral Source validation failure when a request contains both or neither of `streams` and `selection_preset`. The OAuth/RAR binding maps it to RFC 9396 `invalid_authorization_details`.
 6. MUST NOT reject a `purpose_code` solely because it is not in the PDPP registry. For unrecognized codes, displays `purpose_description` if present, or the raw URI. MAY reject a `purpose_code` based on local policy.
 7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms. If `client_claims` are rendered during final review, binds the normalized exact claims into the immutable final approval artifact and review revision, and preserves that binding in retained consent evidence, without adding them to the resolved grant or RS enforcement. Records in the issued grant's `client.client_display` the exact `policy_uri` and `tos_uri` it presented during consent, and omits any it did not present.
 8. Tracks grant lifecycle (active, expired, revoked). Reflects revocation immediately in introspection: the revoked grant is inactive at once, and a token is `active: false` when no grant it covers is active.
-9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
+9. For Core `data-access` details, issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
 10. For `single_use` grants, consumes the grant atomically with first client-token issuance. Gives that access token a finite expiration set by local policy and, when the grant has `expires_at`, no later than `expires_at`; that expiry ends the grant's one read window. Lets a later token in the same refresh-token family carry the grant only inside the window, reports the grant inactive after it, and otherwise rejects issuance against the consumed grant.
 11. Validates stream/field/view/resource-id shape at grant issuance.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
 13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
 14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.dev/purpose/ai_training"`. Never presents an `ai_training` detail as selected by default. In a request with several details, lets the owner approve any other detail while declining it.
-15. Resolves omitted instance IDs before the final approval surface. Binds
+15. For Core `data-access` details, resolves omitted instance IDs before the final approval surface. Binds
     exact resolved instances and all final decision fields to an immutable
     review revision or digest. Rejects stale approval if eligibility or the
     reviewed revision changes before approval.
@@ -1621,12 +1622,12 @@ A conformant authorization server:
 17. Returns 400 `unsupported_version` if `PDPP-Version` header specifies an unsupported version.
 18. For a separated AS and RS, authenticates the RS at the RFC 7662 introspection endpoint and returns the complete grant enforcement context in one response.
 19. Consumes each OAuth authorization code atomically on its first successful redemption. Rejects every later redemption with `invalid_grant` and does not issue another token.
-20. Issues a refresh token only when at least one grant the token response covers is `continuous`, and never extends a `single_use` grant's read window through refresh. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
+20. For Core `data-access` details, issues a refresh token only when at least one grant the token response covers is `continuous`, and never extends a `single_use` grant's read window through refresh. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
 21. Rejects unsupported persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent when no migration applies.
 22. Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value.
 23. Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision. Authenticates and verifies each representative before accepting approval, binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.
-24. Lets the owner approve or decline each detail of a request on its own. Issues one grant for each approved, resolved detail, covering one subject, one source, and one purpose, with its own lifecycle. Identifies grants by `grant_id` and does not treat subject, source, and purpose as a grant key.
-25. If it offers client-initiated revocation, ends grants as Section 10 defines: revoking a refresh token, current or superseded, ends every grant its family covers; revoking an access token ends its grants only when no refresh-token family covers them. In the OAuth binding, implements it as RFC 7009 token revocation and advertises `revocation_endpoint` in RFC 8414 metadata.
+24. For Core `data-access` details, lets the owner approve or decline each detail of a request on its own. Issues one grant for each approved, resolved detail, covering one subject, one source, and one purpose, with its own lifecycle. Identifies grants by `grant_id` and does not treat subject, source, and purpose as a grant key.
+25. For Core `data-access` details, if it offers client-initiated revocation, ends grants as Section 10 defines. Revoking a refresh token, current or superseded, ends every grant its family covers; revoking an access token ends its grants only when no refresh-token family covers them. In the OAuth binding, implements it as RFC 7009 token revocation and advertises `revocation_endpoint` in RFC 8414 metadata.
 26. Ends one grant among several that share a credential without revoking that credential or ending the other grants.
 27. Rejects a declaration that names an ineligible `consent_time_field` or a non-boolean `consent_time_content_may_exceed`. Rejects a `time_range` with no bound, a bound whose type does not match the field's format, an invalid bound, or a `since` not before `until`; the OAuth/RAR binding returns `invalid_authorization_details`. Never converts or rounds a bound. Sets `time_constraint.type` from the field's format in the retained declaration.
 28. For each time-bounded stream, renders the exact bounds with their inclusive and exclusive meaning and the declared meaning of the field. Shows a relative label only when it has verified it for those bounds. Discloses that matched records can contain data from outside the bounds when the stream declares `consent_time_content_may_exceed: true`. For a `continuous` grant, discloses that the client can see records leave the window.
@@ -1638,7 +1639,7 @@ A conformant Core RS:
 1. Implements the query endpoints defined in Section 8: list streams, get stream metadata, list records, get a single record, get a blob, delete a record (owner-authenticated).
 2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter. Authorizes each disclosure under one grant and never combines the constraints of different grants.
 3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results no longer than `min(token_exp, 60 seconds)`.
-4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
+4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`, and authorizes Core operations only for those two kinds, each under its own rules.
 5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
 6. Returns structured errors as defined in Section 8 (unified error table).
 7. Supports incremental sync via `changes_since` on every stream, starting from `beginning`, with tombstone entries and HTTP 410 with error code `cursor_expired` on cursor expiry. Returns every record not visible at h0 and visible at h1, and omits a record visible at both horizons whose projection did not change. The projection is the grant-authorized projection for a client token, and the session's effective `fields` or resolved `view` projection for an owner token.
@@ -1692,7 +1693,7 @@ Two related properties are not tuning choices and are stated in Section 5 as req
 
 ### Token security
 
-PDPP defines two token kinds at the resource server boundary: owner tokens and client tokens. Both use RFC 6750 Bearer Token format on the wire. The RS distinguishes them via `pdpp_token_kind` in the introspection response, not by token syntax.
+Core defines two token kinds at the resource server boundary: owner tokens and client tokens. Both use RFC 6750 Bearer Token format on the wire. The RS distinguishes them via `pdpp_token_kind` in the introspection response, not by token syntax.
 
 For separated AS/RS deployments, the RS MUST authenticate to the AS introspection endpoint (RFC 7662) and enforce only from its response. It MUST NOT make a second AS lookup while handling the request. For co-located deployments, a local equivalent (shared database lookup or function call) is acceptable. Self-contained JWTs are allowed as an optimization but MUST NOT be the sole revocation mechanism.
 
@@ -1798,7 +1799,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Concern | Status |
 |---------|--------|
 | Authorization server interface | Introspection endpoint contract defined here; full AS interface informational only in v0.1 |
-| Ingest and sync-state endpoints | Defined by the Collection Profile; not required for Core RS |
+| Ingest and sync-state endpoints | Outside Core. An ingest or write profile defines its endpoints, its errors, and any sync-state interface it uses. |
 | Conformance test suite | Planned but not defined in v0.1 |
 | Webhook / push ingestion | Deferred |
 | Source lifecycle actions | Deferred (e.g., deleting source data after export) |
@@ -1893,7 +1894,7 @@ type PresetStreamSelection = FieldSelection & {
 // --- Source binding ---
 
 interface SourceObject {
-  kind: 'connector' | 'provider_native';
+  kind: string;            // 'connector' | 'provider_native', or a profile-defined class
   id: string;              // Stable absolute URI for the authorization and data surface
 }
 
@@ -2038,7 +2039,7 @@ interface PDPPIntrospectionResponse {
   grant_id?: string;       // Present for client tokens
   client_id?: string;      // Present for client tokens
   exp?: number;            // Unix timestamp
-  authorization_details?: Array<Record<string, unknown>>; // Approved RFC 9396 detail with Section 7 enforcement constraints
+  authorization_details?: Array<Record<string, unknown>>; // Core client token: approved data-access detail with Section 7 constraints
 }
 
 // --- Tombstones (response objects) ---
