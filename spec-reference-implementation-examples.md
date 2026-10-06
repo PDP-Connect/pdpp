@@ -1,7 +1,7 @@
 # PDPP Reference Implementation Examples
 
 Status: Illustrative
-Date: 2026-09-29
+Date: 2026-10-06
 
 These examples are illustrative sequences built from the current draft. They are not the normative source for wire shapes or role responsibilities. When an example and the live draft differ, the normative documents win:
 
@@ -272,10 +272,7 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
     "memories": { "created_at": "2026-04-01T09:00:00Z" }
   },
   "bindings": {
-    "browser_automation": {
-      "interface": "cdp",
-      "ws_url": "ws://127.0.0.1:39011/devtools/browser/abc"
-    },
+    "browser": {},
     "network": {}
   }
 }
