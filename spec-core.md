@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-06
 
 ---
 
@@ -150,6 +150,28 @@ flowchart TB
     User -- consent --> AS
     Client -- selection request --> AS
     AS -- grant --> Client
+```
+
+The diagram above shows the roles. The sequence below shows the order of messages from approval through a read, including the resource server's token introspection step ([Section 8](#resource-server-interface)):
+
+```mermaid
+sequenceDiagram
+    participant Owner
+    participant Client
+    participant AS as Authorization Server
+    participant RS as Resource Server
+
+    Client->>AS: authorization request (authorization_details)
+    AS->>AS: resolve accepted source declaration
+    AS->>Owner: present consent screen
+    Owner->>AS: review and approve
+    AS->>AS: issue grant
+    AS-->>Client: access token (via authorization code)
+    Client->>RS: query records (access token)
+    RS->>AS: introspect token
+    AS-->>RS: grant context
+    RS-->>Client: records within the grant
+    Note over RS,AS: A co-located deployment uses a local equivalent of introspection
 ```
 
 What differs between deployments is how the resource server that fulfills the grant is populated and operated. This is not a closed set: a resource server may hold pre-collected data with no collection machinery involved, or receive data via regulatory export, manual import, or platform-native APIs ([Section 1](#introduction)). The two examples below illustrate the ends of that spectrum; the [PDPP Collection Profile](spec-collection-profile) is one fulfillment mechanism, not the only one.
@@ -438,6 +460,50 @@ When a record references a record in a different stream on the same resource ser
 **Note:** This section defines the common source surface used by Core, and the conditions under which an authorization server accepts a source declaration. Connector acquisition and execution behavior, including runtime bindings, setup, interaction, refresh, and collection state, is defined by the optional [PDPP Collection Profile](spec-collection-profile). The mechanics of discovering and retrieving a declaration are described in the informative [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) document, which defines no requirements of its own.
 
 Each source publishes a `SourceDeclaration` describing its identity, publisher, consent surface, record semantics, selection capabilities, and Resource Server query capabilities. Connector-backed and provider-native sources use the same Core shape. The declaration defines what can be consented to. The resolved grant defines what was approved.
+
+### Example: one stream, from declaration to grant
+
+The following example follows one stream, `top_artists`, from declaration through the request and consent to the issued grant.
+
+**The declaration.** The source declares the stream, its consent-screen text, and its time field (excerpt; `views` and `query` omitted):
+
+```json
+{
+  "name": "top_artists",
+  "description": "Most-listened artists over time",
+  "display": {
+    "label": "Your top artists",
+    "detail": "Artist names, genres, and popularity scores. No listening timestamps or play counts."
+  },
+  "semantics": "mutable_state",
+  "schema": { "..." : "..." },
+  "primary_key": ["id"],
+  "cursor_field": "source_updated_at",
+  "consent_time_field": "source_updated_at",
+  "selection": { "fields": true, "resources": false }
+}
+```
+
+**The request.** A client asks for this stream in its selection request ([Section 6](#selection-request)) with `fields: ["id", "name", "genres", "popularity", "source_updated_at"]`, `instance_ids: ["spotify-account-a"]`, and `time_range: { since: "2025-09-28T00:00:00Z" }`. `selection.fields: true` allows the field list, and `consent_time_field` makes the stream time-range-capable.
+
+**The consent screen.** The authorization server shows the declaration's label and detail, the requested fields, and the bound stated as inclusive, for example "artists updated at or after 00:00 UTC on 28 September 2025" (see [consent_time_field](#consent-time-field)). The owner approves or declines the request.
+
+**The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields and time bound:
+
+```json
+{
+  "name": "top_artists",
+  "instance_ids": ["spotify-account-a"],
+  "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
+  "time_constraint": {
+    "field": "source_updated_at",
+    "type": "date-time",
+    "since": "2025-09-28T00:00:00Z"
+  }
+}
+```
+
+[Section 7](#grant) has the full grant, including this exact stream entry, in its first example.
 
 ### SourceDeclaration structure
 
