@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-06
 
 ---
 
@@ -46,6 +46,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (Token Introspection) | PDPP uses authenticated RFC 7662 token introspection where the authorization server and resource server are separated, so the resource server can resolve grant-bound tokens. Co-located deployments may use a local equivalent. |
 | [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) (Protected Resource Metadata) | PDPP resource servers publish RFC 9728 protected resource metadata, so a client discovers the authorization server, the query base, and the supported token kinds from the resource itself rather than from prior configuration. Core defines four `pdpp_`-prefixed additional members (Section 8); the extension profiles define `capabilities`. |
 | [OAuth 2.0 Dynamic Client Registration](https://www.rfc-editor.org/rfc/rfc7591) (RFC 7591) | PDPP reuses the RFC 7591 client metadata vocabulary (`client_name`, `logo_uri`, `policy_uri`, and similar fields) for the consent display. A dynamic client registration endpoint is a deployment choice and is required only where deployments need it; Core functions without it. |
+| [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html) | PDPP reuses the `ui_locales` authorization request parameter (Section 3.1.2.1) and the RFC 8414 `ui_locales_supported` metadata member to choose the consent display language. Language tags follow [BCP 47](https://www.rfc-editor.org/info/bcp47), and the AS chooses a declaration text version with [RFC 4647](https://www.rfc-editor.org/rfc/rfc4647) Lookup (Section 6). |
 | [Client ID Metadata Documents](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/) (CIMD, IETF OAuth WG draft) | A client identifier that is itself an `https` URL the authorization server fetches to obtain RFC 7591-shaped client metadata, with no prior registration handshake. Control of the URL's domain is the trust root. CIMD is how deployed MCP clients present themselves: the MCP authorization specification revision 2025-11-25 states that authorization servers and clients SHOULD support CIMD and MAY support RFC 7591 dynamic client registration, which is retained for backward compatibility. Core treats a validated CIMD document as one source of validated binding metadata (Section 6) and its verified domain as a trust signal; the fetch and validation obligations belong to the OAuth binding rather than to Core. |
 | [SMART on FHIR](https://hl7.org/fhir/smart-app-launch/) | Follows the domain-profile-over-OAuth pattern PDPP adopts: OAuth handles authorization, and the profile adds a domain data model, consent semantics, and a conformance regime. SMART on FHIR reached ubiquity through regulatory adoption of SMART-on-FHIR-patterned API requirements (the ONC Cures Act rule). |
 | [UK Open Banking](https://www.openbanking.org.uk/standards/) | Also follows the domain-profile-over-OAuth pattern PDPP adopts: OAuth handles authorization, and the profile adds a domain data model, consent semantics, and a conformance regime. UK Open Banking reached ubiquity through the CMA's Open Banking mandate for the largest UK banks. |
@@ -547,10 +548,11 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `source` | Exactly `{ kind, id }`. `kind` is `connector` or `provider_native`; `id` is the absolute URI authorization identity for the source's data surface. |
 | `declaration_version` | Opaque, non-empty revision identifier for this source declaration. It is not the connector software version and has no implied ordering. |
 | `publisher.id` | Absolute URI identifying the declaration publisher. It is an attribution claim, not an authenticated identity. The authorization server MUST treat `publisher.id` as authenticated only where an accepted channel or configured mapping binds that publisher to the declaration; absent that binding it MUST NOT support source acceptance, redirect policy, attribution, or any other trust decision. |
-| `display.name` | Human-readable source name for consent UIs. It is display metadata, not source identity. |
-| `selection_presets` | Optional preset selections. The authorization server expands a selected preset into explicit stream terms before issuing a grant. |
+| `display.name` | Human-readable source name for consent UIs. It is display metadata, not source identity. It is a localizable display value (see [Display text languages](#display-text-languages)). |
+| `display.default_language` | Optional BCP 47 language tag. It states the language of every plain-string display value in the declaration. It is REQUIRED when any display value is a language map. See [Display text languages](#display-text-languages). |
+| `selection_presets` | Optional preset selections. Each preset has `id`, a localizable `label`, and `streams`. The authorization server expands a selected preset into explicit stream terms before issuing a grant. |
 | `streams[].name` | Unique non-empty stream name, source-local. `*` is request-only and is not a declaration stream name. |
-| `streams[].description` | Optional short human-readable summary of the stream's contents (e.g., "Most-listened artists over time"). Not consent-surface metadata; see `streams[].display` for the fields the AS renders during consent. |
+| `streams[].description` | Optional short human-readable summary of the stream's contents (e.g., "Most-listened artists over time"). The AS can show it in place of a missing `display.label`; see `streams[].display` for the consent-surface metadata. It is a localizable display value. |
 | `streams[].display` | Optional consent-surface metadata. See [Stream display metadata](#stream-display). |
 | `streams[].semantics` | `append_only` or `mutable_state`. |
 | `streams[].schema` | JSON Schema for the record's `data` field. `primary_key` and `cursor_field` MUST reference fields declared here. |
@@ -559,7 +561,7 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `streams[].consent_time_field` | The temporal consent boundary: the field against which `time_range` is evaluated. Absent means `time_range` is not applicable to this stream. MUST reference a top-level field declared in the schema with format `date` or `date-time` (see [consent_time_field](#consent-time-field)). |
 | `streams[].consent_time_content_may_exceed` | Optional boolean, default `false`. `true` means a record can contain data from outside its own `consent_time_field` value. The AS MUST reject a non-boolean value. See [consent_time_field](#consent-time-field). |
 | `streams[].selection` | Which selection parameters this stream supports (`fields`, `resources`). Time-range capability is derived from `consent_time_field` presence; absent means not time-range-capable. The AS MUST reject grants that request `time_range` on a stream without a `consent_time_field`, or that request an unsupported selection parameter. The `fields: ["*"]` marker is always supported. |
-| `streams[].views` | Named field projections the declaration publisher suggests. Advisory; the AS is authoritative. Each view has `id`, `label`, and `fields` (top-level field names only). |
+| `streams[].views` | Named field projections the declaration publisher suggests. Advisory; the AS is authoritative. Each view has `id`, a localizable `label`, and `fields` (top-level field names only). |
 | `streams[].relationships` | Declared foreign key relationships to other streams. Structural graph metadata only; does not by itself make a relation expandable in the read API. Expandability is declared separately as a query capability; see [`expand[]`](#list-records). |
 | `streams[].query` | Stream-specific query capability declaration. `range_filters` declares range-queryable fields and operators. `expand` declares expandable relations and per-relation limits. `search` and `aggregations` preserve source-neutral capability declarations used by companion query profiles; their operation semantics and conformance are not defined by Core. |
 | `extensions` | Optional object keyed by absolute profile URI. Core preserves or ignores an unknown extension value and does not parse it. An operation that explicitly invokes an unsupported profile is rejected. An extension cannot redefine or weaken Core semantics. |
@@ -577,10 +579,11 @@ Streams MAY include a `display` object with human-readable metadata for the cons
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `display.label` | string | Short human-readable name shown in the consent card (e.g., "Who you follow"). If absent, the AS SHOULD display `streams[].description` or fall back to the stream name. |
-| `display.detail` | string | Consent-oriented description of what data is included and, where relevant, what is excluded (e.g., "Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists."). If absent, the AS MAY generate a description from the stream schema, or display no detail. |
+| `display.label` | string or language map | Short human-readable name shown in the consent card (e.g., "Who you follow"). If absent, the AS SHOULD display `streams[].description` or fall back to the stream name. |
+| `display.detail` | string or language map | Consent-oriented description of what data is included and, where relevant, what is excluded (e.g., "Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists."). If absent, the AS MAY generate a description from the stream schema, or display no detail. |
+| `display.fields` | object | Optional per-field consent text, keyed by top-level field name. Each key MUST name a top-level field declared in `streams[].schema`, and the AS MUST reject a declaration with any other key. Each entry has an optional `label` (short consent name for the field) and an optional `meaning` (what the value records, for example "The day Oura assigns, in your local time"). Each is a string or language map. Where an entry or member is absent, the AS uses its own wording. |
 
-**Authorship principle:** `display.label` and `display.detail` describe the data itself, not the requester's purpose. They are attributed to the accepted declaration publisher. The requesting client MUST NOT override or supplement these descriptions in the selection request. Publisher attribution is authenticated only under the conditions in [SourceDeclaration fields](#source-declaration).
+**Authorship principle:** `display.label`, `display.detail`, and `display.fields` describe the data itself, not the requester's purpose. They are attributed to the accepted declaration publisher. The requesting client MUST NOT override or supplement these descriptions in the selection request. Publisher attribution is authenticated only under the conditions in [SourceDeclaration fields](#source-declaration).
 
 ```json
 {
@@ -594,6 +597,36 @@ Streams MAY include a `display` object with human-readable metadata for the cons
   "schema": { "..." : "..." }
 }
 ```
+
+### Display text languages {#display-text-languages}
+
+A localizable display value is declaration-authored text that the AS can render to the owner: `display.name`, `selection_presets[].label`, `streams[].description`, `streams[].display.label`, `streams[].display.detail`, the `label` and `meaning` of each `streams[].display.fields` entry, and `streams[].views[].label`. Each is a plain string or a language map. A language map is a JSON object with one version of the same text per language, keyed by BCP 47 language tag ([RFC 5646](https://www.rfc-editor.org/rfc/rfc5646)):
+
+```json
+{
+  "display": { "name": "Instagram", "default_language": "en" },
+  "streams": [
+    {
+      "name": "following_accounts",
+      "display": {
+        "label": { "en": "Who you follow", "es": "A quién sigues" },
+        "detail": {
+          "en": "Usernames and account IDs of accounts you follow.",
+          "es": "Nombres de usuario e ID de las cuentas que sigues."
+        }
+      }
+    }
+  ]
+}
+```
+
+Each key of a language map MUST be a well-formed BCP 47 language tag. Keys MUST be unique when compared without regard to case. Each value MUST be a non-empty string, and a map MUST have at least one entry. The publisher MUST make every version of one value state the same meaning: a language map carries translations, not different descriptions. A publisher SHOULD include a key with only a primary language subtag, such as `es`, so that a regional preference such as `es-MX` finds it.
+
+A plain string stays valid. Its language is `display.default_language` when that member is present. Otherwise the declaration does not state its language, and the AS MUST NOT assume one. When any display value is a language map, `display.default_language` MUST be present, and every language map MUST have a key that matches it without regard to case. The AS MUST reject a declaration that breaks a structural or language-tag rule in this section. It MAY reject a declaration whose versions it detects do not state the same meaning. Adding or changing a language version changes the declaration's parsed content, so it needs a new `declaration_version` (see [Declaration acceptance](#declaration-acceptance)).
+
+Annotations inside `streams[].schema`, such as `title` and `description`, are JSON Schema keywords. They stay strings, as the JSON Schema 2020-12 meta-schema requires, and they are not localizable display values. A publisher gives localizable consent text for a field in `streams[].display.fields`.
+
+[Display language](#display-language) in Section 6 states which version the AS renders and how the final approval artifact records it.
 
 ### consent_time_field {#consent-time-field}
 
@@ -610,10 +643,10 @@ For many `append_only` streams, both fields will be the same (e.g., `played_at` 
 
 **Period and summary records:** An ordinary record, such as an event or an observation at one instant or on one day, is matched by the single value of its `consent_time_field`. Some records contain data from outside their own time value, for example a budget month, a billing cycle, a statement, or a coverage receipt. A stream whose records can do this MUST declare `consent_time_content_may_exceed: true`. For a time-bounded grant on such a stream, the AS MUST tell the owner that matched records can contain data from outside the bounds, and say what the matched value is. The AS MUST NOT present such a grant as limited to data inside the bounds. Aligning bounds to whole periods does not remove this duty, because a period record can carry figures from earlier periods. A declaration SHOULD put summary records, such as coverage receipts, in their own stream.
 
-**Rendering:** The `consent_time_field` MUST be rendered in human-readable consent UX, with the declared meaning of the field. A grant with `time_range: { since: "2026-01-01T00:00:00Z" }` on the `playlists` stream should be presented as "playlists created at or after 00:00 UTC on 1 January 2026," not just "playlists in time_range." The AS MAY use any language and phrasing that conveys the meaning. For a time-bounded stream:
+**Rendering:** The `consent_time_field` MUST be rendered in human-readable consent UX, with the declared meaning of the field. The declared meaning is the field's `meaning` in `streams[].display.fields` when present; otherwise the AS states the meaning in its own words. A grant with `time_range: { since: "2026-01-01T00:00:00Z" }` on the `playlists` stream should be presented as "playlists created at or after 00:00 UTC on 1 January 2026," not just "playlists in time_range." The AS MAY use any language and phrasing that conveys the meaning. For a time-bounded stream:
 
 - The AS MAY show a relative label, such as "last 90 days", only if the AS has verified that the label is true for that stream's exact bounds. Otherwise it omits the label.
-- For a `date` field, the consent text MUST state whose day the value is, as the declaration describes it: for example "the day Oura assigns, in your local time" or "the budget date you entered in YNAB". If the declaration does not say how the source assigns dates, the consent text says "the date the source records" and claims nothing more.
+- For a `date` field, the consent text MUST state whose day the value is, as the field's declared meaning describes it: for example "the day Oura assigns, in your local time" or "the budget date you entered in YNAB". If the declaration does not say how the source assigns dates, the consent text says "the date the source records" and claims nothing more.
 - A `continuous` grant with `since` and no `until` MUST be described as covering records since that bound, including new records as they arrive. It MUST NOT be described as a rolling window.
 - For a `continuous` grant, the AS MUST tell the owner that the client can see records leave the window when their time values change (see [Time constraint semantics](#time-constraint-semantics)).
 - If the field's schema allows null, the AS SHOULD tell the owner that records without a value are not included.
@@ -677,7 +710,7 @@ When retrieving a declaration, the authorization server MUST use HTTPS without a
 
 The address check is bound to the connection, not to the URL. The authorization server MUST validate the destination address against its network policy immediately before each connection attempt, including each redirect hop. It MUST connect only to an address from that validated result. An address accepted for an earlier attempt does not authorize a later resolution. The declaration location is not the source identity. Section 10 states the retrieval limits an authorization server sets by local judgment.
 
-Declaration display values are untrusted input. An authorization server MUST render declaration display values safely for the output context, by context-appropriate escaping, by sanitization, or by any construction that guarantees the value cannot be interpreted as markup, script, or a control sequence in that context. The requirement is on the outcome; this specification does not mandate one technique. Current declaration capabilities MUST NOT widen an issued grant.
+Declaration display values, in every language version, are untrusted input. An authorization server MUST render declaration display values safely for the output context, by context-appropriate escaping, by sanitization, or by any construction that guarantees the value cannot be interpreted as markup, script, or a control sequence in that context. The requirement is on the outcome; this specification does not mandate one technique. Current declaration capabilities MUST NOT widen an issued grant.
 
 ---
 
@@ -693,6 +726,7 @@ A client requests specific personal data by including `authorization_details` in
   "client_id": "music_recommendations",
   "redirect_uri": "https://app.example.com/callback",
   "scope": "openid",
+  "ui_locales": "es-MX es en",
   "client_display": {
     "name": "Concert Finder",
     "uri": "https://concertfinder.example.com",
@@ -798,6 +832,20 @@ PDPP uses three primary semantic classes across selection requests and grants:
 `client_display` is a separate category: requester identity metadata used to identify who is asking, not a grant constraint. Inline values may be client-asserted, but the AS renders them under its own resolution and trust policy.
 
 PDPP does not standardize consent screen layout, visual design, or copywriting. It does normatively constrain semantic rendering. A conformant AS MUST preserve the distinction between protocol-enforced terms, structured policy declarations, declaration-authored data descriptions, and client-authored claims. It MUST NOT flatten these categories into a single undifferentiated consent surface.
+
+### Display language {#display-language}
+
+The optional `ui_locales` authorization request parameter lists the owner's preferred languages for the user interface, as OpenID Connect Core 1.0 Section 3.1.2.1 defines it: a space-separated list of BCP 47 language tags, most preferred first. Like `client_display`, it appears at the top level of the authorization request, outside `authorization_details`. It is a hint. The AS MUST NOT reject a request solely because a requested language is unsupported. The AS ignores each tag it cannot parse. Other request validation still applies. `ui_locales` chooses among the versions that the declaration publisher supplied. It does not add or change declaration text, and it is not part of the grant.
+
+An AS that supports `ui_locales` SHOULD publish `ui_locales_supported` in its RFC 8414 metadata, listing the languages of its user interface. The display languages of a declaration are the keys of its language maps.
+
+For each language map it renders (see [Display text languages](#display-text-languages)), the AS MUST choose one version:
+
+1. Form a language priority list. A language preference the owner set at the AS comes first, when one exists. The parseable `ui_locales` tags come next, in request order. The list contains nothing else.
+2. Apply the RFC 4647 Section 3.4 Lookup scheme to that list over the map's keys. Lookup shortens each tag from the end until a key matches, so `es-MX` matches an `es` key.
+3. If no key matches, or the list is empty, use the version whose key matches `display.default_language` without regard to case.
+
+The AS SHOULD use the same priority list to choose the language of its own consent-surface text. The AS SHOULD isolate the direction of each display value it renders, for example with `dir="auto"` in HTML, or between U+2068 FIRST STRONG ISOLATE and U+2069 POP DIRECTIONAL ISOLATE in plain text. Core defines no direction metadata. Section 7 states how the final approval artifact binds each chosen version.
 
 ### Request-level parameters
 
@@ -957,7 +1005,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 
 Request-only conveniences such as wildcard names, the `*` field marker, `view`, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
 
-Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since` stated as inclusive, `until` stated as exclusive, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
+Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since` stated as inclusive, `until` stated as exclusive, purpose, retention, client identity, and grant expiry. The client identity it includes MUST cover the client display metadata actually rendered on the final review surface. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. For each declaration display value that final review renders, the final approval artifact and review revision MUST also bind which value it is and the exact string shown. For a value chosen from a language map, they MUST bind the chosen language tag, not the whole map (see [Display language](#display-language)). Declaration display text shown on an earlier consent step that affected an owner choice MUST be recorded in the same way in retained consent evidence, or shown again on final review and bound there. Retained consent evidence MUST preserve these bindings. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields and the bound display text. `client_claims` and bound display text MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
 
 ### Representative approval {#representative-approval}
 
@@ -1623,13 +1671,14 @@ A conformant authorization server:
 19. Consumes each OAuth authorization code atomically on its first successful redemption. Rejects every later redemption with `invalid_grant` and does not issue another token.
 20. Issues a refresh token only when at least one grant the token response covers is `continuous`, and never extends a `single_use` grant's read window through refresh. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
 21. Rejects unsupported persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent when no migration applies.
-22. Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value.
+22. Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value, or a language map or `display.default_language` that breaks a rule in [Display text languages](#display-text-languages).
 23. Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision. Authenticates and verifies each representative before accepting approval, binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.
 24. Lets the owner approve or decline each detail of a request on its own. Issues one grant for each approved, resolved detail, covering one subject, one source, and one purpose, with its own lifecycle. Identifies grants by `grant_id` and does not treat subject, source, and purpose as a grant key.
 25. If it offers client-initiated revocation, ends grants as Section 10 defines: revoking a refresh token, current or superseded, ends every grant its family covers; revoking an access token ends its grants only when no refresh-token family covers them. In the OAuth binding, implements it as RFC 7009 token revocation and advertises `revocation_endpoint` in RFC 8414 metadata.
 26. Ends one grant among several that share a credential without revoking that credential or ending the other grants.
 27. Rejects a declaration that names an ineligible `consent_time_field` or a non-boolean `consent_time_content_may_exceed`. Rejects a `time_range` with no bound, a bound whose type does not match the field's format, an invalid bound, or a `since` not before `until`; the OAuth/RAR binding returns `invalid_authorization_details`. Never converts or rounds a bound. Sets `time_constraint.type` from the field's format in the retained declaration.
 28. For each time-bounded stream, renders the exact bounds with their inclusive and exclusive meaning and the declared meaning of the field. Shows a relative label only when it has verified it for those bounds. Discloses that matched records can contain data from outside the bounds when the stream declares `consent_time_content_may_exceed: true`. For a `continuous` grant, discloses that the client can see records leave the window.
+29. Chooses one version of each language-map display value it renders by the procedure in [Display language](#display-language). Does not reject a request solely because a requested language is unsupported. Binds the identity, exact string, and any chosen language tag of each declaration display value shown on final review into the final approval artifact, the review revision or digest, and retained consent evidence. Records display text from an earlier consent step as Section 7 requires.
 
 ### Resource Server conformance
 
@@ -1820,6 +1869,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Subgrants | Deferred; access under a grant is not transferable. A second party needs its own grant |
 | Client grant management | Deferred; a client can revoke a credential (Section 10), but Core defines no client operation that ends one grant while other grants share its credential |
 | Change of client ownership and undisclosed sub-processing | Deferred; no change-of-control record, revocation trigger, or recipient sub-processing disclosure mechanism. `client_claims` is not an ownership record |
+| Language variants of client-authored request text | Deferred. `purpose_description`, `client_claims.commitments`, and the other free-text members of a `https://pdpp.dev/data-access` detail stay single strings. Variants need a future `authorization_details` type with a distinct type identifier. Before use, a client checks that the AS lists that identifier in RFC 9396 `authorization_details_types_supported`. That metadata lists type identifiers, not fields. It cannot signal variants of `client_display`, which sits outside `authorization_details` and defines no language-tagged members in v0.1. Declaration display text is localizable in v0.1 (Section 5) |
 | Client bulk export | Deferred; owner self-export is SHOULD (Section 9). A client pages through the query under its grant |
 | Owner-operated authorization server (UMA-style) | Not introduced; see Section 3. |
 | Real-time streaming | Different spec needed |
@@ -1957,9 +2007,12 @@ interface DataGrant {
 
 // --- Source Declaration ---
 
+// Plain string, or a language map keyed by BCP 47 tag with non-empty values.
+type LocalizedText = string | Record<string, string>;
+
 interface StreamView {
   id: string;
-  label: string;
+  label: LocalizedText;
   fields: string[];
 }
 
@@ -1996,8 +2049,12 @@ interface StreamQueryCapabilities {
 
 interface SourceDeclarationStream {
   name: string;
-  description?: string;
-  display?: { label?: string; detail?: string };
+  description?: LocalizedText;
+  display?: {
+    label?: LocalizedText;
+    detail?: LocalizedText;
+    fields?: Record<string, { label?: LocalizedText; meaning?: LocalizedText }>;  // Keyed by top-level field name
+  };
   semantics: 'append_only' | 'mutable_state';
   schema: Record<string, unknown>;
   primary_key: string[];
@@ -2019,10 +2076,13 @@ interface SourceDeclaration {
   source: SourceObject;
   declaration_version: string;
   publisher: { id: string };
-  display: { name: string };
+  display: {
+    name: LocalizedText;
+    default_language?: string;  // BCP 47; required when any display value is a language map
+  };
   selection_presets?: Array<{
     id: string;
-    label: string;
+    label: LocalizedText;
     streams: PresetStreamSelection[];
   }>;
   streams: SourceDeclarationStream[];
