@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-06
 
 ---
 
@@ -133,7 +133,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 This document is normative except where content is explicitly marked as an example, a note, or otherwise non-normative.
 
-This is the only normative document for PDPP Core v0.1 conformance. A profile defines no Core requirement; a future profile may define a separate named conformance claim only if its own status says so. The [PDPP Collection Profile](spec-collection-profile) and [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) are informative and define no conformance requirements of their own.
+This is the only normative document for PDPP Core v0.1 conformance. A profile defines no Core requirement; a future profile may define a separate named conformance claim only if its own status says so. The [PDPP Collection Profile](spec-collection-profile) and [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) are informative and add no Core conformance requirement. The canonical Collection Profile is maintained in the PDP-Connect/data-connectors repository ([docs/spec/collection-profile.md](https://github.com/PDP-Connect/data-connectors/blob/main/docs/spec/collection-profile.md)); it is normative only for the connectors and runtimes that claim it.
 
 ---
 
