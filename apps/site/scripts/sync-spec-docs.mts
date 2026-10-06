@@ -45,12 +45,14 @@ const headerDir = path.join(siteDir, "spec-headers");
 // Non-spec docs (reference-implementation*, open-questions, extension specs,
 // index, README) live only under content/docs and are NOT touched here.
 const SPECS = [
+  "spec-access-extension",
   "spec-architecture",
   "spec-auth-design",
   "spec-change-tracking",
   "spec-collection-profile",
   "spec-connector-ecosystem",
   "spec-core",
+  "spec-mcp-profile",
   "spec-data-query-api",
   "spec-discovery-and-trust",
 ];

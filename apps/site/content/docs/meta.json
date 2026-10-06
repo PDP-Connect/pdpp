@@ -4,6 +4,8 @@
   "pages": [
     "---Specification---",
     "spec-core",
+    "spec-access-extension",
+    "spec-mcp-profile",
     "spec-ext-lexical-search",
     "spec-ext-aggregation",
     "spec-semantic-retrieval-extension",

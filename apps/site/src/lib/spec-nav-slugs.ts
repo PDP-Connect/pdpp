@@ -34,6 +34,8 @@ export const PRIMARY_SLUGS = ["spec-core"] as const;
 export const GUIDANCE_SLUGS = [
   "spec-discovery-and-trust",
   "spec-collection-profile",
+  "spec-access-extension",
+  "spec-mcp-profile",
   "spec-ext-lexical-search",
   "spec-ext-aggregation",
   "spec-semantic-retrieval-extension",
@@ -54,12 +56,14 @@ export const GUIDANCE_SLUGS = [
 // the self-host coverage table) reads it from here so the two lists cannot
 // silently diverge in three different places instead of one.
 export const GENERATED_MDX_SPEC_SLUGS = [
+  "spec-access-extension",
   "spec-architecture",
   "spec-auth-design",
   "spec-change-tracking",
   "spec-collection-profile",
   "spec-connector-ecosystem",
   "spec-core",
+  "spec-mcp-profile",
   "spec-data-query-api",
   "spec-discovery-and-trust",
 ] as const;
