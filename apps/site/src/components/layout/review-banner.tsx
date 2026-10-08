@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils.ts";
 // readable by someone who has asked for less movement, so the animation stops
 // with the track at its start rather than the strip disappearing.
 
-const MESSAGE = "The specification is open for comment until 1 October.";
+const MESSAGE = "Review extended: PDPP v1 now locks on 26 October.";
 const CALL_TO_ACTION = "Review it now →";
 
 // Wide gaps and a slash between repeats, per the design. The separator is a
@@ -58,7 +58,7 @@ export function PdppReviewBanner() {
 
   return (
     <Link
-      aria-label="The specification is open for comment until 1 October. Review it now."
+      aria-label="Review extended: PDPP v1 now locks on 26 October. Review it now."
       className={cn(
         "group block overflow-hidden bg-primary-emphasis no-underline",
         "text-on-primary-emphasis hover:text-white!",
