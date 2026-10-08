@@ -44,8 +44,8 @@ const TIMELINE = [
     date: "3 September",
     text: "The specification and Part A are frozen, the Principles are published, and Supporter signing opens.",
   },
-  { date: "15 October", text: "The programme opens." },
   { date: "26 October", text: "The comment period closes, and answers are published after." },
+  { date: "27 October", text: "The programme opens." },
 ] as const;
 
 export default function Page() {
@@ -117,7 +117,7 @@ export default function Page() {
                 Two parts, one of them still open
               </Text>
               <Text as="p" color="muted" size="small" wrap="pretty">
-                Part A is how PDP-Connect runs from 15 October and is frozen during review. Part B is the proposed
+                Part A is how PDP-Connect runs from 27 October and is frozen during review. Part B is the proposed
                 long-term structure and is where your comment will change the most. Two open questions: five steering
                 committee seats or three, and whether one organisation one vote puts off large companies.
               </Text>
