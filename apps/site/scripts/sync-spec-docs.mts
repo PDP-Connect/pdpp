@@ -52,7 +52,6 @@ const SPECS = [
   "spec-connector-ecosystem",
   "spec-core",
   "spec-data-query-api",
-  "spec-deferred",
   "spec-discovery-and-trust",
 ];
 
