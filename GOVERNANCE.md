@@ -2,9 +2,9 @@
 
 **Status:** Consultation draft
 **Circulated:** 24 August 2026. Revised 2 September 2026.
-**Formal review:** 3 September to 1 October 2026
+**Formal review:** 3 September to 26 October 2026
 **Supporter signing opens:** 3 September 2026
-**Programme live:** 15 October 2026
+**Programme live:** 27 October 2026
 **Applies to:** PDP-Connect programme documents
 **Reports:** pdpp-dev-reports@lfdecentralizedtrust.org
 
@@ -80,7 +80,7 @@ The programme moves through four stages: a preparatory stage before programme li
 
 | Phase | Who runs it | What is on the register | Ends when |
 | --- | --- | --- | --- |
-| Pre | The maintainers | Public comment on the specification and Part A. Principles v1.0 published. Supporter signing opens | Programme live, 15 October 2026 |
+| Pre | The maintainers | Public comment on the specification and Part A. Principles v1.0 published. Supporter signing opens | Programme live, 27 October 2026 |
 | 1. Launch | The maintainers | Supporters | The interim technical committee is named |
 | 2. Interim | The maintainers, with an interim technical committee | Supporters, and every status in §5 | Partners elect the steering committee |
 | 3. Full | The steering committee and the technical committee it appoints | As phase 2 | Amended under Part B |
@@ -289,9 +289,9 @@ Decisions under this section are published with reasons.
 | Stage | Date |
 | --- | --- |
 | Specification and Part A locked, published for public comment. PDPP Principles v1.0 published. Supporter signing opens | 3 September 2026 |
-| Comment period closes | 1 October 2026 |
-| Disposition published. Further 15-day review if material change | From 1 October 2026 |
-| Programme live | 15 October 2026 |
+| Comment period closes | 26 October 2026 |
+| Disposition published. Further 15-day review if material change | From 26 October 2026 |
+| Programme live | 27 October 2026 |
 | Interim technical committee named | By 14 November 2026 |
 | Source and Accessor submissions open | On the committee being named |
 | Conformance test suite published | By 1 January 2027 |

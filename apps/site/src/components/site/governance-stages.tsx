@@ -25,13 +25,13 @@ interface Stage {
 
 const STAGES: readonly Stage[] = [
   {
-    when: "Pre · now, to 15 Oct",
+    when: "Pre · now, to 27 Oct",
     name: "Public comment",
     authority: "The maintainers",
-    body: "The specification and Part A are frozen while people comment, and the Principles are published. Supporter signing opens once the register has a confirmed home. This stage ends on 15 October.",
+    body: "The specification and Part A are frozen while people comment, and the Principles are published. Supporter signing opens once the register has a confirmed home. This stage ends on 27 October.",
   },
   {
-    when: "Phase 1 · from 15 Oct",
+    when: "Phase 1 · from 27 Oct",
     name: "Launch",
     authority: "The maintainers",
     body: "The maintainers run things. Supporters can sign, but nobody can be verified until the review committee is named.",
