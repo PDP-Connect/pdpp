@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-06
+Date: 2026-10-11
 
 ---
 
@@ -1406,7 +1406,7 @@ The array has one entry for each instance that the query context authorizes for 
 
 #### Absence of records {#absence-of-records}
 
-An empty result, the end of pagination, a tombstone, or a 404 means only that no stored record is visible under the query context. A client MUST NOT infer from these that a record does not exist at the source, or that collection is complete. This applies whatever `freshness` reports. The guarantees that Core makes about the client's synchronized copy of the authorized view still hold (see [Incremental sync](#incremental-sync)). v0.1 defines no signal that supports a claim that data does not exist at the source.
+An empty result reports no entries for that operation. In incremental sync, it does not establish that the authorized stored view is empty. The end of pagination means there are no more pages in that enumeration. A tombstone reports that its identified record left the query's visible set. A record-read 404 reports that the requested record is not visible under that query context. A client MUST NOT infer from these that a record does not exist at the source, or that collection is complete. This applies whatever `freshness` reports. The guarantees that Core makes about the client's synchronized copy of the authorized view still hold (see [Incremental sync](#incremental-sync)). v0.1 defines no signal that supports a claim that data does not exist at the source.
 
 #### List records {#list-records}
 
