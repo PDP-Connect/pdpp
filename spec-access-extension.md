@@ -1,7 +1,7 @@
 # PDPP extended access profile
 
 Status: Draft extension profile; profile version 0.1.0
-Date: 2026-10-06
+Date: 2026-10-11
 
 ## 1. Scope and status
 
@@ -45,7 +45,7 @@ Core's [AI training consent](spec-core#ai-training-consent) rule applies inside 
 
 Before token issuance, the AS MUST resolve each selected source to one ordinary Core data-access detail with the owner-selection detail's purpose, and then to one grant. The result MUST contain one complete `{ type, grant }` element per issued grant. Each grant MUST contain explicit streams, instance handles, fields, resources, and time constraints required by Core and the retained declaration snapshot. Its `subject.id` and instance handles are the requesting client's pairwise identifiers ([Pairwise identifiers](spec-core#pairwise-identifiers)). For a stream with `resources`, the owner selects exactly one instance, as Core Section 7 requires. Each resolved field set includes the stream's schema-required fields; they are the per-stream consent floor that Core Section 6 defines. Owner narrowing MUST NOT remove them.
 
-If the transaction issues more than one grant, the AS MUST issue a package under Section 5. An AS that cannot issue a package, because it lacks package support or because an element lacks `detail_id`, MUST limit this flow to one issued grant per transaction.
+If the transaction issues more than one grant, the AS MUST issue a package under Section 5. If the AS cannot issue a package, because it lacks package support or an element lacks `detail_id`, it MUST accept at most one requested `authorization_details` element in the entire request. It MUST issue at most one grant. It MUST reject a multi-element request with `invalid_authorization_details`. In the single-element case, the sole returned grant is that element's outcome.
 
 An AS that does not support this type MUST reject it as unsupported and MUST NOT silently process it as Core data access. Absence of `authorization_details` is not opt-in and MUST NOT enable this flow. Final owner review MUST identify the client, resolved data, purpose, access mode, retention, and recipient-authorized standing terms affecting the decision.
 
@@ -91,7 +91,7 @@ Every disclosure made with a package token, other than child discovery (below), 
 
 Child discovery is exempt from the selector rule. A binding MAY define an operation that lists the children of the presented token. It returns only the approved grant metadata of those children and their current status. Any subject, grantor, or instance identifier it returns is the client's pairwise value from the child grant, and it lists only the instance handles that the child grant lists. It MUST NOT return records, derived facts, or inventory of sources, grants, or instances that the owner did not approve.
 
-The resource server MUST reject a missing, malformed, repeated, or unknown selector before it processes the request. An unknown selector names a `grant_id` that is not a child of the package. The HTTP binding returns HTTP 400 `invalid_request` with `param` naming the selector. The resource server MUST NOT fall back to another child.
+For an operation that requires child selection, the resource server MUST reject a missing, malformed, repeated, or unknown selector before it processes the request. An unknown selector names a `grant_id` that is not a child of the package. The HTTP binding returns HTTP 400 `invalid_request` with `param` naming the selector. The resource server MUST NOT fall back to another child.
 
 The resource server MUST verify client, subject, intended-resource, and child bindings before it uses the selected child. It MUST reject incomplete status mappings and context mismatch, and MUST require both package and selected-child active status for disclosure.
 
@@ -103,7 +103,7 @@ Cursors, `changes_since` tokens, signed blob URLs, and cache entries are bound t
 
 The AS MUST give every package child a `grant_id` that matches the grammar `1*( ALPHA / DIGIT / "." / "_" / "~" / "-" )` (RFC 5234 ABNF; the characters `[A-Za-z0-9._~-]`). This constraint applies to package children only.
 
-The HTTP binding carries the selector in the `PDPP-Grant-Id` request header. A request made with a package token MUST contain exactly one `PDPP-Grant-Id` field line. For a Core client token the header is OPTIONAL. After normal HTTP field parsing removes leading and trailing whitespace, the value MUST match the `grant_id` grammar. The resource server MUST reject a request with more than one such field line, and a value that contains a comma, because an HTTP recipient can combine repeated field lines into one comma-separated value ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110) Section 5.3). The resource server compares the value with child `grant_id` values exactly and case-sensitively. A resource server that supports packages MUST reject a `PDPP-Grant-Id` header sent with a Core client token unless its value equals that token's `grant_id`. The MCP binding carries the selector in the `grant_id` tool argument ([MCP read profile](spec-mcp-profile), Section 3).
+The HTTP binding carries the selector in the `PDPP-Grant-Id` request header. Except for a child-discovery operation defined by the binding, a request made with a package token MUST contain exactly one `PDPP-Grant-Id` field line. A child-discovery operation MUST NOT require this header. For a Core client token the header is OPTIONAL. After normal HTTP field parsing removes leading and trailing whitespace, the value MUST match the `grant_id` grammar. The resource server MUST reject a request with more than one such field line, and a value that contains a comma, because an HTTP recipient can combine repeated field lines into one comma-separated value ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110) Section 5.3). The resource server compares the value with child `grant_id` values exactly and case-sensitively. A resource server that supports packages MUST reject a `PDPP-Grant-Id` header sent with a Core client token unless its value equals that token's `grant_id`. The MCP binding carries the selector in the `grant_id` tool argument ([MCP read profile](spec-mcp-profile), Section 3).
 
 ### 5.4 Inactive selected child
 
@@ -143,7 +143,7 @@ Every record, field, identifier, count, search hit, preview, summary, or other d
 
 The resource server MUST NOT search a denied field and return merely projected hits, or use current declaration capabilities to widen or reinterpret an issued grant. If an authorized projection cannot be applied, it MUST redact the affected result or fail closed; error text MUST NOT reveal denied existence.
 
-A presentation result that identifies a record, including a search hit, preview, or fan-out entry, MUST give the record's `instance_id` with its `id`, using the handle from the applicable grant. A `resource_ref` or `blob_ref` in a presentation result MUST take the form Core Section 4 defines for served records: a resolved or redacted reference, and a `fetch_url` that carries `instance_id`. A presentation result MUST NOT contain `rs_instance`, the introspection `subject_id`, or any other identifier that is not pairwise for the client.
+A presentation result that identifies a record, including a search hit, preview, or fan-out entry, MUST give the record's `instance_id` with its `id`, using the handle from the applicable grant. A `resource_ref` or `blob_ref` in a presentation result MUST take the form Core Section 4 defines for served records: a resolved or redacted reference, and a `fetch_url` that carries `instance_id`. A presentation result MUST NOT contain `rs_instance` or the introspection `subject_id`. Identifiers for subjects, grantors, and instances MUST follow Core's [Pairwise identifiers](spec-core#pairwise-identifiers) rules, including its explicit owner-choice exception. Record keys and blob identifiers retain their Core representation.
 
 A presentation result MUST NOT create a new declared source, durable derived dataset, onward disclosure right, or grant authority. Durable derived data requires a separate declared source and authorization contract. This profile defines no action rights or mixed read-and-action rules; Core Section 8's [existing-permissions](spec-core#existing-permissions) boundary governs those operations.
 
