@@ -7,7 +7,7 @@
 // the full OpenAPI artifact and in reference-implementation docs, but NOT in
 // the public PDPP contract surface.
 
-import { ErrorObjectSchema, FreshnessSchema } from "../common/index.ts";
+import { ErrorObjectSchema, FreshnessSchema, type JsonSchema } from "../common/index.ts";
 
 const ConnectorSummarySchema = {
   additionalProperties: true,
@@ -486,7 +486,7 @@ const OwnerSessionRequiredSchema = {
 };
 
 // Preserve the shared handler envelope and constrain the status mapper's type.
-function runErrorSchema(errorType: string) {
+function runErrorSchema(errorType: string): JsonSchema {
   return {
     allOf: [
       ErrorObjectSchema,
