@@ -3,13 +3,13 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
-import { hasResponseSchema, validateResponse } from "../src/index.ts";
+import { getManifest, hasResponseSchema, listOperations, validateRequest, validateResponse } from "../src/index.ts";
+import { generateOpenApi } from "../src/openapi/index.ts";
 
 // Contract coverage for the owner-agent control surface schema additions made
 // in openspec/changes/add-owner-agent-control-surface:
 //
-//   - every `owner_connection` row carries a `supported_actions` array of typed
+//   - every bearer `owner_connection` row carries a `supported_actions` array of typed
 //     control actions (task 2.2 / design.md #5);
 //   - the shared PDPP error envelope can carry the ambiguity-resolution hints
 //     `available_connections` + `retry_with` that `pdppError` already emits, so
@@ -209,4 +209,338 @@ test("an error envelope with an undeclared field still fails closed", () => {
     status: 400,
   });
   assert.equal(result.ok, false);
+});
+
+// Runtime authority: data-connect #347 owner-runs.ts and shared run handlers.
+// Exact method/path inventory catches routes missing from manifest-led checks.
+const RUN_ROUTES = [
+  ["ListRuns", "GET", ""],
+  ["GetRunStatus", "GET", "/{runId}"],
+  ["GetRunTimeline", "GET", "/{runId}/timeline"],
+  ["CancelRun", "POST", "/{runId}/cancel"],
+  ["RunInteraction", "POST", "/{runId}/interaction"],
+] as const;
+
+test("both owner run families declare all ten exact method/path bindings", () => {
+  for (const [prefix, base] of [
+    ["ref", "/_ref/runs"],
+    ["owner", "/v1/owner/runs"],
+  ]) {
+    for (const [suffix, method, path] of RUN_ROUTES) {
+      const manifest = getManifest(`${prefix}${suffix}`);
+      assert.ok(manifest, `${prefix}${suffix} is missing`);
+      assert.equal(
+        listOperations().filter((operation) => operation.method === method && operation.path === `${base}${path}`)
+          .length,
+        1
+      );
+      assert.equal(manifest.method, method);
+      assert.equal(manifest.path, `${base}${path}`);
+      assert.equal(manifest.surface, "reference");
+    }
+  }
+});
+
+test("interaction requests accept null data and extra fields but reject blank IDs", () => {
+  for (const id of ["refRunInteraction", "ownerRunInteraction"]) {
+    assert.deepEqual(
+      validateRequest(id, { body: { interaction_id: "int_1", status: "success", data: null, extra: true } }),
+      { ok: true }
+    );
+    assert.equal(validateRequest(id, { body: { interaction_id: " \t\n", status: "success" } }).ok, false);
+    assert.equal(validateRequest(id, { body: { interaction_id: "int_1", status: "success", data: [] } }).ok, false);
+  }
+});
+
+test("owner run routes appear only in the full OpenAPI document", () => {
+  const full = generateOpenApi({ includeReference: true });
+  const publicDocument = generateOpenApi({ includeReference: false });
+  for (const [prefix, base] of [
+    ["ref", "/_ref/runs"],
+    ["owner", "/v1/owner/runs"],
+  ]) {
+    for (const [suffix, method, path] of RUN_ROUTES) {
+      assert.equal(full.paths[`${base}${path}`]?.[method.toLowerCase()]?.operationId, `${prefix}${suffix}`);
+      assert.equal(publicDocument.paths[`${base}${path}`], undefined);
+    }
+  }
+});
+
+// Serialized field fixtures follow #347 run-status-read-model.ts,
+// lib/spine.ts hydrateRows, and the two canonical spine operations.
+const RUN_STATUS = {
+  object: "run_status",
+  run_id: "run_1",
+  status: "waiting_for_browser_surface",
+  completed_at: null,
+  connector_id: null,
+  connector_instance_id: null,
+  failure: null,
+  started_at: null,
+  terminal_reason: null,
+  trace_id: null,
+  links: { timeline: "/_ref/runs/run_1/timeline" },
+};
+const RUN_SUMMARY = {
+  object: "run_summary",
+  run_id: "run_1",
+  connector_id: null,
+  failure_reason: null,
+  grant_id: null,
+  event_count: 1,
+  first_at: "2026-10-10",
+  last_at: "2026-10-10",
+  status: "leased",
+  kinds: ["run"],
+  needs_input: false,
+  source: null,
+};
+const RUN_EVENT = {
+  actor_id: "owner",
+  actor_type: "subject",
+  event_id: "ev_1",
+  event_type: "run.started",
+  object_id: "run_1",
+  object_type: "run",
+  occurred_at: "2026-10-10",
+  recorded_at: "2026-10-10",
+  scenario_id: "scenario_1",
+  status: "active",
+  trace_id: "trace_1",
+  version: "1",
+  client_id: null,
+  grant_id: null,
+  interaction_id: null,
+  request_id: null,
+  run_id: "run_1",
+  source_id: null,
+  stream_id: null,
+  subject_id: null,
+  subject_type: null,
+  source_kind: null,
+  data: { unknown_payload: [1, null] },
+};
+const RUN_TIMELINE = {
+  object: "run_timeline",
+  run_id: "run_1",
+  trace_id: null,
+  data: [],
+  event_count: 0,
+  truncated: false,
+  next_cursor: null,
+  limit: 2000,
+  terminal_status: "completed",
+};
+
+function expectResponse(id: string, status: number, body: unknown) {
+  assert.deepEqual(validateResponse(id, { status, body }), { ok: true, skipped: false }, id);
+}
+
+test("both run families validate nullable status and raw known gaps", () => {
+  for (const prefix of ["ref", "owner"]) {
+    const id = `${prefix}GetRunStatus`;
+    expectResponse(id, 200, RUN_STATUS);
+    expectResponse(id, 200, {
+      ...RUN_STATUS,
+      status: "stored_future_status",
+      known_gaps: [null, 3],
+      known_gaps_summary: "raw",
+      failure: {
+        connector_error_message: null,
+        message: null,
+        origin: null,
+        reason: null,
+        recovery_hint: { action: "refresh_credentials", retryable: false },
+      },
+    });
+    const { failure: _failure, ...missingFailure } = RUN_STATUS;
+    assert.equal(validateResponse(id, { status: 200, body: missingFailure }).ok, false);
+    assert.equal(validateResponse(id, { status: 200, body: { ...RUN_STATUS, failure: { reason: null } } }).ok, false);
+  }
+});
+
+test("run lists omit absent cursors and accept browser-surface identity fields", () => {
+  for (const prefix of ["ref", "owner"]) {
+    const id = `${prefix}ListRuns`;
+    expectResponse(id, 200, { object: "list", data: [RUN_SUMMARY], has_more: false });
+    expectResponse(id, 200, {
+      object: "list",
+      data: [
+        { ...RUN_SUMMARY, connection_id: "cin_1", connector_instance_id: "cin_1", browser_surface_status: "leased" },
+      ],
+      has_more: true,
+      next_cursor: "opaque",
+    });
+    assert.equal(
+      validateResponse(id, { status: 200, body: { object: "list", data: [], has_more: false, next_cursor: null } }).ok,
+      false
+    );
+    assert.deepEqual(validateRequest(id, { query: { limit: "malformed", cursor: "malformed" } }), { ok: true });
+  }
+});
+
+test("run timelines accept empty cursor pages and reject private storage fields", () => {
+  for (const prefix of ["ref", "owner"]) {
+    const id = `${prefix}GetRunTimeline`;
+    expectResponse(id, 200, RUN_TIMELINE);
+    expectResponse(id, 200, {
+      ...RUN_TIMELINE,
+      data: [RUN_EVENT],
+      event_count: 1,
+      next_cursor: "opaque",
+      truncated: true,
+    });
+    for (const extra of [{ token_id: null }, { id: 42 }]) {
+      assert.equal(
+        validateResponse(id, { status: 200, body: { ...RUN_TIMELINE, data: [{ ...RUN_EVENT, ...extra }] } }).ok,
+        false
+      );
+    }
+    assert.deepEqual(validateRequest(id, { query: { limit: "" } }), { ok: true });
+    assert.equal(validateRequest(id, { query: { limit: 5001 } }).ok, false);
+    assert.equal(validateRequest(id, { query: { limit: 0 } }).ok, false);
+    assert.deepEqual(validateRequest(id, { query: { limit: 5000, cursor: "opaque" } }), { ok: true });
+  }
+});
+
+test("run controls validate acknowledgements without submitted data", () => {
+  for (const prefix of ["ref", "owner"]) {
+    expectResponse(`${prefix}CancelRun`, 202, {
+      object: "run_cancel_ack",
+      run_id: "run_1",
+      status: "cancel_requested",
+    });
+    expectResponse(`${prefix}CancelRun`, 202, {
+      object: "run_cancel_ack",
+      run_id: "run_1",
+      status: "scheduler_accepted",
+    });
+    for (const status of ["success", "cancelled"]) {
+      const body = { object: "run_interaction_ack", run_id: "run_1", interaction_id: "int_1", status };
+      expectResponse(`${prefix}RunInteraction`, 202, body);
+      assert.equal(
+        validateResponse(`${prefix}RunInteraction`, { status: 202, body: { ...body, data: { password: "secret" } } })
+          .ok,
+        false
+      );
+    }
+  }
+});
+
+test("run auth distinguishes cookie session rejection from handler errors", () => {
+  const cookieError = {
+    error: {
+      code: "owner_session_required",
+      message: "Owner session required. Sign in at /owner/login.",
+      type: "authentication_error",
+    },
+  };
+  for (const [suffix] of RUN_ROUTES) {
+    expectResponse(`ref${suffix}`, 401, cookieError);
+    assert.equal(validateResponse(`owner${suffix}`, { status: 401, body: cookieError }).ok, false);
+    expectResponse(`owner${suffix}`, 401, {
+      error: {
+        code: "invalid_token",
+        message: "Invalid token",
+        type: "authentication_error",
+        request_id: "req_1",
+        resource_metadata: "/metadata",
+        next_step: "sign_in",
+      },
+    });
+  }
+});
+
+test("run handlers require request IDs and use api_error for conflicts", () => {
+  for (const prefix of ["ref", "owner"]) {
+    for (const [suffix] of RUN_ROUTES) {
+      for (const [status, type, code] of [
+        [400, "invalid_request_error", "invalid_request"],
+        [403, "permission_error", "run_owner_mismatch"],
+        [404, "not_found_error", "not_found"],
+        [409, "api_error", "no_pending_interaction"],
+        [409, "api_error", "interaction_id_mismatch"],
+        [409, "api_error", "run_already_terminal"],
+        [500, "api_error", "api_error"],
+      ] as const) {
+        const error = { code, type, message: "Rejected", request_id: "req_1" };
+        expectResponse(`${prefix}${suffix}`, status, { error });
+        const { request_id: _requestId, ...missingRequestId } = error;
+        assert.equal(validateResponse(`${prefix}${suffix}`, { status, body: { error: missingRequestId } }).ok, false);
+      }
+      assert.equal(
+        validateResponse(`${prefix}${suffix}`, {
+          status: 409,
+          body: {
+            error: { code: "no_pending_interaction", type: "conflict_error", message: "Rejected", request_id: "req_1" },
+          },
+        }).ok,
+        false
+      );
+    }
+  }
+});
+
+test("cookie connection projections share owner rows while bearer requires actions", () => {
+  const { supported_actions: _actions, ...cookieRow } = OWNER_CONNECTION_ROW;
+  for (const id of ["refListConnections", "refListConnectorInstances"]) {
+    expectResponse(id, 200, { object: "list", data: [cookieRow] });
+  }
+  for (const id of ["refGetConnection", "refGetConnectorInstance", "refSetConnectionDisplayName"]) {
+    expectResponse(id, 200, cookieRow);
+    assert.equal(validateResponse(id, { status: 200, body: { ...cookieRow, object: "ref_connection" } }).ok, false);
+  }
+  assert.equal(
+    validateResponse("ownerListConnections", { status: 200, body: { object: "list", data: [cookieRow] } }).ok,
+    false
+  );
+  expectResponse("refRevokeConnection", 200, {
+    object: "owner_connection_revoke",
+    connection_id: "cin_1",
+    connector_id: "amazon",
+    connector_key: "amazon",
+    status: "revoked",
+    revoked_at: null,
+  });
+  expectResponse("refReactivateConnection", 200, {
+    object: "owner_connection_reactivate",
+    connection_id: "cin_1",
+    connector_id: "amazon",
+    connector_key: "amazon",
+    status: "active",
+    reactivated_at: "2026-10-10",
+  });
+});
+
+// #348 shared revoke handler forwards BrowserProfilePurgeResult after the
+// durable revoke. server/index.ts injects the purger on both owner surfaces.
+test("connection revoke accepts all post-commit browser profile purge outcomes", () => {
+  const revoked = {
+    object: "owner_connection_revoke",
+    connection_id: "cin_1",
+    connector_id: "amazon",
+    connector_key: "amazon",
+    status: "revoked",
+    revoked_at: "2026-10-10",
+  };
+  for (const id of ["refRevokeConnection", "ownerRevokeConnection", "ownerRevokeConnector"]) {
+    expectResponse(id, 200, revoked);
+    for (const target of ["host", "local"]) {
+      for (const profile_purge of [
+        { status: "purged", target, removed: 1 },
+        { status: "absent", target },
+        { status: "failed", target, error_code: "profile_purge_in_use", message: "Browser is still using the profile" },
+      ]) {
+        expectResponse(id, 200, { ...revoked, profile_purge });
+      }
+    }
+    for (const profile_purge of [
+      { status: "purged", target: "local" },
+      { status: "failed", target: "host", error_code: "profile_purge_in_use" },
+      { status: "absent", target: "other" },
+      { status: "absent", target: "local", removed: 1 },
+    ]) {
+      assert.equal(validateResponse(id, { status: 200, body: { ...revoked, profile_purge } }).ok, false);
+    }
+  }
 });

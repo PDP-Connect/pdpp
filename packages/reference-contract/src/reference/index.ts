@@ -218,6 +218,306 @@ const ScheduleUpsertBodySchema = {
   type: "object",
 };
 
+const RunIdParamSchema = {
+  additionalProperties: false,
+  properties: { runId: { minLength: 1, type: "string" } },
+  required: ["runId"],
+  type: "object",
+};
+
+// Status values include stored browser-surface strings; the read model casts
+// them rather than enforcing a closed enum. Known gaps are raw JSON passthrough.
+const RunStatusResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    completed_at: { type: ["string", "null"] },
+    connector_id: { type: ["string", "null"] },
+    connector_instance_id: { type: ["string", "null"] },
+    failure: {
+      additionalProperties: false,
+      properties: {
+        connector_error_message: { type: ["string", "null"] },
+        message: { type: ["string", "null"] },
+        origin: { type: ["string", "null"] },
+        reason: { type: ["string", "null"] },
+        recovery_hint: {
+          additionalProperties: false,
+          properties: { action: { const: "refresh_credentials" }, retryable: { const: false } },
+          required: ["action", "retryable"],
+          type: ["object", "null"],
+        },
+      },
+      required: ["connector_error_message", "message", "origin", "reason"],
+      type: ["object", "null"],
+    },
+    known_gaps: {},
+    known_gaps_summary: {},
+    links: {
+      additionalProperties: false,
+      properties: { timeline: { type: "string" } },
+      required: ["timeline"],
+      type: "object",
+    },
+    object: { const: "run_status" },
+    run_id: { type: "string" },
+    started_at: { type: ["string", "null"] },
+    status: { type: "string" },
+    terminal_reason: { type: ["string", "null"] },
+    trace_id: { type: ["string", "null"] },
+  },
+  required: [
+    "object",
+    "run_id",
+    "status",
+    "links",
+    "completed_at",
+    "connector_id",
+    "connector_instance_id",
+    "failure",
+    "started_at",
+    "terminal_reason",
+    "trace_id",
+  ],
+  type: "object",
+};
+
+// lib/spine.ts hydrateRows supplies every field. The public timeline removes
+// token_id and the SQL sequence before returning the event.
+const RunTimelineEventProperties = {
+  actor_id: { type: "string" },
+  actor_type: { type: "string" },
+  event_id: { type: "string" },
+  event_type: { type: "string" },
+  object_id: { type: "string" },
+  object_type: { type: "string" },
+  occurred_at: { type: "string" },
+  recorded_at: { type: "string" },
+  scenario_id: { type: "string" },
+  status: { type: "string" },
+  trace_id: { type: "string" },
+  version: { type: "string" },
+  client_id: { type: ["string", "null"] },
+  grant_id: { type: ["string", "null"] },
+  interaction_id: { type: ["string", "null"] },
+  request_id: { type: ["string", "null"] },
+  run_id: { type: ["string", "null"] },
+  source_id: { type: ["string", "null"] },
+  stream_id: { type: ["string", "null"] },
+  subject_id: { type: ["string", "null"] },
+  subject_type: { type: ["string", "null"] },
+  source_kind: { enum: ["connector", "provider_native", null], type: ["string", "null"] },
+  data: {},
+};
+
+const RunTimelineResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    object: { const: "run_timeline" },
+    run_id: { type: "string" },
+    trace_id: { type: ["string", "null"] },
+    data: {
+      items: {
+        additionalProperties: false,
+        properties: RunTimelineEventProperties,
+        required: Object.keys(RunTimelineEventProperties),
+        type: "object",
+      },
+      type: "array",
+    },
+    event_count: { type: "integer" },
+    truncated: { type: "boolean" },
+    next_cursor: { type: ["string", "null"] },
+    limit: { type: "integer" },
+    terminal_status: { enum: ["completed", "failed", "cancelled", "abandoned", null], type: ["string", "null"] },
+  },
+  required: [
+    "object",
+    "run_id",
+    "trace_id",
+    "data",
+    "event_count",
+    "truncated",
+    "next_cursor",
+    "limit",
+    "terminal_status",
+  ],
+  type: "object",
+};
+
+const RunListResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    object: { const: "list" },
+    has_more: { type: "boolean" },
+    next_cursor: { type: "string" },
+    data: {
+      items: {
+        additionalProperties: false,
+        properties: {
+          object: { const: "run_summary" },
+          run_id: { type: "string" },
+          connector_id: { type: ["string", "null"] },
+          failure_reason: { type: ["string", "null"] },
+          grant_id: { type: ["string", "null"] },
+          event_count: { type: "integer" },
+          first_at: { type: "string" },
+          last_at: { type: "string" },
+          status: { type: "string" },
+          kinds: { items: { type: "string" }, type: "array" },
+          needs_input: { type: "boolean" },
+          source: {
+            additionalProperties: false,
+            properties: { id: { type: "string" }, kind: { enum: ["connector", "provider_native"], type: "string" } },
+            required: ["id", "kind"],
+            type: ["object", "null"],
+          },
+          connection_id: { type: "string" },
+          connector_instance_id: { type: "string" },
+          browser_surface_status: { type: "string" },
+          browser_surface_wait_reason: { type: "string" },
+          browser_surface_lease_id: { type: "string" },
+          browser_surface_profile_key: { type: "string" },
+        },
+        required: [
+          "object",
+          "run_id",
+          "connector_id",
+          "failure_reason",
+          "grant_id",
+          "event_count",
+          "first_at",
+          "last_at",
+          "status",
+          "kinds",
+          "needs_input",
+          "source",
+        ],
+        type: "object",
+      },
+      type: "array",
+    },
+  },
+  required: ["object", "data", "has_more"],
+  type: "object",
+};
+
+// The correlation stores parse/clamp limit themselves and tolerate malformed
+// cursors. Keep those inputs opaque rather than promising timeline validation.
+const RunListQuerySchema = {
+  additionalProperties: true,
+  properties: {
+    client_id: { type: "string" },
+    connector_id: { type: "string" },
+    cursor: { type: "string" },
+    grant_id: { type: "string" },
+    q: { type: "string" },
+    since: { type: "string" },
+    source_id: { type: "string" },
+    source_kind: { type: "string" },
+    status: { type: "string" },
+    until: { type: "string" },
+    limit: { type: ["string", "number"] },
+  },
+  type: "object",
+};
+
+const RunTimelineQuerySchema = {
+  additionalProperties: true,
+  properties: {
+    cursor: { type: "string" },
+    // An empty query value selects the handler default, like an omitted limit.
+    limit: { anyOf: [{ const: "" }, { maximum: 5000, minimum: 1, type: "integer" }] },
+  },
+  type: "object",
+};
+
+const RunInteractionBodySchema = {
+  additionalProperties: true,
+  properties: {
+    data: { additionalProperties: true, type: ["object", "null"] },
+    interaction_id: { pattern: "\\S", type: "string" },
+    status: { enum: ["success", "cancelled"], type: "string" },
+  },
+  required: ["interaction_id", "status"],
+  type: "object",
+};
+
+const RunInteractionResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    object: { const: "run_interaction_ack" },
+    run_id: { type: "string" },
+    interaction_id: { type: "string" },
+    status: { enum: ["success", "cancelled"], type: "string" },
+  },
+  required: ["object", "run_id", "interaction_id", "status"],
+  type: "object",
+};
+
+const RunCancelResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    object: { const: "run_cancel_ack" },
+    run_id: { type: "string" },
+    // Controller emits cancel_requested; scheduler overrides can acknowledge
+    // other accepted statuses. This acknowledgement is not a terminal status.
+    status: { type: "string" },
+  },
+  required: ["object", "run_id", "status"],
+  type: "object",
+};
+
+const OwnerSessionRequiredSchema = {
+  additionalProperties: false,
+  properties: {
+    error: {
+      additionalProperties: false,
+      properties: {
+        code: { const: "owner_session_required" },
+        message: { type: "string" },
+        type: { const: "authentication_error" },
+      },
+      required: ["code", "message", "type"],
+      type: "object",
+    },
+  },
+  required: ["error"],
+  type: "object",
+};
+
+// Preserve the shared handler envelope and constrain the status mapper's type.
+function runErrorSchema(errorType: string) {
+  return {
+    allOf: [
+      ErrorObjectSchema,
+      { properties: { error: { properties: { type: { const: errorType } }, type: "object" } }, type: "object" },
+    ],
+  };
+}
+
+const OwnerRunErrors = {
+  400: {
+    description: "Invalid request (invalid_request, invalid_status, or invalid_cursor)",
+    schema: runErrorSchema("invalid_request_error"),
+  },
+  401: { description: "Bearer authentication required", schema: runErrorSchema("authentication_error") },
+  403: { description: "Permission denied (including run_owner_mismatch)", schema: runErrorSchema("permission_error") },
+  404: { description: "Not found (not_found or no_active_run)", schema: runErrorSchema("not_found_error") },
+  409: {
+    description: "Conflict: api_error with run_already_terminal, no_pending_interaction, or interaction_id_mismatch",
+    schema: runErrorSchema("api_error"),
+  },
+  500: { description: "Unexpected server error", schema: runErrorSchema("api_error") },
+};
+
+const RefRunErrors = {
+  ...OwnerRunErrors,
+  401: {
+    description: "Owner session required (HTML requests redirect to login)",
+    schema: { anyOf: [OwnerSessionRequiredSchema, runErrorSchema("authentication_error")] },
+  },
+};
+
 const RunStartResponseSchema = {
   additionalProperties: true,
   properties: {
@@ -314,47 +614,6 @@ const RecordRejectionListResponseSchema = {
   type: "object",
 };
 
-const RefConnectionSchema = {
-  additionalProperties: true,
-  properties: {
-    connector_id: { type: "string" },
-    connector_instance_id: { type: "string" },
-    created_at: { type: "string" },
-    display_name: { type: ["string", "null"] },
-    object: { const: "ref_connection" },
-    revoked_at: { type: ["string", "null"] },
-    schedule: { additionalProperties: true, type: ["object", "null"] },
-    source_binding: { additionalProperties: true, type: ["object", "null"] },
-    source_kind: { type: ["string", "null"] },
-    status: { type: "string" },
-    updated_at: { type: "string" },
-  },
-  required: [
-    "object",
-    "connector_instance_id",
-    "connector_id",
-    "display_name",
-    "status",
-    "source_kind",
-    "source_binding",
-    "created_at",
-    "updated_at",
-    "revoked_at",
-    "schedule",
-  ],
-  type: "object",
-};
-
-const ConnectionListResponseSchema = {
-  additionalProperties: false,
-  properties: {
-    data: { items: RefConnectionSchema, type: "array" },
-    object: { const: "list" },
-  },
-  required: ["object", "data"],
-  type: "object",
-};
-
 // One owner-agent control action descriptor. Shared by the control entrypoint
 // document (`GET /v1/owner/control`) and the per-connection `supported_actions`
 // array, so the two surfaces describe an action the same way. `status` is the
@@ -382,7 +641,7 @@ const OwnerControlActionSchema = {
 // `connector_id` and the canonical `connector_key`, and adds `label_status`
 // so an owner agent can tell an owner-chosen label from a storage-layer
 // fallback (label-needed) without re-deriving the placeholder rules.
-const OwnerConnectionSchema = {
+const OwnerConnectionRowSchema = {
   additionalProperties: true,
   properties: {
     connection_id: { type: "string" },
@@ -424,8 +683,23 @@ const OwnerConnectionSchema = {
     "updated_at",
     "revoked_at",
     "schedule",
-    "supported_actions",
   ],
+  type: "object",
+};
+
+// Cookie rows share the owner projection but omit bearer capability advertising.
+const OwnerConnectionSchema = {
+  ...OwnerConnectionRowSchema,
+  required: [...OwnerConnectionRowSchema.required, "supported_actions"],
+};
+
+const ConnectionListResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    data: { items: OwnerConnectionRowSchema, type: "array" },
+    object: { const: "list" },
+  },
+  required: ["object", "data"],
   type: "object",
 };
 
@@ -737,8 +1011,8 @@ const OwnerConnectionDiagnosticsSchema = {
 
 // Owner-agent connection-revoke result: the soft-flipped connection. Revoke is
 // zero-cascade (records, spine, device rows, and sibling connections are
-// untouched) and durable, so the response only confirms the connection's new
-// `revoked` status and the `revoked_at` stamp — there is nothing else to report.
+// untouched) and durable. The response confirms the revoked status and stamp,
+// plus the saved browser-session purge outcome when the purger is configured.
 const OwnerConnectionRevokeSchema = {
   additionalProperties: false,
   properties: {
@@ -746,6 +1020,42 @@ const OwnerConnectionRevokeSchema = {
     connector_id: { type: "string" },
     connector_key: { type: "string" },
     object: { const: "owner_connection_revoke" },
+    // Post-commit purge result from browser-profile-purge.ts. A failed purge
+    // reports the failure while the durable connection revoke stays successful.
+    profile_purge: {
+      oneOf: [
+        {
+          additionalProperties: false,
+          properties: {
+            status: { const: "purged" },
+            target: { enum: ["host", "local"], type: "string" },
+            removed: { type: "number" },
+          },
+          required: ["status", "target", "removed"],
+          type: "object",
+        },
+        {
+          additionalProperties: false,
+          properties: {
+            status: { const: "absent" },
+            target: { enum: ["host", "local"], type: "string" },
+          },
+          required: ["status", "target"],
+          type: "object",
+        },
+        {
+          additionalProperties: false,
+          properties: {
+            status: { const: "failed" },
+            target: { enum: ["host", "local"], type: "string" },
+            error_code: { type: "string" },
+            message: { type: "string" },
+          },
+          required: ["status", "target", "error_code", "message"],
+          type: "object",
+        },
+      ],
+    },
     revoked_at: { type: ["string", "null"] },
     status: { const: "revoked" },
   },
@@ -2582,7 +2892,7 @@ export const referenceManifests = [
     method: "GET",
     path: "/_ref/connections/{connectorInstanceId}",
     request: { params: ConnectorInstanceIdParamSchema },
-    responses: { 200: { schema: RefConnectionSchema }, ...CommonErrors },
+    responses: { 200: { schema: OwnerConnectionRowSchema }, ...CommonErrors },
     summary: "Get one owner-facing configured connector connection by connector instance id.",
     surface: "reference",
     tags: ["reference", "connections"],
@@ -2592,7 +2902,7 @@ export const referenceManifests = [
     method: "GET",
     path: "/_ref/connector-instances/{connectorInstanceId}",
     request: { params: ConnectorInstanceIdParamSchema },
-    responses: { 200: { schema: RefConnectionSchema }, ...CommonErrors },
+    responses: { 200: { schema: OwnerConnectionRowSchema }, ...CommonErrors },
     summary: "Compatibility alias for reading one configured connector instance behind an owner-facing connection.",
     surface: "reference",
     tags: ["reference", "connections"],
@@ -2614,7 +2924,7 @@ export const referenceManifests = [
       },
       params: ConnectorInstanceIdParamSchema,
     },
-    responses: { 200: { schema: RefConnectionSchema }, ...CommonErrors },
+    responses: { 200: { schema: OwnerConnectionRowSchema }, ...CommonErrors },
     summary:
       "Owner-authenticated mutation of the owner-meaningful `display_name` carried on the public read contract. Operator-only surface; grant-authorized tokens SHALL NOT reach this route.",
     surface: "reference",
@@ -3001,7 +3311,7 @@ export const referenceManifests = [
     method: "POST",
     path: "/_ref/connections/{connectorInstanceId}/revoke",
     request: { params: ConnectorInstanceIdParamSchema },
-    responses: { 200: { description: "Revoked" }, ...CommonErrors },
+    responses: { 200: { description: "Revoked", schema: OwnerConnectionRevokeSchema }, ...CommonErrors },
     summary:
       "Owner-session: revoke one configured connection, addressed by `connection_id`. Flips the connection to status `revoked` so no future run/ingest lands; already-collected records, grants, spine evidence, device rows, and sibling connections are untouched (zero cascade). A double-revoke returns a typed `connector_instance_inactive` (400). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerRevokeConnection` route under a cookie auth adapter.",
     surface: "reference",
@@ -3012,7 +3322,7 @@ export const referenceManifests = [
     method: "POST",
     path: "/_ref/connections/{connectorInstanceId}/reactivate",
     request: { params: ConnectorInstanceIdParamSchema },
-    responses: { 200: { description: "Reactivated" }, ...CommonErrors },
+    responses: { 200: { description: "Reactivated", schema: OwnerConnectionReactivateSchema }, ...CommonErrors },
     summary:
       "Owner-session: reactivate one revoked connection, addressed by `connection_id`. The clean inverse of `refRevokeConnection`: flips the connection from `revoked` back to `active`, clears `revoked_at`, and resumes future collection. Already-collected records, grants, schedule, and audit spine are untouched (zero cascade). A non-revoked (active/draft) connection returns `connector_instance_not_revoked` (409). A foreign/unknown id returns `connector_instance_not_found` (404). Owner-session only (operator console); shares the same connector-instance store soft-flip primitive and audit event type as the owner-agent bearer `ownerReactivateConnection` route under a cookie auth adapter.",
     surface: "reference",
@@ -3030,52 +3340,102 @@ export const referenceManifests = [
     tags: ["reference", "connections"],
   },
   {
+    id: "refListRuns",
+    method: "GET",
+    path: "/_ref/runs",
+    request: { query: RunListQuerySchema },
+    responses: { 200: { schema: RunListResponseSchema }, ...RefRunErrors },
+    summary: "List owner-visible runs with correlation filters and pagination.",
+    surface: "reference",
+    tags: ["reference", "runs"],
+  },
+  {
+    id: "refGetRunStatus",
+    method: "GET",
+    path: "/_ref/runs/{runId}",
+    request: { params: RunIdParamSchema },
+    responses: { 200: { schema: RunStatusResponseSchema }, ...RefRunErrors },
+    summary: "Read run status, failure summary, and timeline link.",
+    surface: "reference",
+    tags: ["reference", "runs"],
+  },
+  {
+    id: "refGetRunTimeline",
+    method: "GET",
+    path: "/_ref/runs/{runId}/timeline",
+    request: { params: RunIdParamSchema, query: RunTimelineQuerySchema },
+    responses: { 200: { schema: RunTimelineResponseSchema }, ...RefRunErrors },
+    summary: "Read paginated, redacted run events and terminal status.",
+    surface: "reference",
+    tags: ["reference", "runs"],
+  },
+  {
+    id: "refCancelRun",
+    method: "POST",
+    path: "/_ref/runs/{runId}/cancel",
+    request: { params: RunIdParamSchema },
+    responses: { 202: { schema: RunCancelResponseSchema }, ...RefRunErrors },
+    summary: "Request cancellation of an active run.",
+    surface: "reference",
+    tags: ["reference", "runs"],
+  },
+  {
     id: "refRunInteraction",
     method: "POST",
     path: "/_ref/runs/{runId}/interaction",
-    request: {
-      body: {
-        contentType: "application/json",
-        schema: {
-          additionalProperties: false,
-          properties: {
-            data: {
-              additionalProperties: true,
-              type: "object",
-            },
-            interaction_id: { minLength: 1, type: "string" },
-            status: { enum: ["success", "cancelled"], type: "string" },
-          },
-          required: ["interaction_id", "status"],
-          type: "object",
-        },
-      },
-      params: {
-        additionalProperties: false,
-        properties: { runId: { minLength: 1, type: "string" } },
-        required: ["runId"],
-        type: "object",
-      },
-    },
-    responses: {
-      202: {
-        description: "Accepted",
-        schema: {
-          additionalProperties: false,
-          properties: {
-            interaction_id: { type: "string" },
-            object: { const: "run_interaction_ack" },
-            run_id: { type: "string" },
-            status: { enum: ["success", "cancelled"], type: "string" },
-          },
-          required: ["object", "run_id", "interaction_id", "status"],
-          type: "object",
-        },
-      },
-      ...CommonErrors,
-    },
-    summary:
-      "Owner-only control surface: answer the current pending interaction for an active controller-managed run. Reference-only; not part of the public PDPP API.",
+    request: { params: RunIdParamSchema, body: { contentType: "application/json", schema: RunInteractionBodySchema } },
+    responses: { 202: { schema: RunInteractionResponseSchema }, ...RefRunErrors },
+    summary: "Answer the pending interaction without echoing submitted data.",
+    surface: "reference",
+    tags: ["reference", "runs"],
+  },
+  {
+    id: "ownerListRuns",
+    method: "GET",
+    path: "/v1/owner/runs",
+    request: { query: RunListQuerySchema },
+    responses: { 200: { schema: RunListResponseSchema }, ...OwnerRunErrors },
+    summary: "List owner-visible runs with correlation filters and pagination.",
+    surface: "reference",
+    tags: ["reference", "runs"],
+  },
+  {
+    id: "ownerGetRunStatus",
+    method: "GET",
+    path: "/v1/owner/runs/{runId}",
+    request: { params: RunIdParamSchema },
+    responses: { 200: { schema: RunStatusResponseSchema }, ...OwnerRunErrors },
+    summary: "Read run status, failure summary, and timeline link.",
+    surface: "reference",
+    tags: ["reference", "runs"],
+  },
+  {
+    id: "ownerGetRunTimeline",
+    method: "GET",
+    path: "/v1/owner/runs/{runId}/timeline",
+    request: { params: RunIdParamSchema, query: RunTimelineQuerySchema },
+    responses: { 200: { schema: RunTimelineResponseSchema }, ...OwnerRunErrors },
+    summary: "Read paginated, redacted run events and terminal status.",
+    surface: "reference",
+    tags: ["reference", "runs"],
+  },
+  {
+    id: "ownerCancelRun",
+    method: "POST",
+    path: "/v1/owner/runs/{runId}/cancel",
+    request: { params: RunIdParamSchema },
+    responses: { 202: { schema: RunCancelResponseSchema }, ...OwnerRunErrors },
+    summary: "Request cancellation of an active run.",
+    surface: "reference",
+    tags: ["reference", "runs"],
+  },
+  {
+    id: "ownerRunInteraction",
+    method: "POST",
+    path: "/v1/owner/runs/{runId}/interaction",
+    request: { params: RunIdParamSchema, body: { contentType: "application/json", schema: RunInteractionBodySchema } },
+    responses: { 202: { schema: RunInteractionResponseSchema }, ...OwnerRunErrors },
+    summary: "Answer the pending interaction without echoing submitted data.",
     surface: "reference",
     tags: ["reference", "runs"],
   },
