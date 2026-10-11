@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-06
+Date: 2026-10-11
 
 ---
 
@@ -354,7 +354,7 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 
 **Record identity:** For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree. The Collection Profile defines the HTTP error for its ingest endpoint.
 
-**Absent and null fields:** A response's field projection is the grant-authorized projection for a client token, and the effective `fields` or resolved `view` projection for an owner token. In a returned record (not a tombstone), omission of a top-level `data` field inside that projection means that the record version the response returns has no value for that field. Omission of a field outside that projection says nothing about stored values. A present JSON `null` is a stored null, allowed only where the stream schema allows it. Neither omission nor `null` establishes the source's current state, and neither relaxes the stream's schema-required fields. A client applies each returned record as a replacement of its copy within the same projection, not as a partial-update instruction.
+**Absent and null fields:** A response's field projection is the effective returned field set. For a client token, it is the granted fields narrowed by any accepted `fields` parameter. For an owner token, it is the effective `fields` or resolved `view` projection, or all fields when neither is supplied. Schema-required fields remain included. This response projection is distinct from the grant-authorized projection used to determine client `changes_since` eligibility. In a returned record (not a tombstone), omission of a top-level `data` field inside that projection means that the record version the response returns has no value for that field. Omission of a field outside that projection says nothing about stored values. A present JSON `null` is a stored null, allowed only where the stream schema allows it. Neither omission nor `null` establishes the source's current state, and neither relaxes the stream's schema-required fields. A client applies each returned record as a replacement of its copy within the same projection, not as a partial-update instruction.
 
 **Partial updates:** For `mutable_state` streams, a profile MAY define partial-update instructions, distinct from RECORD snapshots, that name the fields they set or remove and leave all other stored fields unchanged. Applying an instruction MUST atomically produce a record that satisfies the stream schema and the record identity rule above. Reads, time constraints, version history and `changes_since` continue to operate on the resulting complete record snapshots and tombstones under the rules of this specification; a partial-update instruction is never served as a record. Core defines no partial-update syntax. A profile MUST NOT use a partial-update instruction to modify an existing `append_only` record.
 
