@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-06
+Date: 2026-10-11
 
 ---
 
@@ -211,7 +211,7 @@ PDPP separates three concerns that other systems conflate:
 
 The grant and query API are the normative core. Collection is a companion mechanism.
 
-**Ingest and sync-state are Collection Profile concerns.** The core protocol defines the query API (disclosure) and grant semantics. The Collection Profile defines record ingest and sync-state management endpoints for implementations that claim Collection Profile support.
+**Ingest and collection checkpoints are outside Core.** Core defines the query API (disclosure) and grant semantics. The Collection Profile defines connector messages and runtime checkpoint handling, not a resource-server HTTP ingest or sync-state API. An implementation defines its own storage interface.
 
 ---
 
@@ -350,7 +350,7 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 
 **Compound key encoding:** When `primary_key` has multiple fields, `key` is an array of values in the order declared by the SourceDeclaration `primary_key`. The canonical string form of a compound key is the minified JSON array of key values (e.g., `["user_123","2026-04-01"]`). Each primary-key component MUST be serialized as a string in the canonical encoding. Non-string primary-key field values (e.g., integers, dates) MUST be converted to their string representation before encoding. URL path parameters and `resources[]` entries use percent-encoded canonical string form. The `resource_ref.record_id` field retains native `string | string[]` type.
 
-**Record identity:** For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree. The Collection Profile defines the HTTP error for its ingest endpoint.
+**Record identity:** For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree. The write interface defines the error response for that rejection.
 
 ### Timestamps
 
@@ -1798,7 +1798,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Concern | Status |
 |---------|--------|
 | Authorization server interface | Introspection endpoint contract defined here; full AS interface informational only in v0.1 |
-| Ingest and sync-state endpoints | Defined by the Collection Profile; not required for Core RS |
+| Ingest and sync-state endpoints | Outside Core; the Collection Profile defines connector messages and checkpoints, not an RS storage API |
 | Conformance test suite | Planned but not defined in v0.1 |
 | Webhook / push ingestion | Deferred |
 | Source lifecycle actions | Deferred (e.g., deleting source data after export) |
