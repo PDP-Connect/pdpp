@@ -149,7 +149,7 @@ A presentation result MUST carry an `inputs` member whose value is a JSON array.
 
 Each `last_success_at` in `inputs` follows Core's coarsening rule for client-token responses: the resource server truncates it to its declared `pdpp_freshness_granularity_seconds` and does not report it before its interval ends. A resource server that returns `inputs` MUST declare that granularity, as Core requires of one that attaches `freshness`. An `inputs` entry carries no failure time.
 
-In a fan-out envelope (Section 5.3), each entry that holds a result is a separate presentation result under its own child and carries its own `inputs`, computed under that child alone. The envelope carries no combined `inputs`.
+In a fan-out envelope (Section 5.3), each entry that contains a bounded presentation result MUST carry that result's own `inputs`, computed under that child alone. A direct Core query result does not become a presentation result solely because it appears in a fan-out envelope. The envelope MUST NOT carry combined `inputs`.
 
 Free-text output, such as a generated summary, discloses all of its content. This profile does not guarantee that it reveals less than its inputs.
 
