@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-06
+Date: 2026-10-11
 
 ---
 
@@ -777,7 +777,7 @@ A client requests specific personal data by including `authorization_details` in
         {
           "name": "top_artists",
           "necessity": "required",
-          "view": "basic",
+          "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
           "instance_ids": ["spotify-account-a"],
           "time_range": { "since": "2025-09-28T00:00:00Z" }
         },
