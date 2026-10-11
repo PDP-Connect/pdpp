@@ -1,7 +1,7 @@
 # PDPP extended access profile
 
 Status: Draft extension profile; profile version 0.1.0
-Date: 2026-10-06
+Date: 2026-10-11
 
 ## 1. Scope and status
 
@@ -145,7 +145,7 @@ The resource server MUST NOT search a denied field and return merely projected h
 
 A presentation result that identifies a record, including a search hit, preview, or fan-out entry, MUST give the record's `instance_id` with its `id`, using the handle from the applicable grant. A `resource_ref` or `blob_ref` in a presentation result MUST take the form Core Section 4 defines for served records: a resolved or redacted reference, and a `fetch_url` that carries `instance_id`. A presentation result MUST NOT contain `rs_instance`, the introspection `subject_id`, or any other identifier that is not pairwise for the client.
 
-A presentation result MUST carry `inputs`: one entry for each instance and stream the computation consulted, including those that matched nothing. Each entry gives the client's pairwise `instance_id`, the `stream`, and the `last_success_at` value, as defined in Core [Freshness metadata](spec-core#freshness), that the computation used, or null when it is unknown. `inputs` states which facts the result drew on. It is not an as-of or completeness guarantee, and a result MUST NOT replace it with a single blended timestamp.
+A presentation result MUST carry an `inputs` member whose value is a JSON array. The array MUST contain exactly one object for each distinct (`instance_id`, `stream`) pair the computation consulted, including pairs that matched nothing. Each object MUST contain `instance_id` and `stream` as strings and `last_success_at` as an RFC 3339 date-time string or null. `instance_id` is the client's pairwise handle from the applicable grant, and `stream` is the granted stream name. `last_success_at` is the value, as defined in Core [Freshness metadata](spec-core#freshness), that the computation used, or null when no timestamp is reportable. Array order has no meaning; when no pair was consulted, `inputs` is an empty array. `inputs` states which facts the result drew on. It is not an as-of or completeness guarantee, and a result MUST NOT replace it with a single blended timestamp.
 
 Each `last_success_at` in `inputs` follows Core's coarsening rule for client-token responses: the resource server truncates it to its declared `pdpp_freshness_granularity_seconds` and does not report it before its interval ends. A resource server that returns `inputs` MUST declare that granularity, as Core requires of one that attaches `freshness`. An `inputs` entry carries no failure time.
 
