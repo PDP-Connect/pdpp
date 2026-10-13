@@ -1,7 +1,7 @@
 # PDPP extended access profile
 
 Status: Draft extension profile; profile version 0.1.0
-Date: 2026-10-11
+Date: 2026-10-13
 
 ## 1. Scope and status
 
@@ -31,7 +31,7 @@ An authorization server MAY support owner-selected authorization with RFC 9396 t
 
 An AS supporting owner selection MUST advertise `https://pdpp.dev/owner-selection` in `authorization_details_types_supported`. A client MUST establish support before requesting it.
 
-The request MUST identify the requesting client through the selected authorization binding and MUST contain `purpose_code` and `access_mode`. It MAY contain `purpose_description`, `retention`, and a non-empty `source_ids` array. `access_mode` MUST retain Core's `single_use` or `continuous` semantics.
+The request MUST identify the requesting client through the selected authorization binding and MUST contain `purpose_code` and `access_mode`. It MAY contain `purpose_description`, `retention`, `processing_permissions`, and a non-empty `source_ids` array. `access_mode` MUST retain Core's `single_use` or `continuous` semantics. `processing_permissions` has Core's meaning and validation ([Processing permissions](spec-core#processing-permissions)).
 
 The AS MAY resolve purpose and retention from recipient-authorized standing terms, but MUST identify and version those terms in retained consent evidence. An owner-authored condition alone MUST NOT be treated as recipient acceptance. This profile creates no unreviewed terms field or unilateral recipient commitment.
 
@@ -41,13 +41,13 @@ Duplicate source identifiers or unknown request members MUST produce RFC 9396 `i
 
 An owner-selection detail carries one purpose. Every detail it resolves has that purpose. A client that needs several purposes MUST send one owner-selection detail per purpose, in one request or in separate requests. The owner approves or declines each resolved detail on its own, as Core Section 7 requires.
 
-Core's [AI training consent](spec-core#ai-training-consent) rule applies inside owner selection. When an owner-selection detail has purpose `https://pdpp.dev/purpose/ai_training`, the owner MUST select each source for it by a distinct affirmative action. The AS MUST NOT present any such source as selected by default. The owner MUST be able to approve every other detail in the transaction while declining the `ai_training` detail.
+Core's [processing-permission consent rules](spec-core#processing-permissions) apply inside owner selection. Every detail resolved from an owner-selection detail carries that detail's exact `processing_permissions` set. When the set is non-empty, the owner MUST select each source for it by a distinct affirmative action. The AS MUST NOT present any such source as selected by default. The owner MUST be able to approve every other detail in the transaction while declining any such source. The AS MUST NOT drop the set from a resolved detail or issue an ordinary grant in its place.
 
-Before token issuance, the AS MUST resolve each selected source to one ordinary Core data-access detail with the owner-selection detail's purpose, and then to one grant. The result MUST contain one complete `{ type, grant }` element per issued grant. Each grant MUST contain explicit streams, instance handles, fields, resources, and time constraints required by Core and the retained declaration snapshot. Its `subject.id` and instance handles are the requesting client's pairwise identifiers ([Pairwise identifiers](spec-core#pairwise-identifiers)). For a stream with `resources`, the owner selects exactly one instance, as Core Section 7 requires. Each resolved field set includes the stream's schema-required fields; they are the per-stream consent floor that Core Section 6 defines. Owner narrowing MUST NOT remove them.
+Before token issuance, the AS MUST resolve each selected source to one ordinary Core data-access detail with the owner-selection detail's purpose and processing permissions, and then to one grant. The result MUST contain one complete `{ type, grant }` element per issued grant. Each grant MUST contain explicit streams, instance handles, fields, resources, and time constraints required by Core and the retained declaration snapshot. Its `subject.id` and instance handles are the requesting client's pairwise identifiers ([Pairwise identifiers](spec-core#pairwise-identifiers)). For a stream with `resources`, the owner selects exactly one instance, as Core Section 7 requires. Each resolved field set includes the stream's schema-required fields; they are the per-stream consent floor that Core Section 6 defines. Owner narrowing MUST NOT remove them.
 
 If the transaction issues more than one grant, the AS MUST issue a package under Section 5. An AS that cannot issue a package, because it lacks package support or because an element lacks `detail_id`, MUST limit this flow to one issued grant per transaction.
 
-An AS that does not support this type MUST reject it as unsupported and MUST NOT silently process it as Core data access. Absence of `authorization_details` is not opt-in and MUST NOT enable this flow. Final owner review MUST identify the client, resolved data, purpose, access mode, retention, and recipient-authorized standing terms affecting the decision.
+An AS that does not support this type MUST reject it as unsupported and MUST NOT silently process it as Core data access. Absence of `authorization_details` is not opt-in and MUST NOT enable this flow. Final owner review MUST identify the client, resolved data, purpose, processing permissions, access mode, retention, and recipient-authorized standing terms affecting the decision.
 
 ## 5. Grant packages
 
@@ -59,7 +59,7 @@ An AS MAY issue a package when a transaction requests more than one detail, or a
 
 The package MUST contain one complete Core grant per issued resolved detail. Several children MAY share a source, for example when their purposes differ. `grant_id` identifies a child. Subject, source, and purpose together are not a key.
 
-Each child MUST retain its `source.id`, declaration revision, resolved constraints, client and subject bindings, and lifecycle. The AS MUST NOT merge fields, instances, resources, or constraints across children. The AS MUST bind every child to the authenticated client and subject and MUST reject packages combining different clients or subjects.
+Each child MUST retain its `source.id`, declaration revision, resolved constraints, processing permissions, client and subject bindings, and lifecycle. The AS MUST NOT merge fields, instances, resources, or constraints across children. The AS MUST bind every child to the authenticated client and subject and MUST reject packages combining different clients or subjects.
 
 Every child is a Core grant for the same client, so it carries that client's pairwise identifiers ([Pairwise identifiers](spec-core#pairwise-identifiers)). Instance handles are scoped to the client and source, not to the child: two children that cover the same instance list the same handle, and their records carry the same `instance_id`. The client MAY relate records across its own children by `instance_id` and `id`. This does not permit the resource server to compute a result across children (Section 5.3). Each child is subject to Core's `resources` rule: a child stream with `resources` lists exactly one handle. The AS MUST reject a detail that asks for `resources` in more than one instance with RFC 9396 `invalid_authorization_details`, and MUST NOT split it into several children.
 
@@ -71,7 +71,7 @@ The owner approves or declines each resolved detail on its own. A package with e
 
 ### 5.2 Introspection and read deadlines
 
-An active package introspection response MUST report `pdpp_token_kind: "grant_package"`, the `authorization_details` of every child the token carries, and `pdpp_grant_status`. `pdpp_grant_status` maps the `grant_id` of every child of the package to its current `active` boolean. A child that the token no longer carries is reported `false`. The AS MUST compute each status from current lifecycle and report top-level `active: false` when the token is invalid or no child is active. An inactive response MAY omit the grant context.
+An active package introspection response MUST report `pdpp_token_kind: "grant_package"`, the `authorization_details` of every child the token carries, and `pdpp_grant_status`. `pdpp_grant_status` maps the `grant_id` of every child of the package to its current `active` boolean. A child that the token no longer carries is reported `false`. The AS MUST compute each status from current lifecycle and report top-level `active: false` when the token is invalid or no child is active. An inactive response MAY omit the grant context. `pdpp_grant_status` and `pdpp_grant_read_until` describe read access only, not processing authority ([Read access and processing authority](spec-core#processing-authority)).
 
 For each `single_use` child, an active response MUST also report the child's read deadline in `pdpp_grant_read_until`, which maps that child's `grant_id` to a Unix epoch time. The deadline is the expiry of the first package token that carried the child, which ends the child's Core read window. The AS MUST fix the deadline at that issuance and MUST NOT change it. A child is inactive after its deadline, even if its underlying grant has not expired.
 
@@ -117,7 +117,7 @@ When no child is active, the package token is inactive. The resource server then
 
 ### 5.5 Issuance, refresh, and expiry
 
-The AS MUST consume every `single_use` child atomically with first package-token issuance. It MUST reject later issuance against a consumed child, except a successor access token from the same refresh-token family inside the child's read window (Core Section 7).
+The AS MUST consume every `single_use` child atomically with first package-token issuance. It MUST reject later access-token issuance against a consumed child, except a successor access token from the same refresh-token family inside the child's read window (Core Section 7). This restriction does not prohibit issuance or renewal of processing credentials under the child's permission-defining profile.
 
 The AS MAY issue a refresh token only when at least one child is `continuous` (Core Section 10). A refreshed access token carries every active `continuous` child and each active `single_use` child only until the child's read deadline, never after. Refresh never extends a read deadline or opens a second window. The AS MUST apply Core refresh rotation, family-reuse revocation, expiry, and revocation rules. Package-token expiry or revocation MUST deny all child reads.
 
@@ -130,6 +130,8 @@ Core Section 10 defines which credential revocation ends which grants. For a pac
 - Withdrawing one child is a grant-level action at the AS, by owner action or a grant-management operation. It MUST NOT revoke the package credential or end another child. The package token stays active while another child is active.
 
 An AS that issues packages MUST offer a client-callable package disconnect. Disconnect ends every child of the package, the refresh-token family, and every access token issued under the package. It is distinct from revoking one access token, which can leave the family and the children active, and from withdrawing one child.
+
+Disconnect, and withdrawal of one child, end each affected child as Core revocation ends a grant, including its processing authority ([Read access and processing authority](spec-core#processing-authority)). Replay detection on the package refresh-token family invalidates tokens and does not by itself end a child's processing authority.
 
 Disconnect MUST work when the client no longer holds the current refresh token. The client presents any access token or refresh token that the AS issued for the package, active, expired, or superseded, and authenticates as Core's OAuth binding requires for token revocation. The AS MUST verify that the token was issued to that client for that package. Disconnect is idempotent: a repeated call, or a call after the package has ended, succeeds and changes nothing.
 
@@ -153,7 +155,7 @@ In a fan-out envelope (Section 5.3), each entry that contains a bounded presenta
 
 Free-text output, such as a generated summary, discloses all of its content. This profile does not guarantee that it reveals less than its inputs.
 
-A presentation result MUST NOT create a new declared source, durable derived dataset, onward disclosure right, or grant authority. Durable derived data requires a separate declared source and authorization contract. This profile defines no action rights or mixed read-and-action rules; Core Section 8's [existing-permissions](spec-core#existing-permissions) boundary governs those operations.
+A presentation result MUST NOT create a new declared source, durable derived dataset, onward disclosure right, processing permission, or grant authority. Durable derived data requires a separate declared source and authorization contract. This profile defines no action rights or mixed read-and-action rules; Core Section 8's [existing-permissions](spec-core#existing-permissions) boundary governs those operations.
 
 ## 7. Conformance boundary
 
