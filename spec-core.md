@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-11
+Date: 2026-10-13
 
 ---
 
@@ -152,7 +152,7 @@ flowchart TB
     AS -- grant --> Client
 ```
 
-The diagram above shows the roles. The sequence below shows the order of messages from approval through a read, including the resource server's token introspection step ([Section 8](#resource-server-interface)):
+**Example (non-normative).** The diagram above shows the roles. The sequence below illustrates one authorization-code flow for one grant, followed by a client read in a deployment with a separate AS and RS. User-facing authorization flows remain deployment-specific (Section 2); [Section 8](#resource-server-interface) defines the token-resolution and grant-enforcement requirements.
 
 ```mermaid
 sequenceDiagram
@@ -166,12 +166,14 @@ sequenceDiagram
     AS->>Owner: present consent screen
     Owner->>AS: review and approve
     AS->>AS: issue grant
-    AS-->>Client: access token (via authorization code)
+    AS-->>Client: authorization code (via redirect)
+    Client->>AS: redeem authorization code
+    AS-->>Client: access token bound to the grant
     Client->>RS: query records (access token)
     RS->>AS: introspect token
-    AS-->>RS: grant context
+    AS-->>RS: grant enforcement context
     RS-->>Client: records within the grant
-    Note over RS,AS: A co-located deployment uses a local equivalent of introspection
+    Note over RS,AS: A co-located deployment may use a local equivalent of introspection
 ```
 
 What differs between deployments is how the resource server that fulfills the grant is populated and operated. This is not a closed set: a resource server may hold pre-collected data with no collection machinery involved, or receive data via regulatory export, manual import, or platform-native APIs ([Section 1](#introduction)). The two examples below illustrate the ends of that spectrum; the [PDPP Collection Profile](spec-collection-profile) is one fulfillment mechanism, not the only one.
@@ -483,6 +485,8 @@ The following example follows one stream, `top_artists`, from declaration throug
   "selection": { "fields": true, "resources": false }
 }
 ```
+
+The full declaration below gives the omitted schema: `source_updated_at` is a string with format `date-time`, and `id` and `name` are required. The requested field list already includes both required fields, so resolution adds no fields.
 
 **The request.** A client asks for this stream in its selection request ([Section 6](#selection-request)) with `fields: ["id", "name", "genres", "popularity", "source_updated_at"]`, `instance_ids: ["spotify-account-a"]`, and `time_range: { since: "2025-09-28T00:00:00Z" }`. `selection.fields: true` allows the field list, and `consent_time_field` makes the stream time-range-capable.
 
