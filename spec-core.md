@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-11
+Date: 2026-10-13
 
 ---
 
@@ -20,7 +20,7 @@ The protocol specifies:
 
 **Design axiom:** Source declarations define what can be requested. Grants define what was approved. These are separate concerns and must not be conflated.
 
-Most source platforms do not yet expose a PDPP interface natively. Collection is the bridge for those sources: it brings their data into a resource server so the protocol's consent and enforcement layers can govern access to it. The informative [PDPP Collection Profile](spec-collection-profile) describes that bridge as builder guidance; it is not a conformance requirement. A connector conforms to PDPP by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. No particular collection method is required. The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved, and data may also reach it via regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5-8) are agnostic to the collection method.
+Most source platforms do not yet expose a PDPP interface natively. Collection is the bridge for those sources: it brings their data into a resource server so the protocol's consent and enforcement layers can govern access to it. The informative [PDPP Collection Profile](spec-collection-profile) describes that bridge as builder guidance; it is not a Core conformance requirement. A connector conforms to PDPP by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. No particular collection method is required. The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved, and data may also reach it via regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5-8) are agnostic to the collection method.
 
 Any implementation satisfying the role conformance criteria in Section 9 is PDPP-compliant. This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. URI identifiers name sources, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the resolved grant and the exact source declaration snapshot retained by the authorization server.
 
@@ -133,7 +133,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 This document is normative except where content is explicitly marked as an example, a note, or otherwise non-normative.
 
-This is the only normative document for PDPP Core v0.1 conformance. A profile defines no Core requirement; a future profile may define a separate named conformance claim only if its own status says so. The [PDPP Collection Profile](spec-collection-profile) and [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) are informative and add no Core conformance requirement. The canonical Collection Profile is maintained in the PDP-Connect/data-connectors repository ([docs/spec/collection-profile.md](https://github.com/PDP-Connect/data-connectors/blob/main/docs/spec/collection-profile.md)); it is normative only for the connectors and runtimes that claim it.
+This is the only normative document for PDPP Core v0.1 conformance. A profile defines no Core requirement; a profile may define a separate named conformance claim only if its own status says so. The [PDPP Collection Profile](spec-collection-profile) and [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) are informative and add no Core conformance requirement. The canonical Collection Profile is maintained in the PDP-Connect/data-connectors repository ([docs/spec/collection-profile.md](https://github.com/PDP-Connect/data-connectors/blob/main/docs/spec/collection-profile.md)); it is normative only for the connectors and runtimes that claim it.
 
 ---
 
@@ -187,7 +187,7 @@ flowchart TB
     Source -.->|collected by| Runtime
 ```
 
-**Core defines no ingest path.** Core specifies the authorization server, the resource server, and what passes between them and a client. It does not specify how records reach the resource server, and conformance to Core does not depend on any particular answer. Examples A and B are illustrations, not a classification: a resource server holding data placed there by regulatory export, manual import, a provider's own write path, or a mechanism not yet described is equally within Core. The [PDPP Collection Profile](spec-collection-profile) describes one such mechanism, connector collection, and describes it for builders rather than as a conformance requirement.
+**Core defines no ingest path.** Core specifies the authorization server, the resource server, and what passes between them and a client. It does not specify how records reach the resource server, and conformance to Core does not depend on any particular answer. Examples A and B are illustrations, not a classification: a resource server holding data placed there by regulatory export, manual import, a provider's own write path, or a mechanism not yet described is equally within Core. The [PDPP Collection Profile](spec-collection-profile) describes one such mechanism, connector collection, and describes it for builders rather than as a Core conformance requirement.
 
 **On-behalf-of access is two ordinary grants, not one delegated grant.** At the upstream platform, the owner authorizes the personal server to read the owner's data. At the personal server, the owner separately authorizes a downstream client to read owner-held data. These are independent grants, each issued and revocable by the owner. A personal server MAY disclose owner-held data under the fresh downstream grant; it does not pass the platform grant or a downstream PDPP token to the other relationship.
 
@@ -1659,7 +1659,7 @@ A conformant Core RS:
 21. Binds each page cursor and `changes_since` token to its grant, or owner subject and scope, and to its query context, and rejects a mismatch as `invalid_cursor`. Orders a `changes_since` session by canonical key string, does not serve a record deleted after the session's first page, and rejects `expand[]` and `expand_limit[...]` on `changes_since`. Issues tokens and page cursors that reveal no readable position, time, or field value, and whose equality or ordering signals no change outside the grant or owner scope.
 22. Compares time values and bounds by the grant's frozen `time_constraint.type`, never a current declaration, as calendar dates or exact instants, without a host, viewer, or owner time zone. Validates values itself under RFC 3339, including its leap-second rule. Excludes a record whose value is absent, null, or invalid from every read surface. Applies the same rules to owner-token range filters on `date` and `date-time` fields, using the declared format.
 
-Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
+PDPP Core v0.1 defines no separate conformance class for collection resource servers, connector runtimes, or connectors. A connector conforms to PDPP Core as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) page points to the canonical profile in PDP-Connect/data-connectors. A Collection Profile conformance claim is governed by that profile and is not required for Core conformance.
 
 ### Client conformance
 

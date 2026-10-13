@@ -1,9 +1,11 @@
 # PDPP Collection Profile
 
 Status: Informative. Pointer to the canonical Collection Profile. Not a conformance requirement of PDPP Core.
-Date: 2026-10-06
+Date: 2026-10-13
 
-The Collection Profile is maintained in the PDP-Connect/data-connectors repository: [docs/spec/collection-profile.md](https://github.com/PDP-Connect/data-connectors/blob/main/docs/spec/collection-profile.md). That document is the canonical profile (v0.2.0 when this page was written) and is normative for the connectors and runtimes that claim it. This page does not restate it, so the two cannot drift.
+The Collection Profile is maintained in the PDP-Connect/data-connectors repository: [docs/spec/collection-profile.md](https://github.com/PDP-Connect/data-connectors/blob/main/docs/spec/collection-profile.md). That document is the canonical profile (v0.2.0 when this page was written) and is normative for the connectors and runtimes that claim it. The link follows the main branch, so it shows the latest development text, not a fixed conformance target. A Collection Profile conformance claim names the profile version it claims; PDPP Core v0.1 conformance does not imply one. This page does not restate the profile's requirements.
+
+**Compatibility note.** This page formerly held informative builder guidance labelled Collection Profile v0.1.0 ([historical text](https://github.com/PDP-Connect/pdpp/blob/cba5d6db07bfafc52ae0a7e36c3d49bfb257657b/spec-collection-profile.md)). The canonical profile is not wire-compatible with that guidance in every binding. For example, it replaces the `browser_automation` binding, which carried a CDP WebSocket descriptor, with `browser` and declared features. The canonical profile's Bindings section (3.3) lists each removed binding name and its replacement. PDPP Core v0.1 requirements do not change.
 
 ## What the profile covers
 
