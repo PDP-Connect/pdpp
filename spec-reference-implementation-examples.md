@@ -1,12 +1,12 @@
 # PDPP Reference Implementation Examples
 
 Status: Illustrative
-Date: 2026-09-29
+Date: 2026-10-13
 
-These examples are illustrative sequences built from the current draft. They are not the normative source for wire shapes or role responsibilities. When an example and the live draft differ, the normative documents win:
+These examples are illustrative sequences built from the current draft. They are not the normative source for wire shapes or role responsibilities. When an example and the live draft differ, the normative documents win. PDPP Core governs Core wire shapes and role responsibilities; the separately versioned canonical Collection Profile governs connectors and runtimes that claim it.
 
 - [spec-core.md](spec-core.md)
-- [spec-collection-profile.md](spec-collection-profile.md)
+- [spec-collection-profile.md](spec-collection-profile.md) (informative pointer to the canonical Collection Profile)
 
 (`spec-data-query-api.md` is superseded; its surviving normative content lives in [spec-core.md](spec-core.md) — see the authority map in the README.)
 
@@ -229,7 +229,7 @@ The wildcard is expanded at consent time and frozen in the grant. Future stream 
 
 ### Step 3: Runtime loads grant-scoped state
 
-The Collection Profile runtime uses a `grant_id`-scoped state namespace for a `continuous` run.
+In this reference implementation, the runtime stores the checkpoints of a `continuous` run in a `grant_id`-scoped namespace through an implementation-specific HTTP API. Neither PDPP Core nor the Collection Profile specifies the `GET` and `PUT /v1/state` paths shown in Steps 3 and 6.
 
 ```http
 GET /v1/state/https%3A%2F%2Fregistry.pdpp.dev%2Fconnectors%2Fchatgpt?grant_id=grt_agent_001
@@ -272,10 +272,7 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
     "memories": { "created_at": "2026-04-01T09:00:00Z" }
   },
   "bindings": {
-    "browser_automation": {
-      "interface": "cdp",
-      "ws_url": "ws://127.0.0.1:39011/devtools/browser/abc"
-    },
+    "browser": {},
     "network": {}
   }
 }
