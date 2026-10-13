@@ -2225,8 +2225,11 @@ Introspection cache TTL ≤ 60 seconds
 RS sees revocation within max(token_exp, 60s)`}
               </pre>
               <p>
-                Revocation stops <em>future</em> access only. Records already delivered are governed by the grant's
-                retention policy and legal obligations. PDPP does not retroactively reach into client-side data stores.
+                Revocation ends <em>future</em> reads. On owner withdrawal, the owner chooses keep or delete for held
+                data. Keep permits only the grant's surviving use: ordinary grants allow use within purpose and
+                retention; processing-permission grants allow custody only, subject to the learned-parameter exception.
+                Delete is an erasure instruction the client must act on. Clients learn of it through the grant lifecycle
+                operation.
               </p>
               <p>
                 Grant narrowing is not supported in v0.1. Scope reduction: revoke the existing grant, issue a new

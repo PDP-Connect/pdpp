@@ -1,7 +1,7 @@
 # PDPP Reference Implementation Examples
 
 Status: Illustrative
-Date: 2026-10-06
+Date: 2026-10-13
 
 These examples are illustrative sequences built from the current draft. They are not the normative source for wire shapes or role responsibilities. When an example and the live draft differ, the normative documents win:
 
@@ -388,7 +388,7 @@ If this session had multiple pages, the follow-on `next_cursor` pages would stay
 
 ---
 
-## Example 3: Retention and revocation are not deletion
+## Example 3: Retention, revocation, and erasure
 
 A sleep analysis app receives a one-time grant with a retention declaration.
 
@@ -402,16 +402,19 @@ A sleep analysis app receives a one-time grant with a retention declaration.
   "subject": { "id": "user_abc" },
   "client": { "client_id": "sleep_app" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/oura" },
-  "manifest_version": "1.0.0",
+  "source_declaration": { "version": "2026-04-01" },
   "purpose_code": "https://pdpp.dev/purpose/analytics",
   "purpose_description": "Analyze your sleep patterns",
   "access_mode": "single_use",
   "streams": [
     {
       "name": "sleep_sessions",
-      "time_range": {
-        "since": "2026-03-12T00:00:00Z",
-        "until": "2026-04-11T00:00:00Z"
+      "instance_ids": ["inst_R7mT2qVx"],
+      "time_constraint": {
+        "field": "day",
+        "type": "date",
+        "since": "2026-03-12",
+        "until": "2026-04-11"
       },
       "fields": [
         "day",
@@ -432,7 +435,7 @@ A sleep analysis app receives a one-time grant with a retention declaration.
 
 ### Step 2: User later revokes the grant
 
-The AS marks the grant inactive. Further client access stops after revocation propagates through introspection.
+The AS asks the user to choose `keep` or `delete` for the data the app already holds, with neither option preselected. It then marks the grant revoked and records the choice. Further client access stops after revocation propagates through introspection.
 
 ### Step 3: Further disclosure attempts fail
 
@@ -456,8 +459,10 @@ PDPP-Version: 2026-04-06
 ### Step 4: What revocation does and does not mean
 
 - Future disclosure stops.
-- Data already delivered to the client remains governed by the grant's retention commitment and any applicable legal obligations.
-- Revocation is not deletion.
-- v0.1 does not define an active erasure signal telling the client to delete previously disclosed data immediately.
+- Revocation alone does not request deletion. The user's disposition decides what happens to data already delivered.
+- With `keep`, the app may go on using that data for the approved purpose until each record's 90-day retention ceiling, counted from when the app first received the record.
+- With `delete`, the AS records an erasure instruction. The app stops using the data and deletes it, with its derivatives and its processors' copies, within the limits of Core Section 7.
+- The app learns which case applies from the Core grant lifecycle operation, not from the failed read. It checks at least daily while it holds the data.
+- If the app cannot reach the AS, it keeps the data and retries. It cannot learn of a `delete` made at the AS until the AS answers again. A `delete` chosen inside the app binds at once, and the retention ceiling still applies.
 
-That separation is intentional: the protocol should not imply downstream deletion when it cannot actually make it happen.
+Core makes deletion an executable client duty. The stop-use bound runs from the instruction's effective time, and an app that learns later stops at once. The deletion bound runs from the app's first receipt. Core defines no proof of deletion: a conforming app's records make a breach attributable, not impossible.
