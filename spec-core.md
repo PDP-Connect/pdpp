@@ -53,7 +53,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | [GNAP](https://www.rfc-editor.org/rfc/rfc9635) (RFC 9635) | GNAP is an IETF authorization protocol that revisits OAuth-style delegation with a new protocol design. Several design decisions are directly relevant to PDPP: (1) interaction modes beyond browser redirects (relevant to nonstandard authorization interaction patterns); (2) request continuation for multi-step consent negotiation (relevant to optional streams); (3) key-bound grants instead of bearer tokens (stronger security for ongoing personal data access); (4) built-in grant management with revocation and rotation (relevant to `continuous` access mode). PDPP's entity-scoped `client_display` already follows GNAP's pattern of carrying client display metadata inline in the request. PDPP separates its core artifacts from authorization-protocol bindings. OAuth 2.0 and RFC 9396 define the v0.1 binding. Other bindings, including GNAP, may be specified as adoption warrants. For key-bound tokens specifically, DPoP (RFC 9449) offers an OAuth-native path to GNAP-style sender-constrained tokens and is a candidate optional hardening profile for v0.2. |
 | [Solid](https://solidproject.org) | Solid takes the full re-architecture approach: personal data moves into user-controlled pods with RDF/Linked Data semantics, which requires source platforms to adopt the model or users to migrate off-platform. PDPP instead layers on existing OAuth infrastructure and bootstraps data supply through the Collection Profile, without requiring source platforms to adopt anything. |
 | [ODRL](https://www.w3.org/TR/odrl-model/) (W3C Recommendation) | ODRL expresses permissions, prohibitions, and duties as machine-readable policies. PDPP does not use ODRL for authorization. The resource server enforces a PDPP grant on each read. A policy that travels with disclosed data cannot by itself guarantee enforcement after disclosure, the same limit Core states for `retention` (Section 11). |
-| [DPV](https://w3id.org/dpv) (W3C Data Privacy Vocabularies and Controls Community Group) | DPV defines shared terms for purposes, legal bases, and processing. `purpose_code` accepts any absolute URI (Appendix A), so a DPV purpose IRI can be used as a purpose code. PDPP defines its own purpose registry. DPV treats model training as processing, and PDPP likewise carries AI training as a processing permission, not a purpose (Section 6). |
+| [DPV](https://w3id.org/dpv) (W3C Data Privacy Vocabularies and Controls Community Group) | DPV defines shared terms for purposes, legal bases, and processing. `purpose_code` has an extensible binding (Section 6), so a DPV purpose IRI can be used as a purpose code. PDPP keeps a small vocabulary of purposes, and Appendix A relates them to DPV 2.3 terms. DPV is a W3C Community Group report, not a W3C Standard. DPV treats model training as processing, and PDPP likewise carries AI training as a processing permission, not a purpose (Section 6). |
 | [Data Transfer Project](https://github.com/dtinit/data-transfer-project) (DTI) | PDPP and DTI are complementary. The Data Transfer Project handles transfer mechanics, and DTI's stated position is that there is "no silver bullet" for portability: multiple approaches coexist. DTI's Data Trust Registry (post-pilot, 2026) addresses who is trusted: it vets services seeking access to platforms' portability interfaces so that platforms can rely on shared trust signals. PDPP addresses what was consented and how it is enforced (the grant and the resource server interface); a trust registry and PDPP's consent semantics compose rather than compete. The two protocols can chain. See Appendix B. |
 | [Airbyte](https://airbyte.com) / [Singer](https://www.singer.io) | PDPP borrows the RECORD/STATE checkpoint pattern for incremental sync. This record and state-checkpoint lineage informs the Collection Profile companion specification; it appears here for reader orientation and is informative for Core. |
 | [GDPR](https://eur-lex.europa.eu/eli/reg/2016/679/oj) | PDPP implements data minimization through stream and field selection. It also carries machine-readable purpose declarations (`purpose_code`) that support consent display, local policy, and implementation-defined audit or transparency mechanisms, and a separately approved processing permission for AI training (Section 6). The internal version history required for incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability. |
@@ -836,8 +836,8 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 | Parameter | Type | Required | Status | Description |
 |-----------|------|----------|--------|-------------|
 | `source` | object | yes | Protocol-enforced | Source binding. `id` is required and is the stable absolute URI authorization identity for the data surface. A request carries `id` alone: provenance is derived by the authorization server from the accepted declaration, not asserted by the client. |
-| `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). `purpose_code` identifies the requested data-use purpose; clients SHOULD NOT substitute an agreement or terms-document identifier for it. See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced. A purpose code never confers a processing permission. |
-| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. A detail that carries the AI training permission MUST include it ([AI training consent](#ai-training-consent)). |
+| `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). `purpose_code` identifies the requested data-use purpose; clients SHOULD NOT substitute an agreement or terms-document identifier for it. The binding is extensible: a client uses a PDPP purpose from Appendix A when it is semantically adequate for the use. Otherwise it MAY use any absolute URI, for example a DPV purpose, and MUST then send a `purpose_description` that the owner can understand. The AS MUST accept any syntactically valid absolute-URI purpose code. The AS MUST reject a detail whose code is outside Appendix A and that lacks a non-empty `purpose_description`, with `invalid_authorization_details` in the OAuth/RAR binding, and MUST display that description. It MUST NOT reject a complete detail solely because its purpose code is unrecognized. Consent properties associated with Appendix A purposes are advisory, not protocol-enforced. A purpose code never confers a processing permission. |
+| `purpose_description` | string | required for codes outside Appendix A | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field for Appendix A codes, and MUST provide a non-empty description that the owner can understand for any other code. When present, the AS MUST display it. For Appendix A codes, the AS MAY display the Appendix A description when `purpose_description` is absent. A detail that carries the AI training permission MUST include it ([AI training consent](#ai-training-consent)). |
 | `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. See [Section 7](#grant). |
 | `processing_permissions` | string[] | no | Protocol-enforced at issuance time | Unique absolute-URI processing-permission identifiers. Absent or empty requests no processing permission. See [Processing permissions](#processing-permissions). |
 | `retention` | object | no | Structured policy declaration | Requested retention constraints: `{ max_duration, on_expiry }`. |
@@ -1062,7 +1062,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 | `source` | object | yes | Protocol-enforced | Exact `{ kind, id }` retained from the accepted SourceDeclaration. `id` is authorization identity; `kind` is provenance metadata. |
 | `source_declaration` | object | yes | Protocol evidence | `{ version }` records the opaque revision of the exact declaration snapshot used for consent and issuance. It is evidence metadata, not a live lookup authority. |
 | `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (see Appendix A). |
-| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose. |
+| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose. Present whenever `purpose_code` is outside Appendix A. |
 | `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. |
 | `processing_permissions` | string[] | no | Protocol-enforced | The exact set of processing permissions the owner approved, as unique absolute URIs. Present only when non-empty; absent means none. Confers no read access. See [Processing permissions](#processing-permissions). |
 | `streams` | StreamGrant[] | yes | Protocol-enforced | Granted streams. Always expanded; no wildcards. See StreamGrant fields table below. |
@@ -1084,7 +1084,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 
 Request-only conveniences such as wildcard names, the `*` field marker, `view`, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
 
-Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. For a stream with `resources`, that choice is exactly one instance. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since` stated as inclusive, `until` stated as exclusive, purpose, retention, processing permissions, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
+Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. For a stream with `resources`, that choice is exactly one instance. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since` stated as inclusive, `until` stated as exclusive, purpose, retention, processing permissions, client identity, and grant expiry. For purpose, it MUST include the exact `purpose_code` and any `purpose_description`. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
 
 ### Client-visible authorization result {#authorization-result}
 
@@ -1819,7 +1819,7 @@ A conformant authorization server:
 3. Issues grants that conform to the grant schema defined in Section 7 (normative field tables). The AS generates `grant_id` and `issued_at`; it resolves other grant fields from authenticated identities, the selection request, the accepted source declaration, eligible instance handles, user approval, AS policy, or AS-resolved client metadata.
 4. Expands wildcards and selection presets into explicit stream names, fields, per-stream instance handles, resources, and frozen time constraints before issuing the grant.
 5. Produces a binding-neutral Source validation failure when a request contains both or neither of `streams` and `selection_preset`. The OAuth/RAR binding maps it to RFC 9396 `invalid_authorization_details`.
-6. MUST NOT reject a `purpose_code` solely because it is not in the PDPP registry. For unrecognized codes, displays `purpose_description` if present, or the raw URI. MAY reject a `purpose_code` based on local policy.
+6. MUST NOT reject a complete detail solely because its `purpose_code` is not in Appendix A. Rejects a detail with a code outside Appendix A that lacks a non-empty `purpose_description`, and displays that description. MAY reject a `purpose_code` based on local policy.
 7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms. If `client_claims` are rendered during final review, binds the normalized exact claims into the immutable final approval artifact and review revision, and preserves that binding in retained consent evidence, without adding them to the resolved grant or RS enforcement. Records in the issued grant's `client.client_display` the exact `policy_uri` and `tos_uri` it presented during consent, and omits any it did not present.
 8. Tracks grant lifecycle (active, expired, revoked). Reflects revocation immediately in introspection: the revoked grant is inactive at once, and a token is `active: false` when no grant it covers is active.
 9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
@@ -1910,6 +1910,7 @@ A conformant client:
 14. Does not validate a projected `data` object as a full stream record.
 17. Trains on PDPP inputs only when every contributing PDPP input has covering training permission and valid processing authority, as [AI training](#ai-training) defines, regardless of purpose code or acquisition grant. Applies this rule to derivatives and imposes it on every recipient or subprocessor receiving PDPP inputs. Treats the legacy purpose code `https://pdpp.dev/purpose/ai_training` as conferring no training authority.
 18. Requests a processing permission only when the AS advertises it in `pdpp_processing_permissions_supported`, in a detail separate from any ordinary access, and with a `purpose_description` where Section 6 requires one.
+27. Uses an Appendix A purpose when one is semantically adequate for the use, and sends a non-empty `purpose_description` that the owner can understand with any other purpose code.
 
 ### Conformance test suite
 
@@ -2000,7 +2001,7 @@ The `purpose_code` URI enables purpose declaration, consent display, registratio
 
 ### Auditability and transparency boundary
 
-PDPP core defines the authorization, grant, and disclosure semantics that make auditing and transparency possible. This includes stable identifiers and state transitions such as `grant_id`, `client_id`, `subject_id`, `purpose_code`, `processing_permissions`, stream and resource identifiers, timestamps, and grant lifecycle states.
+PDPP core defines the authorization, grant, and disclosure semantics that make auditing and transparency possible. This includes stable identifiers and state transitions such as `grant_id`, `client_id`, `subject_id`, `purpose_code`, `purpose_description`, `processing_permissions`, stream and resource identifiers, timestamps, and grant lifecycle states.
 
 PDPP core does not define a local audit-log schema, storage model, retention period for operational logs, or a user-facing disclosure-history interface. Implementations MAY maintain local records of grant issuance, disclosure, sync, token use, and revocation under local policy.
 
@@ -2177,7 +2178,7 @@ type SelectionRequest = {
   type: 'https://pdpp.dev/data-access';
   source: SourceRequestObject;
   purpose_code: string;
-  purpose_description?: string;
+  purpose_description?: string;  // Required when purpose_code is outside Appendix A
   access_mode: 'single_use' | 'continuous';
   processing_permissions?: string[];  // Unique absolute URIs; closed set (Section 6); absent or empty = none
   retention?: {
@@ -2214,7 +2215,7 @@ interface DataGrant {
   source: SourceObject;
   source_declaration: { version: string };
   purpose_code: string;    // URI
-  purpose_description?: string;
+  purpose_description?: string;  // Present whenever purpose_code is outside Appendix A
   access_mode: 'single_use' | 'continuous';
   processing_permissions?: string[];  // Exact approved set; present only when non-empty; confers no read access
   streams: StreamGrant[];
@@ -2340,11 +2341,9 @@ type OwnerTombstone =
 
 ---
 
-## Appendix A: Purpose Code Registry
+## Appendix A: PDPP Purposes
 
-**Registry governance:** Purpose code registries under `pdpp.dev` are controlled by PDPP maintainers via a public change process. Implementations MUST treat unrecognized purpose URIs as opaque identifiers and MUST NOT reject requests solely because a purpose code is unrecognized.
-
-Purpose codes are URIs. The following codes are defined by PDPP. Implementers may define additional codes using their own URI namespaces.
+**Governance:** PDPP maintains a small vocabulary of purposes under `pdpp.dev`, through a public change process. It does not replace outside vocabularies, and PDPP adds a purpose only where a PDPP rule or a stable consent or grant meaning needs one. `purpose_code` has an extensible binding (Section 6): a client uses one of these purposes when it is semantically adequate for the use, and otherwise any absolute URI with a `purpose_description`, for example a DPV purpose. Implementations MUST treat unrecognized purpose URIs as opaque identifiers and MUST NOT reject a complete detail solely because its purpose code is unrecognized.
 
 | Code | Description |
 |------|-------------|
@@ -2355,6 +2354,17 @@ Purpose codes are URIs. The following codes are defined by PDPP. Implementers ma
 | `https://pdpp.dev/purpose/research` | Academic or market research. |
 
 A purpose code states what a use serves and never confers a processing permission. AI training is the processing permission `https://pdpp.dev/processing/ai_training` (Section 6), not a purpose. Earlier drafts defined the purpose code `https://pdpp.dev/purpose/ai_training`. It is withdrawn, is not reassigned, and confers no training authority.
+
+**Relation to DPV (informative).** The table relates PDPP purposes to [DPV](https://w3id.org/dpv) 2.3 terms with [SKOS](https://www.w3.org/TR/skos-reference/) mapping relations. The mapping is pinned to DPV 2.3; a later DPV release does not change it until this table is revised. The object of `skos:broadMatch` is broader than the PDPP purpose, and the object of `skos:narrowMatch` is narrower. A mapping never widens access, never makes a code trigger or avoid a rule, and never confers a processing permission.
+
+| PDPP purpose | Relation | DPV 2.3 term |
+|---|---|---|
+| `personalization` | `skos:broadMatch` | `https://w3id.org/dpv#Personalisation` |
+| `research` | `skos:narrowMatch` | `https://w3id.org/dpv#AcademicResearch` |
+| `research` | `skos:relatedMatch` | `https://w3id.org/dpv#CommercialResearch` |
+| `analytics` | `skos:relatedMatch` | `https://w3id.org/dpv#Analyse` (a processing operation, not a purpose) |
+| `export` | `skos:relatedMatch` | `https://w3id.org/dpv#Export` (a processing operation, not a purpose) |
+| `agent_context` | none established | |
 
 ---
 
