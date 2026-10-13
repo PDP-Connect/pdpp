@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-06
+Date: 2026-10-13
 
 ---
 
@@ -1193,9 +1193,9 @@ Positive introspection results MUST NOT be cached longer than `min(token_exp, 60
 
 Two authentication boundaries exist:
 
-**Owner operations:** `Authorization: Bearer <owner_token>`. An owner token is a credential that the owner, the resource owner in RFC 6749 terms, holds to act directly on their own data store. It carries no grant, and in that respect it resembles a personal access token more than an OAuth access token issued to a client. Core owner tokens are scoped to a single subject's data store and support the Core owner and self-export operations defined here. The RS MUST derive the `subject_id` from the introspection response and MUST reject any request attempting to access data outside that subject's scope. Companion profiles may define additional owner-authenticated operations. How the owner obtains this token is out of scope (device code flow, API key, or any other mechanism).
+**Owner operations:** `Authorization: Bearer <owner_token>`. An owner token is a credential that the owner, the resource owner in RFC 6749 terms, holds to act directly on their own data store. It carries no PDPP grant (Section 7), so in that respect it resembles a personal access token. The owner may still obtain it through an OAuth flow, such as device authorization; `pdpp_token_kind` describes the authorization context the RS enforces, not how the token was issued. Core owner tokens are scoped to a single subject's data store and support the Core owner and self-export operations defined here. The RS MUST derive the `subject_id` from the introspection response and MUST reject any request attempting to access data outside that subject's scope. Companion profiles may define additional owner-authenticated operations. How the owner obtains this token is out of scope (device code flow, API key, or any other mechanism).
 
-**Client operations** (query records, list streams, fetch blobs): `Authorization: Bearer <access_token>`. A client token is an ordinary OAuth access token issued to a client (RFC 6749) and bound to a specific grant. Both token types use RFC 6750 Bearer Token format. The RS distinguishes them via `pdpp_token_kind` in the introspection response.
+**Client operations** (query records, list streams, fetch blobs): `Authorization: Bearer <access_token>`. A client token is an ordinary OAuth access token issued to a client (RFC 6749) and bound to one or more grants. When one credential covers several grants, the constraints of one grant authorize each disclosure (Section 7). Both token types use RFC 6750 Bearer Token format. The RS distinguishes them via `pdpp_token_kind` in the introspection response.
 
 **Self-export:** An owner holding a valid owner token MAY query their own data using the standard client query endpoints without a client grant. This is the v0.1 self-export mechanism and does not require a separate grant. Conformant Core RS implementations SHOULD support this capability (see Section 9 conformance item 13).
 
