@@ -64,7 +64,7 @@ Legend:
 | # | Concept | Description | Flow | Audience |
 |---|---------|-------------|------|----------|
 | 27 | PDPP Purposes | Absolute-URI purpose codes with an extensible binding; AS accepts a code outside Appendix A only with a purpose_description, and displays it | Spine | All |
-| 28 | AI training mandatory consent | ai_training purpose requires explicit affirmative consent; sole protocol-level requirement | Spine | CEO, Std |
+| 28 | AI training processing permission | AI training requires a covering processing permission and valid processing authority; requesting that permission requires distinct affirmative consent. The withdrawn ai_training purpose code confers no training authority | Spine | CEO, Std |
 | 29 | Retention as policy commitment | retention field is a client commitment, not server-enforced; legal/contractual concern | Spine | All |
 
 ## Access Modes and Grant Lifecycle (7 concepts)
