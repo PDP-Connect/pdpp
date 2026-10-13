@@ -31,7 +31,7 @@ An authorization server MAY support owner-selected authorization with RFC 9396 t
 
 An AS supporting owner selection MUST advertise `https://pdpp.dev/owner-selection` in `authorization_details_types_supported`. A client MUST establish support before requesting it.
 
-The request MUST identify the requesting client through the selected authorization binding and MUST contain `purpose_code` and `access_mode`. It MAY contain `purpose_description`, `retention`, `processing_permissions`, and a non-empty `source_ids` array. `access_mode` MUST retain Core's `single_use` or `continuous` semantics. `processing_permissions` has Core's meaning and validation ([Processing permissions](spec-core#processing-permissions)).
+The request MUST identify the requesting client through the selected authorization binding and MUST contain `purpose_code` and `access_mode`. It MAY contain `purpose_description`, `retention`, `processing_permissions`, and a non-empty `source_ids` array. `purpose_description` MUST be present when `purpose_code` is outside Core Appendix A, including when standing terms supply other conditions. `access_mode` MUST retain Core's `single_use` or `continuous` semantics. `processing_permissions` has Core's meaning and validation ([Processing permissions](spec-core#processing-permissions)).
 
 The AS MAY resolve purpose and retention from recipient-authorized standing terms, but MUST identify and version those terms in retained consent evidence. An owner-authored condition alone MUST NOT be treated as recipient acceptance. This profile creates no unreviewed terms field or unilateral recipient commitment.
 
