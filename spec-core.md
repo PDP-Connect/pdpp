@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-11
+Date: 2026-10-13
 
 ---
 
@@ -246,7 +246,7 @@ Every stream supports incremental sync. The resource server maintains internal c
 
 A `changes_since` token is a position in the resource server's ingestion and change order, not a `cursor_field` value. A `next_changes_since` token MUST NOT reveal a readable position or time. Token equality or ordering MUST NOT signal a change that is not visible to the grant, or to the owner session's effective scope, including after a session that returns nothing. One way to meet this is to make each issued token distinct and opaque, for example by encrypting it with fresh randomness. A page cursor MUST NOT reveal a readable position, time, or field value either. An `append_only` record that arrives late with an earlier `cursor_field` value, such as a play from yesterday ingested today, therefore appears in the next session.
 
-A client that has previously synced a stream queries for changes by passing its last `next_changes_since` token. The resource server returns every record not visible at h0 and visible at h1, within the client's grant-authorized field projection. For a record visible at both horizons, it returns the record only if its grant-authorized projection changed.
+A client that has previously synced a stream queries for changes by passing its last `next_changes_since` token. The resource server returns every record not visible at h0 and visible at h1, within the client's grant-authorized field projection. For a record visible at both horizons, it returns the record only if its grant-authorized projection changed or the previous session withheld it after a deletion (see the pagination rule in Section 8).
 
 This design ensures that a client authorized for fields A and B cannot infer that field C changed, even if C was modified after the client's last sync. The response is a function of the grant, not of the full record state.
 
@@ -259,7 +259,7 @@ This promise covers field values, not membership. Under a time-bounded or resour
 | At h0 | At h1 | Result |
 |---|---|---|
 | not visible | visible | the record, projected as of h1 |
-| visible | visible | the record, projected as of h1, only if its projection changed |
+| visible | visible | the record, projected as of h1, only if its projection changed or the previous session withheld it after a deletion |
 | visible | not visible (deleted, moved out of the time window, or excluded for another reason) | one tombstone |
 | not visible | not visible | nothing |
 
@@ -1382,7 +1382,7 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `fields` | comma-separated | Sparse fieldset. Schema-required fields are always included. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `expand[]` | string | Owner-token current-capability request to expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. Client-token requests MUST reject this parameter in v0.1. |
 | `expand_limit[{relation}]` | integer | Owner-token current-capability limit for an expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. Client-token requests MUST reject this parameter in v0.1. |
-| `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`), or `beginning` to start a sync. Returns the changes since that token under [Incremental sync](#incremental-sync): every record not visible at h0 and visible at h1, a record visible at both only if its grant-authorized projection changed, and tombstones. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the token has expired. |
+| `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`), or `beginning` to start a sync. Returns the changes since that token under [Incremental sync](#incremental-sync): every record not visible at h0 and visible at h1, and tombstones. A record visible at both is returned only if its grant-authorized projection changed or the previous session withheld it after a deletion. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the token has expired. |
 
 The durable client-token base query surface in v0.1 is: `limit`, `cursor`, `order`, `fields`, `changes_since`, and blob fetch. Exact and range `filter[...]`, `expand[]`, and `expand_limit[...]` parameters are not part of the client-token surface. Owner-token current-capability reads MAY support exact and declared range filters, `view`, and declared expansion; those reads consult current serving metadata. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
 
@@ -1647,7 +1647,7 @@ A conformant Core RS:
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
 5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
 6. Returns structured errors as defined in Section 8 (unified error table).
-7. Supports incremental sync via `changes_since` on every stream, starting from `beginning`, with tombstone entries and HTTP 410 with error code `cursor_expired` on cursor expiry. Returns every record not visible at h0 and visible at h1, and omits a record visible at both horizons whose projection did not change. The projection is the grant-authorized projection for a client token, and the session's effective `fields` or resolved `view` projection for an owner token.
+7. Supports incremental sync via `changes_since` on every stream, starting from `beginning`, with tombstone entries and HTTP 410 with error code `cursor_expired` on cursor expiry. Returns every record not visible at h0 and visible at h1, and omits a record visible at both horizons whose projection did not change, unless the previous session withheld it after a deletion. The projection is the grant-authorized projection for a client token, and the session's effective `fields` or resolved `view` projection for an owner token.
 8. Returns `next_changes_since` on the terminal page of every `changes_since` response and on no other page.
 9. Rejects client-token exact and range `filter[...]` parameters with 400
    `invalid_request` before consulting current declaration metadata; owner-token current-capability reads MAY retain declared filter behavior.
