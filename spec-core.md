@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-11
+Date: 2026-10-13
 
 ---
 
@@ -710,7 +710,7 @@ When retrieving a declaration, the authorization server MUST use HTTPS without a
 
 The address check is bound to the connection, not to the URL. The authorization server MUST validate the destination address against its network policy immediately before each connection attempt, including each redirect hop. It MUST connect only to an address from that validated result. An address accepted for an earlier attempt does not authorize a later resolution. The declaration location is not the source identity. Section 10 states the retrieval limits an authorization server sets by local judgment.
 
-Declaration display values, in every language version, are untrusted input. An authorization server MUST render declaration display values safely for the output context, by context-appropriate escaping, by sanitization, or by any construction that guarantees the value cannot be interpreted as markup, script, or a control sequence in that context. The requirement is on the outcome; this specification does not mandate one technique. Current declaration capabilities MUST NOT widen an issued grant.
+Declaration display values, in every language version, are untrusted input. An authorization server MUST render declaration display values safely for the output context, by context-appropriate escaping, by sanitization, or by any construction that guarantees the value cannot be interpreted as markup, script, or a control sequence in that context. The requirement is on the outcome; this specification does not mandate one technique. Client-authored values are also untrusted input: `client_display` members, resolved client metadata, `purpose_description`, and `client_claims`. The AS MUST render them safely under the same requirement. Current declaration capabilities MUST NOT widen an issued grant.
 
 ---
 
@@ -845,7 +845,7 @@ For each language map it renders (see [Display text languages](#display-text-lan
 2. Apply the RFC 4647 Section 3.4 Lookup scheme to that list over the map's keys. Lookup shortens each tag from the end until a key matches, so `es-MX` matches an `es` key.
 3. If no key matches, or the list is empty, use the version whose key matches `display.default_language` without regard to case.
 
-The AS SHOULD use the same priority list to choose the language of its own consent-surface text. The AS SHOULD isolate the direction of each display value it renders, for example with `dir="auto"` in HTML, or between U+2068 FIRST STRONG ISOLATE and U+2069 POP DIRECTIONAL ISOLATE in plain text. Core defines no direction metadata. Section 7 states how the final approval artifact binds each chosen version.
+The AS SHOULD use the same priority list to choose the language of its own consent-surface text. The AS SHOULD isolate the direction of each display value and each client-authored value it renders, for example with `dir="auto"` in HTML, or between U+2068 FIRST STRONG ISOLATE and U+2069 POP DIRECTIONAL ISOLATE in plain text. Core defines no direction metadata. Section 7 states how the final approval artifact binds each chosen version.
 
 ### Request-level parameters
 
