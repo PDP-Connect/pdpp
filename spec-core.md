@@ -2226,6 +2226,7 @@ A conformant client:
 24. Imposes the held-data duties on every party acting for it, and relays erasure instructions with absolute deadlines to it, as [Downstream holders](#downstream-holders) defines.
 25. If it offers its own disconnect, states what happens to held data and offers `keep` and `delete` with neither preselected. Treats `delete` as an erasure instruction effective at once.
 26. Keeps the records that [Erasure](#erasure) requires. Exercises already-issued processing authority after effective erasure only within that section's limited continuation and the defining profile's stop requirements.
+28. Retains the authenticated AS issuer with every grant and does not infer it from `grant_id`, `source.id`, or an untrusted credential, as Section 8 requires.
 
 ### Held-data conformance cases {#held-data-cases}
 
