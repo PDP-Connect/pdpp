@@ -95,7 +95,7 @@ use section numbers rather than page numbers."
 entries, what a registrant must supply, and the initial assignments.
 
 **Cite:** RFC 8126 §2.2, "Documentation Requirements for Registries". Known gap as of this
-writing: `spec-core.md` Appendix A (Purpose Code Registry) gives the name, governance, and
+writing: `spec-core.md` Appendix A (PDPP Purposes) gives the name, governance, and
 initial contents, but no registration policy in RFC 8126's vocabulary and no required-fields
 list for a new entry.
 

@@ -272,7 +272,7 @@ Anyone may make a proposal under this section, whether or not they hold a status
 
 The technical committee reviews every proposal in public and recommends. Adoption is a steering committee decision: from phase 3 the steering committee approves or declines by majority vote and the Chair merges. Before a steering committee exists, the maintainers run the process in phase 1, and in phase 2 merge on the interim technical committee's adopted recommendation with no discretion, as in §2.3.
 
-**Purpose codes.** Core Appendix A defines the initial registry. `https://pdpp.dev/purpose/ai_training` carries the only protocol-level consent requirement. Proposals are considered on a published regular cycle, deciding whether to add a code, and whether it carries a protocol-level consent requirement.
+**Purpose codes.** Core Appendix A defines PDPP's small purpose vocabulary and relates it to DPV. `purpose_code` has an extensible binding, so outside vocabularies need no registration. A purpose code never confers a processing permission; AI training is a processing permission (Core §6). Proposals are considered on a published regular cycle, deciding whether to add a code.
 
 **Views.** Core §5 states that views under `pdpp.dev` URI namespaces are controlled through a public change process. That process is the one in this section.
 
