@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-13
+Date: 2026-10-14
 
 ---
 
@@ -90,7 +90,7 @@ These roles may be co-located in a single deployment (e.g., a personal server ac
 
 | Role | Responsibility |
 |------|---------------|
-| **Authorization Server** | Issues and manages grants. Validates selection requests against retained source declaration snapshots. Tracks grant lifecycle (active, expired, revoked). |
+| **Authorization Server** | Issues and manages grants. Validates selection requests against retained source declaration snapshots. Tracks grant lifecycle (active, expired, revoked) and answers lifecycle queries from clients that hold data. |
 | **Resource Server** | Stores records as flat relational streams. Serves records to clients filtered by grant parameters. |
 
 The [PDPP Collection Profile](spec-collection-profile) defines a third role:
@@ -115,7 +115,7 @@ An authorization server records the trust signal it relied on — subject, role 
 
 Core does not define the registry, transport, recognition mechanism, or withdrawal propagation. A server that consults no registry remains conformant because registry answers inform local policy and never replace the owner's grant. ToIP's Trust Registry Query Protocol is an intended future profile binding, not a Core requirement.
 
-### Data concepts
+### Data concepts {#data-concepts}
 
 | Term | Definition |
 |------|-----------|
@@ -128,6 +128,10 @@ Core does not define the registry, transport, recognition mechanism, or withdraw
 | **Selection Request** | A client's request for specific data, expressed as RFC 9396 `authorization_details`. |
 | **View** | An optional named field set a source declaration may define for a stream, composed from fields declared in the stream schema. When a client requests by view name, the resulting grant records the resolved field list, which is authoritative. Declared views are advisory; the authorization server is authoritative for views used in consent UI and issued grants. |
 | **Processing permission** | Authority, carried in a grant, for an operation on disclosed data that read access alone does not authorize, such as AI training. See [Processing permissions](#processing-permissions). |
+| **PDPP data** | Data obtained through PDPP, or data derived from it, including through successive transformations. Derivatives include labels, synthetic examples, embeddings, indexes, caches, and outputs generated using PDPP data. A model output is derived from an owner's PDPP data only when that data was an input to producing that output. Earlier use of an owner's data to train the model does not, by itself, make the output a derivative of that owner's data. |
+| **Held data** | The PDPP data that a client, or a party acting for it, holds and that the client obtained under a given grant or derived from data so obtained. See [Held data after a grant ends](#held-data). |
+| **Independent recipient** | A party other than the owner that receives PDPP data for an operation in which it does not act for the client under [Downstream holders](#downstream-holders). A party's role is determined for that operation; the same party can act for the client in another operation. |
+| **Erasure instruction** | The owner's durable instruction that a client stop using and delete the held data of a grant. See [Erasure](#erasure). |
 
 ### Requirements Language {#requirements-language}
 
@@ -197,7 +201,9 @@ PDPP therefore defines no delegated-grant, sub-grant, or grant-chaining construc
 
 Only live passthrough is bounded by the upstream grant: when the personal server does not hold a copy and reads from the platform to fulfill a downstream request, it MUST stay within the upstream grant. This limit does not constrain a fresh grant for owner-held data. A downstream PDPP token is never forwarded upstream.
 
-**Onward transfer is prohibited.** A recipient MUST NOT transfer its token or let an ungranted party exercise it.
+**Token transfer is prohibited.** A recipient MUST NOT transfer its token or let an ungranted party exercise it.
+
+A client's disclosure of held PDPP data to an independent recipient is governed by [Independent-recipient disclosure](#independent-recipient-disclosure). This is distinct from an RS serving owner-held data under a fresh grant to the receiving client, as described above.
 
 A different topology — the owner running their own authorization server in front of a platform's data, so that the platform holds the data but the owner's server decides who may read it — is not introduced by this specification. It is the arrangement UMA describes, it is not the arrangement above, and it is recorded as deferred rather than left ambiguous.
 
@@ -851,6 +857,8 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 | `selection_preset` | string | no | Protocol-enforced at issuance time | Reference to a SourceDeclaration preset, as an alternative to explicit streams. |
 | `client_claims` | object | no | Attributed client claim | Client-authored, non-enforceable claims about this request. See [Client claims](#client-claims). |
 
+**Unknown members.** As RFC 9396 Section 5 requires, the AS MUST reject a detail that carries a member that neither Core nor a profile the AS supports defines for that detail type. The OAuth/RAR binding returns `invalid_authorization_details`. The AS MUST NOT ignore the member. A future control contract therefore cannot be issued by an AS that does not implement it.
+
 #### Source kinds {#source-kinds}
 
 These are the two provenance classes an authorization server derives and carries forward. They are defined here because this is where a reader meets the source binding, not because a client sends one.
@@ -867,6 +875,8 @@ An authorization server MUST reject a declaration containing an unrecognized `so
 #### Processing permissions {#processing-permissions}
 
 A processing permission authorizes an operation on disclosed data that read access alone does not authorize. A selection request and a grant carry processing permissions in `processing_permissions`, a set of unique absolute-URI identifiers. Absent or empty means no processing permission. An issued grant carries the member only when the set is non-empty. `processing_permissions` is a Core field, not an extension. A purpose code, `purpose_description`, `client_claims`, `retention`, or extension never confers a processing permission.
+
+Independent-recipient disclosure is an operation that requires a covering processing permission ([Independent-recipient disclosure](#independent-recipient-disclosure)). This version defines no processing permission for that operation. A purpose code or purpose description does not authorize it.
 
 Each identifier has one defining specification, which states the operation the permission covers and how a recipient maintains and exercises the authority. Core defines one identifier:
 
@@ -896,25 +906,33 @@ The AS returns `invalid_authorization_details`. It issues no training grant and 
 
 **Registration.** Only this specification, or a profile registered under a Specification Required policy ([RFC 8126](https://www.rfc-editor.org/rfc/rfc8126) Section 4.6), defines a processing permission. A registration gives the identifier, its stable semantics, and exactly one defining profile and version, and the decision to approve it is publicly recorded. A client, deployment, or extension cannot define a processing permission. The registered defining profile and version are an immutable normative reference for the permission identifier. Registry maintainers MUST NOT replace that reference with a different profile or version. A grant retains the authority and owner protections of that registered version, including for subsequent issuance or renewal of processing authority. Publishing a later profile version does not change this binding. A profile revision MUST NOT widen that authority or reduce those protections. Publishing a revision MUST NOT retroactively invalidate previously issued processing authority or make conduct permitted by the bound version non-conformant. An AS MAY issue shorter-lived or more restricted processing authority when the bound version permits it. Binding grants to a different defining profile or version requires a new permission identifier and fresh owner approval.
 
+**Registration test.** A registration MUST identify every result of the permitted operation that survives the [erasure](#erasure) duty. Where such a result may retain or reveal an owner's data, the defining profile MUST bound cessation of the operation to at most 1 hour. That bound runs from the end of the grant, or from the effective time of an erasure instruction covering the operation's inputs. It MUST hold without delivery of any message to the client, and over the whole execution interval of the operation. A check made once when work starts does not meet it. The defining profile MUST also make every issuance of processing authority depend on the continued eligibility of each acquisition copy the authority covers: no effective erasure instruction covers the copy, and the client may still hold and process it. When an advance instruction has a known future effective time, no processing authority for the covered copy may outlast that time. To make this check possible, the defining profile MUST make each processing credential name the acquisition grants whose held data it covers, and MUST make the processor refuse an input acquired under any grant the credential does not name. A credential that names no acquisition grant covers only data acquired under its own grant.
+
+For a permission that covers independent-recipient disclosure, the defining profile MUST specify the recipients or recipient classes the owner approves. It MUST specify the data and disclosure operations that approval covers. It MUST define the receiving parties' obligations and the evidence of their acceptance. It MUST define which effects of withdrawal and erasure reach those parties. It MUST identify any copy or result that remains usable after those effects. It MUST require the AS to show the owner those limits before approval.
+
+This paragraph does not waive the existing registration test or its cessation bound.
+
 **Consent and evidence.** A client MUST request a processing permission in its own detail, separate from any detail for ordinary access, even for the same source and purpose. The owner MUST select that detail by a distinct affirmative action, even when it is the only detail. The AS MUST NOT present it as selected by default. The owner MUST be able to approve every other detail while declining it, and the AS MUST NOT make approval of another detail depend on it. The AS MUST render each permission as a distinct, labeled term, not as part of the purpose.
 
 The owner approves or declines the detail as a whole. The AS MUST NOT issue its grant without its permissions, and MUST NOT add a permission to a detail that did not request it. Approval of ordinary access never confers a processing permission. The final approval artifact, review revision, retained consent evidence, issued grant, token result, and introspection result MUST carry the exact permission set. If the set changes after review, including by removal, the AS MUST reject approval and require a new review.
 
 #### AI training {#ai-training}
 
-`https://pdpp.dev/processing/ai_training` covers AI training. AI training means using data to fit or select the learned parameters or stored examples of a machine-learning model, generative or not, wherever the model runs, including on-device personalization and federated updates. It includes fine-tuning, distillation, reinforcement learning, and evaluation used to select a model, checkpoint, or hyperparameters. Fitting a model whose learned state is its stored examples, such as a nearest-neighbour classifier, is AI training. Inference, retrieval, embedding generation with fixed parameters, building an index that a fixed model looks up, and measurement that never informs model selection are not AI training. Computing statistics, ranking by a fixed formula, and setting thresholds by hand are not AI training. For example, recommending concerts from a listening history with a fixed model is not AI training; fitting a per-owner recommendation model to that history is. This permission governs clients acting under grants. It does not limit what the owner does with data the owner exports.
+`https://pdpp.dev/processing/ai_training` covers AI training. AI training means using data to fit or select the learned parameters or stored examples of a machine-learning model, generative or not, wherever the model runs, including on-device personalization and federated updates. It includes fine-tuning, distillation, reinforcement learning, and evaluation used to select a model, checkpoint, or hyperparameters. Fitting a model whose learned state is its stored examples, such as a nearest-neighbour classifier, is AI training. Those stored examples remain copies of PDPP data and are not learned parameters: the [erasure](#erasure) duty reaches them. Inference, retrieval, embedding generation with fixed parameters, building an index that a fixed model looks up, and measurement that never informs model selection are not AI training. Computing statistics, ranking by a fixed formula, and setting thresholds by hand are not AI training. For example, recommending concerts from a listening history with a fixed model is not AI training; fitting a per-owner recommendation model to that history is. This permission governs clients acting under grants. It does not limit what the owner does with data the owner exports.
 
-A PDPP input is data obtained through PDPP, or data derived from it, including through successive transformations. Derivatives include labels, synthetic examples, embeddings, and outputs generated using PDPP inputs. A model output inherits the lineage of PDPP inputs used to produce that output. Earlier use of an owner's data to train the model does not, by itself, make the output a derivative of that owner's data.
+A PDPP input is [PDPP data](#data-concepts) used as an input. Its derivatives, and the model-output boundary, follow that definition. Removing identifiers from PDPP data, aggregating it, or declaring it anonymous does not end its status as a PDPP input for this rule. An exclusion from the erasure duty never permits AI training.
 
 A client MUST NOT use a PDPP input for AI training unless it has valid processing authority under the permission's defining profile for every contributing PDPP input. For data obtained through PDPP, a grant carrying `https://pdpp.dev/processing/ai_training` MUST cover the originating subject, source, stream, instance, fields, resources, and time constraint. The client MUST establish that coverage using authenticated issuer, subject, and client bindings; matching identifier strings alone is insufficient. For derived data, the coverage requirement applies recursively to every contributing PDPP input, subject to the model-output boundary above. Different grants MAY cover different contributing inputs. The acquisition grant need not be the training grant. If the client cannot establish coverage and valid authority for every contributing PDPP input, it MUST NOT use the input for AI training. Purpose codes, ordinary grants, and retention commitments never confer this authority. Every recipient or subprocessor to which a client passes PDPP inputs MUST observe the same restriction, and the client MUST impose it on them. An operator of an AS or RS MUST NOT use owner data that it holds in that role for AI training, except under a training grant issued to it as a client. This restriction is PDPP policy, independent of a recipient's lawful basis and of statutory rights.
 
-The PDPP AI Training Profile (forthcoming) defines how a training recipient maintains and exercises this authority. Until that profile is published and its registration as the defining profile is approved, the identifier is reserved. Every AS MUST treat it as unsupported: it MUST NOT advertise it and MUST reject a request that carries it. No grant can then carry it, so no client or operator holds AI training authority.
+The PDPP AI Training Profile (forthcoming) defines how a training recipient maintains and exercises this authority. It defines the cessation bound for AI training, within the [registration test](#processing-permissions), and that bound applies wherever training runs. Until that profile is published and its registration as the defining profile is approved, the identifier is reserved. Every AS MUST treat it as unsupported: it MUST NOT advertise it and MUST reject a request that carries it. No grant can then carry it, so no client or operator holds AI training authority.
 
 Earlier drafts expressed AI training as the purpose code `https://pdpp.dev/purpose/ai_training`. A grant that carries that code confers no AI training authority. Training requires a fresh grant that carries this permission.
 
 #### AI training consent {#ai-training-consent}
 
 A detail that carries the AI training permission MUST include a non-empty `purpose_description` that identifies the type of model, its functions, and the service or recipient it serves. The AS MUST reject such a detail without one, with `invalid_authorization_details` in the OAuth/RAR binding. The AS MUST label the detail as AI training on the approval surface. These rules add to [Consent and evidence](#processing-permissions) and to the final owner approval that every grant needs (Section 7). An AS MUST include `expires_at` in every grant carrying the AI training permission. The expiry MUST be later than `issued_at`. The AS MUST include that expiry in final owner review and bind it into the approval artifact and retained consent evidence.
+
+The approval surface for an AI training detail MUST state that learned parameters produced under valid processing authority may be kept and used for the reviewed purpose after the grant ends or the owner requests erasure. It MUST also state that stored examples remain subject to erasure and retention duties. It MUST NOT claim that keeping learned parameters is exempt from applicable law or from an order to restrict, retrain, or destroy the model. It MUST NOT claim that the model is anonymous, that withdrawal or erasure removes the owner's data from learned parameters, or that erasing the training data removes all personal information from the model.
 
 ### Stream selection parameters
 
@@ -1012,7 +1030,7 @@ An authorization minimum describes permission, not the presence, freshness, comp
 
 The AS MUST distinguish validation of a minimum's syntax and declared capability from satisfaction of that minimum by the owner's approved selection. The AS MUST apply [Authorization privacy boundary](#authorization-privacy) to each check. The AS MUST NOT test record presence, collection status, or data completeness to decide whether the minimum is satisfied.
 
-#### Recipient commitments and approval
+#### Recipient commitments and approval {#recipient-commitments}
 
 The AS MUST NOT interpret narrower access as recipient acceptance of a new purpose or retention obligation. It MUST resolve purpose and retention from the current request or applicable recipient-authorized standing terms before owner approval. It MUST retain the evidence identifying those terms and their version with the consent evidence.
 
@@ -1023,6 +1041,23 @@ Core represents these commitments through its existing purpose and retention fie
 The AS MUST NOT change `access_mode` merely as a consequence of narrowing data. The AS MAY choose grant expiry under its existing policy. Grant lifetime and record time scope remain separate.
 
 The AS MUST include the resolved purpose in final owner review. It MUST include that purpose in the grant. If retention is specified, the AS MUST include it in final owner review. It MUST include that retention in the grant. If grant expiry is specified, the AS MUST include it in final owner review. It MUST include that expiry in the grant. The AS MUST include any processing permissions in final owner review and in the grant, as [Processing permissions](#processing-permissions) defines.
+
+The AS MUST state during final owner review that ordinary access does not authorize the client to disclose PDPP data to an independent recipient. The AS MUST distinguish that restriction from processing by parties acting for the client under [Downstream holders](#downstream-holders). The AS MUST NOT describe this client duty as technical prevention of onward disclosure.
+
+Final owner review MUST also show what happens to held data after the grant ends, as [Held data after a grant ends](#held-data) defines:
+
+- for a grant without a processing permission, that the client may keep using the data it received for the approved purpose, unless the owner asks for deletion;
+- for a grant that carries a processing permission, that the client may keep that data but has no ordinary surviving use of it. Continued processing is limited to already-issued processing authority within the defining profile's cessation bound and any earlier applicable deadline;
+- the retention limit, or, when the grant has no `retention`, that there is no stated limit and the client may keep the data until it receives a deletion request;
+- that the owner can ask for deletion at any time while the client may hold the data;
+- that the client learns of a deletion request made at the AS only when it next obtains an answer from the AS. The client attempts one at least once a day while it runs, retrying hourly after a failed attempt and at least daily during a long outage ([Positive assessment and reconciliation](#reconciliation));
+- that an attempt is not an answer, and that there is no maximum delivery delay;
+- that a client that is not running does not check, and learns of a deletion request only when it next runs and checks;
+- that, if the AS stops answering for good, the client of a grant without a processing permission may keep and use the data for the approved purpose indefinitely when the grant states no retention limit;
+- that, for a grant that carries a processing permission, the AS's silence lets the client keep the data but never extends processing authority or permits ordinary use;
+- that a deletion covers all data the client received under the grant, its derivatives, and copies held by processors and in backups, subject to the exclusions and legal-retention exception in [Erasure](#erasure);
+- that the client's stated retention limit, if any, bounds this, and that the owner can decline a grant that states none;
+- that, if the client offers deletion, choosing it inside the client binds the client at once as an instruction, but is not instant physical deletion.
 
 The AS MUST complete required-stream and minimum checks before issuing a grant or a client token. It MUST NOT issue a temporary overbroad grant while choices are unresolved. Grant issuance does not authorize unrelated collection, billing, or source-side actions.
 
@@ -1084,7 +1119,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
     }
   ],
   "retention": {
-    "max_duration": "P1Y",
+    "max_duration": "P365D",
     "on_expiry": "delete"
   },
   "expires_at": "2027-04-06T00:00:00Z"
@@ -1136,7 +1171,7 @@ Before the final approval surface is shown, the AS MUST resolve omitted `instanc
 
 ### Client-visible authorization result {#authorization-result}
 
-The AS MUST return one `authorization_details` element per covered grant in every successful OAuth token response that issues a client access token, including refresh responses. Each element MUST contain `type` equal to `https://pdpp.dev/data-access` and `grant` containing the complete immutable grant defined by this section. The AS MUST NOT substitute the original selection request or a lossy summary.
+The AS MUST return one `authorization_details` element per covered grant in every successful OAuth token response that issues a client access token, including refresh responses. Each element MUST contain `type` equal to `https://pdpp.dev/data-access` and `grant` containing the complete immutable grant defined by this section. The AS MUST NOT substitute the original selection request or a lossy summary. A [lifecycle recovery](#lifecycle-recovery) token covers no grant for reads; its token response returns the approved recovery element instead. A token response that returns a grant is also a [positive assessment](#reconciliation) for that grant.
 
 The result MUST include source provenance, declaration revision, resolved streams, instance handles, fields, the frozen required-field subsets, resource and time constraints, recipient commitments, access mode, and processing permissions and grant expiry when present. The full grant includes the resolved client identity and reviewed client display defined above. Omitted optional streams are not grants and MUST NOT appear as authorized in the result.
 
@@ -1213,12 +1248,12 @@ A grant that carries a processing permission confers two distinct kinds of autho
 
 - The end of a `single_use` read window, or the expiry of an access token, does not by itself end processing authority.
 - A processing credential never confers read access. It never makes a token active or reopens a read window.
-- When a grant is revoked, read access ends and the AS MUST issue no further processing authority under it. Authority already issued ends within the cessation bound that the defining profile sets. Revocation here includes owner revocation, client-initiated revocation that ends the grant (Section 10), and a companion operation that ends the grant.
+- When a grant is revoked, read access ends and the AS MUST issue no further processing authority under it. Authority already issued ends within the cessation bound that the defining profile sets. Revocation here includes owner revocation, client-initiated revocation that ends the grant (Section 10), revocation by the AS for a security reason, and a companion operation that ends the grant.
 - If a grant has `expires_at`, processing authority ends no later than that time. The AS MUST NOT issue processing authority that outlasts it.
 - Replay detection on a refresh-token family (Section 10) invalidates that family's tokens, and with them read access through those tokens. It does not by itself end processing authority.
-- Ending one grant does not end processing authority under another grant.
+- Ending one grant does not end processing authority under another grant. An erasure instruction is the exception: from its effective time, the AS MUST issue no further processing authority, under any grant of the same client, that permits use of the data the instruction covers ([Erasure](#erasure)). Authority already issued for that data ends within the defining profile's cessation bound, measured from that effective time. Authority MUST NOT outlast a known future effective time of an advance instruction.
 
-The defining profile defines how processing state is represented, the credentials that carry processing authority, and how processing ceases. Core does not require a grant-status endpoint.
+The defining profile defines how processing state is represented, the credentials that carry processing authority, and how processing ceases. The [grant lifecycle operation](#grant-lifecycle) reports grant and erasure state, not processing state.
 
 ### Time constraint semantics {#time-constraint-semantics}
 
@@ -1247,29 +1282,330 @@ For `continuous` grants without `time_constraint.until`, future records in a gra
 
 Grants freeze stream names, instance handles, fields, and any time constraint at consent time. Within that resolved scope, future records are included for `continuous` grants. Future stream types or fields are not included; they require a new grant.
 
-### Grant narrowing
+### Grant narrowing {#grant-narrowing}
 
 Grant narrowing (reducing the scope of an existing grant) is not supported in v0.1. Scope reduction is achieved via revoke-and-reissue: the existing grant is revoked (see [Revocation](#revocation)) and the user issues a new, narrower grant. Authorization server UIs SHOULD model this flow as revocation followed by a new grant request.
 
-### Records from revoked grants
+The revocation in this flow is an owner withdrawal and carries a disposition ([Ending paths](#ending-paths)). On that surface the AS MUST state that `delete` makes the client delete its copy from the old grant, subject to the exclusions in [Erasure](#erasure). Only what the new grant covers can then return, by being read again under the new grant. It MUST state that `keep` leaves the client's existing copy usable under the old grant's surviving-use terms, including data that the new grant does not cover.
 
-Revocation ends future reads, and ends processing authority as [Read access and processing authority](#processing-authority) defines. Otherwise, records already delivered to the client before revocation are governed by the grant's `retention` policy and applicable legal obligations. PDPP does not retroactively reach into client-side data stores.
+### Held data after a grant ends {#held-data}
 
-### Retention
+The rules from here to [Lifecycle durability](#lifecycle-durability) govern the [held data](#data-concepts) of a grant, while the grant is active and after it ends. They bind the client and every party acting for it ([Downstream holders](#downstream-holders)), and the AS duties they depend on. PDPP cannot technically enforce the client's duties. A conforming client's records make a breach attributable, not impossible.
+
+**Learned-parameter exception.** Learned parameters produced under valid processing authority before that authority ended may be retained and used within the purpose the owner reviewed. The contribution of PDPP inputs to those parameters does not, by itself, subject the parameters to the input grants' reconciliation, surviving-use prohibition, retention-disposal, or erasure duties. This exception does not cover stored source examples, training-data copies, retrieval stores, or other retained inputs and derivatives. It does not authorize further training on PDPP inputs without the covering permission and valid processing authority. It is a term of PDPP authority that the owner approves. It does not limit any legal duty or order to restrict, retrain, or destroy a model. Model outputs follow the boundary in [Data concepts](#data-concepts). This exception does not authorize disclosure of PDPP data to an independent recipient. Such disclosure remains subject to [Independent-recipient disclosure](#independent-recipient-disclosure).
+
+**Use.** Use of held data means serving, displaying, querying, computing with, training on, or disclosing it, including through queued or in-flight work. Keeping data, deleting it, and processing that the [legal-retention exception](#erasure) permits are not use.
+
+**Surviving-use terms.** When a grant ends, read access ends (Section 10). Already-issued processing authority ends within the defining profile's cessation bound ([Read access and processing authority](#processing-authority)). An ending by itself creates no erasure instruction. Unless an erasure instruction applies, the client MAY keep the grant's held data and MAY use it only within the grant's surviving-use terms:
+
+- For a grant without a processing permission, the surviving use is use for the grant's approved purpose, within its `retention`, excluding independent-recipient disclosure ([Independent-recipient disclosure](#independent-recipient-disclosure)).
+- For a grant that carries a processing permission, there is no ordinary surviving use. The client MAY keep data held under that grant alone. Already-issued processing authority remains usable only to the extent, and until the cessation deadline, permitted by its defining profile; the client MUST NOT otherwise use the data. Keeping it never makes it usable for another purpose.
+
+Use of held data for any other purpose needs a new grant. The [time limits](#held-data-limits) and the [positive-assessment rule](#reconciliation) apply whether or not the grant has ended.
+
+#### Held-data time limits {#held-data-limits}
+
+Core fixes four time limits for held data. The rest of this specification refers to them by name.
+
+| Limit | Value | Meaning |
+|---|---|---|
+| Reconciliation interval | 24 hours | Longest interval between a client's lifecycle query attempts for a grant while the client runs and it, or a party acting for it, holds held data of that grant. |
+| Retry interval | 1 hour | Longest interval between the starts of successive attempts while the client runs after a failed or unanswered lifecycle query, subject to the retry and resume rules in [Positive assessment and reconciliation](#reconciliation). A `Retry-After` from the AS, or sustained transport failure, can lengthen it, never beyond the reconciliation interval. |
+| Stop-use bound | 48 hours | Longest time from the effective time of an erasure instruction to the end of use, for a client that learns of the instruction before that time has passed. |
+| Deletion bound | 30 days | Longest time from a client's first authenticated receipt of an erasure instruction to the end of deletion. |
+
+Hours and days in this table are elapsed time; a day is 24 hours. ASs and clients MUST enforce these limits using conservative time bounds that include clock uncertainty. A client MUST count time spent suspended or powered off. Clock rollback, restart, restored state, or an uncertain mapping between an AS timestamp and the client's clock MUST NOT extend a deadline. If the client cannot establish that a use deadline has not passed, it MUST NOT use the data until it establishes that. Before further use after an interruption, it MUST establish whether disposal is overdue and complete any overdue disposal. If it cannot establish that a disposal deadline remains in the future, it MUST treat disposal as due. The legal-retention exception still applies. Core does not prescribe a particular time service or clock implementation.
+
+#### Ending paths {#ending-paths}
+
+A grant ends by revocation or by expiry. A disposition is the owner's choice for one ended grant: `keep` or `delete`. A `delete` disposition records an [erasure instruction](#erasure). A `keep` disposition records that the surviving-use terms apply. Each path below has a fixed effect on held data.
+
+| Path | Effect on held data |
+|---|---|
+| Owner withdrawal at the AS, including disconnecting a whole client or a package | The AS MUST obtain an explicit disposition for each grant in the action's scope. A whole-client or package action includes already-ended and consumed grants whose held data may remain, as well as active grants and separate processing-permission grants within that scope. One choice MAY apply to all. Before the final step, the AS MUST list the complete affected set and distinguish grants it will end from ended grants whose held-data disposition it will record. |
+| Owner withdrawal of one package child | The disposition covers that child only. The other children and the shared credential stay active ([extended access profile](spec-access-extension)). Under `delete`, a derivative that mixes that child's data with other data is covered as [Erasure](#erasure) defines. |
+| Narrowing by revoke-and-reissue | An owner withdrawal that carries a disposition, as [Grant narrowing](#grant-narrowing) defines. |
+| Client-initiated revocation at the owner's direction | The owner's choice binds the client from the moment the owner makes it in the client, whether or not the AS records it ([Disconnect in the client](#client-disconnect)). The client SHOULD convey the choice as `pdpp_disposition` on the revocation request (Section 10). |
+| Client-initiated token revocation without a disposition | Revocation ends the token, and ends grants as Section 10 defines. It creates no erasure instruction. |
+| Expiry | Read access and processing authority end at `expires_at`. Expiry creates no erasure instruction, but an erasure the owner elected in advance takes effect. Held data follows the surviving-use terms. |
+| Security revocation by the AS | The AS ends a grant that the owner did not ask to end, for example because the client is compromised or delisted. This creates no erasure instruction. The AS MUST show the owner that the grant ended and why, and MUST offer the disposition until the owner chooses. |
+| Refresh-token replay | A credential event, not a grant ending (Section 10). It creates no erasure instruction. |
+| AS decommission | Before an AS stops answering lifecycle queries for good, it MUST offer the owner a disposition for every grant whose held data may remain. It MUST show each disposition as offered, recorded, sent, or receipt reported. It MUST warn the owner about each `delete` that no client has received yet: once the AS stops answering, the client cannot learn of it. |
+
+Any interface through which the owner ends a grant, including a programmatic or MCP interface, MUST require an explicit disposition for every grant in the action's scope. The AS MUST reject a request that lacks one and MUST NOT apply a default. On an interactive surface, the AS MUST present `keep` and `delete` before the final step, with neither preselected. For `keep`, the AS MUST show the surviving-use terms and the retention limit. For `delete`, it MUST show the statements that [Erasure](#erasure) requires.
+
+The AS MAY let the owner elect deletion before a grant ends. The AS MUST durably record the election as an erasure instruction whose effective time is the end of the grant. Before that time, the election alone MUST NOT revoke the grant, prohibit use, or prohibit issuance of processing authority. An immediate erasure request for the same grant MUST end the grant and make that instruction effective at that ending. It MUST retain the instruction identifier and original acceptance record. While held data of an ended grant may remain ([Lifecycle durability](#lifecycle-durability)), the AS MUST let the owner request its erasure. Erasure requested after a `keep` disposition creates an instruction if none exists. An effective instruction MUST NOT be cancelled or postponed.
+
+#### Disconnect in the client {#client-disconnect}
+
+A client that offers the owner a way to disconnect it, or to end its access, MUST state in that flow what happens to held data. It MUST let the owner choose `keep` or `delete`, with neither preselected. When the owner chooses `delete`, that choice is an erasure instruction for the client, effective at once. It counts as the client's first authenticated receipt of the instruction ([Erasure](#erasure)). The client SHOULD convey it to the AS, with the time of the choice as `reported_at`: as `pdpp_disposition` on the revocation request (Section 10), or through the [grant lifecycle operation](#grant-lifecycle) when no revocation is involved.
+
+#### Positive assessment and reconciliation {#reconciliation}
+
+**Positive assessment.** A positive assessment is an authenticated AS answer that permits the client to keep a grant's held data and to use it within the grant's surviving-use terms. A positive assessment confirms custody eligibility; it authorizes no use outside the applicable surviving-use terms and confers no processing authority. Exactly two answers are positive assessments:
+
+- a lifecycle answer whose `held_data` is `permitted` ([Grant lifecycle operation](#grant-lifecycle));
+- a successful token response that returns the grant in its [authorization result](#authorization-result).
+
+Record delivery by the RS, an introspection result, a read error, and a package read status are not assessments.
+
+The AS MUST NOT return a positive assessment for a grant to which an erasure instruction applies. Otherwise a lifecycle answer is positive whatever the grant's read state: active, read window closed, expired, or revoked. The AS MUST compute every positive assessment from state ordered after every terminal event it has acknowledged ([Lifecycle durability](#lifecycle-durability)).
+
+A lifecycle answer carries the time of the assessment in `assessed_at`. The client MUST associate each assessment with its original request. A delivery, a cache hit, a replay, or a retry that returns an earlier assessment is not a new assessment.
+
+**First use.** Before first use of a grant's held data, the client MUST hold a positive assessment for that grant. Silence from the AS is not an erasure instruction. A client that cannot reach the AS keeps its held data and MAY continue to use it as the grant permits.
+
+**Reconciliation.** While the client runs and it, or a party acting for it, holds any held data of a grant, the client MUST attempt a lifecycle query for that grant at least once per reconciliation interval. The first attempt is due one reconciliation interval after the client first acquires data under the grant. A successful token response that returns the grant counts as a query. Transforming, rereading, relabeling, or moving data never restarts the interval. No attempt is due while neither the client nor a party acting for it holds data of the grant. If it later holds such data again, the duty resumes, and once a reconciliation interval has passed it MUST start a lifecycle query before further use.
+
+The client MUST also start a query before further use of held data in two cases:
+
+- a read or refresh fails in a way that shows the grant may have ended, such as HTTP 401 with Bearer error `invalid_token`, `grant_revoked`, `grant_expired`, `package_child_inactive`, or `invalid_grant` from the token endpoint;
+- the client resumes from suspension or power-off after an attempt fell due.
+
+These duties require an attempt, not a successful answer. A failed or unanswered query does not stop use that the grant's terms still permit. Every known erasure, retention, and processing deadline still binds.
+
+**Retries.** An attempt succeeds when it returns a lifecycle answer for the grant. A successful token response that counts as a query also ends retries. A transport error, an HTTP 401, 429, or 5xx response, or a per-grant error is a failure. While the client runs, unless an attempt succeeds, it MUST start its next attempt within the retry interval of the preceding attempt's start, even if that attempt remains unanswered. This duty applies while the client runs, until an attempt succeeds or it holds no held data of the grant. On resume after an attempt fell due, it MUST start a lifecycle query before further use. Suspension and power-off do not extend use or disposal deadlines. The client SHOULD space retries by exponential backoff with jitter, capped at the retry interval. After every attempt for at least one reconciliation interval has failed at the transport level, the client MAY widen the interval between attempt starts up to the reconciliation interval until an attempt gets an HTTP response. When the AS sends `Retry-After`, the client MAY wait that long instead of the retry interval. The reconciliation interval takes precedence over `Retry-After`: the client MUST still attempt a query once per reconciliation interval. Neither an unanswered attempt nor a failed attempt extends a use or disposal deadline.
+
+### Erasure {#erasure}
+
+**Instruction.** An erasure instruction covers one grant. The AS records one when the owner chooses `delete` ([Ending paths](#ending-paths)), when the owner requests erasure later, or when a client conveys an owner's `delete` with current client authentication ([Grant lifecycle operation](#grant-lifecycle)). The AS MUST record each instruction durably before acknowledging it, with an identifier, the grant, and its acceptance time ([Lifecycle durability](#lifecycle-durability)). Its effective time is its acceptance time, or the end of the grant for an election made in advance. An instruction applies from its effective time. An instruction that takes effect while its grant is active also revokes the grant. An owner's `delete` choice made in the client is an erasure instruction for that client from that moment ([Disconnect in the client](#client-disconnect)).
+
+**Terminal.** An accepted erasure instruction is terminal for the data it covers. A later `keep` disposition, a retry, expiry, a new grant, or reapproval MUST NOT cancel it. At most one erasure instruction applies to a grant; a repeated request returns the existing instruction. Redelivery of an instruction never restarts a clock.
+
+**Scope.** An erasure instruction covers all held data of its grant, which includes:
+
+- data the client received under the grant, including deliveries made after the effective time within the read-propagation bound (Section 10);
+- every derivative of that data, including derivatives produced before use stopped, embeddings, indexes, caches, labels, and training-data copies;
+- the stored examples of a model whose learned state is its stored examples ([AI training](#ai-training));
+- copies held by any party acting for the client, and backup copies.
+
+A derivative that mixes covered data with other data MUST be deleted, or regenerated without the covered data. Regeneration MUST remove the old derivative.
+
+The instruction does not cover:
+
+- learned parameters of a model produced under valid processing authority before that authority ended;
+- data that, before the effective time, the client rendered non-identifiable under a test it states in its records. Non-identifiable means that neither the client nor any other party can link the data to the owner by means reasonably likely to be used. Pseudonymized data, and data that keeps a per-owner key, hash, or identifier, is not non-identifiable;
+- a copy the client acquired independently under another grant whose surviving-use terms still let the client keep it, where the client's acquisition records show that acquisition.
+
+Relabeling or deduplicating one acquisition does not create a second one. An exclusion from erasure never permits AI training ([AI training](#ai-training)). An erasure instruction always requires deletion: `retention.on_expiry: anonymize` does not satisfy it.
+
+**Stop use.** On learning of an erasure instruction, the client MUST stop use of the covered data as soon as practicable, including queued and in-flight work. It MUST stop no later than the stop-use bound after the effective time. If it learns of the instruction after that deadline, it MUST stop at once.
+
+**Delete.** The client MUST delete the covered data no later than the earlier of these times:
+
+- its first authenticated receipt of the instruction plus the deletion bound;
+- each record's [retention ceiling](#grant-retention).
+
+The first authenticated receipt is the first lifecycle answer that carries the instruction, or the owner's `delete` choice made in the client. The client MUST record when it occurred. A later delivery, acknowledgement, forwarding, or AS record MUST NOT restart the deadline.
+
+**Backups.** Destroying the keys that protect a backup meets a deadline only if it makes the covered data irrecoverable. A backup rotation that ends after the deadline does not meet it. A client that keeps immutable backups for longer than the deletion bound cannot meet that bound by rotation alone. A restore MUST replay deletion state before any restored data becomes usable.
+
+**Overdue disposal.** A client that misses a deletion deadline, for example while powered off, MUST complete the deletion before any further use of data of that grant. It MUST record the missed deadline and MUST NOT report the deletion as completed on time.
+
+**Legal retention.** Where law requires the client to keep some covered data, the client MAY keep that data for that obligation only. It MUST NOT process that data except as the obligation requires. This exception covers legally required retention only. It gives no general right to continue clinical or other use after the owner chooses `delete`. Such use is outside v0.1, unless the client holds an independently acquired copy. The client MUST record the scope of the retained data, the legal basis, and the end of the obligation. It records the end as a date, as an event or condition, or as unknown, and MUST NOT record an invented date. It MUST report the exception, with its scope and basis, through the [grant lifecycle operation](#grant-lifecycle), unless law prohibits the report or the client has no current client authentication for the grant.
+
+**Reports and records.** The client SHOULD report its receipt of each instruction and the completion of deletion through the [grant lifecycle operation](#grant-lifecycle). A report needs current client authentication, which a public client usually lacks after its grant ends. Such a client SHOULD then ask the owner to approve [lifecycle recovery](#lifecycle-recovery) at the owner's next interaction with it, and report the times it recorded. A late report keeps the recorded event time. It MUST keep a record of each instruction: receipt time, stop-use time, completion time, any exception, and the parties it informed. The record holds identifiers, not the deleted data. PDPP defines no proof of deletion.
+
+**Processing authority.** From an instruction's effective time, when it covers data that a grant of the same client carrying a processing permission also covers, the AS MUST issue no further processing authority for that data ([Read access and processing authority](#processing-authority)). The AS MUST show the owner the time by which that processing stops under the defining profile, for example "training on this data stops by 21:40". A client that has not learned of an effective erasure instruction MAY exercise processing authority issued before its effective time only within the defining profile's delivery-independent cessation bound. On learning of the instruction, it MUST apply the defining profile's immediate stop requirements. No authority issued at or after the effective time authorizes use of the covered data. This limited continuation does not override an independently applicable retention or overdue-disposal deadline. An advance instruction has the effects defined in [Ending paths](#ending-paths).
+
+**AS records and owner statements.** For each instruction, the AS MUST record separately its acceptance time and the time it first returned the instruction in a lifecycle answer. It MUST also record, separately, the receipt time and any completion or exception that a client reports. When the owner chooses `delete`, the AS MUST state the applicable scope and exceptions. It MUST state that the client learns of the instruction only when it obtains an answer from the AS, which it attempts daily while it runs. It MUST state that an attempt is not an answer, and that there is no maximum delivery delay. It MUST state what happens if the AS stops answering for good before the client receives the instruction. For a grant without a processing permission, the client may keep and use the data until the grant's retention ceiling, or indefinitely when the grant states no retention limit. For a grant that carries a processing permission, it MUST state that the client may keep the data but gains no use or processing authority. The stop-use bound is measured from the instruction's effective time and applies when the client receives the instruction by that deadline; a client that learns later must stop at once. The deletion bound runs from the client's first receipt. Endpoint reachability alone does not establish timely receipt. The AS MUST describe these as duties of conforming clients, not proof of remote deletion. For example: "The app must stop using covered data as soon as practicable after it receives this request: by [stop-use date] if it receives it by then, and at once if it receives it later. It must delete covered data within 30 days of receiving the request. While the app runs, it tries daily to check with your server, but a try is not a received request. An app that is not running does not check, and learns of this request only when it next runs and checks. If your server is offline, the app cannot learn of the request until your server answers, and there is no maximum delay. If your server never answers again, the app may keep using the data for the approved purpose until [retention ceiling], or with no time limit if it stated none. If the app offers deletion, deleting inside it binds the app at once. That is an instruction, not instant physical deletion. Legally required copies and the stated exclusions may remain." For an advance election, these periods run from the displayed effective event, not from the election.
+
+The AS MUST NOT show a receipt-based deletion deadline calculated from its acceptance time or from its first return of the instruction. It MAY show a date measured from a reported receipt time. The arrival of a request that reports no receipt time is not a reported receipt time. It MUST show which stages it has recorded: requested, sent, receipt reported, and completion or exception reported. Until a receipt is reported, it MUST show the latest recorded stage and no deletion date, for example "sent on 2 November; no receipt reported".
+
+#### Downstream holders {#downstream-holders}
+
+A client MAY let another party hold or process PDPP data for it only within the authority that the client holds. The client MUST impose the grant's purpose and retention on that party. The client MUST impose these held-data duties on that party. The client MUST impose the [AI training](#ai-training) restriction on that party.
+
+The client MUST NOT treat a party's independent use of the data as processing for the client. An arrangement that permits such use is subject to [Independent-recipient disclosure](#independent-recipient-disclosure).
+
+The client MUST relay every erasure instruction to each party acting for it. The client MUST relay the deadlines as absolute times. The party's deadlines are the client's deadlines; a relay never starts a new period. The client MUST keep a record of the parties it informed and their confirmations.
+
+These duties create no authority for independent-recipient disclosure. Section 3 separately prohibits token transfer.
+
+#### Independent-recipient disclosure {#independent-recipient-disclosure}
+
+A client MUST NOT disclose PDPP data to an independent recipient unless a registered processing permission expressly covers that disclosure. The client MUST hold valid processing authority under the permission's defining profile when it discloses the data.
+
+This version defines no processing permission for independent-recipient disclosure. Ordinary access therefore does not authorize that operation. The restriction applies while the grant is active and after it ends. It includes disclosures through records, derivatives, summaries, outputs, and services that reveal PDPP data.
+
+A client MUST NOT infer disclosure authority from the grant's purpose, retention, an owner's action instruction, client claims, a positive assessment, or read-token activity. A client MUST NOT infer that authority from an exception to erasure or retention.
+
+A client MAY disclose data to the owner within the grant's applicable use terms. Delivery to an account, device, or service that the owner controls and designates for receiving the data, such as the owner's own email or storage, is disclosure to the owner. A destination that a third party controls is not: a party that the owner directs to receive the data for its own use, such as an accountant, adviser, or lender, is an independent recipient. A client MAY use parties acting for it as [Downstream holders](#downstream-holders) permits. An RS MAY disclose owner-held data under a fresh grant to the receiving client, as Section 3 describes. These permissions do not transfer a grant or token.
+
+This restriction does not prohibit a disclosure that applicable law requires. A client relying on that exception MUST limit the disclosure to what the obligation requires. The client MUST record the data disclosed, recipient, time, and legal obligation, unless law prohibits that record. The exception confers no processing permission. It does not alter the grant's other duties.
+
+**Note (non-normative).** This is a client conformance duty. The RS cannot prevent disclosure of a copy already delivered. A future registered permission needs a complete disclosure contract; a permission identifier alone does not define recipient authority or recall a delivered copy.
+
+**Note (non-normative).** A hosted model or other processing provider acts for the client only when it is bound by the client's duties under [Downstream holders](#downstream-holders) and makes no independent reuse of the data. A provider that may use the data for its own training, product improvement, or other purposes is an independent recipient for that use.
+
+**Example (non-normative).** A budgeting client holds transactions under an analytics grant. It can show a summary to the owner while its use terms permit. A storage service acting only for the client remains subject to the client's held-data duties. Sending the transactions or summary to an independent lender is a different operation. The analytics purpose and the owner's instruction to send do not create a registered processing permission. In this version the client has no PDPP authority for that disclosure. The owner can instead authorize the lender as a separate client at an owner-held resource server, where available and independently permitted.
+
+**Example (non-normative).** A test detail contains `processing_permissions: ["urn:example:processing:independent-disclosure"]`. The URI is an intentionally unregistered test value. An AS rejects the detail with `invalid_authorization_details`; it does not omit the permission and issue an ordinary grant. A production client first checks discovery and does not request an unadvertised permission.
+
+### Grant lifecycle operation {#grant-lifecycle}
+
+The grant lifecycle operation tells a client whether it may keep and use a grant's held data, and delivers erasure instructions. It also accepts the client's erasure reports. Every AS MUST provide it. It confers no read access and no processing authority, and it reopens no read window.
+
+**Note (non-normative):** The operation follows consent and grant status queries that a client makes under its own authority. Examples are the grant query in FAPI Grant Management and the consent status queries in UK Open Banking, the Berlin Group, and Plaid payment consents. Neither of those defines duties for data a recipient already holds. Accepting a retired data token to authenticate a public client's query is specific to PDPP. It confers no data or write authority.
+
+**Discovery.** In the OAuth binding, the AS MUST advertise the operation as `pdpp_grant_lifecycle_endpoint` in its RFC 8414 metadata. The operation is distinct from the read status that the extended access profile reports for package children (`pdpp_grant_read_active`).
+
+**Request.** The client sends an HTTP `POST` to the endpoint with an `application/x-www-form-urlencoded` body. A request without `report` or `pdpp_disposition` is a query.
+
+| Parameter | Required | Meaning |
+|---|---|---|
+| `grant_id` | yes | The grant asked about. A confidential client MAY repeat the parameter to ask about several grants in one query. A public client MUST send it once. |
+| `token` | for a public client | An access token or refresh token that the AS issued to the client and that covers the grant. |
+| `token_type_hint` | no | `access_token` or `refresh_token`, as in RFC 7009. |
+| `report` | no | A write: `received`, `completed`, or `retained`. |
+| `instruction_id` | with `report` | The erasure instruction the report concerns. |
+| `reported_at` | with `report`; optional with `pdpp_disposition` | RFC 3339 time of the reported event: the client's first receipt, the completion of deletion, or the completion of deletion apart from legally retained data. With `pdpp_disposition`, the time the owner chose `delete` in the client. |
+| `retained_until` | with `report=retained` | End of the legal retention obligation, in one of three forms: an RFC 3339 date-time; `event:` followed by text that contains at least one non-whitespace character and names the event or condition that ends it; or `unknown`. |
+| `retention_basis` | no | With `report=retained`: a short statement of the legal basis. The client sends it unless law prohibits it. |
+| `retention_scope` | no | With `report=retained`: a short statement of which covered data the client keeps. The client sends it unless law prohibits it. |
+| `pdpp_disposition` | no | A write with the value `delete`: an owner's erasure request made in the client. |
+
+A write MUST name exactly one grant. The AS MUST reject, with HTTP 400 `invalid_request`, a malformed request, a missing required parameter, an unknown parameter value, and a request that carries both `report` and `pdpp_disposition`.
+
+**Authentication.**
+
+- **Queries.** A public client authenticates with `token`. The AS MUST accept any access token or refresh token that it issued to that client and that covers the grant, whether active, expired, superseded, or revoked. A package token covers each of its children. A confidential client MUST authenticate as at the token endpoint. It MAY omit `token`; the AS then authorizes each `grant_id` by checking that it issued that grant to the client. A token bound to a key under [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449) (DPoP) MUST come with a valid DPoP proof for that key.
+- **Writes.** A write needs current client authentication. For a confidential client, that is client authentication as at the token endpoint. For a public client, it is an access token that is active, the current refresh token of a family, or an unexpired [lifecycle recovery](#lifecycle-recovery) token, covering the grant, with a DPoP proof when the token is bound. An expired, superseded, or revoked token never authenticates a write.
+- **Assertions and proofs.** A client that authenticates with a JWT assertion ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523)) MUST set its `aud` to the AS issuer identifier and MUST include a non-empty `jti` string that uniquely identifies the assertion for that client. The AS MUST reject an assertion with any other audience or with a missing or empty `jti`. It MUST reject reuse of a `jti` already accepted for that client while the previously accepted assertion remains valid. A DPoP proof MUST carry `htm` `POST` and an `htu` equal to the lifecycle endpoint URL. When `token` is an access token, the proof MUST carry `ath` for that token. The AS MUST check the proof as RFC 9449 Section 4.3 defines, including `jti` replay detection.
+- **Compromise.** The AS MAY disable a token for lifecycle use when it learns that the token is compromised. It MUST be able to disable any token it issued, including one never presented to this operation. It MUST then refuse that token for this operation. Disabling ends no grant, records no disposition, and changes nothing else.
+- **Recovery.** A client whose tokens are disabled for lifecycle use MUST be able to recover lifecycle access without a new data grant and without read access. For a confidential client, client authentication is that path. For a public client, the AS MUST support [lifecycle recovery](#lifecycle-recovery).
+- **Storage.** For this operation the AS MUST keep digests of tokens, not the tokens themselves. It keeps them as long as [Lifecycle durability](#lifecycle-durability) requires it to keep the grant's lifecycle and authentication bindings.
+
+**Response.** On success the AS returns HTTP 200 with `Content-Type: application/json`, `Cache-Control: no-store`, and `Pragma: no-cache`. The body is an object with one member, `grants`: an array with one entry per requested `grant_id`, in request order. Each entry is a lifecycle answer or a per-grant error.
+
+| Member | Type | Meaning |
+|---|---|---|
+| `grant_id` | string | The grant. |
+| `assessed_at` | RFC 3339 | When the AS computed the answer. |
+| `read_state` | enum | `active`: the grant can authorize reads. `window_closed`: the read window of a `single_use` grant has ended, and the grant has neither expired nor been revoked. `expired`. `revoked`. |
+| `ended_at` | RFC 3339 | When the grant expired or was revoked. Present only for those two states. A grant has one ending: see below. |
+| `held_data` | enum | `permitted`: no erasure instruction has taken effect, and the answer is a positive assessment. `erase`: an erasure instruction has taken effect. |
+| `erasure` | object | Present only when `held_data` is `erase`: `{ instruction_id, accepted_at, effective_at, stop_use_by }`. `stop_use_by` is the effective time plus the stop-use bound. |
+
+A grant keeps its first ending. If it is revoked before `expires_at`, `read_state` stays `revoked` and `ended_at` stays the revocation time after `expires_at` passes. Otherwise, from `expires_at`, `read_state` is `expired` and `ended_at` is `expires_at`. A later revocation attempt, disposition, or erasure request for an ended grant does not change its `read_state` or `ended_at`.
+
+A per-grant error is `{ grant_id, error }`, where `error` is one of:
+
+- `invalid_grant`: the grant is unknown, was not issued to the client, or is not covered by the presented token. The AS MUST use the same entry schema and error in each of these cases, echoing only the requested `grant_id`, so that a caller cannot tell them apart.
+- `current_authentication_required`: a write lacked current client authentication.
+- `invalid_instruction`: `instruction_id` names no erasure instruction of that grant.
+
+Request-level failures use the error response of RFC 6749 Section 5.2. A malformed request gets HTTP 400 `invalid_request`, and failed client authentication gets HTTP 401 `invalid_client`. A `token` that is unknown, malformed, issued to another client, or disabled for lifecycle use gets HTTP 401 `invalid_token`. When the AS cannot compute an answer from ordered state ([Lifecycle durability](#lifecycle-durability)), it returns HTTP 503 `temporarily_unavailable` with `Retry-After`. The AS MAY rate-limit the operation with HTTP 429, but MUST admit at least one query per grant per retry interval from each client.
+
+**Writes.**
+
+- `report=received` reports the client's first authenticated receipt of the instruction; `reported_at` is the receipt time. A receipt time before the AS first returned the instruction is valid when the owner's choice in the client was the receipt.
+- `report=completed` reports that deletion is complete; `reported_at` is the completion time.
+- `report=retained` reports that deletion is complete except for data kept under a legal obligation, with `retained_until` and, unless law prohibits them, `retention_basis` and `retention_scope`. It is an exception, not completion. When the obligation ends and the client deletes the retained data, it reports `completed`.
+- `pdpp_disposition=delete` conveys an immediate erasure request. The AS MUST end the grant if it has not ended. If an advance instruction exists, it becomes effective at that ending. If an effective instruction exists, the AS returns it without changing its clocks. Otherwise the AS records a new instruction whose acceptance and effective times are the time it durably records the request. The owner's choice in the client is its first authenticated receipt. When `reported_at` is present, the request also reports that receipt, and the AS MUST record that event time under the rules for `report=received`. When it is absent, the AS records the erasure request but MUST NOT infer a receipt time or a receipt-based deadline from the request's arrival. The client's receipt and deadlines remain the owner's choice time.
+
+The AS MUST reject, with `invalid_request`, a `reported_at` later than the request, a `retained_until` in none of its three forms, and a date-time `retained_until` earlier than `reported_at`. The AS records the first `received` report and the first `completed` report for an instruction. A repeated report of that kind succeeds and changes nothing. Each `retained` report is kept with the time the AS received it; a later one with a different `retained_until`, `retention_basis`, or `retention_scope` corrects the earlier one and does not overwrite it. The AS MUST NOT show a `retained` report, or the absence of a report, as completed deletion. It MUST show the end of a `retained` report in the form the client gave: a date, the event or condition, or that the end is unknown. The entry returned for a write is the lifecycle answer after the write.
+
+**Example.** A confidential client queries three grants:
+
+```http
+POST /oauth/grant-lifecycle HTTP/1.1
+Host: as.example.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_id=grt_001&grant_id=grt_8f72a1b3&grant_id=grt_unknown&client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer&client_assertion=eyJhbGciOiJFUzI1NiIs...
+```
+
+```json
+{
+  "grants": [
+    {
+      "grant_id": "grt_001",
+      "assessed_at": "2026-11-02T08:00:03Z",
+      "read_state": "revoked",
+      "ended_at": "2026-10-20T17:42:10Z",
+      "held_data": "permitted"
+    },
+    {
+      "grant_id": "grt_8f72a1b3",
+      "assessed_at": "2026-11-02T08:00:03Z",
+      "read_state": "revoked",
+      "ended_at": "2026-11-01T21:14:09Z",
+      "held_data": "erase",
+      "erasure": {
+        "instruction_id": "ers_Q2v7Lk9w",
+        "accepted_at": "2026-11-01T21:14:09Z",
+        "effective_at": "2026-11-01T21:14:09Z",
+        "stop_use_by": "2026-11-03T21:14:09Z"
+      }
+    },
+    { "grant_id": "grt_unknown", "error": "invalid_grant" }
+  ]
+}
+```
+
+The first grant was revoked with `keep`: the answer is a positive assessment. The second carries an erasure instruction. If this is the first answer to carry it, the client records the time it received the answer as its first receipt. It stops using that grant's data by `stop_use_by` and deletes it within the deletion bound of that receipt.
+
+**Example.** The same client later reports that it deleted the second grant's data, except invoices that a tax audit requires it to keep until the audit closes:
+
+```http
+POST /oauth/grant-lifecycle HTTP/1.1
+Host: as.example.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_id=grt_8f72a1b3&report=retained&instruction_id=ers_Q2v7Lk9w&reported_at=2026-11-20T09%3A00%3A00Z&retained_until=event%3Aclose%20of%20the%202026%20tax%20audit&retention_basis=tax%20record-keeping%20law&retention_scope=invoices%20for%202026&client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer&client_assertion=eyJhbGciOiJFUzI1NiIs...
+```
+
+The AS shows the owner that deletion is complete except for the invoices, kept until the close of the 2026 tax audit. When the audit closes and the client deletes the invoices, it reports `completed`. If the client does not know when the obligation ends, it sends `retained_until=unknown`.
+
+#### Lifecycle recovery {#lifecycle-recovery}
+
+An authorization request MAY carry one `authorization_details` element of type `https://pdpp.dev/grant-lifecycle`, with `grant_ids` containing a non-empty array of distinct, non-empty grant identifier strings. Every AS MUST support this type and advertise it in `authorization_details_types_supported`. A recovery request MUST contain no other authorization detail and MUST NOT request read or processing authority. The AS MUST reject a malformed or mixed request with `invalid_authorization_details`.
+
+The AS MUST authenticate the owner and verify that it issued each named grant to the requesting client for that owner, including when the grant has ended. It MUST reject the element with `invalid_authorization_details` when any grant fails that check, without revealing which grant failed. Before approval it MUST show the client, source, purpose, and issue date of each grant. It MUST state that recovery permits lifecycle queries, erasure reports, and client-conveyed erasure requests for those grants, but gives no read or processing authority. The approved grant identifier set and client binding MUST be fixed in the approval artifact and retained consent evidence.
+
+On approval, the token response issues a lifecycle-only access token for exactly the approved grants, returns the approved recovery element in `authorization_details`, and returns no refresh token. The token authenticates queries through the `token` parameter. It authenticates writes while it is unexpired and has not been revoked or disabled for lifecycle use. The AS MAY give it an expiry; absence of an expiry does not make it expired. The AS SHOULD keep a recovery token valid for lifecycle writes until at least the deletion bound after the client's first authenticated receipt of each covered instruction. When the AS has recorded no receipt, that period runs from issuance. This lets a public client report completion. Its lifecycle validity is separate from introspection `active`: introspection MUST report `active: false`, and the RS MUST reject it. Issuance MUST NOT create or reopen any data grant, read window, or processing authority. Recovery token responses are not positive assessments; the client queries lifecycle state after recovery. Recovery is also how a public client reports receipt and completion after its grant has ended and its tokens can no longer authenticate a write ([Erasure](#erasure)). An expired, superseded, or revoked data-access token never authenticates a report. A client SHOULD resend a report that the AS refused because its credential had expired, once it holds a credential that authenticates the write.
+
+### Lifecycle durability {#lifecycle-durability}
+
+Terminal events are revocations, dispositions, and erasure instructions. Once the AS acknowledges a terminal event, no answer, token, or processing authority that it returns afterwards may contradict it. The following rules generalize that invariant.
+
+The rules in this section that concern a restore, failover, or rollback bind every such path that the AS declares its mechanism detects, and on such a path the AS fails closed as they require. A path that the mechanism does not detect, such as a revert of a virtual-machine snapshot on a single host, is a limitation of the deployment, not a conformance failure. After such a path, an enforcement point may act on history that omits an acknowledged event. The AS MUST disclose that limitation in its durability statement below. Core requires no witness outside the deployment. The AS MUST NOT declare that its mechanism detects a path on which it does not fail closed.
+
+- The AS MUST record each terminal event durably before it acknowledges the event to the owner or to a client.
+- That record MUST be totally ordered against the AS's issuance of tokens, processing authority, and positive assessments. A backup restore or a failover through a path that the AS declares its mechanism detects MUST NOT make any enforcement point act on a history that omits an acknowledged terminal event.
+- Every path that issues a credential for a grant, authorizes a read under it, or assesses it is an enforcement point. These paths include, among others, token responses of every grant type: the authorization-code, device-code, and refresh-token exchanges, and re-delivery of a token already minted. They also include issuance of processing authority, introspection, lifecycle answers, and authentication of lifecycle writes. They include any read authorization made without introspection, such as a package fan-out that resolves its children's status directly. Each path MUST compute its result from state that includes every terminal event acknowledged before the computation. This binds the RS, or any other component, that makes one of these decisions without asking the AS.
+- A resource server MAY authorize a read using an introspection result cached under Section 8 within its original cache lifetime and applicable read deadline. That result's original computation MUST meet the ordering rule. Its cache lifetime runs from the time the RS sent the introspection request. A delayed response, restore, replay, or clock discontinuity MUST NOT restart it. This exception permits only the bounded read-access propagation in Section 10; it permits no positive assessment, credential issuance, or lifecycle write authentication. A read path that establishes status directly instead of using such a cached result MUST establish current ordered state.
+- A replica or restored store may be unable to show that it includes those events. The AS MUST NOT then use it to report a revoked grant active, to issue or re-deliver a token for that grant, or to issue processing authority. It MUST NOT use it to authenticate a write or to return a positive assessment. The lifecycle operation then returns `temporarily_unavailable` for the grant, with one exception. A lifecycle answer whose `held_data` is `erase` MAY come from such state, but only when the complete instruction was durably effective before that state lost currency: its `instruction_id`, `accepted_at`, `effective_at`, and `stop_use_by`, and every grant-ending fact it returns. The AS MUST NOT promote an advance election to an effective instruction, or infer an effective time, from stale state. A refusal or an inactive introspection result MAY also come from such state. A terminal event is never undone, so these answers stay true. The AS still records its first return of an instruction ([Erasure](#erasure)).
+- A restore of the data that read enforcement uses MUST NOT reopen reads under a grant whose revocation the AS acknowledged.
+- Once the AS shows the owner a time by which processing stops, no processing authority it returned before or returns after may permit processing past that time.
+- After a restore or failover through a declared path, an enforcement point MUST NOT treat a history as current until it establishes that the history includes every acknowledged terminal event. The AS chooses and declares the mechanism. Examples are loss-detection evidence kept outside the history's failure domain, and invalidation on restore of every grant whose terminal events may be missing. With a single store and no evidence outside it, that is in practice every grant affected by the undetectable window, and re-establishing those grants needs authoritative facts from outside the restored store. Before acknowledging a terminal event, the AS MUST durably advance whatever evidence its mechanism uses. Evidence MAY lag events that have not been acknowledged. If an enforcement point cannot establish currency, it MUST fail closed as this section requires until authoritative facts are recovered. History whose currency is unknown never yields a positive assessment, a credential, lifecycle write authentication, or renewed read authority.
+- Grant issuance, consumption of a `single_use` grant, authorization-code redemption, refresh-token supersession, and assignment of a `grant_id`, an erasure `instruction_id`, or a pairwise identifier are also recorded events. The AS MUST record each durably before it returns a response that discloses or relies on it. On a declared restore or failover path, the currency rule above applies to these events as to terminal events: a history that may omit one is not current, and an enforcement point fails closed. A `grant_id` and an `instruction_id` are non-empty strings. The AS MUST NOT reuse either after any restore, failover, or rollback, whether or not its mechanism detects it. For example, it generates them with enough randomness that a restored counter cannot repeat them. On a declared path, it MUST NOT reassign a pairwise identifier.
+- While the AS cannot establish a grant's history, it MUST fail closed for that grant: it issues and re-delivers no token, issues no processing authority, reports no active introspection result, and returns no positive assessment. It MUST NOT rebuild an active grant from an older backup. The lifecycle operation returns `temporarily_unavailable` with `Retry-After`, except for an answer that the bullet above permits.
+- While its history is unavailable, the AS MUST still accept an owner's revocation, disposition, or erasure request, and MUST NOT reject one for that reason. It MUST record each such request durably before it acknowledges it, and MUST apply each to the history before any answer for the affected grant once the history is re-established. It MAY return a recorded erasure instruction at once, as the bullet above permits. It MUST show the owner that the action is recorded and pending, and that the AS issues no tokens or processing authority and returns no positive assessments for the affected grants meanwhile. It MUST explain that read access ends within Section 10's bounded propagation period; an existing cached introspection result can permit reads only within its original cache lifetime and applicable read deadline.
+- For an action affecting several grants, the AS MUST durably record a result for each grant. It MUST NOT report the action complete until every requested grant ending and every requested disposition has been durably recorded. A partial result MUST identify each grant as recorded or pending, without treating a pending result as complete.
+- The AS MUST show the owner whether each terminal event is pending or recorded. It MUST describe the durability it actually provides, including its restore mechanism, the disk and host losses it does not survive, and the restore and rollback paths its mechanism does not detect. It MUST state that a rollback it does not detect, such as a revert of a virtual-machine snapshot, can revive revoked grants and lose recorded deletions, unless the deployment declares a mechanism that detects it. It MUST also state that such a rollback can revive consumed `single_use` grants, redeemed authorization codes, and superseded refresh tokens. An AS that keeps its history on a single disk MUST NOT claim that the record survives loss of that disk.
+- The AS MUST retain the grant's lifecycle and authentication bindings while the grant can authorize further reads or processing, while held-data duties remain unresolved, or while legally retained data may remain. Passing a retention ceiling does not establish completed deletion. The AS MUST retain effective erasure instructions, reported exceptions, and the bindings needed for queries and reports until those duties are resolved. It MAY compact resolved history to minimal terminal records, but MUST preserve the facts needed to prevent a restore, replay, or later issuance from reviving ended authority or cancelling erasure. These records MUST NOT contain deleted source data.
+
+### Retention {#grant-retention}
 
 Retention is a structured policy declaration and policy commitment by the data recipient (the client). PDPP does not technically enforce retention. Enforcement is through legal agreements or contractual obligations; a trust registry supports admission and accountability for a retention commitment rather than enforcing it, because Core defines no compliance-evidence query a registry could answer. This is consistent with how OAuth 2.0 treats scope compliance: the protocol makes the commitment legible and machine-readable; external mechanisms enforce it.
 
 ```json
 {
-  "max_duration": "P6M",
+  "max_duration": "P180D",
   "on_expiry": "delete"
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `max_duration` | ISO 8601 duration | How long the client may retain collected data. |
-| `on_expiry` | enum | `delete` or `anonymize`. Note: `archive` is not supported in v0.1. |
+| `max_duration` | ISO 8601 duration in days (`PnD`) | How long the client may retain each record, counted from its first acquisition. |
+| `on_expiry` | enum | `delete` or `anonymize`, applied at each record's retention ceiling. An erasure instruction always requires deletion. Note: `archive` is not supported in v0.1. |
+
+In v0.1, `max_duration` MUST have the form `PnD`, where n is a positive whole number of days, such as `P90D`. A day is 24 hours of elapsed time. The AS MUST reject any other form, including months, years, weeks, and time components, with `invalid_authorization_details` in the OAuth/RAR binding. A client that receives a `max_duration` in any other form MUST treat it as invalid and fail closed: it treats each covered record's retention ceiling as already reached. A record's retention ceiling is the client's first acquisition of that record plus `max_duration`. Rereading, transforming, relabeling, moving, or deriving data never restarts that clock. Neither does obtaining a later grant or processing authority. A later version of a record that the client receives counts from its own receipt. Where the client cannot tell which version a copy came from, the earliest acquisition governs. A derivative is subject to the ceiling of every record it was derived from.
+
+At a record's retention ceiling, the client MUST complete the `on_expiry` action for that record and its derivatives, with no further grace period, subject to the learned-parameter exception in [Held data after a grant ends](#held-data). `anonymize` is complete only when the data is non-identifiable as [Erasure](#erasure) defines, under a test the client states in its records. Removing direct identifiers while keeping a per-owner key, hash, or identifier does not complete it. A client that cannot complete qualifying anonymization by the ceiling MUST delete the data by then. Retention is a maximum. It never permits a new purpose, a processing permission, or keeping data that an erasure instruction requires the client to delete. An owner's choice can shorten it and never extends it. Absent `retention` means no stated limit, which final owner review states ([Recipient commitments and approval](#recipient-commitments)).
 
 ### Examples
 
@@ -1331,6 +1667,8 @@ These examples assume retained declarations whose root `required` arrays list `i
   ]
 }
 ```
+
+This grant permits ordinary agent-context use; it does not authorize the agent to disclose conversation content or a derived summary to an independent recipient.
 
 **Health data with field selection and retention:**
 ```json
@@ -1470,7 +1808,7 @@ A client MUST obtain protected resource metadata without depending on `PDPP-Vers
 
 `resource_name` is RFC 9728's own member for a human-readable resource name, not a PDPP extension; a resource server SHOULD publish it because a consent surface has no other name to display for the resource.
 
-RFC 9728 Section 2 makes `authorization_servers` OPTIONAL, and notes that in some deployments the set of authorization servers is not enumerable. A PDPP resource server MUST publish `authorization_servers` when that set is enumerable, so a client can reach the issuer without prior configuration. When the set is not enumerable, the resource server MUST omit the member rather than publish a partial list. The client then obtains the issuer from the grant it already holds, or from the deployment's own onboarding. Core defines no other discovery path for that case.
+RFC 9728 Section 2 makes `authorization_servers` OPTIONAL, and notes that in some deployments the set of authorization servers is not enumerable. A PDPP resource server MUST publish `authorization_servers` when that set is enumerable, so a client can reach the issuer without prior configuration. When the set is not enumerable, the resource server MUST omit the member rather than publish a partial list. The client then uses the authenticated AS issuer it retained from the OAuth exchange that delivered its grant, or an issuer provisioned through the deployment's trusted onboarding. The grant object contains no issuer identifier, so the client MUST retain the issuer with each grant and MUST NOT infer it from `grant_id`, `source.id`, or an untrusted credential. Core defines no other discovery path for that case.
 
 The `capabilities` member is defined by the extension profiles that advertise into it, not by Core. Core neither requires it nor constrains its contents, and a resource server that implements no extension omits it.
 
@@ -1756,7 +2094,7 @@ DELETE /v1/streams/{stream}/records/{id}
 Authorization: Bearer <owner_token>
 ```
 
-Permanently removes a record from the stream. The RS may implement this as a tombstone internally. Returns 204 No Content on success. The `{id}` path parameter is the percent-encoded canonical key string. The `instance_id` query parameter follows the rule for a single-record read.
+Permanently removes a record from the stream. The RS may implement this as a tombstone internally. Returns 204 No Content on success. Deleting a record at the RS is not an erasure instruction, and it creates no duty for a client that already holds the record (Section 12, Record-level erasure and correction). The `{id}` path parameter is the percent-encoded canonical key string. The `instance_id` query parameter follows the rule for a single-record read.
 
 #### Get a blob
 
@@ -1787,7 +2125,7 @@ A `blob_id` alone does not grant access. When no such record exists, the RS retu
 - `Location` header pointing to a signed URL
 - `Cache-Control: no-store`
 
-The signed URL MUST expire no later than the positive-status cache expiry, or, if no result was cached, 60 seconds after token validation; it MUST also expire no later than the access token or grant expiration when present. The AS MUST include `exp` in every positive introspection response for an expiring PDPP token. A signed URL may remain usable after grant revocation until it expires; its lifetime is bounded by the preceding rule.
+The signed URL MUST expire no later than the positive-status cache expiry. If no result was cached, it MUST expire no later than 60 seconds after the RS sent the introspection request that validated the token. It MUST also expire no later than the access token or grant expiration when present. The AS MUST include `exp` in every positive introspection response for an expiring PDPP token. A signed URL may remain usable after grant revocation until it expires; its lifetime is bounded by the preceding rule.
 
 Redirect URLs may be valid for less than 60 seconds; clients cannot rely on the former 60-second minimum.
 
@@ -1952,18 +2290,27 @@ A conformant authorization server:
 22. Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value.
 23. Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision. Authenticates each representative and, before showing any subject-specific information or accepting approval, verifies their authority under [Representative approval](#representative-approval). Binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.
 24. Lets the owner approve or decline each detail of a request on its own. Issues one grant for each approved, resolved detail, covering one subject, one source, and one purpose, with its own lifecycle. Identifies grants by `grant_id` and does not treat subject, source, and purpose as a grant key.
-25. If it offers client-initiated revocation, ends grants as Section 10 defines: revoking a refresh token, current or superseded, ends every grant its family covers; revoking an access token ends its grants only when no refresh-token family covers them. In the OAuth binding, implements it as RFC 7009 token revocation and advertises `revocation_endpoint` in RFC 8414 metadata.
+25. If it offers client-initiated revocation, ends grants as Section 10 defines: revoking a refresh token, current or superseded, ends every grant its family covers; revoking an access token ends its grants only when no refresh-token family covers them. In the OAuth binding, implements it as RFC 7009 token revocation and advertises `revocation_endpoint` in RFC 8414 metadata. Accepts `pdpp_disposition` on that request and records it only when the request carries current client authentication.
 26. Ends one grant among several that share a credential without revoking that credential or ending the other grants.
 27. Rejects a declaration that names an ineligible `consent_time_field` or a non-boolean `consent_time_content_may_exceed`. Rejects a `time_range` with no bound, a bound whose type does not match the field's format, an invalid bound, or a `since` not before `until`; the OAuth/RAR binding returns `invalid_authorization_details`. This error applies only to public invalidity. A failure that depends on a declaration accepted privately for the owner is an eligibility failure under [Authorization privacy boundary](#authorization-privacy) and MUST NOT produce a client-visible declaration-dependent validation error. Never converts or rounds a bound. Sets `time_constraint.type` from the field's format in the retained declaration.
 28. For each time-bounded stream, renders the exact bounds with their inclusive and exclusive meaning and the declared meaning of the field. Shows a relative label only when it has verified it for those bounds. Discloses that matched records can contain data from outside the bounds when the stream declares `consent_time_content_may_exceed: true`. For a `continuous` grant, discloses that the client can see records leave the window.
 29. Gives each client pairwise identifiers: `subject.id`, `grantors[].id`, instance handles, and any ID Token `sub` differ between clients for the same subject, grantor, or instance. They stay the same for one client, are never reassigned, and cannot be reversed by a client. Sets ID Token `sub` to the authenticated person's identifier, which is a grantor's identifier when a representative authenticates. Uses a globally resolvable `subject.id` only when the owner explicitly chooses to disclose it to that client, and binds that identifier and the client into the final approval artifact and retained consent evidence. Returns an internal subject identifier and `pdpp_instance_bindings` only to the RS.
 30. Resolves each request as [Request resolution](#request-resolution) defines before final approval. Treats requested instances, resources, time bounds, and the field ceiling as upper limits, never narrows below schema-required fields, and adds nothing to compensate for a refused selection. Checks required streams and each retained stream's `minimum` before issuing a grant or client token. Reports an unmet minimum on a required stream as `access_denied` and a malformed `minimum` as `invalid_authorization_details`.
-31. Resolves purpose and retention only from the current request or recipient-authorized standing terms, and retains the evidence identifying those terms with the consent evidence. Discloses during owner review that envelope identifiers are part of every disclosed record.
+31. Resolves purpose and retention only from the current request or recipient-authorized standing terms, and retains the evidence identifying those terms with the consent evidence. Rejects a `retention.max_duration` that is not in the form `PnD`. Discloses during owner review that envelope identifiers are part of every disclosed record.
 32. Returns one `{ type, grant }` element per covered grant in every token response that issues a client access token, including refresh responses, as [Client-visible authorization result](#authorization-result) defines. Returns the same element shape in introspection.
-33. Advertises `https://pdpp.dev/data-access` in `authorization_details_types_supported` and rejects unknown detail types.
-36. For a detail that carries a processing permission, requires a distinct affirmative owner selection, never preselects it, and never makes another detail depend on it. Renders each permission as a labeled term distinct from the purpose. Requires a non-empty `purpose_description` on an AI training detail. Issues the grant with its exact permission set or not at all, and never adds a permission to a detail that did not request it. Binds that set into final owner review, the review revision, retained consent evidence, the grant, token results, and introspection, and requires a new review when the set changes after review. Includes a reviewed `expires_at` in every training grant.
+33. Advertises `https://pdpp.dev/data-access` and `https://pdpp.dev/grant-lifecycle` in `authorization_details_types_supported` and rejects unknown detail types, and a detail that carries a member it does not define.
+36. For a detail that carries a processing permission, requires a distinct affirmative owner selection, never preselects it, and never makes another detail depend on it. Renders each permission as a labeled term distinct from the purpose. Requires a non-empty `purpose_description` on an AI training detail. Issues the grant with its exact permission set or not at all, and never adds a permission to a detail that did not request it. Binds that set into final owner review, the review revision, retained consent evidence, the grant, token results, and introspection, and requires a new review when the set changes after review. Includes a reviewed `expires_at` in every training grant. On the approval surface for an AI training detail, makes the statements and avoids the claims that [AI training consent](#ai-training-consent) lists.
 37. When it supports a processing permission, keeps read access and processing authority distinct as [Read access and processing authority](#processing-authority) defines. Issues no further processing authority after grant revocation or grant expiry. When the grant has `expires_at`, issues no processing authority that outlasts it. Never lets a processing credential confer read access. Does not treat read-window closure, access-token expiry, or refresh-token replay detection alone as ending processing authority or prohibiting its renewal.
 38. Its operator does not use owner data held in the AS role for AI training, except under a training grant issued to it as a client.
+39. Provides the grant lifecycle operation and advertises `pdpp_grant_lifecycle_endpoint`, as [Grant lifecycle operation](#grant-lifecycle) defines. For queries, accepts any token it issued to the client that covers the grant, whether active, expired, superseded, or revoked. Requires current client authentication for writes. Returns indistinguishable `invalid_grant` entries for unknown, foreign, and uncovered grants. Stores token digests, not tokens, and can disable any token it issued for lifecycle use. Admits at least one query per grant per retry interval from each client. Records a client-conveyed `delete` as that client's `received` report only when the request reports the client's first receipt time.
+40. Returns a positive assessment only when no erasure instruction applies to the grant, whatever its read state, and only from state ordered after every terminal event it has acknowledged.
+41. On every interface through which the owner ends a grant, requires an explicit disposition for each grant in the action's scope, rejects a request without one, and applies no default. Presents `keep` and `delete` with neither preselected, and lists the complete affected set as [Ending paths](#ending-paths) defines, including already-ended and consumed grants whose held data may remain and grants that carry a processing permission.
+42. Records each erasure instruction durably before acknowledging it and preserves its terminal effect. An immediate instruction revokes an active grant. An advance instruction takes effect at grant end and does not itself end the grant earlier. Records acceptance, first return, reported receipt, and reported completion or exception separately. Accepts `retained_until` only in its three forms, and shows a `retained` report's end in that form, never as completed deletion. From the effective time, issues no further processing authority that permits use of the covered data.
+43. Shows the owner the stop-use and deletion statements that [Erasure](#erasure) requires, and the time by which covered processing stops. Never shows a receipt-based deletion deadline calculated from acceptance or first return. Until a receipt is reported, shows the latest recorded stage and no deletion date.
+44. Meets [Lifecycle durability](#lifecycle-durability): records terminal events before acknowledging them, in a history that no restore or failover through a path its mechanism detects can make an enforcement point treat as current while it omits an acknowledged terminal event. Records the other events that section lists before a response discloses or relies on them, and never reuses a `grant_id` or `instruction_id`. Never returns a positive assessment, an active introspection result, or a token that contradicts an acknowledged terminal event, on any issuance or assessment path, including code, device-code, and refresh exchanges, token re-delivery, lifecycle write authentication, and package fan-out. This holds except after a restore or rollback path that it discloses as undetected. After restore or failover, treats a history as current only when its declared mechanism establishes that the history includes every acknowledged terminal event, and otherwise fails closed. Describes the durability it actually provides, including the disk and host losses it does not survive, the restore and rollback paths its mechanism does not detect, and what such a path can revive. While its history is unavailable, accepts, records, and later applies owner revocations, dispositions, and erasure requests. For an action affecting several grants, records a result per grant and reports the action complete only when every requested ending and disposition is recorded. Keeps lifecycle and authentication bindings for as long as that section requires.
+45. Shows in final owner review what happens to held data after the grant ends, as [Recipient commitments and approval](#recipient-commitments) defines.
+46. On security revocation, shows the owner the ending and its reason and offers the disposition. Before decommission, offers a disposition for every grant whose held data may remain, shows the stage of each disposition, and warns about each `delete` that no client has received. In a narrowing flow, states the effect of each disposition as [Grant narrowing](#grant-narrowing) defines. Lets the owner request erasure for an ended grant while its held data may remain.
+47. Supports [lifecycle recovery](#lifecycle-recovery), and gives a recovery token no read access and no refresh token.
 48. Retrieves declarations over HTTPS without ambient credentials. Validates every redirect and final URL against its accepted pointer and network policy. Validates the destination immediately before each connection and connects only to that validated address. Rejects automatic remote-schema retrieval and fails closed on any failed check, as Section 5 requires.
 50. Accepts a valid client ID metadata document as an identity without requiring preregistration. Keeps that identity-form acceptance distinct from authorization or admission denial under local policy, as Section 6 requires.
 51. Freezes each stream's schema-required consent floor from the retained declaration into `required_fields` before issuance. Includes the set in reviewed decision evidence, the client-visible grant, and the grant returned through introspection. Includes an empty array for an empty floor. Keeps the set unchanged for the life of that grant.
@@ -1971,6 +2318,7 @@ A conformant authorization server:
 53. Keeps optional ineligible streams unapproved. Refuses required ineligible streams and unmet required authorization minima with `access_denied`. Preserves `invalid_authorization_details` for malformed or unsupported details and any error defined for a specific authorization-details type.
 54. Demonstrates equivalent pre-authentication observables when only protected owner state varies. Demonstrates equivalent client-visible eligibility denials after review. Includes status, response shape and size, redirects, headers, transaction behavior, and timing in its evidence.
 55. Records the entry points, protected-state variants, timing method, and observation limits exercised by its authorization-privacy tests. Reports an unobserved supported path as UNVERIFIED rather than passed.
+56. States during final owner review that ordinary access confers no independent-recipient disclosure authority. Distinguishes parties acting for the client. Does not claim that this duty technically prevents onward disclosure. Applies the closed processing-permission rules without substitution or fallback.
 57. Passes a differential authorization-privacy case that varies private declaration acceptance, temporal capability, and view availability against a matched owner refusal. The client-visible result, the callback, and any transaction-status channel are equivalent across the variants, and no unapproved diagnostic reaches the client.
 
 ### Resource Server conformance
@@ -1995,7 +2343,7 @@ A conformant Core RS:
 15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
 16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource`, the four required `pdpp_`-prefixed members defined in Section 8, and `authorization_servers` when its issuer set is enumerable. Also carries `pdpp_freshness_granularity_seconds` when it attaches `freshness` to client-token responses. Returns a `WWW-Authenticate: Bearer` challenge on 401 per RFC 6750 Section 3, carrying the RFC 9728 `resource_metadata` parameter.
 17. Does not interpret an unrecognized stream semantic as `append_only` or `mutable_state`, or an unrecognized grant `source.kind` as a known provenance class.
-18. Serves a blob only when a record the requesting token may currently read, including its field projection, references it. Otherwise returns 404 `blob_not_found`. Gives a redirect's signed URL an expiry no later than the positive-status cache expiry, or 60 seconds after token validation when no result was cached, and no later than the token or grant expiration when present.
+18. Serves a blob only when a record the requesting token may currently read, including its field projection, references it. Otherwise returns 404 `blob_not_found`. Gives a redirect's signed URL an expiry no later than the positive-status cache expiry, or, when no result was cached, 60 seconds after the RS sent the introspection request that validated the token. The expiry is also no later than the token or grant expiration when present. A delayed response never restarts this deadline.
 19. Returns 401 with `WWW-Authenticate: Bearer error="invalid_token"` for every inactive access token. Uses the structured code `grant_expired` or `grant_revoked` only when authenticated context establishes that cause, otherwise `authentication_error`.
 20. Emits a tombstone for each record visible at the previous horizon and not visible at the new one, and for no other record. Retains the state needed to determine visibility at every unexpired horizon, and otherwise fails the session with 410 `cursor_expired`. Uses the exact client tombstone shape for client tokens. For owner tokens, adds `removal`, and `deleted_at` and `emitted_at` only for a deletion.
 21. Binds each page cursor and `changes_since` token to its grant, or owner subject and scope, and to its query context, and rejects a mismatch as `invalid_cursor`. Orders a `changes_since` session by `instance_id` and then canonical key string, does not serve a record deleted after the session's first page, and rejects `expand[]` and `expand_limit[...]` on `changes_since`. Issues tokens and page cursors that reveal no readable position, time, or field value, and whose equality or ordering signals no change outside the grant or owner scope.
@@ -2019,10 +2367,10 @@ A conformant client:
 3. Treats `cursor` and `changes_since` tokens as opaque and from distinct token spaces. MUST NOT use a `next_cursor` value as a `changes_since` parameter.
 4. Stores `next_changes_since` from the terminal page of a `changes_since` response for use in the next sync session.
 5. Respects HTTP 410 `cursor_expired` responses by starting again from `beginning`, rather than retrying with the expired token. After every completed `beginning` session, replaces its copy of the stream with that session's result.
-6. Honors retention commitments declared in the grant.
+6. Honors retention commitments declared in the grant. Counts each record's retention ceiling from its first acquisition, never restarts it, and applies `on_expiry` at the ceiling to the record and its derivatives with no grace period.
 7. Treats unrecognized error codes as opaque, falling back to the exact HTTP status code and applicable response headers rather than failing on an unknown code. Takes the actual status code and headers as the authoritative outcome. Uses a recognized `error.type` only to refine category or presentation, and only when compatible with that outcome. Ignores an absent, unrecognized, or status-incompatible `type` for control flow, and never fails to parse on an unknown `code` or `type`.
 8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant, and MUST NOT treat an unrecognized `source.kind` as either known value. A client with no provenance-dependent policy has nothing to check.
-9. Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`. Does not treat an inactive token as proof of revocation.
+9. Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`. Does not treat an inactive token as proof of revocation. Starts a grant lifecycle query before further use of held data of that grant.
 10. Identifies each record within a stream by its `instance_id` and `id` together. Treats a tombstone for a record it does not hold as a no-op. Reconciles records it obtained outside sync sessions itself, because the sync guarantee covers only a copy built from sync sessions.
 11. Does not infer from an empty result, the end of pagination, a tombstone, or a 404 that a record does not exist at the source or that collection is complete. Treats a null `last_success_at` only as the absence of a reportable timestamp.
 12. Establishes that the AS advertises `https://pdpp.dev/data-access` before requesting it.
@@ -2030,8 +2378,78 @@ A conformant client:
 14. Does not validate a projected `data` object as a full stream record.
 17. Trains on PDPP inputs only when every contributing PDPP input has covering training permission and valid processing authority, as [AI training](#ai-training) defines, regardless of purpose code or acquisition grant. Applies this rule to derivatives and imposes it on every recipient or subprocessor receiving PDPP inputs. Treats the legacy purpose code `https://pdpp.dev/purpose/ai_training` as conferring no training authority.
 18. Requests a processing permission only when the AS advertises it in `pdpp_processing_permissions_supported`, in a detail separate from any ordinary access, and with a `purpose_description` where Section 6 requires one.
+19. After a grant ends, uses its held data only within the grant's surviving-use terms, including only the limited continuation of already-issued processing authority permitted by the defining profile. Otherwise keeps, but does not use, data held only under a grant that carries a processing permission.
+20. Holds a positive assessment before first use of a grant's held data. Never treats record delivery, introspection, a read error, or a package read status as an assessment.
+21. While it runs and it or a party acting for it holds held data of a grant, attempts a lifecycle query at least once per reconciliation interval, starting one interval after first acquisition. Retries failed or unanswered attempts as [Positive assessment and reconciliation](#reconciliation) requires, including its `Retry-After` and transport-failure widening rules, until an attempt succeeds or it holds no held data of the grant. Also starts a query before further use after a failure that shows the grant may have ended, and after resuming from suspension or power-off if an attempt fell due meanwhile. Does not treat a failed or unanswered query as a reason to stop use the grant's terms permit.
+22. On learning of an erasure instruction, stops use as soon as practicable and no later than the stop-use bound after its effective time, or at once if it learns of the instruction after that deadline. Deletes the covered data, with the scope and by the deadline [Erasure](#erasure) defines. Records its first receipt, never restarts a deadline, and treats the instruction as terminal.
+23. Applies the overdue-disposal rules in [Erasure](#erasure) before further use. Treats backups and legally retained data as [Erasure](#erasure) defines.
+24. Imposes the held-data duties on every party acting for it, and relays erasure instructions with absolute deadlines to it, as [Downstream holders](#downstream-holders) defines.
+25. If it offers its own disconnect, states what happens to held data and offers `keep` and `delete` with neither preselected. Treats `delete` as an erasure instruction effective at once.
+26. Keeps the records that [Erasure](#erasure) requires. Exercises already-issued processing authority after effective erasure only within that section's limited continuation and the defining profile's stop requirements.
+28. Retains the authenticated AS issuer with every grant and does not infer it from `grant_id`, `source.id`, or an untrusted credential, as Section 8 requires.
+29. Discloses PDPP data to an independent recipient only under an expressly covering registered processing permission and valid authority under its defining profile, except for the required-by-law case in Section 7.
+30. Classifies a receiving party by the operation it performs. Does not treat independent use as processing for the client. Applies the rule to derivatives and service outputs as well as source records.
+31. Does not infer independent-recipient disclosure authority from purpose, an owner action instruction, a claim, a positive assessment, an erasure exception, or read-token activity. Records any required-by-law disclosure as Section 7 requires.
 32. Pins a supported HTTP contract with `PDPP-Version` on each Core RS operation, including retries and pagination, and verifies the selected version before using a successful response. Does not infer a contract from a URL path, grant schema, document release, or profile version, and does not silently fall back after a version failure.
 33. Reads each StreamGrant's `required_fields` from the authorization result before requesting disclosure. Expects those fields in every returned record's `data` when the stored record version has a value for them, and does not infer the set from a declaration.
+
+### Held-data conformance cases {#held-data-cases}
+
+Each case below is a conformance requirement on the roles it names, stated as the outcome a test observes. A test controls the clocks of the AS and the client. Cases P1 to P9 cover each [ending path](#ending-paths). Cases C1 to C9 cover each [time limit](#held-data-limits), clock, and the legal-retention exception. Identifiers C3 and C5 are not used. Cases D1 to D5 cover durability and authentication.
+
+A conformance report MUST classify each assertion as protocol-visible or adapter-observed. Client use, retention, erasure, lineage, and backup assertions require a declared deployment adapter identifying the tested operation and storage surfaces. Without the required observation, the report MUST mark the assertion UNVERIFIED, never passed. Erasure reports alone are not evidence of deletion.
+
+Owner actions and displays, security revocation, decommission, downstream relay, and restore or history-loss setup use declared deployment adapters. Core defines no universal HTTP endpoint or UI locator for these controls. The report MUST identify the exercised storage failure domains. Tests MUST run mandatory subcases and subcases for each supported capability. An unsupported optional capability MUST be reported as not applicable, with claim or metadata evidence, never passed. This rule also applies to processing subcases until the defining profile is registered and supported.
+
+Unless a variant states otherwise, fixtures exclude learned parameters, pre-effective non-identifiable data, independent acquisitions, and legal retention. Other deadlines fall after the tested deadline. Cross-limit variants MUST verify the earliest applicable deadline, with isolated legal-retention and independent-acquisition controls. A reported exception is not completed deletion. An anonymization assertion identifies the client's stated non-identifiability test and its observed result; it does not establish universal anonymity.
+
+| Case | Setup | Required outcome |
+|---|---|---|
+| P1. Owner withdrawal at the AS | A client holds data under an active `continuous` grant and a consumed `single_use` grant. The owner disconnects the client at the AS. | The AS lists both grants and presents `keep` and `delete` with neither preselected. It rejects a programmatic request that lacks a disposition. Lifecycle answers report `revoked`, with `held_data` matching each recorded disposition. A `keep` grant answers `permitted`. In a variant, the owner later requests erasure of the `keep` grant: the AS records a new instruction and the answer becomes `erase`. |
+| P1a. Package with an ended child | A package has child A, revoked earlier with `keep`, and active child B. The client disconnects the package with `pdpp_disposition=delete` and current client authentication. | A and B both answer `erase`. In a variant, the AS records B's instruction but not A's: it returns HTTP 503 with A `pending` and B `recorded`, and does not report the action complete. A retry records A and leaves B's instruction clocks unchanged. |
+| P2. One package child | A package has children A and B. The owner withdraws A with `delete`. | A answers `erase`. B still reads, and its answer is `permitted`. The client deletes A's data, and deletes or regenerates without A's data every derivative that mixes A and B. |
+| P3. Narrowing | The owner revokes grant G with `delete` and approves a narrower grant G2. | Before the final step, the AS states the effect of each disposition. G answers `erase`, and the client deletes its G copy. If the client reacquires data, the acquisition uses G2 within G2's scope. Relabeling an old G acquisition never evades its instruction. Choosing not to reacquire does not fail this case. |
+| P4. Revocation at the owner's direction | The owner chooses `delete` in the client while the AS is unreachable. Later the client revokes its refresh-token family with `pdpp_disposition=delete` and the current refresh token. | The client's stop-use and deletion clocks start at the owner's choice, not at AS acceptance. Each grant the family covers then answers `erase`. With a reported owner-choice time, the AS records that time as receipt despite delayed request delivery. Without it, the AS records no receipt-based date and shows no deletion date. In a variant, a public client presents only a superseded refresh token, with no other current client authentication: the grants end and no disposition is recorded. A confidential client with valid current authentication records `delete` even when the target token is superseded. In a variant, the AS crashes after it durably retains the request and before it completes the request's effects. A retry of the same request, with no replacement credential, completes the revocation and the disposition without new owner approval and without restarting any clock. In no variant does the AS record the family revocation without the disposition. |
+| P5. Token revocation without a disposition | The client revokes its refresh-token family without `pdpp_disposition`. | The grants end and answer `revoked` with `held_data` `permitted`. No erasure instruction exists. Revoking an access token that a family covers ends only that token. In a variant, revoking an access token that no family covers ends its grants, which answer `revoked` with `held_data` `permitted`. |
+| P6. Expiry | A grant reaches `expires_at`. In a variant, the owner elected deletion in advance. | Reads end, and no processing authority outlasts `expires_at`. The answer is `expired` and `permitted`. In the variant, the answer is `erase` with `effective_at` equal to `expires_at`. |
+| P7. Security revocation | The AS ends a grant because the client is compromised. | No erasure instruction exists, and the answer is `permitted`. The owner surface shows the ending and its reason and offers the disposition. Choosing `delete` makes the answer `erase`. |
+| P8. Refresh replay | The client reuses a superseded refresh token. | The family's tokens are revoked. The grant does not end and no erasure instruction exists. The superseded token still authenticates a lifecycle query. |
+| P9. AS decommission | The owner retires the AS. One grant has a `delete` that the client has not received. | The AS first offers a disposition for every grant whose held data may remain. It shows each disposition as offered, recorded, sent, or receipt reported, and warns that the undelivered `delete` cannot reach the client once the AS stops answering. |
+| C1. Reconciliation interval | A client first acquires data at t0 and keeps it. The AS is unreachable. The client runs continuously unless a variant says otherwise. | The client attempts a query by t0 plus the reconciliation interval, and at least once per interval afterwards. While no held data remains, no attempt is required. In a variant, the client clears all held data before the first attempt falls due, then acquires data again under the same grant. Attempts resume, and the client starts a query before further use once a reconciliation interval has passed. Voluntary lifecycle queries do not fail this case. |
+| C1a. Retry after a failed attempt | The AS is unreachable for 1 hour, twice, 24 hours apart; each outage covers a scheduled attempt. In a variant, a request remains unanswered beyond the retry interval and no `Retry-After` has been received. The client runs continuously unless a variant says otherwise. | After each failed attempt, the client attempts again within the retry interval until an attempt succeeds, subject to the stated `Retry-After` and transport-failure widening rules. In a variant, the AS is unreachable at the transport level for 3 days: after one reconciliation interval of failed attempts, attempts at least once per reconciliation interval pass the case. The AS admits at least one query per grant per retry interval; other queries MAY receive HTTP 429, which counts as a failed attempt. In the unanswered-request variant, the next attempt starts within the retry interval of the preceding attempt's start, without waiting for that request to finish. In a suspension variant, the client powers off after a failed attempt: it makes no attempts while off and starts a query before any use on resume; a failed or unanswered query does not stop use the grant's terms permit. |
+| C2. Stop-use bound | An erasure instruction takes effect at w. The client receives it at q no later than w plus the stop-use bound. | The client stops use as soon as practicable after authenticated receipt; starting or scheduling cancellation alone does not stop use. The adapter identifies the fixture's use surfaces and a practicable cessation point, and observes that no queued, in-flight, or new use continues past that point. Adapter observations record receipt, cancellation, and completion times on the declared test clock. No queued or in-flight use occurs after the earliest applicable deadline, including w plus the stop-use bound. In a variant with later receipt, it stops at once on receipt. In a variant where the AS is unreachable from w until after w plus the stop-use bound, the client stops at once on receipt; the test does not require it to stop before receipt. The test adds no grace period. |
+| C4. Deletion bound | The client first receives an erasure instruction at q. The AS redelivers it the next day. | Deletion is complete by q plus the deletion bound. Redelivery does not move the deadline. If the client sends a `received` report, it gives q. The AS shows no receipt-based deletion date before such a report. |
+| C5a. Clock discontinuity | The client has received an erasure instruction, or holds a record whose retention ceiling is pending. The client's wall clock then moves backwards, the process restarts from older state, or its elapsed-time clock omits a suspension. | No use or disposal deadline moves later. The client establishes conservative elapsed time or stops use until it can; it completes due disposal before further use. |
+| C6. Retention ceiling | A record is first acquired at a, then reread and transformed. `on_expiry` is `anonymize`. | The client applies `on_expiry` to the record and its derivatives by a plus `max_duration`. An erasure instruction before that time requires deletion instead. In a variant, the client disposed of the raw record but kept a derivative; a later erasure instruction covers that derivative. In a variant, the client removes names but keeps a per-owner hash: this does not pass as anonymization. |
+| C7. Processing cessation | Not applicable until a processing permission's defining profile is published and supported; a test reports it as not applicable, never as passed. The test runs once for each supported permission. An erasure instruction covers data that another grant of the same client, carrying the permission, also covers. | From the instruction's effective time, the AS issues no processing authority that permits use of the covered data. Authority already issued ends within the cessation bound of the permission's registered defining profile and version. The test reads that bound from the registration, not from this case. The [registration test](#processing-permissions) caps it at 1 hour. The owner sees the stop time. |
+| C8. Downstream holders and backups | The client relays an erasure instruction to a party acting for it, and holds a backup of covered data. | The party receives the client's deadlines as absolute times. Its copies and the backup are deleted, or made irrecoverable, by the client's deadlines. A restore replays deletion state before any restored data becomes usable. The adapter enumerates tested backup stores, keys, and recovery paths. Key destruction meets the assertion only when covered data is irrecoverable through those paths; unobserved paths are reported UNVERIFIED. |
+| C9. Legal retention | An erasure instruction covers data that includes invoices that tax law requires the client to keep until an audit closes. The audit's close date is not known. | The client deletes the other covered data by the deletion bound. It processes the invoices only as the obligation requires. A `retained` report carries `retained_until` as `event:` text, with basis and scope. The AS shows that end as an event, never as completed deletion. A later report with a date-time end corrects the earlier one without overwriting it. The AS rejects a `retained_until` in none of the three forms, and a date-time earlier than `reported_at`. In a variant, the client reports `unknown`. When the obligation ends, the client deletes the invoices and reports `completed`. |
+| D1. Restore safety | The AS acknowledges an erasure instruction, then restores a backup taken before it, or answers from a stale replica. | No positive assessment, active introspection result, or token contradicts the acknowledged instruction. The lifecycle operation returns `temporarily_unavailable` rather than a stale positive answer. A stale replica MAY return the instruction. In a variant, a stale replica holds an advance election for grant G. The owner then requests immediate erasure at the authoritative AS. Queried after the originally scheduled time, the replica returns the authoritative effective instruction or `temporarily_unavailable`, never the old `effective_at` or `stop_use_by`. |
+| D1a. Restore across issuance paths | The AS acknowledges revocation of grant G, then restores its main store from a backup in which G and its tokens are live. In a variant, the RS retains a positive introspection result computed before revocation, still within its original cache lifetime and applicable read deadline. | A refresh exchange, an authorization-code or device-code exchange, and re-delivery of a minted token all fail for G. A direct package fan-out sub-call also fails for G. A lifecycle write authenticated by a token revived solely by the restore fails. Introspection returns no active result for G. A read MAY succeed only under the cached-introspection exception in [Lifecycle durability](#lifecycle-durability), within the result's original cache lifetime and applicable read deadline. The restore MUST NOT restart either limit. In a variant, a positive introspection response computed before revocation reaches the RS more than 60 seconds after the RS sent the request. It authorizes neither a read nor a signed blob URL. In a variant, the restore runs through a declared path, and the backup predates redemption of an authorization code and consumption of a `single_use` grant: the code is not redeemed again, and the grant opens no second read window. |
+| D2. Lifecycle authentication | A public client holds only an expired access token for a revoked grant. Another client presents a token for its own grant. | The expired token authenticates a query and cannot authenticate a write. Queries for another client's grant, an unknown grant, and an uncovered grant use the same HTTP handling, entry schema, and `invalid_grant` error. Only the requested `grant_id` differs; no field distinguishes those categories. |
+| D3. Recovery after lifecycle compromise | The AS disables a public client's tokens for lifecycle use. The owner approves lifecycle recovery for the client's grants. | Disabled tokens get `invalid_token`. The recovery token authenticates queries and writes for the approved grants only, introspects `active: false`, and is rejected by the RS. Its token response is not a positive assessment. A request that mixes a recovery detail with a data-access detail is rejected with `invalid_authorization_details`. |
+| D4. History loss | The AS loses its terminal-event history store. Each restore runs through a path that the AS declares it detects, unless a variant says otherwise. In a variant, the store ends before the latest position the AS recorded. While the history is unavailable, the owner revokes grant G with `delete`. In a second variant, for an AS that keeps loss-detection evidence outside the store's failure domain, event-specific evidence for erasure E is durable before E is acknowledged. The history then loses only the suffix containing E, while the independent evidence for E and the history epoch survive. Separately, the test injects failure while advancing the evidence. In a third variant, an AS with one store acknowledges erasure E, then restores a snapshot that predates E. In a fourth variant, the history is rolled back through a path that the AS does not declare, such as a revert of a virtual-machine snapshot. | Except in the fourth variant, the AS treats the history as not current under its declared mechanism. Its durability statement matches the failure domains the test exercises. It issues no token, active introspection result, processing authority, or positive assessment for any grant whose history it cannot establish; lifecycle queries get HTTP 503 `temporarily_unavailable` with `Retry-After`. It accepts the owner's revocation, shows it as pending, and applies it before any answer for G once the history is re-established. It MAY return G's erasure instruction meanwhile. In the second variant, every enabled enforcement point detects the suffix gap and fails closed. Failure to advance the evidence prevents acknowledgement of E. In the third variant, the AS detects the possible rollback and fails closed: it returns no positive assessment and no live credential for E's grant. In the fourth variant, the AS's durability statement names that path as undetected and states what it can revive. This outcome passes only because the AS does not declare the path as detected; the test requires no outside witness. |
+| D5. Reports after revocation | The owner revokes a public client's grant at the AS with `delete`. The client holds only revoked tokens for the grant. | A revoked token authenticates the query that delivers the instruction. A `received` or `completed` report with that token gets `current_authentication_required`. The owner sees the stage sent, receipt not reported, and no deletion date. After the owner approves lifecycle recovery, the recovery token authenticates the client's report of its recorded receipt time and completion; the AS then shows the deletion date from that receipt. In a variant, the owner chooses `delete` in the client and the client conveys it with current client authentication and `reported_at`: the AS records that time as the client's receipt. Without `reported_at`, it records no receipt. |
+
+### Independent-recipient disclosure conformance cases {#independent-recipient-cases}
+
+A report MUST identify which assertions are protocol-visible and which are adapter-observed. Client disclosure assertions require an adapter that identifies the tested outbound, presentation, and storage surfaces. A report without those observations MUST mark those assertions UNVERIFIED.
+
+| Case | Fixture and required outcome | Observation |
+|---|---|---|
+| O1 | An active ordinary grant has an analytics purpose. The client attempts to send records to an independent recipient. The client prevents the disclosure. | Adapter-observed outbound payload and sink state. |
+| O2 | Repeat O1 with a summary, score, embedding, shared-link response, and tool-call argument derived from the records. The client prevents each disclosure. | Adapter-observed, per supported surface; unsupported surfaces documented as not applicable. |
+| O3 | Repeat O1 after grant expiry with `keep`, after `single_use` read-window closure, with an active token, and with a fresh positive assessment. None of these states authorizes disclosure. | Protocol-visible fixtures; adapter-observed release decision. |
+| O4 | The purpose description says that data will be sent to a named adviser; a client claim promises deletion; the owner gives an action instruction to send. Without a covering registered permission, the client prevents independent disclosure. | Adapter-observed owner instruction and egress. |
+| O5 | A party acts only for the client under the required flow-down. The client's classification does not treat that arrangement alone as independent disclosure. The client applies the same erasure deadlines to the party. Add an independent-reuse right to the fixture; the client then prevents disclosure without covering authority. | Adapter-observed arrangement, scope, relay, and outbound result. |
+| O6 | An owner-held RS issues a fresh grant to client B. B reads using its own token. The rule does not reject the read merely because another client previously read the data. The RS never accepts client A's transferred token as B's grant. | Protocol-visible issuer, recipient, and read context, with adapter identity evidence where needed. |
+| O7 | An authorization detail asks for an unknown release-permission URI. The AS returns `invalid_authorization_details` and issues no replacement ordinary grant. Discovery does not advertise the unsupported value. | Protocol-visible. |
+| O8 | The client returns data to the owner within its applicable use terms. This rule does not block that return. Existing erasure, retention, and processing limits still apply. | Adapter-observed recipient identity and use eligibility. |
+| O9 | The client cites the erasure exception for non-identifiable data. That exception alone does not authorize independent release. | Adapter-observed result lineage and release gate. |
+| O9a | The client cites the learned-parameter exception. Not applicable until a supported registered profile can supply valid processing authority; a test reports it as not applicable, never as passed. Once applicable, that exception alone does not authorize independent release. | Adapter-observed result lineage and release gate. |
+| O10 | A fixture supplies a binding legal disclosure obligation for a defined subset. The client releases no larger subset and retains the required record, unless the fixture prohibits that record. A merely legally permitted disclosure does not meet the exception. | Adapter-observed legal-basis fixture, payload, and record; legal validity itself is outside the test. |
+
+No test in this table proves the absence of undiscovered egress channels. A conformance report identifies its adapter coverage.
 
 ### Conformance test suite
 
@@ -2053,7 +2471,7 @@ PDPP defines two token kinds at the resource server boundary: owner tokens and c
 
 For separated AS/RS deployments, the RS MUST authenticate to the AS introspection endpoint (RFC 7662) and enforce only from its response. It MUST NOT make a second AS lookup while handling the request. For co-located deployments, a local equivalent (shared database lookup or function call) is acceptable. Self-contained JWTs are allowed as an optimization but MUST NOT be the sole revocation mechanism.
 
-Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. This bounds read-access revocation propagation.
+Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. The cache lifetime runs from the time the RS sent the introspection request, or, for a co-located local equivalent, from the start of that validation. The RS MUST NOT use a result after that lifetime ends, cached or not. A delayed response does not extend it. This bounds read-access revocation propagation.
 
 An access token issued with or from a refresh-token family MUST be linked to that family and MUST have a short, token-specific expiration no later than the family or grant expiration. A token response MUST derive `expires_in` from the access token's persisted expiration. It MUST omit `expires_in` when the access token has no expiration, which Section 7 does not permit for a `single_use` grant. An RFC 7662 response MUST likewise omit `exp` when no expiration exists.
 
@@ -2090,23 +2508,27 @@ A client that gives records to an automated agent SHOULD treat them as untrusted
 
 | Role | Responsibilities |
 |------|----------------|
-| **Authorization Server** | Validates purpose-code syntax and local policy; authenticates user; preserves semantic distinctions on the consent surface; validates stream/field/view/resource-id shape at grant issuance; resolves views to field lists; issues access tokens; maintains grant lifecycle. |
+| **Authorization Server** | Validates purpose-code syntax and local policy; authenticates user; preserves semantic distinctions on the consent surface; validates stream/field/view/resource-id shape at grant issuance; resolves views to field lists; issues access tokens; maintains grant lifecycle. Records dispositions and erasure instructions durably, and answers lifecycle queries. |
 | **Resource Server** | Validates token via introspection; for client requests, enforces stream, instance, fields, frozen time constraints, and resources against the resolved grant; for owner requests, enforces subject/source/connection/operation scope without requiring a grant; never reinterprets authorization from a current declaration. |
-| **Client** | Submits well-formed selection requests; uses access tokens; terminates on revocation; honors retention commitments; performs no operation that a processing permission covers without that permission and its defining profile's authority. |
+| **Client** | Submits well-formed selection requests; uses access tokens; terminates on revocation; honors retention commitments; performs no operation that a processing permission covers without that permission and its defining profile's authority. Meets its held-data duties: reconciliation, erasure, and relay to parties acting for it. |
 
 ### Revocation {#revocation}
 
-The owner MAY revoke a grant at the AS by a deployment-defined means. A binding MAY also let a client revoke a credential it holds. When a client revokes a refresh token, the AS MUST end every grant that the token's family covers, and every access token issued under those grants. Revoking a superseded refresh token of the family has the same effect. When a client revokes an access token, the AS MUST end that token. The AS MUST also end the token's grants, but only when no refresh-token family covers them. Where client revocation is supported, disconnect therefore requires revoking the refresh-token family. Revoking an access token disconnects only when no refresh-token family covers its grants. Ending one grant among several that share a credential is a grant-level action at the AS. It MUST NOT revoke the shared credential or end the other grants.
+The owner MAY revoke a grant at the AS by a deployment-defined means. Every owner revocation carries a disposition for held data ([Ending paths](#ending-paths)). The AS MAY also end a grant for a security reason, with the effects that [Ending paths](#ending-paths) defines. A binding MAY also let a client revoke a credential it holds. When a client revokes a refresh token, the AS MUST end every grant that the token's family covers, and every access token issued under those grants. Revoking a superseded refresh token of the family has the same effect. When a client revokes an access token, the AS MUST end that token. The AS MUST also end the token's grants, but only when no refresh-token family covers them. Where client revocation is supported, disconnect therefore requires revoking the refresh-token family. Revoking an access token disconnects only when no refresh-token family covers its grants. Ending one grant among several that share a credential is a grant-level action at the AS. It MUST NOT revoke the shared credential or end the other grants.
 
 In the OAuth binding, client-initiated revocation is [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009) token revocation. Support is OPTIONAL. An AS that offers clients a way to disconnect SHOULD support it. An AS that supports it MUST advertise `revocation_endpoint` in its [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) metadata. RFC 7009 Section 2.1 leaves the effect on related tokens and on the grant to AS policy; the rules above fix that policy.
 
-There is no push revocation channel in v0.1. Read-access revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds), whoever starts the revocation. The AS MUST reflect revocation immediately in introspection: the revoked grant is inactive at once. A token that covers another active grant stays active; a token with no active grant is `active: false`. No later than 60 seconds after revocation, a request that uses the revoked grant fails. When the token is bound to no other active grant, the request fails with HTTP 401 and Bearer error `invalid_token`. The structured error code is `grant_revoked` when authenticated context establishes the cause, otherwise `authentication_error` (see Section 8, Errors). A binding in which one credential covers several grants defines the failure while the credential stays active.
+The revocation request MAY carry `pdpp_disposition`, with the value `keep` or `delete`, to convey the owner's choice for every grant the request ends ([Disconnect in the client](#client-disconnect)). An AS that supports RFC 7009 revocation MUST accept the parameter and MUST reject any other value with `invalid_request`. The AS records the disposition only when the request carries current client authentication ([Grant lifecycle operation](#grant-lifecycle)). Without it, the AS still ends the grants but records no disposition. A recorded `delete` creates an erasure instruction for each grant the request ends. With `delete`, the request MAY carry `reported_at`, reporting the owner's choice time in the client. Its validation and receipt-recording rules are those of `pdpp_disposition=delete` in the grant lifecycle operation. Absence of that time MUST NOT make the AS record request arrival as first receipt.
 
-On a 401 response with Bearer error `invalid_token`, the client MUST stop using that access token. On a `grant_revoked` error, the client MUST stop further requests against that grant. A client MUST NOT treat an inactive token as proof of revocation: the token may instead have expired or lost its refresh-token family. The HTTP status governs over an unknown error code, as Section 8 states. Companion profiles define how their active work is terminated.
+Before it applies any effect of a revocation request that carries a recorded disposition, the AS MUST durably retain the request's grant scope, disposition, any `reported_at`, and credential binding. The AS MUST record a conveyed disposition before, or atomically with, the refresh-family revocation that carries it. A matching retry MAY finish that recorded operation after its own effects have revoked the credential. It MUST NOT authorize a new scope, disposition, or report with that credential. The AS returns HTTP 200 only when every requested ending and disposition is durable; otherwise it returns HTTP 503 with `Retry-After`. Retries preserve existing instruction identifiers and clocks.
 
-Revocation ends future reads. Under a grant that carries a processing permission, it also ends processing authority over data already delivered, within the defining profile's cessation bound (Section 7). Other use of data delivered before revocation is governed by the grant's `retention` policy and applicable legal obligations.
+There is no push revocation channel in v0.1. Read-access revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds), whoever starts the revocation. The AS MUST reflect revocation immediately in introspection: the revoked grant is inactive at once. A token that covers another active grant stays active; a token with no active grant is `active: false`. No later than 60 seconds after revocation, a request that uses the revoked grant fails. When the token is bound to no other active grant, the request fails with HTTP 401 and Bearer error `invalid_token`. The structured error code is `grant_revoked` when authenticated context establishes the cause, otherwise `authentication_error` (see Section 8, Errors). A binding in which one credential covers several grants defines the failure while the credential stays active. A client learns whether it may keep and use held data only from token responses, the [grant lifecycle operation](#grant-lifecycle), or the owner's choice in the client ([Disconnect in the client](#client-disconnect)); a failed read only prompts a query.
 
-Revocation is not deletion. v0.1 does not define an active erasure signal or downstream deletion callback.
+On a 401 response with Bearer error `invalid_token`, the client MUST stop using that access token. On a `grant_revoked` error, the client MUST stop further requests against that grant. A client MUST NOT treat an inactive token as proof of revocation: the token may instead have expired or lost its refresh-token family. The HTTP status governs over an unknown error code, as Section 8 states. Before further use of held data of that grant, the client MUST start a grant lifecycle query, which is an attempt and not a successful answer ([Positive assessment and reconciliation](#reconciliation)). Companion profiles define how their active work is terminated.
+
+Revocation ends future reads. Under a grant that carries a processing permission, it also ends processing authority over data already delivered, within the defining profile's cessation bound (Section 7). Revocation alone does not request erasure: held data then follows the grant's surviving-use terms and the client's held-data duties ([Held data after a grant ends](#held-data)). When the owner chooses `delete`, the erasure instruction requires the client to stop using and to delete its copy, its derivatives, and the copies of every party acting for it ([Erasure](#erasure)).
+
+Erasure reaches the client by pull, through the grant lifecycle operation, or by the owner's choice in the client. AS silence starts no additional held-data use or deletion deadline (Section 12). v0.1 defines no push channel for erasure and no proof of deletion.
 
 ---
 
@@ -2130,7 +2552,7 @@ If interoperable audit or transparency events are standardized in the future, th
 
 ### Retention
 
-The `retention` field is a structured policy declaration and policy commitment by the data recipient. PDPP does not technically enforce retention. Enforcement is through legal agreements or contractual obligations, with a trust registry supporting admission and accountability rather than enforcement. This is an intentional design choice, consistent with how OAuth 2.0 treats scope compliance.
+The `retention` field is a structured policy declaration and policy commitment by the data recipient. PDPP does not technically enforce retention. Enforcement is through legal agreements or contractual obligations, with a trust registry supporting admission and accountability rather than enforcement. This is an intentional design choice, consistent with how OAuth 2.0 treats scope compliance. The held-data and erasure duties of Section 7 are client conformance duties of the same kind: the lifecycle operation makes them executable, and a conforming client's records make a breach attributable.
 
 ---
 
@@ -2146,7 +2568,8 @@ The `retention` field is a structured policy declaration and policy commitment b
 - Resource server query API with cursor-based pagination and grant enforcement
 - Incremental sync for every stream via `changes_since`
 - Tombstones for records that leave a client's view
-- Owner-authenticated user erasure (`DELETE /v1/streams/{stream}/records/{id}`)
+- Owner-authenticated deletion of a record at the RS (`DELETE /v1/streams/{stream}/records/{id}`)
+- Client duties for held data after a grant ends, owner-requested erasure of client-held copies, and the grant lifecycle operation (Section 7)
 - Self-export via owner token (SHOULD-level Core RS conformance, see Section 9 item 13)
 - Conformance definitions for all roles
 
@@ -2154,9 +2577,9 @@ The `retention` field is a structured policy declaration and policy commitment b
 
 | Concern | Status |
 |---------|--------|
-| Authorization server interface | Introspection endpoint contract defined here; full AS interface informational only in v0.1 |
+| Authorization server interface | The authorization request, token result, AS metadata members, introspection, revocation, grant lifecycle operation, and lifecycle recovery are defined here. Consent-screen layout, owner authentication, and other AS endpoints are not |
 | Ingest and sync-state endpoints | Defined by the Collection Profile; not required for Core RS |
-| Conformance test suite | Planned but not defined in v0.1 |
+| Conformance test suite | Planned but not defined in v0.1. Section 9 lists the held-data cases such a suite exercises |
 | Webhook / push ingestion | Deferred |
 | Source lifecycle actions | Deferred (e.g., deleting source data after export) |
 | Event-driven collection triggers | Deferred; architecturally distinct from the pull-based Collection Profile |
@@ -2168,16 +2591,21 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Point-in-time reconstruction | Deferred (reconstructing full state at a past timestamp) |
 | Canonical view naming vocabulary | Deferred; will be informed by implementation experience |
 | Predicate-based grant scoping | Deferred; see [Predicate-based grant scoping](#predicate-based-grant-scoping) |
-| Derivative data | New derived sources, onward rights, and durable derived datasets remain deferred. AI training on data derived from PDPP inputs is governed by [AI training](#ai-training). The optional [extended access profile](spec-access-extension) defines bounded presentation of authorized input, not new source or grant authority. |
+| Derivative data | New derived sources and durable derived datasets remain deferred. Derivatives are [PDPP data](#data-concepts): held-data, retention, and erasure duties reach them (Section 7), and AI training on them is governed by [AI training](#ai-training). Independent-recipient disclosure follows the rule in Section 7. The optional [extended access profile](spec-access-extension) defines bounded presentation of authorized input, not new source or grant authority. |
+| Independent-recipient disclosure | Requires a registered processing permission expressly covering the disclosure (Section 7). This version defines none. A future permission must define the complete recipient and disclosure contract under Section 6; ordinary purpose-compatible use supplies no such authority. |
 | Cross-source category grants | Deferred; grants bind to a single `source.id` in v0.1 |
-| Active erasure signal | Deferred; revocation ends reads and processing authority (Section 7) and is not a deletion request. No erasure signal to the recipient is defined |
+| Push delivery and proof of deletion | Not specified in this version. Erasure reaches the client by pull, through the grant lifecycle operation (Section 7). Core defines no issuer-initiated notification to a client and no proof of deletion; the client keeps an accountability record |
+| Use of held data while the AS is unreachable | Core specifies that the client keeps held data, may use it as the grant permits, and retries (Section 7). Core sets no use or deletion deadline that runs because the AS is silent. Known erasure, retention, and processing deadlines still bind |
+| Record-level erasure and correction | Not specified in this version. The owner can delete a record at the RS (Section 8), but Core defines no request to erase or correct an individual record in copies a client holds. An erasure instruction covers all held data of one grant, and its scope is implicit in `grant_id`. Narrowing uses erasure and a new grant (Section 7). A sync tombstone means only that a record left the client's authorized view; it is not an instruction to forget the record. A grant never acquires duties that its approved contract does not define, and an AS rejects unsupported mandatory semantics (Section 6, Unknown members) |
+| Clinical records and continued use after deletion | Not specified in this version: how a change of authority interacts with duties that govern clinical records, including correction, retention, and continued use. The legal-retention exception covers only legally required retention, and gives no general right to continued clinical or other use after the owner chooses `delete` (Section 7) |
+| Issuer succession and estate | Not specified in this version: how existing grants are handled when an issuer stops operating or an owner dies, including who may act for the owner. A new issuer cannot answer for grants of an old one. Before an AS stops answering, it offers dispositions and warns about undelivered deletes (Section 7) |
 | Session refresh | Deferred; no signal asks the owner to renew source-side authentication. A `continuous` grant can stay valid while collection pauses |
 | Request-side freshness requirements | Deferred; freshness is response-side only, as a per-instance `last_success_at` (Section 8) |
 | Collection coverage and degradation signals | Deferred to a future extension. Core reports no completeness (coverage) or degradation signal, and no signal that supports a claim that data does not exist at the source (Section 8) |
 | Minimum-data defaults | Decided for v0.1: a stream request names `fields`, a `view`, or the explicit `fields: ["*"]` marker (Section 6); `necessity` defaults to `optional`; an omitted `time_range` means no temporal constraint; `"name": "*"` requests all declared streams |
 | Subgrants | Deferred; access under a grant is not transferable. A second party needs its own grant |
-| Client grant management | Deferred; a client can revoke a credential (Section 10), but Core defines no client operation that ends one grant while other grants share its credential |
-| Change of client ownership and undisclosed sub-processing | Deferred; no change-of-control record, revocation trigger, or recipient sub-processing disclosure mechanism. `client_claims` is not an ownership record |
+| Client grant management | Deferred; a client can revoke a credential (Section 10), query grant lifecycle, and report on erasure (Section 7). Its only operation that ends one grant while other grants share its credential conveys an owner's erasure request (Section 7) |
+| Change of client ownership and undisclosed sub-processing | Deferred; no change-of-control record, revocation trigger, or recipient sub-processing disclosure mechanism. `client_claims` is not an ownership record. Moving held data to a different party under a change of control is [independent-recipient disclosure](#independent-recipient-disclosure) unless that party acts for the client |
 | Client bulk export | Deferred; owner self-export is SHOULD (Section 9). A client pages through the query under its grant |
 | Owner-operated authorization server (UMA-style) | Not introduced; see Section 3. |
 | Cross-source reference resolution | Deferred; Core does not resolve the target instance of a `resource_ref` to another source, and a resource server serves such a reference in the redacted form (Section 4) |
@@ -2303,7 +2731,7 @@ type SelectionRequest = {
   access_mode: 'single_use' | 'continuous';
   processing_permissions?: string[];  // Unique absolute URIs; closed set (Section 6); absent or empty = none
   retention?: {
-    max_duration: string;
+    max_duration: string;  // ISO 8601 duration in days, PnD
     on_expiry: 'delete' | 'anonymize';
   };
   client_claims?: { commitments?: string[] };
@@ -2343,12 +2771,46 @@ interface DataGrant {
   streams: StreamGrant[];
   selection_preset?: string;
   retention?: {
-    max_duration: string;  // ISO 8601 duration
-    on_expiry: 'delete' | 'anonymize';
+    max_duration: string;  // ISO 8601 duration in days, PnD, counted from the first acquisition of each record
+    on_expiry: 'delete' | 'anonymize';  // Applied at each record's retention ceiling; an erasure instruction always requires deletion
   };
   expires_at?: string;  // ISO 8601; required when processing_permissions includes AI training; otherwise absent means no expiry
   grantors?: Array<{ id: string; capacity: string }>;  // present only for representative approval; id is pairwise per client
   extensions?: Record<string, unknown>;  // keyed by absolute profile URI
+}
+
+// --- Grant lifecycle operation (Section 7) ---
+
+type Disposition = 'keep' | 'delete';  // pdpp_disposition on revocation; only 'delete' is a lifecycle write
+
+interface ErasureInstruction {
+  instruction_id: string;
+  accepted_at: string;   // RFC 3339; when the AS durably accepted the instruction
+  effective_at: string;  // accepted_at, or the end of the grant for an advance election
+  stop_use_by: string;   // effective_at plus the stop-use bound
+}
+
+interface GrantLifecycleAnswer {
+  grant_id: string;
+  assessed_at: string;   // RFC 3339; when the AS computed the answer
+  read_state: 'active' | 'window_closed' | 'expired' | 'revoked';
+  ended_at?: string;     // Present only when read_state is 'expired' or 'revoked'
+  held_data: 'permitted' | 'erase';  // 'permitted' is a positive assessment
+  erasure?: ErasureInstruction;      // Present only when held_data is 'erase'
+}
+
+interface GrantLifecycleError {
+  grant_id: string;
+  error: 'invalid_grant' | 'current_authentication_required' | 'invalid_instruction';
+}
+
+interface GrantLifecycleResponse {
+  grants: Array<GrantLifecycleAnswer | GrantLifecycleError>;  // One entry per requested grant_id, in request order
+}
+
+interface GrantLifecycleRecoveryDetail {
+  type: 'https://pdpp.dev/grant-lifecycle';
+  grant_ids: [string, ...string[]];
 }
 
 // --- Source Declaration ---
@@ -2485,6 +2947,6 @@ A purpose code states what a use serves and never confers a processing permissio
 
 PDPP and DTI are complementary protocols addressing different concerns. PDPP defines parameterized consent and disclosure semantics (the grant is the consent artifact; the query API is the disclosure mechanism). DTI defines canonical data models and transfer adapters (the mechanics of moving data between systems).
 
-The two protocols can chain: a PDPP grant can authorize access to data that a DTI transfer then moves, using PDPP stream schemas to carry DTI canonical data model payloads. Formal integration between PDPP grants and DTI transfer manifests is a separate effort; no integration document is currently specified.
+The two protocols can chain: a PDPP grant can authorize access to data that a DTI transfer then moves, using PDPP stream schemas to carry DTI canonical data model payloads. Formal integration between PDPP grants and DTI transfer manifests is a separate effort; no integration document is currently specified. A client that moves held PDPP data to a party that does not act for it makes an [independent-recipient disclosure](#independent-recipient-disclosure), which v0.1 does not authorize.
 
 Note: "Data Transfer Project" is referred to as DTI (Data Transfer Initiative) in current usage, reflecting its evolution from the original DTP initiative.

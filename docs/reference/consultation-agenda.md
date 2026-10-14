@@ -255,6 +255,12 @@ policy and applicable legal obligations. The specification deliberately does
 not overload revocation responses or introspection state to imply downstream
 erasure, and no active erasure signal is defined in v0.1.
 
+**Superseded.** The paragraph above records the position the consultation
+opened on. A proposed held-data revision would replace it: every owner withdrawal carries a
+keep or delete disposition, and clients learn of erasure instructions through
+the grant lifecycle operation
+([spec-core, held data](https://www.pdpp.dev/docs/spec-core#held-data)).
+
 **What input helps.** Prior art on machine-to-machine deletion requests and
 their acknowledgment (including how legal-hold and retention obligations are
 represented). A view on whether erasure belongs in Core or in a companion

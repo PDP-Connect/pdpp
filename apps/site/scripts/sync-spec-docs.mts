@@ -83,6 +83,11 @@ function toMdxSafe(body) {
       // fails. Backtick-quoting it (already how this table quotes every other
       // token) makes the comparison operator literal.
       .replace("(exclusive, <), evaluated", "(exclusive, `<`), evaluated")
+      // MDX does not accept HTML comments (`<!--` fails as a tag name). The
+      // root specs use single-line editorial markers such as
+      // `<!-- OWNER DECISION OD-4 -->` next to a value; carry them into the
+      // site copy as MDX comments so they stay invisible there too.
+      .replace(/<!--[ \t]*(.*?)[ \t]*-->/g, "{/* $1 */}")
   );
 }
 
