@@ -159,6 +159,34 @@ flowchart TB
     AS -- grant --> Client
 ```
 
+**Example (non-normative).** The diagram above shows the roles. The sequence below illustrates one authorization-code flow for one grant, followed by a client read in a deployment with a separate AS and RS. User-facing authorization flows remain deployment-specific (Section 2); [Section 8](#resource-server-interface) defines the token-resolution and grant-enforcement requirements.
+
+```mermaid
+sequenceDiagram
+    participant Owner
+    participant Client
+    participant AS as Authorization Server
+    participant RS as Resource Server
+
+    Client->>AS: authorization request (authorization_details)
+    AS->>AS: validate owner-independent request and binding facts
+    AS->>Owner: authenticate or verify existing owner session
+    AS->>AS: resolve accepted declaration and owner eligibility privately
+    AS->>Owner: review resolved selection and commitments
+    Owner->>AS: review and approve
+    AS->>AS: issue approved grant
+    AS-->>Client: authorization code (via redirect)
+    Client->>AS: redeem authorization code
+    AS-->>Client: access token bound to the grant
+    Client->>RS: query records (access token)
+    RS->>AS: introspect token
+    AS-->>RS: grant enforcement context
+    RS-->>Client: records within the grant
+    Note over RS,AS: A co-located deployment may use a local equivalent of introspection
+```
+
+**Example (non-normative).** An otherwise valid request names a source that the owner has not connected. The AS follows the same authentication entry path as when the source is connected. In authenticated review, the stream cannot be approved. If it is optional and another stream is approved, the grant omits it. If it is required or no stream remains, the client receives `access_denied` without a connection-status reason. A malformed `fields`/`view` combination still receives `invalid_authorization_details` independently of the owner's connections.
+
 What differs between deployments is how the resource server that fulfills the grant is populated and operated. This is not a closed set: a resource server may hold pre-collected data with no collection machinery involved, or receive data via regulatory export, manual import, or platform-native APIs ([Section 1](#introduction)). The two examples below illustrate the ends of that spectrum; the [PDPP Collection Profile](spec-collection-profile) is one fulfillment mechanism, not the only one.
 
 **Example A: source-native fulfillment.** The data source operates its own authorization and resource servers directly; there is no separate collection step.
@@ -581,6 +609,66 @@ For `changes_since`, the comparison projection includes each `resource_ref` in t
 
 Each source publishes a `SourceDeclaration` describing its identity, publisher, consent surface, record semantics, selection capabilities, and Resource Server query capabilities. Connector-backed and provider-native sources use the same Core shape. The declaration defines what can be consented to. The resolved grant defines what was approved.
 
+### Example: one stream, from declaration to grant
+
+The following example follows one stream, `top_artists`, from declaration through the request and consent to the issued grant.
+
+**The declaration.** The source declares the stream, its consent-screen text, and its time field (excerpt; `views` and `query` omitted):
+
+```json
+{
+  "name": "top_artists",
+  "description": "Most-listened artists over time",
+  "display": {
+    "label": "Your top artists",
+    "detail": "Artist names, genres, and popularity scores. No listening timestamps or play counts."
+  },
+  "semantics": "mutable_state",
+  "schema": { "..." : "..." },
+  "primary_key": ["id"],
+  "cursor_field": "source_updated_at",
+  "consent_time_field": "source_updated_at",
+  "selection": { "fields": true, "resources": false }
+}
+```
+
+The full declaration below gives the omitted schema: `source_updated_at` is a string with format `date-time`, and `id` and `name` are required. The requested field list already includes both required fields, so resolution adds no fields.
+
+**The request.** A client asks for this stream in its selection request ([Section 6](#selection-request)) with `fields: ["id", "name", "genres", "popularity", "source_updated_at"]`, `instance_ids: ["inst_K4wq8Rn2"]`, and `time_range: { since: "2025-09-28T00:00:00Z" }`. `selection.fields: true` allows the field list, and `consent_time_field` makes the stream time-range-capable.
+
+**The consent screen.** The authorization server shows the declaration's label and detail, the requested fields, and the bound stated as inclusive, for example "artists updated at or after 00:00 UTC on 28 September 2025" (see [consent_time_field](#consent-time-field)). It also states that `id` and `name` remain in every record the client receives. The owner approves or declines the request.
+
+**The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields, the required-field subset, and time bound:
+
+```json
+{
+  "name": "top_artists",
+  "instance_ids": ["inst_K4wq8Rn2"],
+  "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
+  "required_fields": ["id", "name"],
+  "time_constraint": {
+    "field": "source_updated_at",
+    "type": "date-time",
+    "since": "2025-09-28T00:00:00Z"
+  }
+}
+```
+
+**A sparse read.** A later client-token request for one granted field still returns the frozen required fields:
+
+```text
+GET /v1/streams/top_artists/records?fields=genres
+
+Grant fields: id, name, genres, popularity, source_updated_at
+Grant required_fields: id, name
+Returned data members, when present: id, name, genres
+Excluded optional data members: popularity, source_updated_at
+```
+
+If `genres` is absent from a record, it stays absent. `id` and `name` are returned whenever the stored record has a value for them; a missing value stays absent. A stored `null` for `name` is returned as `null` where the schema permits it; the RS never fabricates a value.
+
+[Section 7](#grant) has the full grant, including this exact stream entry, in its first example.
+
 ### SourceDeclaration structure
 
 ```json
@@ -892,7 +980,7 @@ The selection fields, validation rules, and detail-specific consent rules in thi
         {
           "name": "top_artists",
           "necessity": "required",
-          "view": "basic",
+          "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
           "instance_ids": ["inst_K4wq8Rn2"],
           "time_range": { "since": "2025-09-28T00:00:00Z" }
         },
