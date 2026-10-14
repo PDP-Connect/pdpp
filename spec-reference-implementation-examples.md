@@ -12,7 +12,7 @@ These examples are illustrative sequences built from the current draft. They are
 
 Two explicit limits apply in this file:
 
-1. The authorization server HTTP interface is not normatively specified in v0.1, so authorization and token-exchange steps are shown as decoded request/response shapes rather than mandatory AS endpoints.
+1. The owner-facing authorization interaction is deployment-specific, so authorization and token-exchange steps are shown as decoded request/response shapes rather than complete OAuth HTTP exchanges. Core specifies the client-visible token result, AS-to-RS introspection, and the grant lifecycle HTTP operation.
 2. The Collection Profile standardizes the `START` envelope and its portable `scope`, but not every runtime-internal planning detail or execution hint a particular runtime may use around that envelope.
 
 ---
@@ -70,7 +70,7 @@ This is the logical content carried in the OAuth authorization request. `client_
 
 ### Step 2: Consent rendering
 
-The authorization server preserves the semantic distinctions required by the draft.
+The authorization server preserves the semantic distinctions required by the draft. This excerpt shows only those distinctions. Final owner review also shows the grant expiry, the selected account, the envelope identifiers that every record discloses, and what happens to held data after the grant ends, as Core Sections 4 and 6 require.
 
 > **Requester**
 > Concerts App
@@ -445,10 +445,12 @@ Authorization: Bearer pdpp_client_tok_sleep_001
 PDPP-Version: 2026-04-06
 ```
 
+The token is inactive, and authenticated RS context establishes that its grant was revoked. The response is HTTP 401 with `WWW-Authenticate: Bearer error="invalid_token"`. If the cause were not established, the structured code would be `authentication_error`.
+
 ```json
 {
   "error": {
-    "type": "permission_error",
+    "type": "authentication_error",
     "code": "grant_revoked",
     "message": "Grant has been revoked.",
     "request_id": "req_01JREVOCATION"
@@ -462,7 +464,7 @@ PDPP-Version: 2026-04-06
 - Revocation alone does not request deletion. The user's disposition decides what happens to data already delivered.
 - With `keep`, the app may go on using that data for the approved purpose until each record's 90-day retention ceiling, counted from when the app first received the record.
 - With `delete`, the AS records an erasure instruction. The app stops using the data and deletes it, with its derivatives and its processors' copies, within the limits of Core Section 7.
-- The app learns which case applies from the Core grant lifecycle operation, not from the failed read. It checks at least daily while it holds the data.
+- The app stops using this access token and starts a Core grant lifecycle query before further use of the data. The failed read is not a lifecycle answer. While it holds the data, it also queries at least daily, and retries a failed query as Core Section 7 requires.
 - If the app cannot reach the AS, it keeps the data and retries. It cannot learn of a `delete` made at the AS until the AS answers again. A `delete` chosen inside the app binds at once, and the retention ceiling still applies.
 
 Core makes deletion an executable client duty. The stop-use bound runs from the instruction's effective time, and an app that learns later stops at once. The deletion bound runs from the app's first receipt. Core defines no proof of deletion: a conforming app's records make a breach attributable, not impossible.
