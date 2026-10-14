@@ -1,7 +1,7 @@
 # PDPP Model Context Protocol (MCP) read profile
 
 Status: Draft extension profile; profile version 0.1.0
-Date: 2026-10-11
+Date: 2026-10-13
 
 ## 1. Scope
 
@@ -17,9 +17,11 @@ The MCP client, authorization server, and resource server MUST satisfy the [MCP 
 
 The MCP server MUST resolve each data-access token to an active Core client grant or an extended-access grant package. It MUST reject owner tokens and tokens intended for the owner control plane. Package acceptance MUST follow the extended access profile; it does not permit package tokens at Core endpoints.
 
-A downstream request MUST use a credential intended for the downstream resource and preserve the applicable grant restrictions. An upstream credential with broader permissions MUST NOT widen the MCP client's approved access.
+A downstream request MUST use a credential intended for the downstream resource and preserve the applicable grant restrictions. An upstream credential with broader permissions MUST NOT widen the MCP client's approved access. When the MCP server and the PDPP resource server are separate protected resources, the same AS MUST issue the downstream credential for the same grant, or for the same package and children. The deployment defines how the MCP server obtains it, for example by OAuth 2.0 Token Exchange ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)).
 
 Clients and authorization servers MUST follow Core's authorization-result requirements. The client MUST inspect the complete resolved result before its first data-disclosing tool call. Optional owner selection and package issuance MUST follow the extended access profile, rather than MCP-specific grant formats.
+
+In this profile, a client's pairwise value for a subject, grantor, or instance is the identifier that Core's [Pairwise identifiers](spec-core#pairwise-identifiers) rules give that client. It includes a `subject.id` that the owner chose to disclose to that client.
 
 ## 3. Tool disclosure
 

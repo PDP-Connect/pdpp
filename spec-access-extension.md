@@ -1,7 +1,7 @@
 # PDPP extended access profile
 
 Status: Draft extension profile; profile version 0.1.0
-Date: 2026-10-11
+Date: 2026-10-13
 
 ## 1. Scope and status
 
@@ -24,6 +24,8 @@ This profile does not redefine the Core client-visible authorization result. Cli
 A separated resource server MUST resolve an access token through authenticated RFC 7662 introspection; a co-located deployment MAY use an authenticated local equivalent. The response MUST contain complete request context. Positive introspection caching MUST respect Core's maximum positive-cache lifetime.
 
 Malformed, incomplete, contradictory, or context-mismatched required introspection data MUST fail closed. Unknown extension members MUST NOT alone cause rejection or confer authority. The resource server MUST determine `pdpp_token_kind` from the authenticated result, never token syntax.
+
+In this profile, a client's pairwise identifiers are the identifiers that Core's [Pairwise identifiers](spec-core#pairwise-identifiers) rules give that client. They include a `subject.id` that the owner chose to disclose to that client under Core's owner-choice exception.
 
 ## 4. Owner-selected authorization
 
@@ -61,7 +63,7 @@ The package MUST contain one complete Core grant per issued resolved detail. Sev
 
 Each child MUST retain its `source.id`, declaration revision, resolved constraints, client and subject bindings, and lifecycle. The AS MUST NOT merge fields, instances, resources, or constraints across children. The AS MUST bind every child to the authenticated client and subject and MUST reject packages combining different clients or subjects.
 
-Every child is a Core grant for the same client, so it carries that client's pairwise identifiers ([Pairwise identifiers](spec-core#pairwise-identifiers)). Instance handles are scoped to the client and source, not to the child: two children that cover the same instance list the same handle, and their records carry the same `instance_id`. The client MAY relate records across its own children by `instance_id` and `id`. This does not permit the resource server to compute a result across children (Section 5.3). Each child is subject to Core's `resources` rule: a child stream with `resources` lists exactly one handle. The AS MUST reject a detail that asks for `resources` in more than one instance with RFC 9396 `invalid_authorization_details`, and MUST NOT split it into several children.
+Every child is a Core grant for the same client, so it carries that client's pairwise identifiers ([Pairwise identifiers](spec-core#pairwise-identifiers)). Instance handles are scoped to issuer, subject, and client and are unique across sources, as Core requires. They are not scoped to a child: two children that cover the same instance list the same handle, and their records carry the same `instance_id`. The client MAY relate records across its own children by `instance_id` and `id`. This does not permit the resource server to compute a result across children (Section 5.3). Each child is subject to Core's `resources` rule: a child stream with `resources` lists exactly one handle. The AS MUST reject a detail that asks for `resources` in more than one instance with RFC 9396 `invalid_authorization_details`, and MUST NOT split it into several children.
 
 Correlation uses a `detail_id` member on each requested `authorization_details` element: a string, unique within the request, chosen by the client. In the OAuth binding, an AS signals package support by advertising `pdpp_package_disconnect_endpoint` (Section 5.6). A client MUST send `detail_id` only to an AS that advertises that endpoint. A client that can accept a package MUST then send `detail_id` on every element. The AS MUST reject an empty or duplicate `detail_id` with RFC 9396 `invalid_authorization_details`. It MUST NOT issue a package for a request in which an element lacks `detail_id`.
 
