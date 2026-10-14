@@ -1989,7 +1989,7 @@ Content-Type: application/json
               >
                 {`GET /v1/streams/pay_statements/records HTTP/1.1
 Authorization: Bearer <client_token>
-PDPP-Version: 0.1.0
+PDPP-Version: 0.1
 
 → RS introspects token
 → Resolves grant: ${protocol.grant?.grant_id || "grt_longview01"}
