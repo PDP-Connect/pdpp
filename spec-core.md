@@ -53,10 +53,10 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | [GNAP](https://www.rfc-editor.org/rfc/rfc9635) (RFC 9635) | GNAP is an IETF authorization protocol that revisits OAuth-style delegation with a new protocol design. Several design decisions are directly relevant to PDPP: (1) interaction modes beyond browser redirects (relevant to nonstandard authorization interaction patterns); (2) request continuation for multi-step consent negotiation (relevant to optional streams); (3) key-bound grants instead of bearer tokens (stronger security for ongoing personal data access); (4) built-in grant management with revocation and rotation (relevant to `continuous` access mode). PDPP's entity-scoped `client_display` already follows GNAP's pattern of carrying client display metadata inline in the request. PDPP separates its core artifacts from authorization-protocol bindings. OAuth 2.0 and RFC 9396 define the v0.1 binding. Other bindings, including GNAP, may be specified as adoption warrants. For key-bound tokens specifically, DPoP (RFC 9449) offers an OAuth-native path to GNAP-style sender-constrained tokens and is a candidate optional hardening profile for v0.2. |
 | [Solid](https://solidproject.org) | Solid takes the full re-architecture approach: personal data moves into user-controlled pods with RDF/Linked Data semantics, which requires source platforms to adopt the model or users to migrate off-platform. PDPP instead layers on existing OAuth infrastructure and bootstraps data supply through the Collection Profile, without requiring source platforms to adopt anything. |
 | [ODRL](https://www.w3.org/TR/odrl-model/) (W3C Recommendation) | ODRL expresses permissions, prohibitions, and duties as machine-readable policies. PDPP does not use ODRL for authorization. The resource server enforces a PDPP grant on each read. A policy that travels with disclosed data cannot by itself guarantee enforcement after disclosure, the same limit Core states for `retention` (Section 11). |
-| [DPV](https://w3id.org/dpv) (W3C Data Privacy Vocabularies and Controls Community Group) | DPV defines shared terms for purposes, legal bases, and processing. `purpose_code` accepts any absolute URI (Appendix A), so a DPV purpose IRI can be used as a purpose code. PDPP defines its own registry for the purposes its consent rules name. |
+| [DPV](https://w3id.org/dpv) (W3C Data Privacy Vocabularies and Controls Community Group) | DPV defines shared terms for purposes, legal bases, and processing. `purpose_code` accepts any absolute URI (Appendix A), so a DPV purpose IRI can be used as a purpose code. PDPP defines its own purpose registry. DPV treats model training as processing, and PDPP likewise carries AI training as a processing permission, not a purpose (Section 6). |
 | [Data Transfer Project](https://github.com/dtinit/data-transfer-project) (DTI) | PDPP and DTI are complementary. The Data Transfer Project handles transfer mechanics, and DTI's stated position is that there is "no silver bullet" for portability: multiple approaches coexist. DTI's Data Trust Registry (post-pilot, 2026) addresses who is trusted: it vets services seeking access to platforms' portability interfaces so that platforms can rely on shared trust signals. PDPP addresses what was consented and how it is enforced (the grant and the resource server interface); a trust registry and PDPP's consent semantics compose rather than compete. The two protocols can chain. See Appendix B. |
 | [Airbyte](https://airbyte.com) / [Singer](https://www.singer.io) | PDPP borrows the RECORD/STATE checkpoint pattern for incremental sync. This record and state-checkpoint lineage informs the Collection Profile companion specification; it appears here for reader orientation and is informative for Core. |
-| [GDPR](https://eur-lex.europa.eu/eli/reg/2016/679/oj) | PDPP implements data minimization through stream and field selection. It also carries machine-readable purpose declarations (`purpose_code`) that support consent display, local policy, and implementation-defined audit or transparency mechanisms, with an explicit protocol-level consent rule for `ai_training`. The internal version history required for incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability. |
+| [GDPR](https://eur-lex.europa.eu/eli/reg/2016/679/oj) | PDPP implements data minimization through stream and field selection. It also carries machine-readable purpose declarations (`purpose_code`) that support consent display, local policy, and implementation-defined audit or transparency mechanisms, and a separately approved processing permission for AI training (Section 6). The internal version history required for incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability. |
 | [DMA](https://eur-lex.europa.eu/eli/reg/2022/1925/oj) | The `continuous` access mode enables ongoing portability aligned with the DMA's requirements. Article 6(9) requires effective portability with continuous and real-time access to the end user's data; PDPP's continuous grants and incremental sync map to that requirement. This alignment is informative only and is not a required v0.1 capability. |
 | [EU Data Act](https://eur-lex.europa.eu/eli/reg/2023/2854/oj) (Regulation 2023/2854) | The Data Act's Article 5(1) flow, where a user directs a data holder to make data available to a third party, is the same triangle as PDPP's owner, source, and client. Article 2(12) defines the user as a natural or legal person, matching PDPP's subject-neutral owner. It applies from 12 September 2025, requires access by design for connected products placed on the market after 12 September 2026, and names no protocol. |
 
@@ -127,6 +127,7 @@ Core does not define the registry, transport, recognition mechanism, or withdraw
 | **Source Declaration** | A source's versioned declaration of its identity, publisher, streams, schemas, consent surface, selection capabilities, and Resource Server query capabilities. It does not define connector acquisition or execution. |
 | **Selection Request** | A client's request for specific data, expressed as RFC 9396 `authorization_details`. |
 | **View** | An optional named field set a source declaration may define for a stream, composed from fields declared in the stream schema. When a client requests by view name, the resulting grant records the resolved field list, which is authoritative. Declared views are advisory; the authorization server is authoritative for views used in consent UI and issued grants. |
+| **Processing permission** | Authority, carried in a grant, for an operation on disclosed data that read access alone does not authorize, such as AI training. See [Processing permissions](#processing-permissions). |
 
 ### Requirements Language {#requirements-language}
 
@@ -134,7 +135,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 This document is normative except where content is explicitly marked as an example, a note, or otherwise non-normative.
 
-This is the only normative document for PDPP Core v0.1 conformance. A profile defines no Core requirement; a future profile may define a separate named conformance claim only if its own status says so. The [PDPP Collection Profile](spec-collection-profile) and [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) are informative and define no conformance requirements of their own.
+This is the only normative document for PDPP Core v0.1 conformance. A profile imposes no requirement on an implementation that does not claim it. A future profile may define a separate named conformance claim only if its own status says so. Core can make support for a Core-defined value depend on such a claim: an implementation that supports a processing permission MUST conform to the permission's defining profile (Section 6). The [PDPP Collection Profile](spec-collection-profile) and [PDPP Source Declaration Discovery and Trust](spec-discovery-and-trust) are informative and define no conformance requirements of their own.
 
 ---
 
@@ -828,8 +829,8 @@ If rendered on the final owner review surface, `client_claims` MUST be normalize
 
 PDPP uses three primary semantic classes across selection requests and grants:
 
-- **Protocol-enforced constraints:** Values the AS and/or RS actually validate or enforce, such as stream selection, field projection, `time_range`, `resources`, and `access_mode`.
-- **Structured policy declarations:** Machine-readable statements that matter for consent, local policy, and implementation-defined audit or transparency mechanisms, but are not generally self-enforcing at the protocol layer. In v0.1 this includes `purpose_code`, `purpose_description`, and `retention`, with one explicit exception: `https://pdpp.dev/purpose/ai_training` adds a protocol-level consent requirement.
+- **Protocol-enforced constraints:** Values the AS and/or RS actually validate or enforce, such as stream selection, field projection, `time_range`, `resources`, `access_mode`, and the closed `processing_permissions` set.
+- **Structured policy declarations:** Machine-readable statements that matter for consent, local policy, and implementation-defined audit or transparency mechanisms, but are not generally self-enforcing at the protocol layer. In v0.1 this includes `purpose_code`, `purpose_description`, and `retention`. None of them confers a processing permission.
 - **Attributed client claims:** Client-authored statements that may matter to the user but are not protocol facts. In v0.1 this is `client_claims`.
 
 `client_display` is a separate category: requester identity metadata used to identify who is asking, not a grant constraint. Inline values may be client-asserted, but the AS renders them under its own resolution and trust policy.
@@ -841,9 +842,10 @@ PDPP does not standardize consent screen layout, visual design, or copywriting. 
 | Parameter | Type | Required | Status | Description |
 |-----------|------|----------|--------|-------------|
 | `source` | object | yes | Protocol-enforced | Source binding. `id` is required and is the stable absolute URI authorization identity for the data surface. A request carries `id` alone: provenance is derived by the authorization server from the accepted declaration, not asserted by the client. |
-| `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). `purpose_code` identifies the requested data-use purpose; clients SHOULD NOT substitute an agreement or terms-document identifier for it. See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced, with the exception of `https://pdpp.dev/purpose/ai_training` (see below). |
-| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. |
+| `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). `purpose_code` identifies the requested data-use purpose; clients SHOULD NOT substitute an agreement or terms-document identifier for it. See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced. A purpose code never confers a processing permission. |
+| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. A detail that carries the AI training permission MUST include it ([AI training consent](#ai-training-consent)). |
 | `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. See [Section 7](#grant). |
+| `processing_permissions` | string[] | no | Protocol-enforced at issuance time | Unique absolute-URI processing-permission identifiers. Absent or empty requests no processing permission. See [Processing permissions](#processing-permissions). |
 | `retention` | object | no | Structured policy declaration | Requested retention constraints: `{ max_duration, on_expiry }`. |
 | `streams` | StreamRequest[] | yes (unless `selection_preset` is used) | Protocol-enforced | Requested streams with per-stream parameters. |
 | `selection_preset` | string | no | Protocol-enforced at issuance time | Reference to a SourceDeclaration preset, as an alternative to explicit streams. |
@@ -862,9 +864,57 @@ A selection request does not carry `source.kind`. The authorization server deriv
 
 An authorization server MUST reject a declaration containing an unrecognized `source.kind`. A resource server MUST NOT interpret an unrecognized grant `source.kind` as a known provenance class. A client that reads an unrecognized `source.kind` in a grant MUST NOT treat it as either known value; it MAY reject the grant as unsupported. A later version can add provenance classes; an implementation that predates one does not misread it as a known class.
 
+#### Processing permissions {#processing-permissions}
+
+A processing permission authorizes an operation on disclosed data that read access alone does not authorize. A selection request and a grant carry processing permissions in `processing_permissions`, a set of unique absolute-URI identifiers. Absent or empty means no processing permission. An issued grant carries the member only when the set is non-empty. `processing_permissions` is a Core field, not an extension. A purpose code, `purpose_description`, `client_claims`, `retention`, or extension never confers a processing permission.
+
+Each identifier has one defining specification, which states the operation the permission covers and how a recipient maintains and exercises the authority. Core defines one identifier:
+
+| Identifier | Operation | Defining specification | Status |
+|---|---|---|---|
+| `https://pdpp.dev/processing/ai_training` | [AI training](#ai-training) | PDPP AI Training Profile (forthcoming) | Reserved and unsupported until that profile is published and its registration is approved |
+
+**Closed issuance.** The AS MUST reject a detail whose `processing_permissions` is not an array of absolute URIs, or contains a duplicate, unknown, or unsupported value. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details`. The AS MUST NOT ignore, substitute, or narrow such a value, and MUST NOT issue an ordinary grant in place of the detail.
+
+**Example.** Until the AI Training Profile is registered, every AS receives this detail as unsupported:
+
+```json
+{
+  "type": "https://pdpp.dev/data-access",
+  "source": { "id": "https://registry.pdpp.dev/connectors/spotify" },
+  "purpose_code": "https://pdpp.dev/purpose/personalization",
+  "purpose_description": "Train an on-device model that ranks concerts for Concert Finder",
+  "access_mode": "single_use",
+  "processing_permissions": ["https://pdpp.dev/processing/ai_training"],
+  "streams": [{ "name": "play_events", "fields": ["*"] }]
+}
+```
+
+The AS returns `invalid_authorization_details`. It issues no training grant and no ordinary grant in its place.
+
+**Discovery.** An AS lists the permissions it supports in `pdpp_processing_permissions_supported`, an array member of its [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) authorization-server metadata. Absent or empty means the AS supports none. An AS MUST NOT advertise or grant a permission unless it implements the permission's complete defining contract. A client MUST NOT request a permission that the AS does not advertise.
+
+**Registration.** Only this specification, or a profile registered under a Specification Required policy ([RFC 8126](https://www.rfc-editor.org/rfc/rfc8126) Section 4.6), defines a processing permission. A registration gives the identifier, its stable semantics, and exactly one defining profile and version, and the decision to approve it is publicly recorded. A client, deployment, or extension cannot define a processing permission. The registered defining profile and version are an immutable normative reference for the permission identifier. Registry maintainers MUST NOT replace that reference with a different profile or version. A grant retains the authority and owner protections of that registered version, including for subsequent issuance or renewal of processing authority. Publishing a later profile version does not change this binding. A profile revision MUST NOT widen that authority or reduce those protections. Publishing a revision MUST NOT retroactively invalidate previously issued processing authority or make conduct permitted by the bound version non-conformant. An AS MAY issue shorter-lived or more restricted processing authority when the bound version permits it. Binding grants to a different defining profile or version requires a new permission identifier and fresh owner approval.
+
+**Consent and evidence.** A client MUST request a processing permission in its own detail, separate from any detail for ordinary access, even for the same source and purpose. The owner MUST select that detail by a distinct affirmative action, even when it is the only detail. The AS MUST NOT present it as selected by default. The owner MUST be able to approve every other detail while declining it, and the AS MUST NOT make approval of another detail depend on it. The AS MUST render each permission as a distinct, labeled term, not as part of the purpose.
+
+The owner approves or declines the detail as a whole. The AS MUST NOT issue its grant without its permissions, and MUST NOT add a permission to a detail that did not request it. Approval of ordinary access never confers a processing permission. The final approval artifact, review revision, retained consent evidence, issued grant, token result, and introspection result MUST carry the exact permission set. If the set changes after review, including by removal, the AS MUST reject approval and require a new review.
+
+#### AI training {#ai-training}
+
+`https://pdpp.dev/processing/ai_training` covers AI training. AI training means using data to fit or select the learned parameters or stored examples of a machine-learning model, generative or not, wherever the model runs, including on-device personalization and federated updates. It includes fine-tuning, distillation, reinforcement learning, and evaluation used to select a model, checkpoint, or hyperparameters. Fitting a model whose learned state is its stored examples, such as a nearest-neighbour classifier, is AI training. Inference, retrieval, embedding generation with fixed parameters, building an index that a fixed model looks up, and measurement that never informs model selection are not AI training. Computing statistics, ranking by a fixed formula, and setting thresholds by hand are not AI training. For example, recommending concerts from a listening history with a fixed model is not AI training; fitting a per-owner recommendation model to that history is. This permission governs clients acting under grants. It does not limit what the owner does with data the owner exports.
+
+A PDPP input is data obtained through PDPP, or data derived from it, including through successive transformations. Derivatives include labels, synthetic examples, embeddings, and outputs generated using PDPP inputs. A model output inherits the lineage of PDPP inputs used to produce that output. Earlier use of an owner's data to train the model does not, by itself, make the output a derivative of that owner's data.
+
+A client MUST NOT use a PDPP input for AI training unless it has valid processing authority under the permission's defining profile for every contributing PDPP input. For data obtained through PDPP, a grant carrying `https://pdpp.dev/processing/ai_training` MUST cover the originating subject, source, stream, instance, fields, resources, and time constraint. The client MUST establish that coverage using authenticated issuer, subject, and client bindings; matching identifier strings alone is insufficient. For derived data, the coverage requirement applies recursively to every contributing PDPP input, subject to the model-output boundary above. Different grants MAY cover different contributing inputs. The acquisition grant need not be the training grant. If the client cannot establish coverage and valid authority for every contributing PDPP input, it MUST NOT use the input for AI training. Purpose codes, ordinary grants, and retention commitments never confer this authority. Every recipient or subprocessor to which a client passes PDPP inputs MUST observe the same restriction, and the client MUST impose it on them. An operator of an AS or RS MUST NOT use owner data that it holds in that role for AI training, except under a training grant issued to it as a client. This restriction is PDPP policy, independent of a recipient's lawful basis and of statutory rights.
+
+The PDPP AI Training Profile (forthcoming) defines how a training recipient maintains and exercises this authority. Until that profile is published and its registration as the defining profile is approved, the identifier is reserved. Every AS MUST treat it as unsupported: it MUST NOT advertise it and MUST reject a request that carries it. No grant can then carry it, so no client or operator holds AI training authority.
+
+Earlier drafts expressed AI training as the purpose code `https://pdpp.dev/purpose/ai_training`. A grant that carries that code confers no AI training authority. Training requires a fresh grant that carries this permission.
+
 #### AI training consent {#ai-training-consent}
 
-The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.dev/purpose/ai_training`. The owner MUST select an `ai_training` detail by a distinct affirmative action, and the AS MUST NOT present it as selected by default. When a request carries several details, the owner MUST be able to approve any other detail while declining the `ai_training` detail, and the AS MUST NOT make approval of another detail depend on it. The separate affirmative selection is required even when `ai_training` is the only requested detail. This rule adds to the final owner approval that every grant needs (Section 7).
+A detail that carries the AI training permission MUST include a non-empty `purpose_description` that identifies the type of model, its functions, and the service or recipient it serves. The AS MUST reject such a detail without one, with `invalid_authorization_details` in the OAuth/RAR binding. The AS MUST label the detail as AI training on the approval surface. These rules add to [Consent and evidence](#processing-permissions) and to the final owner approval that every grant needs (Section 7). An AS MUST include `expires_at` in every grant carrying the AI training permission. The expiry MUST be later than `issued_at`. The AS MUST include that expiry in final owner review and bind it into the approval artifact and retained consent evidence.
 
 ### Stream selection parameters
 
@@ -972,7 +1022,7 @@ Core represents these commitments through its existing purpose and retention fie
 
 The AS MUST NOT change `access_mode` merely as a consequence of narrowing data. The AS MAY choose grant expiry under its existing policy. Grant lifetime and record time scope remain separate.
 
-The AS MUST include the resolved purpose in final owner review. It MUST include that purpose in the grant. If retention is specified, the AS MUST include it in final owner review. It MUST include that retention in the grant. If grant expiry is specified, the AS MUST include it in final owner review. It MUST include that expiry in the grant.
+The AS MUST include the resolved purpose in final owner review. It MUST include that purpose in the grant. If retention is specified, the AS MUST include it in final owner review. It MUST include that retention in the grant. If grant expiry is specified, the AS MUST include it in final owner review. It MUST include that expiry in the grant. The AS MUST include any processing permissions in final owner review and in the grant, as [Processing permissions](#processing-permissions) defines.
 
 The AS MUST complete required-stream and minimum checks before issuing a grant or a client token. It MUST NOT issue a temporary overbroad grant while choices are unresolved. Grant issuance does not authorize unrelated collection, billing, or source-side actions.
 
@@ -1057,12 +1107,13 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 | `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (see Appendix A). |
 | `purpose_description` | string | no | Structured policy declaration | Human-readable purpose. |
 | `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. |
+| `processing_permissions` | string[] | no | Protocol-enforced | The exact set of processing permissions the owner approved, as unique absolute URIs. Present only when non-empty; absent means none. Confers no read access. See [Processing permissions](#processing-permissions). |
 | `streams` | StreamGrant[] | yes | Protocol-enforced | Granted streams. Always expanded; no wildcards. See StreamGrant fields table below. |
 | `selection_preset` | string | no | Informational | Which SourceDeclaration preset was selected. The resolved streams and fields remain authoritative. |
 | `retention` | object | no | Structured policy declaration | Policy commitment by the data recipient (see below). |
-| `expires_at` | ISO 8601 | no | Protocol-enforced | Grant expiry. Absent means no expiry. |
+| `expires_at` | ISO 8601 | yes for AI training; otherwise no | Protocol-enforced | Grant expiry and the latest possible end of processing authority. Required when `processing_permissions` includes `https://pdpp.dev/processing/ai_training`. Otherwise, absence means no expiry. |
 | `grantors` | object[] | no | Identity binding | Present only when representatives approved on the subject's behalf. When present, this is a non-empty list of distinct approving representatives. Absence means the subject approved. Core v0.1 does not encode joint approval by the subject and a representative. Each entry is exactly `{ id, capacity }`. `id` is an opaque identifier of the approving person, unique within the issuing AS's namespace. Like `subject.id`, it is pairwise for the grant's client (see [Pairwise identifiers](#pairwise-identifiers)). `capacity` is an absolute URI that names the basis on which that person approved, such as a parental or legal-representative capacity defined by a profile or deployment. See [Representative approval](#representative-approval). |
-| `extensions` | object | no | Profile data | Optional object keyed by absolute profile URI. Core preserves or ignores an unknown extension value and does not parse it. An extension cannot widen what the grant authorizes or weaken Core semantics. |
+| `extensions` | object | no | Profile data | Optional object keyed by absolute profile URI. Core preserves or ignores an unknown extension value and does not parse it. An extension cannot widen what the grant authorizes or weaken Core semantics. A processing permission is carried only in `processing_permissions`, never in `extensions`. |
 
 ### StreamGrant fields
 
@@ -1085,23 +1136,9 @@ Before the final approval surface is shown, the AS MUST resolve omitted `instanc
 
 ### Client-visible authorization result {#authorization-result}
 
-The AS MUST return one `authorization_details` element per covered grant in every successful OAuth token response that issues a client access token, including refresh responses. Each element MUST contain `type` equal to `https://pdpp.dev/data-access` and `grant` containing the complete immutable grant defined by this section. The AS MUST NOT substitute the original selection request or a lossy summary. A [lifecycle recovery](#lifecycle-recovery) token covers no grant for reads; its token response returns the approved recovery element instead. A token response that returns a grant is also a [positive assessment](#reconciliation) for that grant.
-
-The result MUST include source provenance, declaration revision, resolved streams, instance handles, fields, the frozen required-field subsets, resource and time constraints, recipient commitments, access mode, and processing permissions and grant expiry when present. The full grant includes the resolved client identity and reviewed client display defined above. Omitted optional streams are not grants and MUST NOT appear as authorized in the result.
-
-The client MUST inspect the result before requesting record disclosure. It MUST NOT infer authorization from its original request, an MCP tool listing, or a token's syntax. A client unable to obtain or interpret the result MUST NOT request disclosure. An AS MAY omit only values that the grant definition itself makes optional.
-
-For a credential that a companion binding defines to cover several grants, the AS MUST return every covered grant as a separate element. It MUST NOT merge fields, instances, or resources across grants. A binding supporting such tokens MUST preserve each grant's source and client association during enforcement.
-
-The AS MUST return the same resolved grant facts to the client and to an authenticated RS, apart from token-specific active-state and expiry fields. Receiving this result does not grant the client access to the RS-authenticated introspection endpoint. The AS MUST protect result delivery as part of the authenticated OAuth exchange.
-
-Owner approval covers disclosure of the result's identifiers and metadata to the client. The AS MUST NOT include inventory for unapproved sources or instances. A successful token response consumes a `single_use` grant as defined below even if the client subsequently declines to read.
-
-### Client-visible authorization result {#authorization-result}
-
 The AS MUST return one `authorization_details` element per covered grant in every successful OAuth token response that issues a client access token, including refresh responses. Each element MUST contain `type` equal to `https://pdpp.dev/data-access` and `grant` containing the complete immutable grant defined by this section. The AS MUST NOT substitute the original selection request or a lossy summary.
 
-The result MUST include source provenance, declaration revision, resolved streams, instance handles, fields, the frozen required-field subsets, resource and time constraints, recipient commitments, access mode, and grant expiry when present. The full grant includes the resolved client identity and reviewed client display defined above. Omitted optional streams are not grants and MUST NOT appear as authorized in the result.
+The result MUST include source provenance, declaration revision, resolved streams, instance handles, fields, the frozen required-field subsets, resource and time constraints, recipient commitments, access mode, and processing permissions and grant expiry when present. The full grant includes the resolved client identity and reviewed client display defined above. Omitted optional streams are not grants and MUST NOT appear as authorized in the result.
 
 The client MUST inspect the result before requesting record disclosure. It MUST NOT infer authorization from its original request, an MCP tool listing, or a token's syntax. A client unable to obtain or interpret the result MUST NOT request disclosure. An AS MAY omit only values that the grant definition itself makes optional.
 
@@ -1167,8 +1204,21 @@ The current persisted-authorization-state reader MUST reject any persisted autho
 
 | Mode | Behavior |
 |------|----------|
-| `single_use` | The grant permits one fixed read window. The window opens at the first client access token issuance for the grant and ends at that token's expiry. The AS marks the grant consumed atomically with that issuance. The first token MUST have a finite expiration, set by AS local policy and, when the grant has `expires_at`, no later than `expires_at`. That expiration SHOULD be short. The window does not limit the client to one request: the client MAY use the token for repeated reads, retries, and pagination until the window ends or the grant is revoked. A later access token in the same refresh-token family MAY carry the grant, but only inside the window. A binding that allows this MUST let the resource server enforce the window end, including under a cached introspection result and for a signed blob URL. After the window ends, no token carries the grant, and introspection MUST NOT report the grant active. After first issuance, the AS MUST reject issuance against the consumed grant, except a successor access token from the same refresh-token family issued before the window ends. A `single_use` grant never opens a second window. Failure to complete retrieval inside the window does not un-consume the grant. |
+| `single_use` | The grant permits one fixed read window. The window opens at the first client access token issuance for the grant and ends at that token's expiry. The AS marks the grant consumed atomically with that issuance. The first token MUST have a finite expiration, set by AS local policy and, when the grant has `expires_at`, no later than `expires_at`. That expiration SHOULD be short. The window does not limit the client to one request: the client MAY use the token for repeated reads, retries, and pagination until the window ends or the grant is revoked. A later access token in the same refresh-token family MAY carry the grant, but only inside the window. A binding that allows this MUST let the resource server enforce the window end, including under a cached introspection result and for a signed blob URL. After the window ends, no access token carries the grant, and introspection MUST NOT report the grant active for reads. The end of the window ends read access only; it does not by itself end processing authority ([Read access and processing authority](#processing-authority)). After first issuance, the AS MUST reject further access-token issuance against the consumed grant, except a successor access token from the same refresh-token family issued before the window ends. This restriction does not prohibit issuance or renewal of processing credentials under the permission's defining profile. A `single_use` grant never opens a second window. Failure to complete retrieval inside the window does not un-consume the grant. |
 | `continuous` | The grant is fulfilled repeatedly. The client may query the resource server incrementally over time. Active until expiry or revocation. |
+
+### Read access and processing authority {#processing-authority}
+
+A grant that carries a processing permission confers two distinct kinds of authority. Read access lets a client obtain records through tokens that the RS enforces. Processing authority lets a client perform the permitted operation on PDPP inputs it holds, as the permission's defining profile governs. Token activity, introspection `active`, and the `single_use` read window describe read access only.
+
+- The end of a `single_use` read window, or the expiry of an access token, does not by itself end processing authority.
+- A processing credential never confers read access. It never makes a token active or reopens a read window.
+- When a grant is revoked, read access ends and the AS MUST issue no further processing authority under it. Authority already issued ends within the cessation bound that the defining profile sets. Revocation here includes owner revocation, client-initiated revocation that ends the grant (Section 10), and a companion operation that ends the grant.
+- If a grant has `expires_at`, processing authority ends no later than that time. The AS MUST NOT issue processing authority that outlasts it.
+- Replay detection on a refresh-token family (Section 10) invalidates that family's tokens, and with them read access through those tokens. It does not by itself end processing authority.
+- Ending one grant does not end processing authority under another grant.
+
+The defining profile defines how processing state is represented, the credentials that carry processing authority, and how processing ceases. Core does not require a grant-status endpoint.
 
 ### Time constraint semantics {#time-constraint-semantics}
 
@@ -1203,7 +1253,7 @@ Grant narrowing (reducing the scope of an existing grant) is not supported in v0
 
 ### Records from revoked grants
 
-Revocation stops future access only. Records already delivered to the client before revocation are governed by the grant's `retention` policy and applicable legal obligations. PDPP does not retroactively reach into client-side data stores.
+Revocation ends future reads, and ends processing authority as [Read access and processing authority](#processing-authority) defines. Otherwise, records already delivered to the client before revocation are governed by the grant's `retention` policy and applicable legal obligations. PDPP does not retroactively reach into client-side data stores.
 
 ### Retention
 
@@ -1884,11 +1934,11 @@ A conformant authorization server:
 7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms. If `client_claims` are rendered during final review, binds the normalized exact claims into the immutable final approval artifact and review revision, and preserves that binding in retained consent evidence, without adding them to the resolved grant or RS enforcement. Records in the issued grant's `client.client_display` the exact `policy_uri` and `tos_uri` it presented during consent, and omits any it did not present.
 8. Tracks grant lifecycle (active, expired, revoked). Reflects revocation immediately in introspection: the revoked grant is inactive at once, and a token is `active: false` when no grant it covers is active.
 9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
-10. For `single_use` grants, consumes the grant atomically with first client-token issuance. Gives that access token a finite expiration set by local policy and, when the grant has `expires_at`, no later than `expires_at`; that expiry ends the grant's one read window. Lets a later token in the same refresh-token family carry the grant only inside the window, reports the grant inactive after it, and otherwise rejects issuance against the consumed grant.
+10. For `single_use` grants, consumes the grant atomically with first client-token issuance. Gives that access token a finite expiration set by local policy and, when the grant has `expires_at`, no later than `expires_at`; that expiry ends the grant's one read window. Lets a later token in the same refresh-token family carry the grant only inside the window, reports the grant inactive for reads after it, and otherwise rejects access-token issuance against the consumed grant.
 11. Validates stream/field/view/resource-id shape at grant issuance. Rejects `resources` on a stream with more than one instance. Rejects `resources` entries that are not canonical under Section 4 and does not percent-decode JSON `resources` values.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
 13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
-14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.dev/purpose/ai_training"`. Never presents an `ai_training` detail as selected by default. In a request with several details, lets the owner approve any other detail while declining it.
+14. Rejects a detail whose `processing_permissions` is malformed or contains a duplicate, unknown, or unsupported value, with `invalid_authorization_details`, and never ignores, substitutes, or narrows such a value or issues an ordinary grant in its place. Advertises in `pdpp_processing_permissions_supported`, and grants, only permissions whose complete defining contract it implements. Treats `https://pdpp.dev/processing/ai_training` as unsupported until the PDPP AI Training Profile is published and its registration is approved, and afterwards supports it only by conforming to that profile.
 15. Resolves omitted instance IDs before the final approval surface. Binds
     exact resolved instances and all final decision fields to an immutable
     review revision or digest. Rejects stale approval if eligibility or the
@@ -1911,6 +1961,9 @@ A conformant authorization server:
 31. Resolves purpose and retention only from the current request or recipient-authorized standing terms, and retains the evidence identifying those terms with the consent evidence. Discloses during owner review that envelope identifiers are part of every disclosed record.
 32. Returns one `{ type, grant }` element per covered grant in every token response that issues a client access token, including refresh responses, as [Client-visible authorization result](#authorization-result) defines. Returns the same element shape in introspection.
 33. Advertises `https://pdpp.dev/data-access` in `authorization_details_types_supported` and rejects unknown detail types.
+36. For a detail that carries a processing permission, requires a distinct affirmative owner selection, never preselects it, and never makes another detail depend on it. Renders each permission as a labeled term distinct from the purpose. Requires a non-empty `purpose_description` on an AI training detail. Issues the grant with its exact permission set or not at all, and never adds a permission to a detail that did not request it. Binds that set into final owner review, the review revision, retained consent evidence, the grant, token results, and introspection, and requires a new review when the set changes after review. Includes a reviewed `expires_at` in every training grant.
+37. When it supports a processing permission, keeps read access and processing authority distinct as [Read access and processing authority](#processing-authority) defines. Issues no further processing authority after grant revocation or grant expiry. When the grant has `expires_at`, issues no processing authority that outlasts it. Never lets a processing credential confer read access. Does not treat read-window closure, access-token expiry, or refresh-token replay detection alone as ending processing authority or prohibiting its renewal.
+38. Its operator does not use owner data held in the AS role for AI training, except under a training grant issued to it as a client.
 48. Retrieves declarations over HTTPS without ambient credentials. Validates every redirect and final URL against its accepted pointer and network policy. Validates the destination immediately before each connection and connects only to that validated address. Rejects automatic remote-schema retrieval and fails closed on any failed check, as Section 5 requires.
 50. Accepts a valid client ID metadata document as an identity without requiring preregistration. Keeps that identity-form acceptance distinct from authorization or admission denial under local policy, as Section 6 requires.
 51. Freezes each stream's schema-required consent floor from the retained declaration into `required_fields` before issuance. Includes the set in reviewed decision evidence, the client-visible grant, and the grant returned through introspection. Includes an empty array for an empty floor. Keeps the set unchanged for the life of that grant.
@@ -1952,6 +2005,7 @@ A conformant Core RS:
 25. When it attaches `freshness`, lists exactly one entry for each instance that the query context authorizes for the stream, whatever the page contains. Computes `last_success_at` over the full authorized scope of the query, counts only successful operations as Section 8 defines them, and reports null when it cannot establish relevance safely. In a client-token response, carries no failure time, truncates each value to its declared granularity of at least 3600 seconds, and reports no value before its interval ends. Takes a snapshot of the array on the first page of a `changes_since` session and repeats that exact snapshot on every later page. Reports no staleness verdict.
 26. Builds disclosed `data` only from the top-level members the grant and the request-time field selection permit, with no nulls or fabricated values for withheld members. Refuses a read it cannot serve that way with 403 `disclosure_unavailable`.
 27. Enforces the resolved grant independently of provider action permission, as [Existing permissions and action results](#existing-permissions) defines. Never treats a data grant as action permission or lets a broad read scope widen a grant, and discloses existing data in an action response only under the applicable data grant.
+29. Never treats `processing_permissions` or a processing credential as read authority. Its operator does not use owner data it holds in the RS role for AI training, except under a training grant issued to it as a client.
 30. Validates each StreamGrant's explicit `required_fields` and its containment in `fields` before disclosure. Rejects missing or malformed context with 403 `grant_invalid`. Applies the frozen floor to every client record-data projection and its evidence without declaration lookup. Preserves tombstone shape and existing sync eligibility rules.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
@@ -1974,6 +2028,8 @@ A conformant client:
 12. Establishes that the AS advertises `https://pdpp.dev/data-access` before requesting it.
 13. Inspects the authorization result in each token response, including refresh responses, before requesting record disclosure, and requests no disclosure when it cannot obtain or interpret the result. Does not infer authorization from its original request, a tool listing, or token syntax.
 14. Does not validate a projected `data` object as a full stream record.
+17. Trains on PDPP inputs only when every contributing PDPP input has covering training permission and valid processing authority, as [AI training](#ai-training) defines, regardless of purpose code or acquisition grant. Applies this rule to derivatives and imposes it on every recipient or subprocessor receiving PDPP inputs. Treats the legacy purpose code `https://pdpp.dev/purpose/ai_training` as conferring no training authority.
+18. Requests a processing permission only when the AS advertises it in `pdpp_processing_permissions_supported`, in a detail separate from any ordinary access, and with a `purpose_description` where Section 6 requires one.
 32. Pins a supported HTTP contract with `PDPP-Version` on each Core RS operation, including retries and pagination, and verifies the selected version before using a successful response. Does not infer a contract from a URL path, grant schema, document release, or profile version, and does not silently fall back after a version failure.
 33. Reads each StreamGrant's `required_fields` from the authorization result before requesting disclosure. Expects those fields in every returned record's `data` when the stored record version has a value for them, and does not infer the set from a declaration.
 
@@ -1997,7 +2053,7 @@ PDPP defines two token kinds at the resource server boundary: owner tokens and c
 
 For separated AS/RS deployments, the RS MUST authenticate to the AS introspection endpoint (RFC 7662) and enforce only from its response. It MUST NOT make a second AS lookup while handling the request. For co-located deployments, a local equivalent (shared database lookup or function call) is acceptable. Self-contained JWTs are allowed as an optimization but MUST NOT be the sole revocation mechanism.
 
-Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. This bounds the propagation window for revocation.
+Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. This bounds read-access revocation propagation.
 
 An access token issued with or from a refresh-token family MUST be linked to that family and MUST have a short, token-specific expiration no later than the family or grant expiration. A token response MUST derive `expires_in` from the access token's persisted expiration. It MUST omit `expires_in` when the access token has no expiration, which Section 7 does not permit for a `single_use` grant. An RFC 7662 response MUST likewise omit `exp` when no expiration exists.
 
@@ -2036,7 +2092,7 @@ A client that gives records to an automated agent SHOULD treat them as untrusted
 |------|----------------|
 | **Authorization Server** | Validates purpose-code syntax and local policy; authenticates user; preserves semantic distinctions on the consent surface; validates stream/field/view/resource-id shape at grant issuance; resolves views to field lists; issues access tokens; maintains grant lifecycle. |
 | **Resource Server** | Validates token via introspection; for client requests, enforces stream, instance, fields, frozen time constraints, and resources against the resolved grant; for owner requests, enforces subject/source/connection/operation scope without requiring a grant; never reinterprets authorization from a current declaration. |
-| **Client** | Submits well-formed selection requests; uses access tokens; terminates on revocation; honors retention commitments. |
+| **Client** | Submits well-formed selection requests; uses access tokens; terminates on revocation; honors retention commitments; performs no operation that a processing permission covers without that permission and its defining profile's authority. |
 
 ### Revocation {#revocation}
 
@@ -2044,11 +2100,11 @@ The owner MAY revoke a grant at the AS by a deployment-defined means. A binding 
 
 In the OAuth binding, client-initiated revocation is [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009) token revocation. Support is OPTIONAL. An AS that offers clients a way to disconnect SHOULD support it. An AS that supports it MUST advertise `revocation_endpoint` in its [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) metadata. RFC 7009 Section 2.1 leaves the effect on related tokens and on the grant to AS policy; the rules above fix that policy.
 
-There is no push revocation channel in v0.1. Revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds), whoever starts the revocation. The AS MUST reflect revocation immediately in introspection: the revoked grant is inactive at once. A token that covers another active grant stays active; a token with no active grant is `active: false`. No later than 60 seconds after revocation, a request that uses the revoked grant fails. When the token is bound to no other active grant, the request fails with HTTP 401 and Bearer error `invalid_token`. The structured error code is `grant_revoked` when authenticated context establishes the cause, otherwise `authentication_error` (see Section 8, Errors). A binding in which one credential covers several grants defines the failure while the credential stays active.
+There is no push revocation channel in v0.1. Read-access revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds), whoever starts the revocation. The AS MUST reflect revocation immediately in introspection: the revoked grant is inactive at once. A token that covers another active grant stays active; a token with no active grant is `active: false`. No later than 60 seconds after revocation, a request that uses the revoked grant fails. When the token is bound to no other active grant, the request fails with HTTP 401 and Bearer error `invalid_token`. The structured error code is `grant_revoked` when authenticated context establishes the cause, otherwise `authentication_error` (see Section 8, Errors). A binding in which one credential covers several grants defines the failure while the credential stays active.
 
 On a 401 response with Bearer error `invalid_token`, the client MUST stop using that access token. On a `grant_revoked` error, the client MUST stop further requests against that grant. A client MUST NOT treat an inactive token as proof of revocation: the token may instead have expired or lost its refresh-token family. The HTTP status governs over an unknown error code, as Section 8 states. Companion profiles define how their active work is terminated.
 
-Revocation stops future access only. Data already delivered to the client before revocation is governed by the grant's `retention` policy and applicable legal obligations.
+Revocation ends future reads. Under a grant that carries a processing permission, it also ends processing authority over data already delivered, within the defining profile's cessation bound (Section 7). Other use of data delivered before revocation is governed by the grant's `retention` policy and applicable legal obligations.
 
 Revocation is not deletion. v0.1 does not define an active erasure signal or downstream deletion callback.
 
@@ -2066,7 +2122,7 @@ The `purpose_code` URI enables purpose declaration, consent display, registratio
 
 ### Auditability and transparency boundary
 
-PDPP core defines the authorization, grant, and disclosure semantics that make auditing and transparency possible. This includes stable identifiers and state transitions such as `grant_id`, `client_id`, `subject_id`, `purpose_code`, stream and resource identifiers, timestamps, and grant lifecycle states.
+PDPP core defines the authorization, grant, and disclosure semantics that make auditing and transparency possible. This includes stable identifiers and state transitions such as `grant_id`, `client_id`, `subject_id`, `purpose_code`, `processing_permissions`, stream and resource identifiers, timestamps, and grant lifecycle states.
 
 PDPP core does not define a local audit-log schema, storage model, retention period for operational logs, or a user-facing disclosure-history interface. Implementations MAY maintain local records of grant issuance, disclosure, sync, token use, and revocation under local policy.
 
@@ -2112,9 +2168,9 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Point-in-time reconstruction | Deferred (reconstructing full state at a past timestamp) |
 | Canonical view naming vocabulary | Deferred; will be informed by implementation experience |
 | Predicate-based grant scoping | Deferred; see [Predicate-based grant scoping](#predicate-based-grant-scoping) |
-| Derivative data | New derived sources, onward rights, and durable derived datasets remain deferred. The optional [extended access profile](spec-access-extension) defines bounded presentation of authorized input, not new source or grant authority. |
+| Derivative data | New derived sources, onward rights, and durable derived datasets remain deferred. AI training on data derived from PDPP inputs is governed by [AI training](#ai-training). The optional [extended access profile](spec-access-extension) defines bounded presentation of authorized input, not new source or grant authority. |
 | Cross-source category grants | Deferred; grants bind to a single `source.id` in v0.1 |
-| Active erasure signal | Deferred; revocation stops future access and is not a deletion request. No erasure signal to the recipient is defined |
+| Active erasure signal | Deferred; revocation ends reads and processing authority (Section 7) and is not a deletion request. No erasure signal to the recipient is defined |
 | Session refresh | Deferred; no signal asks the owner to renew source-side authentication. A `continuous` grant can stay valid while collection pauses |
 | Request-side freshness requirements | Deferred; freshness is response-side only, as a per-instance `last_success_at` (Section 8) |
 | Collection coverage and degradation signals | Deferred to a future extension. Core reports no completeness (coverage) or degradation signal, and no signal that supports a claim that data does not exist at the source (Section 8) |
@@ -2142,7 +2198,7 @@ The recommended future direction for this capability is declaration-defined para
 
 ### Extensions
 
-PDPP capabilities beyond this specification (for example, search or aggregation interfaces) are defined in companion profiles, not by extending Core semantics. Implementations MUST NOT change the meaning of Core-granted access via extensions: a grant issued under this specification authorizes exactly what Sections 7 and 8 define, regardless of what additional capabilities a deployment offers. Optional capabilities MUST be discoverable via declared metadata rather than assumed to be present. Unrecognized declared capabilities MUST be ignorable by clients. A full capability-advertisement grammar is deliberately deferred to a future version.
+PDPP capabilities beyond this specification (for example, search or aggregation interfaces) are defined in companion profiles, not by extending Core semantics. Implementations MUST NOT change the meaning of Core-granted access via extensions: a grant issued under this specification authorizes exactly what Sections 6, 7, and 8 define, including any processing permission it carries, regardless of what additional capabilities a deployment offers. `processing_permissions` is a Core field; an extension cannot add or widen a processing permission. Optional capabilities MUST be discoverable via declared metadata rather than assumed to be present. Unrecognized declared capabilities MUST be ignorable by clients. A full capability-advertisement grammar is deliberately deferred to a future version.
 
 ### Specification governance
 
@@ -2245,6 +2301,7 @@ type SelectionRequest = {
   purpose_code: string;
   purpose_description?: string;
   access_mode: 'single_use' | 'continuous';
+  processing_permissions?: string[];  // Unique absolute URIs; closed set (Section 6); absent or empty = none
   retention?: {
     max_duration: string;
     on_expiry: 'delete' | 'anonymize';
@@ -2282,13 +2339,14 @@ interface DataGrant {
   purpose_code: string;    // URI
   purpose_description?: string;
   access_mode: 'single_use' | 'continuous';
+  processing_permissions?: string[];  // Exact approved set; present only when non-empty; confers no read access
   streams: StreamGrant[];
   selection_preset?: string;
   retention?: {
     max_duration: string;  // ISO 8601 duration
     on_expiry: 'delete' | 'anonymize';
   };
-  expires_at?: string;  // ISO 8601; absent means no expiry
+  expires_at?: string;  // ISO 8601; required when processing_permissions includes AI training; otherwise absent means no expiry
   grantors?: Array<{ id: string; capacity: string }>;  // present only for representative approval; id is pairwise per client
   extensions?: Record<string, unknown>;  // keyed by absolute profile URI
 }
@@ -2417,8 +2475,9 @@ Purpose codes are URIs. The following codes are defined by PDPP. Implementers ma
 | `https://pdpp.dev/purpose/analytics` | Analyzing user data to produce insights for the user. |
 | `https://pdpp.dev/purpose/export` | Exporting data for the user's own use. |
 | `https://pdpp.dev/purpose/agent_context` | Providing context to a personal AI agent. |
-| `https://pdpp.dev/purpose/ai_training` | Using data to train AI models. The AS MUST follow the consent rule in [AI training consent](#ai-training-consent) before issuing any grant with this purpose code. This is a protocol-level requirement, not merely advisory. |
 | `https://pdpp.dev/purpose/research` | Academic or market research. |
+
+A purpose code states what a use serves and never confers a processing permission. AI training is the processing permission `https://pdpp.dev/processing/ai_training` (Section 6), not a purpose. Earlier drafts defined the purpose code `https://pdpp.dev/purpose/ai_training`. It is withdrawn, is not reassigned, and confers no training authority.
 
 ---
 
