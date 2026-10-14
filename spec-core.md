@@ -523,7 +523,7 @@ Returned data members, when present: id, name, genres
 Excluded optional data members: popularity, source_updated_at
 ```
 
-If `genres` is absent from a record, it stays absent. `id` and `name` must be present for a returned record.
+If `genres` is absent from a record, it stays absent. `id` and `name` must be present for a returned record. A stored `null` for `name` is returned as `null` where the schema permits it; the RS never fabricates a value.
 
 [Section 7](#grant) has the full grant, including this exact stream entry, in its first example.
 
