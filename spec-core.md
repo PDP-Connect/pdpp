@@ -130,6 +130,7 @@ Core does not define the registry, transport, recognition mechanism, or withdraw
 | **Processing permission** | Authority, carried in a grant, for an operation on disclosed data that read access alone does not authorize, such as AI training. See [Processing permissions](#processing-permissions). |
 | **PDPP data** | Data obtained through PDPP, or data derived from it, including through successive transformations. Derivatives include labels, synthetic examples, embeddings, indexes, caches, and outputs generated using PDPP data. A model output is derived from an owner's PDPP data only when that data was an input to producing that output. Earlier use of an owner's data to train the model does not, by itself, make the output a derivative of that owner's data. |
 | **Held data** | The PDPP data that a client, or a party acting for it, holds and that the client obtained under a given grant or derived from data so obtained. See [Held data after a grant ends](#held-data). |
+| **Independent recipient** | A party other than the owner that receives PDPP data for an operation in which it does not act for the client under [Downstream holders](#downstream-holders). A party's role is determined for that operation; the same party can act for the client in another operation. |
 | **Erasure instruction** | The owner's durable instruction that a client stop using and delete the held data of a grant. See [Erasure](#erasure). |
 
 ### Requirements Language {#requirements-language}
@@ -200,7 +201,9 @@ PDPP therefore defines no delegated-grant, sub-grant, or grant-chaining construc
 
 Only live passthrough is bounded by the upstream grant: when the personal server does not hold a copy and reads from the platform to fulfill a downstream request, it MUST stay within the upstream grant. This limit does not constrain a fresh grant for owner-held data. A downstream PDPP token is never forwarded upstream.
 
-**Onward transfer is prohibited.** A recipient MUST NOT transfer its token or let an ungranted party exercise it.
+**Token transfer is prohibited.** A recipient MUST NOT transfer its token or let an ungranted party exercise it.
+
+A client's disclosure of held PDPP data to an independent recipient is governed by [Independent-recipient disclosure](#independent-recipient-disclosure). This is distinct from an RS serving owner-held data under a fresh grant to the receiving client, as described above.
 
 A different topology — the owner running their own authorization server in front of a platform's data, so that the platform holds the data but the owner's server decides who may read it — is not introduced by this specification. It is the arrangement UMA describes, it is not the arrangement above, and it is recorded as deferred rather than left ambiguous.
 
@@ -867,6 +870,8 @@ An authorization server MUST reject a declaration containing an unrecognized `so
 
 A processing permission authorizes an operation on disclosed data that read access alone does not authorize. A selection request and a grant carry processing permissions in `processing_permissions`, a set of unique absolute-URI identifiers. Absent or empty means no processing permission. An issued grant carries the member only when the set is non-empty. `processing_permissions` is a Core field, not an extension. A purpose code, `purpose_description`, `client_claims`, `retention`, or extension never confers a processing permission.
 
+Independent-recipient disclosure is an operation that requires a covering processing permission ([Independent-recipient disclosure](#independent-recipient-disclosure)). This version defines no processing permission for that operation. A purpose code or purpose description does not authorize it.
+
 Each identifier has one defining specification, which states the operation the permission covers and how a recipient maintains and exercises the authority. Core defines one identifier:
 
 | Identifier | Operation | Defining specification | Status |
@@ -896,6 +901,10 @@ The AS returns `invalid_authorization_details`. It issues no training grant and 
 **Registration.** Only this specification, or a profile registered under a Specification Required policy ([RFC 8126](https://www.rfc-editor.org/rfc/rfc8126) Section 4.6), defines a processing permission. A registration gives the identifier, its stable semantics, and exactly one defining profile and version, and the decision to approve it is publicly recorded. A client, deployment, or extension cannot define a processing permission. The registered defining profile and version are an immutable normative reference for the permission identifier. Registry maintainers MUST NOT replace that reference with a different profile or version. A grant retains the authority and owner protections of that registered version, including for subsequent issuance or renewal of processing authority. Publishing a later profile version does not change this binding. A profile revision MUST NOT widen that authority or reduce those protections. Publishing a revision MUST NOT retroactively invalidate previously issued processing authority or make conduct permitted by the bound version non-conformant. An AS MAY issue shorter-lived or more restricted processing authority when the bound version permits it. Binding grants to a different defining profile or version requires a new permission identifier and fresh owner approval.
 
 **Registration test.** A registration MUST identify every result of the permitted operation that survives the [erasure](#erasure) duty. Where such a result may retain or reveal an owner's data, the defining profile MUST bound cessation of the operation to at most 1 hour. That bound runs from the end of the grant, or from the effective time of an erasure instruction covering the operation's inputs. It MUST hold without delivery of any message to the client, and over the whole execution interval of the operation. A check made once when work starts does not meet it. The defining profile MUST also make every issuance of processing authority depend on the continued eligibility of each acquisition copy the authority covers: no effective erasure instruction covers the copy, and the client may still hold and process it. When an advance instruction has a known future effective time, no processing authority for the covered copy may outlast that time. To make this check possible, the defining profile MUST make each processing credential name the acquisition grants whose held data it covers, and MUST make the processor refuse an input acquired under any grant the credential does not name. A credential that names no acquisition grant covers only data acquired under its own grant.
+
+For a permission that covers independent-recipient disclosure, the defining profile MUST specify the recipients or recipient classes the owner approves. It MUST specify the data and disclosure operations that approval covers. It MUST define the receiving parties' obligations and the evidence of their acceptance. It MUST define which effects of withdrawal and erasure reach those parties. It MUST identify any copy or result that remains usable after those effects. It MUST require the AS to show the owner those limits before approval.
+
+This paragraph does not waive the existing registration test or its cessation bound.
 
 **Consent and evidence.** A client MUST request a processing permission in its own detail, separate from any detail for ordinary access, even for the same source and purpose. The owner MUST select that detail by a distinct affirmative action, even when it is the only detail. The AS MUST NOT present it as selected by default. The owner MUST be able to approve every other detail while declining it, and the AS MUST NOT make approval of another detail depend on it. The AS MUST render each permission as a distinct, labeled term, not as part of the purpose.
 
@@ -990,6 +999,8 @@ Core represents these commitments through its existing purpose and retention fie
 The AS MUST NOT change `access_mode` merely as a consequence of narrowing data. The AS MAY choose grant expiry under its existing policy. Grant lifetime and record time scope remain separate.
 
 The AS MUST include the resolved purpose in final owner review. It MUST include that purpose in the grant. If retention is specified, the AS MUST include it in final owner review. It MUST include that retention in the grant. If grant expiry is specified, the AS MUST include it in final owner review. It MUST include that expiry in the grant. The AS MUST include any processing permissions in final owner review and in the grant, as [Processing permissions](#processing-permissions) defines.
+
+The AS MUST state during final owner review that ordinary access does not authorize the client to disclose PDPP data to an independent recipient. The AS MUST distinguish that restriction from processing by parties acting for the client under [Downstream holders](#downstream-holders). The AS MUST NOT describe this client duty as technical prevention of onward disclosure.
 
 Final owner review MUST also show what happens to held data after the grant ends, as [Held data after a grant ends](#held-data) defines:
 
@@ -1233,13 +1244,13 @@ The revocation in this flow is an owner withdrawal and carries a disposition ([E
 
 The rules from here to [Lifecycle durability](#lifecycle-durability) govern the [held data](#data-concepts) of a grant, while the grant is active and after it ends. They bind the client and every party acting for it ([Downstream holders](#downstream-holders)), and the AS duties they depend on. PDPP cannot technically enforce the client's duties. A conforming client's records make a breach attributable, not impossible.
 
-**Learned-parameter exception.** Learned parameters produced under valid processing authority before that authority ended may be retained and used within the purpose the owner reviewed. The contribution of PDPP inputs to those parameters does not, by itself, subject the parameters to the input grants' reconciliation, surviving-use prohibition, retention-disposal, or erasure duties. This exception does not cover stored source examples, training-data copies, retrieval stores, or other retained inputs and derivatives. It does not authorize further training on PDPP inputs without the covering permission and valid processing authority. It is a term of PDPP authority that the owner approves. It does not limit any legal duty or order to restrict, retrain, or destroy a model. Model outputs follow the boundary in [Data concepts](#data-concepts).
+**Learned-parameter exception.** Learned parameters produced under valid processing authority before that authority ended may be retained and used within the purpose the owner reviewed. The contribution of PDPP inputs to those parameters does not, by itself, subject the parameters to the input grants' reconciliation, surviving-use prohibition, retention-disposal, or erasure duties. This exception does not cover stored source examples, training-data copies, retrieval stores, or other retained inputs and derivatives. It does not authorize further training on PDPP inputs without the covering permission and valid processing authority. It is a term of PDPP authority that the owner approves. It does not limit any legal duty or order to restrict, retrain, or destroy a model. Model outputs follow the boundary in [Data concepts](#data-concepts). This exception does not authorize disclosure of PDPP data to an independent recipient. Such disclosure remains subject to [Independent-recipient disclosure](#independent-recipient-disclosure).
 
 **Use.** Use of held data means serving, displaying, querying, computing with, training on, or disclosing it, including through queued or in-flight work. Keeping data, deleting it, and processing that the [legal-retention exception](#erasure) permits are not use.
 
 **Surviving-use terms.** When a grant ends, read access ends (Section 10). Already-issued processing authority ends within the defining profile's cessation bound ([Read access and processing authority](#processing-authority)). An ending by itself creates no erasure instruction. Unless an erasure instruction applies, the client MAY keep the grant's held data and MAY use it only within the grant's surviving-use terms:
 
-- For a grant without a processing permission, the surviving use is use for the grant's approved purpose, within its `retention`.
+- For a grant without a processing permission, the surviving use is use for the grant's approved purpose, within its `retention`, excluding independent-recipient disclosure ([Independent-recipient disclosure](#independent-recipient-disclosure)).
 - For a grant that carries a processing permission, there is no ordinary surviving use. The client MAY keep data held under that grant alone. Already-issued processing authority remains usable only to the extent, and until the cessation deadline, permitted by its defining profile; the client MUST NOT otherwise use the data. Keeping it never makes it usable for another purpose.
 
 Use of held data for any other purpose needs a new grant. The [time limits](#held-data-limits) and the [positive-assessment rule](#reconciliation) apply whether or not the grant has ended.
@@ -1355,7 +1366,31 @@ The AS MUST NOT show a receipt-based deletion deadline calculated from its accep
 
 #### Downstream holders {#downstream-holders}
 
-A client that lets another party hold or process PDPP data for it MUST impose on that party the grant's purpose and retention, these held-data duties, and the [AI training](#ai-training) restriction. It MUST relay every erasure instruction to that party, with its deadlines as absolute times and never relative ones. A relay never starts a new period: the party's deadlines are the client's deadlines. The client MUST keep a record of the parties it informed and their confirmations. This duty creates no right of onward disclosure (Section 3).
+A client MAY let another party hold or process PDPP data for it only within the authority that the client holds. The client MUST impose the grant's purpose and retention on that party. The client MUST impose these held-data duties on that party. The client MUST impose the [AI training](#ai-training) restriction on that party.
+
+The client MUST NOT treat a party's independent use of the data as processing for the client. An arrangement that permits such use is subject to [Independent-recipient disclosure](#independent-recipient-disclosure).
+
+The client MUST relay every erasure instruction to each party acting for it. The client MUST relay the deadlines as absolute times. The party's deadlines are the client's deadlines; a relay never starts a new period. The client MUST keep a record of the parties it informed and their confirmations.
+
+These duties create no authority for independent-recipient disclosure. Section 3 separately prohibits token transfer.
+
+#### Independent-recipient disclosure {#independent-recipient-disclosure}
+
+A client MUST NOT disclose PDPP data to an independent recipient unless a registered processing permission expressly covers that disclosure. The client MUST hold valid processing authority under the permission's defining profile when it discloses the data.
+
+This version defines no processing permission for independent-recipient disclosure. Ordinary access therefore does not authorize that operation. The restriction applies while the grant is active and after it ends. It includes disclosures through records, derivatives, summaries, outputs, and services that reveal PDPP data.
+
+A client MUST NOT infer disclosure authority from the grant's purpose, retention, an owner's action instruction, client claims, a positive assessment, or read-token activity. A client MUST NOT infer that authority from an exception to erasure or retention.
+
+A client MAY disclose data to the owner within the grant's applicable use terms. A client MAY use parties acting for it as [Downstream holders](#downstream-holders) permits. An RS MAY disclose owner-held data under a fresh grant to the receiving client, as Section 3 describes. These permissions do not transfer a grant or token.
+
+This restriction does not prohibit a disclosure that applicable law requires. A client relying on that exception MUST limit the disclosure to what the obligation requires. The client MUST record the data disclosed, recipient, time, and legal obligation, unless law prohibits that record. The exception confers no processing permission. It does not alter the grant's other duties.
+
+**Note (non-normative).** This is a client conformance duty. The RS cannot prevent disclosure of a copy already delivered. A future registered permission needs a complete disclosure contract; a permission identifier alone does not define recipient authority or recall a delivered copy.
+
+**Example (non-normative).** A budgeting client holds transactions under an analytics grant. It can show a summary to the owner while its use terms permit. A storage service acting only for the client remains subject to the client's held-data duties. Sending the transactions or summary to an independent lender is a different operation. The analytics purpose and the owner's instruction to send do not create a registered processing permission. In this version the client has no PDPP authority for that disclosure. The owner can instead authorize the lender as a separate client at an owner-held resource server, where available and independently permitted.
+
+**Example (non-normative).** A test detail contains `processing_permissions: ["urn:example:processing:independent-disclosure"]`. The URI is an intentionally unregistered test value. An AS rejects the detail with `invalid_authorization_details`; it does not omit the permission and issue an ordinary grant. A production client first checks discovery and does not request an unadvertised permission.
 
 ### Grant lifecycle operation {#grant-lifecycle}
 
@@ -1577,6 +1612,8 @@ At a record's retention ceiling, the client MUST complete the `on_expiry` action
   ]
 }
 ```
+
+This grant permits ordinary agent-context use; it does not authorize the agent to disclose conversation content or a derived summary to an independent recipient.
 
 **Health data with field selection and retention:**
 ```json
@@ -2161,6 +2198,7 @@ A conformant authorization server:
 45. Shows in final owner review what happens to held data after the grant ends, as [Recipient commitments and approval](#recipient-commitments) defines.
 46. On security revocation, shows the owner the ending and its reason and offers the disposition. Before decommission, offers a disposition for every grant whose held data may remain, shows the stage of each disposition, and warns about each `delete` that no client has received. In a narrowing flow, states the effect of each disposition as [Grant narrowing](#grant-narrowing) defines. Lets the owner request erasure for an ended grant while its held data may remain.
 47. Supports [lifecycle recovery](#lifecycle-recovery), and gives a recovery token no read access and no refresh token.
+56. States during final owner review that ordinary access confers no independent-recipient disclosure authority. Distinguishes parties acting for the client. Does not claim that this duty technically prevents onward disclosure. Applies the closed processing-permission rules without substitution or fallback.
 
 ### Resource Server conformance
 
@@ -2227,6 +2265,9 @@ A conformant client:
 25. If it offers its own disconnect, states what happens to held data and offers `keep` and `delete` with neither preselected. Treats `delete` as an erasure instruction effective at once.
 26. Keeps the records that [Erasure](#erasure) requires. Exercises already-issued processing authority after effective erasure only within that section's limited continuation and the defining profile's stop requirements.
 28. Retains the authenticated AS issuer with every grant and does not infer it from `grant_id`, `source.id`, or an untrusted credential, as Section 8 requires.
+29. Discloses PDPP data to an independent recipient only under an expressly covering registered processing permission and valid authority under its defining profile, except for the required-by-law case in Section 7.
+30. Classifies a receiving party by the operation it performs. Does not treat independent use as processing for the client. Applies the rule to derivatives and service outputs as well as source records.
+31. Does not infer independent-recipient disclosure authority from purpose, an owner action instruction, a claim, a positive assessment, an erasure exception, or read-token activity. Records any required-by-law disclosure as Section 7 requires.
 
 ### Held-data conformance cases {#held-data-cases}
 
@@ -2406,7 +2447,8 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Point-in-time reconstruction | Deferred (reconstructing full state at a past timestamp) |
 | Canonical view naming vocabulary | Deferred; will be informed by implementation experience |
 | Predicate-based grant scoping | Deferred; see [Predicate-based grant scoping](#predicate-based-grant-scoping) |
-| Derivative data | New derived sources, onward rights, and durable derived datasets remain deferred. Derivatives are [PDPP data](#data-concepts): held-data, retention, and erasure duties reach them (Section 7), and AI training on them is governed by [AI training](#ai-training). The optional [extended access profile](spec-access-extension) defines bounded presentation of authorized input, not new source or grant authority. |
+| Derivative data | New derived sources and durable derived datasets remain deferred. Derivatives are [PDPP data](#data-concepts): held-data, retention, and erasure duties reach them (Section 7), and AI training on them is governed by [AI training](#ai-training). Independent-recipient disclosure follows the rule in Section 7. The optional [extended access profile](spec-access-extension) defines bounded presentation of authorized input, not new source or grant authority. |
+| Independent-recipient disclosure | Requires a registered processing permission expressly covering the disclosure (Section 7). This version defines none. A future permission must define the complete recipient and disclosure contract under Section 6; ordinary purpose-compatible use supplies no such authority. |
 | Cross-source category grants | Deferred; grants bind to a single `source.id` in v0.1 |
 | Push delivery and proof of deletion | Not specified in this version. Erasure reaches the client by pull, through the grant lifecycle operation (Section 7). Core defines no issuer-initiated notification to a client and no proof of deletion; the client keeps an accountability record |
 | Use of held data while the AS is unreachable | Core specifies that the client keeps held data, may use it as the grant permits, and retries (Section 7). Core sets no use or deletion deadline that runs because the AS is silent. Known erasure, retention, and processing deadlines still bind |

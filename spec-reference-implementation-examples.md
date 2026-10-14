@@ -390,7 +390,7 @@ If this session had multiple pages, the follow-on `next_cursor` pages would stay
 
 ## Example 3: Retention, revocation, and erasure
 
-A sleep analysis app receives a one-time grant with a retention declaration.
+A sleep analysis app receives a one-time grant with a retention declaration. The retained `sleep_sessions` schema requires `day`.
 
 ### Step 1: Issued grant
 
@@ -421,7 +421,8 @@ A sleep analysis app receives a one-time grant with a retention declaration.
         "total_sleep_duration",
         "sleep_score",
         "deep_sleep_duration"
-      ]
+      ],
+      "required_fields": ["day"]
     }
   ],
   "retention": {
@@ -442,7 +443,7 @@ The AS asks the user to choose `keep` or `delete` for the data the app already h
 ```http
 GET /v1/streams/sleep_sessions/records
 Authorization: Bearer pdpp_client_tok_sleep_001
-PDPP-Version: 2026-04-06
+PDPP-Version: 0.1
 ```
 
 The token is inactive, and authenticated RS context establishes that its grant was revoked. The response is HTTP 401 with `WWW-Authenticate: Bearer error="invalid_token"`. If the cause were not established, the structured code would be `authentication_error`.
