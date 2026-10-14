@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-13
 
 ---
 
@@ -22,7 +22,7 @@ The protocol specifies:
 
 Most source platforms do not yet expose a PDPP interface natively. Collection is the bridge for those sources: it brings their data into a resource server so the protocol's consent and enforcement layers can govern access to it. The informative [PDPP Collection Profile](spec-collection-profile) describes that bridge as builder guidance; it is not a conformance requirement. A connector conforms to PDPP by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. No particular collection method is required. The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved, and data may also reach it via regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5-8) are agnostic to the collection method.
 
-Any implementation satisfying the role conformance criteria in Section 9 is PDPP-compliant. This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. URI identifiers name sources, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the resolved grant and the exact source declaration snapshot retained by the authorization server.
+An implementation is PDPP-compliant for a role when it meets every requirement of this specification that applies to that role. Section 9 summarizes those requirements and does not narrow them. This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. URI identifiers name sources, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the resolved grant and the exact source declaration snapshot retained by the authorization server.
 
 ### Interoperable core sections
 
@@ -348,7 +348,7 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 | `emitted_at` | ISO 8601 | yes | When the record was emitted by its producer (processing time, not source time). |
 | `op` | enum | no | `upsert` (default) or `delete`. This field is a directive to the resource server and is not stored as part of the record data. |
 
-**Compound key encoding:** When `primary_key` has multiple fields, `key` is an array of values in the order declared by the SourceDeclaration `primary_key`. The canonical string form of a compound key is the minified JSON array of key values (e.g., `["user_123","2026-04-01"]`). Each primary-key component MUST be serialized as a string in the canonical encoding. Non-string primary-key field values (e.g., integers, dates) MUST be converted to their string representation before encoding. URL path parameters and `resources[]` entries use percent-encoded canonical string form. The `resource_ref.record_id` field retains native `string | string[]` type.
+**Compound key encoding:** When `primary_key` has multiple fields, `key` is an array of values in the order declared by the SourceDeclaration `primary_key`. The canonical string form of a compound key is the [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) (JSON Canonicalization Scheme) serialization of the ordered array of string key components (e.g., `["user_123","2026-04-01"]`). Minification alone does not make the form unique, because a JSON string can escape the same character in more than one way. Each primary-key component MUST be serialized as a string in the canonical encoding. Non-string primary-key field values (e.g., integers, dates) MUST be converted to their string representation before encoding. Within JSON, `resources[]` entries and response record `id` values carry the canonical key string without percent-encoding, and the AS and RS MUST NOT percent-decode them. The AS MUST reject a `resources[]` entry that is not in canonical form. A URL path parameter carries the canonical key string percent-encoded for HTTP, and the RS decodes it exactly once before it compares keys. The `resource_ref.record_id` field retains native `string | string[]` type.
 
 **Record identity:** For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree. The Collection Profile defines the HTTP error for its ingest endpoint.
 
@@ -1312,7 +1312,7 @@ A client-token caller may fetch metadata only for a stream present in its resolv
 }
 ```
 
-**Client-token response** (closed projection of a grant frozen to fields `id`, `name`, `source_updated_at`; no range filters, views, or relationships were granted):
+**Client-token response** (closed projection of a grant frozen to fields `id`, `name`, `source_updated_at`; no range filters, views, or relationships were granted). It shows no declaration fact that the grant does not carry, such as the primary key, cursor field, or selection capabilities:
 
 ```json
 {
@@ -1324,13 +1324,6 @@ A client-token caller may fetch metadata only for a stream present in its resolv
       "name": { },
       "source_updated_at": { }
     }
-  },
-  "primary_key": ["id"],
-  "cursor_field": "source_updated_at",
-  "consent_time_field": "source_updated_at",
-  "selection": {
-    "fields": true,
-    "resources": false
   },
   "query": { },
   "freshness": {
@@ -1524,7 +1517,7 @@ Redirect URLs may be valid for less than 60 seconds; clients cannot rely on the 
 
 ### Errors {#errors}
 
-Every non-2xx response returns a structured error:
+Every 4xx or 5xx response whose HTTP semantics permit a body returns a structured error. A `HEAD` response carries no body and reports failure through its status and headers. A blob redirect (HTTP 302) is a success under the redirect contract above. A structured error has this shape:
 
 ```json
 {
@@ -1591,7 +1584,7 @@ Every response includes a `Request-Id` header for debugging.
 
 ## 9. Conformance {#conformance}
 
-This section defines what it means to implement each PDPP role. Conformance claims should reference this section.
+This section defines what it means to implement each PDPP role. Conformance claims should reference this section. The role lists index the requirements and do not narrow them: a conformance claim also meets every applicable requirement elsewhere in this document, and omitting a requirement from a list does not waive it.
 
 Conformance is role- and behavior-based. A conformant implementation is not required to use any particular vendor-hosted service, token, chain, centralized registry operator, domain, or repository deployment.
 
@@ -1624,7 +1617,7 @@ A conformant authorization server:
 20. Issues a refresh token only when at least one grant the token response covers is `continuous`, and never extends a `single_use` grant's read window through refresh. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
 21. Rejects unsupported persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent when no migration applies.
 22. Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value.
-23. Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision. Authenticates and verifies each representative before accepting approval, binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.
+23. Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision. Authenticates each representative and, before showing any subject-specific information or accepting approval, verifies their authority under [Representative approval](#representative-approval). Binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.
 24. Lets the owner approve or decline each detail of a request on its own. Issues one grant for each approved, resolved detail, covering one subject, one source, and one purpose, with its own lifecycle. Identifies grants by `grant_id` and does not treat subject, source, and purpose as a grant key.
 25. If it offers client-initiated revocation, ends grants as Section 10 defines: revoking a refresh token, current or superseded, ends every grant its family covers; revoking an access token ends its grants only when no refresh-token family covers them. In the OAuth binding, implements it as RFC 7009 token revocation and advertises `revocation_endpoint` in RFC 8414 metadata.
 26. Ends one grant among several that share a credential without revoking that credential or ending the other grants.
