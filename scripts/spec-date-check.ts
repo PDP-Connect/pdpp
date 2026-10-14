@@ -47,7 +47,8 @@ function declaredDate(text: string): { raw: string; iso: string } | null {
 }
 
 function git(args: string[]): string {
-  return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" });
+  // `git log -p` over a long spec history exceeds the 1 MiB default buffer.
+  return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 }
 
 interface Options {
