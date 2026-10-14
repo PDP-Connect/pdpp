@@ -1,7 +1,7 @@
 # PDPP Reference Implementation Examples
 
 Status: Illustrative
-Date: 2026-09-02
+Date: 2026-09-29
 
 These examples are illustrative sequences built from the current draft. They are not the normative source for wire shapes or role responsibilities. When an example and the live draft differ, the normative documents win:
 
@@ -352,7 +352,7 @@ Content-Type: application/json
 The client has previously stored a `next_changes_since` token from an earlier successful session.
 
 ```http
-GET /v1/streams/conversations/records?changes_since=chg_eyJwcmV2IjoiMjAyNi0wNC0xMFQyMDowNToxMFoifQ
+GET /v1/streams/conversations/records?changes_since=cs_Hq4mZ8tWc1Lr6VxN0bYk3PjD9fGs2Ae7
 Authorization: Bearer pdpp_client_tok_agent_001
 PDPP-Version: 2026-04-06
 ```
@@ -362,7 +362,7 @@ PDPP-Version: 2026-04-06
   "object": "list",
   "url": "/v1/streams/conversations/records",
   "has_more": false,
-  "next_changes_since": "chg_eyJuZXh0IjoiMjAyNi0wNC0xMVQxNToxMjowMVoifQ",
+  "next_changes_since": "cs_T2wPd7Kx5NqB0mRz9LyVc4HgJ1sFa8Eu",
   "freshness": {
     "captured_at": "2026-04-11T15:12:01Z",
     "status": "current",

@@ -48,7 +48,6 @@ const SPECS = [
     "spec-connector-ecosystem",
     "spec-core",
     "spec-data-query-api",
-    "spec-deferred",
     "spec-discovery-and-trust",
 ];
 // The root specs use kramdown-style `{#id}` heading-id suffixes (see

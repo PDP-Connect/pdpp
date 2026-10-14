@@ -61,7 +61,6 @@ export const GENERATED_MDX_SPEC_SLUGS = [
   "spec-connector-ecosystem",
   "spec-core",
   "spec-data-query-api",
-  "spec-deferred",
   "spec-discovery-and-trust",
 ] as const;
 
@@ -124,6 +123,5 @@ export const MAINTAINER_DOC_SLUGS = [
   "spec-auth-design",
   "spec-change-tracking",
   "spec-data-query-api",
-  "spec-deferred",
   "open-questions",
 ] as const;
