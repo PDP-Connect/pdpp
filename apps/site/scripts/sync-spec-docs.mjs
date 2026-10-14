@@ -42,6 +42,7 @@ const headerDir = path.join(siteDir, "spec-headers");
 // index, README) live only under content/docs and are NOT touched here.
 const SPECS = [
     "spec-access-extension",
+    "spec-ai-training-profile",
     "spec-architecture",
     "spec-auth-design",
     "spec-change-tracking",
