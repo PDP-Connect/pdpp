@@ -162,10 +162,12 @@ sequenceDiagram
     participant RS as Resource Server
 
     Client->>AS: authorization request (authorization_details)
-    AS->>AS: resolve accepted source declaration
-    AS->>Owner: present consent screen
+    AS->>AS: validate owner-independent request and binding facts
+    AS->>Owner: authenticate or verify existing owner session
+    AS->>AS: resolve accepted declaration and owner eligibility privately
+    AS->>Owner: review resolved selection and commitments
     Owner->>AS: review and approve
-    AS->>AS: issue grant
+    AS->>AS: issue approved grant
     AS-->>Client: authorization code (via redirect)
     Client->>AS: redeem authorization code
     AS-->>Client: access token bound to the grant
@@ -175,6 +177,8 @@ sequenceDiagram
     RS-->>Client: records within the grant
     Note over RS,AS: A co-located deployment may use a local equivalent of introspection
 ```
+
+**Example (non-normative).** An otherwise valid request names a source that the owner has not connected. The AS follows the same authentication entry path as when the source is connected. In authenticated review, the stream cannot be approved. If it is optional and another stream is approved, the grant omits it. If it is required or no stream remains, the client receives `access_denied` without a connection-status reason. A malformed `fields`/`view` combination still receives `invalid_authorization_details` independently of the owner's connections.
 
 What differs between deployments is how the resource server that fulfills the grant is populated and operated. This is not a closed set: a resource server may hold pre-collected data with no collection machinery involved, or receive data via regulatory export, manual import, or platform-native APIs ([Section 1](#introduction)). The two examples below illustrate the ends of that spectrum; the [PDPP Collection Profile](spec-collection-profile) is one fulfillment mechanism, not the only one.
 
@@ -492,13 +496,14 @@ The full declaration below gives the omitted schema: `source_updated_at` is a st
 
 **The consent screen.** The authorization server shows the declaration's label and detail, the requested fields, and the bound stated as inclusive, for example "artists updated at or after 00:00 UTC on 28 September 2025" (see [consent_time_field](#consent-time-field)). The owner approves or declines the request.
 
-**The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields and time bound:
+**The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields, the required-field subset, and time bound:
 
 ```json
 {
   "name": "top_artists",
   "instance_ids": ["spotify-account-a"],
   "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
+  "required_fields": ["id", "name"],
   "time_constraint": {
     "field": "source_updated_at",
     "type": "date-time",
@@ -506,6 +511,19 @@ The full declaration below gives the omitted schema: `source_updated_at` is a st
   }
 }
 ```
+
+**A sparse read.** A later client-token request for one granted field still returns the frozen required fields:
+
+```text
+GET /v1/streams/top_artists/records?fields=genres
+
+Grant fields: id, name, genres, popularity, source_updated_at
+Grant required_fields: id, name
+Returned data members, when present: id, name, genres
+Excluded optional data members: popularity, source_updated_at
+```
+
+If `genres` is absent from a record, it stays absent. `id` and `name` must be present for a returned record.
 
 [Section 7](#grant) has the full grant, including this exact stream entry, in its first example.
 
