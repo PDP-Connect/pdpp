@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-06
+Date: 2026-10-13
 
 ---
 
@@ -1043,7 +1043,7 @@ The result MUST include source provenance, declaration revision, resolved stream
 
 The client MUST inspect the result before requesting record disclosure. It MUST NOT infer authorization from its original request, an MCP tool listing, or a token's syntax. A client unable to obtain or interpret the result MUST NOT request disclosure. An AS MAY omit only values that the grant definition itself makes optional.
 
-For a token covering multiple grants, the AS MUST return every covered grant as a separate element. It MUST NOT merge fields, instances, or resources across grants. A binding supporting such tokens MUST preserve each grant's source and client association during enforcement.
+For a credential that a companion binding defines to cover several grants, the AS MUST return every covered grant as a separate element. It MUST NOT merge fields, instances, or resources across grants. A binding supporting such tokens MUST preserve each grant's source and client association during enforcement.
 
 The AS MUST return the same resolved grant facts to the client and to an authenticated RS, apart from token-specific active-state and expiry fields. Receiving this result does not grant the client access to the RS-authenticated introspection endpoint. The AS MUST protect result delivery as part of the authenticated OAuth exchange.
 
