@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-13
 
 ---
 
@@ -888,7 +888,7 @@ A grant is an immutable consent artifact. It is the output of the authorization 
 
 The authorization server issues an access token bound to the grant. The client uses the access token (not the raw grant) to authenticate with the resource server. The resource server resolves the token to the grant and enforces its constraints on every request. Grant lifecycle (active, expired, revoked) is tracked by the authorization server, not stored in the grant itself.
 
-A grant covers one subject, one source, and one purpose. This is a granularity rule, not an identity rule: `grant_id` identifies a grant, and two grants MAY have the same subject, source, and purpose. An authorization request MAY carry several `authorization_details` entries. The owner approves or declines each entry on its own, and each approved, resolved Core `data-access` detail yields one grant with its own lifecycle. A companion binding that expands one requested detail into several resolved details MUST define them and MUST correlate every requested detail with its outcome. No permission is built by combining grants: the constraints of one grant authorize each disclosure, even when one credential covers several grants.
+A grant covers one subject, one source, and one purpose. This is a granularity rule, not an identity rule: `grant_id` identifies a grant, and two grants MAY have the same subject, source, and purpose. An authorization request MAY carry several `authorization_details` entries. A companion binding, such as a grant package, can define a credential that covers several grants. Without such a credential, the AS MUST accept at most one `https://pdpp.dev/data-access` element in an authorization request. It MUST reject a request with more than one with `invalid_authorization_details`. The owner approves or declines each entry on its own, and each approved, resolved Core `data-access` detail yields one grant with its own lifecycle. A companion binding that expands one requested detail into several resolved details MUST define them and MUST correlate every requested detail with its outcome. No permission is built by combining grants: the constraints of one grant authorize each disclosure, even when one credential covers several grants.
 
 ```json
 {
@@ -1193,9 +1193,9 @@ Positive introspection results MUST NOT be cached longer than `min(token_exp, 60
 
 Two authentication boundaries exist:
 
-**Owner operations:** `Authorization: Bearer <owner_token>`. Core owner tokens are scoped to a single subject's data store and support the Core owner and self-export operations defined here. The RS MUST derive the `subject_id` from the introspection response and MUST reject any request attempting to access data outside that subject's scope. Companion profiles may define additional owner-authenticated operations. How the owner obtains this token is out of scope (device code flow, API key, or any other mechanism).
+**Owner operations:** `Authorization: Bearer <owner_token>`. An owner token is a credential that the owner, the resource owner in RFC 6749 terms, holds to act directly on their own data store. It carries no PDPP grant (Section 7), so in that respect it resembles a personal access token. The owner may still obtain it through an OAuth flow, such as device authorization; `pdpp_token_kind` describes the authorization context the RS enforces, not how the token was issued. Core owner tokens are scoped to a single subject's data store and support the Core owner and self-export operations defined here. The RS MUST derive the `subject_id` from the introspection response and MUST reject any request attempting to access data outside that subject's scope. Companion profiles may define additional owner-authenticated operations. How the owner obtains this token is out of scope (device code flow, API key, or any other mechanism).
 
-**Client operations** (query records, list streams, fetch blobs): `Authorization: Bearer <access_token>`. Access tokens are bound to a specific grant. Both token types use RFC 6750 Bearer Token format. The RS distinguishes them via `pdpp_token_kind` in the introspection response.
+**Client operations** (query records, list streams, fetch blobs): `Authorization: Bearer <access_token>`. A client token is an ordinary OAuth access token issued to a client (RFC 6749) and bound to exactly one grant. A credential that covers several grants, such as a grant package, is defined by a companion binding, which also defines how each request selects one grant (Section 7). Both token types use RFC 6750 Bearer Token format. The RS distinguishes them via `pdpp_token_kind` in the introspection response.
 
 **Self-export:** An owner holding a valid owner token MAY query their own data using the standard client query endpoints without a client grant. This is the v0.1 self-export mechanism and does not require a separate grant. Conformant Core RS implementations SHOULD support this capability (see Section 9 conformance item 13).
 
@@ -1607,7 +1607,7 @@ A conformant authorization server:
 6. MUST NOT reject a `purpose_code` solely because it is not in the PDPP registry. For unrecognized codes, displays `purpose_description` if present, or the raw URI. MAY reject a `purpose_code` based on local policy.
 7. Renders requester identity metadata, declaration-authored data descriptions, structured policy declarations, and client-authored claims as semantically distinct categories during consent. MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms. If `client_claims` are rendered during final review, binds the normalized exact claims into the immutable final approval artifact and review revision, and preserves that binding in retained consent evidence, without adding them to the resolved grant or RS enforcement. Records in the issued grant's `client.client_display` the exact `policy_uri` and `tos_uri` it presented during consent, and omits any it did not present.
 8. Tracks grant lifecycle (active, expired, revoked). Reflects revocation immediately in introspection: the revoked grant is inactive at once, and a token is `active: false` when no grant it covers is active.
-9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
+9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields. Binds each Core client token to exactly one grant. Without a companion credential binding, rejects more than one Core data-access detail with `invalid_authorization_details`.
 10. For `single_use` grants, consumes the grant atomically with first client-token issuance. Gives that access token a finite expiration set by local policy and, when the grant has `expires_at`, no later than `expires_at`; that expiry ends the grant's one read window. Lets a later token in the same refresh-token family carry the grant only inside the window, reports the grant inactive after it, and otherwise rejects issuance against the consumed grant.
 11. Validates stream/field/view/resource-id shape at grant issuance.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
@@ -1810,6 +1810,8 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Interoperable audit/transparency event format | Separate companion profile if standardized |
 | Point-in-time reconstruction | Deferred (reconstructing full state at a past timestamp) |
 | Canonical view naming vocabulary | Deferred; will be informed by implementation experience |
+| Shared record vocabularies | Deferred; Core is schema-agnostic and each declaration carries its own stream schemas. Common schemas for a kind of data across sources, such as transactions across banks, are an ecosystem registry concern |
+| Named conformance bundles for agent clients | Deferred; Core defines one conformance target per role (Section 9), and a future profile may define its own named conformance claim (see [Requirements Language](#requirements-language)). A named bundle of Core plus companion query profiles for agent clients can be added later |
 | Predicate-based grant scoping | Deferred; see [Predicate-based grant scoping](#predicate-based-grant-scoping) |
 | Derivative data | Deferred and unresolved; v0.1 authorizes reads of declared streams and states no default for the output of compute over them |
 | Cross-source category grants | Deferred; grants bind to a single `source.id` in v0.1 |
@@ -1820,6 +1822,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Subgrants | Deferred; access under a grant is not transferable. A second party needs its own grant |
 | Client grant management | Deferred; a client can revoke a credential (Section 10), but Core defines no client operation that ends one grant while other grants share its credential |
 | Change of client ownership and undisclosed sub-processing | Deferred; no change-of-control record, revocation trigger, or recipient sub-processing disclosure mechanism. `client_claims` is not an ownership record |
+| Owner-proffered terms | Deferred; Core defines no way for an owner to propose terms that a client accepts, such as IEEE 7012-2025 (MyTerms) agreements. Core asks the AS to present the client's own policy and terms links and records the ones it presented (Section 6) |
 | Client bulk export | Deferred; owner self-export is SHOULD (Section 9). A client pages through the query under its grant |
 | Owner-operated authorization server (UMA-style) | Not introduced; see Section 3. |
 | Real-time streaming | Different spec needed |
