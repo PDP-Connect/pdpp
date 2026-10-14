@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-13
 
 ---
 
@@ -231,8 +231,10 @@ Each stream has one of two semantic types:
 
 | Semantics | Meaning | Examples | Resource server behavior |
 |-----------|---------|----------|------------------------|
-| `append_only` | Records are immutable events. New records are added; existing records are never modified. | messages, transactions, play_events, workouts | Insert only. Duplicate keys are idempotent. |
+| `append_only` | Records are immutable events. New records are added; existing records are never modified. | messages, transactions, play_events, workouts | Insert new records only. Equal-data duplicates are idempotent; differing data is a conflict (see below). Explicit deletion is permitted. |
 | `mutable_state` | Records represent current state of an entity. Records may be updated or deleted. | profile, settings, playlist_items, follow_lists | Upsert by primary key. Resource server maintains version history for incremental sync. |
+
+**Re-emitted append-only records:** A valid `op: upsert` RECORD in an `append_only` stream is a duplicate when a record with the same canonical key is already stored for the same source, stream and instance. The record identity rule applies before duplicate handling. The resource server MUST leave the stored record, including its `emitted_at`, unchanged, and MUST NOT create a version or a change-history event. Equal `data` is an idempotent retry. Differing `data` is a conflict: a profile-defined ingest or write interface that receives one MUST report the conflict to the producer and SHOULD make it visible to the owner. Equality compares `data` as JSON values, not the new envelope's `emitted_at`: object member order and whitespace do not matter, and numbers compare by numeric value. A duplicate produces no `changes_since` result; the existing record still appears in a session that starts from `beginning`. This rule does not block `op: delete` or owner deletion; those removals produce tombstones under [Incremental sync](#incremental-sync). A source that updates existing records declares the stream `mutable_state`.
 
 Approximately 95% of personal data by volume is `append_only`. The remaining 5% is `mutable_state`. Mutable state records (profiles, preferences, relationships) are often the highest-value context for AI agents.
 
@@ -244,20 +246,20 @@ Every stream supports incremental sync. The resource server maintains internal c
 
 A `changes_since` token is a position in the resource server's ingestion and change order, not a `cursor_field` value. A `next_changes_since` token MUST NOT reveal a readable position or time. Token equality or ordering MUST NOT signal a change that is not visible to the grant, or to the owner session's effective scope, including after a session that returns nothing. One way to meet this is to make each issued token distinct and opaque, for example by encrypting it with fresh randomness. A page cursor MUST NOT reveal a readable position, time, or field value either. An `append_only` record that arrives late with an earlier `cursor_field` value, such as a play from yesterday ingested today, therefore appears in the next session.
 
-A client that has previously synced a stream queries for changes by passing its last `next_changes_since` token. The resource server returns every record not visible at h0 and visible at h1, within the client's grant-authorized field projection. For a record visible at both horizons, it returns the record only if its grant-authorized projection changed.
+A client that has previously synced a stream queries for changes by passing its last `next_changes_since` token. The resource server returns every record not visible at h0 and visible at h1, within the client's grant-authorized field projection. For a record visible at both horizons, it returns the record only if its grant-authorized projection changed or the previous session withheld it, or redacted a reference in it, after a deletion (see the pagination rule in Section 8).
 
 This design ensures that a client authorized for fields A and B cannot infer that field C changed, even if C was modified after the client's last sync. The response is a function of the grant, not of the full record state.
 
 This promise covers field values, not membership. Under a time-bounded or resource-filtered grant, the client can see which records are visible. A change to a hidden time field can move a record into or out of that set. Repeated full listings reveal the same change, so no grant of this kind can hide it.
 
-**Snapshot model:** `changes_since` returns the full current state of every record not visible at h0 and visible at h1, and of every record visible at both whose grant-authorized projection changed, plus tombstones. It does not return field-level diffs. The client receives a complete record object for any record that changed.
+**Snapshot model:** `changes_since` returns the full current state of every record not visible at h0 and visible at h1, and of every record visible at both whose grant-authorized projection changed, plus tombstones. It also returns each record that the previous session withheld, or in which it redacted a reference, after a deletion (see the pagination rule below, and Cross-stream references in Section 4). It does not return field-level diffs. The client receives a complete record object for any record that changed.
 
 **Visibility:** A record is *visible* at a horizon if it exists at that horizon and passes every restriction of the query context at that horizon. For a client token, these are the grant's stream, `instance_ids`, `resources`, and `time_constraint`. For an owner token, they are the owner scope and any request filter. A `changes_since` session from horizon h0 to horizon h1 returns:
 
 | At h0 | At h1 | Result |
 |---|---|---|
 | not visible | visible | the record, projected as of h1 |
-| visible | visible | the record, projected as of h1, only if its projection changed |
+| visible | visible | the record, projected as of h1, only if its projection changed or the previous session withheld it, or redacted a reference in it, after a deletion |
 | visible | not visible (deleted, moved out of the time window, or excluded for another reason) | one tombstone |
 | not visible | not visible | nothing |
 
@@ -267,7 +269,7 @@ Visibility at h0 uses the record's version at h0. For a deleted record, the h0 v
 
 **Sync guarantee:** With these rules, two conforming resource servers that hold the same records produce the same synced copy. The guarantee covers only a copy that starts at `beginning` and is updated by later `changes_since` sessions. A client that also keeps records from other reads, such as a get by ID between sessions, reconciles them itself; a get by ID returns 404 once the record is not visible. A client MUST treat a tombstone for an ID it does not hold as a no-op.
 
-**Starting a sync:** A client starts incremental sync with `changes_since=beginning`. `beginning` stands for an empty horizon at which no record is visible, so the first session returns every visible record and no tombstones. It is not a retained snapshot: it never expires, and it is bound to a grant and query context only when a request uses it. After a completed `changes_since=beginning` session, the client MUST replace its copy of the stream with that session's result. This applies to every restart, not only a restart after `cursor_expired`.
+**Starting a sync:** A client starts incremental sync with `changes_since=beginning`. `beginning` stands for an empty horizon at which no record is visible, so the first session returns every visible record and no tombstones. It is not a retained snapshot: it never expires, and it is bound to a grant and query context only when a request uses it. After a completed `changes_since=beginning` session, the client MUST replace its copy of the stream synchronized under that grant and query context with that session's result. This applies to every restart, not only a restart after `cursor_expired`. Sync state and the sync guarantee are per grant: the replacement does not reach records that the client holds under another grant.
 
 **Cursor expiry:** Resource servers MAY expire historical change data after a retention period. A `changes_since` token is valid while the resource server still holds the change history back to and including its horizon. If a client's token has expired, the resource server MUST return HTTP 410 Gone with error code `cursor_expired`. The client MUST start again from `beginning`.
 
@@ -351,6 +353,10 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 **Compound key encoding:** When `primary_key` has multiple fields, `key` is an array of values in the order declared by the SourceDeclaration `primary_key`. The canonical string form of a compound key is the minified JSON array of key values (e.g., `["user_123","2026-04-01"]`). Each primary-key component MUST be serialized as a string in the canonical encoding. Non-string primary-key field values (e.g., integers, dates) MUST be converted to their string representation before encoding. URL path parameters and `resources[]` entries use percent-encoded canonical string form. The `resource_ref.record_id` field retains native `string | string[]` type.
 
 **Record identity:** For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree. The Collection Profile defines the HTTP error for its ingest endpoint.
+
+**Absent and null fields:** A response's field projection is the effective returned field set. For a client token, it is the granted fields narrowed by any accepted `fields` parameter, together with the grant's `required_fields`. For an owner token, it is the effective `fields` or resolved `view` projection, or all fields when neither is supplied, with the stream's schema-required fields. This response projection is distinct from the grant-authorized projection used to determine client `changes_since` eligibility. In a returned record (not a tombstone), omission of a top-level `data` field inside that projection means that the record version the response returns has no value for that field. Omission of a field outside that projection says nothing about stored values. A present JSON `null` is a stored null, allowed only where the stream schema allows it. Neither omission nor `null` establishes the source's current state, and neither relaxes the stream's schema-required fields. A client applies each returned record as a replacement of its copy within the same projection, not as a partial-update instruction.
+
+**Partial updates:** For `mutable_state` streams, a profile MAY define partial-update instructions, distinct from RECORD snapshots, that name the fields they set or remove and leave all other stored fields unchanged. Applying an instruction MUST atomically produce a record that satisfies the stream schema and the record identity rule above. Reads, time constraints, version history and `changes_since` continue to operate on the resulting complete record snapshots and tombstones under the rules of this specification; a partial-update instruction is never served as a record. Core defines no partial-update syntax. A profile MUST NOT use a partial-update instruction to modify an existing `append_only` record.
 
 ### Timestamps
 
@@ -1347,7 +1353,7 @@ A client-token caller may fetch metadata only for a stream present in its resolv
 
 A resource server MAY attach a `freshness` object to stream listings, stream metadata, and record-list responses.
 
-Freshness is server-observed disclosure metadata, not a grant constraint. It reports what the server knows about the recency of the underlying data relevant to the response. It does not guarantee that the source has not changed since `captured_at`, and it does not widen or narrow access rights.
+Freshness is server-observed disclosure metadata, not a grant constraint. It reports what the server knows about the recency of the underlying data relevant to the response. It does not guarantee that the source has not changed since `captured_at`, it does not establish that every returned field was observed again in the most recent collection, and it does not widen or narrow access rights.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -1376,7 +1382,7 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `fields` | comma-separated | Sparse fieldset. Schema-required fields are always included. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `expand[]` | string | Owner-token current-capability request to expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. Client-token requests MUST reject this parameter in v0.1. |
 | `expand_limit[{relation}]` | integer | Owner-token current-capability limit for an expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. Client-token requests MUST reject this parameter in v0.1. |
-| `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`), or `beginning` to start a sync. Returns the changes since that token under [Incremental sync](#incremental-sync): every record not visible at h0 and visible at h1, a record visible at both only if its grant-authorized projection changed, and tombstones. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the token has expired. |
+| `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`), or `beginning` to start a sync. Returns the changes since that token under [Incremental sync](#incremental-sync): every record not visible at h0 and visible at h1, and tombstones. A record visible at both is returned only if its grant-authorized projection changed or the previous session withheld it, or redacted a reference in it, after a deletion. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the token has expired. |
 
 The durable client-token base query surface in v0.1 is: `limit`, `cursor`, `order`, `fields`, `changes_since`, and blob fetch. Exact and range `filter[...]`, `expand[]`, and `expand_limit[...]` parameters are not part of the client-token surface. Owner-token current-capability reads MAY support exact and declared range filters, `view`, and declared expansion; those reads consult current serving metadata. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
 
@@ -1401,11 +1407,11 @@ A page cursor is bound to the query context of the first page: the grant (for an
 
 **Incremental sync:** Pass `changes_since=beginning` to start a sync, and the stored `next_changes_since` to retrieve the changes since a previous session. The resource server returns records within the grant's authorized field projection, and tombstones under the rules in [Incremental sync](#incremental-sync). If the token has expired (HTTP 410 Gone with error code `cursor_expired`), the client MUST start again from `beginning`.
 
-A `changes_since` session returns every record not visible at h0 and visible at h1 (the horizons defined in [Incremental sync](#incremental-sync)). For a record visible at both horizons, eligibility MUST be computed on the grant-authorized projection, not on the unprojected record. For an owner session, the projection is the session's effective `fields` or resolved `view` projection. Returning such a record when its authorized projection is unchanged is a protocol violation because it leaks that hidden fields changed.
+A `changes_since` session returns every record not visible at h0 and visible at h1 (the horizons defined in [Incremental sync](#incremental-sync)). For a record visible at both horizons, eligibility MUST be computed on the grant-authorized projection, not on the unprojected record. For an owner session, the projection is the session's effective `fields` or resolved `view` projection. Except where this specification requires the next session to return a record after a deletion during the previous session, returning such a record when its authorized projection is unchanged is a protocol violation because it leaks that hidden fields changed.
 
 A `changes_since` token is bound to the grant (for an owner token, the subject and effective owner scope) and to the query context that produced it, excluding the input `changes_since` value itself. For an owner session that uses `view`, the binding includes the resolved field set; when the view resolves to a different field set, the resource server rejects the token and the client starts a new `beginning` session. The resource server MUST reject a token used under another grant, subject, scope, or query context as `invalid_cursor`. `beginning` is bound only when a request uses it.
 
-If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`. Deletion is the exception: the resource server MUST NOT serve a record on a later page if the record was deleted after page 1. The next session under a still-active grant emits its tombstone. An ordinary edit after page 1 does not override the horizon; the next session applies it. Revocation ends access and promises no later tombstone: requests fail within the propagation bound in [Revocation](#revocation).
+If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`. Deletion is the exception: the resource server MUST NOT serve a record on a later page if the record was deleted after page 1. The next session under the same still-authorized grant or owner scope and query context treats the withheld record as changed, even if its projection did not change. That session emits its tombstone, or its current state if the record was reinserted. Otherwise a client that replaced its copy after a `changes_since=beginning` session would lose a record that was deleted and reinserted unchanged. An ordinary edit after page 1 does not override the horizon; the next session applies it. Revocation ends access and promises no later tombstone: requests fail within the propagation bound in [Revocation](#revocation).
 
 **Invalid owner filter:** An owner-token current-capability filter on an unknown, non-scalar, or unsupported field/operator returns HTTP 400 `invalid_request` or `unknown_field`, as applicable. Client-token predicate filters are rejected earlier under the v0.1 client-filter rule.
 
@@ -1641,7 +1647,7 @@ A conformant Core RS:
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
 5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
 6. Returns structured errors as defined in Section 8 (unified error table).
-7. Supports incremental sync via `changes_since` on every stream, starting from `beginning`, with tombstone entries and HTTP 410 with error code `cursor_expired` on cursor expiry. Returns every record not visible at h0 and visible at h1, and omits a record visible at both horizons whose projection did not change. The projection is the grant-authorized projection for a client token, and the session's effective `fields` or resolved `view` projection for an owner token.
+7. Supports incremental sync via `changes_since` on every stream, starting from `beginning`, with tombstone entries and HTTP 410 with error code `cursor_expired` on cursor expiry. Returns every record not visible at h0 and visible at h1, and omits a record visible at both horizons whose projection did not change, unless the previous session withheld it, or redacted a reference in it, after a deletion. The projection is the grant-authorized projection for a client token, and the session's effective `fields` or resolved `view` projection for an owner token.
 8. Returns `next_changes_since` on the terminal page of every `changes_since` response and on no other page.
 9. Rejects client-token exact and range `filter[...]` parameters with 400
    `invalid_request` before consulting current declaration metadata; owner-token current-capability reads MAY retain declared filter behavior.
@@ -1669,7 +1675,7 @@ A conformant client:
 2. Uses access tokens (not raw grants) to authenticate with the resource server.
 3. Treats `cursor` and `changes_since` tokens as opaque and from distinct token spaces. MUST NOT use a `next_cursor` value as a `changes_since` parameter.
 4. Stores `next_changes_since` from the terminal page of a `changes_since` response for use in the next sync session.
-5. Respects HTTP 410 `cursor_expired` responses by starting again from `beginning`, rather than retrying with the expired token. After every completed `beginning` session, replaces its copy of the stream with that session's result.
+5. Respects HTTP 410 `cursor_expired` responses by starting again from `beginning`, rather than retrying with the expired token. After every completed `beginning` session, replaces its copy of the stream synchronized under that grant and query context with that session's result. Applies each returned record as a replacement of its copy within the same projection, never as a partial update: omission of an optional field inside that projection removes it, and a present `null` is a stored null.
 6. Honors retention commitments declared in the grant.
 7. Treats unrecognized error codes as opaque, falling back to the exact HTTP status code and applicable response headers rather than failing on an unknown code. Takes the actual status code and headers as the authoritative outcome. Uses a recognized `error.type` only to refine category or presentation, and only when compatible with that outcome. Ignores an absent, unrecognized, or status-incompatible `type` for control flow, and never fails to parse on an unknown `code` or `type`.
 8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant, and MUST NOT treat an unrecognized `source.kind` as either known value. A client with no provenance-dependent policy has nothing to check.
@@ -1801,6 +1807,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Ingest and sync-state endpoints | Defined by the Collection Profile; not required for Core RS |
 | Conformance test suite | Planned but not defined in v0.1 |
 | Webhook / push ingestion | Deferred |
+| Partial-update syntax | Deferred to a profile; Core states the constraints (Section 4) |
 | Source lifecycle actions | Deferred (e.g., deleting source data after export) |
 | Event-driven collection triggers | Deferred; architecturally distinct from the pull-based Collection Profile |
 | Grant signing and token format | Deferred; current design is compatible |
