@@ -494,7 +494,7 @@ The full declaration below gives the omitted schema: `source_updated_at` is a st
 
 **The request.** A client asks for this stream in its selection request ([Section 6](#selection-request)) with `fields: ["id", "name", "genres", "popularity", "source_updated_at"]`, `instance_ids: ["spotify-account-a"]`, and `time_range: { since: "2025-09-28T00:00:00Z" }`. `selection.fields: true` allows the field list, and `consent_time_field` makes the stream time-range-capable.
 
-**The consent screen.** The authorization server shows the declaration's label and detail, the requested fields, and the bound stated as inclusive, for example "artists updated at or after 00:00 UTC on 28 September 2025" (see [consent_time_field](#consent-time-field)). The owner approves or declines the request.
+**The consent screen.** The authorization server shows the declaration's label and detail, the requested fields, and the bound stated as inclusive, for example "artists updated at or after 00:00 UTC on 28 September 2025" (see [consent_time_field](#consent-time-field)). It also states that `id` and `name` remain in every record the client receives. The owner approves or declines the request.
 
 **The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields, the required-field subset, and time bound:
 
@@ -523,7 +523,7 @@ Returned data members, when present: id, name, genres
 Excluded optional data members: popularity, source_updated_at
 ```
 
-If `genres` is absent from a record, it stays absent. `id` and `name` must be present for a returned record. A stored `null` for `name` is returned as `null` where the schema permits it; the RS never fabricates a value.
+If `genres` is absent from a record, it stays absent. `id` and `name` are returned whenever the stored record has a value for them; a missing value stays absent. A stored `null` for `name` is returned as `null` where the schema permits it; the RS never fabricates a value.
 
 [Section 7](#grant) has the full grant, including this exact stream entry, in its first example.
 
