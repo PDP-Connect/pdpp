@@ -101,9 +101,9 @@ The [PDPP Collection Profile](spec-collection-profile) defines a third role:
 
 In many deployments, a single **personal server** fills all three roles. The spec uses "personal server" when referring to a combined deployment, and the specific role name when the distinction matters.
 
-**Note on the Authorization Server interface:** This spec defines the resource server interface normatively because cross-deployment interoperability requires it: a client written against the interface works with any conformant resource server regardless of who operates it or where data lives. The authorization server interface is not normatively specified in v0.1 because user-facing authorization flows are deployment-specific. The reference implementation uses the OAuth authorization code flow with RFC 9396 authorization_details for client grants, and OAuth device authorization for owner tokens.
+**Note on the Authorization Server interface:** User-facing authorization interaction remains deployment-specific. Request resolution, the OAuth token result, and AS-to-RS token resolution are normative contracts. Core does not prescribe the consent screen layout or the owner's authentication method.
 
-**Token resolution:** User-facing authorization flows are deployment-specific and are not normatively specified in v0.1. However, when the AS and RS are deployed separately, the AS-to-RS token-resolution contract is normative: the RS MUST authenticate to the RFC 7662 introspection endpoint and resolve the complete grant enforcement context from its response. The RS MUST enforce the request from that response and MUST NOT make a second AS lookup. For co-located deployments, a local equivalent (shared database or function call) is acceptable. Self-contained JWTs may be used as an optimization but MUST NOT be the sole revocation mechanism (see Section 10).
+**Token resolution:** When the AS and RS are deployed separately, the AS-to-RS token-resolution contract is normative: the RS MUST authenticate to the RFC 7662 introspection endpoint and resolve the complete grant enforcement context from its response. The RS MUST enforce the request from that response and MUST NOT make a second AS lookup. For co-located deployments, a local equivalent (shared database or function call) is acceptable. Self-contained JWTs may be used as an optimization but MUST NOT be the sole revocation mechanism (see Section 10).
 
 ### Trust registry queries {#trust-registry-queries}
 
@@ -238,6 +238,16 @@ Each stream has one of two semantic types:
 Approximately 95% of personal data by volume is `append_only`. The remaining 5% is `mutable_state`. Mutable state records (profiles, preferences, relationships) are often the highest-value context for AI agents.
 
 An authorization server MUST reject a declaration containing an unrecognized `streams[].semantics` value. A resource server MUST NOT interpret an unrecognized stream semantic as `append_only` or `mutable_state`. A later version can add semantic types; an implementation that predates one does not apply the wrong write and sync behavior to it.
+
+### Full records and disclosed projections
+
+A stream schema describes a full record before disclosure projection. For a client token, the StreamGrant's `required_fields` is the frozen consent floor defined in Sections 5 through 7. For a client-token read, the RS MUST include those fields whenever it returns that record's `data` and the stored record version has a value for them. A required field without a stored value stays absent. A tombstone carries no `data` and follows the tombstone shape defined in this section.
+
+The RS MUST construct disclosed `data` from only the top-level members permitted by the grant and the request-time field selection. Missing authorized optional members remain absent. The RS MUST NOT insert nulls or fabricated values for withheld members. A client MUST NOT validate a projected `data` object as though it were the full stream record.
+
+Envelope identifiers remain part of the record contract. The AS MUST disclose this fact during owner review. Withholding an identifier from `data` does not hide a matching identifier in the envelope. If envelope disclosure is unacceptable, the AS MUST omit an optional stream or refuse issuance for a required stream.
+
+An RS unable to serve a requested projection without changing the meaning of the disclosed data MUST refuse that read with HTTP 403 `disclosure_unavailable`. It MUST NOT repair the projection by disclosing unauthorized fields.
 
 ### Incremental sync {#incremental-sync}
 
@@ -690,7 +700,7 @@ Adding a field, view, stream, or capability to a later declaration never widens 
 
 An authorization server accepts a source declaration only through explicit owner or operator onboarding, an installed catalog, an accepted registry entry, or explicit local provisioning. A client MUST NOT introduce a new source authority or declaration URI during authorization.
 
-For a `provider_native` source, `source.id` MUST be identical to the protected-resource identifier the authorization server has already accepted for that resource. The authorization server MUST reject any mismatch before consent or grant issuance.
+For a `provider_native` source, `source.id` MUST be identical to the protected-resource identifier the authorization server has already accepted for that resource. The authorization server MUST reject any mismatch before consent or grant issuance. This check depends only on the AS's own resource configuration, not on protected owner state ([Authorization privacy boundary](#authorization-privacy)).
 
 `publisher.id` is an unauthenticated claim unless an accepted channel or configured mapping binds that publisher to the declaration. Without such a binding, the authorization server MUST NOT rely on `publisher.id` for source acceptance, attribution, redirect policy, or any other trust decision.
 
@@ -865,13 +875,16 @@ Per-stream, within the `streams` array. `name` and exactly one of a non-empty `f
 | `time_range.until` | RFC 3339 `full-date` or `date-time` | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. Its type matches the field's format. A hard cap: applies to future resources as well as past ones. |
 | `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. The OAuth/RAR binding maps a request with both to RFC 9396 `invalid_authorization_details`. |
 | `fields` | string[] | Protocol-enforced | Field allowlist. `["*"]` requests all permitted fields; `*` MUST then be the only element. Schema-required fields are always included regardless of this list. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
-| `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the retained declaration's `primary_key` at grant issuance. The RS filters by exact primary-key match. In v0.1 a stream with `resources` covers exactly one instance. The AS MUST reject a request that has `resources` and more than one `instance_ids` entry for the stream; the OAuth/RAR binding returns RFC 9396 `invalid_authorization_details`. |
+| `minimum` | object | Issuance condition | Optional `{ fields, time_range }` authorization minimum. See [Request resolution](#request-resolution). Not a data-availability or completeness guarantee. |
+| `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the retained declaration's `primary_key` at grant issuance. A failure of this check that depends on a declaration accepted only for the owner follows [Authorization privacy boundary](#authorization-privacy). The RS filters by exact primary-key match. In v0.1 a stream with `resources` covers exactly one instance. The AS MUST reject a request that has `resources` and more than one `instance_ids` entry for the stream; the OAuth/RAR binding returns RFC 9396 `invalid_authorization_details`. |
 
 **Note on `fields`:** At consent resolution, schema-required fields are always included in the resolved field set, regardless of the requested field list, because a record missing its schema-required fields is not a valid record of that stream; the per-stream consent floor is its required fields.
 
-**Note on `time_range`:** `time_range` is only valid for streams that declare a `consent_time_field`. The authorization server MUST reject selection requests that specify `time_range` on a stream without that field. Its presence in the retained declaration is the authoritative signal that a stream is time-range-capable.
+The resolved selection MUST contain at least one field for each retained stream.
 
-**Time range bounds:** Each bound MUST have the type of the stream's `consent_time_field`: a `full-date` for a `date` field, and a `date-time` for a `date-time` field. A `time_range` MUST contain `since`, `until`, or both. The AS MUST reject a `time_range` with no bound, a bound of the wrong type, a bound that is not valid under [Time constraint semantics](#time-constraint-semantics), or a `since` that is not before `until`. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details`, as for other invalid details; `error_description` MAY name the failed check. The AS MUST NOT convert or round a bound. A client reads each field's format from the declaration and sends bounds of that type per stream.
+**Note on `time_range`:** `time_range` is only valid for streams that declare a `consent_time_field`. The authorization server MUST reject selection requests that specify `time_range` on a stream without that field. A failure of this check that depends on a declaration accepted only for the owner follows [Authorization privacy boundary](#authorization-privacy). Its presence in the retained declaration is the authoritative signal that a stream is time-range-capable.
+
+**Time range bounds:** Each bound MUST have the type of the stream's `consent_time_field`: a `full-date` for a `date` field, and a `date-time` for a `date-time` field. A `time_range` MUST contain `since`, `until`, or both. The AS MUST reject a `time_range` with no bound, a bound of the wrong type, a bound that is not valid under [Time constraint semantics](#time-constraint-semantics), or a `since` that is not before `until`. The OAuth/RAR binding returns RFC 9396 `invalid_authorization_details`, as for other invalid details; `error_description` MAY name the failed check. A failure of this check that depends on a declaration accepted only for the owner follows [Authorization privacy boundary](#authorization-privacy). The AS MUST NOT convert or round a bound. A client reads each field's format from the declaration and sends bounds of that type per stream.
 
 **Note on wildcards:** `"streams": [{ "name": "*", "fields": ["*"] }]` requests all streams declared by the source. This is resolved against the retained snapshot and frozen as an explicit list in the grant. A stream that a later declaration adds is not part of the grant. If the wildcard request includes `instance_ids`, the AS applies the requested handles to every expanded stream and verifies that each handle is eligible for that stream. If it omits `instance_ids`, the usual exactly-one eligible instance rule applies to every expanded stream.
 
@@ -880,6 +893,80 @@ A wildcard entry MUST be the only entry in `streams`. Otherwise stream names MUS
 **Note on `streams` vs `selection_preset`:** Exactly one is required. Source validation fails if both or neither are present. The OAuth/RAR binding maps this failure to RFC 9396 `invalid_authorization_details`.
 
 **Defaults:** Each stream request, including each stream in a selection preset, MUST carry either `fields` or `view`. There is no implicit "all fields" default: a client that wants every permitted field sends `fields: ["*"]`, which the AS resolves against the retained snapshot. The marker is valid even when the stream declares `selection.fields: false`. The OAuth/RAR binding maps a stream request with neither `fields` nor `view` to RFC 9396 `invalid_authorization_details`. Omitting `necessity` means `optional`. Omitting `time_range` asks for no temporal constraint. Omitting `instance_ids` never asks for fan-in. The issued grant contains explicit non-empty `fields` and `instance_ids`. Clients SHOULD request only the data they need (see [Section 11, Data Minimization](#data-minimization)).
+
+### Authorization privacy boundary {#authorization-privacy}
+
+For authorization requests, protected owner state includes the owner's connected sources and instances, their eligibility, private source-declaration acceptance, and owner-specific authorization conditions. A client identifier, identity hint, source identifier, or instance handle does not authenticate the owner.
+
+Before authenticating the owner, the AS MUST NOT make an externally observable authorization-processing result depend on protected owner state. For representative approval, the AS MUST verify the representative's authority before applying owner-dependent resolution or showing subject-specific information, as [Representative approval](#representative-approval) requires.
+
+The AS MAY validate request syntax, client identity, redirect and resource bindings, and owner-independent capabilities before owner authentication. The AS MUST preserve the errors required by the authorization binding for those failures. The AS MUST NOT redirect to an invalid redirect URI.
+
+The AS MUST defer a validation or resolution step when its result depends on protected owner state. The AS MUST perform that step within the authenticated owner's review interaction. This includes source acceptance held privately for the owner and the existence or eligibility of requested instance handles. The AS MUST NOT treat the absence of an eligible owner source or instance as malformed authorization details.
+
+For Core data-access details, request validity is determined from request structure and owner-independent capabilities. A syntactically valid selection that cannot be satisfied under a privately accepted declaration is an owner-dependent eligibility failure, not malformed authorization details. The AS MUST NOT return a client-visible declaration-dependent validation error for an unapproved source or stream. It MAY explain the failure within authenticated owner review. The `invalid_authorization_details` error remains for public invalidity, such as unknown members, invalid value grammar, and unsupported public capabilities.
+
+An AS that uses public source capabilities for early validation MUST determine those capabilities independently of the owner's private connections and eligibility. The AS MUST NOT derive a public capability response from protected owner state. The AS MUST NOT retrieve or accept a new declaration authority merely because an authorization request names it.
+
+The AS MUST treat an otherwise valid stream that has no eligible instance as unapproved. The AS MAY omit that stream only when it is optional. The AS MUST refuse the detail when a required stream cannot be retained. The AS MUST apply the existing required-stream and authorization-minimum rules before issuance.
+
+The AS MAY explain an owner-dependent failure to the authenticated owner within the protected review interaction. The AS MUST NOT disclose that explanation to the client without authorization for that disclosure. The AS MUST report an authorization refusal caused by source or instance ineligibility as `access_denied` in the OAuth binding. The AS MUST NOT distinguish that refusal from owner refusal by its client-visible response. This rule does not change `invalid_authorization_details` for malformed or unsupported details, or an error that this specification defines for a specific authorization-details type. A type-specific error remains subject to this boundary's no-inventory and observable-equivalence requirements.
+
+The AS MUST NOT treat owner authentication alone as authorization to disclose unapproved source or instance inventory to the client. The AS MUST limit a successful client result to the approved result defined in [Client-visible authorization result](#authorization-result). When a private validation failure requires owner interaction, the AS MUST NOT release an owner-dependent terminal result to the client before that interaction concludes.
+
+The AS MUST apply this boundary at every supported authorization entry point, including pushed authorization requests and noninteractive requests. Client authentication at a pushed authorization endpoint MUST NOT substitute for owner authentication. Acceptance of a pushed request MUST NOT assert that an owner can approve it. The AS MUST use the pushed-request binding's validation and response rules without returning an owner-interaction error at that endpoint.
+
+When a noninteractive request cannot proceed without owner authentication or review, the AS MUST use an error permitted by that binding for the missing interaction. The AS MUST NOT choose that error according to source or instance eligibility. A valid existing owner session MAY satisfy owner authentication. An identity hint MUST NOT satisfy it.
+
+For requests that differ only in protected owner state, the AS MUST use equivalent pre-authentication status, response structure, redirects, headers, and transaction-state behavior. The AS MUST prevent systematic differences in processing time from revealing that state. The AS MUST apply the same requirement to client-visible eligibility denials after authenticated review. Required request correlation values and unpredictable transaction values MAY differ when they do not reveal protected owner state.
+
+The AS MUST apply this boundary before it resolves owner-specific source or instance eligibility for final owner review (Section 7). A failed or stale eligibility check MUST remain within authenticated review until that interaction concludes. The AS MUST NOT expose the failed instance or the reason for its ineligibility in the client result.
+
+These requirements do not replace authentication-protocol requirements or the authorization binding's client, redirect, request-integrity, and abuse protections.
+
+### Request resolution {#request-resolution}
+
+The AS MUST expand presets, views, and wildcards against the retained declaration before applying owner choices. It MUST resolve the request into explicit grant constraints before final approval. It MUST preserve the client identity associated with the authorization request.
+
+#### Limits and owner choices
+
+Explicit requested instances, resources, and time bounds are upper limits. For fields, the upper limit is the field ceiling: the stream's expanded requested fields together with its schema-required fields. The AS MUST compute the ceiling before owner narrowing and minimum checks. The AS MUST NOT resolve outside those limits. Each stream names non-empty `fields`, a `view`, or `fields: ["*"]`; there is no implicit field selection. An omitted time range remains unbounded. Omitted instance handles retain the exactly-one-or-owner-choice rule.
+
+The schema-required fields here are the set that the AS freezes as the stream's `required_fields`; the AS MUST use that same set for the field ceiling, owner narrowing, and grant issuance. The AS MAY let the owner remove optional streams and narrow retained streams, but not below a stream's schema-required fields. The AS MUST NOT infer a client requirement from a schema-required property. It MUST retain each required stream or refuse the authorization. Narrowing a required stream does not itself constitute refusal if its explicit minimum remains satisfied.
+
+The AS MUST refuse issuance when the owner approves no streams. It MUST NOT add another source, stream, instance, field, or resource to compensate for a refused selection. A different proposal requires a new authorization request or an explicitly defined owner-selection binding.
+
+An AS MAY present bundles, contextual choices, or detailed controls. It MUST show the resolved disclosure and commitments before final approval. It MUST NOT present optional selections as compulsory. Core does not require a separate toggle for each selector.
+
+#### Explicit authorization minima
+
+The AS MUST recognize only `fields` and `time_range` inside `minimum`. It MUST reject empty minimum objects, unknown minimum members, duplicate field names, and fields outside the stream's field ceiling. A failure of this check that depends on a declaration accepted only for the owner follows [Authorization privacy boundary](#authorization-privacy). A supplied `minimum.fields` MUST be a non-empty array of declared top-level field names.
+
+For a retained stream, the AS MUST include every `minimum.fields` member in the resolved field selection. The AS MUST NOT treat a schema's `required` array as `minimum.fields`. For an optional stream, failure to satisfy its minimum permits omission of that whole stream, not a weaker retained stream.
+
+A supplied `minimum.time_range` MUST contain both `since` and `until`. Each bound MUST have the type of the stream's retained `consent_time_field` and MUST be valid under [Time constraint semantics](#time-constraint-semantics). `since` MUST be before `until`. The AS MUST NOT convert or round a bound. The AS MUST reject a minimum window outside the requested time window or on a stream without `consent_time_field`. A failure of this check that depends on a declaration accepted only for the owner follows [Authorization privacy boundary](#authorization-privacy). It MUST resolve a retained stream to a time window containing the entire minimum window.
+
+For these checks, an absent resolved lower bound means negative infinity and an absent upper bound means positive infinity. Comparisons follow [Time constraint semantics](#time-constraint-semantics): calendar order for `date` values and exact instant order for `date-time` values, never string order. Boundaries retain the inclusive-lower, exclusive-upper semantics of `time_range`.
+
+The AS MUST refuse issuance if an owner-approved required stream cannot meet its minimum. The OAuth binding MUST report this refusal as `access_denied`. Malformed or unsupported authorization details, judged under [Authorization privacy boundary](#authorization-privacy), instead produce `invalid_authorization_details`. Error descriptions MUST NOT reveal unapproved source, instance, record, or field existence.
+
+An authorization minimum describes permission, not the presence, freshness, completeness, or suitability of records. The AS MUST NOT require records to exist to satisfy an authorization minimum. A client MUST evaluate application sufficiency separately. Core does not define arbitrary predicates over records as issuance conditions.
+
+The AS MUST distinguish validation of a minimum's syntax and declared capability from satisfaction of that minimum by the owner's approved selection. The AS MUST apply [Authorization privacy boundary](#authorization-privacy) to each check. The AS MUST NOT test record presence, collection status, or data completeness to decide whether the minimum is satisfied.
+
+#### Recipient commitments and approval
+
+The AS MUST NOT interpret narrower access as recipient acceptance of a new purpose or retention obligation. It MUST resolve purpose and retention from the current request or applicable recipient-authorized standing terms before owner approval. It MUST retain the evidence identifying those terms and their version with the consent evidence.
+
+An AS MUST NOT treat a capability advertisement or owner-authored condition alone as recipient acceptance. When an owner condition is not covered by recipient authority, the AS MUST refuse issuance or obtain recipient acceptance before presenting the revised final approval. No particular acceptance transport is required by Core.
+
+Core represents these commitments through its existing purpose and retention fields. It does not define additional terms fields or a general agreement object. An AS MUST NOT claim that an unrepresented owner condition is a Core grant constraint. A companion that adds recipient obligations MUST define their result representation and acceptance evidence.
+
+The AS MUST NOT change `access_mode` merely as a consequence of narrowing data. The AS MAY choose grant expiry under its existing policy. Grant lifetime and record time scope remain separate.
+
+The AS MUST include the resolved purpose in final owner review. It MUST include that purpose in the grant. If retention is specified, the AS MUST include it in final owner review. It MUST include that retention in the grant. If grant expiry is specified, the AS MUST include it in final owner review. It MUST include that expiry in the grant.
+
+The AS MUST complete required-stream and minimum checks before issuing a grant or a client token. It MUST NOT issue a temporary overbroad grant while choices are unresolved. Grant issuance does not authorize unrelated collection, billing, or source-side actions.
 
 ### Selection presets
 
@@ -899,7 +986,7 @@ The authorization server expands the preset from the retained snapshot into expl
 Each selection preset MUST NOT contain the same stream name more than once.
 Duplicate stream names make the declaration invalid. They are not deferred to grant issuance.
 
-Every field in the issued grant is derived from either the selection request, client registration, or authorization server policy. The grant never contains values whose source is ambiguous.
+Every field in the issued grant is derived from the selection request, explicit owner resolution, client registration, or authorization server policy. Recipient commitments additionally require the authority described in [Request resolution](#request-resolution). The grant never contains values whose source is ambiguous.
 
 ---
 
@@ -981,6 +1068,20 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 Request-only conveniences such as wildcard names, the `*` field marker, `view`, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
 
 Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. For a stream with `resources`, that choice is exactly one instance. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since` stated as inclusive, `until` stated as exclusive, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
+
+### Client-visible authorization result {#authorization-result}
+
+The AS MUST return one `authorization_details` element per covered grant in every successful OAuth token response that issues a client access token, including refresh responses. Each element MUST contain `type` equal to `https://pdpp.dev/data-access` and `grant` containing the complete immutable grant defined by this section. The AS MUST NOT substitute the original selection request or a lossy summary.
+
+The result MUST include source provenance, declaration revision, resolved streams, instance handles, fields, the frozen required-field subsets, resource and time constraints, recipient commitments, access mode, and grant expiry when present. The full grant includes the resolved client identity and reviewed client display defined above. Omitted optional streams are not grants and MUST NOT appear as authorized in the result.
+
+The client MUST inspect the result before requesting record disclosure. It MUST NOT infer authorization from its original request, an MCP tool listing, or a token's syntax. A client unable to obtain or interpret the result MUST NOT request disclosure. An AS MAY omit only values that the grant definition itself makes optional.
+
+For a credential that a companion binding defines to cover several grants, the AS MUST return every covered grant as a separate element. It MUST NOT merge fields, instances, or resources across grants. A binding supporting such tokens MUST preserve each grant's source and client association during enforcement.
+
+The AS MUST return the same resolved grant facts to the client and to an authenticated RS, apart from token-specific active-state and expiry fields. Receiving this result does not grant the client access to the RS-authenticated introspection endpoint. The AS MUST protect result delivery as part of the authenticated OAuth exchange.
+
+Owner approval covers disclosure of the result's identifiers and metadata to the client. The AS MUST NOT include inventory for unapproved sources or instances. A successful token response consumes a `single_use` grant as defined below even if the client subsequently declines to read.
 
 ### Pairwise identifiers {#pairwise-identifiers}
 
@@ -1183,7 +1284,7 @@ Retention is a structured policy declaration and policy commitment by the data r
 
 **Note:** This section defines the interoperable record-query and blob-fetch interface under grant enforcement. Authorization-server deployment, storage backend, collection runtime, operator dashboard, and hosted service choices are out of scope for this document.
 
-The resource server stores records and serves them to clients filtered by grants. This section is normative: a compliant resource server must implement this interface for cross-deployment interoperability.
+The resource server stores records and serves them to clients filtered by grants. A conformant resource server MUST implement this interface for cross-deployment interoperability.
 
 ### Grant enforcement
 
@@ -1204,6 +1305,22 @@ The RS MUST NOT re-validate authorization against the current SourceDeclaration.
 
 **Token type distinction:** The format of the access token is opaque to the Resource Server. The RS MUST determine the token's properties (including `pdpp_token_kind`) solely from the introspection response, never from token syntax.
 
+### Existing permissions and action results {#existing-permissions}
+
+PDPP grants govern the data surface named in the grant. Provider-defined permissions continue to govern actions such as posting, sending, editing, and deleting. A PDPP data grant MUST NOT authorize those actions.
+
+For an operation using PDPP-governed data access, the RS MUST enforce the resolved grant independently of provider action permission. Existing broad read scopes MUST NOT widen that grant. Legacy interfaces MAY retain their existing permission model outside the declared PDPP surface.
+
+When an operation needs both permissions, the server MUST verify both before execution. Denial of action permission MUST NOT cancel independently approved reads unless the authorization transaction explicitly requires both.
+
+An action may use source-side data under its provider authorization. This does not authorize disclosure of that data to the client. An action response containing existing PDPP-governed records or facts derived from them MUST satisfy the applicable data grant.
+
+A server MAY return a minimal action receipt under the action permission alone. Such a receipt is limited to operation status, values supplied by the caller, and a newly generated opaque operation or resource identifier. Status MUST describe only the outcome of the authorized action. The receipt MUST NOT reveal pre-existing field values, unrelated record existence, or private associations, or confer permission to retrieve source data.
+
+If the action response would disclose unauthorized data, the server MUST redact that data or refuse the operation. The server MUST resolve a predictable disclosure failure before performing the side effect. An unexpected post-action failure MUST NOT cause broader disclosure; the provider's action protocol governs retry and recovery.
+
+The optional [extended access profile](spec-access-extension) defines owner-selected authorization, grant packages, and bounded presentation reads. These features do not add operations to the Core query interface.
+
 ### Token introspection
 
 For separated AS/RS deployments, the RS MUST authenticate to the AS introspection endpoint as required by RFC 7662. The introspection response combines standard RFC 7662 fields with PDPP-defined extensions:
@@ -1216,7 +1333,7 @@ For separated AS/RS deployments, the RS MUST authenticate to the AS introspectio
 | `grant_id` | string | The associated grant identifier. Present for client tokens. |
 | `client_id` | string | The client identifier. Present for client tokens. |
 | `exp` | integer | Expiry timestamp (Unix epoch). Present in every positive response for a token that has an expiration, including every client token issued against a `single_use` grant. Omitted when the token has no expiration. |
-| `authorization_details` | array | The approved RFC 9396 detail for a client token. It carries the resolved grant enforcement constraints defined in Section 7. |
+| `authorization_details` | array | One `{ type, grant }` element per authorized grant, using the same shape as the [client-visible authorization result](#authorization-result) in Section 7. |
 | `pdpp_instance_bindings` | array | RS-only. Maps each instance handle that the token can use to the instance that the RS stores. For a client token, there is one entry `{ source_id, stream, instance_id, rs_instance }` for each stream and handle in the grant. For an owner token, there is one entry `{ source_id, instance_id, rs_instance }` for each instance in the owner's connection scope, with the owner's handle. `rs_instance` is an opaque string that the RS resolves to a stored instance. Every entry for one `(source_id, instance_id)` MUST name the same `rs_instance`; the RS MUST reject conflicting entries as `grant_invalid` before serving data. |
 
 For a given issuer, subject, and receiving client, the AS MUST assign instance handles that identify only one instance across all sources. The AS MUST apply the same cross-source uniqueness requirement to an owner's handles. A `pdpp_instance_bindings` response MUST NOT contain the same `instance_id` under different `source_id` values. The RS MUST reject such a response with 403 `grant_invalid` before serving data.
@@ -1230,6 +1347,8 @@ For a client or owner token, that context includes `pdpp_instance_bindings`. A s
 Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. Self-contained JWTs (e.g., signed JWTs) are allowed as an optimization but MUST NOT be the sole revocation mechanism; the RS MUST still be able to check active status through introspection or local equivalent.
 
 ### Authentication
+
+An AS MUST advertise `https://pdpp.dev/data-access` in `authorization_details_types_supported` in its OAuth authorization-server metadata. A client MUST establish support for this type before requesting it. Unknown detail types MUST be rejected.
 
 Two authentication boundaries exist:
 
@@ -1634,6 +1753,7 @@ This makes a future error code safe to introduce: an older client keeps handling
 | `grant_expired` | 401 | `authentication_error` | Token is inactive because its grant has expired, and authenticated context establishes this cause. See Inactive tokens below. |
 | `grant_revoked` | 401 | `authentication_error` | Token is inactive because its grant has been revoked, and authenticated context establishes this cause. See Inactive tokens below. |
 | `grant_invalid` | 403 | `permission_error` | Resolved grant is malformed or cannot be served without changing its authorization meaning. |
+| `disclosure_unavailable` | 403 | `permission_error` | The RS cannot safely serve the authorized projection and will not add unauthorized fields. |
 | `blob_not_found` | 404 | `not_found_error` | `blob_id` is unknown or stale, or no record the token may read references it. |
 | `not_found` | 404 | `not_found_error` | Stream, instance, or record not found. |
 | `cursor_expired` | 410 | `gone_error` | `changes_since` token is too old; start again from `beginning`. |
@@ -1667,7 +1787,7 @@ Conformance is role- and behavior-based. A conformant implementation is not requ
 A conformant authorization server:
 
 1. Accepts selection requests using the RFC 9396 `authorization_details` envelope with `type: "https://pdpp.dev/data-access"`.
-2. Validates selection requests against one retained SourceDeclaration snapshot: rejects unknown streams, unsupported selection parameters (e.g., `time_range` on a stream without `consent_time_field`), and unrecognized selection presets.
+2. Validates public request structure and owner-independent capabilities, rejecting public invalidity with `invalid_authorization_details`. Resolves selections against one retained SourceDeclaration snapshot. Treats an otherwise valid selection that is infeasible under privately accepted capabilities as owner-dependent eligibility, only within authenticated review. There, omits an optional unapproved stream or refuses under the required-stream/minimum rules with indistinguishable `access_denied`, without client-visible private diagnostics, as [Authorization privacy boundary](#authorization-privacy) requires.
 3. Issues grants that conform to the grant schema defined in Section 7 (normative field tables). The AS generates `grant_id` and `issued_at`; it resolves other grant fields from authenticated identities, the selection request, the accepted source declaration, eligible instance handles, user approval, AS policy, or AS-resolved client metadata.
 4. Expands wildcards and selection presets into explicit stream names, fields, per-stream instance handles, resources, and frozen time constraints before issuing the grant.
 5. Produces a binding-neutral Source validation failure when a request contains both or neither of `streams` and `selection_preset`. The OAuth/RAR binding maps it to RFC 9396 `invalid_authorization_details`.
@@ -1695,9 +1815,18 @@ A conformant authorization server:
 24. Lets the owner approve or decline each detail of a request on its own. Issues one grant for each approved, resolved detail, covering one subject, one source, and one purpose, with its own lifecycle. Identifies grants by `grant_id` and does not treat subject, source, and purpose as a grant key.
 25. If it offers client-initiated revocation, ends grants as Section 10 defines: revoking a refresh token, current or superseded, ends every grant its family covers; revoking an access token ends its grants only when no refresh-token family covers them. In the OAuth binding, implements it as RFC 7009 token revocation and advertises `revocation_endpoint` in RFC 8414 metadata.
 26. Ends one grant among several that share a credential without revoking that credential or ending the other grants.
-27. Rejects a declaration that names an ineligible `consent_time_field` or a non-boolean `consent_time_content_may_exceed`. Rejects a `time_range` with no bound, a bound whose type does not match the field's format, an invalid bound, or a `since` not before `until`; the OAuth/RAR binding returns `invalid_authorization_details`. Never converts or rounds a bound. Sets `time_constraint.type` from the field's format in the retained declaration.
+27. Rejects a declaration that names an ineligible `consent_time_field` or a non-boolean `consent_time_content_may_exceed`. Rejects a `time_range` with no bound, a bound whose type does not match the field's format, an invalid bound, or a `since` not before `until`; the OAuth/RAR binding returns `invalid_authorization_details`. This error applies only to public invalidity. A failure that depends on a declaration accepted privately for the owner is an eligibility failure under [Authorization privacy boundary](#authorization-privacy) and MUST NOT produce a client-visible declaration-dependent validation error. Never converts or rounds a bound. Sets `time_constraint.type` from the field's format in the retained declaration.
 28. For each time-bounded stream, renders the exact bounds with their inclusive and exclusive meaning and the declared meaning of the field. Shows a relative label only when it has verified it for those bounds. Discloses that matched records can contain data from outside the bounds when the stream declares `consent_time_content_may_exceed: true`. For a `continuous` grant, discloses that the client can see records leave the window.
 29. Gives each client pairwise identifiers: `subject.id`, `grantors[].id`, instance handles, and any ID Token `sub` differ between clients for the same subject, grantor, or instance. They stay the same for one client, are never reassigned, and cannot be reversed by a client. Sets ID Token `sub` to the authenticated person's identifier, which is a grantor's identifier when a representative authenticates. Uses a globally resolvable `subject.id` only when the owner explicitly chooses to disclose it to that client, and binds that identifier and the client into the final approval artifact and retained consent evidence. Returns an internal subject identifier and `pdpp_instance_bindings` only to the RS.
+30. Resolves each request as [Request resolution](#request-resolution) defines before final approval. Treats requested instances, resources, time bounds, and the field ceiling as upper limits, never narrows below schema-required fields, and adds nothing to compensate for a refused selection. Checks required streams and each retained stream's `minimum` before issuing a grant or client token. Reports an unmet minimum on a required stream as `access_denied` and a malformed `minimum` as `invalid_authorization_details`.
+31. Resolves purpose and retention only from the current request or recipient-authorized standing terms, and retains the evidence identifying those terms with the consent evidence. Discloses during owner review that envelope identifiers are part of every disclosed record.
+32. Returns one `{ type, grant }` element per covered grant in every token response that issues a client access token, including refresh responses, as [Client-visible authorization result](#authorization-result) defines. Returns the same element shape in introspection.
+33. Advertises `https://pdpp.dev/data-access` in `authorization_details_types_supported` and rejects unknown detail types.
+52. Applies [Authorization privacy boundary](#authorization-privacy) to every supported authorization entry point. Performs owner-independent syntax and binding checks without querying private owner availability. Defers owner-dependent resolution to authenticated review.
+53. Keeps optional ineligible streams unapproved. Refuses required ineligible streams and unmet required authorization minima with `access_denied`. Preserves `invalid_authorization_details` for malformed or unsupported details and any error defined for a specific authorization-details type.
+54. Demonstrates equivalent pre-authentication observables when only protected owner state varies. Demonstrates equivalent client-visible eligibility denials after review. Includes status, response shape and size, redirects, headers, transaction behavior, and timing in its evidence.
+55. Records the entry points, protected-state variants, timing method, and observation limits exercised by its authorization-privacy tests. Reports an unobserved supported path as UNVERIFIED rather than passed.
+57. Passes a differential authorization-privacy case that varies private declaration acceptance, temporal capability, and view availability against a matched owner refusal. The client-visible result, the callback, and any transaction-status channel are equivalent across the variants, and no unapproved diagnostic reaches the client.
 
 ### Resource Server conformance
 
@@ -1729,6 +1858,8 @@ A conformant Core RS:
 23. Puts `instance_id` on every record and tombstone it serves: the grant's handle for a client token, and the owner's handle for an owner token. Serves each `resource_ref` in the resolved or redacted form according to the token-kind, source, and sync-horizon rules in Section 4. In the next session, returns each referring record that the previous session served with a reference redacted after a target deletion, as Section 4 requires. Identifies records within a stream by instance and canonical key in sync, removals, cursors, and single-record reads. Requires `instance_id` on a single-record read or record delete when the query context covers more than one instance of the stream, and on every blob fetch. Rejects a missing one with 400 `invalid_request`.
 24. In a separated deployment, resolves every handle through `pdpp_instance_bindings`. Fails a client request with 403 `grant_invalid` when a handle the request needs has no binding or names no stored instance. Treats an owner instance without a binding as outside the owner scope.
 25. When it attaches `freshness`, lists exactly one entry for each instance that the query context authorizes for the stream, whatever the page contains. Computes `last_success_at` over the full authorized scope of the query, counts only successful operations as Section 8 defines them, and reports null when it cannot establish relevance safely. In a client-token response, carries no failure time, truncates each value to its declared granularity of at least 3600 seconds, and reports no value before its interval ends. Takes a snapshot of the array on the first page of a `changes_since` session and repeats that exact snapshot on every later page. Reports no staleness verdict.
+26. Builds disclosed `data` only from the top-level members the grant and the request-time field selection permit, with no nulls or fabricated values for withheld members. Refuses a read it cannot serve that way with 403 `disclosure_unavailable`.
+27. Enforces the resolved grant independently of provider action permission, as [Existing permissions and action results](#existing-permissions) defines. Never treats a data grant as action permission or lets a broad read scope widen a grant, and discloses existing data in an action response only under the applicable data grant.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
@@ -1747,6 +1878,9 @@ A conformant client:
 9. Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`. Does not treat an inactive token as proof of revocation.
 10. Identifies each record within a stream by its `instance_id` and `id` together. Treats a tombstone for a record it does not hold as a no-op. Reconciles records it obtained outside sync sessions itself, because the sync guarantee covers only a copy built from sync sessions.
 11. Does not infer from an empty result, the end of pagination, a tombstone, or a 404 that a record does not exist at the source or that collection is complete. Treats a null `last_success_at` only as the absence of a reportable timestamp.
+12. Establishes that the AS advertises `https://pdpp.dev/data-access` before requesting it.
+13. Inspects the authorization result in each token response, including refresh responses, before requesting record disclosure, and requests no disclosure when it cannot obtain or interpret the result. Does not infer authorization from its original request, a tool listing, or token syntax.
+14. Does not validate a projected `data` object as a full stream record.
 
 ### Conformance test suite
 
@@ -1883,7 +2017,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 | Point-in-time reconstruction | Deferred (reconstructing full state at a past timestamp) |
 | Canonical view naming vocabulary | Deferred; will be informed by implementation experience |
 | Predicate-based grant scoping | Deferred; see [Predicate-based grant scoping](#predicate-based-grant-scoping) |
-| Derivative data | Deferred and unresolved; v0.1 authorizes reads of declared streams and states no default for the output of compute over them |
+| Derivative data | New derived sources, onward rights, and durable derived datasets remain deferred. The optional [extended access profile](spec-access-extension) defines bounded presentation of authorized input, not new source or grant authority. |
 | Cross-source category grants | Deferred; grants bind to a single `source.id` in v0.1 |
 | Active erasure signal | Deferred; revocation stops future access and is not a deletion request. No erasure signal to the recipient is defined |
 | Session refresh | Deferred; no signal asks the owner to renew source-side authentication. A `continuous` grant can stay valid while collection pauses |
@@ -1985,6 +2119,10 @@ type FieldSelection =
 type StreamRequest = FieldSelection & {
   name: string;
   necessity?: 'required' | 'optional';   // Default 'optional'
+  minimum?: {
+    fields?: string[];
+    time_range?: { since: string; until: string };
+  };
   instance_ids?: string[];
   time_range?: TimeRange;
   resources?: string[];    // Canonical key strings per compound key encoding
@@ -2142,7 +2280,7 @@ interface PDPPIntrospectionResponse {
   grant_id?: string;       // Present for client tokens
   client_id?: string;      // Present for client tokens
   exp?: number;            // Unix timestamp
-  authorization_details?: Array<Record<string, unknown>>; // Approved RFC 9396 detail with Section 7 enforcement constraints
+  authorization_details?: Array<{ type: string; grant: DataGrant }>; // One element per authorized grant (Section 7 authorization result)
   pdpp_instance_bindings?: InstanceBinding[];  // RS-only; never returned to a client
 }
 

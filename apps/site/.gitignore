@@ -20,6 +20,8 @@ node_modules/
 /content/docs/spec-collection-profile.mdx
 /content/docs/spec-connector-ecosystem.mdx
 /content/docs/spec-core.mdx
+/content/docs/spec-access-extension.mdx
+/content/docs/spec-mcp-profile.mdx
 /content/docs/spec-data-query-api.mdx
 /content/docs/spec-discovery-and-trust.mdx
 /content/docs/governance.mdx

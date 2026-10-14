@@ -145,6 +145,16 @@ const nextConfig = {
         source: "/spec-collection-profile",
       },
       {
+        destination: "/specification/spec-access-extension",
+        permanent: true,
+        source: "/spec-access-extension",
+      },
+      {
+        destination: "/specification/spec-mcp-profile",
+        permanent: true,
+        source: "/spec-mcp-profile",
+      },
+      {
         destination: "/specification/spec-architecture",
         permanent: true,
         source: "/spec-architecture",
