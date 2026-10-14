@@ -5,6 +5,7 @@
     "---Specification---",
     "spec-core",
     "spec-access-extension",
+    "spec-ai-training-profile",
     "spec-mcp-profile",
     "spec-ext-lexical-search",
     "spec-ext-aggregation",
