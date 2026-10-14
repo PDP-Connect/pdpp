@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-10-11
+Date: 2026-10-13
 
 ---
 
@@ -394,7 +394,11 @@ A binding MAY be composed. The attester binds its own identifier for the record,
 
 **References.** A resource server MUST NOT deliver an item whose local `refs` entries do not all name items delivered in the same array. A client treats a local entry that names no delivered item as a reference to an absent item. An absolute URI in `refs` is an identifier only. The no-widening rule applies to the URI and to everything that a client can obtain through it. A client MUST NOT retrieve the URI unless the profile defines retrieval, access control, and integrity binding for it.
 
-**Effective projection.** The effective projection is the set of fields that the response serves for the record. For a client token, it is the granted fields, narrowed by any `fields` parameter, plus the schema-required fields. For an owner token, it is the read's effective `fields` or resolved `view` projection plus the schema-required fields, or the whole record when the read names neither. The effective projection governs evidence as it governs `data`. v0.1 defines no request member or query parameter that asks for evidence or suppresses it. A resource server delivers evidence on an owner-token read only for a type whose profile supports owner reads.
+**Effective projection.** The effective projection is the set of fields that the response serves for the record. For a client token, the granted field set is the StreamGrant's `fields`, and the required field set is its `required_fields`. When a record request supplies `fields`, the RS MUST serve only the intersection of the requested and granted fields, together with the required field set. When the request omits `fields`, the RS MUST use the granted field set. The RS MUST apply this effective projection to record `data` and to record evidence. For an owner token, it is the read's effective `fields` or resolved `view` projection plus the schema-required fields, or the whole record when the read names neither. The effective projection governs evidence as it governs `data`. v0.1 defines no request member or query parameter that asks for evidence or suppresses it. A resource server delivers evidence on an owner-token read only for a type whose profile supports owner reads.
+
+The RS MUST NOT add a field outside the granted field set. A required field missing from stored record data prevents the RS from serving that record safely. For a read that would return such a record, the RS MUST return HTTP 403 `disclosure_unavailable`. The RS MUST NOT fabricate its value or silently omit the record to repair the projection.
+
+These projection rules do not change record eligibility under `changes_since`. The RS MUST continue to determine client-token eligibility using the grant-authorized projection defined in [Incremental sync](#incremental-sync). The RS MUST preserve the grant and request-field bindings of page cursors and sync tokens.
 
 **No widening.** Evidence MUST NOT reveal anything outside the effective projection. It MUST NOT reveal a value, field name, or subject identifier other than one already disclosed to this caller. It MUST NOT reveal any fact about hidden data, such as whether a hidden value changed or how many hidden fields or records exist. The rule covers every signal that evidence gives: whether an item is present or absent, how many items there are, the bytes of each item, and how these change between reads. For example, a cleartext subject identifier, a signature over bytes that include a hidden field, an unsalted hash of a hidden value, and a digest count that shows how many fields are hidden all widen the disclosure. A grant could authorize a hidden-dependent signal expressly, but no v0.1 grant does.
 
