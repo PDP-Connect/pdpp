@@ -1952,10 +1952,9 @@ Content-Type: application/json
                 </span>
               </div>
               <p>
-                A <strong>single_use</strong> grant is consumed on the first token issuance: the issued token keeps
-                working until expiry, but no second token is ever minted (a second attempt is rejected{" "}
-                <span className="font-mono">grant_consumed</span> → 403). The runtime enforces this and persists no
-                STATE from single_use runs. See{" "}
+                For a <strong>single_use</strong> grant, the first issuance consumes the grant and fixes its read
+                window. A later token may carry it only in the same refresh family and inside that window; no issuance
+                may reopen or extend it. The runtime persists no STATE from single_use runs. See{" "}
                 <a
                   className="underline"
                   href="/specification/reference-implementation-examples#example-6-single-use-grant-consumption"
@@ -1980,8 +1979,8 @@ Content-Type: application/json
           detail={
             <DetailPanel label="See the HTTP exchange" spec="§8 Resource Server">
               <p>
-                The RS computes effective_filter = grant_filter AND request_filter. Request-time filters can only
-                narrow, never widen.
+                Client reads enforce the frozen grant constraints. Request-time predicate filters are rejected in Core
+                v0.1; owner current-capability reads may use supported filters.
               </p>
               <pre
                 className="overflow-x-auto rounded-md p-3 font-mono text-xs"
@@ -1989,7 +1988,7 @@ Content-Type: application/json
               >
                 {`GET /v1/streams/pay_statements/records HTTP/1.1
 Authorization: Bearer <client_token>
-PDPP-Version: 0.1.0
+PDPP-Version: 0.1
 
 → RS introspects token
 → Resolves grant: ${protocol.grant?.grant_id || "grt_longview01"}
@@ -2001,10 +2000,11 @@ PDPP-Version: 0.1.0
               <p>Edge cases:</p>
               <div className="flex flex-col gap-1 font-mono text-xs">
                 <span>
-                  <span className="text-destructive">403 grant_revoked</span> — grant has been revoked
+                  <span className="text-destructive">401 grant_revoked</span> — inactive token; WWW-Authenticate:{" "}
+                  {'Bearer error="invalid_token"'}
                 </span>
                 <span>
-                  <span className="text-destructive">403 field_not_granted</span> — filter targets unauthorized field
+                  <span className="text-destructive">400 invalid_request</span> — client-token predicate filter
                 </span>
                 <span>
                   <span className="text-destructive">403 insufficient_scope</span> — stream not in grant

@@ -62,7 +62,7 @@ A server that does not implement this profile MUST either omit `capabilities.lex
 
 ### `GET /v1/search`
 
-Lexical-only search over the caller's grant. The endpoint returns a list envelope of `search_result` candidate references (not hydrated records). Authentication and versioning follow the Core data query API: bearer token plus the `PDPP-Version` header; both client tokens (grant-bound third parties) and owner tokens (the resource owner performing self-export) are accepted, and the request shape is identical for both.
+Lexical-only search over the caller's grant. The endpoint returns a list envelope of `search_result` candidate references (not hydrated records). Authentication and versioning follow the Core data query API: bearer token plus the `PDPP-Version` header, which selects the Core `0.1` contract for this endpoint as Core Section 8 defines; both client tokens (grant-bound third parties) and owner tokens (the resource owner performing self-export) are accepted, and the request shape is identical for both.
 
 | Parameter | Type | Requirement |
 |-----------|------|-------------|
