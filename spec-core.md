@@ -41,7 +41,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | Standard | Relationship |
 |----------|-------------|
 | [OAuth 2.0](https://www.rfc-editor.org/rfc/rfc6749) (RFC 6749) | PDPP is a profile of OAuth 2.0, carrying selection requests in RFC 9396 authorization_details. The grant is issued as the result of an OAuth authorization flow. |
-| [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396) (RAR) | PDPP uses the `authorization_details` envelope for selection requests. Core defines the `https://pdpp.dev/data-access` type URI; a companion profile can define others. |
+| [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396) (RAR) | PDPP uses the `authorization_details` envelope for selection requests. Core defines the `https://pdpp.dev/data-access` type URI for selection requests and the `https://pdpp.dev/grant-lifecycle` type URI for [lifecycle recovery](#lifecycle-recovery); a companion profile can define others. |
 | [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (Bearer Token) | PDPP transports both owner tokens and client tokens as RFC 6750 Bearer Tokens on the wire. The resource server distinguishes token kind via `pdpp_token_kind` in the introspection response, not by token syntax. |
 | [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (Token Introspection) | PDPP uses authenticated RFC 7662 token introspection where the authorization server and resource server are separated, so the resource server can resolve grant-bound tokens. Co-located deployments may use a local equivalent. |
 | [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) (Protected Resource Metadata) | PDPP resource servers publish RFC 9728 protected resource metadata, so a client discovers the authorization server, the query base, and the supported token kinds from the resource itself rather than from prior configuration. Core defines five `pdpp_`-prefixed additional members (Section 8): four always required, and `pdpp_freshness_granularity_seconds` required when client-token responses carry `freshness`. The extension profiles define `capabilities`. |
@@ -1326,7 +1326,7 @@ Every field in the issued grant is derived from the selection request, explicit 
 
 **Note:** This section defines the immutable consent artifact and the constraints a resource server enforces for a token-bound client. Grant database schema, signed-token format, hosted registries, and deployment topology are out of scope for this document.
 
-A grant is an immutable consent artifact. It is the output of the authorization flow. This section applies to grants issued for Core `data-access` authorization details. A companion profile that defines another authorization-details type defines the grant and consent contracts for that type.
+A grant is an immutable consent artifact. It is the output of the authorization flow. This section applies to grants issued for Core `data-access` authorization details. A companion profile that defines another authorization-details type defines the grant and consent contracts for that type. The Core `https://pdpp.dev/grant-lifecycle` type issues no grant; [Lifecycle recovery](#lifecycle-recovery) defines its contract.
 
 The authorization server issues an access token bound to the grant. The client uses the access token (not the raw grant) to authenticate with the resource server. The resource server resolves the token to the grant and enforces its constraints on every request. Grant lifecycle (active, expired, revoked) is tracked by the authorization server, not stored in the grant itself.
 
