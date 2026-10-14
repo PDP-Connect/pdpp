@@ -28,7 +28,7 @@ normative specs prevail.
 protocol but define no conformance requirements of their own:
 
 - [`spec-discovery-and-trust.md`](spec-discovery-and-trust.md) — implementation guidance for discovering and retrieving a declaration; the normative requirements live in Core Section 5 (*Informative*)
-- [`spec-collection-profile.md`](spec-collection-profile.md) — builder guidance for connector collection; not a conformance requirement (*Informative*)
+- [`spec-collection-profile.md`](spec-collection-profile.md) — pointer to the canonical Collection Profile in PDP-Connect/data-connectors; not a Core conformance requirement (*Informative*)
 - [`spec-architecture.md`](spec-architecture.md) — the layered architecture and its boundaries (*Informative*)
 - [`spec-auth-design.md`](spec-auth-design.md) — authorization and consent design (*Informative*)
 - [`spec-connector-ecosystem.md`](spec-connector-ecosystem.md) — the connector model and runtime landscape (*Informative*)
