@@ -80,12 +80,12 @@
     "@pdpp/list-envelope": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.51.0",
+    "lucide-react": "^1.55.0",
     "next-themes": "^0.4.6",
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "react": "^19.3.0",
