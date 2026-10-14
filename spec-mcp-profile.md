@@ -19,6 +19,8 @@ The MCP server MUST resolve each data-access token to an active Core client gran
 
 A downstream request MUST use a credential intended for the downstream resource and preserve the applicable grant restrictions. An upstream credential with broader permissions MUST NOT widen the MCP client's approved access. When the MCP server and the PDPP resource server are separate protected resources, the same AS MUST issue the downstream credential for the same grant, or for the same package and children. The deployment defines how the MCP server obtains it, for example by OAuth 2.0 Token Exchange ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)).
 
+Downstream credential issuance remains subject to Core's access-mode and refresh-family rules. OAuth token exchange does not exempt an issuance from those rules. Before approval, a separated-resource deployment MUST reject a requested `single_use` flow that would require a later access-token issuance not permitted by those rules; it MUST NOT silently substitute continuous access, issue a replacement grant, or reopen the read window. A conformance claim MUST state this limitation.
+
 Clients and authorization servers MUST follow Core's authorization-result requirements. The client MUST inspect the complete resolved result before its first data-disclosing tool call. Optional owner selection and package issuance MUST follow the extended access profile, rather than MCP-specific grant formats.
 
 In this profile, a client's pairwise value for a subject, grantor, or instance is the identifier that Core's [Pairwise identifiers](spec-core#pairwise-identifiers) rules give that client. It includes a `subject.id` that the owner chose to disclose to that client.
