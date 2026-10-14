@@ -1889,7 +1889,10 @@ Content-Type: application/json
                 monogram instead of fetching arbitrary remote logos.
               </p>
               <p>
-                ai_training purpose code requires explicit affirmative consent — the sole protocol-level requirement.
+                The revised Core draft reserves AI training as a separate processing permission. Training remains
+                unavailable until the AI Training Profile is published and registered. The reference implementation
+                still uses the earlier purpose-code consent rule; that rule confers no training authority under the
+                revised draft.
               </p>
             </DetailPanel>
           }
