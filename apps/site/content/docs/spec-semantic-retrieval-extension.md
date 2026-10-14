@@ -40,7 +40,7 @@ Clients and agents that use this extension:
 Same as every other public PDPP surface:
 
 - `Authorization: Bearer <access_token>` — grant-bound for client tokens; owner-bound for owner self-export.
-- `PDPP-Version: <date>` header.
+- `PDPP-Version: 0.1` header, which selects the Core `0.1` contract for this endpoint as Core Section 8 defines.
 - `Request-Id` echoed on the response.
 
 No new auth scheme. No capability-specific auth. Deployments that want to restrict semantic retrieval do so via grant scope on the normal scope vocabulary, not through a custom semantic-retrieval-only auth path.

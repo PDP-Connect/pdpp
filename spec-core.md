@@ -1,7 +1,7 @@
 # Personal Data Portability Protocol (PDPP) v0.1.0
 
 Status: Normative draft
-Date: 2026-09-29
+Date: 2026-10-13
 
 ---
 
@@ -22,7 +22,7 @@ The protocol specifies:
 
 Most source platforms do not yet expose a PDPP interface natively. Collection is the bridge for those sources: it brings their data into a resource server so the protocol's consent and enforcement layers can govern access to it. The informative [PDPP Collection Profile](spec-collection-profile) describes that bridge as builder guidance; it is not a conformance requirement. A connector conforms to PDPP by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. No particular collection method is required. The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved, and data may also reach it via regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5-8) are agnostic to the collection method.
 
-Any implementation satisfying the role conformance criteria in Section 9 is PDPP-compliant. This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. URI identifiers name sources, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the resolved grant and the exact source declaration snapshot retained by the authorization server.
+An implementation is PDPP-compliant for a role when it meets every requirement of this specification that applies to that role. Section 9 summarizes those requirements and does not narrow them. This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. URI identifiers name sources, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the resolved grant and the exact source declaration snapshot retained by the authorization server.
 
 ### Interoperable core sections
 
@@ -348,7 +348,7 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 | `emitted_at` | ISO 8601 | yes | When the record was emitted by its producer (processing time, not source time). |
 | `op` | enum | no | `upsert` (default) or `delete`. This field is a directive to the resource server and is not stored as part of the record data. |
 
-**Compound key encoding:** When `primary_key` has multiple fields, `key` is an array of values in the order declared by the SourceDeclaration `primary_key`. The canonical string form of a compound key is the minified JSON array of key values (e.g., `["user_123","2026-04-01"]`). Each primary-key component MUST be serialized as a string in the canonical encoding. Non-string primary-key field values (e.g., integers, dates) MUST be converted to their string representation before encoding. URL path parameters and `resources[]` entries use percent-encoded canonical string form. The `resource_ref.record_id` field retains native `string | string[]` type.
+**Compound key encoding:** When `primary_key` has multiple fields, `key` is an array of values in the order declared by the SourceDeclaration `primary_key`. The canonical string form of a compound key is the [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) (JSON Canonicalization Scheme) serialization of the ordered array of string key components (e.g., `["user_123","2026-04-01"]`). Minification alone does not make the form unique, because a JSON string can escape the same character in more than one way. Each primary-key component MUST be serialized as a string in the canonical encoding. Non-string primary-key field values (e.g., integers, dates) MUST be converted to their string representation before encoding. Within JSON, `resources[]` entries and response record `id` values carry the canonical key string without percent-encoding, and the AS and RS MUST NOT percent-decode them. The AS MUST reject a `resources[]` entry that is not in canonical form. A URL path parameter carries the canonical key string percent-encoded for HTTP, and the RS decodes it exactly once before it compares keys. The `resource_ref.record_id` field retains native `string | string[]` type.
 
 **Record identity:** For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree. The Collection Profile defines the HTTP error for its ingest endpoint.
 
@@ -565,6 +565,10 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `extensions` | Optional object keyed by absolute profile URI. Core preserves or ignores an unknown extension value and does not parse it. An operation that explicitly invokes an unsupported profile is rejected. An extension cannot redefine or weaken Core semantics. |
 
 The public SourceDeclaration JSON Schema declares JSON Schema 2020-12. Each `streams[].schema` uses that dialect when `$schema` is absent. If `$schema` is present, it MUST equal `https://json-schema.org/draft/2020-12/schema`. This dialect choice does not by itself guarantee identical validator behavior. The AS MUST meta-validate each embedded stream schema before accepting the declaration. Embedded `$ref` and `$dynamicRef` values MUST be local fragment references. A declaration MUST NOT make consent interpretation depend on a mutable remote schema.
+
+For field selection in this version, a stream's schema-required fields are the names in the root `required` array of `streams[].schema`. An absent array defines an empty set. The AS MUST reject a declaration whose root `required` array names a field not declared in the root `properties` object.
+
+Requiredness inside a nested schema, a referenced schema, a conditional, or another schema applicator does not add a field to this consent floor. A publisher MUST list a top-level field in the root `required` array if the field must be included in every disclosed record. These rules define disclosure selection, not full-record JSON Schema validation.
 
 `source.id` is the authorization identity. In a retained declaration or grant, `source.kind` records the provenance class that the AS accepted from its declaration authority. It is not authorization equality, a runtime type, or a Collection Profile claim, and it never selects serving or acquisition runtime.
 A connector declaration with no Collection extension remains valid Core input.
@@ -841,10 +845,14 @@ Per-stream, within the `streams` array. `name` and exactly one of a non-empty `f
 | `time_range.since` | RFC 3339 `full-date` or `date-time` | Protocol-enforced | Earliest data to include (inclusive, >=), evaluated against the stream's `consent_time_field`. Its type matches the field's format. |
 | `time_range.until` | RFC 3339 `full-date` or `date-time` | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. Its type matches the field's format. A hard cap: applies to future resources as well as past ones. |
 | `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. The OAuth/RAR binding maps a request with both to RFC 9396 `invalid_authorization_details`. |
-| `fields` | string[] | Protocol-enforced | Field allowlist. `["*"]` requests all permitted fields; `*` MUST then be the only element. Schema-required fields are always included regardless of this list. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
+| `fields` | string[] | Protocol-enforced | Field allowlist. `["*"]` requests all permitted fields; `*` MUST then be the only element. Schema-required fields are always included regardless of this list, and the AS freezes them in the grant as `required_fields`. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the retained declaration's `primary_key` at grant issuance. The RS filters by exact primary-key match. |
 
-**Note on `fields`:** At consent resolution, schema-required fields are always included in the resolved field set, regardless of the requested field list, because a record missing its schema-required fields is not a valid record of that stream; the per-stream consent floor is its required fields.
+The AS MUST resolve each retained stream's schema-required field set from the retained declaration snapshot before final owner review. The AS MUST include that set in the resolved `fields` allowlist. The AS MUST record that set as `required_fields` in the issued StreamGrant. The AS MUST NOT derive `required_fields` from `minimum.fields`, stream `necessity`, current records, or a later declaration revision.
+
+The AS MUST show which fields will remain in every client record projection. The AS MUST bind the exact `required_fields` set into the final approval artifact and review revision. The AS MUST retain that binding in the consent evidence.
+
+**Note on `fields`:** A record missing its schema-required fields is not a valid record of that stream, so a stream's required fields are its per-stream consent floor. The rules above freeze that floor into the grant as `required_fields` (Section 7).
 
 **Note on `time_range`:** `time_range` is only valid for streams that declare a `consent_time_field`. The authorization server MUST reject selection requests that specify `time_range` on a stream without that field. Its presence in the retained declaration is the authoritative signal that a stream is time-range-capable.
 
@@ -907,6 +915,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
       "name": "top_artists",
       "instance_ids": ["spotify-account-a"],
       "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
+      "required_fields": ["id", "name"],
       "time_constraint": {
         "field": "source_updated_at",
         "type": "date-time",
@@ -952,12 +961,17 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 | `name` | string | yes | Protocol-enforced | Unique stream name within the grant. Always concrete; no wildcards in issued grants. |
 | `instance_ids` | string[] | yes | Protocol-enforced | Unique non-empty opaque instance handles scoped to issuer, subject, source ID, and this stream. Multiple handles authorize fan-in only when explicitly listed. Example: two connected Gmail accounts are two instances of the same source kind, each with its own handle. |
 | `fields` | string[] | yes | Protocol-enforced | Unique non-empty resolved field allowlist, authoritative for RS enforcement. Top-level field names only. |
+| `required_fields` | string[] | yes | Protocol-enforced | Unique top-level field names forming the schema-required consent floor frozen from the retained declaration. Every entry is also in `fields`. An empty array represents an empty floor. Order has no meaning. |
 | `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, type, since?, until? }` resolved from the retained declaration. `field` and `type` are required and at least one bound is present. `type` is `date` or `date-time`; the AS sets it at issuance from the field's format in the retained declaration. Each bound has that type. `since` is inclusive; `until` is exclusive. |
 | `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Absent means all records. |
 
+The AS MUST include `required_fields` in every StreamGrant, including when its value is an empty array. The AS MUST freeze this set at issuance. The AS MUST NOT change the set when it refreshes a token or returns a later authorization result.
+
+The AS MUST return the same `required_fields` set in the complete grant delivered to the client and to the authenticated RS. A declaration change does not change the set in an issued grant.
+
 Request-only conveniences such as wildcard names, the `*` field marker, `view`, and omitted instance handles are fully resolved before final owner review and issuance. They are not continuing authority in the grant. Selection provenance may be retained at grant level through `selection_preset`; the concrete stream rows remain authoritative.
 
-Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since` stated as inclusive, `until` stated as exclusive, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
+Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice. The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, `required_fields`, resources, temporal field, `since` stated as inclusive, `until` stated as exclusive, purpose, retention, client identity, and grant expiry. If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution. Retained consent evidence MUST preserve that binding. The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields. `client_claims` MUST remain outside the resolved grant and RS enforcement. If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.
 
 ### Representative approval {#representative-approval}
 
@@ -995,7 +1009,7 @@ Three independent version axes exist in PDPP. They MUST NOT be conflated:
 |------|-------|---------|
 | Grant schema version | `grant.version` | Version of the PDPP grant schema. RS MUST reject grants with unsupported major versions, returning 400 `unsupported_version`. |
 | Source declaration revision | `grant.source_declaration.version` | Identifies the exact retained declaration snapshot used for consent and issuance. It is opaque evidence metadata. The RS enforces the resolved grant and does not fetch that revision for authorization. |
-| HTTP API contract version | `PDPP-Version` request header | Version of the RS HTTP API contract. RS returns 400 `unsupported_version` if the requested version is not supported. If the header is absent, the RS uses the current stable version and returns the selected version in the response header (see [Section 8](#resource-server-interface)). |
+| HTTP API contract version | `PDPP-Version` request and response header | Identifies the RS HTTP contract selected under [API versioning](#api-versioning). This specification defines the exact identifier `0.1`. It is independent of the document release, `grant.version`, source declaration revision, and profile versions. |
 
 The current persisted-authorization-state reader MUST reject any persisted authorization state whose version or shape it cannot validate against a supported contract before its caller continues introspection or route handling. The reader MUST NOT reconstruct missing authorization or binding facts from current configuration. A deployment that cannot support or explicitly migrate such state MUST require fresh consent.
 
@@ -1059,6 +1073,8 @@ Retention is a structured policy declaration and policy commitment by the data r
 
 ### Examples
 
+These examples assume retained declarations whose root `required` arrays list `id` and `name` for `top_artists`, `id` for `conversations` and `messages`, and `day` for `sleep_sessions`.
+
 **Specific data, single use:**
 ```json
 {
@@ -1076,6 +1092,7 @@ Retention is a structured policy declaration and policy commitment by the data r
       "name": "top_artists",
       "instance_ids": ["spotify-account-a"],
       "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
+      "required_fields": ["id", "name"],
       "time_constraint": {
         "field": "source_updated_at",
         "type": "date-time",
@@ -1102,12 +1119,14 @@ Retention is a structured policy declaration and policy commitment by the data r
     {
       "name": "conversations",
       "instance_ids": ["openai-account-a"],
-      "fields": ["id", "title", "source_created_at", "source_updated_at"]
+      "fields": ["id", "title", "source_created_at", "source_updated_at"],
+      "required_fields": ["id"]
     },
     {
       "name": "messages",
       "instance_ids": ["openai-account-a"],
-      "fields": ["id", "conversation_id", "role", "content", "source_created_at"]
+      "fields": ["id", "conversation_id", "role", "content", "source_created_at"],
+      "required_fields": ["id"]
     }
   ]
 }
@@ -1130,6 +1149,7 @@ Retention is a structured policy declaration and policy commitment by the data r
       "name": "sleep_sessions",
       "instance_ids": ["oura-account-a"],
       "fields": ["day", "total_sleep_duration", "sleep_score"],
+      "required_fields": ["day"],
       "time_constraint": {
         "field": "day",
         "type": "date",
@@ -1185,6 +1205,12 @@ For separated AS/RS deployments, the RS MUST authenticate to the AS introspectio
 
 The introspection response MUST contain the complete context needed to enforce the request. The separated RS MUST enforce only from that response and MUST NOT make a second AS lookup while handling the request. A co-located AS and RS MAY resolve the same context through a local equivalent.
 
+For a Core client token, the AS MUST include each stream's `required_fields` in the grant within `authorization_details`. The separated RS MUST obtain this set only from that grant in the authenticated introspection response. A co-located RS MUST obtain the same set through its local equivalent.
+
+Before serving data under a grant, the RS MUST verify that every StreamGrant contains a `required_fields` array of unique strings. The RS MUST verify that every entry also appears in that StreamGrant's `fields`. The RS MUST reject a grant that fails either check with HTTP 403 `grant_invalid`.
+
+The RS MUST NOT interpret an absent `required_fields` member as an empty set. The RS MUST NOT derive the set from a current declaration, a retained declaration outside the resolved context, stored record contents, primary keys, or another grant.
+
 **Token kind extensibility:** This specification defines `owner` and `client`. Deployments MAY introduce additional token kinds in companion profiles. A resource server that receives a `pdpp_token_kind` value it does not recognize MUST treat the token as unauthorized for all operations defined in this specification.
 
 Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. Self-contained JWTs (e.g., signed JWTs) are allowed as an optimization but MUST NOT be the sole revocation mechanism; the RS MUST still be able to check active status through introspection or local equivalent.
@@ -1214,7 +1240,9 @@ PDPP defines four additional members. RFC 9728 Section 2 permits additional para
 | `pdpp_core_query_base` | The base path the Section 8 endpoint paths extend, so a client composes a record query without assuming a version segment. |
 | `pdpp_token_kinds_supported` | The `pdpp_token_kind` values this resource server accepts, drawn from the kinds Section 8 defines. |
 | `pdpp_self_export_supported` | Whether an owner token may read the owner's own data through the client query endpoints without a client grant. |
-| `pdpp_provider_connect_version` | The PDPP version this resource server's interface implements, which a client would otherwise learn only from the `PDPP-Version` negotiation on a first request. |
+| `pdpp_provider_connect_version` | A required JSON string identifying the HTTP contract selected when `PDPP-Version` is absent on the advertised `pdpp_core_query_base`. For a resource server claiming this specification's v0.1 conformance, the value MUST be `"0.1"` and that contract MUST be supported. This member describes the default, not an exhaustive list of supported contracts, the document release, or a profile version. |
+
+A client MUST obtain protected resource metadata without depending on `PDPP-Version` negotiation. Metadata does not authorize disclosure or change the contract of a request that carries an explicit `PDPP-Version`. A client MUST NOT infer an HTTP contract from a version-looking component of `pdpp_core_query_base`.
 
 `resource_name` is RFC 9728's own member for a human-readable resource name, not a PDPP extension; a resource server SHOULD publish it because a consent surface has no other name to display for the resource.
 
@@ -1312,7 +1340,7 @@ A client-token caller may fetch metadata only for a stream present in its resolv
 }
 ```
 
-**Client-token response** (closed projection of a grant frozen to fields `id`, `name`, `source_updated_at`; no range filters, views, or relationships were granted):
+**Client-token response** (closed projection of a grant frozen to fields `id`, `name`, `source_updated_at`; no range filters, views, or relationships were granted). It shows no declaration fact that the grant does not carry, such as the primary key, cursor field, or selection capabilities:
 
 ```json
 {
@@ -1324,13 +1352,6 @@ A client-token caller may fetch metadata only for a stream present in its resolv
       "name": { },
       "source_updated_at": { }
     }
-  },
-  "primary_key": ["id"],
-  "cursor_field": "source_updated_at",
-  "consent_time_field": "source_updated_at",
-  "selection": {
-    "fields": true,
-    "resources": false
   },
   "query": { },
   "freshness": {
@@ -1373,7 +1394,7 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `order` | enum | `desc` (default) or `asc`. |
 | `filter[{field}]` and `filter[{field}][op]` | string | Owner-token current-capability filters only. Client-token requests MUST reject exact and range forms in v0.1. |
 | `view` | string | Owner-token current-capability request for records projected to a named view. Client-token records requests MUST reject `view`; clients use explicit `fields` or the field projection already frozen into the grant. Mutually exclusive with `fields`. |
-| `fields` | comma-separated | Sparse fieldset. Schema-required fields are always included. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
+| `fields` | comma-separated | Sparse fieldset. For a client token, the RS uses the granted fields requested here together with the grant's `required_fields`, as Section 4 defines. For an owner token, schema-required fields are included under the current-capability read rules. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `expand[]` | string | Owner-token current-capability request to expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. Client-token requests MUST reject this parameter in v0.1. |
 | `expand_limit[{relation}]` | integer | Owner-token current-capability limit for an expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. Client-token requests MUST reject this parameter in v0.1. |
 | `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`), or `beginning` to start a sync. Returns the changes since that token under [Incremental sync](#incremental-sync): every record not visible at h0 and visible at h1, a record visible at both only if its grant-authorized projection changed, and tombstones. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the token has expired. |
@@ -1397,7 +1418,7 @@ For owner-token current-capability reads, expansion is declaration-driven. A rel
 
 **Stable sort:** Records are sorted by `(cursor_field, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values. A `changes_since` session instead orders records and tombstones together by canonical key string, in the direction `order` selects. It does not follow `cursor_field`, which a tombstone lacks, or the order of changes, which would reveal when a hidden field changed relative to other updates.
 
-A page cursor is bound to the query context of the first page: the grant (for an owner token, the subject and effective owner scope), stream, `fields`, `view`, `expand[]`, `expand_limit[...]`, `order`, every `filter[...]`, and any `changes_since` token. A client MUST follow a `next_cursor` with the same context that produced it. To change the context, the client MUST restart pagination without a cursor. Resource servers MUST reject a page cursor used with a different context as `invalid_cursor`.
+A page cursor is bound to the query context of the first page: the grant (for an owner token, the subject and effective owner scope), stream, `fields`, `view`, `expand[]`, `expand_limit[...]`, `order`, every `filter[...]`, and any `changes_since` token. The selected `PDPP-Version` contract is also part of that context. A client MUST follow a `next_cursor` with the same context that produced it. To change the context, the client MUST restart pagination without a cursor. Resource servers MUST reject a page cursor used with a different context as `invalid_cursor`.
 
 **Incremental sync:** Pass `changes_since=beginning` to start a sync, and the stored `next_changes_since` to retrieve the changes since a previous session. The resource server returns records within the grant's authorized field projection, and tombstones under the rules in [Incremental sync](#incremental-sync). If the token has expired (HTTP 410 Gone with error code `cursor_expired`), the client MUST start again from `beginning`.
 
@@ -1524,7 +1545,7 @@ Redirect URLs may be valid for less than 60 seconds; clients cannot rely on the 
 
 ### Errors {#errors}
 
-Every non-2xx response returns a structured error:
+Every 4xx or 5xx response whose HTTP semantics permit a body returns a structured error. A `HEAD` response carries no body and reports failure through its status and headers. A blob redirect (HTTP 302) is a success under the redirect contract above. A structured error has this shape:
 
 ```json
 {
@@ -1554,10 +1575,10 @@ This makes a future error code safe to introduce: an older client keeps handling
 | Code | HTTP Status | Type | Meaning |
 |------|------------|------|---------|
 | `invalid_cursor` | 400 | `invalid_request_error` | Page cursor or `changes_since` token is malformed or unrecognized, or is used with a different grant, owner scope, or query context. |
-| `invalid_request` | 400 | `invalid_request_error` | Malformed request parameter or mutually exclusive parameters. |
+| `invalid_request` | 400 | `invalid_request_error` | Malformed request parameter, mutually exclusive parameters, or a malformed `PDPP-Version` field. |
 | `invalid_expand` | 400 | `invalid_request_error` | Relation is not declared as expandable. |
 | `unknown_field` | 400 | `invalid_request_error` | Requested field not in stream schema. |
-| `unsupported_version` | 400 | `invalid_request_error` | `PDPP-Version` header specifies unsupported version, or grant references unsupported schema version. |
+| `unsupported_version` | 400 | `invalid_request_error` | A syntactically valid `PDPP-Version` identifies an unsupported HTTP contract, or the resolved grant uses an unsupported grant schema. For an HTTP-contract rejection, `param` is `PDPP-Version`. This code does not authorize fallback to another contract or reinterpretation of the grant. |
 | `authentication_error` | 401 | `authentication_error` | Missing, invalid, or inactive access token. |
 | `authorization_state.unsupported_legacy_shape` | 401 | `authentication_error` | Persisted authorization state does not match a supported shape. Fresh consent is required when no migration applies. |
 | `field_not_granted` | 403 | `permission_error` | Requested client field exceeds the grant's authorized field projection. |
@@ -1575,15 +1596,69 @@ This makes a future error code safe to introduce: an older client keeps handling
 
 **Inactive tokens.** An RFC 7662 response with `active: false` need not say why the token is inactive (RFC 7662 Section 2.2). Every inactive access token produces HTTP 401 with `WWW-Authenticate: Bearer error="invalid_token"`. `invalid_token` is the Bearer challenge value (RFC 6750 Section 3.1), not a structured error code. The structured error code is `authentication_error`. When authenticated context establishes the cause, the structured error MAY use `grant_expired` or `grant_revoked`; those codes have HTTP status 401 and type `authentication_error`. A co-located RS that reads grant lifecycle state is one example of such context.
 
-### API versioning
+### API versioning {#api-versioning}
 
-API version is specified via header:
+The `PDPP-Version` field selects the HTTP contract for the Resource Server operations defined in this section. The contract includes request syntax, operation semantics, response representations, and errors. This specification assigns that contract the identifier `0.1`. An RS claiming conformance to this specification MUST support `0.1` at its advertised `pdpp_core_query_base`.
+
+`PDPP-Version` does not select the grant schema, source declaration revision, server software release, or companion profile version. It does not negotiate OAuth authorization, token, revocation, introspection, or grant lifecycle endpoints, protected resource metadata, or an MCP transport. Co-location of roles does not change this scope. A companion binding that uses Core RS operations MUST preserve their selected Core contract.
+
+The field value is one HTTP token as defined by RFC 9110 Section 5.6.2. A sender MUST send at most one `PDPP-Version` field line in the header section and MUST NOT send this field in trailers. A receiver MUST compare identifiers exactly after HTTP field parsing has removed surrounding whitespace. A receiver MUST NOT parse the value as a number, a semantic-version range, or a date. A quoted string, an empty value, a comma-separated list, or duplicate `PDPP-Version` field lines is invalid.
+
+A conformant client MUST send the exact identifier of a contract it implements on every Core RS operation, including retries and subsequent pages. A client using this specification's contract sends:
 
 ```
-PDPP-Version: 2026-04-06
+PDPP-Version: 0.1
 ```
 
-If the `PDPP-Version` header is absent, the RS uses the current stable version and returns the selected version in the `PDPP-Version` response header. If the requested version is not supported, the RS returns 400 `unsupported_version`.
+Request examples elsewhere in this document omit this field and other common headers for brevity.
+
+**Example (non-normative).** A successful exchange:
+
+```http
+GET /v1/streams HTTP/1.1
+Host: rs.example
+Authorization: Bearer <access_token>
+PDPP-Version: 0.1
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+PDPP-Version: 0.1
+Request-Id: req_example
+
+{"object":"list","data":[]}
+```
+
+An unsupported version on an otherwise admissible authenticated request gets no `PDPP-Version` response field, because no contract was selected:
+
+```http
+PDPP-Version: 0.1.0
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Request-Id: req_example
+
+{"error":{"type":"invalid_request_error","code":"unsupported_version",
+  "message":"Unsupported HTTP API contract.","param":"PDPP-Version",
+  "request_id":"req_example"}}
+```
+
+If the field is absent, an RS implementing this contract MUST select `0.1`. It MUST NOT change that selection merely because a later document or another HTTP contract becomes available. If the field is present and syntactically valid, the RS MUST either select that exact supported identifier or reject the request with HTTP 400 and error code `unsupported_version`. It MUST NOT substitute another identifier or retry the operation internally under another contract. The values `0.1.0`, `v0.1`, and `2026-04-06` are not aliases for `0.1`.
+
+When version validation finds an invalid field, the RS MUST reject the request with HTTP 400 and error code `invalid_request`. For a version-field error, the structured error's `param` MUST be `PDPP-Version`. These rules do not override HTTP message-framing errors or the authentication requirements of this section: an inactive token still produces the required HTTP 401 response and Bearer challenge. No request with an invalid or unsupported version may disclose protected data or perform the requested operation.
+
+After selecting a contract, the RS MUST include exactly one `PDPP-Version` response field containing the selected identifier on every response it generates for that operation, including errors, `HEAD` responses, and blob redirects. When version validation fails without selecting a contract, the RS MUST omit that response field. It MUST NOT echo an unsupported requested identifier as though it had been selected. Errors and bodyless responses retain the HTTP status, header, and body rules defined elsewhere in this section.
+
+Before using a successful Core RS response, a client MUST verify that the response contains exactly one valid `PDPP-Version` value equal to its requested identifier. If that check fails, it MUST treat the response as a protocol failure and MUST NOT use its data. This check does not permit a client to ignore the actual HTTP status, authentication challenge, redirection rules, or retry timing of an error response.
+
+An RS MUST apply the selected contract without widening or reinterpreting the resolved authorization context. Supporting an HTTP contract does not establish that a grant schema or profile is supported. Existing grant validation, introspection, projection, token-kind, and profile requirements continue to apply.
+
+The selected contract identifier is part of the query context to which page cursors and `changes_since` tokens are bound. An RS MUST reject use under another contract with HTTP 400 and error code `invalid_cursor`. A client MUST keep the same identifier throughout a pagination or synchronization session.
+
+If a response is reusable by an HTTP cache and its representation depends on `PDPP-Version`, the RS MUST include `PDPP-Version` in `Vary`, or use `Vary: *`. This requirement does not weaken any `Cache-Control` restriction in this specification. A deployment supporting browser cross-origin clients MUST permit `PDPP-Version` on its authorized cross-origin Core requests and expose `PDPP-Version` to those clients, without broadening which origins or credentials it authorizes.
+
+A `PDPP-Version` field on an RS blob response identifies the RS contract, not the blob's media type. A signed-URL target is not required to implement this field unless it is independently a Core RS endpoint.
+
+A later document release MAY retain the identifier `0.1` only for a compatible revision of this contract. Compatibility requires preserving the meaning of conforming requests and responses and all authorization and disclosure constraints. Allowed response extensions remain subject to this specification's response forward-compatibility, closed-shape, and projection rules. An incompatible HTTP contract MUST have a distinct identifier and MUST NOT be served as `0.1`. A companion profile MUST NOT redefine `0.1` or alter the meaning of a Core member under that identifier.
 
 Every response includes a `Request-Id` header for debugging.
 
@@ -1591,7 +1666,7 @@ Every response includes a `Request-Id` header for debugging.
 
 ## 9. Conformance {#conformance}
 
-This section defines what it means to implement each PDPP role. Conformance claims should reference this section.
+This section defines what it means to implement each PDPP role. Conformance claims should reference this section. The role lists index the requirements and do not narrow them: a conformance claim also meets every applicable requirement elsewhere in this document, and omitting a requirement from a list does not waive it.
 
 Conformance is role- and behavior-based. A conformant implementation is not required to use any particular vendor-hosted service, token, chain, centralized registry operator, domain, or repository deployment.
 
@@ -1609,7 +1684,7 @@ A conformant authorization server:
 8. Tracks grant lifecycle (active, expired, revoked). Reflects revocation immediately in introspection: the revoked grant is inactive at once, and a token is `active: false` when no grant it covers is active.
 9. Issues access tokens bound to specific grants. Access tokens include the PDPP introspection extension fields.
 10. For `single_use` grants, consumes the grant atomically with first client-token issuance. Gives that access token a finite expiration set by local policy and, when the grant has `expires_at`, no later than `expires_at`; that expiry ends the grant's one read window. Lets a later token in the same refresh-token family carry the grant only inside the window, reports the grant inactive after it, and otherwise rejects issuance against the consumed grant.
-11. Validates stream/field/view/resource-id shape at grant issuance.
+11. Validates stream/field/view/resource-id shape at grant issuance. Rejects `resources` entries that are not canonical under Section 4 and does not percent-decode JSON `resources` values.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
 13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
 14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.dev/purpose/ai_training"`. Never presents an `ai_training` detail as selected by default. In a request with several details, lets the owner approve any other detail while declining it.
@@ -1618,25 +1693,28 @@ A conformant authorization server:
     review revision or digest. Rejects stale approval if eligibility or the
     reviewed revision changes before approval.
 16. Retains one exact SourceDeclaration snapshot through request validation, consent display, narrowing, issuance, and consent evidence. A later current declaration never substitutes for it.
-17. Returns 400 `unsupported_version` if `PDPP-Version` header specifies an unsupported version.
+17. Not used. `PDPP-Version` negotiation is a Resource Server requirement and does not version Authorization Server endpoints.
 18. For a separated AS and RS, authenticates the RS at the RFC 7662 introspection endpoint and returns the complete grant enforcement context in one response.
 19. Consumes each OAuth authorization code atomically on its first successful redemption. Rejects every later redemption with `invalid_grant` and does not issue another token.
 20. Issues a refresh token only when at least one grant the token response covers is `continuous`, and never extends a `single_use` grant's read window through refresh. It rotates refresh tokens by family. Reuse of a superseded token revokes the family and every family-linked access token, returns `invalid_grant`, and requires fresh authorization.
 21. Rejects unsupported persisted authorization state before introspection or request handling. Does not reconstruct missing facts from current configuration and requires fresh consent when no migration applies.
 22. Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value.
-23. Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision. Authenticates and verifies each representative before accepting approval, binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.
+23. Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision. Authenticates each representative and, before showing any subject-specific information or accepting approval, verifies their authority under [Representative approval](#representative-approval). Binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.
 24. Lets the owner approve or decline each detail of a request on its own. Issues one grant for each approved, resolved detail, covering one subject, one source, and one purpose, with its own lifecycle. Identifies grants by `grant_id` and does not treat subject, source, and purpose as a grant key.
 25. If it offers client-initiated revocation, ends grants as Section 10 defines: revoking a refresh token, current or superseded, ends every grant its family covers; revoking an access token ends its grants only when no refresh-token family covers them. In the OAuth binding, implements it as RFC 7009 token revocation and advertises `revocation_endpoint` in RFC 8414 metadata.
 26. Ends one grant among several that share a credential without revoking that credential or ending the other grants.
 27. Rejects a declaration that names an ineligible `consent_time_field` or a non-boolean `consent_time_content_may_exceed`. Rejects a `time_range` with no bound, a bound whose type does not match the field's format, an invalid bound, or a `since` not before `until`; the OAuth/RAR binding returns `invalid_authorization_details`. Never converts or rounds a bound. Sets `time_constraint.type` from the field's format in the retained declaration.
 28. For each time-bounded stream, renders the exact bounds with their inclusive and exclusive meaning and the declared meaning of the field. Shows a relative label only when it has verified it for those bounds. Discloses that matched records can contain data from outside the bounds when the stream declares `consent_time_content_may_exceed: true`. For a `continuous` grant, discloses that the client can see records leave the window.
+48. Retrieves declarations over HTTPS without ambient credentials. Validates every redirect and final URL against its accepted pointer and network policy. Validates the destination immediately before each connection and connects only to that validated address. Rejects automatic remote-schema retrieval and fails closed on any failed check, as Section 5 requires.
+50. Accepts a valid client ID metadata document as an identity without requiring preregistration. Keeps that identity-form acceptance distinct from authorization or admission denial under local policy, as Section 6 requires.
+51. Freezes each stream's schema-required consent floor from the retained declaration into `required_fields` before issuance. Includes the set in reviewed decision evidence, the client-visible grant, and the grant returned through introspection. Includes an empty array for an empty floor. Keeps the set unchanged for the life of that grant.
 
 ### Resource Server conformance
 
 A conformant Core RS:
 
 1. Implements the query endpoints defined in Section 8: list streams, get stream metadata, list records, get a single record, get a blob, delete a record (owner-authenticated).
-2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter. Authorizes each disclosure under one grant and never combines the constraints of different grants.
+2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter. Authorizes each disclosure under one grant and never combines the constraints of different grants. Uses Section 4's canonical key representation, never percent-decodes JSON key values, and decodes an HTTP path key exactly once before comparison.
 3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results no longer than `min(token_exp, 60 seconds)`.
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
 5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
@@ -1646,7 +1724,7 @@ A conformant Core RS:
 9. Rejects client-token exact and range `filter[...]` parameters with 400
    `invalid_request` before consulting current declaration metadata; owner-token current-capability reads MAY retain declared filter behavior.
 10. Rejects unknown query parameters and unsupported query shapes with 400 instead of silently ignoring them.
-11. Implements the `PDPP-Version` header negotiation.
+11. Implements [API versioning](#api-versioning): supports the exact `0.1` contract, selects it for an absent header, rejects malformed or unsupported values without fallback, reports the selected contract in responses, and publishes the matching default in protected resource metadata. Binds cursors and synchronization tokens to the selected contract and preserves all grant and profile enforcement independently of it.
 12. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response.
 13. SHOULD support owner-authenticated access to the `/v1/streams/{stream}/records` query endpoints without a client grant, allowing the data subject to export their own data directly (self-export).
 14. For owner-token stream-metadata reads, returns the full current stream metadata within the owner's subject/source/connection scope, including current query, view, and relationship capabilities.
@@ -1658,6 +1736,7 @@ A conformant Core RS:
 20. Emits a tombstone for each record visible at the previous horizon and not visible at the new one, and for no other record. Retains the state needed to determine visibility at every unexpired horizon, and otherwise fails the session with 410 `cursor_expired`. Uses the exact client tombstone shape for client tokens. For owner tokens, adds `removal`, and `deleted_at` and `emitted_at` only for a deletion.
 21. Binds each page cursor and `changes_since` token to its grant, or owner subject and scope, and to its query context, and rejects a mismatch as `invalid_cursor`. Orders a `changes_since` session by canonical key string, does not serve a record deleted after the session's first page, and rejects `expand[]` and `expand_limit[...]` on `changes_since`. Issues tokens and page cursors that reveal no readable position, time, or field value, and whose equality or ordering signals no change outside the grant or owner scope.
 22. Compares time values and bounds by the grant's frozen `time_constraint.type`, never a current declaration, as calendar dates or exact instants, without a host, viewer, or owner time zone. Validates values itself under RFC 3339, including its leap-second rule. Excludes a record whose value is absent, null, or invalid from every read surface. Applies the same rules to owner-token range filters on `date` and `date-time` fields, using the declared format.
+30. Validates each StreamGrant's explicit `required_fields` and its containment in `fields` before disclosure. Rejects missing or malformed context with 403 `grant_invalid`. Applies the frozen floor to every client record-data projection and its evidence without declaration lookup. Preserves tombstone shape and existing sync eligibility rules.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
@@ -1675,6 +1754,8 @@ A conformant client:
 8. Where local policy depends on source provenance, MUST read `source.kind` from the issued grant and apply that policy before first use of the records. A client MUST NOT assume a provenance class it did not read from the grant, and MUST NOT treat an unrecognized `source.kind` as either known value. A client with no provenance-dependent policy has nothing to check.
 9. Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`. Does not treat an inactive token as proof of revocation.
 10. Treats a tombstone for an ID it does not hold as a no-op. Reconciles records it obtained outside sync sessions itself, because the sync guarantee covers only a copy built from sync sessions.
+32. Pins a supported HTTP contract with `PDPP-Version` on each Core RS operation, including retries and pagination, and verifies the selected version before using a successful response. Does not infer a contract from a URL path, grant schema, document release, or profile version, and does not silently fall back after a version failure.
+33. Reads each StreamGrant's `required_fields` from the authorization result before requesting disclosure. Expects those fields in every returned record's `data` when the stored record version has a value for them, and does not infer the set from a declaration.
 
 ### Conformance test suite
 
@@ -1929,6 +2010,7 @@ interface StreamGrant {
   name: string;
   instance_ids: string[];  // Non-empty, unique, and stream-scoped
   fields: string[];        // Non-empty and authoritative for RS enforcement
+  required_fields: string[]; // Frozen, unique subset of fields; may be empty
   time_constraint?: TimeConstraint;
   resources?: string[];    // Canonical key strings per compound key encoding
 }

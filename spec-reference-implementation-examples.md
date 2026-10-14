@@ -1,7 +1,7 @@
 # PDPP Reference Implementation Examples
 
 Status: Illustrative
-Date: 2026-09-29
+Date: 2026-10-13
 
 These examples are illustrative sequences built from the current draft. They are not the normative source for wire shapes or role responsibilities. When an example and the live draft differ, the normative documents win:
 
@@ -90,27 +90,28 @@ The authorization server preserves the semantic distinctions required by the dra
 >
 > [Allow] [Deny]
 
-The manifest-authored data description and the structured grant terms are rendered authoritatively. The free-text commitment is attributed to the client and not flattened into the same register.
+The declaration-authored data description and the structured grant terms are rendered authoritatively. The free-text commitment is attributed to the client and not flattened into the same register.
 
 ### Step 3: Issued grant
 
-The AS validates the request against the connector manifest and issues an immutable grant.
+The AS validates the request against the retained source declaration, whose `top_artists` schema requires `id` and `name`, and issues an immutable grant.
 
 ```json
 {
   "version": "0.1.0",
   "grant_id": "grt_concerts_001",
   "issued_at": "2026-04-11T15:00:00Z",
-  "subject": { "id": "user_abc" },
+  "subject": { "id": "sub_H7mQ2vKa" },
   "client": { "client_id": "concerts_app" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
-  "manifest_version": "2.0.0",
+  "source_declaration": { "version": "2.0.0" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "purpose_description": "Recommend concerts based on your listening history",
   "access_mode": "single_use",
   "streams": [
     {
       "name": "top_artists",
+      "instance_ids": ["inst_Rb3kT9wE"],
       "fields": [
         "id",
         "name",
@@ -118,7 +119,10 @@ The AS validates the request against the connector manifest and issues an immuta
         "popularity",
         "source_updated_at"
       ],
-      "time_range": {
+      "required_fields": ["id", "name"],
+      "time_constraint": {
+        "field": "source_updated_at",
+        "type": "date-time",
         "since": "2025-10-11T00:00:00Z"
       }
     }
@@ -138,7 +142,7 @@ The AS validates the request against the connector manifest and issues an immuta
 ```http
 GET /v1/streams/top_artists/records?limit=50
 Authorization: Bearer pdpp_client_tok_001
-PDPP-Version: 2026-04-06
+PDPP-Version: 0.1
 ```
 
 ```json
@@ -196,7 +200,7 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
       "purpose_description": "Provide context to your personal AI agent",
       "access_mode": "continuous",
       "streams": [
-        { "name": "*" }
+        { "name": "*", "fields": ["*"] }
       ]
     }
   ]
@@ -205,27 +209,29 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
 
 ### Step 2: Issued grant with wildcard expansion
 
+For this example, the retained source declaration revision is 2.0.0, and the owner approves one ChatGPT instance, exposed to this client as `inst_Jm6pX2cV`. The `conversations` schema has `id`, `title`, and `source_updated_at`; `messages` has `id`, `conversation_id`, `role`, `content`, and `source_created_at`; `memories` has `id`, `content`, and `source_created_at`. Each schema's root `required` array lists only `id`. The AS resolves the `*` markers to these explicit lists and freezes each required set as `required_fields`.
+
 ```json
 {
   "version": "0.1.0",
   "grant_id": "grt_agent_001",
   "issued_at": "2026-04-11T15:10:00Z",
-  "subject": { "id": "user_abc" },
+  "subject": { "id": "sub_N9rT4xWp" },
   "client": { "client_id": "my_agent" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/chatgpt" },
-  "manifest_version": "2.0.0",
+  "source_declaration": { "version": "2.0.0" },
   "purpose_code": "https://pdpp.dev/purpose/agent_context",
   "purpose_description": "Provide context to your personal AI agent",
   "access_mode": "continuous",
   "streams": [
-    { "name": "conversations" },
-    { "name": "messages" },
-    { "name": "memories" }
+    { "name": "conversations", "instance_ids": ["inst_Jm6pX2cV"], "fields": ["id", "title", "source_updated_at"], "required_fields": ["id"] },
+    { "name": "messages", "instance_ids": ["inst_Jm6pX2cV"], "fields": ["id", "conversation_id", "role", "content", "source_created_at"], "required_fields": ["id"] },
+    { "name": "memories", "instance_ids": ["inst_Jm6pX2cV"], "fields": ["id", "content", "source_created_at"], "required_fields": ["id"] }
   ]
 }
 ```
 
-The wildcard is expanded at consent time and frozen in the grant. Future stream types added by later manifest versions are not silently included.
+The wildcard is expanded at consent time and frozen in the grant. Future stream types added by later source declaration revisions are not silently included.
 
 ### Step 3: Runtime loads grant-scoped state
 
@@ -354,7 +360,7 @@ The client has previously stored a `next_changes_since` token from an earlier su
 ```http
 GET /v1/streams/conversations/records?changes_since=cs_Hq4mZ8tWc1Lr6VxN0bYk3PjD9fGs2Ae7
 Authorization: Bearer pdpp_client_tok_agent_001
-PDPP-Version: 2026-04-06
+PDPP-Version: 0.1
 ```
 
 ```json
@@ -401,7 +407,7 @@ A sleep analysis app receives a one-time grant with a retention declaration.
   "version": "0.1.0",
   "grant_id": "grt_sleep_001",
   "issued_at": "2026-04-11T15:20:00Z",
-  "subject": { "id": "user_abc" },
+  "subject": { "id": "sub_B6jL8sYe" },
   "client": { "client_id": "sleep_app" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/oura" },
   "manifest_version": "1.0.0",
