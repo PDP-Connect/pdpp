@@ -1,7 +1,7 @@
 # PDPP Data Query API v0.1.0
 
 Status: Superseded
-Date: 2026-08-29 (last corrected); superseded 2026-04-12
+Date: 2026-10-06 (last corrected); superseded 2026-04-12
 
 > **Note:** This document was written before Core Section 8 was expanded to normatively define the RS query interface. [Core Section 8 (Resource Server Interface)](spec-core.md#resource-server-interface) is authoritative for current query syntax, including the canonical `filter[{field}]` / `filter[{field}][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the `limit_clamped` warning behavior. This file is retained for historical reference and should not be used for implementation. Where it disagrees with Core Section 8, Core Section 8 prevails — in particular, the `limit`, `expand_limit`, search, and error-table sections below predate the current contract and are stale.
 
@@ -60,23 +60,17 @@ Returns the streams available under the current grant.
       "object": "stream",
       "name": "conversations",
       "record_count": 2196,
-      "last_updated": "2026-03-28T15:01:00Z",
-      "freshness": {
-        "captured_at": "2026-03-28T15:01:00Z",
-        "status": "current",
-        "last_attempted_at": "2026-03-28T15:01:00Z"
-      }
+      "freshness": [
+        { "instance_id": "inst_Hc7vM3sD", "last_success_at": "2026-03-28T15:00:00Z" }
+      ]
     },
     {
       "object": "stream",
       "name": "messages",
       "record_count": 48302,
-      "last_updated": "2026-03-28T15:01:00Z",
-      "freshness": {
-        "captured_at": "2026-03-28T15:01:00Z",
-        "status": "current",
-        "last_attempted_at": "2026-03-28T15:01:00Z"
-      }
+      "freshness": [
+        { "instance_id": "inst_Hc7vM3sD", "last_success_at": "2026-03-28T15:00:00Z" }
+      ]
     }
   ]
 }
@@ -96,12 +90,9 @@ Returns full source stream metadata, including schema, primary key, cursor field
   "object": "stream_metadata",
   "name": "conversations",
   "record_count": 2196,
-  "last_updated": "2026-03-28T15:01:00Z",
-  "freshness": {
-    "captured_at": "2026-03-28T15:01:00Z",
-    "status": "current",
-    "last_attempted_at": "2026-03-28T15:01:00Z"
-  },
+  "freshness": [
+    { "instance_id": "inst_Hc7vM3sD", "last_success_at": "2026-03-28T15:00:00Z" }
+  ],
   "schema": {
     "type": "object",
     "properties": {
@@ -120,15 +111,15 @@ Returns full source stream metadata, including schema, primary key, cursor field
 
 ### Freshness metadata
 
-The resource server MAY include a `freshness` object on stream listings, stream metadata, and record-list responses.
+The resource server MAY include a `freshness` array on stream listings, stream metadata, and record-list responses. [Core Section 8 (Freshness metadata)](spec-core.md#freshness) is authoritative.
 
-Freshness is server-observed response metadata, not a grant term. It reports what the server knows about the recency of the underlying data relevant to the response. It does not widen or narrow access rights, and it does not guarantee that the source has not changed since `captured_at`.
+Freshness is server-observed response metadata, not a grant term. The array has one entry for each instance that the grant, or the owner scope, authorizes for the stream, whatever the page contains. It does not widen or narrow access rights, and it does not guarantee that the source has not changed since `last_success_at`.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `captured_at` | ISO 8601 or null | Time of the most recent successful collection or source confirmation that could have affected the response. null if unknown. |
-| `status` | enum | `current`, `stale`, or `unknown`. |
-| `last_attempted_at` | ISO 8601 or null | Time of the most recent attempted refresh relevant to the response, if tracked. |
+| `instance_id` | string | The instance handle (Core Section 4, Response records). |
+| `last_success_at` | RFC 3339 date-time or null | Completion time of the most recent successful collection or source confirmation that could affect records visible under the full authorized scope of the query. Coarsened in client-token responses. null means only that no timestamp is reportable. |
+| `last_failure_at` | RFC 3339 date-time or null | Owner token only. Never present in a client-token response. |
 
 ### List records
 
@@ -170,11 +161,9 @@ PDPP-Version: 2026-03-28
   "url": "/v1/streams/conversations/records",
   "has_more": true,
   "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wMy0yNVQxODoyMjoxMVoiLCJpZCI6ImNvbnZfMDFKUVc4TTJSNyJ9",
-  "freshness": {
-    "captured_at": "2026-03-28T15:01:00Z",
-    "status": "current",
-    "last_attempted_at": "2026-03-28T15:01:00Z"
-  },
+  "freshness": [
+    { "instance_id": "inst_Hc7vM3sD", "last_success_at": "2026-03-28T15:00:00Z" }
+  ],
   "data": [
     {
       "object": "record",
