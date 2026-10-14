@@ -241,7 +241,7 @@ An authorization server MUST reject a declaration containing an unrecognized `st
 
 ### Full records and disclosed projections
 
-A stream schema describes a full record before disclosure projection. Every resolved field set includes the stream's schema-required fields (see the note on `fields` in [Section 6](#selection-request)). They are the per-stream consent floor, so a disclosed record always carries them.
+A stream schema describes a full record before disclosure projection. For a client token, the StreamGrant's `required_fields` is the frozen consent floor defined in Sections 5 through 7. The RS MUST include those fields whenever it returns that record's `data`. A tombstone carries no `data` and follows the tombstone shape defined in this section.
 
 The RS MUST construct disclosed `data` from only the top-level members permitted by the grant and the request-time field selection. Missing authorized optional members remain absent. The RS MUST NOT insert nulls or fabricated values for withheld members. A client MUST NOT validate a projected `data` object as though it were the full stream record.
 
@@ -892,6 +892,34 @@ A wildcard entry MUST be the only entry in `streams`. Otherwise stream names MUS
 
 **Defaults:** Each stream request, including each stream in a selection preset, MUST carry either `fields` or `view`. There is no implicit "all fields" default: a client that wants every permitted field sends `fields: ["*"]`, which the AS resolves against the retained snapshot. The marker is valid even when the stream declares `selection.fields: false`. The OAuth/RAR binding maps a stream request with neither `fields` nor `view` to RFC 9396 `invalid_authorization_details`. Omitting `necessity` means `optional`. Omitting `time_range` asks for no temporal constraint. Omitting `instance_ids` never asks for fan-in. The issued grant contains explicit non-empty `fields` and `instance_ids`. Clients SHOULD request only the data they need (see [Section 11, Data Minimization](#data-minimization)).
 
+### Authorization privacy boundary {#authorization-privacy}
+
+For authorization requests, protected owner state includes the owner's connected sources and instances, their eligibility, private source-declaration acceptance, and owner-specific authorization conditions. A client identifier, identity hint, source identifier, or instance handle does not authenticate the owner.
+
+Before authenticating the owner, the AS MUST NOT make an externally observable authorization-processing result depend on protected owner state. For representative approval, the AS MUST verify the representative's authority before applying owner-dependent resolution or showing subject-specific information, as [Representative approval](#representative-approval) requires.
+
+The AS MAY validate request syntax, client identity, redirect and resource bindings, and owner-independent capabilities before owner authentication. The AS MUST preserve the errors required by the authorization binding for those failures. The AS MUST NOT redirect to an invalid redirect URI.
+
+The AS MUST defer a validation or resolution step when its result depends on protected owner state. The AS MUST perform that step within the authenticated owner's review interaction. This includes source acceptance held privately for the owner and the existence or eligibility of requested instance handles. The AS MUST NOT treat the absence of an eligible owner source or instance as malformed authorization details.
+
+An AS that uses public source capabilities for early validation MUST determine those capabilities independently of the owner's private connections and eligibility. The AS MUST NOT derive a public capability response from protected owner state. The AS MUST NOT retrieve or accept a new declaration authority merely because an authorization request names it.
+
+The AS MUST treat an otherwise valid stream that has no eligible instance as unapproved. The AS MAY omit that stream only when it is optional. The AS MUST refuse the detail when a required stream cannot be retained. The AS MUST apply the existing required-stream and authorization-minimum rules before issuance.
+
+The AS MAY explain an owner-dependent failure to the authenticated owner within the protected review interaction. The AS MUST NOT disclose that explanation to the client without authorization for that disclosure. The AS MUST report an authorization refusal caused by source or instance ineligibility as `access_denied` in the OAuth binding. The AS MUST NOT distinguish that refusal from owner refusal by its client-visible response. This rule does not change `invalid_authorization_details` for malformed or unsupported details, or an error that this specification defines for a specific authorization-details type.
+
+The AS MUST NOT treat owner authentication alone as authorization to disclose unapproved source or instance inventory to the client. The AS MUST limit a successful client result to the approved result defined in [Client-visible authorization result](#authorization-result). When a private validation failure requires owner interaction, the AS MUST NOT release an owner-dependent terminal result to the client before that interaction concludes.
+
+The AS MUST apply this boundary at every supported authorization entry point, including pushed authorization requests and noninteractive requests. Client authentication at a pushed authorization endpoint MUST NOT substitute for owner authentication. Acceptance of a pushed request MUST NOT assert that an owner can approve it. The AS MUST use the pushed-request binding's validation and response rules without returning an owner-interaction error at that endpoint.
+
+When a noninteractive request cannot proceed without owner authentication or review, the AS MUST use an error permitted by that binding for the missing interaction. The AS MUST NOT choose that error according to source or instance eligibility. A valid existing owner session MAY satisfy owner authentication. An identity hint MUST NOT satisfy it.
+
+For requests that differ only in protected owner state, the AS MUST use equivalent pre-authentication status, response structure, redirects, headers, and transaction-state behavior. The AS MUST prevent systematic differences in processing time from revealing that state. The AS MUST apply the same requirement to client-visible eligibility denials after authenticated review. Required request correlation values and unpredictable transaction values MAY differ when they do not reveal protected owner state.
+
+The AS MUST apply this boundary before it resolves owner-specific source or instance eligibility for final owner review (Section 7). A failed or stale eligibility check MUST remain within authenticated review until that interaction concludes. The AS MUST NOT expose the failed instance or the reason for its ineligibility in the client result.
+
+These requirements do not replace authentication-protocol requirements or the authorization binding's client, redirect, request-integrity, and abuse protections.
+
 ### Request resolution {#request-resolution}
 
 The AS MUST expand presets, views, and wildcards against the retained declaration before applying owner choices. It MUST resolve the request into explicit grant constraints before final approval. It MUST preserve the client identity associated with the authorization request.
@@ -900,7 +928,7 @@ The AS MUST expand presets, views, and wildcards against the retained declaratio
 
 Explicit requested instances, resources, and time bounds are upper limits. For fields, the upper limit is the field ceiling: the stream's expanded requested fields together with its schema-required fields. The AS MUST compute the ceiling before owner narrowing and minimum checks. The AS MUST NOT resolve outside those limits. Each stream names non-empty `fields`, a `view`, or `fields: ["*"]`; there is no implicit field selection. An omitted time range remains unbounded. Omitted instance handles retain the exactly-one-or-owner-choice rule.
 
-The AS MAY let the owner remove optional streams and narrow retained streams, but not below a stream's schema-required fields. The AS MUST NOT infer a client requirement from a schema-required property. It MUST retain each required stream or refuse the authorization. Narrowing a required stream does not itself constitute refusal if its explicit minimum remains satisfied.
+The schema-required fields here are the set that the AS freezes as the stream's `required_fields`; the AS MUST use that same set for the field ceiling, owner narrowing, and grant issuance. The AS MAY let the owner remove optional streams and narrow retained streams, but not below a stream's schema-required fields. The AS MUST NOT infer a client requirement from a schema-required property. It MUST retain each required stream or refuse the authorization. Narrowing a required stream does not itself constitute refusal if its explicit minimum remains satisfied.
 
 The AS MUST refuse issuance when the owner approves no streams. It MUST NOT add another source, stream, instance, field, or resource to compensate for a refused selection. A different proposal requires a new authorization request or an explicitly defined owner-selection binding.
 
@@ -919,6 +947,8 @@ For these checks, an absent resolved lower bound means negative infinity and an 
 The AS MUST refuse issuance if an owner-approved required stream cannot meet its minimum. The OAuth binding MUST report this refusal as `access_denied`. Malformed or unsupported authorization details instead produce `invalid_authorization_details`. Error descriptions MUST NOT reveal unapproved source, instance, record, or field existence.
 
 An authorization minimum describes permission, not the presence, freshness, completeness, or suitability of records. The AS MUST NOT require records to exist to satisfy an authorization minimum. A client MUST evaluate application sufficiency separately. Core does not define arbitrary predicates over records as issuance conditions.
+
+The AS MUST distinguish validation of a minimum's syntax and declared capability from satisfaction of that minimum by the owner's approved selection. The AS MUST apply [Authorization privacy boundary](#authorization-privacy) to each check. The AS MUST NOT test record presence, collection status, or data completeness to decide whether the minimum is satisfied.
 
 #### Recipient commitments and approval
 
@@ -1039,7 +1069,7 @@ Before the final approval surface is shown, the AS MUST resolve omitted `instanc
 
 The AS MUST return one `authorization_details` element per covered grant in every successful OAuth token response that issues a client access token, including refresh responses. Each element MUST contain `type` equal to `https://pdpp.dev/data-access` and `grant` containing the complete immutable grant defined by this section. The AS MUST NOT substitute the original selection request or a lossy summary.
 
-The result MUST include source provenance, declaration revision, resolved streams, instance handles, fields, resource and time constraints, recipient commitments, access mode, and grant expiry when present. The full grant includes the resolved client identity and reviewed client display defined above. Omitted optional streams are not grants and MUST NOT appear as authorized in the result.
+The result MUST include source provenance, declaration revision, resolved streams, instance handles, fields, the frozen required-field subsets, resource and time constraints, recipient commitments, access mode, and grant expiry when present. The full grant includes the resolved client identity and reviewed client display defined above. Omitted optional streams are not grants and MUST NOT appear as authorized in the result.
 
 The client MUST inspect the result before requesting record disclosure. It MUST NOT infer authorization from its original request, an MCP tool listing, or a token's syntax. A client unable to obtain or interpret the result MUST NOT request disclosure. An AS MAY omit only values that the grant definition itself makes optional.
 
@@ -1786,6 +1816,10 @@ A conformant authorization server:
 31. Resolves purpose and retention only from the current request or recipient-authorized standing terms, and retains the evidence identifying those terms with the consent evidence. Discloses during owner review that envelope identifiers are part of every disclosed record.
 32. Returns one `{ type, grant }` element per covered grant in every token response that issues a client access token, including refresh responses, as [Client-visible authorization result](#authorization-result) defines. Returns the same element shape in introspection.
 33. Advertises `https://pdpp.dev/data-access` in `authorization_details_types_supported` and rejects unknown detail types.
+52. Applies [Authorization privacy boundary](#authorization-privacy) to every supported authorization entry point. Performs owner-independent syntax and binding checks without querying private owner availability. Defers owner-dependent resolution to authenticated review.
+53. Keeps optional ineligible streams unapproved. Refuses required ineligible streams and unmet required authorization minima with `access_denied`. Preserves `invalid_authorization_details` for malformed or unsupported details and any error defined for a specific authorization-details type.
+54. Demonstrates equivalent pre-authentication observables when only protected owner state varies. Demonstrates equivalent client-visible eligibility denials after review. Includes status, response shape and size, redirects, headers, transaction behavior, and timing in its evidence.
+55. Records the entry points, protected-state variants, timing method, and observation limits exercised by its authorization-privacy tests. Reports an unobserved supported path as UNVERIFIED rather than passed.
 
 ### Resource Server conformance
 

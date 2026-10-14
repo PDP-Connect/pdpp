@@ -37,7 +37,11 @@ The request MUST identify the requesting client through the selected authorizati
 
 The AS MAY resolve purpose and retention from recipient-authorized standing terms, but MUST identify and version those terms in retained consent evidence. An owner-authored condition alone MUST NOT be treated as recipient acceptance. This profile creates no unreviewed terms field or unilateral recipient commitment.
 
-Every listed source MUST have an accepted declaration known to the AS. The request MUST NOT introduce an unaccepted declaration URI, source authority, or resource authority. `source_ids`, when present, MUST limit selection to those sources. When absent, the AS MAY offer any eligible accepted source but MUST NOT disclose that source inventory to the client.
+The AS MUST resolve owner selection under Core's [Authorization privacy boundary](spec-core#authorization-privacy). A source identifier in `source_ids` limits the requested selection; it does not establish that the owner has connected or may authorize that source. The AS MUST offer only sources with accepted declarations that are eligible for the authenticated owner. The AS MUST NOT accept or retrieve a new declaration authority because the request names a source.
+
+When `source_ids` is present, the AS MUST limit selection to those identifiers. When it is absent, the AS MAY offer any eligible accepted source. The AS MUST keep that offered inventory within the authenticated owner's review interaction.
+
+A source that cannot be offered MUST remain unapproved. The AS MUST NOT identify it to the client as unknown, unconnected, unaccepted, or ineligible. The AS MUST NOT reject an otherwise valid request before owner authentication because such a source is listed.
 
 Duplicate source identifiers or unknown request members MUST produce RFC 9396 `invalid_authorization_details`. An empty final selection MUST produce `access_denied`. The request does not require an initial stream selector; the owner's selection supplies that choice.
 
@@ -69,6 +73,8 @@ Correlation uses a `detail_id` member on each requested `authorization_details` 
 
 The token response that first issues the package MUST contain `pdpp_detail_outcomes`: an array with one `{ detail_id, grant_ids }` entry per requested detail. `grant_ids` lists the `grant_id` of every child issued for that detail. An empty `grant_ids` means the detail was declined. For an owner-selection detail, the entry lists only the issued children. The AS MUST NOT reveal which sources the owner saw, declined, or could have selected.
 
+The AS MUST apply Core's [Authorization privacy boundary](spec-core#authorization-privacy) when resolving children. An empty `grant_ids` list MUST NOT distinguish owner refusal from owner-dependent ineligibility. The AS MUST NOT add per-source rejection reasons, candidate counts, or unapproved instance identifiers to `pdpp_detail_outcomes`.
+
 The owner approves or declines each resolved detail on its own. A package with exactly one issued child is still a package: the client selects that child as Section 5.3 requires. When no child is issued, the AS MUST refuse the authorization with `access_denied` and MUST NOT issue a token.
 
 ### 5.2 Introspection and read deadlines
@@ -96,6 +102,8 @@ Child discovery is exempt from the selector rule. A binding MAY define an operat
 For an operation that requires child selection, the resource server MUST reject a missing, malformed, repeated, or unknown selector before it processes the request. An unknown selector names a `grant_id` that is not a child of the package. The HTTP binding returns HTTP 400 `invalid_request` with `param` naming the selector. The resource server MUST NOT fall back to another child.
 
 The resource server MUST verify client, subject, intended-resource, and child bindings before it uses the selected child. It MUST reject incomplete status mappings and context mismatch, and MUST require both package and selected-child active status for disclosure.
+
+The resource server MUST apply the selected child's `required_fields` independently for each stream. The resource server MUST NOT substitute a required-field set from another child, including a child for the same source and stream.
 
 The resource server MUST authorize each disclosure under the selected child alone. It MUST NOT combine the constraints of several children to authorize a disclosure. It MUST NOT compute a result across children, such as a count, ranking, join, deduplication, or summary. An operation that spans children MUST make one sub-call per child, and each sub-call MUST name its own child. A binding MAY return the sub-call results in one envelope. Each entry is labeled with its child's `grant_id` and is either that child's independently authorized result or that child's error, including `package_child_inactive`. One entry's error does not change another entry.
 
@@ -153,4 +161,4 @@ A presentation result MUST NOT create a new declared source, durable derived dat
 
 Each optional feature is independently conformance-scoped. Owner-selection claims cover request, resolution, review, and result behavior. Package claims cover issuance, detail correlation, introspection, resource binding, child selection, inactive-child errors, refresh, and disconnect. Presentation claims cover only documented bounded operations and authorized-input computation.
 
-All claims remain subject to Core validation, authorization, disclosure, snapshot, revocation, expiry, result, and resource-server requirements. The implementation MUST fail closed whenever required authority, binding, status, projection, or complete result context is absent or ambiguous.
+All claims remain subject to Core validation, authorization, disclosure, snapshot, revocation, expiry, result, and resource-server requirements. The implementation MUST fail closed whenever required authority, binding, status, projection, or complete result context is absent or ambiguous. Owner-selection and package claims MUST include the applicable Core authorization-privacy tests.
