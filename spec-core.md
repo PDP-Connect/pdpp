@@ -845,7 +845,7 @@ Per-stream, within the `streams` array. `name` and exactly one of a non-empty `f
 | `time_range.since` | RFC 3339 `full-date` or `date-time` | Protocol-enforced | Earliest data to include (inclusive, >=), evaluated against the stream's `consent_time_field`. Its type matches the field's format. |
 | `time_range.until` | RFC 3339 `full-date` or `date-time` | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. Its type matches the field's format. A hard cap: applies to future resources as well as past ones. |
 | `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. The OAuth/RAR binding maps a request with both to RFC 9396 `invalid_authorization_details`. |
-| `fields` | string[] | Protocol-enforced | Field allowlist. `["*"]` requests all permitted fields; `*` MUST then be the only element. Schema-required fields are always included regardless of this list. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
+| `fields` | string[] | Protocol-enforced | Field allowlist. `["*"]` requests all permitted fields; `*` MUST then be the only element. Schema-required fields are always included regardless of this list, and the AS freezes them in the grant as `required_fields`. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the retained declaration's `primary_key` at grant issuance. The RS filters by exact primary-key match. |
 
 The AS MUST resolve each retained stream's schema-required field set from the retained declaration snapshot before final owner review. The AS MUST include that set in the resolved `fields` allowlist. The AS MUST record that set as `required_fields` in the issued StreamGrant. The AS MUST NOT derive `required_fields` from `minimum.fields`, stream `necessity`, current records, or a later declaration revision.
@@ -1418,7 +1418,7 @@ For owner-token current-capability reads, expansion is declaration-driven. A rel
 
 **Stable sort:** Records are sorted by `(cursor_field, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values. A `changes_since` session instead orders records and tombstones together by canonical key string, in the direction `order` selects. It does not follow `cursor_field`, which a tombstone lacks, or the order of changes, which would reveal when a hidden field changed relative to other updates.
 
-A page cursor is bound to the query context of the first page: the grant (for an owner token, the subject and effective owner scope), stream, `fields`, `view`, `expand[]`, `expand_limit[...]`, `order`, every `filter[...]`, and any `changes_since` token. A client MUST follow a `next_cursor` with the same context that produced it. To change the context, the client MUST restart pagination without a cursor. Resource servers MUST reject a page cursor used with a different context as `invalid_cursor`.
+A page cursor is bound to the query context of the first page: the grant (for an owner token, the subject and effective owner scope), stream, `fields`, `view`, `expand[]`, `expand_limit[...]`, `order`, every `filter[...]`, and any `changes_since` token. The selected `PDPP-Version` contract is also part of that context. A client MUST follow a `next_cursor` with the same context that produced it. To change the context, the client MUST restart pagination without a cursor. Resource servers MUST reject a page cursor used with a different context as `invalid_cursor`.
 
 **Incremental sync:** Pass `changes_since=beginning` to start a sync, and the stored `next_changes_since` to retrieve the changes since a previous session. The resource server returns records within the grant's authorized field projection, and tombstones under the rules in [Incremental sync](#incremental-sync). If the token has expired (HTTP 410 Gone with error code `cursor_expired`), the client MUST start again from `beginning`.
 
@@ -1612,6 +1612,36 @@ PDPP-Version: 0.1
 
 Request examples elsewhere in this document omit this field and other common headers for brevity.
 
+**Example (non-normative).** A successful exchange:
+
+```http
+GET /v1/streams HTTP/1.1
+Host: rs.example
+Authorization: Bearer <access_token>
+PDPP-Version: 0.1
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+PDPP-Version: 0.1
+Request-Id: req_example
+
+{"object":"list","data":[]}
+```
+
+An unsupported version on an otherwise admissible authenticated request gets no `PDPP-Version` response field, because no contract was selected:
+
+```http
+PDPP-Version: 0.1.0
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Request-Id: req_example
+
+{"error":{"type":"invalid_request_error","code":"unsupported_version",
+  "message":"Unsupported HTTP API contract.","param":"PDPP-Version",
+  "request_id":"req_example"}}
+```
+
 If the field is absent, an RS implementing this contract MUST select `0.1`. It MUST NOT change that selection merely because a later document or another HTTP contract becomes available. If the field is present and syntactically valid, the RS MUST either select that exact supported identifier or reject the request with HTTP 400 and error code `unsupported_version`. It MUST NOT substitute another identifier or retry the operation internally under another contract. The values `0.1.0`, `v0.1`, and `2026-04-06` are not aliases for `0.1`.
 
 When version validation finds an invalid field, the RS MUST reject the request with HTTP 400 and error code `invalid_request`. For a version-field error, the structured error's `param` MUST be `PDPP-Version`. These rules do not override HTTP message-framing errors or the authentication requirements of this section: an inactive token still produces the required HTTP 401 response and Bearer challenge. No request with an invalid or unsupported version may disclose protected data or perform the requested operation.
@@ -1725,6 +1755,7 @@ A conformant client:
 9. Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`. Does not treat an inactive token as proof of revocation.
 10. Treats a tombstone for an ID it does not hold as a no-op. Reconciles records it obtained outside sync sessions itself, because the sync guarantee covers only a copy built from sync sessions.
 32. Pins a supported HTTP contract with `PDPP-Version` on each Core RS operation, including retries and pagination, and verifies the selected version before using a successful response. Does not infer a contract from a URL path, grant schema, document release, or profile version, and does not silently fall back after a version failure.
+33. Reads each StreamGrant's `required_fields` from the authorization result before requesting disclosure. Expects those fields in every returned record's `data`, and does not infer the set from a declaration.
 
 ### Conformance test suite
 
