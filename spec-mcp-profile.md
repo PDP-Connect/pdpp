@@ -1,7 +1,7 @@
 # PDPP Model Context Protocol (MCP) read profile
 
 Status: Draft extension profile; profile version 0.1.0
-Date: 2026-10-11
+Date: 2026-10-13
 
 ## 1. Scope
 
@@ -17,9 +17,13 @@ The MCP client, authorization server, and resource server MUST satisfy the [MCP 
 
 The MCP server MUST resolve each data-access token to an active Core client grant or an extended-access grant package. It MUST reject owner tokens and tokens intended for the owner control plane. Package acceptance MUST follow the extended access profile; it does not permit package tokens at Core endpoints.
 
-A downstream request MUST use a credential intended for the downstream resource and preserve the applicable grant restrictions. An upstream credential with broader permissions MUST NOT widen the MCP client's approved access.
+A downstream request MUST use a credential intended for the downstream resource and preserve the applicable grant restrictions. An upstream credential with broader permissions MUST NOT widen the MCP client's approved access. When the MCP server and the PDPP resource server are separate protected resources, the same AS MUST issue the downstream credential for the same grant, or for the same package and children. The deployment defines how the MCP server obtains it, for example by OAuth 2.0 Token Exchange ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)).
+
+Downstream credential issuance remains subject to Core's access-mode and refresh-family rules. OAuth token exchange does not exempt an issuance from those rules. Before approval, a separated-resource deployment MUST reject a requested `single_use` flow that would require a later access-token issuance not permitted by those rules; it MUST NOT silently substitute continuous access, issue a replacement grant, or reopen the read window. A conformance claim MUST state this limitation.
 
 Clients and authorization servers MUST follow Core's authorization-result requirements. The client MUST inspect the complete resolved result before its first data-disclosing tool call. Optional owner selection and package issuance MUST follow the extended access profile, rather than MCP-specific grant formats.
+
+In this profile, a client's pairwise value for a subject, grantor, or instance is the identifier that Core's [Pairwise identifiers](spec-core#pairwise-identifiers) rules give that client. It includes a `subject.id` that the owner chose to disclose to that client.
 
 ## 3. Tool disclosure
 
@@ -54,5 +58,7 @@ An MCP endpoint can use one ordinary grant; owner selection and grant packages a
 Some MCP SDKs discard unfamiliar token-response fields by default. Implementers should verify that their client preserves and inspects PDPP's complete authorization result, including on refresh. SDK customization or a grant-aware client may be necessary.
 
 Surveyed MCP clients hold one token per configured server and overwrite it on refresh. A package therefore fits their token storage: the client keeps one token and passes `grant_id` as an ordinary tool argument. The same clients pass a tool result with `isError: true` to the model without retrying or re-authorizing, while several treat HTTP 403 with `insufficient_scope` as a trigger for step-up authorization. For that reason an inactive child is a tool result and not a 403 challenge. Some clients show `isError` results to the model as plain content, so the text of the result has to explain itself. The survey shows compatibility of token storage and tool errors only. It does not show a complete conforming journey: request construction and inspection of the complete result still need PDPP-aware client support. Loss of the last child makes the token inactive, and the resulting 401 can start the host's authorization handling.
+
+For work that continues after re-authorization, a client can retain the source identifier and its pairwise `instance_id` handles as discovery hints within the same issuer, subject, and client context. Core keeps those handles stable for that client across grants. The client discovers the current children and inspects the complete authorization result before choosing a new `grant_id`; a source or instance handle does not select a child or confer authority. Several children can cover the same source or instance under different purposes or constraints. The server does not substitute a new child for an ended grant.
 
 Tool names and schemas remain deployment choices. This profile supplies a grant-enforcement claim, not a shared tool vocabulary or a guarantee of complete platform-data coverage. Applicable Core conformance remains required.
