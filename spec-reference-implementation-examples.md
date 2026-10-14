@@ -94,7 +94,7 @@ The declaration-authored data description and the structured grant terms are ren
 
 ### Step 3: Issued grant
 
-The AS validates the request against the retained source declaration and issues an immutable grant.
+The AS validates the request against the retained source declaration, whose `top_artists` schema requires `id` and `name`, and issues an immutable grant.
 
 ```json
 {
@@ -119,6 +119,7 @@ The AS validates the request against the retained source declaration and issues 
         "popularity",
         "source_updated_at"
       ],
+      "required_fields": ["id", "name"],
       "time_constraint": {
         "field": "source_updated_at",
         "type": "date-time",
@@ -141,7 +142,7 @@ The AS validates the request against the retained source declaration and issues 
 ```http
 GET /v1/streams/top_artists/records?limit=50
 Authorization: Bearer pdpp_client_tok_001
-PDPP-Version: 2026-04-06
+PDPP-Version: 0.1
 ```
 
 ```json
@@ -208,7 +209,7 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
 
 ### Step 2: Issued grant with wildcard expansion
 
-For this example, the retained source declaration revision is 2.0.0, and the owner approves one ChatGPT instance, exposed to this client as `inst_Jm6pX2cV`. The `conversations` schema has `id`, `title`, and `source_updated_at`; `messages` has `id`, `conversation_id`, `role`, `content`, and `source_created_at`; `memories` has `id`, `content`, and `source_created_at`. The AS resolves the `*` markers to these explicit lists.
+For this example, the retained source declaration revision is 2.0.0, and the owner approves one ChatGPT instance, exposed to this client as `inst_Jm6pX2cV`. The `conversations` schema has `id`, `title`, and `source_updated_at`; `messages` has `id`, `conversation_id`, `role`, `content`, and `source_created_at`; `memories` has `id`, `content`, and `source_created_at`. Each schema's root `required` array lists only `id`. The AS resolves the `*` markers to these explicit lists and freezes each required set as `required_fields`.
 
 ```json
 {
@@ -223,9 +224,9 @@ For this example, the retained source declaration revision is 2.0.0, and the own
   "purpose_description": "Provide context to your personal AI agent",
   "access_mode": "continuous",
   "streams": [
-    { "name": "conversations", "instance_ids": ["inst_Jm6pX2cV"], "fields": ["id", "title", "source_updated_at"] },
-    { "name": "messages", "instance_ids": ["inst_Jm6pX2cV"], "fields": ["id", "conversation_id", "role", "content", "source_created_at"] },
-    { "name": "memories", "instance_ids": ["inst_Jm6pX2cV"], "fields": ["id", "content", "source_created_at"] }
+    { "name": "conversations", "instance_ids": ["inst_Jm6pX2cV"], "fields": ["id", "title", "source_updated_at"], "required_fields": ["id"] },
+    { "name": "messages", "instance_ids": ["inst_Jm6pX2cV"], "fields": ["id", "conversation_id", "role", "content", "source_created_at"], "required_fields": ["id"] },
+    { "name": "memories", "instance_ids": ["inst_Jm6pX2cV"], "fields": ["id", "content", "source_created_at"], "required_fields": ["id"] }
   ]
 }
 ```
@@ -359,7 +360,7 @@ The client has previously stored a `next_changes_since` token from an earlier su
 ```http
 GET /v1/streams/conversations/records?changes_since=cs_Hq4mZ8tWc1Lr6VxN0bYk3PjD9fGs2Ae7
 Authorization: Bearer pdpp_client_tok_agent_001
-PDPP-Version: 2026-04-06
+PDPP-Version: 0.1
 ```
 
 ```json
