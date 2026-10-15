@@ -71,7 +71,7 @@
     "semantic-release": "^25.0.9",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "ultracite": "7.12.2"
+    "ultracite": "8.0.0"
   },
   "packageManager": "pnpm@12.6.0",
   "engines": {
