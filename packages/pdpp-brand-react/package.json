@@ -18,7 +18,7 @@
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {
-    "@base-ui/react": "^1.8.0",
+    "@base-ui/react": "^1.9.0",
     "@pdpp/brand": "workspace:*",
     "@pdpp/display": "workspace:*",
     "class-variance-authority": "^0.7.1",
@@ -28,10 +28,10 @@
   "devDependencies": {
     "@testing-library/user-event": "^14.6.7",
     "@types/jsdom": "^30.0.0",
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "jsdom": "30.1.1",
+    "jsdom": "30.1.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "tsx": "^4.23.15",
