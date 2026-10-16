@@ -1,7 +1,7 @@
 # PDPP client range filters profile
 
 Status: Experimental extension profile; profile version 0.1-experimental
-Date: 2026-10-15
+Date: 2026-10-16
 
 ## 1. Scope and status
 
@@ -19,7 +19,7 @@ The profile identifier is `https://pdpp.dev/profiles/client-range-filters/0.1-ex
 
 An AS that supports this profile MUST list the profile URI in the array member `pdpp_client_range_filters_supported` of its RFC 8414 metadata. A client MUST test exact string membership in that array and MUST ignore unknown entries.
 
-An RS that supports this profile MUST publish an object named `capabilities.client_range_filters` in its RFC 9728 metadata. The object MUST contain `supported: true`, `stability: "experimental"`, and `profile` set to the profile URI. A client MUST treat the profile as supported only when `supported` is `true` and `profile` exactly equals the profile URI. Any other shape, or an absent member, does not advertise support. Unknown members MUST be ignored.
+An RS that supports this profile MUST publish an object named `capabilities.client_range_filters` in its RFC 9728 metadata. The object MUST contain `supported: true`, `stability: "experimental"`, and `profile` set to the profile URI. A client MUST treat the profile as supported if and only if capabilities.client_range_filters is an object whose supported member is true, stability member is the string experimental, and profile member exactly equals the profile URI. An absent member or any other shape does not advertise support. Unknown members MUST be ignored.
 
 ```json
 {
@@ -170,7 +170,7 @@ A synchronized copy is scoped to the complete Core query context: the applicable
 
 ### 6.9 Serving changes
 
-Core allows a current serving change to make a request technically unsupported. If the RS cannot evaluate a filter in the frozen set, it MUST return HTTP 403 with code `grant_invalid`. It MUST NOT drop or relax the filter, serve an unfiltered result, or remove the filter from the metadata of Section 7.
+Core allows a current serving change to make a request technically unsupported. For a list-records request, including a changes_since session, if the RS cannot evaluate any client filter supplied in that request, it MUST return HTTP 403 with code grant_invalid. An unavailable frozen filter not supplied in the request MUST NOT by itself cause rejection. It MUST NOT drop or relax the filter, serve an unfiltered result, or remove the filter from the metadata of Section 7.
 
 ### 6.10 Pagination and response shape
 
@@ -231,13 +231,13 @@ Conformance claims MUST identify experimental MCP and package variants. They MUS
 2. Rejects a malformed frozen set with 403 `grant_invalid` before it serves data. Tests include `{}`, `{"streams":{}}`, an empty stream map, missing `ops`, non-array `ops`, invalid types, and invalid operators. Unknown profile and field-descriptor members are ignored and confer no behavior.
 3. Rejects a client filter under a grant or stream without a frozen set, and on any endpoint other than list records, with 400 `invalid_request`.
 4. Rejects the exact form, repeated pairs, and other filter forms with 400 `invalid_request`.
-5. Checks every field and operator against the frozen set before any declaration lookup, and returns an identical 400 `invalid_request` for every field or operator outside it.
+5. Checks every field and operator against the frozen set before any declaration lookup, and returns 400 `invalid_request` for a field or operator outside it. For a fixed submitted field/operator, returns the same status, code, param, and message regardless of declaration existence, grant membership, or current range-filter capability.
 6. Validates and compares values by the frozen type, and rejects an invalid value with 400 `invalid_request`.
 7. Returns exactly the grant-visible records that satisfy every filter. Partially overlapping bounds return the intersection; disjoint or unsatisfiable bounds return an empty result.
 8. Fails a filter for an absent, null, or invalid stored value.
 9. Binds page cursors and `changes_since` tokens to the filter set, and rejects a mismatch with 400 `invalid_cursor`.
 10. Applies filters to `changes_since` visibility, including tombstones for records that leave the range.
-11. Returns HTTP 403 with code `grant_invalid` for a request whose frozen filter it cannot evaluate, and never drops or relaxes a filter.
+11. Rejects a request containing an unevaluable client filter with 403 grant_invalid, never drops or relaxes it, and does not reject solely because an unused frozen filter is unavailable.
 12. Returns HTTP 200 with exactly the frozen set and types in client stream metadata, including when a frozen filter cannot be evaluated.
 13. Uses only the selected child's frozen set for a package token.
 14. Computes pagination and counts from the authorized, filtered result for ordinary reads and `changes_since` sessions. With grant, request, and authorized result fixed, records and fields outside the grant do not change error details, response size, or continuation behavior.
@@ -245,7 +245,7 @@ Conformance claims MUST identify experimental MCP and package variants. They MUS
 ### 11.3 Client
 
 1. Sends `pdpp_range_filters` only when the AS metadata array contains the exact profile URI, ignoring unknown entries.
-2. Sends a client filter only when the RS advertises support under Section 2, and only for a stream whose grant carries a frozen set.
+2. Sends a client filter only when the complete support predicate in Section 2 holds: `capabilities.client_range_filters` is an object with `supported: true`, `stability: "experimental"`, and `profile` exactly equal to the profile URI. Sends a client filter only for a stream whose grant carries a frozen set.
 3. Uses only fields and operators of the applicable frozen set.
 4. Keeps a separate synchronized copy for each complete query context defined in Section 6.8.
 
