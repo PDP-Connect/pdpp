@@ -2,6 +2,14 @@
   "profile": "https://pdpp.dev/profiles/client-range-filters/0.1-experimental",
   "format_version": 1,
   "fixtures": {
+    "exact_number": {
+      "retained_declaration": {"streams":[{"name":"transactions","semantics":"mutable_state","primary_key":["id"],"cursor_field":"id","consent_time_field":"day","schema":{"type":"object","properties":{"id":{"type":"string"},"amount":{"type":"number"},"day":{"type":"string","format":"date"}},"required":["id"]},"query":{"range_filters":{"amount":["gte","lte"]}}}]},
+      "grant": {"streams":[{"name":"transactions","fields":["id","amount","day"],"required_fields":["id"],"instance_ids":["inst_a"],"time_constraint":{"field":"day","type":"date","since":"2026-01-01","until":"2026-02-01"}}],"extensions":{"https://pdpp.dev/profiles/client-range-filters/0.1-experimental":{"streams":{"transactions":{"amount":{"type":"number","ops":["gte","lte"]}}}}}},
+      "records": [
+        {"key":"n01","instance_id":"inst_a","data":{"id":"n01","amount":0.3,"day":"2026-01-10"}},
+        {"key":"n02","instance_id":"inst_a","data":{"id":"n02","amount":0.30000000000000001,"day":"2026-01-10"}}
+      ]
+    },
     "exact_integer": {
       "retained_declaration": {"streams":[{"name":"transactions","semantics":"mutable_state","primary_key":["id"],"cursor_field":"id","consent_time_field":"day","schema":{"type":"object","properties":{"id":{"type":"string"},"amount":{"type":"integer"},"day":{"type":"string","format":"date"}},"required":["id"]},"query":{"range_filters":{"amount":["gte","lte"]}}}]},
       "grant": {"streams":[{"name":"transactions","fields":["id","amount","day"],"required_fields":["id"],"instance_ids":["inst_a"],"time_constraint":{"field":"day","type":"date","since":"2026-01-01","until":"2026-02-01"}}],"extensions":{"https://pdpp.dev/profiles/client-range-filters/0.1-experimental":{"streams":{"transactions":{"amount":{"type":"integer","ops":["gte","lte"]}}}}}},
@@ -293,6 +301,8 @@
     {"id":"number-invalid-leading-dot","requirements":["CRF-RS-6"],"fixture":"base","request":{"method":"GET","path":"/v1/streams/transactions/records","query":[["filter[amount][gte]",".1"]],"token":{"kind":"client"}},"expected":{"status":400,"error":"invalid_request"}},
     {"id":"number-invalid-whitespace","requirements":["CRF-RS-6"],"fixture":"base","request":{"method":"GET","path":"/v1/streams/transactions/records","query":[["filter[amount][gte]"," 1"]],"token":{"kind":"client"}},"expected":{"status":400,"error":"invalid_request"}},
     {"id":"exact-number-boundary-and-invalid-stored","requirements":["CRF-RS-6","CRF-RS-7","CRF-RS-8"],"fixture":"base","request":{"method":"GET","path":"/v1/streams/transactions/records","query":[["filter[amount][lte]","0.3"]],"token":{"kind":"client"}},"expected":{"status":200,"record_keys":["r01","r02"]}},
+    {"id":"exact-number-lte-excludes-rounded-equal","requirements":["CRF-RS-6"],"fixture":"exact_number","request":{"method":"GET","path":"/v1/streams/transactions/records","query":[["filter[amount][lte]","0.3"]],"token":{"kind":"client"}},"expected":{"status":200,"record_keys":["n01"]}},
+    {"id":"exact-number-gte-excludes-rounded-equal","requirements":["CRF-RS-6"],"fixture":"exact_number","request":{"method":"GET","path":"/v1/streams/transactions/records","query":[["filter[amount][gte]","0.30000000000000001"]],"token":{"kind":"client"}},"expected":{"status":200,"record_keys":["n02"]}},
     {"id":"exact-integer-excludes-above-binary64-boundary","requirements":["CRF-RS-6"],"fixture":"exact_integer","request":{"method":"GET","path":"/v1/streams/transactions/records","query":[["filter[amount][lte]","9007199254740992"]],"token":{"kind":"client"}},"expected":{"status":200,"record_keys":[]}},
     {"id":"exact-integer-includes-equal-boundary","requirements":["CRF-RS-6"],"fixture":"exact_integer","request":{"method":"GET","path":"/v1/streams/transactions/records","query":[["filter[amount][gte]","9007199254740993"]],"token":{"kind":"client"}},"expected":{"status":200,"record_keys":["exact_integer"]}},
     {"id":"integer-rejects-fraction-beyond-binary64-precision","requirements":["CRF-RS-6"],"fixture":"exact_integer","request":{"method":"GET","path":"/v1/streams/transactions/records","query":[["filter[amount][gte]","1.00000000000000001"]],"token":{"kind":"client"}},"expected":{"status":400,"error":"invalid_request"}},
