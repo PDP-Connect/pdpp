@@ -2,6 +2,7 @@
 
 These are normative examples for the 0.1-experimental client range filters profile only.
 They do not define or demonstrate PDPP Core v0.1 conformance.
+The file contains 74 vectors. The two serving-change vectors now assert exact outcomes: 403 `grant_invalid` for reads and 200 with frozen metadata.
 
 ## Format version 1
 The JSON has `profile`, `format_version`, named `fixtures`, and `vectors`.
@@ -11,8 +12,8 @@ Every fixture contains a retained declaration excerpt, grant excerpt, and stored
 Complete excerpts with otherwise valid, active, approved Core/OAuth context; never change tested facts.
 Record keys are unique in these fixtures; `instance_id` still governs authorization.
 Load numbers as exact decimal values from JSON lexemes, never through binary floating point.
-Seed invalid stored values directly through a test adapter; an ingest validator may correctly reject them.
-`current_declaration` differs from retained consent; it must not change grant authority.
+Seed invalid stored values directly through a test adapter; an ingest validator can correctly reject them.
+`current_declaration` differs from retained consent; it MUST NOT change grant authority.
 `children` supplies each package child's own retained declaration and grant.
 `blobs`, `serving`, and `horizons` are test-adapter inputs, not protocol extensions.
 
@@ -35,5 +36,7 @@ Compare `grant_member` at its path on the returned grant; `absent` means missing
 `equals_capture` compares that same member on the captured grant; operators are sets, never array order.
 Within each `response_equivalence_group`, also compare all named response members, including absence.
 Error message/param text is not prescribed; equivalence checks prevent existence-dependent differences.
-An `ambiguity` is unresolved, not a passing exact-outcome assertion; report it and enforce stated invariants.
+`page_length` is the number of returned records; `next_cursor_present` tests for a non-null continuation cursor.
+A `follow_up` entry's `fixture` resets the fixture and keeps it active for subsequent entries.
+The pagination vector compares corresponding pages across two fixtures with the same authorized, filtered result.
 No runner ships here. The owner validates JSON and runs implementation-specific adapters separately.

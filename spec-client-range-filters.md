@@ -7,9 +7,9 @@ Date: 2026-10-15
 
 This profile lets a client token use request-time range filters on a stream. The authorization server (AS) freezes the allowed filters into the grant at issuance. The resource server (RS) evaluates them only from the grant, as an intersection with every grant constraint.
 
-This profile is experimental. It is not part of PDPP Core v0.1, and it can change incompatibly. Implementations test it and report where the text fails. A later profile version or Core revision may adopt it.
+This profile is experimental. It is not part of PDPP Core v0.1, and it can change incompatibly. Implementations test it and report where the text fails. A later profile version or Core revision could adopt it.
 
-Core v0.1 rejects every client-token `filter[...]` parameter ([List records](spec-core#list-records)). That rule protects two properties. Filter capability read from a current source declaration can reveal fields that a source added after consent. A separated RS must also enforce a grant without a declaration lookup. This profile keeps both properties. The filter set, including each field's type, comes from the retained declaration at issuance and travels with the grant.
+Core v0.1 rejects every client-token `filter[...]` parameter ([List records](spec-core#list-records)). That rule protects two properties. Filter capability read from a current source declaration can reveal fields that a source added after consent. A separated RS also has to enforce a grant without a declaration lookup. This profile keeps both properties. The filter set, including each field's type, comes from the retained declaration at issuance and travels with the grant.
 
 The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL are to be interpreted as described in RFC 2119 and RFC 8174 when, and only when, they appear in capitals.
 
@@ -17,9 +17,23 @@ The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RE
 
 The profile identifier is `https://pdpp.dev/profiles/client-range-filters/0.1-experimental`. In this document, "the profile URI" means that string.
 
-An AS that supports this profile MUST list the profile URI in the array member `pdpp_client_range_filters_supported` of its RFC 8414 metadata. An RS that supports it MUST list the profile URI in its RFC 9728 `capabilities` member, which Core reserves for extension profiles ([Protected-resource metadata](spec-core#protected-resource-metadata)).
+An AS that supports this profile MUST list the profile URI in the array member `pdpp_client_range_filters_supported` of its RFC 8414 metadata. A client MUST test exact string membership in that array and MUST ignore unknown entries.
 
-A client MUST NOT send the request member of Section 3 unless the AS lists the profile URI. A client MUST NOT send a client filter unless the RS lists the profile URI and the applicable grant carries a frozen set for the stream.
+An RS that supports this profile MUST publish an object named `capabilities.client_range_filters` in its RFC 9728 metadata. The object MUST contain `supported: true`, `stability: "experimental"`, and `profile` set to the profile URI. A client MUST treat the profile as supported only when `supported` is `true` and `profile` exactly equals the profile URI. Any other shape, or an absent member, does not advertise support. Unknown members MUST be ignored.
+
+```json
+{
+  "capabilities": {
+    "client_range_filters": {
+      "supported": true,
+      "stability": "experimental",
+      "profile": "https://pdpp.dev/profiles/client-range-filters/0.1-experimental"
+    }
+  }
+}
+```
+
+A client MUST NOT send the request member of Section 3 unless the AS lists the profile URI. A client MUST NOT send a client filter unless the RS advertises support as defined above and the applicable grant carries a frozen set for the stream.
 
 A grant without the member of Section 4 carries no frozen set. Core governs every request made under it.
 
@@ -86,15 +100,19 @@ The frozen set is part of the grant and is immutable for the life of the grant. 
 
 In a grant package, each child carries its own frozen set in its own grant. The RS MUST use only the set of the selected child.
 
+Package endpoints that use these filters are experimental variants of the extended access profile, not conforming implementations of its unchanged package binding. All other package requirements remain mandatory.
+
 The frozen set does not widen what the grant authorizes. It only narrows a read.
 
 ### 4.4 Validation by the RS
 
-Before it serves any data under a grant that carries the member, the RS MUST verify that the member is well formed: each stream key names a stream grant of that grant; each field is in that stream grant's `fields`; each type is one of the four types above; each `ops` array is a non-empty set of the four operators. The RS MUST reject a malformed member with 403 `grant_invalid`, as Core requires for malformed grant context, and MUST NOT repair it.
+The profile value MUST be an object. It MUST contain a non-empty object member `streams`. Each stream value MUST be a non-empty object that maps field names to field descriptors. Each field descriptor MUST contain a string member `type` and an array member `ops`. Unknown members of the profile value and of field descriptors MUST be ignored and confer no behavior. Missing required members, incorrect container types and empty maps are malformed.
+
+Before serving data under a grant that carries the member, the RS MUST verify that the member is well formed. Each stream key MUST name a stream grant of that grant. Each field MUST be in that stream grant's `fields`. Each type MUST be one of the four types above. Each `ops` array MUST be a non-empty set of the four operators. The RS MUST reject a malformed member with 403 `grant_invalid`, as Core requires for malformed grant context, and MUST NOT repair it.
 
 ## 5. Consent
 
-A frozen set discloses nothing that the grant does not already disclose. The AS is not required to show it on the approval surface. It MAY tell the owner that the client can ask for these records by the listed fields.
+A frozen set discloses nothing that the grant does not already disclose. The AS MAY omit it from the approval surface. It MAY tell the owner that the client can ask for these records by the listed fields.
 
 ## 6. Resource-server evaluation
 
@@ -130,7 +148,7 @@ A filter that fails validation fails the whole request. The RS MUST NOT ignore i
 
 A record is visible to a filtered read only when it is visible under the grant, as Core defines for the stream, `instance_ids`, `resources`, `time_constraint`, and every other grant constraint, and it satisfies every client filter. A client filter MUST NOT make visible a record that the grant hides.
 
-A filter range that lies partly or wholly outside the grant's `time_constraint` is not an error. The result contains only records inside both ranges, and is empty when the ranges do not overlap. Bounds that no value can satisfy, such as `gte` above `lt`, give an empty result.
+A filter range that lies partly or wholly outside the grant's `time_constraint` is not an error. The result contains exactly the grant-visible records that satisfy every filter. Partially overlapping bounds return the intersection; disjoint or unsatisfiable bounds return an empty result.
 
 ### 6.6 Missing and invalid stored values
 
@@ -148,29 +166,40 @@ Core defines visibility at a horizon as passing every restriction of the query c
 - A record visible at h0 and not at h1, including one that left the filter range, produces a tombstone under Core's rules.
 - A `changes_since` token is bound to the filter set, compared as in Section 6.7. A token presented with a different set MUST fail with 400 `invalid_cursor`.
 
-A client's synchronized copy is per query context: the stream together with its filter set. A completed filtered `beginning` session replaces only the copy for that filter set.
+A synchronized copy is scoped to the complete Core query context: the applicable grant or package child, the stream, the projection, other bound parameters, and the filter set. A completed beginning session replaces only that context's copy.
 
 ### 6.9 Serving changes
 
-Core allows a current serving change to make a request technically unsupported. If the RS cannot evaluate a filter in the frozen set, it MUST reject the request with an error. It MUST NOT drop or relax the filter, serve an unfiltered result, or remove the filter from the metadata of Section 7.
+Core allows a current serving change to make a request technically unsupported. If the RS cannot evaluate a filter in the frozen set, it MUST return HTTP 403 with code `grant_invalid`. It MUST NOT drop or relax the filter, serve an unfiltered result, or remove the filter from the metadata of Section 7.
+
+### 6.10 Pagination and response shape
+
+The RS MUST compute page boundaries, page lengths, `has_more`, and any counts from the authorized, filtered result. It MUST NOT compute them from pre-authorization scan batches or from changes that affect only fields outside the grant.
+
+With the grant, the request and the authorized result held fixed, records and fields outside the grant MUST NOT change error details, response size, or continuation behavior.
+
+These rules apply to ordinary reads and to `changes_since` sessions under this profile.
 
 ## 7. Stream metadata
 
 For a client token, the RS MUST show the frozen set of the applicable grant, and only that set, as `query.range_filters` in the [stream metadata](spec-core#stream-metadata) projection. Each entry MUST map the field to its frozen operators. The RS MUST also show each field's frozen type, as `query.range_filter_types`, an object that maps each field to its type. The RS MUST NOT show any current declaration capability that the frozen set does not contain. This is the frozen grant vocabulary that Core's stream-metadata rule anticipates.
 
+Stream metadata for a client token MUST succeed and MUST show the frozen set even when current serving cannot evaluate one of its filters (Section 6.9). Metadata reports frozen grant facts, not current serving capability.
+
 ## 8. MCP binding
 
-An MCP server that claims the [MCP read profile](spec-mcp-profile) MAY offer range arguments on a tool that lists records. A tool's input schema is listed once per session. With a package token, it MAY therefore offer the union of the children's frozen sets. The server MUST validate every call against the applicable grant's frozen set, or the named child's set, under Section 6, before it forwards or answers the call. A tool listing does not show what a grant authorizes.
+An experimental MCP binding MAY offer range arguments on list-records tools and MUST otherwise satisfy the MCP read profile. Such tools MUST be identified as an experimental variant, not as conforming to the unchanged MCP read profile. A tool's input schema is listed once per session. With a package token, it MAY therefore offer the union of the children's frozen sets. The server MUST validate every call against the applicable grant's frozen set, or the named child's set, under Section 6, before it forwards or answers the call. A tool listing does not show what a grant authorizes.
 
 ## 9. Core text that adoption would change
 
 None of these edits would change a v0.1 grant, or any read under a grant without a frozen set.
 
-- Section 8, List records: the client filter rejection, the `filter[...]` row of the parameter table, the client base query surface, and the invalid-filter rule each gain an exception for a grant that carries a frozen client filter set under a profile that the RS supports.
-- Section 8: the note that client-token reads have no request-time predicate filters.
+- Section 8, List records: the client filter rejection and the `filter[...]` parameter row gain an exception. The client base query surface and the invalid-filter rule gain the same exception. It covers grants carrying a frozen client filter set under a profile that the RS supports.
+- Core Section 8's `grant_time_range_exceeded` error does not apply to filters evaluated under this profile.
+- Section 8: the statement that client-token reads have no request-time predicate filters.
 - Section 4, Incremental sync: a client token's restrictions include its frozen-set filters, and the synchronized copy is per query context.
 - Section 9, RS conformance item 9: the same exception.
-- Section 12: the note that request-time filters are not grant scope.
+- Section 12: the statement that request-time filters are not grant scope.
 - Possibly a `StreamGrant` member and a stream request member, in place of the grant `extensions` object and the profile request member.
 
 ## 10. Privacy considerations
@@ -181,7 +210,11 @@ None of these edits would change a v0.1 grant, or any read under a grant without
 - **No hidden-value probing.** Only granted fields are eligible. A field the grant hides, including an ungranted `time_constraint` field, cannot be filtered, so repeated range queries cannot narrow down its values.
 - **No change to freshness or grant metadata.** A filtered read reports the same freshness as an unfiltered one.
 
+- **Timing is out of scope.** This profile does not require query-processing time to be independent of unauthorized data. Core's freshness section disclaims whole-API timing privacy.
+
 ## 11. Conformance
+
+Conformance claims MUST identify experimental MCP and package variants. They MUST NOT claim unchanged companion conformance for affected operations.
 
 ### 11.1 Authorization server
 
@@ -194,26 +227,27 @@ None of these edits would change a v0.1 grant, or any read under a grant without
 
 ### 11.2 Resource server
 
-1. Lists the profile URI in `capabilities` when it supports this profile.
-2. Rejects a malformed frozen set with 403 `grant_invalid` before it serves data.
+1. Publishes `capabilities.client_range_filters` as an object with `supported: true`, `stability: "experimental"`, and `profile` equal to the profile URI.
+2. Rejects a malformed frozen set with 403 `grant_invalid` before it serves data. Tests include `{}`, `{"streams":{}}`, an empty stream map, missing `ops`, non-array `ops`, invalid types, and invalid operators. Unknown profile and field-descriptor members are ignored and confer no behavior.
 3. Rejects a client filter under a grant or stream without a frozen set, and on any endpoint other than list records, with 400 `invalid_request`.
 4. Rejects the exact form, repeated pairs, and other filter forms with 400 `invalid_request`.
 5. Checks every field and operator against the frozen set before any declaration lookup, and returns an identical 400 `invalid_request` for every field or operator outside it.
 6. Validates and compares values by the frozen type, and rejects an invalid value with 400 `invalid_request`.
-7. Returns only records visible under the grant and satisfying every filter; returns an empty result for a range outside the grant's `time_constraint` or for unsatisfiable bounds.
+7. Returns exactly the grant-visible records that satisfy every filter. Partially overlapping bounds return the intersection; disjoint or unsatisfiable bounds return an empty result.
 8. Fails a filter for an absent, null, or invalid stored value.
 9. Binds page cursors and `changes_since` tokens to the filter set, and rejects a mismatch with 400 `invalid_cursor`.
 10. Applies filters to `changes_since` visibility, including tombstones for records that leave the range.
-11. Rejects a request whose frozen filter it cannot evaluate, and never drops or relaxes a filter.
-12. Shows exactly the frozen set and types in client stream metadata.
+11. Returns HTTP 403 with code `grant_invalid` for a request whose frozen filter it cannot evaluate, and never drops or relaxes a filter.
+12. Returns HTTP 200 with exactly the frozen set and types in client stream metadata, including when a frozen filter cannot be evaluated.
 13. Uses only the selected child's frozen set for a package token.
+14. Computes pagination and counts from the authorized, filtered result for ordinary reads and `changes_since` sessions. With grant, request, and authorized result fixed, records and fields outside the grant do not change error details, response size, or continuation behavior.
 
 ### 11.3 Client
 
-1. Sends `pdpp_range_filters` only to an AS that lists the profile URI.
-2. Sends a client filter only to an RS that lists the profile URI, and only for a stream whose grant carries a frozen set.
+1. Sends `pdpp_range_filters` only when the AS metadata array contains the exact profile URI, ignoring unknown entries.
+2. Sends a client filter only when the RS advertises support under Section 2, and only for a stream whose grant carries a frozen set.
 3. Uses only fields and operators of the applicable frozen set.
-4. Keeps a separate synchronized copy for each filter set.
+4. Keeps a separate synchronized copy for each complete query context defined in Section 6.8.
 
 ### 11.4 Test vectors
 
@@ -228,8 +262,10 @@ Implementations report findings against the section they affect.
 3. **Null semantics.** Is "absent or null fails the filter" right, or do clients need an explicit null test?
 4. **Cursor stability.** Are page cursors stable when filters combine with the stable sort? Are tombstones for records that leave the range affordable? Is a synchronized copy per filter set workable for clients?
 5. **Consent rendering.** Should the approval surface show the frozen set? Should a client request named fields instead of `true`?
-6. **Errors.** Is an empty result right for a range outside the grant's time window? Which error code fits a frozen filter that current serving cannot evaluate?
+6. **Errors.** Should a future version change the intersection behavior fixed by Section 6.5, or define a more specific error than `grant_invalid` for Section 6.9?
 7. **Projection.** May a client filter on a granted field that it did not request in `fields`? This profile allows it.
 8. **Cost.** What does filter evaluation after grant constraints cost, and does pagination need limits?
 9. **Presets and owner selection.** Should these carry a frozen set?
 10. **Placement.** Should the frozen set become a Core `StreamGrant` member, and the request a Core stream request member?
+
+11. **Core dependencies.** The profile's no-oracle properties cover the filter surface. They assume that Core client reads do not order results by fields outside the grant, and that projection errors do not reveal which fields exist. Should this profile restate those rules if Core does not adopt them?
