@@ -2,7 +2,7 @@
 
 These are normative examples for the 0.1-experimental client range filters profile only.
 They do not define or demonstrate PDPP Core v0.1 conformance.
-The file contains 78 vectors. Serving-change vectors assert 403 `grant_invalid` for a supplied unavailable filter, successful reads when that filter is unused, and 200 with frozen metadata.
+The file contains 81 vectors. Serving-change vectors assert 403 `grant_invalid` for a supplied unavailable filter, successful reads when that filter is unused, and 200 with frozen metadata.
 
 ## Format version 1
 The JSON has `profile`, `format_version`, named `fixtures`, and `vectors`.
