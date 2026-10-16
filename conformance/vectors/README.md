@@ -2,22 +2,24 @@
 
 These are normative examples for the 0.1-experimental client range filters profile only.
 They do not define or demonstrate PDPP Core v0.1 conformance.
-The file contains 83 vectors. Serving-change vectors assert 403 `grant_invalid` for a supplied unavailable filter, successful reads when that filter is unused, and 200 with frozen metadata.
+The file contains 89 vectors. Serving-change vectors assert 403 `grant_invalid` for a supplied unavailable filter, successful reads when that filter is unused, and 200 with frozen metadata.
 
-## Format version 1
+## Format version 2
 The JSON has `profile`, `format_version`, named `fixtures`, and `vectors`.
+Version 2 adds the `control` member: the ID of a positive vector whose full expected outcome includes HTTP 200 and demonstrates profile support. A control may use any fixture in the same server run; reset each vector's fixture independently.
 Requirements `CRF-AS-n`, `CRF-RS-n`, and `CRF-C-n` refer to Sections 11.1, 11.2, and 11.3 item n.
 These vectors cover AS/RS request-response behavior and the client discovery predicate, not internal lookup-order proofs.
 Every fixture contains a retained declaration excerpt, grant excerpt, and stored `key`/`data` records.
 Complete excerpts with otherwise valid, active, approved Core/OAuth context; never change tested facts.
 Record keys are unique in these fixtures; `instance_id` still governs authorization.
-Load numbers as exact decimal values from JSON lexemes, never through binary floating point.
+Seed the comparison tests with the exact stored decimal values specified by the JSON lexemes, never through binary floating point. These test-adapter seeds constrain comparison against values the RS holds; they impose no additional ingest lexeme-preservation requirement.
 Seed invalid stored values directly through a test adapter; an ingest validator can correctly reject them.
 `current_declaration` differs from retained consent; it MUST NOT change grant authority.
 `children` supplies each package child's own retained declaration and grant.
 `blobs`, `serving`, and `horizons` are test-adapter inputs, not protocol extensions.
 
 ## Running a vector
+A runner MUST pass a negative vector's `control` before counting that negative as a pass. A failed or unrun control makes the negative inconclusive, even if its error matches. The control must pass against the same server with the profile enabled; an unfiltered successful read or an advertisement alone is not sufficient proof.
 Reset its fixture, resolve endpoint placeholders, and supply valid authentication/context.
 `/v1` is the fixture query base; resolve `$as_metadata` through AS discovery.
 Other `$..._endpoint` paths name deployment-discovered OAuth or owner-selection endpoints.

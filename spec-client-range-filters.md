@@ -75,7 +75,7 @@ The frozen operators of an eligible field are the declared operators that are in
 
 ### 4.2 Representation
 
-Core's stream grant has no extension member. The AS MUST record the frozen set in the grant's `extensions` object, under the profile URI, keyed by stream name:
+Core's StreamGrant has no extension member, so the frozen set goes in the Grant's `extensions` member ([Core Section 7](spec-core#grant)), which Core preserves without parsing unknown values. The AS MUST record the frozen set in the grant's `extensions` object, under the profile URI, keyed by stream name:
 
 ```json
 {
@@ -96,7 +96,7 @@ Each stream key MUST name a stream grant in the same grant. Each `ops` array MUS
 
 ### 4.3 Immutability and delivery
 
-The frozen set is part of the grant and is immutable for the life of the grant. The AS MUST NOT add to it or remove from it after issuance, including when a later declaration changes `query.range_filters` or a field's schema. The member appears wherever Core delivers the grant: the client-visible authorization result, refresh responses, and introspection.
+The frozen set is part of the grant and is immutable for the life of the grant. The AS MUST NOT add to it or remove from it after issuance, including when a later declaration changes `query.range_filters` or a field's schema. Core returns one `{ type, grant }` element per covered grant in every token response that issues a client access token, including refresh responses, and the same element shape in introspection ([Client-visible authorization result](spec-core#authorization-result) and AS conformance item 32). The frozen set therefore appears at `authorization_details[].grant.extensions["<profile URI>"]` in those responses, never at `authorization_details[].extensions`. A refresh response delivers it because Core requires the grant there.
 
 In a grant package, each child carries its own frozen set in its own grant. The RS MUST use only the set of the selected child.
 
@@ -120,7 +120,7 @@ A frozen set discloses nothing that the grant does not already disclose. The AS 
 
 This section applies to a client-token list-records read ([List records](spec-core#list-records)), including a `changes_since` session, when the applicable grant carries a frozen set for the requested stream. For a package token, the applicable grant is the selected child's grant.
 
-A client filter on a stream without a frozen set, or under a grant without the member, MUST fail as Core requires: 400 `invalid_request`. A client filter on a single-record read, a blob fetch, or any other endpoint MUST fail with 400 `invalid_request`.
+A client filter on a stream without a frozen set, or under a grant without the member, MUST fail as Core requires: 400 `invalid_request`. A client filter on a single-record read, a blob fetch, or any other endpoint MUST fail with 400 `invalid_request`. Core already requires an RS to reject unknown query parameters on every endpoint with HTTP 400, so rejecting a client filter on endpoints other than list records does not change a conforming RS.
 
 ### 6.2 Syntax
 
@@ -142,6 +142,8 @@ For a field of frozen type `date` or `date-time`, the RS MUST validate and compa
 
 For a field of frozen type `integer` or `number`, a filter value MUST match the `number` grammar of RFC 8259 Section 6. The RS MUST compare by exact mathematical value, without rounding through binary floating point. A value with a fractional part or an exponent that yields a non-integer, on an `integer` field, MUST fail with 400 `invalid_request`.
 
+Exact comparison is between the filter value and the stored value as the RS holds it. This profile does not require ingest to preserve number lexemes beyond what Core requires; vectors that seed stored values as text constrain only comparison.
+
 A filter that fails validation fails the whole request. The RS MUST NOT ignore it or serve an unfiltered result.
 
 ### 6.5 Intersection
@@ -158,12 +160,14 @@ A record whose filter field is absent, null, or not a valid value of the frozen 
 
 Core binds a page cursor to every `filter[...]` parameter ([List records](spec-core#list-records)). For that binding, the RS MUST compare client filters as an unordered set of decoded field, operator, and value triples. A cursor presented with a different set MUST fail with 400 `invalid_cursor`.
 
+The `changes_since=beginning` start value carries no filter set. The RS MUST accept it with any valid set and bind the returned `next_changes_since` to that request's set. A token issued under one set (including no filters) and presented with a different set (including no filters) MUST fail with 400 `invalid_cursor`.
+
 ### 6.8 Incremental sync
 
 Core defines visibility at a horizon as passing every restriction of the query context ([Incremental sync](spec-core#incremental-sync)). For a client token, Core lists the grant's restrictions. Under this profile, a client token's filters join those restrictions for the session.
 
 - A record visible at h1 and not at h0, including one that entered the filter range, is returned.
-- A record visible at h0 and not at h1, including one that left the filter range, produces a tombstone under Core's rules.
+- A record visible at h0 and not at h1, including one that left the filter range, produces a Core client tombstone. It carries no `data`, `deleted_at`, or `emitted_at`, and appears in the first `changes_since` session whose horizon observes the exit.
 - A `changes_since` token is bound to the filter set, compared as in Section 6.7. A token presented with a different set MUST fail with 400 `invalid_cursor`.
 
 A synchronized copy is scoped to the complete Core query context: the applicable grant or package child, the stream, the projection, other bound parameters, and the filter set. A completed beginning session replaces only that context's copy.
