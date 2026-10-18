@@ -1312,13 +1312,14 @@ export async function runAuthority({
   }
   receipts.push(...[...sealed.entries()].sort(([a], [b]) => a - b).map(([, receipt]) => receipt));
   if (poolFailure) {
-    // Verify what was sealed once, then surface the original error.
+    // Verify what was sealed once, then surface the original error. Only sealed
+    // runs are required: a run that never started or threw has no receipt.
     await verifyReceipts(manifest, files, receipts, {
       root,
       head,
       authorityDirectory: directory,
       sourceTree,
-      requiredKeys: runs.map((run) => `${run.suite.id}/${run.profile.id}`),
+      requiredKeys: receipts.map((receipt) => `${receipt.suite}/${receipt.profile}`),
     }).catch(() => undefined);
     throw poolFailure.error;
   }

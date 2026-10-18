@@ -205,6 +205,16 @@ function readRunReceipts(root: string): FixtureReceipt[] {
     .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")) as FixtureReceipt);
 }
 
+// Run ids whose receipts verifyReceipts consumed: one verified/<run_id>.json each.
+function readVerifiedRunIds(root: string): string[] {
+  const directory = resolve(runDirectory(root), "verified");
+  return existsSync(directory)
+    ? readdirSync(directory)
+        .map((name) => name.slice(0, -".json".length))
+        .sort()
+    : [];
+}
+
 function readRunLedger(root: string): RunLedger {
   const directory = runDirectory(root);
   const names = existsSync(directory) ? readdirSync(directory) : [];
@@ -224,7 +234,13 @@ function readRunLedger(root: string): RunLedger {
 async function withFixtureSuites<T>(
   concurrency: string,
   makeSpecs: (markers: string) => FixtureSpec[],
-  inspect: (outcome: { markers: string; receipts: FixtureReceipt[]; ledger: RunLedger; error?: unknown }) => T,
+  inspect: (outcome: {
+    markers: string;
+    receipts: FixtureReceipt[];
+    ledger: RunLedger;
+    verified: string[];
+    error?: unknown;
+  }) => T,
   run: typeof runAuthority = runAuthority
 ): Promise<T> {
   const markers = mkdtempSync(join(tmpdir(), "pdpp-suite-concurrency-"));
@@ -269,7 +285,7 @@ async function withFixtureSuites<T>(
       const receipts = (Object.keys(ledger).length ? readRunReceipts(root) : []).sort((x, y) =>
         x.suite.localeCompare(y.suite)
       );
-      result = inspect({ markers, receipts, ledger, error });
+      result = inspect({ markers, receipts, ledger, verified: readVerifiedRunIds(root), error });
     });
     return result as T;
   } finally {
@@ -437,13 +453,19 @@ test("the last run to leave may throw: the completed sibling is still sealed, ve
   await withFixtureSuites(
     "2",
     (markers) => [markedLeaf(markers, "fixture-a", 0), markedLeaf(markers, "fixture-b", 60_000)],
-    ({ markers, ledger, error }) => {
+    ({ markers, receipts, ledger, verified, error }) => {
       assert.match((error as Error | undefined)?.message ?? "", LEAF_DEADLINE_PATTERN);
       assert.ok(existsSync(markerPath(markers, "fixture-a", "end")), "the completed sibling ran to the end");
       assert.deepEqual(ledger, {
         "fixture-a": SEALED,
         "fixture-b": { authorities: 1, completions: 0, receipts: 0 },
       });
+      // Verification passed over the sibling's receipt and consumed it. The run
+      // that threw has no receipt, so it is never consumed.
+      assert.deepEqual(
+        verified,
+        receipts.map((receipt) => receipt.run_id)
+      );
     },
     runWithDeadline
   );
