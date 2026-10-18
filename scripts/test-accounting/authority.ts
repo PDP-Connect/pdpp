@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile } from "node:fs/promises";
-import { relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import {
   assertCleanSourceTree,
   type Counts,
@@ -376,8 +376,17 @@ interface Run {
   profile: Profile;
   suite: Suite;
 }
-export function suiteEnvironment(inherited: NodeJS.ProcessEnv, profile: string, suite: Suite): NodeJS.ProcessEnv {
+export function suiteEnvironment(
+  inherited: NodeJS.ProcessEnv,
+  profile: string,
+  suite: Suite,
+  root = process.cwd()
+): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...inherited, PDPP_TEST_PROFILE: profile, ...(suite.environment ?? {}) };
+  const tsconfigPath = environment.TSX_TSCONFIG_PATH;
+  if (tsconfigPath && !isAbsolute(tsconfigPath)) {
+    environment.TSX_TSCONFIG_PATH = resolve(root, suite.cwd, tsconfigPath);
+  }
   for (const name of suite.environment_unset ?? []) {
     delete environment[name];
   }
@@ -569,7 +578,7 @@ export async function runAuthority({
     // One environment and cwd for both the prepare step and the children, so a
     // prerequisite is always built under the same resolver config that will load it.
     const suiteCwd = resolve(root, run.suite.cwd);
-    const suiteEnv = suiteEnvironment(env, profileId, run.suite);
+    const suiteEnv = suiteEnvironment(env, profileId, run.suite, root);
     let observed: CaptureResult;
     try {
       await prepareSuite(run.suite, suiteCwd, suiteEnv);
