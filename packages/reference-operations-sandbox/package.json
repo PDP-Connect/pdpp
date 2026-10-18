@@ -18,5 +18,9 @@
     "./rs-search-lexical": "./src/operations/rs-search-lexical/index.ts",
     "./rs-streams-detail": "./src/operations/rs-streams-detail/index.ts",
     "./rs-streams-list": "./src/operations/rs-streams-list/index.ts"
+  },
+  "scripts": {
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx \"src/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
   }
 }
