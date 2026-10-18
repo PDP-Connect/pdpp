@@ -53,9 +53,9 @@ Clauses enumerated: **214**.
 | MUST clauses | Count |
 | --- | --- |
 | Total | **181** |
-| With at least one case | **117** |
+| With at least one case | **118** |
 | Untestable (review-only, no case) | **59** |
-| Not yet tested (observable, no case) | **5** |
+| Not yet tested (observable, no case) | **4** |
 
 The last three rows partition the total. 2 of the clauses with a case are
 review-only: a case exercises part of them, and a run still reports them `untestable`.
@@ -191,7 +191,7 @@ Tracks grant lifecycle (active, expired, revoked) and reflects revocation immedi
 | `10.2-2` | 1699 | MUST | review-only | — | Review-only, for the same reason as 8.1-1: the revocation-propagation bound is the introspection cache TTL of a separated RS, observable only with a separated target and a timed wait of more than 60 seconds. |
 | `10.2-7` | 1708 | MUST | black-box-http | `AS-20/refresh-reuse-revokes-the-family` | Introspection of the family-linked token is checked only where the target offers an introspection route; otherwise the case judges the resource read alone, which is not the introspection interface this clause names. The prohibition on issuing a refresh token unless a covered grant is `continuous` is not covered, and needs a target supporting both `single_use` and refresh tokens at once. The revision drops the separate sentence about grant packages. |
 | `10.2-10` | 1697 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path. |
-| `10.7-1` | 1746 | MUST | black-box-http | `AS-8/revoked-token-introspects-inactive`<br>`AS-8/revoked-grant-refused` | The mapped cases revoke a grant whose only token is the probe token. The text also states that a token covering another active grant stays active and a token with no active grant is `active: false`; that needs the same shared-credential hook as 10.7-6 (`issueSharedCredentialGrants`), which the adapter contract does not have. |
+| `10.7-1` | 1746 | MUST | black-box-http | `AS-8/revoked-token-introspects-inactive`<br>`AS-8/revoked-grant-refused`<br>`AS-8/shared-credential-inactive-only-when-no-grant-is-active` | The first two cases revoke a grant whose only token is the probe token. That a token covering another active grant stays active, and a token with no active grant is `active: false`, is observed through the adapter's `issueSharedCredentialGrants` hook (a binding Core leaves open); a target whose adapter has none reports that case `skip`. |
 
 ### AS-9 (authorization-server, MUST)
 
@@ -387,7 +387,7 @@ Ends one grant among several that share a credential without revoking that crede
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `10.7-6` | 1742 | MUST | black-box-http | — | Needs an adapter hook that returns two grants sharing one credential (for example `issueSharedCredentialGrants`) so one grant can be ended while the other is probed through the same credential. The adapter contract has none; no bundled or reference target issues a credential that covers several grants. |
+| `10.7-6` | 1742 | MUST | black-box-http | `AS-26/ending-one-grant-spares-the-shared-credential` | A credential covering several grants is a binding choice Core leaves open, so the fixture is the adapter's `issueSharedCredentialGrants` hook; a target whose adapter has none reports the case `skip` naming it. After one grant is ended the credential must still read the other grant's stream and introspect active; the failure of the ended grant's own stream is binding-defined and not asserted. |
 
 ### AS-27 (authorization-server, MUST)
 

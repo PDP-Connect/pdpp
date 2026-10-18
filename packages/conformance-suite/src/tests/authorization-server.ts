@@ -230,6 +230,30 @@ function grantedStreamFields(details: readonly unknown[]): string {
   );
 }
 
+/** The adapter's shared-credential fixture with at least two grants, or the reason there is none. */
+async function sharedCredential(
+  adapter: TargetAdapter
+): Promise<
+  { readonly credential: string; readonly grants: readonly [SharedGrant, SharedGrant] } | { readonly skip: string }
+> {
+  if (!adapter.issueSharedCredentialGrants) {
+    return {
+      skip: "The adapter has no issueSharedCredentialGrants hook, so there is no credential covering several grants to end one grant of.",
+    };
+  }
+  const fixture = await adapter.issueSharedCredentialGrants();
+  const [first, second] = fixture?.grants ?? [];
+  if (!(fixture && first && second)) {
+    return { skip: "The target binds one credential to one grant, so there is no shared credential to test." };
+  }
+  return { credential: fixture.credential, grants: [first, second] };
+}
+
+interface SharedGrant {
+  readonly grantId: string;
+  readonly stream: string;
+}
+
 export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
   // ---------------------------------------------------------------- AS-9 ---
   // AS-9 is `applicability: "always"` (grant-bound tokens with PDPP extension
@@ -474,6 +498,104 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
         );
       }
       return pass([before.evidence, after.evidence]);
+    },
+  },
+
+  // ------------------------------------------------------ 10.7-6, 10.7-1 ---
+  // Core Section 10 "Revocation": "Ending one grant among several that share a
+  // credential is a grant-level action at the AS. It MUST NOT revoke the shared
+  // credential or end the other grants." and "A token that covers another active
+  // grant stays active; a token with no active grant is `active: false`."
+  //
+  // A shared credential is a binding choice Core leaves open, so the fixture is
+  // the adapter's (`issueSharedCredentialGrants`). Both streams are read through
+  // the credential first: ending one grant must not be confused with a
+  // credential that never reached the other.
+  {
+    caseId: "AS-26/ending-one-grant-spares-the-shared-credential",
+    requirementId: "AS-26",
+    assertion:
+      "After one of two grants that share a credential is ended, the credential still reads the other grant's stream and introspects active.",
+    async run({ adapter, path }) {
+      const shared = await sharedCredential(adapter);
+      if ("skip" in shared) {
+        return skip(shared.skip);
+      }
+      const [ended, kept] = shared.grants;
+      const readKept = () =>
+        request(adapter.baseUrl, path(`/streams/${encodeURIComponent(kept.stream)}/records`), {
+          token: shared.credential,
+        });
+      const before = await readKept();
+      if (before.status !== 200) {
+        return skip(
+          `The shared credential did not read the second grant's stream before anything was ended (${before.status}), so a later refusal cannot be attributed to ending the first grant.`
+        );
+      }
+      await adapter.revokeGrant(ended.grantId);
+      const after = await readKept();
+      const introspected = await introspectByAnyRoute(adapter, shared.credential);
+      const evidence = [before.evidence, after.evidence, ...(introspected ? [introspected.evidence] : [])];
+      if (after.status !== 200) {
+        return fail(
+          `Ending grant ${ended.grantId} made the credential it shares with grant ${kept.grantId} stop reading ${kept.stream} (${after.status}). Core Section 10: ending one grant among several that share a credential MUST NOT revoke the shared credential or end the other grants.`,
+          evidence
+        );
+      }
+      if (introspected && (introspected.json as IntrospectionBody | undefined)?.active !== true) {
+        return fail(
+          "Introspection reports the shared credential inactive after only one of its two grants was ended. Core Section 10: a token that covers another active grant stays active.",
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+  {
+    caseId: "AS-8/shared-credential-inactive-only-when-no-grant-is-active",
+    requirementId: "AS-8",
+    assertion:
+      "A credential covering two grants introspects active while either is active and inactive once both are ended.",
+    async run({ adapter }) {
+      const shared = await sharedCredential(adapter);
+      if ("skip" in shared) {
+        return skip(shared.skip);
+      }
+      const [first, second] = shared.grants;
+      const both = await arrange("introspection (prerequisite)", () =>
+        introspectByAnyRoute(adapter, shared.credential)
+      );
+      if (!both) {
+        return skip(
+          "The target publishes no introspection route the suite can use and the adapter names no co-located equivalent, so the credential's state is unobserved."
+        );
+      }
+      if ((both.json as IntrospectionBody | undefined)?.active !== true) {
+        return skip(
+          "Introspection did not report the fresh shared credential active, so revocation cannot be isolated."
+        );
+      }
+      await adapter.revokeGrant(first.grantId);
+      const one = await introspectByAnyRoute(adapter, shared.credential);
+      await adapter.revokeGrant(second.grantId);
+      const none = await introspectByAnyRoute(adapter, shared.credential);
+      if (!(one && none)) {
+        return skip("Introspection could not be observed after the grants were ended.");
+      }
+      const evidence = [both.evidence, one.evidence, none.evidence];
+      if ((one.json as IntrospectionBody | undefined)?.active !== true) {
+        return fail(
+          "Introspection reported the shared credential inactive while one of the grants it covers was still active. Core Section 10: a token that covers another active grant stays active.",
+          evidence
+        );
+      }
+      if ((none.json as IntrospectionBody | undefined)?.active !== false) {
+        return fail(
+          "Introspection still reports the shared credential active after every grant it covers was ended. Core Section 10: a token with no active grant is active: false, and revocation is reflected immediately.",
+          evidence
+        );
+      }
+      return pass(evidence);
     },
   },
 

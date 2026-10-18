@@ -2787,9 +2787,13 @@ const SECTION_10: readonly ClauseEntry[] = [
     specAnchor: "#revocation",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: ["AS-8/revoked-token-introspects-inactive", "AS-8/revoked-grant-refused"],
+    caseIds: [
+      "AS-8/revoked-token-introspects-inactive",
+      "AS-8/revoked-grant-refused",
+      "AS-8/shared-credential-inactive-only-when-no-grant-is-active",
+    ],
     gapNote:
-      "The mapped cases revoke a grant whose only token is the probe token. The text also states that a token covering another active grant stays active and a token with no active grant is `active: false`; that needs the same shared-credential hook as 10.7-6 (`issueSharedCredentialGrants`), which the adapter contract does not have.",
+      "The first two cases revoke a grant whose only token is the probe token. That a token covering another active grant stays active, and a token with no active grant is `active: false`, is observed through the adapter's `issueSharedCredentialGrants` hook (a binding Core leaves open); a target whose adapter has none reports that case `skip`.",
   },
   {
     clauseId: "10.7-2",
@@ -2856,9 +2860,9 @@ const SECTION_10: readonly ClauseEntry[] = [
     specAnchor: "#revocation",
     applicability: "several grants share a credential",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-26/ending-one-grant-spares-the-shared-credential"],
     gapNote:
-      "Needs an adapter hook that returns two grants sharing one credential (for example `issueSharedCredentialGrants`) so one grant can be ended while the other is probed through the same credential. The adapter contract has none; no bundled or reference target issues a credential that covers several grants.",
+      "A credential covering several grants is a binding choice Core leaves open, so the fixture is the adapter's `issueSharedCredentialGrants` hook; a target whose adapter has none reports the case `skip` naming it. After one grant is ended the credential must still read the other grant's stream and introspect active; the failure of the ended grant's own stream is binding-defined and not asserted.",
   },
   {
     clauseId: "10.7-7",

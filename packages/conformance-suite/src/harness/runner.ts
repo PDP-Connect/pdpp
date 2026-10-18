@@ -135,6 +135,7 @@ const ARRANGEMENT_HOOKS: ReadonlySet<string | symbol> = new Set([
   "foreignSubjectRecordIds",
   "issueGrant",
   "issueMultiInstanceGrant",
+  "issueSharedCredentialGrants",
   "issueRefreshableGrant",
   "ownerToken",
   "revokeGrant",

@@ -578,6 +578,10 @@ export type Defect =
   | "client-filter-consults-metadata-first"
   /** Binds a page cursor to the grant and `fields` only, so it replays on another stream or under a view or filter (RS-6, clause 8.9-11). */
   | "cursor-context-omits-query-shape"
+  /** Revoking one grant of a shared credential revokes the credential and every grant it covers (AS-26, clause 10.7-6). */
+  | "revoking-one-grant-revokes-shared-credential"
+  /** Keeps a shared credential active in introspection after every grant it covers has ended (AS-8, clause 10.7-1). */
+  | "shared-credential-active-after-all-grants-end"
   /** Lets a `single_use` grant be issued a token again after its first issuance (AS-10, clause 7.5-1). */
   | "single-use-grant-reissuable"
   /** Keeps a `single_use` grant active in introspection and on reads after its window has ended (AS-10, clause 7.5-7). */
@@ -724,7 +728,7 @@ interface GrantState {
  * governs.
  */
 type Principal =
-  | { kind: "client"; grantId: string }
+  | { kind: "client"; grantId: string; covers?: readonly string[] }
   | { kind: "owner"; subjectId: string }
   | { kind: "unrecognized"; reportedKind: string };
 
@@ -1423,12 +1427,56 @@ export class ReferenceServer {
   }
 
   /**
+   * The grant a client credential acts under for this request. A credential that
+   * covers several grants (Core Section 10 "Revocation") acts under the active
+   * one that lists the requested stream, else the first active one, else the
+   * first it covers, whose lifecycle denial then explains the refusal.
+   */
+  private coveredGrantFor(principal: { grantId: string; covers?: readonly string[] }, streamHint?: string): string {
+    const all = principal.covers ?? [principal.grantId];
+    const live = all
+      .map((id) => this.grants.get(id))
+      .filter((g): g is GrantState => g !== undefined && !g.revoked && !g.expired && !this.windowEnded(g));
+    const listing = live.find((g) => streamHint !== undefined && g.streams.some((st) => st.name === streamHint));
+    return (listing ?? live[0])?.grantId ?? principal.grantId;
+  }
+
+  /**
+   * Issue ONE credential that covers two grants over two streams, so one grant
+   * can be ended while the other is probed through the same credential.
+   */
+  issueSharedCredential(): { credential: string; grants: { grantId: string; stream: string }[] } | null {
+    const [first, second] = this.streams;
+    if (!(first && second)) {
+      return null;
+    }
+    const issued = [first, second].map((fixture) =>
+      this.issueGrant([{ name: fixture.name, fields: [...fixture.fields] }])
+    );
+    const [a, b] = issued;
+    if (!(a && b) || "deniedReason" in a || "deniedReason" in b) {
+      return null;
+    }
+    this.counter += 1;
+    const credential = `token_shared_${this.counter}`;
+    this.tokens.set(credential, { kind: "client", grantId: a.grantId, covers: [a.grantId, b.grantId] });
+    return {
+      credential,
+      grants: [
+        { grantId: a.grantId, stream: first.name },
+        { grantId: b.grantId, stream: second.name },
+      ],
+    };
+  }
+
+  /**
    * Resolve a token's principal to the enforcement context, or the denial that
    * Section 8 requires. A client token carries a grant whose lifecycle is
    * checked here; an owner token carries none (Section 8 "Grant enforcement").
    */
   private resolvePrincipal(
-    principal: Principal
+    principal: Principal,
+    streamHint?: string
   ):
     | { grant: GrantState | undefined; subjectId: string }
     | { denial: { code: string; inactive?: true; message: string } } {
@@ -1446,7 +1494,7 @@ export class ReferenceServer {
         ? { grant, subjectId: grant.subjectId }
         : { denial: { code: "grant_invalid", message: "Unknown grant." } };
     }
-    const grant = this.grants.get(principal.grantId);
+    const grant = this.grants.get(this.coveredGrantFor(principal, streamHint));
     if (!grant) {
       return { denial: { code: "grant_invalid", message: "Unknown grant." } };
     }
@@ -1774,21 +1822,27 @@ export class ReferenceServer {
     if (principal?.kind !== "client") {
       return null;
     }
-    const grant = this.grants.get(principal.grantId);
+    // A credential covering several grants is active while any of them is
+    // (Core Section 10 "Revocation"), and reports the one it is active under.
+    const reportedGrantId = this.has("shared-credential-active-after-all-grants-end")
+      ? principal.grantId
+      : this.coveredGrantFor(principal);
+    const grant = this.grants.get(reportedGrantId);
     // Revocation and expiry are reported here, not just enforced at the query
     // surface: Section 9 AS item 8 requires revocation to be reflected in
     // introspection, and a stub that always answered `active: true` would make
     // the AS-8 oracle pass against a server that never propagates it.
     const active =
       grant !== undefined &&
-      !(grant.revoked || grant.expired || this.windowEnded(grant)) &&
+      (!(grant.revoked || grant.expired || this.windowEnded(grant)) ||
+        (this.has("shared-credential-active-after-all-grants-end") && principal.covers !== undefined)) &&
       !this.endedTokens.has(accessToken);
-    const detail = this.grantedAuthorizationDetails(principal.grantId);
+    const detail = this.grantedAuthorizationDetails(reportedGrantId);
     const body = active
       ? {
           active: true,
           pdpp_token_kind: "client",
-          grant_id: principal.grantId,
+          grant_id: reportedGrantId,
           // Core Section 8 requires the client-token context to name both the
           // subject whose data is reachable and the client it was issued to.
           subject_id: grant?.subjectId ?? SEEDED_SUBJECT,
@@ -1827,6 +1881,19 @@ export class ReferenceServer {
     if (grant) {
       grant.revoked = true;
       grant.revokedAt = Date.now();
+    }
+    if (this.has("revoking-one-grant-revokes-shared-credential")) {
+      for (const principal of this.tokens.values()) {
+        if (principal.kind === "client" && principal.covers?.includes(grantId)) {
+          for (const covered of principal.covers) {
+            const other = this.grants.get(covered);
+            if (other && !other.revoked) {
+              other.revoked = true;
+              other.revokedAt = Date.now();
+            }
+          }
+        }
+      }
     }
   }
 
@@ -2079,7 +2146,10 @@ export class ReferenceServer {
 
     // Resolve the client authorization context, mirroring what a separated RS
     // would read from an RFC 7662 introspection response.
-    const resolved = this.resolvePrincipal(principal);
+    const streamHint = decodeURIComponent(
+      (RECORDS_PATH.exec(path) ?? SINGLE_RECORD_PATH.exec(path) ?? METADATA_PATH.exec(path))?.[1] ?? ""
+    );
+    const resolved = this.resolvePrincipal(principal, streamHint);
     if ("denial" in resolved) {
       // Section 8 "Inactive tokens": a token whose grant is revoked or expired
       // is inactive, and every inactive access token is 401 behind a Bearer

@@ -18,6 +18,7 @@ import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import type { Defect } from "../src/targets/reference-server.ts";
 
 const MAKE_STALE_HOOK = /makeStale/;
+const SHARED_CREDENTIAL_HOOK = /issueSharedCredentialGrants/;
 
 async function runWith(caseId: string, defects: readonly Defect[], wrap?: (inner: TargetAdapter) => TargetAdapter) {
   const conformanceCase = ALL_CASES.find((c) => c.caseId === caseId);
@@ -73,6 +74,48 @@ describe("a target that cannot make a review stale", () => {
       const result = await runCase(conformanceCase, makeContext(adapter, streams));
       assert.equal(result.outcome, "skip", result.detail ?? "(no detail)");
       assert.match(result.detail ?? "", MAKE_STALE_HOOK);
+    } finally {
+      await adapter.teardown();
+    }
+  });
+});
+
+describe("a target that binds one credential to one grant", () => {
+  class OneCredentialPerGrant extends ReferenceTargetAdapter {
+    override issueSharedCredentialGrants() {
+      return Promise.resolve(null);
+    }
+  }
+
+  for (const caseId of [
+    "AS-26/ending-one-grant-spares-the-shared-credential",
+    "AS-8/shared-credential-inactive-only-when-no-grant-is-active",
+  ]) {
+    it(`${caseId} skips rather than fails`, async () => {
+      const conformanceCase = ALL_CASES.find((c) => c.caseId === caseId);
+      assert.ok(conformanceCase);
+      const adapter = new OneCredentialPerGrant();
+      const { streams } = await adapter.setup();
+      try {
+        const result = await runCase(conformanceCase, makeContext(adapter, streams));
+        assert.equal(result.outcome, "skip", result.detail ?? "(no detail)");
+      } finally {
+        await adapter.teardown();
+      }
+    });
+  }
+
+  it("a target with no hook at all names it in the skip", async () => {
+    const conformanceCase = ALL_CASES.find((c) => c.caseId === "AS-26/ending-one-grant-spares-the-shared-credential");
+    assert.ok(conformanceCase);
+    const adapter = new ReferenceTargetAdapter();
+    Reflect.deleteProperty(adapter, "issueSharedCredentialGrants");
+    const hookless = Object.create(adapter, { issueSharedCredentialGrants: { value: undefined } }) as TargetAdapter;
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(conformanceCase, makeContext(hookless, streams));
+      assert.equal(result.outcome, "skip", result.detail ?? "(no detail)");
+      assert.match(result.detail ?? "", SHARED_CREDENTIAL_HOOK);
     } finally {
       await adapter.teardown();
     }

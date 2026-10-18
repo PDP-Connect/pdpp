@@ -26,6 +26,7 @@ import type {
   SeededStream,
   SelectionOutcome,
   SelectionRequest,
+  SharedCredentialFixture,
   SourceDeclarationStream,
   SourceDeclarationSubmission,
   StagedApproval,
@@ -1710,6 +1711,10 @@ export class ReferenceTargetAdapter implements TargetAdapter {
         grantRequest: { ...grantRequest, timeConstraint: blobs.window },
       },
     };
+  }
+
+  async issueSharedCredentialGrants(): Promise<SharedCredentialFixture | null> {
+    return this.server.issueSharedCredential();
   }
 
   /**

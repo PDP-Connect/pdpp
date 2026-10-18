@@ -672,6 +672,23 @@ export interface GrantRequest {
 }
 
 /**
+ * One credential that covers two active grants over two different streams.
+ *
+ * Core Section 10 "Revocation": "Ending one grant among several that share a
+ * credential is a grant-level action at the AS. It MUST NOT revoke the shared
+ * credential or end the other grants." The suite cannot create such a credential
+ * itself, so a target that binds one credential to several grants (a binding
+ * Core leaves open) supplies it. Optional: without it the cases that need one
+ * report `skip` naming `issueSharedCredentialGrants`.
+ */
+export interface SharedCredentialFixture {
+  /** The one access token that carries every grant below. */
+  readonly credential: string;
+  /** At least two grants, each readable through `credential` on its own `stream`. */
+  readonly grants: readonly { readonly grantId: string; readonly stream: string }[];
+}
+
+/**
  * A grant listing two (or more) instance handles for ONE stream, plus the
  * adapter's own record of what it seeded under those handles.
  *
@@ -936,6 +953,12 @@ export interface TargetAdapter {
    * `unsupported` rather than `fail`.
    */
   issueRefreshableGrant?: (request: GrantRequest) => Promise<RefreshableGrant | null>;
+  /**
+   * One credential covering two active grants over two streams, for the shared
+   * credential cases (clauses 10.7-1 and 10.7-6). Returns null when this
+   * deployment binds one credential to one grant.
+   */
+  issueSharedCredentialGrants?: () => Promise<SharedCredentialFixture | null>;
 
   /**
    * Offer a URL-hosted client identity document as the `client_id` of an

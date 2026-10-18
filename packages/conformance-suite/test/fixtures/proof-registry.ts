@@ -81,6 +81,18 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "AS-10/single-use-window-end-deactivates-the-grant", defect: "single-use-window-never-ends" },
   { caseId: "AS-10/single-use-grant-consumed", defect: "single-use-grant-reissuable" },
   { caseId: "AS-10/single-use-first-token-has-finite-expiry", defect: "single-use-token-without-expiry" },
+  {
+    caseId: "AS-26/ending-one-grant-spares-the-shared-credential",
+    defect: "revoking-one-grant-revokes-shared-credential",
+  },
+  {
+    caseId: "AS-8/shared-credential-inactive-only-when-no-grant-is-active",
+    defect: "revoking-one-grant-revokes-shared-credential",
+  },
+  {
+    caseId: "AS-8/shared-credential-inactive-only-when-no-grant-is-active",
+    defect: "shared-credential-active-after-all-grants-end",
+  },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-wrong-bytes" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-response-cacheable" },
   { caseId: "RS-1/blob-ref-mime-type-valid", defect: "blob-ref-invalid-mime-type" },
