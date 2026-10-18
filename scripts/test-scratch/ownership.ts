@@ -554,8 +554,17 @@ export async function cleanupScratchOwnership(ownership: ScratchOwnership, hooks
   await quarantineAndRemove(ownership.allocation, undefined, hooks);
 }
 
-function ownerAbsence(marker: Marker): "absent" | "owner-live" | "pid-namespace-mismatch" {
-  if (platform() === "linux" && marker.pid_namespace !== linuxPidNamespace()) {
+function ownerAbsence(
+  marker: Marker,
+  bootId: string | null,
+  pidNamespace: string | null
+): "absent" | "owner-live" | "pid-namespace-mismatch" {
+  // A different boot proves the owner died, whatever namespace recorded it. Legacy markers and
+  // markers from a dead nested namespace would otherwise be retained forever.
+  if (marker.boot_id !== undefined && bootId !== null && marker.boot_id !== bootId) {
+    return "absent";
+  }
+  if (platform() === "linux" && marker.pid_namespace !== pidNamespace) {
     return "pid-namespace-mismatch";
   }
   try {
@@ -654,6 +663,7 @@ async function recoverJournal(
   canonicalParent: string,
   now: number,
   bootId: string | null,
+  pidNamespace: string | null,
   budget: CleanupBudget
 ): Promise<RecoveryResult> {
   const journal = await readCleanupJournal(journalPath);
@@ -664,7 +674,7 @@ async function recoverJournal(
   if (!isOldEnough(marker, now)) {
     return { path: journalPath, reason: "fresh", removed: false };
   }
-  const ownerStatus = ownerAbsence(marker);
+  const ownerStatus = ownerAbsence(marker, bootId, pidNamespace);
   if (ownerStatus !== "absent") {
     return { path: journalPath, reason: ownerStatus, removed: false };
   }
@@ -716,6 +726,7 @@ async function recoverCompatibleQuarantine(
   canonicalParent: string,
   now: number,
   bootId: string | null,
+  pidNamespace: string | null,
   budget: CleanupBudget
 ): Promise<RecoveryResult> {
   const stats = await lstat(candidate).catch(() => undefined);
@@ -736,7 +747,7 @@ async function recoverCompatibleQuarantine(
   if (marker.parent !== canonicalParent || marker.dev !== stats.dev || marker.ino !== stats.ino) {
     return { path: candidate, reason: "quarantine-no-capability", removed: false };
   }
-  const ownerStatus = ownerAbsence(marker);
+  const ownerStatus = ownerAbsence(marker, bootId, pidNamespace);
   if (ownerStatus !== "absent") {
     return { path: candidate, reason: ownerStatus, removed: false };
   }
@@ -764,6 +775,7 @@ async function recoverRunCandidate(
   canonicalParent: string,
   now: number,
   bootId: string | null,
+  pidNamespace: string | null,
   budget: CleanupBudget
 ): Promise<RecoveryResult | undefined> {
   if (!isImmediateRunChild(canonicalParent, candidate)) {
@@ -792,7 +804,7 @@ async function recoverRunCandidate(
   ) {
     return { path: candidate, reason: "identity-mismatch", removed: false };
   }
-  const ownerStatus = ownerAbsence(marker);
+  const ownerStatus = ownerAbsence(marker, bootId, pidNamespace);
   if (ownerStatus !== "absent") {
     return { path: candidate, reason: ownerStatus, removed: false };
   }
@@ -913,6 +925,7 @@ export async function recoverStaleScratch(options: RecoverStaleScratchOptions = 
   const canonicalParent = await validatedParent(options.parent);
   const now = options.now ?? Date.now();
   const bootId = await linuxBootId();
+  const pidNamespace = linuxPidNamespace();
   const limits = boundedLimits(options.limits);
   const results: RecoveryResult[] = [];
   const cursorPath = join(canonicalParent, RECOVERY_CURSOR_NAME);
@@ -958,14 +971,22 @@ export async function recoverStaleScratch(options: RecoverStaleScratchOptions = 
     let result: RecoveryResult | undefined;
     if (name.startsWith("run-")) {
       // biome-ignore lint/performance/noAwaitInLoops: recovery concurrency is deliberately fixed at one.
-      result = await recoverRunCandidate(candidate, canonicalParent, now, bootId, budget);
+      result = await recoverRunCandidate(candidate, canonicalParent, now, bootId, pidNamespace, budget);
     } else {
       const journalNonce = journalPathNonce(candidate);
       const quarantineNonce = quarantinePathNonce(candidate);
       if (journalNonce) {
-        result = await recoverJournal(candidate, canonicalParent, now, bootId, budget);
+        result = await recoverJournal(candidate, canonicalParent, now, bootId, pidNamespace, budget);
       } else if (quarantineNonce) {
-        result = await recoverCompatibleQuarantine(candidate, quarantineNonce, canonicalParent, now, bootId, budget);
+        result = await recoverCompatibleQuarantine(
+          candidate,
+          quarantineNonce,
+          canonicalParent,
+          now,
+          bootId,
+          pidNamespace,
+          budget
+        );
       } else {
         result = { path: candidate, reason: "foreign-entry", removed: false };
       }
