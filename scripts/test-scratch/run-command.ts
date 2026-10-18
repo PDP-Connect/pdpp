@@ -7,6 +7,7 @@ import { constants } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hermeticTestEnvironment } from "../hermetic/launcher.ts";
+import { linkTransformCache, pruneCompileCache } from "../hermetic/test-caches.ts";
 import {
   allocateScratchOwnership,
   type CleanupHooks,
@@ -377,6 +378,8 @@ async function restoreSandboxSignal(result: CommandResult, signalPath?: string):
 }
 
 function spawnOwnedCommand(launch: ReturnType<typeof sandboxLaunch>, ownership: ScratchOwnership) {
+  linkTransformCache(ownership.allocation.root);
+  pruneCompileCache();
   return spawn(launch.file, launch.args, {
     cwd: process.cwd(),
     detached: true,
