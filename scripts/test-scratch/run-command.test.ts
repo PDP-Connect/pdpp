@@ -11,6 +11,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  readlink,
   realpath,
   rename,
   rm,
@@ -18,7 +19,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import test from "node:test";
 import {
@@ -127,6 +128,7 @@ async function oldMarker(
   overrides: Record<string, unknown> = {}
 ): Promise<void> {
   const rootStats = await stat(ownership.allocation.root);
+  const pidNamespace = await readlink("/proc/self/ns/pid").catch(() => undefined);
   await writeFile(
     ownership.allocation.markerPath,
     `${JSON.stringify({
@@ -135,6 +137,7 @@ async function oldMarker(
       ino: rootStats.ino,
       nonce: ownership.allocation.nonce,
       owner_pid: 999_999_999,
+      pid_namespace: pidNamespace,
       parent: ownership.allocation.canonicalParent,
       root: ownership.allocation.root,
       schema: "pdpp.test-scratch/v1",
@@ -371,10 +374,215 @@ test("recovery retains fresh and malformed roots", async () => {
   await rm(parent, { force: true, recursive: true });
 });
 
+function canEnterPidNamespace(): boolean {
+  try {
+    execFileSync("bwrap", ["--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--", "true"], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("recovery retains a root from another PID namespace", { skip: platform() !== "linux" }, async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  try {
+    const originalRoot = await lstat(ownership.allocation.root);
+    const marker = JSON.parse(await readFile(ownership.allocation.markerPath, "utf8")) as Record<string, unknown>;
+    await writeFile(
+      ownership.allocation.markerPath,
+      `${JSON.stringify({ ...marker, created_at: new Date(Date.now() - 120_000).toISOString() })}\n`
+    );
+    let recovered: Awaited<ReturnType<typeof recoverStaleScratch>>;
+    if (canEnterPidNamespace()) {
+      const code = `import { recoverStaleScratch } from ${JSON.stringify(new URL("./ownership.ts", import.meta.url).pathname)}; console.log(JSON.stringify(await recoverStaleScratch({ parent: ${JSON.stringify(parent)} })))`;
+      const output = execFileSync(
+        "bwrap",
+        [
+          "--dev-bind",
+          "/",
+          "/",
+          "--unshare-pid",
+          "--proc",
+          "/proc",
+          "--",
+          process.execPath,
+          "--import",
+          "tsx",
+          "--input-type=module",
+          "-e",
+          code,
+        ],
+        { encoding: "utf8" }
+      );
+      recovered = JSON.parse(output.trim());
+    } else {
+      // Keep the namespace check deterministic when a second namespace cannot be created.
+      await writeFile(
+        ownership.allocation.markerPath,
+        `${JSON.stringify({ ...marker, created_at: new Date(Date.now() - 120_000).toISOString(), owner_pid: 999_999_999, pid_namespace: "pid:[0]" })}\n`
+      );
+      recovered = await recoverStaleScratch({ parent });
+    }
+    assert.deepEqual(recovered, [
+      { path: ownership.allocation.root, reason: "pid-namespace-mismatch", removed: false },
+    ]);
+    const retainedRoot = await lstat(ownership.allocation.root);
+    assert.equal(retainedRoot.ino, originalRoot.ino);
+    assert.equal(retainedRoot.mode % 0o1000, 0o700);
+    assert.equal(
+      (JSON.parse(await readFile(ownership.allocation.markerPath, "utf8")) as { nonce: string }).nonce,
+      ownership.allocation.nonce
+    );
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+const FOREIGN_PID_NAMESPACE = "pid:[0]";
+
+test("recovery retains a legacy marker without a PID namespace until the boot differs", {
+  skip: platform() !== "linux",
+}, async () => {
+  const parent = await temporaryParent();
+  const sameBoot = await allocateScratchOwnership({ parent });
+  const priorBoot = await allocateScratchOwnership({ parent });
+  const bootId = await currentBootId();
+  try {
+    await oldMarker(sameBoot, { boot_id: bootId, pid_namespace: undefined });
+    await oldMarker(priorBoot, { boot_id: differentBootId(bootId), pid_namespace: undefined });
+    const results = await recoverStaleScratch({ parent });
+    assert.deepEqual(
+      results.find((result) => result.path === sameBoot.allocation.root),
+      { path: sameBoot.allocation.root, reason: "pid-namespace-mismatch", removed: false }
+    );
+    // A different boot resolves the namespace ambiguity only when the current boot id is itself readable.
+    assert.deepEqual(
+      results.find((result) => result.path === priorBoot.allocation.root),
+      bootId
+        ? { path: priorBoot.allocation.root, reason: "dead-verified", removed: true }
+        : { path: priorBoot.allocation.root, reason: "pid-namespace-mismatch", removed: false }
+    );
+    await access(sameBoot.allocation.root);
+    if (bootId) {
+      await assert.rejects(access(priorBoot.allocation.root));
+    } else {
+      await access(priorBoot.allocation.root);
+    }
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("journal recovery retains a root whose owner is in another PID namespace", {
+  skip: platform() !== "linux",
+}, async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const journal = join(parent, `.scratch-cleanup-${ownership.allocation.nonce}.json`);
+  try {
+    await oldMarker(ownership, { pid_namespace: FOREIGN_PID_NAMESPACE });
+    await assert.rejects(
+      cleanupScratchOwnership(ownership, {
+        afterJournal: () => Promise.reject(new Error("simulate crash after journal")),
+      })
+    );
+    const results = await recoverStaleScratch({ parent });
+    assert.deepEqual(
+      results.find((result) => result.path === journal),
+      { path: journal, reason: "pid-namespace-mismatch", removed: false }
+    );
+    await access(journal);
+    await access(ownership.allocation.root);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("quarantine recovery retains a quarantine whose owner is in another PID namespace", {
+  skip: platform() !== "linux",
+}, async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const quarantine = join(parent, `.quarantine-${ownership.allocation.nonce}`);
+  try {
+    await oldMarker(ownership, { pid_namespace: FOREIGN_PID_NAMESPACE });
+    await rename(ownership.allocation.root, quarantine);
+    assert.deepEqual(await recoverStaleScratch({ parent }), [
+      { path: quarantine, reason: "pid-namespace-mismatch", removed: false },
+    ]);
+    await access(quarantine);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("recovery retains a same-namespace live owner whose boot id differs", {
+  skip: platform() !== "linux",
+}, async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  try {
+    await oldMarker(ownership, { boot_id: differentBootId(await currentBootId()), owner_pid: process.pid });
+    assert.deepEqual(await recoverStaleScratch({ parent }), [
+      { path: ownership.allocation.root, reason: "owner-live", removed: false },
+    ]);
+    await access(ownership.allocation.root);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("journal recovery retains a same-namespace live owner whose boot id differs", {
+  skip: platform() !== "linux",
+}, async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const journal = join(parent, `.scratch-cleanup-${ownership.allocation.nonce}.json`);
+  try {
+    await oldMarker(ownership, { boot_id: differentBootId(await currentBootId()), owner_pid: process.pid });
+    await assert.rejects(
+      cleanupScratchOwnership(ownership, {
+        afterJournal: () => Promise.reject(new Error("simulate crash after journal")),
+      })
+    );
+    const results = await recoverStaleScratch({ parent });
+    assert.deepEqual(
+      results.find((result) => result.path === journal),
+      { path: journal, reason: "owner-live", removed: false }
+    );
+    await access(journal);
+    await access(ownership.allocation.root);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("quarantine recovery retains a same-namespace live owner whose boot id differs", {
+  skip: platform() !== "linux",
+}, async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const quarantine = join(parent, `.quarantine-${ownership.allocation.nonce}`);
+  try {
+    await oldMarker(ownership, { boot_id: differentBootId(await currentBootId()), owner_pid: process.pid });
+    await rename(ownership.allocation.root, quarantine);
+    assert.deepEqual(await recoverStaleScratch({ parent }), [
+      { path: quarantine, reason: "owner-live", removed: false },
+    ]);
+    await access(quarantine);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
 test("recovery removes only a verified old dead allocation and retains a live owner", async () => {
   const parent = await temporaryParent();
   const stale = await allocateScratchOwnership({ parent });
   const staleStats = await stat(stale.allocation.root);
+  const pidNamespace = await readlink("/proc/self/ns/pid").catch(() => undefined);
   await writeFile(
     stale.allocation.markerPath,
     `${JSON.stringify({
@@ -383,6 +591,7 @@ test("recovery removes only a verified old dead allocation and retains a live ow
       ino: staleStats.ino,
       nonce: stale.allocation.nonce,
       owner_pid: 999_999_999,
+      pid_namespace: pidNamespace,
       parent: stale.allocation.canonicalParent,
       root: stale.allocation.root,
       schema: "pdpp.test-scratch/v1",

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomBytes } from "node:crypto";
+import { readlinkSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, opendir, readFile, realpath, rename, rm, unlink } from "node:fs/promises";
 import { homedir, platform, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
@@ -17,6 +18,7 @@ const JOURNAL_PREFIX = ".scratch-cleanup-";
 const RECOVERY_CURSOR_NAME = ".scratch-recovery-cursor.json";
 const RECOVERY_CURSOR_SCHEMA = "pdpp.test-scratch/recovery-cursor/v1";
 const LINUX_BOOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const LINUX_PID_NAMESPACE = /^pid:\[[0-9]+\]$/;
 
 type MarkerState = "allocated" | "launching" | "running";
 
@@ -29,6 +31,7 @@ interface Marker {
   owner_pid: number;
   parent: string;
   pgid?: number;
+  pid_namespace?: string;
   root: string;
   schema: typeof SCRATCH_SCHEMA;
   state: MarkerState;
@@ -151,6 +154,19 @@ async function linuxBootId(): Promise<string | null> {
   }
 }
 
+function linuxPidNamespace(): string | null {
+  if (platform() !== "linux") {
+    return null;
+  }
+  try {
+    const namespace = readlinkSync("/proc/self/ns/pid");
+    return LINUX_PID_NAMESPACE.test(namespace) ? namespace : null;
+  } catch {
+    // Without a namespace identity, another process cannot be proven absent.
+    return null;
+  }
+}
+
 function defaultParent(): string {
   const runnerTemp = process.env.RUNNER_TEMP;
   return runnerTemp ? join(runnerTemp, "pdpp-test-scratch") : join(homedir(), ".tmp", "pdpp-test-scratch");
@@ -260,6 +276,10 @@ export async function allocateScratchOwnership(options: { parent?: string } = {}
   if (bootId !== null) {
     marker.boot_id = bootId;
   }
+  const pidNamespace = linuxPidNamespace();
+  if (pidNamespace !== null) {
+    marker.pid_namespace = pidNamespace;
+  }
   await writeExclusiveMarker(allocation.markerPath, marker);
   return { allocation, env: ownedEnvironment(allocation) };
 }
@@ -326,7 +346,9 @@ function isValidMarker(value: unknown): value is Marker {
     !Number.isSafeInteger(marker.ino) ||
     marker.ino < 0 ||
     typeof marker.created_at !== "string" ||
-    (marker.boot_id !== undefined && (typeof marker.boot_id !== "string" || !LINUX_BOOT_ID.test(marker.boot_id)))
+    (marker.boot_id !== undefined && (typeof marker.boot_id !== "string" || !LINUX_BOOT_ID.test(marker.boot_id))) ||
+    (marker.pid_namespace !== undefined &&
+      (typeof marker.pid_namespace !== "string" || !LINUX_PID_NAMESPACE.test(marker.pid_namespace)))
   );
 }
 
@@ -532,12 +554,26 @@ export async function cleanupScratchOwnership(ownership: ScratchOwnership, hooks
   await quarantineAndRemove(ownership.allocation, undefined, hooks);
 }
 
-function processAbsent(pid: number): boolean {
+function ownerAbsence(
+  marker: Marker,
+  bootId: string | null,
+  pidNamespace: string | null
+): "absent" | "owner-live" | "pid-namespace-mismatch" {
+  if (platform() === "linux" && marker.pid_namespace !== pidNamespace) {
+    // This process cannot see the owner's PID, so a PID probe proves nothing. Only a different boot, read
+    // from a trustworthy current boot id, proves the owner died. Legacy markers and markers from a dead
+    // nested namespace would otherwise be retained forever.
+    if (marker.boot_id !== undefined && bootId !== null && marker.boot_id !== bootId) {
+      return "absent";
+    }
+    return "pid-namespace-mismatch";
+  }
+  // Same namespace: the PID probe is authoritative, so a live owner is never overridden by a boot id.
   try {
-    process.kill(pid, 0);
-    return false;
+    process.kill(marker.owner_pid, 0);
+    return "owner-live";
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
+    return (error as NodeJS.ErrnoException).code === "ESRCH" ? "absent" : "owner-live";
   }
 }
 
@@ -629,6 +665,7 @@ async function recoverJournal(
   canonicalParent: string,
   now: number,
   bootId: string | null,
+  pidNamespace: string | null,
   budget: CleanupBudget
 ): Promise<RecoveryResult> {
   const journal = await readCleanupJournal(journalPath);
@@ -639,8 +676,9 @@ async function recoverJournal(
   if (!isOldEnough(marker, now)) {
     return { path: journalPath, reason: "fresh", removed: false };
   }
-  if (!processAbsent(marker.owner_pid)) {
-    return { path: journalPath, reason: "owner-live", removed: false };
+  const ownerStatus = ownerAbsence(marker, bootId, pidNamespace);
+  if (ownerStatus !== "absent") {
+    return { path: journalPath, reason: ownerStatus, removed: false };
   }
   const stateReason = recoveryStateReason(marker, bootId);
   if (stateReason) {
@@ -690,6 +728,7 @@ async function recoverCompatibleQuarantine(
   canonicalParent: string,
   now: number,
   bootId: string | null,
+  pidNamespace: string | null,
   budget: CleanupBudget
 ): Promise<RecoveryResult> {
   const stats = await lstat(candidate).catch(() => undefined);
@@ -707,13 +746,12 @@ async function recoverCompatibleQuarantine(
   if (!isOldEnough(marker, now)) {
     return { path: candidate, reason: "fresh", removed: false };
   }
-  if (
-    marker.parent !== canonicalParent ||
-    marker.dev !== stats.dev ||
-    marker.ino !== stats.ino ||
-    !processAbsent(marker.owner_pid)
-  ) {
+  if (marker.parent !== canonicalParent || marker.dev !== stats.dev || marker.ino !== stats.ino) {
     return { path: candidate, reason: "quarantine-no-capability", removed: false };
+  }
+  const ownerStatus = ownerAbsence(marker, bootId, pidNamespace);
+  if (ownerStatus !== "absent") {
+    return { path: candidate, reason: ownerStatus, removed: false };
   }
   const stateReason = recoveryStateReason(marker, bootId);
   if (stateReason) {
@@ -739,6 +777,7 @@ async function recoverRunCandidate(
   canonicalParent: string,
   now: number,
   bootId: string | null,
+  pidNamespace: string | null,
   budget: CleanupBudget
 ): Promise<RecoveryResult | undefined> {
   if (!isImmediateRunChild(canonicalParent, candidate)) {
@@ -767,8 +806,9 @@ async function recoverRunCandidate(
   ) {
     return { path: candidate, reason: "identity-mismatch", removed: false };
   }
-  if (!processAbsent(marker.owner_pid)) {
-    return { path: candidate, reason: "owner-live", removed: false };
+  const ownerStatus = ownerAbsence(marker, bootId, pidNamespace);
+  if (ownerStatus !== "absent") {
+    return { path: candidate, reason: ownerStatus, removed: false };
   }
   const stateReason = recoveryStateReason(marker, bootId);
   if (stateReason) {
@@ -887,6 +927,7 @@ export async function recoverStaleScratch(options: RecoverStaleScratchOptions = 
   const canonicalParent = await validatedParent(options.parent);
   const now = options.now ?? Date.now();
   const bootId = await linuxBootId();
+  const pidNamespace = linuxPidNamespace();
   const limits = boundedLimits(options.limits);
   const results: RecoveryResult[] = [];
   const cursorPath = join(canonicalParent, RECOVERY_CURSOR_NAME);
@@ -932,14 +973,22 @@ export async function recoverStaleScratch(options: RecoverStaleScratchOptions = 
     let result: RecoveryResult | undefined;
     if (name.startsWith("run-")) {
       // biome-ignore lint/performance/noAwaitInLoops: recovery concurrency is deliberately fixed at one.
-      result = await recoverRunCandidate(candidate, canonicalParent, now, bootId, budget);
+      result = await recoverRunCandidate(candidate, canonicalParent, now, bootId, pidNamespace, budget);
     } else {
       const journalNonce = journalPathNonce(candidate);
       const quarantineNonce = quarantinePathNonce(candidate);
       if (journalNonce) {
-        result = await recoverJournal(candidate, canonicalParent, now, bootId, budget);
+        result = await recoverJournal(candidate, canonicalParent, now, bootId, pidNamespace, budget);
       } else if (quarantineNonce) {
-        result = await recoverCompatibleQuarantine(candidate, quarantineNonce, canonicalParent, now, bootId, budget);
+        result = await recoverCompatibleQuarantine(
+          candidate,
+          quarantineNonce,
+          canonicalParent,
+          now,
+          bootId,
+          pidNamespace,
+          budget
+        );
       } else {
         result = { path: candidate, reason: "foreign-entry", removed: false };
       }
