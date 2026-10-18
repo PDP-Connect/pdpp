@@ -7,5 +7,8 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node --import tsx ../../scripts/test-scratch/run-command.ts -- node ../../scripts/run-node-tests.mjs --test --import tsx \"src/**/*.test.ts\""
+  }
 }

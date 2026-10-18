@@ -300,6 +300,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@types/jsdom':
+        specifier: ^30.0.0
+        version: 30.0.0
       '@types/mdx':
         specifier: ^2.0.14
         version: 2.0.14
@@ -315,6 +318,9 @@ importers:
       design-book:
         specifier: 0.6.0
         version: 0.6.0
+      jsdom:
+        specifier: 30.1.1
+        version: 30.1.1(@noble/hashes@1.8.0)
       playwright:
         specifier: ^1.63.0
         version: 1.63.0

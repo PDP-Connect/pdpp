@@ -1004,6 +1004,18 @@ test("the dedicated scratch lifecycle leaf removes every inherited capability va
     "renamed-lifecycle/default",
   ]);
 });
+test("suite environment resolves relative tsx config paths before passing them to leaf processes", () => {
+  const root = join(tmpdir(), "pdpp-authority-root");
+  const suite = {
+    id: "site",
+    cwd: ".",
+    environment: { TSX_TSCONFIG_PATH: "apps/site/tsconfig.json" },
+  } as Manifest["suites"][number];
+
+  const environment = suiteEnvironment({}, "default", suite, root);
+
+  assert.equal(environment.TSX_TSCONFIG_PATH, join(root, "apps/site/tsconfig.json"));
+});
 test("default authority selection spawns and completes only required profiles even when an optional predicate is present", async () => {
   const root = await mkdtemp(join(tmpdir(), "pdpp-authority-"));
   await mkdir(join(root, "test"));
