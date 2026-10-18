@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   access,
   chmod,
@@ -66,6 +66,152 @@ function startRawWrapper(argv: string[], env: NodeJS.ProcessEnv = process.env) {
   });
 }
 
+test("owner routes children through the sandbox unless explicitly disabled", async () => {
+  const runnerTemp = await temporaryParent();
+  const probe = [
+    process.execPath,
+    "-e",
+    "console.log(JSON.stringify({active:process.env.TEST_SANDBOX_ACTIVE||null,tmp:process.env.TMPDIR,umask:process.umask()}))",
+  ];
+  try {
+    for (const disabled of [false, true]) {
+      const env = {
+        ...process.env,
+        PDPP_TEST_SCRATCH_ROOT: undefined,
+        PDPP_TEST_SCRATCH_SCHEMA: undefined,
+        PDPP_TEST_SCRATCH_MARKER: undefined,
+        PDPP_TEST_SCRATCH_NONCE: undefined,
+        PDPP_TEST_SCRATCH_OWNER_PID: undefined,
+        RUNNER_TEMP: runnerTemp,
+        TEST_SANDBOX_ACTIVE: "",
+        TEST_SANDBOX_DISABLE: disabled ? "1" : "0",
+      };
+      const wrapper = startRawWrapper(probe, env);
+      let stdout = "";
+      wrapper.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString();
+      });
+      // biome-ignore lint/performance/noAwaitInLoops: exercise enabled and disabled launches sequentially.
+      assert.deepEqual(await closed(wrapper), { code: 0, signal: null });
+      const result = JSON.parse(stdout.trim()) as { active: string | null; tmp: string; umask: number };
+      assert.equal(result.active, disabled ? null : "1");
+      if (!disabled) {
+        assert.equal(result.umask, 0o077);
+      }
+      assert.ok(result.tmp.includes("pdpp-test-scratch"));
+      await assert.rejects(access(result.tmp));
+    }
+  } finally {
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("sandbox preserves literal shell variable syntax in child argv", async () => {
+  const runnerTemp = await temporaryParent();
+  try {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: exercise literal shell syntax across the launcher boundary.
+    const wrapper = startRawWrapper(["bash", "-c", 'X=ok; printf %s "${X}"'], {
+      ...process.env,
+      PDPP_TEST_SCRATCH_ROOT: undefined,
+      PDPP_TEST_SCRATCH_SCHEMA: undefined,
+      PDPP_TEST_SCRATCH_MARKER: undefined,
+      PDPP_TEST_SCRATCH_NONCE: undefined,
+      PDPP_TEST_SCRATCH_OWNER_PID: undefined,
+      RUNNER_TEMP: runnerTemp,
+      TEST_SANDBOX_ACTIVE: "",
+      TEST_SANDBOX_DISABLE: "0",
+    });
+    let output = "";
+    wrapper.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    assert.deepEqual(await closed(wrapper), { code: 0, signal: null });
+    assert.equal(output, "ok");
+  } finally {
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("normal sandbox exit stops a background command child before scratch cleanup", async () => {
+  const runnerTemp = await temporaryParent();
+  const wrapper = startRawWrapper(
+    ["bash", "-c", 'sleep 300 </dev/null >/dev/null 2>&1 & printf "%s\\n%s\\n" "$!" "$TMPDIR"'],
+    {
+      ...process.env,
+      PDPP_TEST_SCRATCH_ROOT: undefined,
+      PDPP_TEST_SCRATCH_SCHEMA: undefined,
+      PDPP_TEST_SCRATCH_MARKER: undefined,
+      PDPP_TEST_SCRATCH_NONCE: undefined,
+      PDPP_TEST_SCRATCH_OWNER_PID: undefined,
+      RUNNER_TEMP: runnerTemp,
+      TEST_RECEIPT_ACTIVE: "1",
+      TEST_SANDBOX_ACTIVE: "1",
+      TEST_SANDBOX_DISABLE: "0",
+    }
+  );
+  let output = "";
+  wrapper.stdout?.on("data", (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  let backgroundPid: number | undefined;
+  try {
+    const result = await closed(wrapper);
+    const [pidLine, root] = output.trim().split("\n");
+    backgroundPid = Number(pidLine);
+    assert.ok(Number.isSafeInteger(backgroundPid) && backgroundPid > 0);
+    assert.ok(root);
+    assert.deepEqual(result, { code: 0, signal: null });
+    await eventuallyAbsentProcess(backgroundPid);
+    await assert.rejects(access(root));
+  } finally {
+    if (backgroundPid) {
+      try {
+        process.kill(backgroundPid, "SIGKILL");
+      } catch {
+        // The launcher may already have stopped the child.
+      }
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("sandbox sees its owned scratch root below /tmp", {
+  skip: process.platform !== "linux",
+}, async () => {
+  const runnerTemp = await mkdtemp(join("/tmp", "pdpp-test-sandbox-tmp-"));
+  try {
+    const wrapper = startRawWrapper(
+      [
+        process.execPath,
+        "-e",
+        'const fs=require("node:fs");const root=process.env.TMPDIR;fs.writeFileSync(root+"/visible","ok");console.log(JSON.stringify({root,active:process.env.TEST_SANDBOX_ACTIVE}))',
+      ],
+      {
+        ...process.env,
+        PDPP_TEST_SCRATCH_ROOT: undefined,
+        PDPP_TEST_SCRATCH_SCHEMA: undefined,
+        PDPP_TEST_SCRATCH_MARKER: undefined,
+        PDPP_TEST_SCRATCH_NONCE: undefined,
+        PDPP_TEST_SCRATCH_OWNER_PID: undefined,
+        RUNNER_TEMP: runnerTemp,
+        TEST_SANDBOX_ACTIVE: "",
+        TEST_SANDBOX_DISABLE: "0",
+      }
+    );
+    let output = "";
+    wrapper.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    assert.deepEqual(await closed(wrapper), { code: 0, signal: null });
+    const result = JSON.parse(output.trim()) as { root: string; active: string };
+    assert.equal(result.active, "1");
+    assert.ok(result.root.startsWith(`${runnerTemp}/pdpp-test-scratch/run-`));
+    await assert.rejects(access(result.root));
+  } finally {
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
 function startLaunchingWrapper(env: NodeJS.ProcessEnv = process.env) {
   return spawn(process.execPath, ["--import", "tsx", lifecycleWrapperPath], {
     env,
@@ -79,7 +225,7 @@ function reportedRoot(proc: ReturnType<typeof spawn>): Promise<string> {
     output += chunk.toString();
   });
   return new Promise<string>((resolve, reject) => {
-    const deadline = setTimeout(() => reject(new Error("child did not report its scratch root")), 5000);
+    const deadline = setTimeout(() => reject(new Error("child did not report its scratch root")), 20_000);
     const observe = () => {
       const value = output.trim();
       if (value) {
@@ -147,8 +293,8 @@ async function oldMarker(
   );
 }
 
-async function eventuallyRead(path: string): Promise<string> {
-  const deadline = Date.now() + 5000;
+async function eventuallyRead(path: string, timeoutMs = 5000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
   while (Date.now() < deadline) {
     try {
@@ -164,6 +310,24 @@ async function eventuallyRead(path: string): Promise<string> {
     }
   }
   throw lastError;
+}
+
+async function eventuallyRunningMarker(
+  path: string
+): Promise<Record<string, unknown> & { pgid: number; state: string }> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    // biome-ignore lint/performance/noAwaitInLoops: marker state is published after the fixture reports its root.
+    const marker = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown> & {
+      pgid?: number;
+      state: string;
+    };
+    if (marker.state === "running" && Number.isSafeInteger(marker.pgid)) {
+      return marker as Record<string, unknown> & { pgid: number; state: string };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`scratch marker did not reach running state: ${path}`);
 }
 
 async function eventuallyRecover(parent: string, root: string): Promise<void> {
@@ -194,6 +358,23 @@ async function eventuallyAbsentGroup(pgid: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`process group ${pgid} did not exit`);
+}
+
+async function eventuallyAbsentProcess(pid: number): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        return;
+      }
+      throw error;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: bounded polling observes reaping after sandbox shutdown.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`process ${pid} did not exit`);
 }
 
 test("owner contains tmpdir writes, preserves numeric exits, and removes only its root", async () => {
@@ -249,15 +430,20 @@ test("cleanup refuses a swapped root identity", async () => {
 test("cleanup refuses a live recorded process group before quarantine", async () => {
   const parent = await temporaryParent();
   const ownership = await allocateScratchOwnership({ parent });
-  const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).trim());
-  assert.ok(Number.isSafeInteger(pgid) && pgid > 0);
-  await oldMarker(ownership, { pgid, state: "running" });
-  await assert.rejects(cleanupScratchOwnership(ownership), {
-    name: "ScratchOwnershipError",
-    reason: "group-live",
-  });
-  await access(ownership.allocation.root);
-  await rm(parent, { force: true, recursive: true });
+  const live = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  assert.ok(live.pid);
+  try {
+    await oldMarker(ownership, { pgid: live.pid, state: "running" });
+    await assert.rejects(cleanupScratchOwnership(ownership), {
+      name: "ScratchOwnershipError",
+      reason: "group-live",
+    });
+    await access(ownership.allocation.root);
+  } finally {
+    process.kill(-live.pid, "SIGKILL");
+    await eventuallyAbsentGroup(live.pid);
+    await rm(parent, { force: true, recursive: true });
+  }
 });
 
 test("participant creates no nested owner", async () => {
@@ -699,7 +885,7 @@ test("SIGTERM reaches the owned group and cleanup completes before wrapper termi
     output += chunk.toString();
   });
   const root = await new Promise<string>((resolve, reject) => {
-    const deadline = setTimeout(() => reject(new Error("child did not report its scratch root")), 5000);
+    const deadline = setTimeout(() => reject(new Error("child did not report its scratch root")), 20_000);
     const observe = () => {
       const value = output.trim();
       if (value) {
@@ -735,7 +921,7 @@ test("SIGINT is forwarded unchanged to the owned group before cleanup", async ()
     output += chunk.toString();
   });
   const root = await new Promise<string>((resolve, reject) => {
-    const deadline = setTimeout(() => reject(new Error("child did not report its scratch root")), 5000);
+    const deadline = setTimeout(() => reject(new Error("child did not report its scratch root")), 20_000);
     const observe = () => {
       const [value] = output.trim().split("\n");
       if (value) {
@@ -758,6 +944,59 @@ test("SIGINT is forwarded unchanged to the owned group before cleanup", async ()
   await assert.rejects(access(root));
 });
 
+test("SIGINT waits for the sandbox child group to be published", async () => {
+  const runnerTemp = await temporaryParent();
+  const wrapper = startWrapper(["--print-root", "--record-signals", "--wait"], {
+    ...process.env,
+    RUNNER_TEMP: runnerTemp,
+    TEST_SANDBOX_ACTIVE: "",
+    TEST_SANDBOX_DISABLE: "0",
+    PDPP_TEST_SANDBOX_GROUP_PUBLISH_BARRIER: "1",
+  });
+  let output = "";
+  wrapper.stdout?.on("data", (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  const rootPromise = reportedRoot(wrapper);
+  const result = closed(wrapper);
+  let commandPgid: number | undefined;
+  let barrier: string | undefined;
+  try {
+    const root = await rootPromise;
+    barrier = join(root, ".sandbox-child-group.barrier");
+    commandPgid = Number((await eventuallyRead(`${barrier}.spawned`, 20_000)).trim());
+    assert.ok(Number.isSafeInteger(commandPgid) && commandPgid > 0);
+    await eventuallyRead(join(root, "signals-ready"));
+    await assert.rejects(access(join(root, ".sandbox-child-group")));
+    wrapper.kill("SIGINT");
+    await eventuallyRead(`${barrier}.waiting`);
+    await writeFile(`${barrier}.release`, "release\n");
+    assert.deepEqual(await result, { code: null, signal: "SIGINT" });
+    assert.match(output, CHILD_SIGINT_OUTPUT);
+    assert.doesNotMatch(output, CHILD_SIGTERM_OUTPUT);
+    await eventuallyAbsentGroup(commandPgid);
+    await assert.rejects(access(root));
+  } finally {
+    if (barrier) {
+      await writeFile(`${barrier}.release`, "release\n").catch(() => {
+        // The owner may already have removed its scratch root.
+      });
+    }
+    if (commandPgid) {
+      try {
+        process.kill(-commandPgid, "SIGKILL");
+      } catch {
+        // The group may have exited before this failure-path cleanup.
+      }
+    }
+    if (wrapper.exitCode === null && wrapper.signalCode === null) {
+      wrapper.kill("SIGTERM");
+      await result;
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
 test("SIGTERM starts bounded escalation before a TERM-ignoring direct child closes", async () => {
   let output = "";
   const wrapper = spawn(
@@ -768,13 +1007,13 @@ test("SIGTERM starts bounded escalation before a TERM-ignoring direct child clos
       new URL("./run-command.ts", import.meta.url).pathname,
       ...command(["--print-root", "--ignore-term", "--grandchild", "--grandchild-ignore-term", "--wait"]),
     ],
-    { stdio: ["ignore", "pipe", "ignore"] }
+    { env: { ...process.env, TEST_SANDBOX_DISABLE: "1" }, stdio: ["ignore", "pipe", "ignore"] }
   );
   wrapper.stdout?.on("data", (chunk: Buffer) => {
     output += chunk.toString();
   });
   const root = await new Promise<string>((resolve, reject) => {
-    const deadline = setTimeout(() => reject(new Error("child did not report its scratch root")), 5000);
+    const deadline = setTimeout(() => reject(new Error("child did not report its scratch root")), 20_000);
     const observe = () => {
       const value = output.trim();
       if (value) {
@@ -805,6 +1044,7 @@ test("an intentionally detached descendant is outside the process-group containm
   const wrapper = startWrapper(["--print-root", "--escaped-grandchild", "--wait"], {
     ...process.env,
     RUNNER_TEMP: runnerTemp,
+    TEST_SANDBOX_DISABLE: "1",
   });
   let escapedPid: number | undefined;
   try {
@@ -941,7 +1181,7 @@ test("a latched signal plus a pre-launch error cleans the provably allocated roo
 test("SIGKILL during spawn-before-running retains a launching root even after its group dies", async () => {
   const runnerTemp = await temporaryParent();
   const parent = join(runnerTemp, "pdpp-test-scratch");
-  const proc = startLaunchingWrapper({ ...process.env, RUNNER_TEMP: runnerTemp });
+  const proc = startLaunchingWrapper({ ...process.env, RUNNER_TEMP: runnerTemp, TEST_SANDBOX_DISABLE: "1" });
   try {
     const root = await reportedRoot(proc);
     const markerPath = join(root, ".pdpp-test-scratch.json");
@@ -1158,10 +1398,11 @@ test("SIGKILL leaves a live orphan, then a later recovery removes its dead group
   const proc = startWrapper(["--print-root", "--grandchild", "--grandchild-ignore-term", "--wait"], {
     ...process.env,
     RUNNER_TEMP: runnerTemp,
+    TEST_SANDBOX_DISABLE: "1",
   });
   const root = await reportedRoot(proc);
   const markerPath = join(root, ".pdpp-test-scratch.json");
-  const marker = JSON.parse(await readFile(markerPath, "utf8")) as { pgid: number };
+  const marker = await eventuallyRunningMarker(markerPath);
   const close = exited(proc);
   proc.kill("SIGKILL");
   assert.deepEqual(await close, { code: null, signal: "SIGKILL" });
@@ -1301,7 +1542,7 @@ test("wrong-owner candidates have a stable conservative recovery reason", async 
 
 test("parallel outer owners isolate participant worker trees under one inherited root each", async () => {
   const runnerTemp = await temporaryParent();
-  const env = { ...process.env, RUNNER_TEMP: runnerTemp };
+  const env = { ...process.env, RUNNER_TEMP: runnerTemp, TEST_SANDBOX_DISABLE: "1" };
   const first = startWrapper(["--print-root", "--nested-participant", "--wait"], env);
   const second = startWrapper(["--print-root", "--nested-participant", "--wait"], env);
   const [firstRoot, secondRoot] = await Promise.all([reportedRoot(first), reportedRoot(second)]);

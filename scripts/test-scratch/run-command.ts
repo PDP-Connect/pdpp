@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
+import { constants } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   allocateScratchOwnership,
   type CleanupHooks,
@@ -18,6 +22,8 @@ import {
 
 const INFRASTRUCTURE_EXIT_CODE = 74;
 const GROUP_GRACE_MS = 3000;
+const SANDBOX = fileURLToPath(new URL("../test-sandbox/test-sandbox", import.meta.url));
+const SANDBOX_CHILD = fileURLToPath(new URL("./sandbox-child.ts", import.meta.url));
 type Signal = "SIGINT" | "SIGTERM";
 
 export interface CommandResult {
@@ -66,6 +72,29 @@ function signalGroup(pgid: number, signal: NodeJS.Signals): void {
       throw error;
     }
   }
+}
+
+async function publishedSandboxGroup(path: string): Promise<number | undefined> {
+  const deadline = Date.now() + GROUP_GRACE_MS;
+  let waitingReported = false;
+  while (Date.now() < deadline) {
+    // biome-ignore lint/performance/noAwaitInLoops: the sidecar publishes the group after spawning the command.
+    const value = await readFile(path, "utf8").catch(() => "");
+    const published = value.trim();
+    const pgid = Number(published);
+    if (published === "0") {
+      return 0;
+    }
+    if (Number.isSafeInteger(pgid) && pgid > 0) {
+      return pgid;
+    }
+    if (!waitingReported && process.env.PDPP_TEST_SANDBOX_GROUP_PUBLISH_BARRIER === "1") {
+      await writeFile(`${path}.barrier.waiting`, "waiting\n");
+      waitingReported = true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return undefined;
 }
 
 async function waitForGroup(pgid: number, timeoutMs: number): Promise<boolean> {
@@ -158,7 +187,9 @@ interface SignalControl {
   pgid: () => number | undefined;
   receivedAt: () => number | undefined;
   release: () => void;
+  sandboxGroupPath: () => string | undefined;
   setPgid: (pgid: number) => void;
+  setSandboxGroupPath: (path: string) => void;
   shutdown: () => Promise<boolean> | undefined;
   signal: () => Signal | undefined;
 }
@@ -171,9 +202,30 @@ function installSignalControl(
   let runningGroupActive = false;
   let signalReceivedAt: number | undefined;
   let signalShutdown: Promise<boolean> | undefined;
+  let sandboxGroupPath: string | undefined;
   const startSignalShutdown = () => {
     if (firstSignal && pgid !== undefined && runningGroupActive && !signalShutdown) {
-      signalShutdown = stopGroup(pgid, signalReceivedAt, firstSignal);
+      const signal = firstSignal;
+      const sandboxPgid = pgid;
+      signalShutdown = (async () => {
+        let commandGroupStopped = true;
+        if (sandboxGroupPath) {
+          const commandPgid = await publishedSandboxGroup(sandboxGroupPath);
+          if (commandPgid === 0) {
+            commandGroupStopped = true;
+          } else if (commandPgid) {
+            commandGroupStopped = await terminateRemainingGroup(commandPgid, signalReceivedAt, signal).catch(
+              () => false
+            );
+          } else {
+            // The command may have spawned without publishing its group yet.
+            // Stop the scope, but retain scratch when that group is unknown.
+            commandGroupStopped = false;
+          }
+        }
+        const sandboxGroupStopped = await stopGroup(sandboxPgid, signalReceivedAt, signal);
+        return commandGroupStopped && sandboxGroupStopped;
+      })();
     }
   };
   const forwardSignal = (signal: Signal) => {
@@ -195,10 +247,14 @@ function installSignalControl(
       process.off("SIGINT", forwardSignal);
       process.off("SIGTERM", forwardSignal);
     },
+    sandboxGroupPath: () => sandboxGroupPath,
     shutdown: () => signalShutdown,
     signal: () => firstSignal,
     setPgid: (value) => {
       pgid = value;
+    },
+    setSandboxGroupPath: (path) => {
+      sandboxGroupPath = path;
     },
   };
 }
@@ -208,16 +264,30 @@ function latchedSignalResult(control: SignalControl): CommandResult | undefined 
   return signal ? { code: null, signal } : undefined;
 }
 
-function stopTrackedGroup(
+async function stopTrackedGroup(
   control: SignalControl,
   stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>
 ): Promise<boolean> {
   const pgid = control.pgid();
   if (pgid === undefined) {
-    return Promise.resolve(true);
+    return true;
   }
   const shutdown = control.shutdown();
-  return shutdown ?? stopGroup(pgid, control.receivedAt(), control.signal());
+  if (shutdown) {
+    return shutdown;
+  }
+  let commandGroupStopped = true;
+  const commandGroupPath = control.sandboxGroupPath();
+  if (commandGroupPath) {
+    const commandPgid = await publishedSandboxGroup(commandGroupPath);
+    if (commandPgid === undefined) {
+      commandGroupStopped = false;
+    } else if (commandPgid > 0) {
+      commandGroupStopped = await terminateRemainingGroup(commandPgid);
+    }
+  }
+  const sandboxGroupStopped = await stopGroup(pgid, control.receivedAt(), control.signal());
+  return commandGroupStopped && sandboxGroupStopped;
 }
 
 async function stopTrackedGroupSafely(
@@ -231,6 +301,71 @@ async function stopTrackedGroupSafely(
     // retain the root, but preserve the child's already-observed result.
     process.stderr.write("test scratch cleanup failed: group-shutdown-failed\n");
     return false;
+  }
+}
+
+function sandboxLaunch(
+  file: string,
+  args: string[],
+  ownership: ScratchOwnership
+): {
+  file: string;
+  args: string[];
+  signalPath?: string;
+  groupPath?: string;
+} {
+  if (process.env.TEST_SANDBOX_DISABLE === "1") {
+    return { file, args };
+  }
+  const signalPath = join(ownership.allocation.root, ".sandbox-child-signal");
+  const groupPath = join(ownership.allocation.root, ".sandbox-child-group");
+  return {
+    file: SANDBOX,
+    args: [
+      "--scratch",
+      ownership.allocation.root,
+      "--",
+      process.execPath,
+      "--import",
+      "tsx",
+      SANDBOX_CHILD,
+      signalPath,
+      groupPath,
+      file,
+      ...args,
+    ],
+    signalPath,
+    groupPath,
+  };
+}
+
+async function restoreSandboxSignal(result: CommandResult, signalPath?: string): Promise<CommandResult> {
+  if (!signalPath) {
+    return result;
+  }
+  const signal = await readFile(signalPath, "utf8").catch(() => undefined);
+  const signalNumber = signal && constants.signals[signal.trim() as NodeJS.Signals];
+  return signalNumber && result.code === 128 + signalNumber
+    ? { code: null, signal: signal.trim() as NodeJS.Signals }
+    : result;
+}
+
+function spawnOwnedCommand(launch: ReturnType<typeof sandboxLaunch>, ownership: ScratchOwnership) {
+  // The collector uses mkdir -p for --scratch. A replacement root must remain
+  // private even if another process removes the one we allocated.
+  const previousUmask = launch.groupPath ? process.umask(0o077) : undefined;
+  try {
+    return spawn(launch.file, launch.args, {
+      cwd: process.cwd(),
+      detached: true,
+      env: launch.groupPath ? { ...ownership.env, TEST_SANDBOX_PIDNS: "0" } : ownership.env,
+      shell: false,
+      stdio: "inherit",
+    });
+  } finally {
+    if (previousUmask !== undefined) {
+      process.umask(previousUmask);
+    }
   }
 }
 
@@ -254,13 +389,11 @@ async function runLaunchedCommand(
         options.cleanupHooks
       );
     }
-    const child = spawn(file, args, {
-      cwd: process.cwd(),
-      detached: true,
-      env: ownership.env,
-      shell: false,
-      stdio: "inherit",
-    });
+    const launch = sandboxLaunch(file, args, ownership);
+    if (launch.groupPath) {
+      control.setSandboxGroupPath(launch.groupPath);
+    }
+    const child = spawnOwnedCommand(launch, ownership);
     const observed = observeChild(child);
     if (!child.pid) {
       await markScratchUnlaunched(ownership);
@@ -277,6 +410,7 @@ async function runLaunchedCommand(
     if (observed.launchError()) {
       throw observed.launchError();
     }
+    result = await restoreSandboxSignal(result, launch.signalPath);
     const groupStopped = await stopTrackedGroupSafely(control, stopGroup);
     const signalResult = latchedSignalResult(control);
     return cleanupWithResult(ownership, signalResult ?? result, groupStopped, control, options.cleanupHooks);
