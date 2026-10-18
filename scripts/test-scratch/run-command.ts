@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { constants } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,10 +74,16 @@ function signalGroup(pgid: number, signal: NodeJS.Signals): void {
   }
 }
 
-async function publishedSandboxGroup(path: string): Promise<number | undefined> {
+/**
+ * Read the command group published by the sidecar. `0` means no command group
+ * exists: the spawn failed, or the sandbox exited before the sidecar published
+ * (for example `TEST_SANDBOX_REQUIRE=1` with bubblewrap unusable).
+ */
+async function publishedSandboxGroup(path: string, sandboxPgid: number): Promise<number | undefined> {
   const deadline = Date.now() + GROUP_GRACE_MS;
-  let waitingReported = false;
   while (Date.now() < deadline) {
+    // Observe the sandbox first: a group that is gone cannot publish after the read below.
+    const sandboxGone = !groupExists(sandboxPgid);
     // biome-ignore lint/performance/noAwaitInLoops: the sidecar publishes the group after spawning the command.
     const value = await readFile(path, "utf8").catch(() => "");
     const published = value.trim();
@@ -88,9 +94,8 @@ async function publishedSandboxGroup(path: string): Promise<number | undefined> 
     if (Number.isSafeInteger(pgid) && pgid > 0) {
       return pgid;
     }
-    if (!waitingReported && process.env.PDPP_TEST_SANDBOX_GROUP_PUBLISH_BARRIER === "1") {
-      await writeFile(`${path}.barrier.waiting`, "waiting\n");
-      waitingReported = true;
+    if (sandboxGone) {
+      return 0;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -178,6 +183,8 @@ export interface RunScratchCommandOptions {
   cleanupHooks?: CleanupHooks;
   /** Fixed startup-recovery limits, exposed only for deterministic lifecycle tests. */
   recoveryLimits?: Partial<RecoveryLimits>;
+  /** Test seam replacing the sidecar script that spawns and publishes the command group. */
+  sandboxChild?: string;
   /** Test seam for the fail-closed path after a process-group shutdown attempt. */
   stopGroup?: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>;
 }
@@ -210,7 +217,7 @@ function installSignalControl(
       signalShutdown = (async () => {
         let commandGroupStopped = true;
         if (sandboxGroupPath) {
-          const commandPgid = await publishedSandboxGroup(sandboxGroupPath);
+          const commandPgid = await publishedSandboxGroup(sandboxGroupPath, sandboxPgid);
           if (commandPgid === 0) {
             commandGroupStopped = true;
           } else if (commandPgid) {
@@ -279,7 +286,7 @@ async function stopTrackedGroup(
   let commandGroupStopped = true;
   const commandGroupPath = control.sandboxGroupPath();
   if (commandGroupPath) {
-    const commandPgid = await publishedSandboxGroup(commandGroupPath);
+    const commandPgid = await publishedSandboxGroup(commandGroupPath, pgid);
     if (commandPgid === undefined) {
       commandGroupStopped = false;
     } else if (commandPgid > 0) {
@@ -307,7 +314,8 @@ async function stopTrackedGroupSafely(
 function sandboxLaunch(
   file: string,
   args: string[],
-  ownership: ScratchOwnership
+  ownership: ScratchOwnership,
+  sandboxChild: string
 ): {
   file: string;
   args: string[];
@@ -328,7 +336,7 @@ function sandboxLaunch(
       process.execPath,
       "--import",
       "tsx",
-      SANDBOX_CHILD,
+      sandboxChild,
       signalPath,
       groupPath,
       file,
@@ -380,7 +388,7 @@ async function runLaunchedCommand(
         options.cleanupHooks
       );
     }
-    const launch = sandboxLaunch(file, args, ownership);
+    const launch = sandboxLaunch(file, args, ownership, options.sandboxChild ?? SANDBOX_CHILD);
     if (launch.groupPath) {
       control.setSandboxGroupPath(launch.groupPath);
     }

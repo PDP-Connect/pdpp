@@ -3,12 +3,11 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const LOCK_NAME = "pdpp-test-accounting.lock.d";
 const OWNER_NAME = "owner.json";
-const PID_NAMESPACE_PATTERN = /^pid:\[\d+\]$/;
 const INCOMPLETE_OWNER_GRACE_MS = 10_000;
 const POLL_INTERVAL_MS = 250;
 const WAIT_MESSAGE = "Another full PDPP test-accounting run is active; waiting for it to finish.";
@@ -40,18 +39,6 @@ function pidIsAlive(pid) {
   }
 }
 
-function pidNamespace() {
-  if (process.platform !== "linux") {
-    return null;
-  }
-  try {
-    const namespace = readlinkSync("/proc/self/ns/pid");
-    return PID_NAMESPACE_PATTERN.test(namespace) ? namespace : null;
-  } catch {
-    return null;
-  }
-}
-
 function readOwner(ownerPath) {
   try {
     const value = JSON.parse(readFileSync(ownerPath, "utf8"));
@@ -64,17 +51,13 @@ function readOwner(ownerPath) {
   }
 }
 
-function ownerMayBeAlive(owner) {
-  const namespace = pidNamespace();
-  if (process.platform === "linux" && (!namespace || owner.pid_namespace !== namespace)) {
-    return true;
-  }
+function ownerIsAlive(owner) {
   return pidIsAlive(owner.wrapper_pid) || pidIsAlive(owner.child_pid);
 }
 
 function reclaimAbandonedLock(lockPath, ownerPath) {
   const owner = readOwner(ownerPath);
-  if (owner && ownerMayBeAlive(owner)) {
+  if (owner && ownerIsAlive(owner)) {
     return false;
   }
   if (!owner) {
@@ -115,10 +98,6 @@ async function acquireLock() {
         child_pid: null,
         acquired_at: new Date().toISOString(),
       };
-      const namespace = pidNamespace();
-      if (namespace) {
-        owner.pid_namespace = namespace;
-      }
       writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`, { flag: "wx" });
       return {
         setChildPid(childPid) {

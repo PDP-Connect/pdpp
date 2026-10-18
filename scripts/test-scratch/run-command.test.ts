@@ -34,6 +34,7 @@ import { runScratchCommand } from "./run-command.ts";
 const child = new URL("./fixtures/child.ts", import.meta.url).pathname;
 const CHILD_SIGINT_OUTPUT = /child-signal:SIGINT/;
 const CHILD_SIGTERM_OUTPUT = /child-signal:SIGTERM/;
+const GROUP_STILL_LIVE_OUTPUT = /group-still-live/;
 const LINUX_BOOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function temporaryParent(): Promise<string> {
@@ -47,6 +48,7 @@ function command(args: string[]): string[] {
 const SANDBOX_SCRIPT = new URL("../test-sandbox/test-sandbox", import.meta.url).pathname;
 const wrapperPath = new URL("./run-command.ts", import.meta.url).pathname;
 const lifecycleWrapperPath = new URL("./fixtures/lifecycle-wrapper.ts", import.meta.url).pathname;
+const delayedPublishWrapperPath = new URL("./fixtures/delayed-publish-wrapper.ts", import.meta.url).pathname;
 
 interface ChildResult {
   code: number | null;
@@ -973,12 +975,9 @@ test("SIGINT is forwarded unchanged to the owned group before cleanup", async ()
 
 test("SIGINT waits for the sandbox child group to be published", async () => {
   const runnerTemp = await temporaryParent();
-  const wrapper = startWrapper(["--print-root", "--record-signals", "--wait"], {
-    ...process.env,
-    RUNNER_TEMP: runnerTemp,
-    TEST_SANDBOX_ACTIVE: "",
-    TEST_SANDBOX_DISABLE: "0",
-    PDPP_TEST_SANDBOX_GROUP_PUBLISH_BARRIER: "1",
+  const wrapper = spawn(process.execPath, ["--import", "tsx", delayedPublishWrapperPath], {
+    env: { ...process.env, RUNNER_TEMP: runnerTemp, TEST_SANDBOX_ACTIVE: "", TEST_SANDBOX_DISABLE: "0" },
+    stdio: ["ignore", "pipe", "ignore"],
   });
   let output = "";
   wrapper.stdout?.on("data", (chunk: Buffer) => {
@@ -986,26 +985,33 @@ test("SIGINT waits for the sandbox child group to be published", async () => {
   });
   const rootPromise = reportedRoot(wrapper);
   const result = closed(wrapper);
+  let settled = false;
+  result.then(() => {
+    settled = true;
+  });
   let commandPgid: number | undefined;
-  let barrier: string | undefined;
+  let groupPath: string | undefined;
   try {
     const root = await rootPromise;
-    barrier = join(root, ".sandbox-child-group.barrier");
-    commandPgid = Number((await eventuallyRead(`${barrier}.spawned`, 20_000)).trim());
+    groupPath = join(root, ".sandbox-child-group");
+    commandPgid = Number((await eventuallyRead(`${groupPath}.spawned`, 20_000)).trim());
     assert.ok(Number.isSafeInteger(commandPgid) && commandPgid > 0);
     await eventuallyRead(join(root, "signals-ready"));
-    await assert.rejects(access(join(root, ".sandbox-child-group")));
+    await assert.rejects(access(groupPath));
     wrapper.kill("SIGINT");
-    await eventuallyRead(`${barrier}.waiting`);
-    await writeFile(`${barrier}.release`, "release\n");
+    // The launcher must keep waiting for the unpublished group, not give up or clean up.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(settled, false);
+    await access(root);
+    await writeFile(`${groupPath}.release`, "release\n");
     assert.deepEqual(await result, { code: null, signal: "SIGINT" });
     assert.match(output, CHILD_SIGINT_OUTPUT);
     assert.doesNotMatch(output, CHILD_SIGTERM_OUTPUT);
     await eventuallyAbsentGroup(commandPgid);
     await assert.rejects(access(root));
   } finally {
-    if (barrier) {
-      await writeFile(`${barrier}.release`, "release\n").catch(() => {
+    if (groupPath) {
+      await writeFile(`${groupPath}.release`, "release\n").catch(() => {
         // The owner may already have removed its scratch root.
       });
     }
@@ -1021,6 +1027,43 @@ test("SIGINT waits for the sandbox child group to be published", async () => {
       await result;
     }
     await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("a sandbox that exits before publishing a command group leaves no scratch and propagates its status", async () => {
+  const runnerTemp = await temporaryParent();
+  const stubs = await temporaryParent();
+  try {
+    // A bwrap that cannot create namespaces makes TEST_SANDBOX_REQUIRE=1 exit 3 before the command starts.
+    await writeFile(join(stubs, "bwrap"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const wrapper = spawn(process.execPath, ["--import", "tsx", wrapperPath, ...command(["--exit=0"])], {
+      env: {
+        ...process.env,
+        PATH: `${stubs}:${process.env.PATH}`,
+        PDPP_TEST_SCRATCH_ROOT: undefined,
+        PDPP_TEST_SCRATCH_SCHEMA: undefined,
+        PDPP_TEST_SCRATCH_MARKER: undefined,
+        PDPP_TEST_SCRATCH_NONCE: undefined,
+        PDPP_TEST_SCRATCH_OWNER_PID: undefined,
+        RUNNER_TEMP: runnerTemp,
+        TEST_SANDBOX_ACTIVE: "",
+        TEST_SANDBOX_DISABLE: "0",
+        TEST_SANDBOX_REQUIRE: "1",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    wrapper.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    const started = Date.now();
+    assert.deepEqual(await closed(wrapper), { code: 3, signal: null });
+    assert.doesNotMatch(stderr, GROUP_STILL_LIVE_OUTPUT);
+    assert.ok(Date.now() - started < 3000, "the launcher must not wait out the publish grace period");
+    assert.deepEqual(await readdir(join(runnerTemp, "pdpp-test-scratch")), []);
+  } finally {
+    await rm(runnerTemp, { force: true, recursive: true });
+    await rm(stubs, { force: true, recursive: true });
   }
 });
 

@@ -1,8 +1,15 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+// Second process hop between test-sandbox and the test command. The sandbox and
+// its cgroup scope hide two facts from the launcher: the command's process
+// group and its terminating signal. This sidecar spawns the command in its own
+// group, publishes that group to `groupPath` (so the launcher can stop exactly
+// that group), and records a terminating signal at `signalPath` (so the
+// launcher can restore signal status instead of a bare 128+N exit code).
+
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { constants } from "node:os";
 
 const [signalPath, groupPath, file, ...args] = process.argv.slice(2);
@@ -23,21 +30,5 @@ child.once("close", (code, signal) => {
   }
 });
 
-if (child.pid) {
-  const barrier = process.env.PDPP_TEST_SANDBOX_GROUP_PUBLISH_BARRIER === "1" ? `${groupPath}.barrier` : undefined;
-  const barrierDeadline = Date.now() + 10_000;
-  if (barrier) {
-    writeFileSync(`${barrier}.spawned`, `${child.pid}\n`);
-  }
-  const publishGroup = () => {
-    if (barrier && !existsSync(`${barrier}.release`) && Date.now() < barrierDeadline) {
-      setTimeout(publishGroup, 25);
-      return;
-    }
-    writeFileSync(groupPath, `${child.pid}\n`, { mode: 0o600 });
-  };
-  publishGroup();
-} else {
-  // A failed spawn has no command group; publish that fact for cleanup.
-  writeFileSync(groupPath, "0\n", { mode: 0o600 });
-}
+// A failed spawn has no command group; publish that fact for cleanup.
+writeFileSync(groupPath, `${child.pid ?? 0}\n`, { mode: 0o600 });
