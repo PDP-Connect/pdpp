@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
+import { withoutServiceCredentials, withTestGuard } from "../hermetic/launcher.ts";
 import {
   assertCleanSourceTree,
   type Counts,
@@ -753,7 +754,11 @@ export function suiteEnvironment(
   suite: Suite,
   root = process.cwd()
 ): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...inherited, PDPP_TEST_PROFILE: profile, ...(suite.environment ?? {}) };
+  const environment: NodeJS.ProcessEnv = {
+    ...withoutServiceCredentials(inherited),
+    PDPP_TEST_PROFILE: profile,
+    ...(suite.environment ?? {}),
+  };
   const tsconfigPath = environment.TSX_TSCONFIG_PATH;
   if (tsconfigPath && !isAbsolute(tsconfigPath)) {
     environment.TSX_TSCONFIG_PATH = resolve(root, suite.cwd, tsconfigPath);
@@ -761,7 +766,7 @@ export function suiteEnvironment(
   for (const name of suite.environment_unset ?? []) {
     delete environment[name];
   }
-  return environment;
+  return withTestGuard(environment);
 }
 function leafCommand(run: Run, authorityPath: string, issuedArgv: string[]): string[] | null {
   if (run.suite.zero_tests) {

@@ -29,6 +29,7 @@ on:
       - "apps/site/**"
       - "docs/design-system/ink-carbon/project/**"
       - "scripts/check-generated-artifacts.ts"
+      - "scripts/hermetic/**"
       - "package.json"
       - "pnpm-lock.yaml"
   pull_request:
@@ -38,6 +39,7 @@ on:
       - "apps/site/**"
       - "docs/design-system/ink-carbon/project/**"
       - "scripts/check-generated-artifacts.ts"
+      - "scripts/hermetic/**"
       - "package.json"
       - "pnpm-lock.yaml"
   workflow_dispatch: {}

@@ -1,0 +1,614 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+// Fail-closed hermetic network guard for test/smoke execution.
+//
+// Background: a migration lane smoke-ran a migrated RI script with no args.
+// Its default fallback resolved to http://localhost:7662 -- the exact port a
+// live production reference server runs on on this machine -- and made real
+// read-only requests against it. A "check what's listening first" procedural
+// fix was rejected: the systemic problem is that ANY test or smoke process
+// can silently reach an ambient/production network origin whenever it fails
+// to plumb through an explicit fixture URL. This module makes that fail
+// LOUD and IMMEDIATE instead of silent.
+//
+// Design: default-deny. Once installed, every outbound HTTP(S) attempt
+// (fetch(), undici's global dispatcher, and legacy http.request()/https.request()) is checked
+// against an explicit allowlist of origins. Anything not on the allowlist is
+// refused before a socket is ever opened -- surfaced as a connection-refused
+// error (ECONNREFUSED) on the request, matching Node's real connection-failure
+// contract, so callers that await the 'error' event (proxies, clients) fail
+// cleanly instead of hanging. A request that supplies its OWN connection
+// machinery (an explicit http(s).Agent, or a per-request undici dispatcher) is
+// deferred to that machinery rather than guarded, since that is the caller's
+// declared connection intent (e.g. the product's loopback-pinned SSRF agent).
+//
+// AUTHORITY IS NORMALLY BIND-DERIVED. The guard patches the ONE bind-lifecycle
+// seam that every in-process server passes through -- net.Server.prototype
+// .listen (which http.Server and https.Server both inherit unchanged, and
+// which Fastify's app.listen() bottoms out at). When a server in THIS
+// process finishes binding a port (the 'listening' event -- i.e. the bind
+// actually succeeded and reported an address), the guard grants authority
+// for that exact bound port over its loopback spellings, and revokes it
+// again when close() is called. The 'close' event is too late for that: it
+// waits for open connections to end, while close() releases the port at once.
+// A test therefore reaches a server it itself started by any loopback
+// spelling, and nothing else -- not a different port, not a different host,
+// and not a port a foreign/production process happens to hold (7662). A test
+// that starts a server in a child process must explicitly grant the exact
+// returned origin in its parent, then revoke that grant.
+//
+// This module is inert until installHermeticNetworkGuard() is called. It is
+// never imported by product/runtime code paths -- see preload.mjs, which is
+// the only intended call site, wired into canonical test launchers and gated on
+// PDPP_HERMETIC_GUARD.
+import { createRequire, registerHooks, syncBuiltinESMExports } from "node:module";
+// Reference-counted allowlist: origin string -> number of currently-open
+// servers granting it. Ref-counting (not a plain Set) so that two servers
+// that legitimately map to the same loopback origin spelling -- e.g. an
+// IPv4 and an IPv6 listener sharing a port is impossible, but an AS and RS
+// on distinct ports never collide; the guard against double-revoke is for a
+// single server whose close/error paths both try to revoke -- do not have
+// one's close revoke the other's still-live grant. A grant is live while its
+// count is > 0.
+const registeredOrigins = new Map();
+let activeHandle;
+const TRAILING_SLASH_PATTERN = /\/+$/;
+/** Registry key for a Unix-domain socket: `unix:<path>`, e.g. `unix:/run/x.sock`. */
+const UNIX_SOCKET_PREFIX = "unix:";
+/**
+ * Normalize a URL-ish string down to its origin: `protocol//host:port`. A
+ * `unix:<absolute path>` key (a socket a server bound, or one a test grants
+ * explicitly through registerEphemeralOrigin) passes through unchanged.
+ */
+function normalizeOrigin(input) {
+    if (input.startsWith(UNIX_SOCKET_PREFIX)) {
+        return input;
+    }
+    const url = new URL(input);
+    return `${url.protocol}//${url.host}`.replace(TRAILING_SLASH_PATTERN, "");
+}
+function grantOrigin(origin) {
+    registeredOrigins.set(origin, (registeredOrigins.get(origin) ?? 0) + 1);
+}
+function revokeOrigin(origin) {
+    const count = registeredOrigins.get(origin);
+    if (count === undefined) {
+        return;
+    }
+    if (count <= 1) {
+        registeredOrigins.delete(origin);
+        return;
+    }
+    registeredOrigins.set(origin, count - 1);
+}
+/**
+ * Register an origin (e.g. the URL a test's own `server.listen(0, ...)` just
+ * bound) as reachable while the hermetic guard is active. Normally called by
+ * the bind-lifecycle hook (see installBindDerivedAuthority), not by tests.
+ * Kept exported so the guard's own unit tests can drive the allowlist
+ * directly, and so a test with a genuinely explicit, unusual handoff need
+ * (documented at its call site) can opt in. Idempotent-safe via ref-count.
+ */
+export function registerEphemeralOrigin(url) {
+    grantOrigin(normalizeOrigin(url));
+}
+/** Remove a previously registered origin. Mainly useful for guard's own tests. */
+export function unregisterEphemeralOrigin(url) {
+    revokeOrigin(normalizeOrigin(url));
+}
+/** True if `url`'s origin is currently allowlisted. */
+export function isOriginAllowed(url) {
+    const origin = normalizeOrigin(url);
+    return (registeredOrigins.get(origin) ?? 0) > 0 || localhostOwnsBothFamilies(origin);
+}
+/**
+ * `localhost` names a host, not a family. It can resolve to 127.0.0.1 or ::1,
+ * and Node may try either, so this process must own both loopback families on
+ * the port before the name is trusted. Otherwise a foreign listener on the
+ * other family would answer it.
+ */
+function localhostOwnsBothFamilies(origin) {
+    if (origin.startsWith(UNIX_SOCKET_PREFIX)) {
+        return false;
+    }
+    const { protocol, hostname, port } = new URL(origin);
+    if (hostname !== "localhost") {
+        return false;
+    }
+    const suffix = port === "" ? "" : `:${port}`;
+    return [IPV4_LOOPBACK, IPV6_LOOPBACK].every((host) => (registeredOrigins.get(`${protocol}//${host}${suffix}`) ?? 0) > 0);
+}
+export function blockedOriginError(origin) {
+    const error = new Error(`blocked non-allowlisted origin ${origin} (hermetic test guard: origin authority is derived from a successful in-process server bind; this origin was never bound by a server in this process, or was bound elsewhere/already closed)`);
+    // Carry the standard connection-refused code. The guard refuses to let the
+    // connection be established, so semantically this IS a refused connection --
+    // and any caller that keys off `err.code` (e.g. a proxy classifying upstream
+    // failures) then treats a guard block identically to a real ECONNREFUSED,
+    // rather than seeing an unrecognized error. The message still names the
+    // hermetic guard, so the block remains fully diagnosable.
+    error.code = "ECONNREFUSED";
+    return error;
+}
+// ─── Bind-derived origin authority ──────────────────────────────────────────
+// Loopback spellings per address family. `localhost` is not one of them: it is
+// trusted only when both families are owned on the port (see isOriginAllowed).
+const IPV4_LOOPBACK = "127.0.0.1";
+const IPV6_LOOPBACK = "[::1]";
+/**
+ * Given a bound AddressInfo and whether the server is TLS, produce the exact
+ * set of origins to grant -- only the address family the server actually bound.
+ * 0.0.0.0 and 127.0.0.1 grant IPv4 loopback; ::1 grants IPv6 loopback; `::`
+ * is dual-stack (IPv4-mapped) and grants both unless the server asked for
+ * `ipv6Only`. Another family on the same port may belong to a foreign process,
+ * so it is never granted. A specific non-loopback bind grants only that exact
+ * host:port. Never broadens to another port or an unrelated host.
+ */
+function boundOrigins(protocol, address, port, ipv6Only) {
+    const ipv4 = `${protocol}//${IPV4_LOOPBACK}:${port}`;
+    const ipv6 = `${protocol}//${IPV6_LOOPBACK}:${port}`;
+    if (address === "0.0.0.0" || address === "127.0.0.1") {
+        return [ipv4];
+    }
+    if (address === "::1") {
+        return [ipv6];
+    }
+    if (address === "::" || address === "") {
+        return ipv6Only ? [ipv6] : [ipv4, ipv6];
+    }
+    // A concrete, non-loopback interface (e.g. a specific LAN IP). Grant only
+    // that literal host:port. IPv6 literals must be bracketed to form a valid
+    // origin host.
+    const literalHost = address.includes(":") ? `[${address}]` : address;
+    return [`${protocol}//${literalHost}:${port}`];
+}
+const bindAuthority = new WeakMap();
+/**
+ * Attach the grant/revoke lifecycle to a single server instance the moment
+ * its listen() call has been issued. The grant is applied on 'listening'
+ * (bind SUCCEEDED and address() is populated) -- never merely on listen()
+ * being called -- and withdrawn when close() runs (see patchedClose). A bind
+ * that fails emits 'error' and never 'listening', so it grants nothing.
+ * Returns the server's authority; the caller commits a listen()'s options only
+ * once that listen() has returned.
+ */
+function attachBindAuthority(server) {
+    // A server can listen, close and listen again with different options. One
+    // handler pair serves every listen and reads the options the latest
+    // successful listen() committed.
+    const existing = bindAuthority.get(server);
+    if (existing) {
+        return existing;
+    }
+    // Detect TLS at grant time (a tls.Server is an https listener). Imported
+    // lazily to avoid a hard node:tls dependency in the hot patch path.
+    let granted;
+    const revoke = () => {
+        if (!granted) {
+            return;
+        }
+        for (const origin of granted) {
+            revokeOrigin(origin);
+        }
+        granted = undefined;
+    };
+    const authority = { ipv6Only: false, revoke };
+    bindAuthority.set(server, authority);
+    server.on("listening", () => {
+        if (granted) {
+            return;
+        }
+        const info = server.address();
+        if (info === null) {
+            return;
+        }
+        if (typeof info === "string") {
+            // A Unix-domain socket: grant exactly that path for socketPath requests.
+            granted = [`${UNIX_SOCKET_PREFIX}${info}`];
+        }
+        else {
+            const protocol = isTlsServer(server) ? "https:" : "http:";
+            granted = boundOrigins(protocol, info.address, info.port, authority.ipv6Only);
+        }
+        for (const origin of granted) {
+            grantOrigin(origin);
+        }
+    });
+    // 'close' fires only after open connections end, so close() has already
+    // revoked by then. This listener is a backstop; revoke is idempotent.
+    server.on("close", revoke);
+    return authority;
+}
+// node:tls's Server extends net.Server; an https listener IS a tls.Server.
+// Resolve its constructor only when a test loads TLS or HTTPS.
+let tlsServerCtor = null;
+function isTlsServer(server) {
+    return tlsServerCtor !== null && server instanceof tlsServerCtor;
+}
+/** True when `listen({ ipv6Only: true })` made a `::` bind IPv6-only. */
+function listensIpv6Only(args) {
+    const [options] = args;
+    return typeof options === "object" && options !== null && options.ipv6Only === true;
+}
+/**
+ * Patch net.Server.prototype.listen and close when the test first loads a
+ * network server module. This avoids loading net/tls in test descendants that
+ * only run a helper CLI and never open a server. http.Server.close reaches
+ * net.Server.prototype.close through a live lookup, so one patch covers both.
+ */
+function installBindDerivedAuthority(restoreList) {
+    const net = process.getBuiltinModule("node:net");
+    if (!net) {
+        throw new Error("node:net is unavailable to the hermetic test guard");
+    }
+    const proto = net.Server.prototype;
+    const original = proto.listen;
+    const originalClose = proto.close;
+    if (original.__pdppHermeticPatched) {
+        return;
+    }
+    const patched = function patchedListen(...args) {
+        const authority = attachBindAuthority(this);
+        const ipv6Only = listensIpv6Only(args);
+        const result = original.apply(this, args);
+        // Commit only after listen() returns. Node throws ERR_SERVER_ALREADY_LISTEN
+        // when a live server is listened on again, and that rejected call must not
+        // change how the live bind is granted.
+        authority.ipv6Only = ipv6Only;
+        return result;
+    };
+    patched.__pdppHermeticPatched = true;
+    patched.__pdppOriginalListen = original;
+    proto.listen = patched;
+    // close() releases the port at once, but the 'close' event waits for open
+    // connections to end. Withdraw the grant here, when the port is given up.
+    const patchedClose = function patchedClose(...args) {
+        bindAuthority.get(this)?.revoke();
+        return originalClose.apply(this, args);
+    };
+    proto.close = patchedClose;
+    restoreList.push(() => {
+        if (proto.listen === patched) {
+            proto.listen = original;
+        }
+        if (proto.close === patchedClose) {
+            proto.close = originalClose;
+        }
+    });
+}
+/** What Node's `urlToHttpOptions` yields for the fields that pick a destination. */
+function destinationFromUrl(url) {
+    return {
+        protocol: url.protocol,
+        hostname: url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname,
+        port: url.port === "" ? undefined : url.port,
+    };
+}
+/**
+ * The options a `http(s).request(url, options?, cb?)` / `request(options, cb?)`
+ * call ends up dialing with. Mirrors ClientRequest: a URL argument is expanded
+ * first, then the options object is assigned over it, so an options field
+ * (including an explicit `undefined`) wins over the URL's.
+ */
+function effectiveRequestOptions(firstArg, secondArg) {
+    const isUrlArg = typeof firstArg === "string" || firstArg instanceof URL;
+    const fromUrl = isUrlArg ? destinationFromUrl(new URL(String(firstArg))) : {};
+    const explicit = isUrlArg ? secondArg : firstArg;
+    return typeof explicit === "object" && explicit !== null ? { ...fromUrl, ...explicit } : fromUrl;
+}
+/** `hostname` wins over `host`; an empty value falls through, as in Node. */
+function resolveHostFromOptions(opts) {
+    for (const candidate of [opts.hostname, opts.host]) {
+        if (typeof candidate === "string" && candidate !== "") {
+            return candidate;
+        }
+    }
+    return "localhost";
+}
+/** The allowlist key a `http(s).request`/`.get` call is about to reach: a
+ * `unix:<path>` key for a socketPath request, otherwise the origin Node dials. */
+function resolveRequestOrigin(firstArg, secondArg, defaultProtocol) {
+    const opts = effectiveRequestOptions(firstArg, secondArg);
+    if (typeof opts.socketPath === "string" && opts.socketPath !== "") {
+        return `${UNIX_SOCKET_PREFIX}${opts.socketPath}`;
+    }
+    const protocol = typeof opts.protocol === "string" ? opts.protocol : defaultProtocol;
+    const host = resolveHostFromOptions(opts);
+    const bracketed = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+    const portValue = opts.port || opts.defaultPort;
+    const port = typeof portValue === "number" || typeof portValue === "string" ? `:${portValue}` : "";
+    return normalizeOrigin(`${protocol}//${bracketed}${port}`);
+}
+/**
+ * True when the caller supplied an explicit custom `agent` object in the
+ * request options. Such a request has opted into its OWN connection strategy
+ * -- the same way a `fetch(url, { dispatcher })` supplies a per-request
+ * undici dispatcher that already bypasses the guard's GLOBAL dispatcher. The
+ * guard governs the DEFAULT connection path -- the plain `fetch`/`http.request`
+ * with no custom agent, which is exactly the shape of the incident (a default
+ * fallback to http://localhost:7662). It steps aside when the caller brings
+ * its own agent, because that agent is the caller's declared connection
+ * intent. This is NOT a host allowlist and NOT a localhost allow: a plain
+ * default request to ANY unbound origin is still blocked.
+ */
+function hasExplicitCustomAgent(firstArg, secondArg) {
+    const { agent } = effectiveRequestOptions(firstArg, secondArg);
+    return typeof agent === "object" && agent !== null;
+}
+function guardLegacyHttpModule(moduleNamespace, defaultProtocol, restoreList) {
+    const originalRequest = moduleNamespace.request;
+    const originalGet = moduleNamespace.get;
+    // biome-ignore lint/suspicious/noExplicitAny: the original http(s).request/get is overload-heavy; args are forwarded verbatim
+    function blockRequest(original, args) {
+        const origin = resolveRequestOrigin(args[0], args[1], defaultProtocol);
+        // Create the real ClientRequest, then immediately destroy it with the
+        // guard error BEFORE it connects. This surfaces the block as an
+        // ASYNCHRONOUS 'error' event on the request -- matching how Node reports a
+        // real connection failure (ECONNREFUSED etc.) -- rather than throwing
+        // synchronously. A synchronous throw breaks any caller that (correctly)
+        // expects connection errors on the 'error' event and has not yet attached
+        // its handler (e.g. a streaming proxy that has already hijacked the
+        // response), producing a hang instead of a clean failure. destroy() aborts
+        // before the socket reaches the target, so nothing is dialed.
+        const req = original.apply(this, args);
+        req.destroy(blockedOriginError(origin));
+        return req;
+    }
+    function guardedRequest(...args) {
+        if (!(hasExplicitCustomAgent(args[0], args[1]) ||
+            isOriginAllowed(resolveRequestOrigin(args[0], args[1], defaultProtocol)))) {
+            return blockRequest.call(this, originalRequest, args);
+        }
+        // biome-ignore lint/suspicious/noExplicitAny: forwarding arbitrary overload args to the original implementation
+        return originalRequest.apply(this, args);
+    }
+    function guardedGet(...args) {
+        if (!(hasExplicitCustomAgent(args[0], args[1]) ||
+            isOriginAllowed(resolveRequestOrigin(args[0], args[1], defaultProtocol)))) {
+            return blockRequest.call(this, originalGet, args);
+        }
+        // biome-ignore lint/suspicious/noExplicitAny: forwarding arbitrary overload args to the original implementation
+        return originalGet.apply(this, args);
+    }
+    // biome-ignore lint/suspicious/noExplicitAny: module export types are overload-heavy; guarded fns are behaviorally compatible
+    moduleNamespace.request = guardedRequest;
+    // biome-ignore lint/suspicious/noExplicitAny: module export types are overload-heavy; guarded fns are behaviorally compatible
+    moduleNamespace.get = guardedGet;
+    restoreList.push(() => {
+        moduleNamespace.request = originalRequest;
+        moduleNamespace.get = originalGet;
+    });
+}
+/** True for a redirect response (3xx with a `Location`) that fetch would follow on its own. */
+function isRedirectResponse(response) {
+    return [301, 302, 303, 307, 308].includes(response.status) && response.headers.has("location");
+}
+/** The origin of an http(s) URL; null for data: and other schemes. */
+function httpOriginOf(target) {
+    return target.protocol === "http:" || target.protocol === "https:" ? target.origin : null;
+}
+/** Guard Node's built-in fetch even when npm's undici package is absent. */
+function guardFetch(restoreList) {
+    const originalFetch = globalThis.fetch;
+    if (typeof originalFetch !== "function") {
+        return;
+    }
+    globalThis.fetch = function guardedFetch(input, init) {
+        // A per-request dispatcher is the caller's explicit connection machinery,
+        // just like an explicit http(s).Agent in guardLegacyHttpModule.
+        const dispatcher = init?.dispatcher;
+        if (typeof dispatcher === "object" && dispatcher !== null) {
+            return originalFetch(input, init);
+        }
+        let url;
+        if (typeof input === "string") {
+            url = input;
+        }
+        else if (input instanceof URL) {
+            url = input.href;
+        }
+        else {
+            ({ url } = input);
+        }
+        let target;
+        try {
+            target = new URL(url);
+        }
+        catch {
+            // Preserve fetch's own rejected-promise contract for malformed inputs.
+            return originalFetch(input, init);
+        }
+        const origin = httpOriginOf(target);
+        if (origin === null) {
+            // data: and other non-HTTP URLs cannot open an ambient HTTP socket.
+            return originalFetch(input, init);
+        }
+        if (!isOriginAllowed(origin)) {
+            return Promise.reject(blockedOriginError(origin));
+        }
+        const redirect = init?.redirect ?? (input instanceof Request ? input.redirect : "follow");
+        if (redirect !== "follow") {
+            // 'manual' and 'error' never take a second hop.
+            return originalFetch(input, init);
+        }
+        // Built-in fetch would follow a redirect without re-checking the allowlist,
+        // so fetch stops at the first hop and a redirect response is refused.
+        return originalFetch(input, { ...init, redirect: "manual" }).then(async (response) => {
+            if (!isRedirectResponse(response)) {
+                return response;
+            }
+            await response.body?.cancel();
+            throw new Error("hermetic guard: automatic redirects are refused in tests; pass redirect: 'manual' and handle the Location yourself");
+        });
+    };
+    restoreList.push(() => {
+        globalThis.fetch = originalFetch;
+    });
+}
+function guardUndiciDispatcher(undici, restoreList) {
+    const { Dispatcher, getGlobalDispatcher, setGlobalDispatcher } = undici;
+    const previousDispatcher = getGlobalDispatcher();
+    class HermeticGuardDispatcher extends Dispatcher {
+        inner;
+        constructor(inner) {
+            super();
+            this.inner = inner;
+        }
+        // Declared as arrow-function properties (not `override <name>(...) {}`
+        // methods) to match UndiciDispatcher's property-style method signatures
+        // (see the interface above) -- TypeScript requires a subclass's member
+        // kind to agree with the base type's for the same key.
+        dispatch = (options, handler) => {
+            const origin = String(options.origin ?? "");
+            if (!isOriginAllowed(origin)) {
+                const error = blockedOriginError(origin);
+                if (typeof handler.onError === "function") {
+                    handler.onError(error);
+                    return true;
+                }
+                throw error;
+            }
+            return this.inner.dispatch(options, handler);
+        };
+        close = (...args) => this.inner.close(...args);
+        destroy = (...args) => this.inner.destroy(...args);
+    }
+    setGlobalDispatcher(new HermeticGuardDispatcher(previousDispatcher));
+    restoreList.push(() => setGlobalDispatcher(previousDispatcher));
+}
+/**
+ * Install the hermetic network guard for the current process. Idempotent:
+ * calling this twice without an intervening uninstall() is a no-op and
+ * returns the existing handle.
+ */
+export function installHermeticNetworkGuard() {
+    if (activeHandle) {
+        return activeHandle;
+    }
+    const restoreList = [];
+    guardFetch(restoreList);
+    let netPatched = false;
+    let httpPatched = false;
+    let httpsPatched = false;
+    let resolvingUndici = false;
+    let undiciPatched = false;
+    const ensureNet = () => {
+        if (!netPatched) {
+            installBindDerivedAuthority(restoreList);
+            netPatched = true;
+        }
+    };
+    const ensureTls = () => {
+        ensureNet();
+        if (!tlsServerCtor) {
+            const tls = process.getBuiltinModule("node:tls");
+            if (!tls) {
+                throw new Error("node:tls is unavailable to the hermetic test guard");
+            }
+            tlsServerCtor = tls.Server;
+        }
+    };
+    const ensureHttp = () => {
+        if (httpPatched) {
+            return;
+        }
+        ensureNet();
+        const http = process.getBuiltinModule("node:http");
+        if (!http) {
+            throw new Error("node:http is unavailable to the hermetic test guard");
+        }
+        guardLegacyHttpModule(http, "http:", restoreList);
+        syncBuiltinESMExports();
+        httpPatched = true;
+    };
+    const ensureHttps = () => {
+        if (httpsPatched) {
+            return;
+        }
+        ensureTls();
+        const https = process.getBuiltinModule("node:https");
+        if (!https) {
+            throw new Error("node:https is unavailable to the hermetic test guard");
+        }
+        guardLegacyHttpModule(https, "https:", restoreList);
+        syncBuiltinESMExports();
+        httpsPatched = true;
+    };
+    // A synchronous resolve hook catches both ESM imports and require calls.
+    // Core modules load only when test code requests them; helper Node processes
+    // pay for the small fetch wrapper but never load net, http, https, or tls.
+    const hooks = registerHooks({
+        resolve(specifier, context, nextResolve) {
+            switch (specifier) {
+                case "net":
+                case "node:net":
+                    ensureNet();
+                    break;
+                case "tls":
+                case "node:tls":
+                    ensureTls();
+                    break;
+                case "http":
+                case "node:http":
+                    ensureHttp();
+                    break;
+                case "https":
+                case "node:https":
+                    ensureHttps();
+                    break;
+                case "undici":
+                    if (!(undiciPatched || resolvingUndici)) {
+                        resolvingUndici = true;
+                        try {
+                            const parent = context.parentURL?.startsWith("file:")
+                                ? context.parentURL
+                                : `${process.cwd()}/package.json`;
+                            const undici = createRequire(parent)("undici");
+                            guardUndiciDispatcher(undici, restoreList);
+                            undiciPatched = true;
+                        }
+                        finally {
+                            resolvingUndici = false;
+                        }
+                    }
+                    break;
+                default:
+                    break;
+            }
+            return nextResolve(specifier, context);
+        },
+    });
+    restoreList.push(() => hooks.deregister());
+    // Explicit installs in unit tests can happen after a test imported a core
+    // module. Patch only those already loaded; preloaded test children take the
+    // lazy path because their application modules have not loaded yet.
+    const { moduleLoadList } = process;
+    const wasLoaded = (name) => moduleLoadList.includes(`NativeModule ${name}`) || moduleLoadList.includes(`NativeModule node:${name}`);
+    if (wasLoaded("net")) {
+        ensureNet();
+    }
+    if (wasLoaded("tls")) {
+        ensureTls();
+    }
+    if (wasLoaded("http")) {
+        ensureHttp();
+    }
+    if (wasLoaded("https")) {
+        ensureHttps();
+    }
+    const handle = {
+        installed: true,
+        uninstall() {
+            for (const restore of restoreList.splice(0, restoreList.length)) {
+                restore();
+            }
+            tlsServerCtor = null;
+            activeHandle = undefined;
+        },
+    };
+    activeHandle = handle;
+    return handle;
+}
+/** True if the guard is currently installed in this process. */
+export function isHermeticNetworkGuardInstalled() {
+    return activeHandle !== undefined;
+}

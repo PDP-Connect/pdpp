@@ -152,10 +152,15 @@ Postgres today. If a test needs one:
   becomes a suite.
 
 **Network guard.** The sandbox cuts the network at the operating-system level.
-An in-process guard that refuses requests to origins a test did not start is
-pending in the open pull request "test: enable hermetic network guard in
-canonical launchers" (#420). Once it merges, treat it as a tripwire for
-accidental egress, not as a security boundary.
+The canonical launchers (the accounting authority, the package test runner and
+the scratch owner) also set `PDPP_HERMETIC_GUARD=1` and preload
+`scripts/hermetic/preload.mjs`, an in-process guard that refuses HTTP requests
+to origins the test did not start; a server the test binds is allowed until its
+`close()` is called. It is a tripwire for accidental egress, not a security
+boundary. It does not check a request that brings its own `agent` or
+`dispatcher`, a boxed `String` URL, a relative Unix socket path after `chdir`,
+a socket adopted from a file descriptor, or a request already queued in an agent
+when its server closes.
 
 ## Objective
 
