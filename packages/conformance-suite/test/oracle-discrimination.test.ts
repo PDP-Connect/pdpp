@@ -36,6 +36,7 @@ import { CLIENT_IDENTITY_CASES } from "../src/tests/client-identity.ts";
 import { CONSENT_ARTIFACT_CASES } from "../src/tests/consent-artifact.ts";
 import { DECLARATION_TRUST_CASES } from "../src/tests/declaration-trust.ts";
 import { DECLARATION_VALIDITY_CASES } from "../src/tests/declaration-validity.ts";
+import { GRANT_INTEGRITY_CASES } from "../src/tests/grant-integrity.ts";
 import { GRANT_LIFECYCLE_CASES, REVOCATION_TIMING } from "../src/tests/grant-lifecycle.ts";
 import { MULTI_INSTANCE_CASES } from "../src/tests/multi-instance.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
@@ -55,6 +56,7 @@ const CASES: readonly ConformanceCase[] = [
   ...RESOURCE_SERVER_CASES,
   ...AUTHORIZATION_SERVER_CASES,
   ...GRANT_LIFECYCLE_CASES,
+  ...GRANT_INTEGRITY_CASES,
   ...QUERY_SURFACE_CASES,
   ...SYNC_VISIBILITY_CASES,
   ...MULTI_INSTANCE_CASES,

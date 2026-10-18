@@ -560,6 +560,10 @@ export type Defect =
   | "coerce-invalid-limit"
   /** Leaves `error="invalid_token"` out of the 401 challenge for a presented-and-rejected token (RS-16). */
   | "omit-invalid-token-error"
+  /** Publishes an issued grant artifact without its Section 7 `version` row (AS-3, clause 7.1-1). */
+  | "issued-grant-omits-version"
+  /** Lets an authorization code be redeemed again after its first successful redemption (AS-19, clause 10.2-5). */
+  | "redeem-authorization-code-repeatedly"
   /** Serves different bytes than the blob stores (RS-1, clause 8.12-2). */
   | "blob-wrong-bytes"
   /** Serves a blob without `Cache-Control: private, no-store` (RS-1, clause 8.12-2). */
@@ -641,6 +645,8 @@ interface GrantState {
   readonly accessMode: string;
   expired: boolean;
   readonly grantId: string;
+  /** RFC 3339 instant the grant was issued, for the published grant artifact's `issued_at`. */
+  readonly issuedAt: string;
   readonly purposeCode: string;
   revoked: boolean;
   revokedAt?: number;
@@ -704,8 +710,8 @@ const SUPPORTED_VERSION = PDPP_VERSION;
  * giving them the same value here would let a conflating implementation pass by
  * coincidence.
  */
-export const GRANT_SCHEMA_VERSION = "1.0";
-const SUPPORTED_GRANT_MAJOR = "1";
+export const GRANT_SCHEMA_VERSION = "0.1.0";
+const SUPPORTED_GRANT_MAJOR = "0";
 
 /** The major component of a grant schema version, per Core's major-version rule. */
 function grantMajor(version: string): string {
@@ -812,10 +818,13 @@ export const SEEDED_SUBJECT = "subject_seeded";
  * to be STATED, because a resource server enforces from the introspected grant
  * and cannot infer an instance the AS never named.
  */
-const SEEDED_INSTANCE = "instance_seeded";
+export const SEEDED_INSTANCE = "instance_seeded";
+
+/** Expiry every grant this server issues carries (`expires_at`), stated by the grant artifact and the approval artifact alike. */
+export const GRANT_EXPIRES_AT = "2027-01-01T00:00:00Z";
 
 /** Source the seeded streams belong to (Core Section 7 `source`). */
-const SEEDED_SOURCE = { kind: "connector", id: "https://registry.pdpp.dev/connectors/reference" } as const;
+export const SEEDED_SOURCE = { kind: "connector", id: "https://registry.pdpp.dev/connectors/reference" } as const;
 
 /** Purpose bound to a grant whose request named none (Core Section 7 `purpose_code`). */
 const DEFAULT_PURPOSE = "https://pdpp.dev/purpose/personalization";
@@ -831,6 +840,15 @@ export class ReferenceServer {
   private readonly defects: ReadonlySet<Defect>;
   /** Streams provisioned on demand (multi-instance, blobs): served, but not part of the seeded inventory or the owner stream list. */
   private readonly provisionedStreams: StreamFixture[] = [];
+
+  /**
+   * Authorization codes minted for approved grants, with the PKCE challenge each
+   * is bound to and whether its first redemption has happened (clause 10.2-5).
+   */
+  private readonly authorizationCodes = new Map<
+    string,
+    { readonly challenge: string; consumed: boolean; readonly grantId: string }
+  >();
 
   /** Stored blobs by id, provisioned on demand by `provisionBlobStreams`. */
   private readonly blobs = new Map<string, { readonly bytes: Buffer; readonly mimeType: string }>();
@@ -1481,6 +1499,7 @@ export class ReferenceServer {
         ...(s.timeConstraint ? { timeConstraint: s.timeConstraint } : {}),
         ...(s.resolvedFromView === undefined ? {} : { resolvedFromView: s.resolvedFromView }),
       })),
+      issuedAt: new Date().toISOString(),
       revoked: false,
       expired: options.expired ?? false,
       schemaVersion: options.schemaVersion ?? GRANT_SCHEMA_VERSION,
@@ -1564,6 +1583,33 @@ export class ReferenceServer {
   }
 
   /**
+   * The issued grant as Core Section 7's field tables state it, built from the
+   * grant this server actually holds (clause 7.1-1). `streams` is the same
+   * resolved projection the token response and introspection report, so the
+   * artifact cannot drift from what the RS enforces.
+   */
+  issuedGrantArtifact(grantId: string): Record<string, unknown> | null {
+    const grant = this.grants.get(grantId);
+    const detail = this.grantedAuthorizationDetails(grantId);
+    if (!(grant && detail)) {
+      return null;
+    }
+    return {
+      ...(this.has("issued-grant-omits-version") ? {} : { version: grant.schemaVersion }),
+      grant_id: grant.grantId,
+      issued_at: grant.issuedAt,
+      subject: { id: grant.subjectId },
+      client: { client_id: CLIENT_ID },
+      source: { ...grant.source },
+      source_declaration: { version: "2026-01-01" },
+      purpose_code: grant.purposeCode,
+      access_mode: grant.accessMode,
+      streams: detail.streams,
+      expires_at: GRANT_EXPIRES_AT,
+    };
+  }
+
+  /**
    * A frozen `time_constraint` bound as the grant reports it (clause 6.8-11):
    * verbatim. `normalize-time-constraint-bounds` converts a `date-time` to a UTC
    * instant at millisecond precision, which is the conversion and rounding the
@@ -1572,6 +1618,41 @@ export class ReferenceServer {
   private issuedBound(bound: string): string {
     const instant = this.has("normalize-time-constraint-bounds") ? Date.parse(bound) : Number.NaN;
     return Number.isNaN(instant) ? bound : new Date(instant).toISOString();
+  }
+
+  /** Mint an authorization code for an approved grant, bound to an S256 PKCE challenge. */
+  mintAuthorizationCode(grantId: string, challenge: string): string | null {
+    if (!this.grants.has(grantId)) {
+      return null;
+    }
+    this.counter += 1;
+    const code = `code_${this.counter}`;
+    this.authorizationCodes.set(code, { grantId, challenge, consumed: false });
+    return code;
+  }
+
+  /**
+   * Redeem an authorization code at the token endpoint (RFC 6749 Section 4.1.3
+   * with PKCE, RFC 7636). The first successful redemption consumes the code; a
+   * later one is `invalid_grant` and issues nothing (clause 10.2-5). The check
+   * and the consumption are one step, so two redemptions cannot both succeed.
+   */
+  redeemAuthorizationCode(code: string, verifier: string): { accessToken: string } | null {
+    const entry = this.authorizationCodes.get(code);
+    if (!entry) {
+      return null;
+    }
+    if (createHash("sha256").update(verifier).digest("base64url") !== entry.challenge) {
+      return null;
+    }
+    if (entry.consumed && !this.has("redeem-authorization-code-repeatedly")) {
+      return null;
+    }
+    entry.consumed = true;
+    this.counter += 1;
+    const accessToken = `token_${this.counter}`;
+    this.tokens.set(accessToken, { kind: "client", grantId: entry.grantId });
+    return { accessToken };
   }
 
   /** The access token bound to a grant, for the token endpoint to re-serve. */
@@ -1789,6 +1870,26 @@ export class ReferenceServer {
     // already issued by the time this is called; this route exists so the
     // headers of a real, successful, token-bearing HTTP response are observable
     // over the wire rather than asserted about an in-process return value.
+    // The authorization_code grant (RFC 6749 Section 4.1.3, clause 10.2-5). The
+    // parameters travel in the query here, as the revocation endpoint's token
+    // does; what the route decides is the code's single use, not its transport.
+    if (path === "/oauth/token" && method === "POST") {
+      const redeemed = this.redeemAuthorizationCode(
+        parsed.searchParams.get("code") ?? "",
+        parsed.searchParams.get("code_verifier") ?? ""
+      );
+      const noStore = { "cache-control": "no-store", pragma: "no-cache" };
+      if (!redeemed) {
+        send(400, { error: "invalid_grant", error_description: "The authorization code is invalid or used." }, noStore);
+        return;
+      }
+      send(
+        200,
+        { access_token: redeemed.accessToken, token_type: "Bearer", expires_in: TOKEN_LIFETIME_SECONDS },
+        noStore
+      );
+      return;
+    }
     if (path === "/oauth/token") {
       const grantId = parsed.searchParams.get("grant_id") ?? "";
       const issuedToken = this.tokenForGrant(grantId);

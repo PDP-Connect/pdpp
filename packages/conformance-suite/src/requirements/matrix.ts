@@ -1530,10 +1530,9 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#streamgrant-fields",
     applicability: "always",
     observable: "black-box-http",
-    partial: true,
-    caseIds: ["AS-2/dotted-nested-field-refused"],
+    caseIds: ["AS-2/dotted-nested-field-refused", "AS-3/issued-grant-artifact-matches-section-7-schema"],
     gapNote:
-      "The `fields` row of the normative StreamGrant table; carries no RFC 2119 keyword, so its MUST level is Section 9 AS item 11's. The top-level-only constraint is tested; uniqueness and non-emptiness of the issued allowlist are not.",
+      "The `fields` row of the normative StreamGrant table; carries no RFC 2119 keyword, so its MUST level is Section 9 AS item 11's. The top-level-only constraint is tested by refusing a dotted field at selection; uniqueness and non-emptiness are checked on the issued grant artifact, so a target that publishes no artifact reports the clause `skip`.",
   },
   {
     clauseId: "7.2-1",

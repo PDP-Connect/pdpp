@@ -226,7 +226,7 @@ Validates stream/field/view/resource-id shape at grant issuance.
 | `6.8-7` | 844 | MUST | black-box-http | `AS-2/star-beside-named-field-refused` | — |
 | `6.8-12` | 859 | MUST | black-box-http | `AS-2/stream-request-without-fields-or-view-refused` | The AS half is tested for a `streams` request. A stream inside a selection preset is not probed: the bundled declaration defines no presets. The client half (always send `fields` or `view`) is not exercised: the ClientUnderTest fixture's authorize action always sends a selection built by the caller. |
 | `7.1-1` | 927 | MUST | black-box-http | `AS-3/issued-grant-artifact-matches-section-7-schema`<br>`AS-3/resolved-grant-matches-observable-schema-fields` | — |
-| `7.2-0` | 954 | MUST | black-box-http | `AS-2/dotted-nested-field-refused` | The `fields` row of the normative StreamGrant table; carries no RFC 2119 keyword, so its MUST level is Section 9 AS item 11's. The top-level-only constraint is tested; uniqueness and non-emptiness of the issued allowlist are not. |
+| `7.2-0` | 954 | MUST | black-box-http | `AS-2/dotted-nested-field-refused`<br>`AS-3/issued-grant-artifact-matches-section-7-schema` | The `fields` row of the normative StreamGrant table; carries no RFC 2119 keyword, so its MUST level is Section 9 AS item 11's. The top-level-only constraint is tested by refusing a dotted field at selection; uniqueness and non-emptiness are checked on the issued grant artifact, so a target that publishes no artifact reports the clause `skip`. |
 
 ### AS-12 (authorization-server, MUST)
 

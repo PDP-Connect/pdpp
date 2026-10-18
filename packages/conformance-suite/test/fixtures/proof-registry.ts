@@ -61,6 +61,11 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "RS-10/unknown-parameter-rejected", defect: "ignore-unknown-params" },
   // The bundled target serves blobs directly, so the redirect case reports
   // `unsupported` against it; its proof stays bespoke (below).
+  // The bundled adapter reads the staged review back through `reviewedStreams`.
+  { caseId: "AS-4/omitted-fields-expanded-before-issuance", defect: "carry-unexpanded-selection-into-review" },
+  { caseId: "AS-4/wildcard-stream-name-expanded-before-issuance", defect: "carry-unexpanded-selection-into-review" },
+  { caseId: "AS-3/issued-grant-artifact-matches-section-7-schema", defect: "issued-grant-omits-version" },
+  { caseId: "AS-19/authorization-code-redemption-is-not-replayable", defect: "redeem-authorization-code-repeatedly" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-wrong-bytes" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-response-cacheable" },
   { caseId: "RS-1/blob-ref-mime-type-valid", defect: "blob-ref-invalid-mime-type" },
@@ -661,18 +666,8 @@ export const BESPOKE_PROOFS: readonly { readonly caseId: string; readonly proof:
 export const HOOKED_DISCRIMINATION_MATRIX: readonly {
   readonly caseId: string;
   readonly defect: Defect;
-  readonly adapter: "review-reading" | "refreshable" | "single-use";
+  readonly adapter: "refreshable" | "single-use";
 }[] = [
-  {
-    caseId: "AS-4/omitted-fields-expanded-before-issuance",
-    defect: "carry-unexpanded-selection-into-review",
-    adapter: "review-reading",
-  },
-  {
-    caseId: "AS-4/wildcard-stream-name-expanded-before-issuance",
-    defect: "carry-unexpanded-selection-into-review",
-    adapter: "review-reading",
-  },
   { caseId: "AS-20/refresh-reuse-revokes-the-family", defect: "refresh-without-rotation", adapter: "refreshable" },
   {
     caseId: "AS-20/refresh-reuse-revokes-the-family",

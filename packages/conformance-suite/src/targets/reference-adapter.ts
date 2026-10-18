@@ -15,6 +15,7 @@
 
 // biome-ignore-all lint/suspicious/useAwait: the TargetAdapter contract is async; this in-process target answers from memory.
 
+import { createHash, randomBytes } from "node:crypto";
 import type {
   BlobFixture,
   DeclarationOutcome,
@@ -37,9 +38,11 @@ import type { PdppResponse } from "../harness/http.ts";
 import type { Role } from "../requirements/catalog.ts";
 import {
   type Defect,
+  GRANT_EXPIRES_AT,
   GRANT_SCHEMA_VERSION,
   PDPP_VERSION,
   ReferenceServer,
+  SEEDED_INSTANCE,
   type StreamFixture,
 } from "./reference-server.ts";
 import { compareDateTimes, parseDateTime, parseFullDate } from "./rfc3339.ts";
@@ -217,8 +220,6 @@ const UNDECLARED_VIEW_FIELD = "pdpp_conformance_field_absent_from_schema";
 const CLIENT_IDENTITY = "pdpp-conformance-client";
 const DEFAULT_PURPOSE = "https://pdpp.dev/purpose/personalization";
 const DEFAULT_RETENTION = "P30D";
-const GRANT_EXPIRY = "2027-01-01T00:00:00Z";
-const INSTANCE_ID = "instance_reference_1";
 
 /**
  * The source this target was onboarded with, and the only one it accepts
@@ -428,6 +429,8 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   private readonly defects: ReadonlySet<Defect>;
   /** Monotonic handle/revision source for staged approvals. */
   private stagedCounter = 0;
+  /** The streams and fields each staged approval's artifact states, keyed by handle (`reviewedStreams`). */
+  private readonly reviewed = new Map<string, readonly { name: string; fields: readonly string[] }[]>();
   /**
    * Declarations accepted so far, keyed by the accepted authority binding,
    * `source.id` and `declaration_version` — exactly the key Core Section 5
@@ -838,6 +841,11 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * (clause 7.2-4): Core places them outside authorization equality, the
    * resolved grant, introspection rights and RS enforcement.
    */
+  /** The streams and fields the staged request's artifact states, read back from what this target published for the review. */
+  async reviewedStreams(handle: string) {
+    return this.reviewed.get(handle) ?? null;
+  }
+
   async stageApproval(request: GrantRequest): Promise<StagedApproval | null> {
     const resolved = this.resolveStreams(request, !this.defects.has("carry-unexpanded-selection-into-review"));
     if (!resolved) {
@@ -866,12 +874,12 @@ export class ReferenceTargetAdapter implements TargetAdapter {
             retention: request.retention
               ? { max_duration: request.retention.maxDuration, on_expiry: request.retention.onExpiry }
               : DEFAULT_RETENTION,
-            grant_expiry: GRANT_EXPIRY,
+            grant_expiry: GRANT_EXPIRES_AT,
           }),
       streams: resolved.map((stream) => ({
         name: stream.name,
         fields: [...stream.fields],
-        ...(thin ? {} : { instance_ids: [INSTANCE_ID] }),
+        ...(thin ? {} : { instance_ids: [SEEDED_INSTANCE] }),
         resources: [],
         temporal_field: request.timeConstraint?.field ?? null,
         since: request.timeConstraint?.from ?? null,
@@ -887,6 +895,11 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       ...(claims?.commitments?.length ? { client_claims: this.bindClaims(claims.commitments) } : {}),
     };
 
+    this.reviewed.set(
+      handle,
+      artifact.streams.map((s) => ({ name: s.name, fields: [...s.fields] }))
+    );
+    let redemption: { code: string; verifier: string } | null = null;
     return {
       handle,
       reviewRevision: revision,
@@ -899,9 +912,53 @@ export class ReferenceTargetAdapter implements TargetAdapter {
         ) {
           return null;
         }
-        return await this.issueGrant(request);
+        const grant = await this.issueGrant(request);
+        if (grant) {
+          redemption = await this.redeemFirstCode(grant.grantId);
+        }
+        return grant;
       },
+      // Replays the SAME code and verifier at the token endpoint. The code stays
+      // inside this adapter; the case sees only what the endpoint answered.
+      replayLastCode: async () => (redemption ? await this.postCode(redemption.code, redemption.verifier) : null),
     };
+  }
+
+  /**
+   * Mint the authorization code an approval hands the client, bound to a fresh
+   * PKCE challenge, and make its first redemption at the token endpoint.
+   * Returns the code and verifier a replay needs, or null when either step
+   * could not be taken (then no replay is possible and the case reads `skip`).
+   */
+  private async redeemFirstCode(grantId: string): Promise<{ code: string; verifier: string } | null> {
+    const verifier = randomBytes(32).toString("base64url");
+    const code = this.server.mintAuthorizationCode(grantId, createHash("sha256").update(verifier).digest("base64url"));
+    if (!code) {
+      return null;
+    }
+    const first = await this.postCode(code, verifier);
+    return first?.accessToken ? { code, verifier } : null;
+  }
+
+  /** POST an authorization_code redemption; null on a transport failure or an unreadable body. */
+  private async postCode(
+    code: string,
+    verifier: string
+  ): Promise<{ status: number; errorCode?: string; accessToken?: string } | null> {
+    try {
+      const response = await fetch(
+        `${this.server.tokenEndpoint}?grant_type=authorization_code&code=${encodeURIComponent(code)}&code_verifier=${encodeURIComponent(verifier)}`,
+        { method: "POST" }
+      );
+      const body = (await response.json()) as { access_token?: unknown; error?: unknown };
+      return {
+        status: response.status,
+        ...(typeof body.error === "string" ? { errorCode: body.error } : {}),
+        ...(typeof body.access_token === "string" ? { accessToken: body.access_token } : {}),
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -966,33 +1023,18 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     if (!issued || "deniedReason" in issued) {
       return null;
     }
-    // The resolved grant artifact, published ONLY for a request that carried
-    // client claims.
-    //
+    // The issued grant artifact, built by the server from the grant it holds.
     // Clause 7.2-4 places `client_claims` outside the resolved grant, and the
-    // case checking that needs to see the grant to confirm their absence. But
-    // this target deliberately publishes no Section 7 grant otherwise: AS-3
-    // reports `skip` against it, and the suite's own tests assert that skip as
-    // the honest report of missing evidence. Publishing a hand-built artifact
-    // unconditionally would silently convert that `skip` into a claim about a
-    // grant body this target does not really produce. So the artifact appears
-    // exactly where the 7.2-4 oracle needs it and nowhere else.
-    //
+    // case checking that reads this artifact to confirm their absence;
     // `leak-client-claims-into-grant` copies the claims in, which is the
     // violation: an unenforceable client promise becomes something a downstream
     // component may read as an authorization term.
     const claims = request.clientClaims?.commitments ?? [];
+    const artifact = this.server.issuedGrantArtifact(issued.grantId);
     const rawGrant =
-      claims.length === 0
-        ? undefined
-        : {
-            grant_id: issued.grantId,
-            purpose: request.purposeCode ?? DEFAULT_PURPOSE,
-            streams: resolved.map((s) => ({ name: s.name, fields: [...s.fields] })),
-            ...(this.defects.has("leak-client-claims-into-grant")
-              ? { client_claims: { commitments: [...claims] } }
-              : {}),
-          };
+      artifact && this.defects.has("leak-client-claims-into-grant") && claims.length > 0
+        ? { ...artifact, client_claims: { commitments: [...claims] } }
+        : artifact;
 
     // Redeem the issued grant at the real token endpoint so the headers the
     // 10.2-4 case asserts on are the ones an HTTP client actually received.
@@ -1003,7 +1045,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     return {
       grantId: issued.grantId,
       accessToken: issued.accessToken,
-      ...(rawGrant === undefined ? {} : { rawGrant }),
+      ...(rawGrant === null ? {} : { rawGrant }),
       ...(tokenResponse === null
         ? {}
         : { tokenResponseHeaders: tokenResponse.headers, tokenResponseBody: tokenResponse.body }),

@@ -454,8 +454,12 @@ describe("AS-3 consumes the returned artifact", () => {
       const issueGrant = adapter.issueGrant.bind(adapter);
       adapter.issueGrant = async (request) => {
         const issued = await issueGrant(request);
-        if (!issued || variant === "absent") {
+        if (!issued) {
           return issued;
+        }
+        if (variant === "absent") {
+          const { rawGrant: _artifact, ...withoutArtifact } = issued;
+          return withoutArtifact;
         }
         const rawGrant = conformingGrant();
         if (variant === "missing-version") {
