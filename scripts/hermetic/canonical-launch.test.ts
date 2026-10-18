@@ -157,6 +157,36 @@ test("canonical launchers deny fetch and http to a parent-owned canary", async (
     );
     assert.equal(canaryRequests, 0, "root test alias reached the parent canary");
 
+    // A run-command started inside a scratch owner takes its participant path.
+    // The inner run-command receives the owner's scratch variables, and `env -u`
+    // drops the guard that the outer launch installed, so only the participant
+    // path can install it again for the canary child.
+    await runChild(
+      [
+        process.execPath,
+        "--import",
+        "tsx",
+        join(root, "scripts/test-scratch/run-command.ts"),
+        "--",
+        "env",
+        "-u",
+        "PDPP_HERMETIC_GUARD",
+        "-u",
+        "NODE_OPTIONS",
+        process.execPath,
+        "--import",
+        "tsx",
+        join(root, "scripts/test-scratch/run-command.ts"),
+        "--",
+        process.execPath,
+        "--test",
+        fixture,
+      ],
+      root,
+      scratchEnv
+    );
+    assert.equal(canaryRequests, 0, "participant run-command reached the parent canary");
+
     // Accounting leaves get their environment from suiteEnvironment. npm
     // undici is unavailable from this root working directory.
     const manifest = JSON.parse(await readFile(join(root, "test-accounting.manifest.json"), "utf8")) as {
