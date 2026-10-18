@@ -214,6 +214,15 @@ private, command-scoped host scratch root, passes it to ordinary descendants
 through the normal temporary-directory environment, and removes the verified
 root after normal completion, failure, SIGINT, or SIGTERM.
 
+The test launcher also runs each command through the vendored `test-sandbox`.
+On hosts with systemd and working bubblewrap, runs share `agent-tests.slice`
+limits and get private `/tmp` and loopback-only networking while retaining host
+PID visibility. One JSON enforcement and resource receipt goes to stderr per
+run. When either tool is unavailable, the receipt states which limits still
+apply; set `TEST_SANDBOX_REQUIRE=1` to require both.
+`TEST_SANDBOX_DISABLE=1` bypasses the sandbox for diagnosis while retaining
+scratch ownership and cleanup.
+
 The wrapper preserves the exact child exit code and signal semantics. If a
 successful child leaves a root that cannot be verified and removed, the wrapper
 fails with infrastructure code 74 rather than reporting success. SIGKILL, OOM,

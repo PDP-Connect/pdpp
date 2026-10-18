@@ -1,0 +1,400 @@
+#!/usr/bin/env bash
+# test-sandbox: run one test command with shared cgroup limits and isolation.
+#
+# Usage: test-sandbox [--cpu PCT] [--mem SIZE] [--tasks N] [--net none|host]
+#   [--pg 16|18] [--pg-port PORT] [--pg-env NAME] [--timeout SECONDS]
+#   [--slots N] [--receipt FILE] [--scratch DIR] [--pidns] -- cmd...
+# --isolate cgroup (or TEST_SANDBOX_ISOLATE=cgroup) keeps slots, limits and
+# descendant cleanup but skips bwrap: for tests that create their own
+# namespaces (nested bwrap/unshare fails inside bwrap) and for the governor-only
+# use. The network is then the host's and /tmp is shared; TMPDIR still points to
+# a run-owned directory.
+# --pidns (or TEST_SANDBOX_PIDNS=1) adds a private PID namespace. It is off by
+# default: code that records PIDs in shared files (lock owners, scratch-root
+# owners) would see live host processes as dead from inside one. The scope
+# (or, without systemd, the process group) already reaps every descendant.
+# Defaults may also be set with TEST_SANDBOX_CPU, _MEM, _TASKS, _NET, _PG,
+# _TIMEOUT and _SLOTS. TEST_SANDBOX_REQUIRE=1 requires cgroups and bwrap.
+# TEST_SANDBOX_STATE_DIR overrides the shared slot directory (tests only).
+# TEST_SANDBOX_DISABLE=1 runs directly. One JSON receipt is written to stderr
+# unless --receipt is given.
+# Old bash (macOS ships 3.2) cannot parse what follows: run the command directly.
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
+  echo "test-sandbox: bash 5 not found; running without enforcement" >&2
+  # Drop our options (bash 3.2 syntax only): everything after "--" is the command.
+  for a in "$@"; do shift; [ "$a" = "--" ] && exec "$@"; done
+  echo "test-sandbox: usage: test-sandbox [options] -- cmd..." >&2; exit 2
+fi
+set -uo pipefail
+# systemd-run (>= 254) expands ${VAR} in the command line by default, which
+# mangles shell code and test arguments; turn that off where supported.
+noexpand=(); systemd-run --help 2>/dev/null | grep -q -- --expand-environment && noexpand=(--expand-environment=no)
+
+die() { echo "test-sandbox: $*" >&2; exit 2; }
+cpu=${TEST_SANDBOX_CPU:-400}
+mem=${TEST_SANDBOX_MEM:-8G}
+tasks=${TEST_SANDBOX_TASKS:-4096}
+net=${TEST_SANDBOX_NET:-none}
+pg=${TEST_SANDBOX_PG:-}
+timeout_s=${TEST_SANDBOX_TIMEOUT:-0}
+slots=${TEST_SANDBOX_SLOTS:-6}
+pg_port=55447 pg_env=DATABASE_URL receipt="" scratch="" pidns=${TEST_SANDBOX_PIDNS:-0} isolate=${TEST_SANDBOX_ISOLATE:-full}
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cpu|--mem|--tasks|--net|--pg|--pg-port|--pg-env|--timeout|--slots|--receipt|--scratch)
+      [[ $# -ge 2 ]] || die "$1 needs a value"
+      case "$1" in
+        --cpu) cpu=$2;; --mem) mem=$2;; --tasks) tasks=$2;; --net) net=$2; net_given=1;;
+        --pg) pg=$2;; --pg-port) pg_port=$2;; --pg-env) pg_env=$2;;
+        --timeout) timeout_s=$2;; --slots) slots=$2;;
+        --receipt) receipt=$2;; --scratch) scratch=$2;;
+      esac
+      shift 2;;
+    --pidns) pidns=1; shift;;
+    --isolate) [[ $# -ge 2 ]] || die "--isolate needs a value"; isolate=$2; shift 2;;
+    --) shift; break;;
+    -*) die "unknown option $1 (put the command after --)";;
+    *) break;;
+  esac
+done
+[[ $# -gt 0 ]] || die "usage: test-sandbox [options] -- cmd..."
+[[ "$cpu" =~ ^[1-9][0-9]*([.][0-9]+)?$ ]] || die "--cpu must be a positive percentage"
+[[ -n "$mem" ]] || die "--mem cannot be empty"
+[[ "$tasks" =~ ^[1-9][0-9]*$ ]] || die "--tasks must be a positive integer"
+[[ "$net" == none || "$net" == host ]] || die "--net must be none or host"
+[[ "$isolate" == full || "$isolate" == cgroup ]] || die "--isolate must be full or cgroup"
+if [[ "$isolate" == cgroup ]]; then
+  [[ "$net" == none && -n "${TEST_SANDBOX_NET:-}${net_given:-}" ]] && die "--isolate cgroup cannot give --net none"
+  net=host
+fi
+[[ -z "$pg" || "$pg" == 16 || "$pg" == 18 ]] || die "--pg must be 16 or 18"
+[[ "$pg_port" =~ ^[1-9][0-9]*$ && "$pg_port" -le 65535 ]] || die "--pg-port must be a port number"
+[[ "$pg_env" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || die "--pg-env must be an environment variable name"
+[[ "$timeout_s" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "--timeout must be zero or positive seconds"
+[[ "$slots" =~ ^[1-9][0-9]*$ ]] || die "--slots must be a positive integer"
+command -v python3 >/dev/null || die "python3 is required"
+have_flock=1; command -v flock >/dev/null || have_flock=0
+
+# A command already inside a sandbox runs directly: a nested call would take a
+# second slot (and could deadlock with --slots 1) and gain nothing.
+if [[ -n "${TEST_SANDBOX_ACTIVE:-}" ]]; then exec "$@"; fi
+export TEST_SANDBOX_ACTIVE=1
+slice=${TEST_SANDBOX_SLICE:-agent-tests}
+slice=${slice%.slice}
+slice_unit="$slice.slice"
+disabled=${TEST_SANDBOX_DISABLE:-0}
+notes=()
+systemd_ok=0 bwrap_ok=0
+# Under test-receipt the caller's scope already carries the limits and is the
+# measurement boundary; a new scope would move the work out of it.
+in_receipt=0; [[ -n "${TEST_RECEIPT_ACTIVE:-}" ]] && in_receipt=1
+if [[ "$disabled" != 1 && $in_receipt -eq 0 ]] && command -v systemd-run >/dev/null && command -v systemctl >/dev/null &&
+   [[ -r /sys/fs/cgroup/cgroup.controllers ]]; then
+  for probe in 1 2 3; do
+    # shellcheck disable=SC2016
+    if systemd-run --user --scope --quiet --unit="test-sandbox-probe-$$-$RANDOM-$probe" -- \
+      bash -c 'cg=/sys/fs/cgroup$(grep "^0::" /proc/self/cgroup | cut -d: -f3); [[ -r "$cg/cpu.stat" && -r "$cg/memory.peak" ]]' >/dev/null 2>&1; then
+      systemd_ok=1; break
+    fi
+    sleep 0.1
+  done
+fi
+# Probe bwrap with the flags this run needs: it can be installed but unable to
+# create namespaces (AppArmor userns restriction on Ubuntu 24.04 runners,
+# containers without CAP_SYS_ADMIN).
+if [[ "$disabled" != 1 && "$isolate" == full ]] && command -v bwrap >/dev/null; then
+  probe=(bwrap --dev-bind / / --tmpfs /tmp)
+  [[ "$net" == none ]] && probe+=(--unshare-net)
+  [[ "$pidns" == 1 ]] && probe+=(--unshare-pid --proc /proc)
+  if "${probe[@]}" true >/dev/null 2>&1; then bwrap_ok=1
+  else notes+=("bwrap is installed but cannot create namespaces here; running without it"); fi
+fi
+if [[ "$disabled" == 1 ]]; then
+  enforcement=disabled
+else
+  enforcement=none
+  if (( systemd_ok )); then enforcement=cgroup
+  elif (( in_receipt )); then enforcement=cgroup; notes+=("cgroup limits from the caller's test-receipt scope")
+  else notes+=("systemd user manager unavailable; cgroup limits not enforced"); fi
+  if [[ "$net" == none ]] && (( bwrap_ok )); then
+    if (( systemd_ok )); then enforcement=cgroup+netns; else enforcement=netns; fi
+  elif [[ "$net" == none ]]; then notes+=("bwrap unavailable; network and PID isolation not enforced")
+  fi
+fi
+if [[ -n "$pg" && "$net" == host ]]; then die "--pg requires --net none"
+elif [[ -n "$pg" && $bwrap_ok -eq 0 && ${TEST_SANDBOX_PG_UNSAFE_HOST:-0} != 1 ]]; then die "--pg requires bwrap (or TEST_SANDBOX_PG_UNSAFE_HOST=1)"
+fi
+if [[ "${TEST_SANDBOX_REQUIRE:-0}" == 1 && "$disabled" != 1 ]] &&
+   { (( ! systemd_ok && ! in_receipt )) || (( ! have_flock )) || { [[ "$net" == none ]] && (( ! bwrap_ok )); }; }; then
+  notes+=("required enforcement layer unavailable")
+  write_receipt() {
+    python3 - "$receipt" "$slice" "$cpu" "$mem" "$tasks" "$pg" <<'PY'
+import json,sys
+dest,slice_name,cpu,mem,tasks,pg=sys.argv[1:]
+r={"tool":"test-sandbox","exit":3,"wall_s":0,"cpu_s":0,"peak_mem_mb":0,"pids_peak":0,
+   "enforcement":"none","slice":slice_name,"limits":{"cpu":cpu,"mem":mem,"tasks":int(tasks)},
+   "pg":int(pg) if pg else None,"slot":None,"timed_out":False,"notes":["required enforcement layer unavailable"]}
+line=json.dumps(r,separators=(",",":"))
+if dest:
+    with open(dest,"w") as f:f.write(line+"\n")
+else: print(line,file=sys.stderr)
+PY
+  }
+  write_receipt
+  exit 3
+fi
+
+runtime=${XDG_RUNTIME_DIR:-$HOME/.cache}
+state_dir=${TEST_SANDBOX_STATE_DIR:-$runtime/agent-tests}
+mkdir -p "$state_dir/slots" || die "cannot create slot directory $state_dir/slots"
+slot="" slot_fd=""
+if (( ! have_flock )); then slot=0; notes+=("flock unavailable; host-wide slots not enforced"); fi
+for ((i=1;i<=slots && have_flock;i++)); do
+  exec {fd}>"$state_dir/slots/$i" || die "cannot open slot $i"
+  if flock -n "$fd"; then slot=$i; slot_fd=$fd; break; fi
+  exec {fd}>&-
+done
+if [[ -z "$slot" ]]; then
+  echo "test-sandbox: waiting for a test slot ($slots in use)" >&2
+  while [[ -z "$slot" ]]; do
+    for ((i=1;i<=slots;i++)); do
+      exec {fd}>"$state_dir/slots/$i" || die "cannot open slot $i"
+      if flock -n "$fd"; then slot=$i; slot_fd=$fd; break; fi
+      exec {fd}>&-
+    done
+    [[ -n "$slot" ]] || sleep "1.$((RANDOM % 10))"
+  done
+fi
+
+# Default slice caps are 50% of available cores and 35% of physical memory.
+if [[ -z "${TEST_SANDBOX_SLICE_CPU:-}" ]]; then
+  slice_cpu=$(python3 -c 'import os;print(max(1,os.cpu_count() or 1)*50)')
+else slice_cpu=$TEST_SANDBOX_SLICE_CPU; fi
+if [[ -z "${TEST_SANDBOX_SLICE_MEM:-}" ]]; then
+  slice_mem=$(python3 -c 'import re; n=int(re.search(r"MemTotal:\s+(\d+)",open("/proc/meminfo").read()).group(1))*1024;print(f"{int(n*.35)}")')
+else slice_mem=$TEST_SANDBOX_SLICE_MEM; fi
+slice_high=$(python3 - "$slice_mem" <<'PY'
+import re,sys
+s=sys.argv[1]
+m=re.fullmatch(r"([0-9]+)([KMGTP]?)",s, re.I)
+if not m: print(s);raise SystemExit
+n=int(m.group(1))*1024**("KMGTP".find(m.group(2).upper())+1) if m.group(2) else int(m.group(1))
+print(int(n*.9))
+PY
+)
+if (( systemd_ok )); then
+  if ! systemctl --user set-property --runtime "$slice_unit" "CPUQuota=${slice_cpu}%" "MemoryMax=$slice_mem" "MemoryHigh=$slice_high" "TasksMax=$((tasks * slots))" >/dev/null 2>&1; then
+    notes+=("setting aggregate slice limits failed")
+  fi
+fi
+
+tmpdir=$(mktemp -d "$state_dir/run.XXXXXX") || die "mktemp failed"
+stats="$tmpdir/stats"
+started=$(python3 -c 'import time;print(time.monotonic())')
+unit="test-sandbox-$$-$RANDOM"
+child="" child_group=0 timed_out=false
+# cleanup and on_signal are invoked indirectly by traps.
+# shellcheck disable=SC2329
+cleanup() {
+  if [[ -n "$child" ]]; then
+    if (( child_group )); then kill -TERM -- "-$child" 2>/dev/null || true
+    else kill -TERM "$child" 2>/dev/null || true; fi
+  fi
+  if [[ -n "$unit" && $systemd_ok -eq 1 ]]; then systemctl --user stop "$unit.scope" >/dev/null 2>&1 || true; fi
+  [[ -n "$slot_fd" ]] && exec {slot_fd}>&-
+  rm -rf "$tmpdir"
+}
+# shellcheck disable=SC2329
+on_signal() {
+  local status=$1
+  if [[ -n "$unit" && $systemd_ok -eq 1 ]]; then
+    systemctl --user kill --kill-who=all --signal=SIGTERM "$unit.scope" >/dev/null 2>&1 || true
+    sleep 1
+    systemctl --user kill --kill-who=all --signal=SIGKILL "$unit.scope" >/dev/null 2>&1 || true
+    systemctl --user stop "$unit.scope" >/dev/null 2>&1 || true
+  elif [[ -n "$child" ]]; then
+    if (( child_group )); then
+      kill -TERM -- "-$child" 2>/dev/null || true; sleep 1; kill -KILL -- "-$child" 2>/dev/null || true
+    else
+      kill -TERM "$child" 2>/dev/null || true; sleep 1; kill -KILL "$child" 2>/dev/null || true
+    fi
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+
+# The private tmpfs on /tmp would hide a --scratch dir or working directory
+# that lives under /tmp (CI often uses RUNNER_TEMP=/tmp/...): bind them back.
+tmp_binds=()
+# A given --scratch dir is created once, private, only if absent at start; it is
+# never re-created later (its owner may delete it on purpose, e.g. test-scratch).
+if [[ -n "$scratch" && ! -e "$scratch" ]]; then (umask 077; mkdir -p "$scratch") || die "cannot create --scratch $scratch"; fi
+for p in "$scratch" "$PWD"; do
+  [[ -n "$p" ]] || continue
+  p=$(cd "$p" 2>/dev/null && pwd -P) || continue
+  # Bind the whole top directory under /tmp, so a checkout's root (node_modules,
+  # sibling packages) stays visible when the working directory is deeper.
+  if [[ "$p" == /tmp/* ]]; then top=${p#/tmp/}; top=/tmp/${top%%/*}; tmp_binds+=(--bind "$top" "$top"); fi
+done
+# The quoted body is evaluated later by bash -c inside the scope.
+# shellcheck disable=SC2016
+collector='stats="$1"; shift
+scratch="$1"; pg="$2"; pg_port="$3"; pg_env="$4"; shift 4
+cg=/sys/fs/cgroup$(grep "^0::" /proc/self/cgroup | cut -d: -f3)
+rc=0
+created_scratch=0
+if [[ -z "$scratch" ]]; then scratch=$(mktemp -d /tmp/test-sandbox.XXXXXX); created_scratch=1; fi
+export TMPDIR="$scratch" TEST_TMPDIR="$scratch" TMP="$scratch" TEMP="$scratch"
+pg_data=""
+pg_bin="/usr/lib/postgresql/$pg/bin"
+pg_owned=0
+# Stop and delete only a cluster this run created.
+pg_stop() { if (( pg_owned )); then "$pg_bin/pg_ctl" -D "$pg_data" -m immediate stop >/dev/null 2>&1 || true; rm -rf "$pg_data" "$pg_data.initdb.log"; pg_owned=0; fi; }
+if [[ -n "$pg" ]]; then
+  pg_data=$(mktemp -d "$scratch/pgdata.XXXXXX") && pg_owned=1 || rc=1
+  [[ $rc -eq 0 ]] && "$pg_bin/initdb" -D "$pg_data" -U postgres -A trust --no-sync -E UTF8 >"$pg_data.initdb.log" 2>&1 || { [[ $rc -eq 0 ]] && cat "$pg_data.initdb.log" >&2; rc=1; }
+  if [[ $rc -eq 0 ]]; then
+    # Settings go in postgresql.conf, not pg_ctl -o, which a shell re-parses
+    # (a scratch path with a space would break it). \047 is a single quote.
+    q=$(printf "\047"); sock=${scratch//$q/$q$q}
+    printf "listen_addresses = \047127.0.0.1\047\nport = %s\nunix_socket_directories = \047%s\047\nfsync = off\nsynchronous_commit = off\nfull_page_writes = off\nmax_connections = 200\n" "$pg_port" "$sock" >>"$pg_data/postgresql.conf"
+    "$pg_bin/pg_ctl" -D "$pg_data" -w start >/dev/null 2>&1 || rc=1
+  fi
+  if [[ $rc -eq 0 ]]; then
+    ready=0; for _ in $(seq 1 150); do if "$pg_bin/pg_isready" -h 127.0.0.1 -p "$pg_port" >/dev/null 2>&1; then ready=1; break; fi; sleep .1; done
+    if [[ $ready -eq 0 ]]; then rc=1; fi
+  fi
+  if [[ $rc -eq 0 ]]; then
+    export PGHOST=127.0.0.1 PGPORT="$pg_port" PGUSER=postgres
+    export "$pg_env"="postgres://postgres@127.0.0.1:$pg_port/postgres"
+  fi
+fi
+trap pg_stop EXIT
+if [[ $rc -eq 0 ]]; then "$@"; rc=$?; fi
+pg_stop
+mem_peak=0 cpu_usec=0 pids_peak=0
+[[ -r "$cg/memory.peak" ]] && mem_peak=$(cat "$cg/memory.peak")
+[[ -r "$cg/pids.peak" ]] && pids_peak=$(cat "$cg/pids.peak")
+[[ -r "$cg/cpu.stat" ]] && cpu_usec=$(grep "^usage_usec " "$cg/cpu.stat" | cut -d" " -f2)
+printf "rc %s\nmem %s\ncpu %s\npids %s\n" "$rc" "${mem_peak:-0}" "${cpu_usec:-0}" "${pids_peak:-0}" >"$stats"
+if [[ $created_scratch -eq 1 ]]; then rm -rf "$scratch"; fi
+exit "$rc"'
+
+if [[ "$disabled" == 1 ]]; then
+  "$@"; rc=$?
+  wall=$(python3 - "$started" <<'PY'
+import sys,time;print(max(0,time.monotonic()-float(sys.argv[1])))
+PY
+)
+  cpu_s=0 peak_mb=0 pids_peak=0
+else
+  if (( systemd_ok )); then
+    cmd=("$@")
+    if (( bwrap_ok )); then
+      bw=(bwrap --dev-bind / / --die-with-parent --tmpfs /tmp "${tmp_binds[@]}" --chdir "$PWD")
+      [[ "$pidns" == 1 ]] && bw+=(--unshare-pid --proc /proc)
+      [[ "$net" == none ]] && bw+=(--unshare-net)
+      cmd=("${bw[@]}" bash -c "$collector" _ "$stats" "$scratch" "$pg" "$pg_port" "$pg_env" "${cmd[@]}")
+    else
+      if [[ "$net" == none ]]; then notes+=("command ran without network isolation"); fi
+      cmd=(bash -c "$collector" _ "$stats" "$scratch" "$pg" "$pg_port" "$pg_env" "${cmd[@]}")
+    fi
+    systemd-run "${noexpand[@]}" --user --scope --quiet --unit="$unit" --slice="$slice_unit" -p "CPUQuota=${cpu}%" -p "MemoryMax=$mem" -p "TasksMax=$tasks" -p MemoryAccounting=yes -- "${cmd[@]}" &
+    child=$!
+    if [[ "$timeout_s" != 0 ]]; then
+      deadline_us=$(( ${EPOCHREALTIME/./} + $(python3 -c 'import sys;print(int(float(sys.argv[1])*1e6))' "$timeout_s") ))
+      while kill -0 "$child" 2>/dev/null; do
+        if (( ${EPOCHREALTIME/./} >= deadline_us )); then
+          timed_out=true
+          systemctl --user kill --kill-who=all --signal=SIGTERM "$unit.scope" >/dev/null 2>&1 || true
+          for _ in $(seq 1 100); do kill -0 "$child" 2>/dev/null || break; sleep .1; done
+          systemctl --user kill --kill-who=all --signal=SIGKILL "$unit.scope" >/dev/null 2>&1 || true
+          systemctl --user stop "$unit.scope" >/dev/null 2>&1 || true
+          break
+        fi
+        sleep .2
+      done
+    fi
+    wait "$child"; rc=$?; child=""
+    if [[ "$timed_out" == true ]]; then rc=124; fi
+    systemctl --user stop "$unit.scope" >/dev/null 2>&1 || true
+    if [[ -f "$stats" ]]; then
+      read -r _ wrapped_rc < <(sed -n '1p' "$stats")
+      read -r _ mem_bytes < <(sed -n '2p' "$stats")
+      read -r _ cpu_usec < <(sed -n '3p' "$stats")
+      read -r _ pids_peak < <(sed -n '4p' "$stats")
+      [[ "$timed_out" == true ]] || rc=${wrapped_rc:-$rc}
+    else mem_bytes=0 cpu_usec=0 pids_peak=0; notes+=("scope metrics unavailable"); fi
+    peak_mb=$(python3 - "$mem_bytes" <<'PY'
+import sys;print(round(int(sys.argv[1])/1048576,2))
+PY
+)
+    cpu_s=$(python3 - "$cpu_usec" <<'PY'
+import sys;print(round(int(sys.argv[1])/1000000,3))
+PY
+)
+  else
+    if (( bwrap_ok )); then
+      cmd=(bwrap --dev-bind / / --die-with-parent --tmpfs /tmp "${tmp_binds[@]}" --chdir "$PWD")
+      [[ "$pidns" == 1 ]] && cmd+=(--unshare-pid --proc /proc)
+      [[ "$net" == none ]] && cmd+=(--unshare-net)
+      cmd+=(bash -c "$collector" _ "$stats" "$scratch" "$pg" "$pg_port" "$pg_env" "$@")
+    else
+      [[ "$net" == none ]] && notes+=("command ran without network isolation")
+      cmd=(bash -c "$collector" _ "$stats" "$scratch" "$pg" "$pg_port" "$pg_env" "$@")
+    fi
+    if command -v setsid >/dev/null; then
+      setsid "${cmd[@]}" & child=$!; child_group=1
+    else
+      "${cmd[@]}" & child=$!
+    fi
+    if [[ "$timeout_s" != 0 ]]; then
+      deadline_us=$(( ${EPOCHREALTIME/./} + $(python3 -c 'import sys;print(int(float(sys.argv[1])*1e6))' "$timeout_s") ))
+      while kill -0 "$child" 2>/dev/null; do
+        if (( ${EPOCHREALTIME/./} >= deadline_us )); then
+          timed_out=true
+          if (( child_group )); then kill -TERM -- "-$child" 2>/dev/null || true
+          else kill -TERM "$child" 2>/dev/null || true; fi
+          for _ in $(seq 1 100); do kill -0 "$child" 2>/dev/null || break; sleep .1; done
+          if (( child_group )); then kill -KILL -- "-$child" 2>/dev/null || true
+          else kill -KILL "$child" 2>/dev/null || true; fi
+          break
+        fi
+        sleep .2
+      done
+    fi
+    wait "$child"; rc=$?
+    # Without a scope, reap what the command left behind in its process group.
+    if (( child_group )); then kill -KILL -- "-$child" 2>/dev/null || true; fi
+    child="" child_group=0
+    [[ "$timed_out" == true ]] && rc=124
+    wall=0 cpu_s=0 peak_mb=0 pids_peak=0
+  fi
+  wall=$(python3 - "$started" <<'PY'
+import sys,time;print(round(max(0,time.monotonic()-float(sys.argv[1])),3))
+PY
+)
+fi
+
+if [[ "$timed_out" == true ]]; then rc=124; fi
+[[ "$rc" =~ ^[0-9]+$ ]] || rc=125
+notes_json=$(python3 - "${notes[@]}" <<'PY'
+import json,sys;print(json.dumps(sys.argv[1:]))
+PY
+)
+pg_json=null; [[ -n "$pg" ]] && pg_json=$pg
+line=$(python3 - "$rc" "$wall" "$cpu_s" "$peak_mb" "$pids_peak" "$enforcement" "$slice" "$cpu" "$mem" "$tasks" "$pg_json" "$slot" "$timed_out" "$notes_json" <<'PY'
+import json,sys
+rc,wall,cpu,mem_peak,pids,enforcement,slice_name,limit_cpu,limit_mem,limit_tasks,pg,slot,timed_out,notes=sys.argv[1:]
+r={"tool":"test-sandbox","exit":int(rc),"wall_s":float(wall),"cpu_s":float(cpu),"peak_mem_mb":float(mem_peak),
+   "pids_peak":int(pids),"enforcement":enforcement,"slice":slice_name,
+   "limits":{"cpu":limit_cpu,"mem":limit_mem,"tasks":int(limit_tasks)},"pg":int(pg) if pg!="null" else None,
+   "slot":int(slot),"timed_out":timed_out=="true","notes":json.loads(notes)}
+print(json.dumps(r,separators=(",",":")))
+PY
+)
+if [[ -n "$receipt" ]]; then printf '%s\n' "$line" >"$receipt" || { echo "test-sandbox: cannot write receipt $receipt" >&2; exit 125; }
+else printf '%s\n' "$line" >&2; fi
+exit "$rc"

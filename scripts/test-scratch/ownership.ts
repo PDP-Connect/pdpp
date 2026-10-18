@@ -9,6 +9,10 @@ import { basename, dirname, isAbsolute, join, relative } from "node:path";
 
 export const SCRATCH_SCHEMA = "pdpp.test-scratch/v1";
 const MARKER_NAME = ".pdpp-test-scratch.json";
+/** Process group the sandbox sidecar publishes before it spawns the command (see sandbox-child.ts). */
+export const SANDBOX_GROUP_FILE = ".sandbox-child-group";
+/** Durable record that a sandbox launch may still publish a group; see `recordSandboxLaunchIntent`. */
+const SANDBOX_INTENT_FILE = ".sandbox-launch-intent";
 const REQUIRED_DIRECTORY_MODE = 0o700;
 const MARKER_MODE = 0o600;
 const RECOVERY_GRACE_MS = 60_000;
@@ -512,7 +516,8 @@ async function removeJournalWhenTargetAbsent(journalPath: string, root: string, 
 async function quarantineAndRemove(
   allocation: Allocation,
   budget?: CleanupBudget,
-  hooks?: CleanupHooks
+  hooks?: CleanupHooks,
+  bootDiffers = false
 ): Promise<void> {
   const quarantine = quarantinePath(allocation.canonicalParent, allocation.nonce);
   if (!(await matchesAllocation(allocation))) {
@@ -526,7 +531,7 @@ async function quarantineAndRemove(
     if (typeof marker.pgid !== "number" || !Number.isSafeInteger(marker.pgid) || marker.pgid <= 0) {
       throw new ScratchOwnershipError("malformed-marker");
     }
-    if (!groupAbsent(marker.pgid)) {
+    if (!groupAbsent(marker.pgid) || (await sandboxGroupReason(bootDiffers, allocation.root))) {
       throw new ScratchOwnershipError("group-live");
     }
   }
@@ -586,13 +591,87 @@ function groupAbsent(pgid: number): boolean {
   }
 }
 
+/**
+ * Record, before the sandbox is spawned, that a sidecar may exist whose group is
+ * not yet published. A sidecar can be stopped or slow after its sandbox is
+ * killed, so "marker group dead and nothing published" is not proof that no
+ * command will start. The owner clears the record only once it has proved the
+ * sandbox never started a sidecar.
+ */
+export async function recordSandboxLaunchIntent(ownership: ScratchOwnership): Promise<void> {
+  await writeExclusiveJson(join(ownership.allocation.root, SANDBOX_INTENT_FILE), { schema: SCRATCH_SCHEMA });
+}
+
+export async function clearSandboxLaunchIntent(root: string): Promise<void> {
+  try {
+    await unlink(join(root, SANDBOX_INTENT_FILE));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  await syncDirectory(root);
+}
+
+async function readFirst(name: string, dirs: string[]): Promise<string | undefined | null> {
+  for (const dir of dirs) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: at most two directories, and the first match decides.
+      return await readFile(join(dir, name), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return null;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Without a systemd user manager test-sandbox runs the command in a process
+ * group of its own, so the marker's group can be gone while the command lives.
+ * The sidecar publishes that group before it spawns the command, so a present
+ * file is the durable record of every group the command can occupy. A launch
+ * intent without a publication is ambiguous: the sidecar may still publish and
+ * spawn. Only a different boot, which killed every process, resolves it.
+ */
+async function sandboxGroupReason(
+  bootDiffers: boolean,
+  ...dirs: string[]
+): Promise<"group-live" | "group-unknown" | "sandbox-launch-pending" | undefined> {
+  const published = await readFirst(SANDBOX_GROUP_FILE, dirs);
+  if (published === null) {
+    return "group-unknown";
+  }
+  if (published === undefined) {
+    const intent = await readFirst(SANDBOX_INTENT_FILE, dirs);
+    if (intent === null) {
+      return "group-unknown";
+    }
+    return intent !== undefined && !bootDiffers ? "sandbox-launch-pending" : undefined;
+  }
+  const pgid = Number(published.trim());
+  if (!(Number.isSafeInteger(pgid) && pgid > 0)) {
+    return "group-unknown";
+  }
+  return groupAbsent(pgid) ? undefined : "group-live";
+}
+
 function isOldEnough(marker: Marker, now: number): boolean {
   const age = now - Date.parse(marker.created_at);
   return Number.isFinite(age) && age >= RECOVERY_GRACE_MS;
 }
 
+function bootChanged(marker: Marker, bootId: string | null): boolean {
+  return marker.boot_id !== undefined && bootId !== null && marker.boot_id !== bootId;
+}
+
 /** Return the fail-closed reason for a marker whose owner is already absent. */
-function recoveryStateReason(marker: Marker, bootId: string | null): string | undefined {
+async function recoveryStateReason(
+  marker: Marker,
+  bootId: string | null,
+  ...rootDirs: string[]
+): Promise<string | undefined> {
   if (marker.state === "allocated") {
     return;
   }
@@ -607,6 +686,10 @@ function recoveryStateReason(marker: Marker, bootId: string | null): string | un
   // after its exact recorded group is absent, irrespective of boot identity.
   if (!groupAbsent(marker.pgid)) {
     return "group-live";
+  }
+  const sandboxReason = await sandboxGroupReason(bootChanged(marker, bootId), ...rootDirs);
+  if (sandboxReason) {
+    return sandboxReason;
   }
   if (marker.boot_id === undefined || bootId === null) {
     return "unverifiable-boot";
@@ -680,7 +763,7 @@ async function recoverJournal(
   if (ownerStatus !== "absent") {
     return { path: journalPath, reason: ownerStatus, removed: false };
   }
-  const stateReason = recoveryStateReason(marker, bootId);
+  const stateReason = await recoveryStateReason(marker, bootId, journal.root, journal.quarantine);
   if (stateReason) {
     return { path: journalPath, reason: stateReason, removed: false };
   }
@@ -753,7 +836,7 @@ async function recoverCompatibleQuarantine(
   if (ownerStatus !== "absent") {
     return { path: candidate, reason: ownerStatus, removed: false };
   }
-  const stateReason = recoveryStateReason(marker, bootId);
+  const stateReason = await recoveryStateReason(marker, bootId, candidate);
   if (stateReason) {
     return { path: candidate, reason: stateReason, removed: false };
   }
@@ -810,12 +893,17 @@ async function recoverRunCandidate(
   if (ownerStatus !== "absent") {
     return { path: candidate, reason: ownerStatus, removed: false };
   }
-  const stateReason = recoveryStateReason(marker, bootId);
+  const stateReason = await recoveryStateReason(marker, bootId, candidate);
   if (stateReason) {
     return { path: candidate, reason: stateReason, removed: false };
   }
   try {
-    await quarantineAndRemove(recoveryAllocation(canonicalParent, marker, candidate), budget);
+    await quarantineAndRemove(
+      recoveryAllocation(canonicalParent, marker, candidate),
+      budget,
+      undefined,
+      bootChanged(marker, bootId)
+    );
     return { path: candidate, reason: "dead-verified", removed: true };
   } catch (error) {
     if (error instanceof ScratchOwnershipError && error.reason === "recovery-budget-exhausted") {
