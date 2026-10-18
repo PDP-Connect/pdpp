@@ -95,8 +95,9 @@ test("a server bound BEFORE install is not retroactively trusted; a server bound
     try {
       const port = boundPort(server);
       assert.equal(isOriginAllowed(`http://127.0.0.1:${port}`), true, "bound port allowed after listening");
-      assert.equal(isOriginAllowed(`http://localhost:${port}`), true, "localhost spelling allowed");
       // A 127.0.0.1 bind says nothing about ::1, which a foreign process may hold.
+      // localhost can resolve to ::1, so an IPv4-only bind does not grant it either.
+      assert.equal(isOriginAllowed(`http://localhost:${port}`), false, "localhost granted by an IPv4-only bind");
       assert.equal(isOriginAllowed(`http://[::1]:${port}`), false, "ipv6 loopback not granted by an IPv4 bind");
 
       const body = await httpGetBody(`http://127.0.0.1:${port}`);
@@ -480,7 +481,8 @@ test("bind grants follow the bound family: ::1 only, 0.0.0.0 only IPv4, :: both"
         try {
           assert.equal(isOriginAllowed(`http://127.0.0.1:${server.port}`), v4, `${host}: 127.0.0.1`);
           assert.equal(isOriginAllowed(`http://[::1]:${server.port}`), v6, `${host}: [::1]`);
-          assert.equal(isOriginAllowed(`http://localhost:${server.port}`), v4, `${host}: localhost`);
+          // localhost is granted only when both loopback families are owned.
+          assert.equal(isOriginAllowed(`http://localhost:${server.port}`), v4 && v6, `${host}: localhost`);
         } finally {
           await server.close();
         }

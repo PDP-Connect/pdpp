@@ -29,11 +29,13 @@
 // process finishes binding a port (the 'listening' event -- i.e. the bind
 // actually succeeded and reported an address), the guard grants authority
 // for that exact bound port over its loopback spellings, and revokes it
-// again on 'close'. A test therefore reaches a server it itself started by
-// any loopback spelling, and nothing else -- not a different port, not a
-// different host, and not a port a foreign/production process happens to
-// hold (7662). A test that starts a server in a child process must explicitly
-// grant the exact returned origin in its parent, then revoke that grant.
+// again when close() is called. The 'close' event is too late for that: it
+// waits for open connections to end, while close() releases the port at once.
+// A test therefore reaches a server it itself started by any loopback
+// spelling, and nothing else -- not a different port, not a different host,
+// and not a port a foreign/production process happens to hold (7662). A test
+// that starts a server in a child process must explicitly grant the exact
+// returned origin in its parent, then revoke that grant.
 //
 // This module is inert until installHermeticNetworkGuard() is called. It is
 // never imported by product/runtime code paths -- see preload.mjs, which is
@@ -96,7 +98,25 @@ export function unregisterEphemeralOrigin(url) {
 }
 /** True if `url`'s origin is currently allowlisted. */
 export function isOriginAllowed(url) {
-    return (registeredOrigins.get(normalizeOrigin(url)) ?? 0) > 0;
+    const origin = normalizeOrigin(url);
+    return (registeredOrigins.get(origin) ?? 0) > 0 || localhostOwnsBothFamilies(origin);
+}
+/**
+ * `localhost` names a host, not a family. It can resolve to 127.0.0.1 or ::1,
+ * and Node may try either, so this process must own both loopback families on
+ * the port before the name is trusted. Otherwise a foreign listener on the
+ * other family would answer it.
+ */
+function localhostOwnsBothFamilies(origin) {
+    if (origin.startsWith(UNIX_SOCKET_PREFIX)) {
+        return false;
+    }
+    const { protocol, hostname, port } = new URL(origin);
+    if (hostname !== "localhost") {
+        return false;
+    }
+    const suffix = port === "" ? "" : `:${port}`;
+    return [IPV4_LOOPBACK, IPV6_LOOPBACK].every((host) => (registeredOrigins.get(`${protocol}//${host}${suffix}`) ?? 0) > 0);
 }
 export function blockedOriginError(origin) {
     const error = new Error(`blocked non-allowlisted origin ${origin} (hermetic test guard: origin authority is derived from a successful in-process server bind; this origin was never bound by a server in this process, or was bound elsewhere/already closed)`);
@@ -110,14 +130,10 @@ export function blockedOriginError(origin) {
     return error;
 }
 // ─── Bind-derived origin authority ──────────────────────────────────────────
-// Loopback host spellings per address family. `localhost` is granted only with
-// IPv4: it can resolve to 127.0.0.1, where a foreign IPv4 server may hold the
-// same port, so an IPv6 bind grants only [::1]. Residual: on a host whose
-// resolver returns ::1 for `localhost`, an IPv4-only bind still grants
-// `localhost:<port>`, so a foreign ::1 listener on that port is reachable
-// through that one spelling.
-const IPV4_LOOPBACK_HOSTS = ["localhost", "127.0.0.1"];
-const IPV6_LOOPBACK_HOSTS = ["[::1]"];
+// Loopback spellings per address family. `localhost` is not one of them: it is
+// trusted only when both families are owned on the port (see isOriginAllowed).
+const IPV4_LOOPBACK = "127.0.0.1";
+const IPV6_LOOPBACK = "[::1]";
 /**
  * Given a bound AddressInfo and whether the server is TLS, produce the exact
  * set of origins to grant -- only the address family the server actually bound.
@@ -128,18 +144,16 @@ const IPV6_LOOPBACK_HOSTS = ["[::1]"];
  * host:port. Never broadens to another port or an unrelated host.
  */
 function boundOrigins(protocol, address, port, ipv6Only) {
-    let hosts;
+    const ipv4 = `${protocol}//${IPV4_LOOPBACK}:${port}`;
+    const ipv6 = `${protocol}//${IPV6_LOOPBACK}:${port}`;
     if (address === "0.0.0.0" || address === "127.0.0.1") {
-        hosts = IPV4_LOOPBACK_HOSTS;
+        return [ipv4];
     }
-    else if (address === "::1") {
-        hosts = IPV6_LOOPBACK_HOSTS;
+    if (address === "::1") {
+        return [ipv6];
     }
-    else if (address === "::" || address === "") {
-        hosts = ipv6Only ? IPV6_LOOPBACK_HOSTS : [...IPV4_LOOPBACK_HOSTS, "[::1]"];
-    }
-    if (hosts) {
-        return hosts.map((host) => `${protocol}//${host}:${port}`);
+    if (address === "::" || address === "") {
+        return ipv6Only ? [ipv6] : [ipv4, ipv6];
     }
     // A concrete, non-loopback interface (e.g. a specific LAN IP). Grant only
     // that literal host:port. IPv6 literals must be bracketed to form a valid
@@ -147,29 +161,39 @@ function boundOrigins(protocol, address, port, ipv6Only) {
     const literalHost = address.includes(":") ? `[${address}]` : address;
     return [`${protocol}//${literalHost}:${port}`];
 }
-const bindOptions = new WeakMap();
+const bindAuthority = new WeakMap();
 /**
  * Attach the grant/revoke lifecycle to a single server instance the moment
  * its listen() call has been issued. The grant is applied on 'listening'
  * (bind SUCCEEDED and address() is populated) -- never merely on listen()
- * being called -- and withdrawn on 'close'. A bind that fails emits 'error'
- * and never 'listening', so it grants nothing. Returns the server's options;
- * the caller commits a listen()'s options only once that listen() has returned.
+ * being called -- and withdrawn when close() runs (see patchedClose). A bind
+ * that fails emits 'error' and never 'listening', so it grants nothing.
+ * Returns the server's authority; the caller commits a listen()'s options only
+ * once that listen() has returned.
  */
 function attachBindAuthority(server) {
     // A server can listen, close and listen again with different options. One
     // handler pair serves every listen and reads the options the latest
     // successful listen() committed.
-    const existing = bindOptions.get(server);
+    const existing = bindAuthority.get(server);
     if (existing) {
         return existing;
     }
-    const options = { ipv6Only: false };
-    bindOptions.set(server, options);
     // Detect TLS at grant time (a tls.Server is an https listener). Imported
     // lazily to avoid a hard node:tls dependency in the hot patch path.
     let granted;
-    const onListening = () => {
+    const revoke = () => {
+        if (!granted) {
+            return;
+        }
+        for (const origin of granted) {
+            revokeOrigin(origin);
+        }
+        granted = undefined;
+    };
+    const authority = { ipv6Only: false, revoke };
+    bindAuthority.set(server, authority);
+    server.on("listening", () => {
         if (granted) {
             return;
         }
@@ -183,24 +207,16 @@ function attachBindAuthority(server) {
         }
         else {
             const protocol = isTlsServer(server) ? "https:" : "http:";
-            granted = boundOrigins(protocol, info.address, info.port, options.ipv6Only);
+            granted = boundOrigins(protocol, info.address, info.port, authority.ipv6Only);
         }
         for (const origin of granted) {
             grantOrigin(origin);
         }
-    };
-    const revoke = () => {
-        if (!granted) {
-            return;
-        }
-        for (const origin of granted) {
-            revokeOrigin(origin);
-        }
-        granted = undefined;
-    };
-    server.on("listening", onListening);
+    });
+    // 'close' fires only after open connections end, so close() has already
+    // revoked by then. This listener is a backstop; revoke is idempotent.
     server.on("close", revoke);
-    return options;
+    return authority;
 }
 // node:tls's Server extends net.Server; an https listener IS a tls.Server.
 // Resolve its constructor only when a test loads TLS or HTTPS.
@@ -214,9 +230,10 @@ function listensIpv6Only(args) {
     return typeof options === "object" && options !== null && options.ipv6Only === true;
 }
 /**
- * Patch net.Server.prototype.listen when the test first loads a network
- * server module. This avoids loading net/tls in test descendants that only
- * run a helper CLI and never open a server.
+ * Patch net.Server.prototype.listen and close when the test first loads a
+ * network server module. This avoids loading net/tls in test descendants that
+ * only run a helper CLI and never open a server. http.Server.close reaches
+ * net.Server.prototype.close through a live lookup, so one patch covers both.
  */
 function installBindDerivedAuthority(restoreList) {
     const net = process.getBuiltinModule("node:net");
@@ -225,25 +242,36 @@ function installBindDerivedAuthority(restoreList) {
     }
     const proto = net.Server.prototype;
     const original = proto.listen;
+    const originalClose = proto.close;
     if (original.__pdppHermeticPatched) {
         return;
     }
     const patched = function patchedListen(...args) {
-        const options = attachBindAuthority(this);
+        const authority = attachBindAuthority(this);
         const ipv6Only = listensIpv6Only(args);
         const result = original.apply(this, args);
         // Commit only after listen() returns. Node throws ERR_SERVER_ALREADY_LISTEN
         // when a live server is listened on again, and that rejected call must not
         // change how the live bind is granted.
-        options.ipv6Only = ipv6Only;
+        authority.ipv6Only = ipv6Only;
         return result;
     };
     patched.__pdppHermeticPatched = true;
     patched.__pdppOriginalListen = original;
     proto.listen = patched;
+    // close() releases the port at once, but the 'close' event waits for open
+    // connections to end. Withdraw the grant here, when the port is given up.
+    const patchedClose = function patchedClose(...args) {
+        bindAuthority.get(this)?.revoke();
+        return originalClose.apply(this, args);
+    };
+    proto.close = patchedClose;
     restoreList.push(() => {
         if (proto.listen === patched) {
             proto.listen = original;
+        }
+        if (proto.close === patchedClose) {
+            proto.close = originalClose;
         }
     });
 }
