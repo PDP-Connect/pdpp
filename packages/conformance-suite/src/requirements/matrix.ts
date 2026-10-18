@@ -364,9 +364,9 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#incremental-sync",
     applicability: "the client performs incremental sync",
     observable: "client-capture",
-    caseIds: [],
+    caseIds: ["CL-10/tombstone-for-unheld-id-is-a-no-op"],
     gapNote:
-      "Missing case: configure the client fixture to answer a sync page with a tombstone for an ID the client never received, and assert the client's copy is unchanged and it raises no error.",
+      "Judged through the optional ClientUnderTest.storedCopy accessor; a client that does not expose its stored copy skips.",
   },
   {
     clauseId: "4.3-15",
@@ -378,9 +378,9 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#incremental-sync",
     applicability: "the client performs incremental sync",
     observable: "client-capture",
-    caseIds: [],
+    caseIds: ["CL-5/beginning-session-replaces-the-stored-copy"],
     gapNote:
-      "Missing case: the CL-5 cases observe the client's requests after `cursor_expired`, not the contents of its stored copy. A case needs a fixture that serves two different `beginning` results and a view of the client's stored stream.",
+      "Judged through the optional ClientUnderTest.storedCopy accessor; a client that does not expose its stored copy skips. Only a single-page session is probed.",
   },
   {
     clauseId: "4.3-16",
@@ -1251,9 +1251,7 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#source-kinds",
     applicability: "the client has provenance-dependent local policy",
     observable: "client-capture",
-    caseIds: [],
-    gapNote:
-      "CL-8/reads-source-kind-from-grant covers the two known values only. A case that feeds the client fixture a grant with an unrecognized `source.kind` is missing.",
+    caseIds: ["CL-8/unrecognized-source-kind-not-treated-as-known"],
   },
   {
     clauseId: "6.7-1",
@@ -2860,9 +2858,9 @@ const SECTION_10: readonly ClauseEntry[] = [
     specAnchor: "#revocation",
     applicability: "always",
     observable: "client-capture",
-    caseIds: [],
+    caseIds: ["CL-9/invalid-token-challenge-stops-use-of-the-token"],
     gapNote:
-      "Missing case: configure the client fixture to answer 401 with a Bearer `invalid_token` challenge and assert the client sends no further request with that token. CL-2/grant-revocation-stops-further-requests feeds a 403 instead (see 10.7-2).",
+      "`Stop using the token` is observed as no retry of the refused request with the same token; a later request with it is not provoked. CL-2/grant-revocation-stops-further-requests now feeds 401, so the revoked-grant half is covered there.",
   },
   {
     clauseId: "10.7-10",
@@ -2874,9 +2872,9 @@ const SECTION_10: readonly ClauseEntry[] = [
     specAnchor: "#revocation",
     applicability: "always",
     observable: "client-capture",
-    caseIds: [],
+    caseIds: ["CL-9/inactive-token-is-not-recorded-as-revocation"],
     gapNote:
-      "Missing case: answer a client's request with a 401 for an inactive token and assert the client does not record the grant as revoked.",
+      "Judged through the optional ClientUnderTest.grantState accessor; a client that does not expose what it recorded about the grant skips.",
   },
 ];
 

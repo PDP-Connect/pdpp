@@ -53,9 +53,9 @@ Clauses enumerated: **214**.
 | MUST clauses | Count |
 | --- | --- |
 | Total | **181** |
-| With at least one case | **103** |
+| With at least one case | **108** |
 | Untestable (review-only, no case) | **56** |
-| Not yet tested (observable, no case) | **22** |
+| Not yet tested (observable, no case) | **17** |
 
 The last three rows partition the total. 2 of the clauses with a case are
 review-only: a case exercises part of them, and a run still reports them `untestable`.
@@ -687,7 +687,7 @@ Respects HTTP 410 `cursor_expired` by starting again from `beginning` rather tha
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `4.3-3` | 272 | MUST | client-capture | `CL-5/full-resync-after-cursor-expired` | — |
-| `4.3-15` | 270 | MUST | client-capture | — | Missing case: the CL-5 cases observe the client's requests after `cursor_expired`, not the contents of its stored copy. A case needs a fixture that serves two different `beginning` results and a view of the client's stored stream. |
+| `4.3-15` | 270 | MUST | client-capture | `CL-5/beginning-session-replaces-the-stored-copy` | Judged through the optional ClientUnderTest.storedCopy accessor; a client that does not expose its stored copy skips. Only a single-page session is probed. |
 | `8.9-12` | 1402 | MUST | client-capture | `CL-5/endpoint-cursor-expiry-also-full-resyncs` | — |
 
 ### CL-6 (client, MUST)
@@ -717,7 +717,7 @@ Reads `source.kind` from the issued grant and applies provenance policy before f
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `6.6-1` | 824 | MUST | client-capture | `CL-8/reads-source-kind-from-grant` | — |
-| `6.6-4` | 826 | MUST | client-capture | — | CL-8/reads-source-kind-from-grant covers the two known values only. A case that feeds the client fixture a grant with an unrecognized `source.kind` is missing. |
+| `6.6-4` | 826 | MUST | client-capture | `CL-8/unrecognized-source-kind-not-treated-as-known` | — |
 
 ### CL-9 (client, MUST)
 
@@ -725,8 +725,8 @@ Stops using an access token on a 401 with Bearer error `invalid_token`, and stop
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `10.7-9` | 1748 | MUST | client-capture | — | Missing case: configure the client fixture to answer 401 with a Bearer `invalid_token` challenge and assert the client sends no further request with that token. CL-2/grant-revocation-stops-further-requests feeds a 403 instead (see 10.7-2). |
-| `10.7-10` | 1748 | MUST | client-capture | — | Missing case: answer a client's request with a 401 for an inactive token and assert the client does not record the grant as revoked. |
+| `10.7-9` | 1748 | MUST | client-capture | `CL-9/invalid-token-challenge-stops-use-of-the-token` | `Stop using the token` is observed as no retry of the refused request with the same token; a later request with it is not provoked. CL-2/grant-revocation-stops-further-requests now feeds 401, so the revoked-grant half is covered there. |
+| `10.7-10` | 1748 | MUST | client-capture | `CL-9/inactive-token-is-not-recorded-as-revocation` | Judged through the optional ClientUnderTest.grantState accessor; a client that does not expose what it recorded about the grant skips. |
 
 ### CL-10 (client, MUST)
 
@@ -734,7 +734,7 @@ Treats a tombstone for an ID it does not hold as a no-op, and reconciles records
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `4.3-14` | 268 | MUST | client-capture | — | Missing case: configure the client fixture to answer a sync page with a tombstone for an ID the client never received, and assert the client's copy is unchanged and it raises no error. |
+| `4.3-14` | 268 | MUST | client-capture | `CL-10/tombstone-for-unheld-id-is-a-no-op` | Judged through the optional ClientUnderTest.storedCopy accessor; a client that does not expose its stored copy skips. |
 
 
 ## Clauses no Section 9 item covers

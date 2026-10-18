@@ -274,4 +274,159 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
           );
     },
   },
+  // ------------------------------------------------------------- CL-9 / 10.7-9
+  {
+    caseId: "CL-9/invalid-token-challenge-stops-use-of-the-token",
+    requirementId: "CL-9",
+    assertion:
+      "After a 401 carrying a Bearer invalid_token challenge, the client sends one request with that token and does not retry it.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      client.fixture.configure({
+        challenge: 'Bearer error="invalid_token"',
+        code: "authentication_error",
+        kind: "error",
+        status: 401,
+        type: "authentication_error",
+      });
+      const before = client.fixture.requestLog().length;
+      const result = await client.readPage(STREAM);
+      const requests = requestAfter(client, before);
+      return !result.ok && result.status === 401 && requests.length === 1
+        ? pass()
+        : fail(
+            `Expected one request ending in 401 invalid_token and no retry with the same token; observed ${requests.length} request(s), status ${result.status}.`
+          );
+    },
+  },
+
+  // ------------------------------------------------------------ CL-9 / 10.7-10
+  {
+    caseId: "CL-9/inactive-token-is-not-recorded-as-revocation",
+    requirementId: "CL-9",
+    assertion:
+      "A 401 for an inactive token whose cause is unknown does not make the client record the grant as revoked, while a grant_revoked error does.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      if (!client.grantState) {
+        return skip("The client under test does not expose grantState, so what it recorded about the grant is unobserved.");
+      }
+      const challenge = 'Bearer error="invalid_token"';
+      await client.authorize({ source: { id: "https://fixture.invalid/source" }, streams: [{ name: STREAM }] });
+      // Control: told the grant was revoked, the client records it. Without
+      // this a client that records nothing would satisfy the negative.
+      client.fixture.configure({ challenge, code: "grant_revoked", kind: "error", status: 401, type: "authentication_error" });
+      await client.readPage(STREAM);
+      if (client.grantState() !== "revoked") {
+        return skip("The client did not record a grant_revoked error as revocation, so the inference case cannot be judged.");
+      }
+      await client.authorize({ source: { id: "https://fixture.invalid/source" }, streams: [{ name: STREAM }] });
+      client.fixture.configure({ challenge, code: "authentication_error", kind: "error", status: 401, type: "authentication_error" });
+      const before = client.fixture.requestLog().length;
+      const result = await client.readPage(STREAM);
+      const sent = requestAfter(client, before).length;
+      return sent === 1 && result.status === 401 && client.grantState() !== "revoked"
+        ? pass()
+        : fail(
+            `After a 401 invalid_token whose cause is unknown (${sent} request(s), status ${result.status}), the client recorded the grant as ${String(client.grantState())}. Core Section 10: a client MUST NOT treat an inactive token as proof of revocation; the token may have expired or lost its refresh-token family.`
+          );
+    },
+  },
+
+  // ------------------------------------------------------------ CL-8 / 6.6-4
+  {
+    caseId: "CL-8/unrecognized-source-kind-not-treated-as-known",
+    requirementId: "CL-8",
+    assertion: "A grant reporting an unrecognized source.kind is not read as connector or provider_native.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      client.fixture.configureGrantSourceKind("vendor_native");
+      try {
+        const before = client.fixture.requestLog().length;
+        const result = await client.authorize({ source: { id: "https://fixture.invalid/source" }, streams: [{ name: STREAM }] });
+        if (result.ok) {
+          await client.readPage(STREAM);
+        }
+        const sent = requestAfter(client, before).length;
+        const read = result.sourceKindRead;
+        return sent >= 1 && read !== "connector" && read !== "provider_native"
+          ? pass()
+          : fail(
+              `A grant reporting source.kind 'vendor_native' was read as ${JSON.stringify(read)} after ${sent} request(s). Core Section 6: a client that reads an unrecognized source.kind MUST NOT treat it as either known value; it MAY reject the grant as unsupported.`
+            );
+      } finally {
+        client.fixture.configureGrantSourceKind("connector");
+      }
+    },
+  },
+
+  // ----------------------------------------------------------- CL-10 / 4.3-14
+  {
+    caseId: "CL-10/tombstone-for-unheld-id-is-a-no-op",
+    requirementId: "CL-10",
+    assertion: "A tombstone for an ID the client does not hold leaves its stored copy unchanged and raises no error.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      if (!client.storedCopy) {
+        return skip("The client under test does not expose its stored copy, so tombstone handling is unobserved.");
+      }
+      client.fixture.configure({ kind: "page", nextChangesSince: CHANGES_SINCE, records: [{ id: "held" }] });
+      const first = await client.syncOnce(STREAM);
+      client.fixture.configure({
+        kind: "page",
+        nextChangesSince: CHANGES_SINCE,
+        records: [{ deleted: true, id: "never-held" }],
+      });
+      const before = client.fixture.requestLog().length;
+      const second = await client.syncAgain(STREAM);
+      const copy = client.storedCopy(STREAM);
+      return first.ok && second.ok && requestAfter(client, before).length >= 1 && copy.join(",") === "held"
+        ? pass()
+        : fail(
+            `Expected a tombstone for an unheld id to be a no-op; observed ok=${second.ok} and stored copy ${JSON.stringify(copy)}.`
+          );
+    },
+  },
+
+  // ------------------------------------------------------------ CL-5 / 4.3-15
+  {
+    caseId: "CL-5/beginning-session-replaces-the-stored-copy",
+    requirementId: "CL-5",
+    assertion:
+      "After a completed changes_since=beginning session, the client's stored copy equals that session's result, not a merge with the earlier copy.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      if (!client.storedCopy) {
+        return skip("The client under test does not expose its stored copy, so replacement is unobserved.");
+      }
+      client.fixture.configure({ kind: "page", nextChangesSince: CHANGES_SINCE, records: [{ id: "a" }, { id: "b" }] });
+      await client.syncOnce(STREAM);
+      const held = client.storedCopy(STREAM).join(",");
+      client.fixture.configure({ kind: "page", nextChangesSince: CHANGES_SINCE, records: [{ id: "b" }, { id: "c" }] });
+      const before = client.fixture.requestLog().length;
+      await client.syncOnce(STREAM);
+      const requests = requestAfter(client, before);
+      const copy = client.storedCopy(STREAM).join(",");
+      return held === "a,b" && requests[0]?.query.changes_since === BEGINNING && copy === "b,c"
+        ? pass()
+        : fail(
+            `Expected the second beginning session to leave exactly b,c (first copy ${held}); observed ${copy}. Core Section 4: after a completed changes_since=beginning session the client MUST replace its copy of the stream with that session's result.`
+          );
+    },
+  },
 ];

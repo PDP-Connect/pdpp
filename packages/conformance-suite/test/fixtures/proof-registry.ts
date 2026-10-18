@@ -575,6 +575,12 @@ export const CLIENT_DISCRIMINATION_MATRIX: readonly { caseId: string; defect: Cl
   { caseId: "CL-7/status-incompatible-code-does-not-override-status", defect: "override-status-with-error-code" },
   { caseId: "CL-7/unknown-error-identifiers-do-not-break-parser", defect: "parse-unknown-identifier" },
   { caseId: "CL-8/reads-source-kind-from-grant", defect: "assume-source-kind" },
+  // Revised-text client clauses (Section 4 copy handling, Section 10 revocation, Section 6 source.kind).
+  { caseId: "CL-9/invalid-token-challenge-stops-use-of-the-token", defect: "retry-after-invalid-token" },
+  { caseId: "CL-9/inactive-token-is-not-recorded-as-revocation", defect: "treat-inactive-as-revoked" },
+  { caseId: "CL-8/unrecognized-source-kind-not-treated-as-known", defect: "coerce-unrecognized-source-kind" },
+  { caseId: "CL-10/tombstone-for-unheld-id-is-a-no-op", defect: "throw-on-unknown-tombstone" },
+  { caseId: "CL-5/beginning-session-replaces-the-stored-copy", defect: "merge-copy-on-beginning" },
 ];
 
 /**
