@@ -75,31 +75,56 @@ function signalGroup(pgid: number, signal: NodeJS.Signals): void {
 }
 
 /**
- * Read the command group published by the sidecar. `0` means no command group
- * exists: the spawn failed, or the sandbox exited before the sidecar published
- * (for example `TEST_SANDBOX_REQUIRE=1` with bubblewrap unusable).
+ * Read the process group the sidecar published before it spawned the command.
+ * `0` means no command exists: the sandbox exited on its own (for example
+ * `TEST_SANDBOX_REQUIRE=1` with bubblewrap unusable) before the sidecar
+ * published, and the sidecar publishes before it spawns. `undefined` means
+ * unknown: nothing was published within the grace period, or the sandbox was
+ * killed, so a sidecar may still publish and spawn.
  */
-async function publishedSandboxGroup(path: string, sandboxPgid: number): Promise<number | undefined> {
+async function publishedSandboxGroup(
+  path: string,
+  sandboxPgid: number,
+  sandboxKilled: boolean
+): Promise<number | undefined> {
   const deadline = Date.now() + GROUP_GRACE_MS;
   while (Date.now() < deadline) {
     // Observe the sandbox first: a group that is gone cannot publish after the read below.
     const sandboxGone = !groupExists(sandboxPgid);
-    // biome-ignore lint/performance/noAwaitInLoops: the sidecar publishes the group after spawning the command.
+    // biome-ignore lint/performance/noAwaitInLoops: the sidecar publishes its group before spawning the command.
     const value = await readFile(path, "utf8").catch(() => "");
-    const published = value.trim();
-    const pgid = Number(published);
-    if (published === "0") {
-      return 0;
-    }
+    const pgid = Number(value.trim());
     if (Number.isSafeInteger(pgid) && pgid > 0) {
       return pgid;
     }
     if (sandboxGone) {
-      return 0;
+      return sandboxKilled ? undefined : 0;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   return undefined;
+}
+
+/**
+ * Stop the sidecar's group when it differs from the sandbox group (no cgroup
+ * layer: test-sandbox runs the command under `setsid`). Returns false when that
+ * group is unknown or cannot be proven stopped.
+ */
+async function stopPublishedGroup(
+  path: string,
+  sandboxPgid: number,
+  sandboxKilled: boolean,
+  startedAt?: number,
+  initiatingSignal?: Signal
+): Promise<boolean> {
+  const pgid = await publishedSandboxGroup(path, sandboxPgid, sandboxKilled);
+  if (pgid === undefined) {
+    return false;
+  }
+  if (pgid === 0 || pgid === sandboxPgid) {
+    return true;
+  }
+  return terminateRemainingGroup(pgid, startedAt, initiatingSignal).catch(() => false);
 }
 
 async function waitForGroup(pgid: number, timeoutMs: number): Promise<boolean> {
@@ -183,7 +208,7 @@ export interface RunScratchCommandOptions {
   cleanupHooks?: CleanupHooks;
   /** Fixed startup-recovery limits, exposed only for deterministic lifecycle tests. */
   recoveryLimits?: Partial<RecoveryLimits>;
-  /** Test seam replacing the sidecar script that spawns and publishes the command group. */
+  /** Test seam replacing the sidecar script that publishes its group and spawns the command. */
   sandboxChild?: string;
   /** Test seam for the fail-closed path after a process-group shutdown attempt. */
   stopGroup?: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>;
@@ -215,23 +240,11 @@ function installSignalControl(
       const signal = firstSignal;
       const sandboxPgid = pgid;
       signalShutdown = (async () => {
-        let commandGroupStopped = true;
-        if (sandboxGroupPath) {
-          const commandPgid = await publishedSandboxGroup(sandboxGroupPath, sandboxPgid);
-          if (commandPgid === 0) {
-            commandGroupStopped = true;
-          } else if (commandPgid) {
-            commandGroupStopped = await terminateRemainingGroup(commandPgid, signalReceivedAt, signal).catch(
-              () => false
-            );
-          } else {
-            // The command may have spawned without publishing its group yet.
-            // Stop the scope, but retain scratch when that group is unknown.
-            commandGroupStopped = false;
-          }
-        }
+        const publishedStopped = sandboxGroupPath
+          ? await stopPublishedGroup(sandboxGroupPath, sandboxPgid, false, signalReceivedAt, signal)
+          : true;
         const sandboxGroupStopped = await stopGroup(sandboxPgid, signalReceivedAt, signal);
-        return commandGroupStopped && sandboxGroupStopped;
+        return publishedStopped && sandboxGroupStopped;
       })();
     }
   };
@@ -273,7 +286,8 @@ function latchedSignalResult(control: SignalControl): CommandResult | undefined 
 
 async function stopTrackedGroup(
   control: SignalControl,
-  stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>
+  stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>,
+  sandboxKilled: boolean
 ): Promise<boolean> {
   const pgid = control.pgid();
   if (pgid === undefined) {
@@ -283,26 +297,20 @@ async function stopTrackedGroup(
   if (shutdown) {
     return shutdown;
   }
-  let commandGroupStopped = true;
-  const commandGroupPath = control.sandboxGroupPath();
-  if (commandGroupPath) {
-    const commandPgid = await publishedSandboxGroup(commandGroupPath, pgid);
-    if (commandPgid === undefined) {
-      commandGroupStopped = false;
-    } else if (commandPgid > 0) {
-      commandGroupStopped = await terminateRemainingGroup(commandPgid);
-    }
-  }
+  const groupPath = control.sandboxGroupPath();
+  const publishedStopped = groupPath ? await stopPublishedGroup(groupPath, pgid, sandboxKilled) : true;
   const sandboxGroupStopped = await stopGroup(pgid, control.receivedAt(), control.signal());
-  return commandGroupStopped && sandboxGroupStopped;
+  return publishedStopped && sandboxGroupStopped;
 }
 
 async function stopTrackedGroupSafely(
   control: SignalControl,
-  stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>
+  stopGroup: (pgid: number, startedAt?: number, initiatingSignal?: Signal) => Promise<boolean>,
+  result: CommandResult | undefined
 ): Promise<boolean> {
   try {
-    return await stopTrackedGroup(control, stopGroup);
+    // Without a close event or with a signal status the sandbox may have died before its sidecar published.
+    return await stopTrackedGroup(control, stopGroup, !result || result.signal !== null);
   } catch {
     // A rejected shutdown proof is the same fail-closed outcome as a live group:
     // retain the root, but preserve the child's already-observed result.
@@ -410,14 +418,14 @@ async function runLaunchedCommand(
       throw observed.launchError();
     }
     result = await restoreSandboxSignal(result, launch.signalPath);
-    const groupStopped = await stopTrackedGroupSafely(control, stopGroup);
+    const groupStopped = await stopTrackedGroupSafely(control, stopGroup, result);
     const signalResult = latchedSignalResult(control);
     return cleanupWithResult(ownership, signalResult ?? result, groupStopped, control, options.cleanupHooks);
   } catch (error) {
     const reason = error instanceof ScratchOwnershipError ? error.reason : "spawn-failed";
     process.stderr.write(`test scratch command failed: ${reason}\n`);
     const pgid = control.pgid();
-    const groupStopped = await stopTrackedGroupSafely(control, stopGroup);
+    const groupStopped = await stopTrackedGroupSafely(control, stopGroup, result);
     const signalResult = latchedSignalResult(control);
     if (!runningRecorded) {
       process.stderr.write("test scratch cleanup failed: launch-unknown\n");

@@ -9,6 +9,8 @@ import { basename, dirname, isAbsolute, join, relative } from "node:path";
 
 export const SCRATCH_SCHEMA = "pdpp.test-scratch/v1";
 const MARKER_NAME = ".pdpp-test-scratch.json";
+/** Process group the sandbox sidecar publishes before it spawns the command (see sandbox-child.ts). */
+export const SANDBOX_GROUP_FILE = ".sandbox-child-group";
 const REQUIRED_DIRECTORY_MODE = 0o700;
 const MARKER_MODE = 0o600;
 const RECOVERY_GRACE_MS = 60_000;
@@ -526,7 +528,7 @@ async function quarantineAndRemove(
     if (typeof marker.pgid !== "number" || !Number.isSafeInteger(marker.pgid) || marker.pgid <= 0) {
       throw new ScratchOwnershipError("malformed-marker");
     }
-    if (!groupAbsent(marker.pgid)) {
+    if (!groupAbsent(marker.pgid) || (await sandboxGroupReason(allocation.root))) {
       throw new ScratchOwnershipError("group-live");
     }
   }
@@ -586,13 +588,46 @@ function groupAbsent(pgid: number): boolean {
   }
 }
 
+/**
+ * Without a systemd user manager test-sandbox runs the command in a process
+ * group of its own, so the marker's group can be gone while the command lives.
+ * The sidecar publishes that group before it spawns the command, so a present
+ * file is the durable record of every group the command can occupy.
+ */
+async function sandboxGroupReason(...dirs: string[]): Promise<"group-live" | "group-unknown" | undefined> {
+  let published: string | undefined;
+  for (const dir of dirs) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: at most two directories, and the first match decides.
+      published = await readFile(join(dir, SANDBOX_GROUP_FILE), "utf8");
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return "group-unknown";
+      }
+    }
+  }
+  if (published === undefined) {
+    return undefined;
+  }
+  const pgid = Number(published.trim());
+  if (!(Number.isSafeInteger(pgid) && pgid > 0)) {
+    return "group-unknown";
+  }
+  return groupAbsent(pgid) ? undefined : "group-live";
+}
+
 function isOldEnough(marker: Marker, now: number): boolean {
   const age = now - Date.parse(marker.created_at);
   return Number.isFinite(age) && age >= RECOVERY_GRACE_MS;
 }
 
 /** Return the fail-closed reason for a marker whose owner is already absent. */
-function recoveryStateReason(marker: Marker, bootId: string | null): string | undefined {
+async function recoveryStateReason(
+  marker: Marker,
+  bootId: string | null,
+  ...rootDirs: string[]
+): Promise<string | undefined> {
   if (marker.state === "allocated") {
     return;
   }
@@ -607,6 +642,10 @@ function recoveryStateReason(marker: Marker, bootId: string | null): string | un
   // after its exact recorded group is absent, irrespective of boot identity.
   if (!groupAbsent(marker.pgid)) {
     return "group-live";
+  }
+  const sandboxReason = await sandboxGroupReason(...rootDirs);
+  if (sandboxReason) {
+    return sandboxReason;
   }
   if (marker.boot_id === undefined || bootId === null) {
     return "unverifiable-boot";
@@ -680,7 +719,7 @@ async function recoverJournal(
   if (ownerStatus !== "absent") {
     return { path: journalPath, reason: ownerStatus, removed: false };
   }
-  const stateReason = recoveryStateReason(marker, bootId);
+  const stateReason = await recoveryStateReason(marker, bootId, journal.root, journal.quarantine);
   if (stateReason) {
     return { path: journalPath, reason: stateReason, removed: false };
   }
@@ -753,7 +792,7 @@ async function recoverCompatibleQuarantine(
   if (ownerStatus !== "absent") {
     return { path: candidate, reason: ownerStatus, removed: false };
   }
-  const stateReason = recoveryStateReason(marker, bootId);
+  const stateReason = await recoveryStateReason(marker, bootId, candidate);
   if (stateReason) {
     return { path: candidate, reason: stateReason, removed: false };
   }
@@ -810,7 +849,7 @@ async function recoverRunCandidate(
   if (ownerStatus !== "absent") {
     return { path: candidate, reason: ownerStatus, removed: false };
   }
-  const stateReason = recoveryStateReason(marker, bootId);
+  const stateReason = await recoveryStateReason(marker, bootId, candidate);
   if (stateReason) {
     return { path: candidate, reason: stateReason, removed: false };
   }

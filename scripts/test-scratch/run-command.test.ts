@@ -48,7 +48,9 @@ function command(args: string[]): string[] {
 const SANDBOX_SCRIPT = new URL("../test-sandbox/test-sandbox", import.meta.url).pathname;
 const wrapperPath = new URL("./run-command.ts", import.meta.url).pathname;
 const lifecycleWrapperPath = new URL("./fixtures/lifecycle-wrapper.ts", import.meta.url).pathname;
-const delayedPublishWrapperPath = new URL("./fixtures/delayed-publish-wrapper.ts", import.meta.url).pathname;
+const sandboxChildWrapperPath = new URL("./fixtures/sandbox-child-wrapper.ts", import.meta.url).pathname;
+const delayedPublishSandboxChild = new URL("./fixtures/delayed-publish-sandbox-child.ts", import.meta.url).pathname;
+const killAfterSpawnSandboxChild = new URL("./fixtures/kill-after-spawn-sandbox-child.ts", import.meta.url).pathname;
 
 interface ChildResult {
   code: number | null;
@@ -370,6 +372,19 @@ async function eventuallyRecover(parent: string, root: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error("killed orphan group was not recoverable");
+}
+
+async function eventuallyRunRoot(parent: string): Promise<string> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    // biome-ignore lint/performance/noAwaitInLoops: bounded wait for the owner to allocate its root.
+    const entry = (await readdir(parent).catch(() => [] as string[])).find((name) => name.startsWith("run-"));
+    if (entry) {
+      return join(parent, entry);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("the owner did not allocate a scratch root");
 }
 
 async function eventuallyAbsentGroup(pgid: number): Promise<void> {
@@ -973,30 +988,69 @@ test("SIGINT is forwarded unchanged to the owned group before cleanup", async ()
   await assert.rejects(access(root));
 });
 
-test("SIGINT waits for the sandbox child group to be published", async () => {
+/** Environment for a sandbox with its cgroup layer absent, as under test-receipt or without a systemd user manager. */
+function noCgroupEnv(runnerTemp: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    PDPP_TEST_SCRATCH_ROOT: undefined,
+    PDPP_TEST_SCRATCH_SCHEMA: undefined,
+    PDPP_TEST_SCRATCH_MARKER: undefined,
+    PDPP_TEST_SCRATCH_NONCE: undefined,
+    PDPP_TEST_SCRATCH_OWNER_PID: undefined,
+    RUNNER_TEMP: runnerTemp,
+    TEST_RECEIPT_ACTIVE: "1",
+    TEST_SANDBOX_ACTIVE: "",
+    TEST_SANDBOX_DISABLE: "0",
+  };
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function killQuietly(pid: number | undefined): void {
+  if (pid && processAlive(pid)) {
+    process.kill(pid, "SIGKILL");
+  }
+}
+
+test("SIGINT waits for the sidecar to publish its group before the launcher cleans up", async () => {
   const runnerTemp = await temporaryParent();
-  const wrapper = spawn(process.execPath, ["--import", "tsx", delayedPublishWrapperPath], {
-    env: { ...process.env, RUNNER_TEMP: runnerTemp, TEST_SANDBOX_ACTIVE: "", TEST_SANDBOX_DISABLE: "0" },
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  let output = "";
-  wrapper.stdout?.on("data", (chunk: Buffer) => {
-    output += chunk.toString();
-  });
-  const rootPromise = reportedRoot(wrapper);
+  const wrapper = spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      sandboxChildWrapperPath,
+      delayedPublishSandboxChild,
+      process.execPath,
+      "--import",
+      "tsx",
+      child,
+      "--print-root",
+      "--record-signals",
+      "--wait",
+    ],
+    { env: noCgroupEnv(runnerTemp), stdio: ["ignore", "ignore", "ignore"] }
+  );
   const result = closed(wrapper);
   let settled = false;
   result.then(() => {
     settled = true;
   });
-  let commandPgid: number | undefined;
+  let sidecarPgid: number | undefined;
   let groupPath: string | undefined;
   try {
-    const root = await rootPromise;
+    const parent = join(runnerTemp, "pdpp-test-scratch");
+    const root = await eventuallyRunRoot(parent);
     groupPath = join(root, ".sandbox-child-group");
-    commandPgid = Number((await eventuallyRead(`${groupPath}.spawned`, 20_000)).trim());
-    assert.ok(Number.isSafeInteger(commandPgid) && commandPgid > 0);
-    await eventuallyRead(join(root, "signals-ready"));
+    sidecarPgid = Number((await eventuallyRead(`${groupPath}.held`, 20_000)).trim());
+    assert.ok(Number.isSafeInteger(sidecarPgid) && sidecarPgid > 0);
     await assert.rejects(access(groupPath));
     wrapper.kill("SIGINT");
     // The launcher must keep waiting for the unpublished group, not give up or clean up.
@@ -1005,9 +1059,7 @@ test("SIGINT waits for the sandbox child group to be published", async () => {
     await access(root);
     await writeFile(`${groupPath}.release`, "release\n");
     assert.deepEqual(await result, { code: null, signal: "SIGINT" });
-    assert.match(output, CHILD_SIGINT_OUTPUT);
-    assert.doesNotMatch(output, CHILD_SIGTERM_OUTPUT);
-    await eventuallyAbsentGroup(commandPgid);
+    await eventuallyAbsentGroup(sidecarPgid);
     await assert.rejects(access(root));
   } finally {
     if (groupPath) {
@@ -1015,9 +1067,9 @@ test("SIGINT waits for the sandbox child group to be published", async () => {
         // The owner may already have removed its scratch root.
       });
     }
-    if (commandPgid) {
+    if (sidecarPgid) {
       try {
-        process.kill(-commandPgid, "SIGKILL");
+        process.kill(-sidecarPgid, "SIGKILL");
       } catch {
         // The group may have exited before this failure-path cleanup.
       }
@@ -1064,6 +1116,131 @@ test("a sandbox that exits before publishing a command group leaves no scratch a
   } finally {
     await rm(runnerTemp, { force: true, recursive: true });
     await rm(stubs, { force: true, recursive: true });
+  }
+});
+
+test("a sidecar killed right after spawning the command does not orphan the command under a deleted scratch", async () => {
+  const runnerTemp = await temporaryParent();
+  const work = await temporaryParent();
+  const pidFile = join(work, "command.pid");
+  let commandPid: number | undefined;
+  try {
+    const wrapper = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        sandboxChildWrapperPath,
+        killAfterSpawnSandboxChild,
+        "sh",
+        "-c",
+        'echo "$$ $PDPP_TEST_SCRATCH_ROOT" > "$1"; exec sleep 300',
+        "sh",
+        pidFile,
+      ],
+      { env: noCgroupEnv(runnerTemp), stdio: ["ignore", "ignore", "ignore"] }
+    );
+    await closed(wrapper);
+    const [pid, root] = (await eventuallyRead(pidFile, 20_000)).trim().split(" ");
+    commandPid = Number(pid);
+    assert.ok(Number.isSafeInteger(commandPid) && commandPid > 0);
+    assert.ok(root);
+    // Either the scratch is kept, or the command is gone: never a live command with its scratch deleted.
+    if (
+      !(await access(root)
+        .then(() => true)
+        .catch(() => false))
+    ) {
+      await eventuallyAbsentProcess(commandPid);
+    }
+  } finally {
+    killQuietly(commandPid);
+    await rm(runnerTemp, { force: true, recursive: true });
+    await rm(work, { force: true, recursive: true });
+  }
+});
+
+test("owner SIGKILL then a command that leaves a background child does not let recovery delete a live group's scratch", async () => {
+  const runnerTemp = await temporaryParent();
+  const work = await temporaryParent();
+  const pidFile = join(work, "background.pid");
+  const releaseFile = join(work, "release");
+  let backgroundPid: number | undefined;
+  let wrapper: ReturnType<typeof startRawWrapper> | undefined;
+  try {
+    wrapper = startRawWrapper(
+      [
+        "sh",
+        "-c",
+        'sleep 300 </dev/null >/dev/null 2>&1 & echo "$! $PDPP_TEST_SCRATCH_ROOT" > "$1"; while [ ! -e "$2" ]; do sleep 0.05; done',
+        "sh",
+        pidFile,
+        releaseFile,
+      ],
+      noCgroupEnv(runnerTemp)
+    );
+    const [pid, root] = (await eventuallyRead(pidFile, 20_000)).trim().split(" ");
+    backgroundPid = Number(pid);
+    assert.ok(root);
+    const markerPath = join(root, ".pdpp-test-scratch.json");
+    const marker = await eventuallyRunningMarker(markerPath);
+    const close = exited(wrapper);
+    wrapper.kill("SIGKILL");
+    await close;
+    // The command now exits, leaving its background child behind; no owner is left to stop it.
+    await writeFile(releaseFile, "release\n");
+    await eventuallyAbsentGroup(marker.pgid);
+    await writeFile(
+      markerPath,
+      `${JSON.stringify({ ...marker, created_at: new Date(Date.now() - 120_000).toISOString() })}\n`
+    );
+    const results = await recoverStaleScratch({ parent: join(runnerTemp, "pdpp-test-scratch") });
+    // Either recovery keeps the scratch, or nothing of the command is left alive in it.
+    if (results.some((entry) => entry.path === root && entry.removed)) {
+      await eventuallyAbsentProcess(backgroundPid);
+    }
+  } finally {
+    // Release the command's wait loop and stop an owner a failed assertion left running.
+    await writeFile(releaseFile, "release\n").catch(() => undefined);
+    if (wrapper?.pid && wrapper.exitCode === null && wrapper.signalCode === null) {
+      wrapper.kill("SIGKILL");
+    }
+    killQuietly(backgroundPid);
+    await rm(runnerTemp, { force: true, recursive: true });
+    await rm(work, { force: true, recursive: true });
+  }
+});
+
+test("recovery keeps a scratch whose published sidecar group is live although the marker group is gone", async () => {
+  const parent = await temporaryParent();
+  const live = await allocateScratchOwnership({ parent });
+  const unreadable = await allocateScratchOwnership({ parent });
+  const dead = await allocateScratchOwnership({ parent });
+  const bootId = await currentBootId();
+  const group = spawn("sh", ["-c", "exec sleep 30"], { detached: true, stdio: "ignore" });
+  assert.ok(group.pid);
+  try {
+    for (const [ownership, published] of [
+      [live, `${group.pid}\n`],
+      [unreadable, "not a group\n"],
+      [dead, "999999999\n"],
+    ] as const) {
+      // biome-ignore lint/performance/noAwaitInLoops: three small fixtures built in order.
+      await oldMarker(ownership, { boot_id: bootId, pgid: 999_999_998, state: "running" });
+      await writeFile(join(ownership.allocation.root, ".sandbox-child-group"), published, { mode: 0o600 });
+    }
+    const reason = new Map((await recoverStaleScratch({ parent })).map((entry) => [entry.path, entry.reason]));
+    assert.equal(reason.get(live.allocation.root), "group-live");
+    assert.equal(reason.get(unreadable.allocation.root), "group-unknown");
+    assert.equal(reason.get(dead.allocation.root), bootId ? "dead-verified" : "unverifiable-boot");
+    await access(live.allocation.root);
+    await access(unreadable.allocation.root);
+    // The owner's own cleanup refuses the same live group.
+    await assert.rejects(cleanupScratchOwnership(live), { reason: "group-live" });
+    await access(live.allocation.root);
+  } finally {
+    process.kill(-group.pid, "SIGKILL");
+    await rm(parent, { force: true, recursive: true });
   }
 });
 
