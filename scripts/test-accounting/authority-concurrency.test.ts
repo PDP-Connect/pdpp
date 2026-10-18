@@ -138,6 +138,7 @@ interface FixtureReceipt {
   counts: { passed: number; failed: number };
   ended_at: string;
   exit_code: number;
+  run_id: string;
   started_at: string;
   suite: string;
 }
@@ -415,7 +416,7 @@ test("a leaf with malformed structured output is a failure that stops new starts
   await withFixtureSuites(
     "2",
     (markers) => [
-      { id: "fixture-a", authorityRunner: true, command: ["node", "-e", "process.stdout.write('not json')"] },
+      { id: "fixture-a", authorityRunner: true, command: ["node", "-e", "process.stdout.write('not json')", "--"] },
       markedLeaf(markers, "fixture-b", 600),
       markedLeaf(markers, "fixture-c", 0),
     ],
