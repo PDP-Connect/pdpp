@@ -180,6 +180,8 @@ interface PatchedListen {
   (this: NetServer, ...args: ListenArgs): NetServer;
 }
 
+const bindOptions = new WeakMap<NetServer, { ipv6Only: boolean }>();
+
 /**
  * Attach the grant/revoke lifecycle to a single server instance the moment
  * its listen() call has been issued. The grant is applied on 'listening'
@@ -188,6 +190,16 @@ interface PatchedListen {
  * and never 'listening', so it grants nothing.
  */
 function attachBindAuthority(server: NetServer, ipv6Only: boolean): void {
+  // A server can listen, close and listen again with different options. One
+  // handler pair serves every listen and reads the options of the latest one.
+  const existing = bindOptions.get(server);
+  if (existing) {
+    existing.ipv6Only = ipv6Only;
+    return;
+  }
+  const options = { ipv6Only };
+  bindOptions.set(server, options);
+
   // Detect TLS at grant time (a tls.Server is an https listener). Imported
   // lazily to avoid a hard node:tls dependency in the hot patch path.
   let granted: string[] | undefined;
@@ -205,7 +217,7 @@ function attachBindAuthority(server: NetServer, ipv6Only: boolean): void {
       granted = [`${UNIX_SOCKET_PREFIX}${info}`];
     } else {
       const protocol = isTlsServer(server) ? "https:" : "http:";
-      granted = boundOrigins(protocol, info.address, info.port, ipv6Only);
+      granted = boundOrigins(protocol, info.address, info.port, options.ipv6Only);
     }
     for (const origin of granted) {
       grantOrigin(origin);
@@ -404,94 +416,14 @@ function guardLegacyHttpModule<M extends NodeHttpModule | NodeHttpsModule>(
   });
 }
 
-const MAX_FETCH_REDIRECTS = 20;
-const REQUEST_BODY_HEADERS = ["content-encoding", "content-language", "content-location", "content-type"];
-
-/** The `Location` target of a redirect response, or null if it is not one. */
-function redirectLocation(response: Response): string | null {
-  const redirecting = [301, 302, 303, 307, 308].includes(response.status);
-  return redirecting ? response.headers.get("location") : null;
+/** True for a redirect response (3xx with a `Location`) that fetch would follow on its own. */
+function isRedirectResponse(response: Response): boolean {
+  return [301, 302, 303, 307, 308].includes(response.status) && response.headers.has("location");
 }
 
-function fetchNetworkError(reason: string): TypeError {
-  return new TypeError("fetch failed", { cause: new Error(reason) });
-}
-
-/** The URL's origin if it is an http(s) URL; null for data: and other schemes. */
+/** The origin of an http(s) URL; null for data: and other schemes. */
 function httpOriginOf(target: URL): string | null {
   return target.protocol === "http:" || target.protocol === "https:" ? target.origin : null;
-}
-
-/** Resolve a redirect's `Location` and require it to be an allowlisted http(s) origin. */
-function guardedRedirectTarget(location: string, base: string): URL {
-  let next: URL;
-  try {
-    next = new URL(location, base);
-  } catch (error) {
-    throw new TypeError("fetch failed", { cause: error });
-  }
-  const origin = httpOriginOf(next);
-  if (origin === null) {
-    throw fetchNetworkError("redirect to a non-http(s) URL");
-  }
-  if (!isOriginAllowed(origin)) {
-    throw blockedOriginError(origin);
-  }
-  return next;
-}
-
-/** The request for the next redirect hop, per the Fetch standard's HTTP-redirect fetch. */
-function redirectedRequest(current: Request, status: number, next: URL, replayable: Request | null): Request {
-  const { method } = current;
-  const toGet =
-    status === 303 ? method !== "GET" && method !== "HEAD" : (status === 301 || status === 302) && method === "POST";
-  const headers = new Headers(current.headers);
-  if (new URL(current.url).origin !== next.origin) {
-    headers.delete("authorization");
-  }
-  const init: RequestInit & { duplex?: "half" } = { method, headers, redirect: "manual", signal: current.signal };
-  if (toGet) {
-    init.method = "GET";
-    for (const name of REQUEST_BODY_HEADERS) {
-      headers.delete(name);
-    }
-  } else if (replayable !== null) {
-    init.body = replayable.clone().body;
-    init.duplex = "half";
-  }
-  return new Request(next, init);
-}
-
-/**
- * Follow redirects ourselves so every hop passes the allowlist. Built-in fetch
- * follows redirects internally and would otherwise check only the first URL, so
- * an owned server could bounce a request to a foreign loopback port. Follows
- * the Fetch standard's redirect rules (method/body rewrite on 303 and
- * 301/302-POST, `authorization` dropped across origins, 20 hops).
- */
-function fetchWithGuardedRedirects(
-  originalFetch: typeof fetch,
-  input: RequestInfo | URL,
-  init: RequestInit | undefined
-): Promise<Response> {
-  const first = new Request(input, { ...init, redirect: "manual" });
-  // Keep a pristine copy so a 307/308 hop can replay the body.
-  const replayable = first.body === null ? null : first.clone();
-
-  const hop = async (current: Request, redirects: number): Promise<Response> => {
-    const response = await originalFetch(current);
-    const location = redirectLocation(response);
-    if (location === null) {
-      return redirects === 0 ? response : Object.defineProperty(response, "redirected", { value: true });
-    }
-    if (redirects >= MAX_FETCH_REDIRECTS) {
-      throw fetchNetworkError("redirect count exceeded");
-    }
-    await response.body?.cancel();
-    const next = guardedRedirectTarget(location, current.url);
-    return hop(redirectedRequest(current, response.status, next, replayable), redirects + 1);
-  };
-  return hop(first, 0);
 }
 
 /** Guard Node's built-in fetch even when npm's undici package is absent. */
@@ -535,7 +467,17 @@ function guardFetch(restoreList: Array<() => void>): void {
       // 'manual' and 'error' never take a second hop.
       return originalFetch(input, init);
     }
-    return fetchWithGuardedRedirects(originalFetch, input, init);
+    // Built-in fetch would follow a redirect without re-checking the allowlist,
+    // so fetch stops at the first hop and a redirect response is refused.
+    return originalFetch(input, { ...init, redirect: "manual" }).then(async (response) => {
+      if (!isRedirectResponse(response)) {
+        return response;
+      }
+      await response.body?.cancel();
+      throw new Error(
+        "hermetic guard: automatic redirects are refused in tests; pass redirect: 'manual' and handle the Location yourself"
+      );
+    });
   };
   restoreList.push(() => {
     globalThis.fetch = originalFetch;

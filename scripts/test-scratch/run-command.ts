@@ -380,9 +380,7 @@ function spawnOwnedCommand(launch: ReturnType<typeof sandboxLaunch>, ownership: 
   return spawn(launch.file, launch.args, {
     cwd: process.cwd(),
     detached: true,
-    env: hermeticTestEnvironment(
-      launch.groupPath ? { ...ownership.env, TEST_SANDBOX_PIDNS: "0" } : ownership.env
-    ),
+    env: hermeticTestEnvironment(launch.groupPath ? { ...ownership.env, TEST_SANDBOX_PIDNS: "0" } : ownership.env),
     shell: false,
     stdio: "inherit",
   });

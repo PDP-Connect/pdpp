@@ -140,7 +140,7 @@ test("event-subscription-test-receiver: --port 0 reports the bound port and serv
     assert.equal(res.status, 200);
     assert.equal((await res.json()).listening, port);
   } finally {
-    await stopReceiver(proc);
+    await stopReceiver(proc, port);
   }
 });
 
