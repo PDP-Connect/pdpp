@@ -110,7 +110,9 @@ interface CaptureResult {
   retained_capture_bytes: number;
   signal: string | null;
   stderr: string;
+  stderr_truncated: boolean;
   stdout: string;
+  stdout_truncated: boolean;
 }
 interface TranscriptHandle {
   write: (chunk: string) => Promise<unknown>;
@@ -131,6 +133,7 @@ const LEAF_DEADLINE_MS = configuredDeadline("PDPP_ACCOUNTING_LEAF_DEADLINE_MS", 
 const PREPARE_DEADLINE_MS = configuredDeadline("PDPP_ACCOUNTING_PREPARE_DEADLINE_MS", 120_000);
 const LEAF_STALL_BUDGET_MS = configuredDeadline("PDPP_ACCOUNTING_STALL_BUDGET_MS", 300_000);
 const CAPTURE_TAIL_BYTES = 64 * 1024;
+const KILL_SETTLE_GRACE_MS = 250;
 // How often the watchdog re-checks for silence, and the cadence of the heartbeat
 // line printed while a leaf is quiet. Short enough that an operator sees the run
 // is alive within seconds of starting it, long enough to add no measurable cost.
@@ -151,6 +154,29 @@ function reportProgress(text: string): void {
   process.stderr.write(`[test-accounting] ${text}\n`);
 }
 
+function killProcessGroup(child: ReturnType<typeof spawn>): void {
+  if (child.pid === undefined) {
+    child.kill("SIGKILL");
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      return;
+    }
+    reportProgress(`could not signal process group ${child.pid}; falling back to direct child kill`);
+    child.kill("SIGKILL");
+  }
+}
+
+function destroyChildPipes(child: ReturnType<typeof spawn>): void {
+  child.stdout?.resume();
+  child.stderr?.resume();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+}
+
 function capture(
   command: string[],
   cwd: string,
@@ -168,9 +194,11 @@ function capture(
     const label = `${start.suite}/${start.profile}`;
     const startedAt = Date.now();
     reportProgress(`${label}: started (${start.files.length} files)`);
-    const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let stdoutTail = Buffer.alloc(0);
     let stderrTail = Buffer.alloc(0);
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     const nodeSummary = parseNodeEvents ? new StructuredNodeSummaryAccumulator() : undefined;
     let bytes = 0;
     let lastOutputAt = Date.now();
@@ -179,14 +207,21 @@ function capture(
     let nodeSummaryError: string | undefined;
     let writeFailure: unknown;
     let writeChain = Promise.resolve();
-    const appendTail = (current: Buffer, chunk: Buffer) => {
+    const appendTail = (current: Buffer, chunk: Buffer, stream: "stdout" | "stderr") => {
       const combined = Buffer.concat([current, chunk]);
+      if (combined.length > CAPTURE_TAIL_BYTES) {
+        if (stream === "stdout") {
+          stdoutTruncated = true;
+        } else {
+          stderrTruncated = true;
+        }
+      }
       return combined.length > CAPTURE_TAIL_BYTES ? combined.subarray(combined.length - CAPTURE_TAIL_BYTES) : combined;
     };
     const append = (stream: "stdout" | "stderr", text: string) => {
       const chunk = Buffer.from(text);
       if (stream === "stdout") {
-        stdoutTail = appendTail(stdoutTail, chunk);
+        stdoutTail = appendTail(stdoutTail, chunk, stream);
         if (nodeSummary && !nodeSummaryError) {
           try {
             nodeSummary.write(text);
@@ -195,7 +230,7 @@ function capture(
           }
         }
       } else {
-        stderrTail = appendTail(stderrTail, chunk);
+        stderrTail = appendTail(stderrTail, chunk, stream);
       }
       // Progress is measured as output ARRIVING, which is what distinguishes a
       // slow-but-live leaf from a wedged one. Only the clock and a byte counter
@@ -213,7 +248,7 @@ function capture(
         })
         .catch((error: unknown) => {
           writeFailure ??= error;
-          child.kill("SIGKILL");
+          killForFailure();
         })
         .finally(() => {
           if (!writeFailure) {
@@ -227,10 +262,32 @@ function capture(
     child.stdout?.on("data", (chunk) => append("stdout", chunk));
     child.stderr?.on("data", (chunk) => append("stderr", chunk));
 
+    let settled = false;
+    let killSettleTimer: NodeJS.Timeout | undefined;
+    const settleFailureAfterKill = () => {
+      if (killSettleTimer) {
+        return;
+      }
+      killSettleTimer = setTimeout(() => {
+        destroyChildPipes(child);
+        if (!settled) {
+          settled = true;
+          reject(captureFailure() ?? new Error(`${label} child was killed`));
+        }
+      }, KILL_SETTLE_GRACE_MS);
+    };
+    const killForFailure = () => {
+      try {
+        killProcessGroup(child);
+      } finally {
+        destroyChildPipes(child);
+        settleFailureAfterKill();
+      }
+    };
     const killForDeadline = () => {
       deadlineExpired = true;
       reportProgress(`${label}: exceeded total deadline ${Math.round(LEAF_DEADLINE_MS / 1000)}s; killing`);
-      child.kill("SIGKILL");
+      killForFailure();
     };
     const captureFailure = (): Error | unknown | undefined => {
       if (writeFailure) {
@@ -263,6 +320,8 @@ function capture(
       resolveResult({
         exit_code: code ?? 1,
         signal: signal ?? null,
+        stdout_truncated: stdoutTruncated,
+        stderr_truncated: stderrTruncated,
         stdout: stdoutTail.toString(),
         stderr: stderrTail.toString(),
         retained_capture_bytes: stdoutTail.length + stderrTail.length,
@@ -285,7 +344,7 @@ function capture(
         reportProgress(
           `${label}: STALLED — no output for ${Math.round(quietMs / 1000)}s (budget ${Math.round(LEAF_STALL_BUDGET_MS / 1000)}s); killing`
         );
-        child.kill("SIGKILL");
+        killForFailure();
         return;
       }
       reportProgress(
@@ -297,7 +356,10 @@ function capture(
     child.on("error", (error) => {
       clearInterval(ticker);
       clearTimeout(deadlineTimer);
-      reject(error);
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
     });
     child.on("close", async (code, signal) => {
       clearInterval(ticker);
@@ -310,7 +372,15 @@ function capture(
         }
         completeCapture(code, signal);
       } catch (error) {
-        reject(error);
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
+      } finally {
+        settled = true;
+        if (killSettleTimer) {
+          clearTimeout(killSettleTimer);
+        }
       }
     });
   });
@@ -322,12 +392,17 @@ function capture(
  * deliberately thin: it adds no logic of its own, so a test through this seam
  * fails exactly when `capture` regresses.
  */
-export function runCaptureForTest(command: string[], cwd: string, parseNodeEvents = false): Promise<CaptureResult> {
+export function runCaptureForTest(
+  command: string[],
+  cwd: string,
+  parseNodeEvents = false,
+  writeTranscript: (chunk: string) => Promise<unknown> = () => Promise.resolve()
+): Promise<CaptureResult> {
   return capture(
     command,
     cwd,
     process.env,
-    { write: () => Promise.resolve() },
+    { write: writeTranscript },
     { run_id: "test", suite: "fixture", profile: "fixture", files: [] },
     parseNodeEvents
   );
@@ -360,9 +435,11 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
   }
   reportProgress(`${suite.id}: preparing (${command.join(" ")})`);
   return new Promise((resolvePrepare, reject) => {
-    const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let output = Buffer.alloc(0);
     let deadlineExpired = false;
+    let settled = false;
+    let killSettleTimer: NodeJS.Timeout | undefined;
     const appendOutput = (chunk: Buffer) => {
       const combined = Buffer.concat([output, chunk]);
       output =
@@ -377,23 +454,52 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
     const deadlineTimer = setTimeout(() => {
       deadlineExpired = true;
       reportProgress(`${suite.id}: prepare exceeded deadline ${Math.round(PREPARE_DEADLINE_MS / 1000)}s; killing`);
-      child.kill("SIGKILL");
+      try {
+        killProcessGroup(child);
+      } finally {
+        destroyChildPipes(child);
+        killSettleTimer = setTimeout(() => {
+          destroyChildPipes(child);
+          if (!settled) {
+            settled = true;
+            reject(
+              new Error(
+                `${suite.id} prepare exceeded deadline ${Math.round(PREPARE_DEADLINE_MS / 1000)}s (PDPP_ACCOUNTING_PREPARE_DEADLINE_MS) and was killed`
+              )
+            );
+          }
+        }, KILL_SETTLE_GRACE_MS);
+      }
     }, PREPARE_DEADLINE_MS);
     deadlineTimer.unref?.();
     child.on("error", (error) => {
       clearTimeout(deadlineTimer);
-      reject(error);
+      if (killSettleTimer) {
+        clearTimeout(killSettleTimer);
+      }
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
     });
     child.on("close", (code, signal) => {
       clearTimeout(deadlineTimer);
-      if (code === 0 && !signal) {
+      if (code === 0 && !signal && !deadlineExpired) {
+        settled = true;
         resolvePrepare();
         return;
       }
+      if (killSettleTimer) {
+        clearTimeout(killSettleTimer);
+      }
+      if (settled) {
+        return;
+      }
+      settled = true;
       reject(
         new Error(
           deadlineExpired
-            ? `${suite.id} prepare exceeded deadline ${Math.round(PREPARE_DEADLINE_MS / 1000)}ms (PDPP_ACCOUNTING_PREPARE_DEADLINE_MS) and was killed`
+            ? `${suite.id} prepare exceeded deadline ${Math.round(PREPARE_DEADLINE_MS / 1000)}s (PDPP_ACCOUNTING_PREPARE_DEADLINE_MS) and was killed`
             : `${suite.id} prepare failed (exit ${code ?? "null"}${signal ? `, signal ${signal}` : ""}): ${output.toString().trim()}`
         )
       );
@@ -533,6 +639,9 @@ function observedCounts(
     };
   }
   if (run.suite.execution === "authority-runner") {
+    if (observed.stdout_truncated) {
+      throw new Error("authority-runner stdout exceeded the retained output limit; child result was truncated");
+    }
     return assertChildResult(readStructuredChildResult(observed.stdout), issued);
   }
   let counts: Counts;
@@ -542,6 +651,9 @@ function observedCounts(
     }
     counts = observed.node_summary ?? structuredNodeSummary(observed.stdout);
   } else if (run.suite.loader === "python-unittest") {
+    if (observed.stdout_truncated || observed.stderr_truncated) {
+      throw new Error("python unittest output exceeded the retained output limit; summary was truncated");
+    }
     counts = structuredPythonSummary(observed.stdout + observed.stderr, observed.exit_code);
   } else {
     counts = {
@@ -699,7 +811,15 @@ export async function runAuthority({
             issued,
             run.suite.loader === "node-test" && run.suite.execution !== "authority-runner"
           )
-        : { exit_code: 0, signal: null, stdout: "", stderr: "", retained_capture_bytes: 0 };
+        : {
+            exit_code: 0,
+            signal: null,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            stdout: "",
+            stderr: "",
+            retained_capture_bytes: 0,
+          };
       if (!command) {
         reportProgress(`${issued.suite}/${issued.profile}: zero-test declaration, nothing spawned`);
       }

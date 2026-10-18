@@ -17,7 +17,8 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runPrepareForTest } from "./authority.ts";
@@ -30,6 +31,7 @@ const GENERATED = join(root, "apps/site/src/generated/spec-front-matter.ts");
 const MODULE_NOT_FOUND_PATTERN = /ERR_MODULE_NOT_FOUND/;
 const PREPARE_FAILED_PATTERN = /site prepare failed \(exit 3/;
 const PREPARE_DEADLINE_PATTERN = /prepare.*deadline/i;
+const PREPARE_DEADLINE_SECONDS_PATTERN = /prepare exceeded deadline 1s \(PDPP_ACCOUNTING_PREPARE_DEADLINE_MS\)/;
 
 async function siteSuite(): Promise<Suite> {
   const manifest = await readManifest(join(root, "test-accounting.manifest.json"), { root });
@@ -117,30 +119,77 @@ test("prepare writes only gitignored artifacts, so the clean-tree gate still hol
 });
 
 test("a prepare command is killed and reported when it exceeds its deadline", async () => {
-  const deadlineMs = 1500;
+  const deadlineMs = 1000;
+  const tempDir = mkdtempSync(join(tmpdir(), "pdpp-prepare-descendant-"));
+  const pidFile = join(tempDir, "pid");
+  const prepareScript = `
+    const { spawn } = require('node:child_process');
+    const fs = require('node:fs');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+    process.exit(0);
+  `;
   const driver = `
     process.env.PDPP_ACCOUNTING_PREPARE_DEADLINE_MS = ${JSON.stringify(String(deadlineMs))};
     const { runPrepareForTest } = await import(${JSON.stringify(new URL("./authority.ts", import.meta.url).href)});
-    await runPrepareForTest({ id: "fixture", cwd: ".", prepare: ["node", "-e", "setInterval(() => {}, 1000)"], profiles: [] }, process.cwd());
+    await runPrepareForTest({ id: "fixture", cwd: ".", prepare: ["node", "-e", ${JSON.stringify(prepareScript)}], profiles: [] }, process.cwd());
   `;
   const started = Date.now();
   const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", driver], {
     cwd: root,
     stdio: ["ignore", "ignore", "pipe"],
+    detached: true,
   });
   let stderr = "";
   child.stderr?.on("data", (chunk) => {
     stderr += chunk.toString();
   });
   const outcome = await new Promise<{ code: number | null }>((resolve) => {
-    const guard = setTimeout(() => child.kill("SIGKILL"), 8000);
+    const guard = setTimeout(() => {
+      if (child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          /* already gone */
+        }
+      }
+    }, 8000);
     child.on("close", (code) => {
       clearTimeout(guard);
       resolve({ code });
     });
   });
 
-  assert.equal(outcome.code, 1, "a hanging prepare must fail the suite instead of hanging forever");
-  assert.match(stderr, PREPARE_DEADLINE_PATTERN, "the failure must identify the prepare deadline");
-  assert.ok(Date.now() - started < 8000, "the deadline must stop prepare promptly");
+  let pid: number | undefined;
+  try {
+    assert.equal(outcome.code, 1, "a hanging prepare must fail the suite instead of hanging forever");
+    assert.match(stderr, PREPARE_DEADLINE_PATTERN, "the failure must identify the prepare deadline");
+    assert.match(stderr, PREPARE_DEADLINE_SECONDS_PATTERN, "the deadline must report its value in seconds");
+    assert.ok(Date.now() - started < 8000, "the deadline must stop prepare promptly");
+    pid = Number(readFileSync(pidFile, "utf8"));
+    await assertProcessGone(pid);
+  } finally {
+    if (pid) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
+
+async function assertProcessGone(pid: number): Promise<void> {
+  const deadline = Date.now() + 1500;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: each check waits for the OS to reap the process just killed.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`descendant ${pid} survived prepare deadline`);
+}

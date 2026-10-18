@@ -3,6 +3,7 @@
 
 const RESULT_PREFIX = "PDPP_TEST_ACCOUNTING_RESULT ";
 const EVENT_PREFIX = "PDPP_TEST_ACCOUNTING_EVENT ";
+const MAX_EVENT_LINE_BYTES = 1024 * 1024;
 
 function fail(message: string): never {
   throw new Error(`test accounting result: ${message}`);
@@ -373,7 +374,9 @@ export function structuredNodeSummary(output: string): StructuredSummary {
 
 /** Incrementally counts reporter events without retaining the full transcript. */
 export class StructuredNodeSummaryAccumulator {
-  private readonly state = { discardingLine: false, pending: "", sawEvent: false };
+  private discardingLine = false;
+  private pending = "";
+  private sawEvent = false;
   private readonly skipReasons: Record<string, number> = {};
   private readonly consumedMappingIdentities: string[] = [];
   private assertions = 0;
@@ -381,20 +384,30 @@ export class StructuredNodeSummaryAccumulator {
   private failed = 0;
   private skipped = 0;
 
+  private get pendingLine(): string {
+    return this.pending;
+  }
+
+  private get hasPendingDiscard(): boolean {
+    return this.discardingLine;
+  }
+
+  private get hasSeenEvent(): boolean {
+    return this.sawEvent;
+  }
+
   write(chunk: string): void {
     let incoming = chunk;
-    // Biome cannot follow the parser state mutations across streamed chunks.
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: parser state carries across calls to write.
-    if (this.state.discardingLine) {
+    if (this.hasPendingDiscard) {
       const newline = incoming.indexOf("\n");
       if (newline === -1) {
         return;
       }
       incoming = incoming.slice(newline + 1);
-      this.state.discardingLine = false;
+      this.discardingLine = false;
     }
-    const lines = (this.state.pending + incoming).split("\n");
-    this.state.pending = lines.pop() ?? "";
+    const lines = (this.pending + incoming).split("\n");
+    this.pending = lines.pop() ?? "";
     for (const line of lines) {
       this.consumeLine(line);
     }
@@ -402,12 +415,11 @@ export class StructuredNodeSummaryAccumulator {
   }
 
   finish(): StructuredSummary {
-    if (this.state.pending.startsWith(EVENT_PREFIX)) {
-      this.consumeLine(this.state.pending);
+    if (this.pending.startsWith(EVENT_PREFIX)) {
+      this.consumeLine(this.pending);
     }
-    this.state.pending = "";
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: sawEvent is set by prior write calls.
-    if (!this.state.sawEvent) {
+    this.pending = "";
+    if (!this.hasSeenEvent) {
       fail("runner emitted no structured node events");
     }
     return {
@@ -421,14 +433,13 @@ export class StructuredNodeSummaryAccumulator {
   }
 
   private boundPendingLine(): void {
-    const { pending } = this.state;
-    if (pending.length > 1024 * 1024 && pending.startsWith(EVENT_PREFIX)) {
+    const pending = this.pendingLine;
+    if (Buffer.byteLength(pending, "utf8") > MAX_EVENT_LINE_BYTES && pending.startsWith(EVENT_PREFIX)) {
       fail("reporter event exceeds the 1 MiB parser limit");
     }
-    // biome-ignore lint/suspicious/noUnnecessaryConditions: pending may be empty or a partial event prefix across chunks.
     if (pending && !pending.startsWith(EVENT_PREFIX) && !EVENT_PREFIX.startsWith(pending)) {
-      this.state.pending = "";
-      this.state.discardingLine = true;
+      this.pending = "";
+      this.discardingLine = true;
     }
   }
 
@@ -436,7 +447,10 @@ export class StructuredNodeSummaryAccumulator {
     if (!line.startsWith(EVENT_PREFIX)) {
       return;
     }
-    this.state.sawEvent = true;
+    if (Buffer.byteLength(line, "utf8") > MAX_EVENT_LINE_BYTES) {
+      fail("reporter event exceeds the 1 MiB parser limit");
+    }
+    this.sawEvent = true;
     let event: NodeTestEvent;
     try {
       event = JSON.parse(line.slice(EVENT_PREFIX.length));
