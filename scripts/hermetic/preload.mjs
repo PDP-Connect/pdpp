@@ -27,7 +27,6 @@
 // for a real operator/product run -- activation is opt-in and explicit, not
 // "on by default because loaded". It is never imported by any product/runtime
 // startup path.
-// biome-ignore lint/correctness/useImportExtensions: generated MJS is the native Node runtime artifact
 import { installHermeticNetworkGuard } from "./guard-runtime.mjs";
 if (process.env.PDPP_HERMETIC_GUARD === "1") {
     await installHermeticNetworkGuard();
