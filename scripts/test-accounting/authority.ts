@@ -830,9 +830,11 @@ function observedCounts(
 }
 
 const SUITE_CONCURRENCY_ENV = "PDPP_ACCOUNTING_SUITE_CONCURRENCY";
-// Measured on the full gate: root-node (~22s, wait-bound) is the critical path,
-// so one lane for it plus two for everything else already reaches that floor.
-const LOCAL_SUITE_CONCURRENCY = 3;
+// Measured on the full gate (test-ab -n 3): width 3 vs 2 is noise on wall time
+// and CPU-seconds and costs ~6% more peak memory, because root-node (~22s,
+// wait-bound) is the critical path and one lane for it plus one for the rest
+// already reaches that floor.
+const LOCAL_SUITE_CONCURRENCY = 2;
 
 /**
  * How many suite/profile runs may execute at once.

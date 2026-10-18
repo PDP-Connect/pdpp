@@ -102,7 +102,7 @@ const runStub = (id: string, prepare?: string[]) =>
   }) as unknown as Parameters<typeof schedulePhases>[0][number];
 
 test("suite concurrency defaults to the local width, stays serial in CI, and rejects garbage", () => {
-  assert.equal(suiteConcurrency({}), 3);
+  assert.equal(suiteConcurrency({}), 2);
   assert.equal(suiteConcurrency({ CI: "true" }), 1);
   assert.equal(suiteConcurrency({ PDPP_ACCOUNTING_SUITE_CONCURRENCY: "2", CI: "true" }), 2);
   assert.equal(suiteConcurrency({ PDPP_ACCOUNTING_SUITE_CONCURRENCY: "1" }), 1);
