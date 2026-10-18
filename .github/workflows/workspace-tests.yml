@@ -19,7 +19,10 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: workspace-tests-${{ github.ref }}
+  # A pending run in a group is replaced when a newer one queues, whatever
+  # cancel-in-progress says. Only PRs may supersede each other; every other run
+  # (pushes to main, dispatch) gets its own group so each one is tested.
+  group: workspace-tests-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
