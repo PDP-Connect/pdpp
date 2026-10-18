@@ -472,7 +472,7 @@ For owner tokens computes the effective filter as the permitted owner request fi
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.1-1a` | 1164 | MUST | black-box-http | `RS-9/client-token-exact-filter-rejected`<br>`RS-10/owner-filter-unknown-field-rejected` | Carries no RFC 2119 keyword here; its MUST level is Section 9 RS item 5's, and the enforceable half is restated with keywords at 8.9-2 and 8.9-9. The owner-side "cannot widen" property is not directly tested — that needs an owner filter naming a record outside the owner's scope. |
+| `8.1-1a` | 1164 | MUST | black-box-http | `RS-9/client-token-exact-filter-rejected`<br>`RS-10/owner-filter-unknown-field-rejected`<br>`RS-5/owner-filter-narrows-and-never-widens` | Carries no RFC 2119 keyword here; its MUST level is Section 9 RS item 5's, and the enforceable half is restated with keywords at 8.9-2 and 8.9-9. The owner-side narrowing property is judged against the same owner's unfiltered read. Owner filters are optional, so a target that rejects them reports that case `unsupported`; cross-subject reach is RS-12's. |
 
 ### RS-6 (resource-server, MUST)
 
@@ -480,7 +480,7 @@ Returns structured errors as defined in the Section 8 unified error table.
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.9-11` | 1400 | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected`<br>`RS-6/page-cursor-rejected-under-another-context` | Cursor replay under a different `fields` selection, another grant and an owner token is tested, in addition to `order`. `view`, `expand[]`, `expand_limit[...]`, `filter[...]` and the `changes_since` dimension are not replayed. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test. |
+| `8.9-11` | 1400 | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected`<br>`RS-6/page-cursor-rejected-under-another-context`<br>`RS-6/page-cursor-rejected-under-another-query-shape` | Cursor replay under a different `fields` selection, another grant, an owner token, `order`, another stream and (for an owner token that serves them) a `view` and an exact `filter[...]` is tested. `expand[]` and `expand_limit[...]` need a target that declares `query.expand`, and the `changes_since` dimension cannot be replayed apart from ordinary session paging, which this suite follows by `cursor` alone. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test. |
 
 ### RS-7 (resource-server, MUST)
 
@@ -515,10 +515,10 @@ Rejects client-token exact and range `filter[...]` parameters with 400 `invalid_
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `8.9-2` | 1374 | MUST | black-box-http | `RS-9/client-token-exact-filter-rejected` | — |
-| `8.9-3` | 1375 | MUST | black-box-http | `RS-9/client-token-view-rejected` | The client-token rejection half is covered. The sentence's second half — `view` and `fields` being mutually exclusive — is an owner-token concern (a client token must reject `view` outright, so the pair can never both be honoured there) and is tracked at 6.8-1, which needs a view-declaring target. |
+| `8.9-3` | 1375 | MUST | black-box-http | `RS-9/client-token-view-rejected`<br>`RS-9/owner-view-and-fields-are-mutually-exclusive` | The client-token rejection is RS-9/client-token-view-rejected. The exclusivity of `view` and `fields` is an owner-token concern and is RS-9/owner-view-and-fields-are-mutually-exclusive, which needs a target that serves owner views (a target that rejects them reports that case `unsupported`). |
 | `8.9-4` | 1377 | MUST | black-box-http | `RS-9/client-token-expand-rejected` | — |
 | `8.9-5` | 1377 | MUST | black-box-http | `RS-9/client-token-expand-limit-rejected` | — |
-| `8.9-9` | 1387 | MUST | black-box-http | `RS-9/client-token-exact-filter-rejected` | The status and code are tested; the ordering half ("before the RS consults ... metadata") is not, and black-box observation cannot establish it. |
+| `8.9-9` | 1387 | MUST | black-box-http | `RS-9/client-token-exact-filter-rejected`<br>`RS-9/client-token-filter-rejected-whether-or-not-declared` | The status and code are tested, for a declared exact filter and for an undeclared field, an undeclared operator and a range operator. The ordering itself ("before the RS consults ... metadata") is an internal call order: a server that consulted metadata first and still answered 400 `invalid_request` is indistinguishable on the wire, so only its observable consequence is covered. |
 | `8.9-10` | 1392 | MUST | black-box-http | `RS-9/client-token-expand-rejected` | — |
 
 ### RS-10 (resource-server, MUST)
@@ -670,7 +670,7 @@ Treats `cursor` and `changes_since` tokens as opaque and from distinct token spa
 | --- | --- | --- | --- | --- | --- |
 | `4.3-4` | 274 | MUST | client-capture | `CL-3/changes-since-does-not-reuse-next-cursor` | — |
 | `8.9-1` | 1372 | MUST | client-capture | `CL-3/forwards-cursors-as-opaque-values` | — |
-| `8.9-11` | 1400 | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected`<br>`RS-6/page-cursor-rejected-under-another-context` | Cursor replay under a different `fields` selection, another grant and an owner token is tested, in addition to `order`. `view`, `expand[]`, `expand_limit[...]`, `filter[...]` and the `changes_since` dimension are not replayed. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test. |
+| `8.9-11` | 1400 | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected`<br>`RS-6/page-cursor-rejected-under-another-context`<br>`RS-6/page-cursor-rejected-under-another-query-shape` | Cursor replay under a different `fields` selection, another grant, an owner token, `order`, another stream and (for an owner token that serves them) a `view` and an exact `filter[...]` is tested. `expand[]` and `expand_limit[...]` need a target that declares `query.expand`, and the `changes_since` dimension cannot be replayed apart from ordinary session paging, which this suite follows by `cursor` alone. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test. |
 
 ### CL-4 (client, MUST)
 

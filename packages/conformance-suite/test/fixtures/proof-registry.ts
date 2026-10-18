@@ -66,6 +66,13 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "AS-4/wildcard-stream-name-expanded-before-issuance", defect: "carry-unexpanded-selection-into-review" },
   { caseId: "AS-3/issued-grant-artifact-matches-section-7-schema", defect: "issued-grant-omits-version" },
   { caseId: "AS-19/authorization-code-redemption-is-not-replayable", defect: "redeem-authorization-code-repeatedly" },
+  { caseId: "RS-5/owner-filter-narrows-and-never-widens", defect: "owner-filter-fails-open" },
+  { caseId: "RS-9/owner-view-and-fields-are-mutually-exclusive", defect: "accept-owner-view-and-fields-together" },
+  {
+    caseId: "RS-9/client-token-filter-rejected-whether-or-not-declared",
+    defect: "client-filter-consults-metadata-first",
+  },
+  { caseId: "RS-6/page-cursor-rejected-under-another-query-shape", defect: "cursor-context-omits-query-shape" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-wrong-bytes" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-response-cacheable" },
   { caseId: "RS-1/blob-ref-mime-type-valid", defect: "blob-ref-invalid-mime-type" },

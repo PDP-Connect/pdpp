@@ -504,6 +504,34 @@ async function excludedReferenceCase(
   return pass(evidence);
 }
 
+/**
+ * A string field and one of its values held by some but not all of `records`,
+ * so an exact filter on it must return a proper, non-empty subset.
+ */
+function pickDiscriminatingFilter(
+  records: NonNullable<ListBody["data"]>
+): { readonly field: string; readonly value: string } | undefined {
+  const first = records[0]?.data;
+  if (!first || records.length < 2) {
+    return undefined;
+  }
+  for (const [field, value] of Object.entries(first)) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const matches = records.filter((r) => r.data?.[field] === value).length;
+    if (matches > 0 && matches < records.length) {
+      return { field, value };
+    }
+  }
+  return undefined;
+}
+
+/** Whether two id lists hold the same members, ignoring order. */
+function sameMembers(a: readonly (string | undefined)[], b: readonly (string | undefined)[]): boolean {
+  return a.length === b.length && [...a].sort().join("\u0000") === [...b].sort().join("\u0000");
+}
+
 export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
   // ---------------------------------------------------------------- RS-1 ---
   {
@@ -1328,6 +1356,122 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // The second half of clause 8.9-3: `view` is "Mutually exclusive with
+  // `fields`". Owner-token `view` is optional ("MAY support ... `view`"), so a
+  // target that answers a bare `view` with 400 is `unsupported`; one that serves
+  // it must refuse the request that also names `fields`, because "unsupported
+  // query shapes MUST be rejected with HTTP 400 and MUST NOT be silently
+  // ignored" -- serving one of the two quietly drops the other. Each parameter
+  // alone is the positive control.
+  {
+    caseId: "RS-9/owner-view-and-fields-are-mutually-exclusive",
+    requirementId: "RS-9",
+    appliesWhen: (adapter) => adapter.capabilities.ownerTokens && adapter.capabilities.views,
+    assertion:
+      "An owner-token read naming both view and fields is rejected with 400, while each parameter alone is served.",
+    async run({ adapter, streams, path }) {
+      const owner = await adapter.ownerToken();
+      const view = (await adapter.declaredViews?.())?.find((v) => streams.some((s) => s.name === v.stream));
+      if (!(owner && view)) {
+        return skip("The adapter exposes no owner token or no declared view to request.");
+      }
+      const [field] = view.fields;
+      if (field === undefined) {
+        return skip(`The declared view '${view.view}' lists no field to name beside it.`);
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(view.stream)}/records`);
+      const ownerQuery = adapter.ownerReadParams ? { ...adapter.ownerReadParams } : {};
+      const viewOnly = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, view: view.view },
+      });
+      if (viewOnly.status === 400) {
+        return unsupported(
+          `The target rejects an owner-token view (${view.view}) with 400. Owner views are optional in v0.1, so their exclusivity with fields does not apply.`
+        );
+      }
+      const fieldsOnly = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, fields: field },
+      });
+      if (viewOnly.status !== 200 || fieldsOnly.status !== 200) {
+        return skip(
+          `Each parameter alone should be served (view ${viewOnly.status}, fields ${fieldsOnly.status}), so a refusal of the pair cannot be attributed to their combination.`
+        );
+      }
+      const both = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, view: view.view, fields: field },
+      });
+      const evidence = [viewOnly.evidence, fieldsOnly.evidence, both.evidence];
+      if (both.status === 200) {
+        return fail(
+          "An owner-token read naming both `view` and `fields` was served. Section 8: `view` is mutually exclusive with `fields`, and an unsupported query shape MUST be rejected with 400 rather than silently ignoring one of the two.",
+          evidence
+        );
+      }
+      if (both.status !== 400) {
+        return fail(`Expected 400 for an owner-token read naming both view and fields, got ${both.status}.`, evidence);
+      }
+      return pass(evidence);
+    },
+  },
+
+  // Clause 8.9-9, the half the exact-filter case above leaves open: the
+  // rejection "applies regardless of whether the field or operator would
+  // otherwise be declared". A server that consults serving metadata first
+  // answers an undeclared field or operator with a different error (the code an
+  // owner read would get), so each shape must still be 400 invalid_request.
+  {
+    caseId: "RS-9/client-token-filter-rejected-whether-or-not-declared",
+    requirementId: "RS-9",
+    assertion:
+      "A client-token filter naming an undeclared field, an undeclared operator, or a range operator is rejected with 400 invalid_request, as a declared exact filter is.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      const field = stream?.fields[0];
+      if (!(stream && field)) {
+        return skip("A seeded stream with at least one field is required.");
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const control = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+      if (control.status !== 200) {
+        return skip(
+          `The control read without a filter was refused (${control.status}), so a rejection cannot be told from a target that refuses every client-token read.`
+        );
+      }
+      const absent = stream.fields.includes("pdpp_conformance_absent_field")
+        ? "pdpp_conformance_absent_field_"
+        : "pdpp_conformance_absent_field";
+      const shapes: [string, string][] = [
+        ["a field the stream does not declare", `filter[${absent}]`],
+        ["an operator no declaration defines", `filter[${field}][pdpp_conformance_operator]`],
+        ["a range operator", `filter[${field}][gte]`],
+      ];
+      const evidence = [control.evidence];
+      for (const [label, key] of shapes) {
+        // biome-ignore lint/performance/noAwaitInLoops: three short probes against one target, reported in order.
+        const response = await request(adapter.baseUrl, recordsPath, {
+          token: grant.accessToken,
+          query: { [key]: "any-value" },
+        });
+        evidence.push(response.evidence);
+        const code = errorBody(response)?.code;
+        if (response.status !== 400 || code !== "invalid_request") {
+          return fail(
+            `A client-token request with ${label} (${key}) returned ${response.status}${code ? ` ${code}` : ""}, not 400 invalid_request. Section 8 requires the rejection regardless of whether the field or operator would otherwise be declared, before serving metadata is consulted.`,
+            evidence
+          );
+        }
+      }
+      return pass(evidence);
+    },
+  },
+
   // Section 8 clause 8.9-5, the `expand_limit[{relation}]` row: "Client-token
   // requests MUST reject this parameter in v0.1."
   //
@@ -1494,6 +1638,83 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
 
       return pass([control.evidence, exactFiltered.evidence, rangeFiltered.evidence]);
+    },
+  },
+
+  // Section 8 "Grant enforcement" / clause 8.1-1a: for an owner-token read "the
+  // effective filter is the permitted owner request filter alone ... Request
+  // filters can only narrow the current owner read and cannot widen it." Owner
+  // exact filters are optional (a target may answer them 400 invalid_request),
+  // so a target that rejects a filter on a declared field is `unsupported`.
+  //
+  // The expected result is computed from the same owner's UNFILTERED read: the
+  // filtered records must be exactly the matching members of it, and a filter
+  // that matches nothing must return nothing -- a server that falls back to the
+  // unfiltered read when the filter is empty has widened the result to the
+  // whole owner scope.
+  {
+    caseId: "RS-5/owner-filter-narrows-and-never-widens",
+    requirementId: "RS-5",
+    appliesWhen: (adapter) => adapter.capabilities.ownerTokens,
+    assertion:
+      "An owner-token exact filter on a declared field returns exactly the matching records of the unfiltered owner read, and a filter that matches nothing returns nothing.",
+    async run({ adapter, streams, path }) {
+      const owner = await adapter.ownerToken();
+      if (!owner) {
+        return skip("The target declares owner tokens but the adapter produced none.");
+      }
+      const stream = streams.find((s) => s.recordCount >= 2);
+      if (!stream) {
+        return skip("No seeded stream has two records, so a filter cannot be shown to narrow.");
+      }
+      const ownerQuery = { ...(adapter.ownerReadParams ?? {}), limit: "100" };
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const control = await request(adapter.baseUrl, recordsPath, { token: owner, query: ownerQuery });
+      const records = asList(control.json)?.data;
+      if (control.status !== 200 || !records || asList(control.json)?.has_more) {
+        return skip(
+          "The unfiltered owner read was not a single served page, so the expected filter result is unknown."
+        );
+      }
+      const choice = pickDiscriminatingFilter(records);
+      if (!choice) {
+        return skip("No string field separates the stream's records, so a filter cannot be shown to narrow.");
+      }
+      const expected = records.filter((r) => r.data?.[choice.field] === choice.value).map((r) => r.id);
+      const filterKey = `filter[${choice.field}]`;
+      const filtered = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, [filterKey]: choice.value },
+      });
+      if (filtered.status === 400) {
+        return unsupported(
+          `The target rejects an owner exact filter on declared field "${choice.field}" (400). Owner filters are optional in v0.1 ("MAY accept exact filters"), so the narrowing property does not apply.`
+        );
+      }
+      const got = (asList(filtered.json)?.data ?? []).map((r) => r.id);
+      if (filtered.status !== 200 || !sameMembers(got, expected)) {
+        return fail(
+          `${filterKey}=${choice.value} returned ${filtered.status} with records [${got.join(", ")}], not exactly the matching members [${expected.join(", ")}] of the same owner's unfiltered read. Section 8: request filters can only narrow the current owner read.`,
+          [control.evidence, filtered.evidence]
+        );
+      }
+      // A value no record holds: the result must be empty, not the unfiltered scope.
+      let absent = "pdpp_conformance_absent_value";
+      while (records.some((r) => r.data?.[choice.field] === absent)) {
+        absent = `${absent}_`;
+      }
+      const empty = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, [filterKey]: absent },
+      });
+      const emptyIds = (asList(empty.json)?.data ?? []).map((r) => r.id);
+      if (empty.status !== 200 || emptyIds.length > 0) {
+        return fail(
+          `${filterKey}=${absent} matches no record, yet the read returned ${empty.status} with [${emptyIds.join(", ")}]. A filter that matches nothing must narrow the owner read to nothing, not widen it to the unfiltered scope.`,
+          [control.evidence, empty.evidence]
+        );
+      }
+      return pass([control.evidence, filtered.evidence, empty.evidence]);
     },
   },
 

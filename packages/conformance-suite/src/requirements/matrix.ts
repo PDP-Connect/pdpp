@@ -1928,10 +1928,13 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#grant-enforcement",
     applicability: "always",
     observable: "black-box-http",
-    partial: true,
-    caseIds: ["RS-9/client-token-exact-filter-rejected", "RS-10/owner-filter-unknown-field-rejected"],
+    caseIds: [
+      "RS-9/client-token-exact-filter-rejected",
+      "RS-10/owner-filter-unknown-field-rejected",
+      "RS-5/owner-filter-narrows-and-never-widens",
+    ],
     gapNote:
-      "Carries no RFC 2119 keyword here; its MUST level is Section 9 RS item 5's, and the enforceable half is restated with keywords at 8.9-2 and 8.9-9. The owner-side \"cannot widen\" property is not directly tested — that needs an owner filter naming a record outside the owner's scope.",
+      "Carries no RFC 2119 keyword here; its MUST level is Section 9 RS item 5's, and the enforceable half is restated with keywords at 8.9-2 and 8.9-9. The owner-side narrowing property is judged against the same owner's unfiltered read. Owner filters are optional, so a target that rejects them reports that case `unsupported`; cross-subject reach is RS-12's.",
   },
   {
     clauseId: "8.1-2",
@@ -2142,10 +2145,9 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "always",
     observable: "black-box-http",
-    partial: true,
-    caseIds: ["RS-9/client-token-view-rejected"],
+    caseIds: ["RS-9/client-token-view-rejected", "RS-9/owner-view-and-fields-are-mutually-exclusive"],
     gapNote:
-      "The client-token rejection half is covered. The sentence's second half — `view` and `fields` being mutually exclusive — is an owner-token concern (a client token must reject `view` outright, so the pair can never both be honoured there) and is tracked at 6.8-1, which needs a view-declaring target.",
+      "The client-token rejection is RS-9/client-token-view-rejected. The exclusivity of `view` and `fields` is an owner-token concern and is RS-9/owner-view-and-fields-are-mutually-exclusive, which needs a target that serves owner views (a target that rejects them reports that case `unsupported`).",
   },
   {
     clauseId: "8.9-4",
@@ -2224,9 +2226,9 @@ const SECTION_8: readonly ClauseEntry[] = [
     applicability: "always",
     observable: "black-box-http",
     partial: true,
-    caseIds: ["RS-9/client-token-exact-filter-rejected"],
+    caseIds: ["RS-9/client-token-exact-filter-rejected", "RS-9/client-token-filter-rejected-whether-or-not-declared"],
     gapNote:
-      'The status and code are tested; the ordering half ("before the RS consults ... metadata") is not, and black-box observation cannot establish it.',
+      'The status and code are tested, for a declared exact filter and for an undeclared field, an undeclared operator and a range operator. The ordering itself ("before the RS consults ... metadata") is an internal call order: a server that consulted metadata first and still answered 400 `invalid_request` is indistinguishable on the wire, so only its observable consequence is covered.',
   },
   {
     clauseId: "8.9-10",
@@ -2251,9 +2253,13 @@ const SECTION_8: readonly ClauseEntry[] = [
     applicability: "always",
     observable: "black-box-http",
     partial: true,
-    caseIds: ["RS-6/order-mismatched-cursor-rejected", "RS-6/page-cursor-rejected-under-another-context"],
+    caseIds: [
+      "RS-6/order-mismatched-cursor-rejected",
+      "RS-6/page-cursor-rejected-under-another-context",
+      "RS-6/page-cursor-rejected-under-another-query-shape",
+    ],
     gapNote:
-      "Cursor replay under a different `fields` selection, another grant and an owner token is tested, in addition to `order`. `view`, `expand[]`, `expand_limit[...]`, `filter[...]` and the `changes_since` dimension are not replayed. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test.",
+      "Cursor replay under a different `fields` selection, another grant, an owner token, `order`, another stream and (for an owner token that serves them) a `view` and an exact `filter[...]` is tested. `expand[]` and `expand_limit[...]` need a target that declares `query.expand`, and the `changes_since` dimension cannot be replayed apart from ordinary session paging, which this suite follows by `cursor` alone. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test.",
   },
   {
     clauseId: "8.9-12",

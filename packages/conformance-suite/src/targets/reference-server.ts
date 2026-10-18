@@ -560,6 +560,22 @@ export type Defect =
   | "coerce-invalid-limit"
   /** Leaves `error="invalid_token"` out of the 401 challenge for a presented-and-rejected token (RS-16). */
   | "omit-invalid-token-error"
+  /**
+   * CONFORMANT, not a violation: declines owner-token `filter[...]` outright with
+   * 400 `invalid_request`. Owner filters are optional ("MAY accept exact
+   * filters"), so the narrowing case must report `unsupported`, not `fail`.
+   */
+  | "decline-owner-filters"
+  /** CONFORMANT, not a violation: declines an owner-token `view` with 400, which Section 8 leaves optional. */
+  | "decline-owner-view"
+  /** Answers a client-token filter on an undeclared field or operator with the error an owner read would give, having consulted serving metadata first (RS-9, clause 8.9-9). */
+  | "client-filter-consults-metadata-first"
+  /** Binds a page cursor to the grant and `fields` only, so it replays on another stream or under a view or filter (RS-6, clause 8.9-11). */
+  | "cursor-context-omits-query-shape"
+  /** Accepts an owner-token read naming both `view` and `fields`, honouring `fields` (RS-9, clause 8.9-3). */
+  | "accept-owner-view-and-fields-together"
+  /** Answers an owner exact filter that matches no record with the unfiltered read, so the filter widens the result (RS-5, clause 8.1-1a). */
+  | "owner-filter-fails-open"
   /** Publishes an issued grant artifact without its Section 7 `version` row (AS-3, clause 7.1-1). */
   | "issued-grant-omits-version"
   /** Lets an authorization code be redeemed again after its first successful redemption (AS-19, clause 10.2-5). */
@@ -801,6 +817,11 @@ function parseSyncToken(raw: string): { readonly context?: string; readonly vers
 const RECORDS_PATH = /^\/v1\/streams\/([^/]+)\/records$/;
 const SINGLE_RECORD_PATH = /^\/v1\/streams\/([^/]+)\/records\/([^/]+)$/;
 const METADATA_PATH = /^\/v1\/streams\/([^/]+)$/;
+/** `filter[{field}]` with no operator: the exact form. */
+const OWNER_EXACT_FILTER = /^filter\[([^\]]+)\]$/;
+/** `filter[{field}]` or `filter[{field}][{op}]`. */
+const CLIENT_FILTER_SHAPE = /^filter\[([^\]]+)\](?:\[([^\]]+)\])?$/;
+const RANGE_OPERATORS: readonly string[] = ["gt", "gte", "lt", "lte"];
 const BLOB_PATH = /^\/v1\/blobs\/([^/]+)$/;
 
 /** The seeded subject. A second subject exists so cross-subject scoping is testable. */
@@ -2256,12 +2277,22 @@ export class ReferenceServer {
       // `filter[...]` / `expand` parameter -- and is rejected under another as
       // `invalid_cursor`. `order` keeps its own, more specific refusal below.
       const contextParams = [...parsed.searchParams.entries()]
-        .filter(([key]) => key === "fields" || key.startsWith("filter[") || key.startsWith("expand"))
+        .filter(
+          ([key]) =>
+            key === "fields" ||
+            (!this.has("cursor-context-omits-query-shape") &&
+              (key === "view" || key.startsWith("filter[") || key.startsWith("expand")))
+        )
         .map(
           ([key, value]) => `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort().join(",") : value}`
         )
         .sort((a, b) => a.localeCompare(b));
-      const pageContext = contextDigest(["page", scopeKey, fixture.name, ...contextParams]);
+      const pageContext = contextDigest([
+        "page",
+        scopeKey,
+        ...(this.has("cursor-context-omits-query-shape") ? [] : [fixture.name]),
+        ...contextParams,
+      ]);
       if (rawCursor?.startsWith("ok:")) {
         const [, cursorOrder, offsetText, horizonText, fromText, cursorContext] = rawCursor.split(":");
         if (cursorContext !== pageContext && !this.has("accept-cursor-under-other-context")) {
@@ -2376,9 +2407,13 @@ export class ReferenceServer {
       // grant's own projection. Eligibility above keeps using `projection`.
       const requestedFields = parseFieldsParam(parsed.searchParams.get("fields"));
       const required = fixture.requiredFields ?? [];
+      const ownerViewFields =
+        principal.kind === "owner"
+          ? this.views.get(viewKey(fixture.name, parsed.searchParams.get("view") ?? ""))
+          : undefined;
       const dataFields =
         requestedFields === undefined
-          ? projection
+          ? (ownerViewFields ?? projection)
           : projection.filter(
               (field) =>
                 requestedFields.has(field) ||
@@ -2508,7 +2543,27 @@ export class ReferenceServer {
         return { records, tombstones, visibleHorizon };
       };
       const sync = syncHorizon === null ? undefined : syncDelta(syncHorizon, sessionHorizon);
-      const eligible = sync ? sync.records : fixture.records.filter(inGrantInstances).filter(withinWindow);
+      const scoped = sync ? sync.records : fixture.records.filter(inGrantInstances).filter(withinWindow);
+      // Owner exact filters only intersect with what the owner may read
+      // (clause 8.1-1a): the result is the scoped records that match.
+      const ownerFilters =
+        principal.kind === "owner"
+          ? [...parsed.searchParams.entries()].flatMap(([key, value]) => {
+              const field = OWNER_EXACT_FILTER.exec(key)?.[1];
+              return field !== undefined && fixture.fields.includes(field) ? [{ field, value }] : [];
+            })
+          : [];
+      const matching = scoped.filter((record) =>
+        ownerFilters.every(({ field, value }) => {
+          const held = record[field];
+          return (
+            (typeof held === "string" || typeof held === "number" || typeof held === "boolean") &&
+            String(held) === value
+          );
+        })
+      );
+      const eligible =
+        matching.length === 0 && ownerFilters.length > 0 && this.has("owner-filter-fails-open") ? scoped : matching;
       // Clause 4.3-6: a changes_since feed on a grant that lists several
       // instances is still a changes_since feed (Section 9 RS item 7).
       if (isSync && (instanceIds?.length ?? 0) > 1 && this.has("reject-multi-instance-changes-since")) {
@@ -2714,6 +2769,66 @@ export class ReferenceServer {
   }
 
   /**
+   * The rejection a server gives when it consults serving metadata BEFORE
+   * rejecting a client-token filter, which clause 8.9-9 forbids: an undeclared
+   * field or operator gets the error an owner read would, not `invalid_request`.
+   */
+  private metadataFirstFilterRejection(
+    params: readonly string[],
+    fixture: StreamFixture
+  ): { code: string; message: string } | undefined {
+    for (const param of params.filter((p) => p.startsWith("filter["))) {
+      const [, field, operator] = CLIENT_FILTER_SHAPE.exec(param) ?? [];
+      if (field !== undefined && !fixture.fields.includes(field)) {
+        return { code: "unknown_field", message: `Field '${field}' is not declared.` };
+      }
+      if (operator !== undefined && !RANGE_OPERATORS.includes(operator)) {
+        return { code: "unsupported_operator", message: `Operator '${operator}' is not declared.` };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Owner-token `view` and `filter[...]` rules (Section 8): both optional, so a
+   * target may decline them; `view` is mutually exclusive with `fields`; exact
+   * filters take a declared top-level scalar field, and the range form is an
+   * unsupported shape on this fixture, which declares no range filters.
+   */
+  private ownerViewOrFilterRejection(
+    searchParams: URLSearchParams,
+    fixture: StreamFixture
+  ): { code: string; message: string } | undefined {
+    const params = [...searchParams.keys()];
+    const filters = params.filter((p) => p.startsWith("filter["));
+    if (this.has("decline-owner-filters") && filters.length > 0) {
+      return { code: "invalid_request", message: "Owner filters are not supported." };
+    }
+    if (this.has("decline-owner-view") && params.includes("view")) {
+      return { code: "invalid_request", message: "Owner views are not supported." };
+    }
+    if (params.includes("view")) {
+      if (params.includes("fields") && !this.has("accept-owner-view-and-fields-together")) {
+        return { code: "invalid_request", message: "`view` and `fields` are mutually exclusive." };
+      }
+      if (!this.views.has(viewKey(fixture.name, searchParams.get("view") ?? ""))) {
+        return { code: "invalid_request", message: "The view is not defined for this stream." };
+      }
+    }
+    if (this.has("ignore-owner-filter-unknown-field")) {
+      return undefined;
+    }
+    for (const param of filters) {
+      const field = OWNER_EXACT_FILTER.exec(param)?.[1];
+      const type = fixture.fieldTypes?.[field ?? ""];
+      if (field === undefined || !fixture.fields.includes(field) || type === "array" || type === "object") {
+        return { code: "invalid_request", message: `Parameter '${param}' is unsupported.` };
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * The Section 8 query-parameter gate, returning a rejection message or
    * undefined. Two distinct rules share this seam: client-token predicate and
    * expansion parameters are off the v0.1 client surface (RS-9), and unknown
@@ -2732,6 +2847,12 @@ export class ReferenceServer {
     // violation clause 8.9-3 names, and the only one a case asserting on the
     // status alone can be shown to catch.
     const servesClientView = this.has("serve-client-token-view");
+    if (kind === "client" && this.has("client-filter-consults-metadata-first")) {
+      const early = this.metadataFirstFilterRejection(params, fixture);
+      if (early) {
+        return early;
+      }
+    }
     if (kind === "client" && !this.has("accept-client-filters")) {
       const offending = params.find(
         (p) =>
@@ -2748,11 +2869,10 @@ export class ReferenceServer {
         };
       }
     }
-    // This fixture does not implement owner predicate filters.
-    if (kind === "owner" && !this.has("ignore-owner-filter-unknown-field")) {
-      const offending = params.find((p) => p.startsWith("filter["));
-      if (offending) {
-        return { code: "invalid_request", message: `Parameter '${offending}' is unsupported.` };
+    if (kind === "owner") {
+      const rejected = this.ownerViewOrFilterRejection(searchParams, fixture);
+      if (rejected) {
+        return rejected;
       }
     }
     // Section 8 "Relationships": an owner-token expand[] naming a relation
@@ -2774,7 +2894,7 @@ export class ReferenceServer {
             KNOWN_PARAMS.has(p) ||
             p.startsWith("filter[") ||
             p.startsWith("expand") ||
-            (p === "view" && servesClientView)
+            (p === "view" && (servesClientView || kind === "owner"))
           )
       );
       if (unknown) {

@@ -90,6 +90,52 @@ function invalidCursorFault(label: string, response: PdppResponse): string | und
   return `${label}: expected 400 invalid_cursor, got ${response.status}${errorBody(response)?.code ? ` ${errorBody(response)?.code}` : ""}.`;
 }
 
+/**
+ * Owner-token replays of a page cursor under `view` and an exact filter, for
+ * each the owner read supports. Dimensions the target declines (a 400 on the
+ * request without a cursor) are left out; the cursor is minted by the owner so
+ * only the added parameter differs.
+ */
+async function ownerShapeVariants(
+  adapter: TargetAdapter,
+  stream: Seeded,
+  recordsPath: string,
+  evidence: Evidence[]
+): Promise<[string, PdppResponse][]> {
+  const owner = await adapter.ownerToken();
+  if (!owner) {
+    return [];
+  }
+  const base = { ...(adapter.ownerReadParams ?? {}), limit: "1" };
+  const first = await request(adapter.baseUrl, recordsPath, { token: owner, query: base });
+  const cursor = asList(first.json).next_cursor;
+  if (first.status !== 200 || cursor === undefined) {
+    return [];
+  }
+  evidence.push(first.evidence);
+  const view = (await adapter.declaredViews?.())?.find((v) => v.stream === stream.name)?.view;
+  const [field] = stream.fields;
+  const dimensions: [string, Record<string, string>][] = [];
+  if (view !== undefined) {
+    dimensions.push([`an owner \`view\` (${view})`, { view }]);
+  }
+  if (field !== undefined) {
+    dimensions.push([`an owner exact filter on ${field}`, { [`filter[${field}]`]: "pdpp_conformance_value" }]);
+  }
+  const variants: [string, PdppResponse][] = [];
+  for (const [label, extra] of dimensions) {
+    // biome-ignore lint/performance/noAwaitInLoops: each probe is a short, ordered request pair on one target.
+    const supported = await request(adapter.baseUrl, recordsPath, { token: owner, query: { ...base, ...extra } });
+    if (supported.status === 200) {
+      variants.push([
+        label,
+        await request(adapter.baseUrl, recordsPath, { token: owner, query: { ...base, ...extra, cursor } }),
+      ]);
+    }
+  }
+  return variants;
+}
+
 const SESSION_CASES: readonly ConformanceCase[] = [
   // ----------------------------------------------------------------- 4.3-16 ---
   {
@@ -204,6 +250,75 @@ const SESSION_CASES: readonly ConformanceCase[] = [
         if (fault) {
           return fail(
             `${fault} Core Section 8: a page cursor is bound to the query context that produced it (grant or owner scope, stream, \`fields\`, \`view\`, \`expand[]\`, \`order\`, every \`filter[...]\`), and the RS MUST reject it under another as invalid_cursor. Serving it pages a different result set from a stranger's offset.`,
+            evidence
+          );
+        }
+      }
+      return pass(evidence);
+    },
+  },
+
+  // ------------------------------------------------------------------ 8.9-11 ---
+  // More of the query context a page cursor is bound to: the stream, `view` and
+  // every `filter[...]`. `expand[]`, `expand_limit[...]` and `changes_since` are
+  // also named by the clause. The first two need a target that declares
+  // `query.expand`; a `changes_since` session is paged by following `cursor`
+  // alone throughout this suite, so replaying one under another context is not
+  // distinguishable here from ordinary session paging.
+  //
+  // The `view` and `filter[...]` dimensions are owner-token features a target
+  // MAY decline; each is exercised only when the owner read WITHOUT a cursor is
+  // served under it, so a target that rejects the parameter outright is not
+  // failed for it. The stream dimension needs no optional capability.
+  {
+    caseId: "RS-6/page-cursor-rejected-under-another-query-shape",
+    requirementId: "RS-6",
+    assertion:
+      "A page cursor replayed on another stream, or (for an owner token) under a view or an exact filter is rejected as 400 invalid_cursor, while the unchanged replay is served.",
+    async run({ adapter, streams, path }) {
+      const stream = streams.find((s) => s.semantics === "mutable_state" && s.recordCount >= 2);
+      const sibling = streams.find((s) => s !== stream);
+      if (!(stream && sibling)) {
+        return skip(
+          "The adapter seeded no mutable_state stream with two records and a second stream, so a cursor cannot change stream."
+        );
+      }
+      const grant = await adapter.issueGrant({
+        streams: [stream, sibling].map((s) => ({ name: s.name, fields: [...s.fields] })),
+      });
+      if (!grant) {
+        return skip(`The target did not issue a grant over '${stream.name}' and '${sibling.name}'.`);
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const siblingPath = path(`/streams/${encodeURIComponent(sibling.name)}/records`);
+      const first = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken, query: { limit: "1" } });
+      const cursor = asList(first.json).next_cursor;
+      if (first.status !== 200 || asList(first.json).has_more !== true || cursor === undefined) {
+        return skip("The first page was not followed by a cursor, so there is nothing to replay.");
+      }
+      const control = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { limit: "1", cursor },
+      });
+      if (control.status !== 200) {
+        return skip(
+          `The cursor was refused under the context that minted it (${control.status}), so a refusal elsewhere cannot be attributed to the context.`
+        );
+      }
+      const evidence = [first.evidence, control.evidence];
+      const variants: [string, PdppResponse][] = [
+        [
+          "another stream",
+          await request(adapter.baseUrl, siblingPath, { token: grant.accessToken, query: { limit: "1", cursor } }),
+        ],
+      ];
+      variants.push(...(await ownerShapeVariants(adapter, stream, recordsPath, evidence)));
+      for (const [label, response] of variants) {
+        evidence.push(response.evidence);
+        const fault = invalidCursorFault(`A page cursor replayed under ${label}`, response);
+        if (fault) {
+          return fail(
+            `${fault} Core Section 8: a page cursor is bound to the query context of its first page (grant or owner scope, stream, \`fields\`, \`view\`, \`expand[]\`, \`order\`, every \`filter[...]\`), and the RS MUST reject it under another as invalid_cursor.`,
             evidence
           );
         }
