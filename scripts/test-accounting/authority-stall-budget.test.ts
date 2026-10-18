@@ -58,9 +58,20 @@ function runCapture(
   hardTimeoutMs?: number,
   // Body of the injected transcript write (an async function body with `writes`
   // in scope); runs before the failWriteAt check.
-  transcriptWriteBody = ""
+  transcriptWriteBody = "",
+  // Keep the driver alive this long after capture settles, so a late transcript
+  // write can resolve and reveal any signal sent after the settlement.
+  lingerMs = 0
 ): Promise<Outcome> {
   const driver = `
+    // Record every process-group SIGKILL so a test can see signals sent after
+    // the capture settled; the real kill still happens.
+    const groupKills = [];
+    const realKill = process.kill;
+    process.kill = (pid, signal) => {
+      if (typeof pid === "number" && pid < 0 && signal === "SIGKILL") groupKills.push(pid);
+      return realKill.call(process, pid, signal);
+    };
     const { runCaptureForTest } = await import(${JSON.stringify(new URL("./authority.ts", import.meta.url).href)});
     let writes = 0;
     try {
@@ -82,7 +93,14 @@ function runCapture(
         writes,
       }) + "\\n");
     } catch (error) {
-      process.stdout.write(JSON.stringify({ capture_error: error.message, writes }) + "\\n");
+      const killsAtSettle = groupKills.length;
+      await new Promise((resolve) => setTimeout(resolve, ${JSON.stringify(lingerMs)}));
+      process.stdout.write(JSON.stringify({
+        capture_error: error.message,
+        writes,
+        kills_at_settle: killsAtSettle,
+        kills_total: groupKills.length,
+      }) + "\\n");
       process.stderr.write(String(error.message) + "\\n");
       process.exitCode = 1;
     }
@@ -431,6 +449,55 @@ test("the leaf deadline still bounds a transcript write that never resolves afte
   assert.equal(outcome.code, 1, `a wedged transcript write must fail the run; stderr was: ${outcome.stderr}`);
   assert.match(result.capture_error ?? "", DEADLINE_PATTERN);
   assert.ok(outcome.durationMs < 5000, `deadline must bound the wedged write, took ${outcome.durationMs}ms`);
+});
+
+test("a stall rejection releases the leaf deadline so the authority process exits promptly", async () => {
+  // The leaf writes once and stays alive while its transcript write never
+  // resolves. The stall watchdog kills it and the run rejects, but the 60s leaf
+  // deadline must not keep the authority process alive after that.
+  const outcome = await runCapture(
+    "process.stdout.write('hello\\n'); setInterval(() => {}, 1000);",
+    1000,
+    60_000,
+    false,
+    undefined,
+    20_000,
+    "await new Promise(() => {});"
+  );
+  const result = JSON.parse(outcome.stdout) as { capture_error?: string };
+
+  assert.equal(outcome.code, 1, `a stalled leaf must fail the run; stderr was: ${outcome.stderr}`);
+  assert.match(result.capture_error ?? "", NO_OUTPUT_PATTERN);
+  assert.ok(
+    outcome.durationMs < 9000,
+    `the authority process must exit after the stall failure, took ${outcome.durationMs}ms`
+  );
+});
+
+test("a transcript write that resolves after the capture rejected sends no further signal", async () => {
+  // The deadline rejects the capture while the first transcript write is still
+  // pending. Releasing the process group is one-shot: when that write resolves
+  // later, the old numeric PGID must not be signalled again.
+  const outcome = await runCapture(
+    "process.stdout.write('hello\\n'); setInterval(() => {}, 1000);",
+    60_000,
+    1000,
+    false,
+    undefined,
+    10_000,
+    "if (writes === 1) await new Promise((resolve) => setTimeout(resolve, 2500));",
+    3500
+  );
+  const result = JSON.parse(outcome.stdout) as { capture_error?: string; kills_at_settle: number; kills_total: number };
+
+  assert.equal(outcome.code, 1, `the deadline must fail the run; stderr was: ${outcome.stderr}`);
+  assert.match(result.capture_error ?? "", DEADLINE_PATTERN);
+  assert.ok(result.kills_at_settle >= 1, "the deadline must have killed the group");
+  assert.equal(
+    result.kills_total,
+    result.kills_at_settle,
+    "no process-group signal may be sent after the capture settled"
+  );
 });
 
 async function assertProcessGone(pid: number): Promise<void> {

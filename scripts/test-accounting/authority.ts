@@ -195,21 +195,33 @@ function killProcessGroup(child: ReturnType<typeof spawn>): void {
 }
 
 /**
- * Register a detached child's process group for shutdown cleanup. The returned
- * release function SIGKILLs the group before it unregisters it: a same-group
- * descendant that ignored or redirected its stdio can outlive the leaf, and once
- * the group is unregistered nothing else would ever signal it.
+ * Register a detached child's process group for shutdown cleanup. `kill`
+ * SIGKILLs the group while it is tracked; `release` SIGKILLs it and unregisters
+ * it, because a same-group descendant that ignored or redirected its stdio can
+ * outlive the leaf and nothing else would signal it once it is unregistered.
+ * Release is one-shot and ends all signalling: the numeric PGID may belong to an
+ * unrelated process group by the time a late timer or write callback runs.
  */
-function trackProcessGroup(child: ReturnType<typeof spawn>): () => void {
+function trackProcessGroup(child: ReturnType<typeof spawn>): { kill: () => void; release: () => void } {
   let pid: number | undefined;
+  let released = false;
   const register = () => {
     const { pid: childPid } = child;
-    if (childPid !== undefined) {
+    if (!released && childPid !== undefined) {
       pid = childPid;
       liveProcessGroups.add(pid);
     }
   };
+  const kill = () => {
+    if (!released) {
+      killProcessGroup(child);
+    }
+  };
   const release = () => {
+    if (released) {
+      return;
+    }
+    released = true;
     if (pid !== undefined) {
       killProcessGroup(child);
       liveProcessGroups.delete(pid);
@@ -218,7 +230,7 @@ function trackProcessGroup(child: ReturnType<typeof spawn>): () => void {
   child.once("spawn", register);
   child.once("error", release);
   register();
-  return release;
+  return { kill, release };
 }
 
 function destroyChildPipes(child: ReturnType<typeof spawn>): void {
@@ -246,7 +258,7 @@ function capture(
     const startedAt = Date.now();
     reportProgress(`${label}: started (${start.files.length} files)`);
     const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    const releaseProcessGroup = trackProcessGroup(child);
+    const group = trackProcessGroup(child);
     let stdoutTail = Buffer.alloc(0);
     let stderrTail = Buffer.alloc(0);
     let stdoutTruncated = false;
@@ -323,22 +335,34 @@ function capture(
     let exitSettleTimer: NodeJS.Timeout | undefined;
     let ticker: NodeJS.Timeout | undefined;
     let deadlineTimer: NodeJS.Timeout | undefined;
+    // The single terminal path. Every outcome clears every timer and releases the
+    // process group exactly once, independently of any pending transcript write,
+    // so a settled capture can neither keep the authority process alive nor
+    // signal the group again.
+    const finish = (outcome: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearInterval(ticker);
+      clearTimeout(deadlineTimer);
+      clearTimeout(killSettleTimer);
+      clearTimeout(exitSettleTimer);
+      group.release();
+      outcome();
+    };
     const settleFailureAfterKill = () => {
       if (killSettleTimer) {
         return;
       }
       killSettleTimer = setTimeout(() => {
         destroyChildPipes(child);
-        if (!settled) {
-          settled = true;
-          releaseProcessGroup();
-          reject(captureFailure() ?? new Error(`${label} child was killed`));
-        }
+        finish(() => reject(captureFailure() ?? new Error(`${label} child was killed`)));
       }, KILL_SETTLE_GRACE_MS);
     };
     const killForFailure = () => {
       try {
-        killProcessGroup(child);
+        group.kill();
       } finally {
         destroyChildPipes(child);
         settleFailureAfterKill();
@@ -365,7 +389,7 @@ function capture(
       }
       return undefined;
     };
-    const completeCapture = (code: number | null, signal: NodeJS.Signals | null) => {
+    const completeCapture = (code: number | null, signal: NodeJS.Signals | null): CaptureResult => {
       let summary: StructuredSummary | undefined;
       if (nodeSummary && !nodeSummaryError) {
         try {
@@ -377,7 +401,7 @@ function capture(
       reportProgress(
         `${label}: exit ${code ?? "null"}${signal ? ` (signal ${signal})` : ""} after ${Math.round((Date.now() - startedAt) / 1000)}s`
       );
-      resolveResult({
+      return {
         exit_code: code ?? 1,
         signal: signal ?? null,
         stdout_truncated: stdoutTruncated,
@@ -387,7 +411,7 @@ function capture(
         retained_capture_bytes: stdoutTail.length + stderrTail.length,
         ...(summary ? { node_summary: summary } : {}),
         ...(nodeSummaryError ? { node_summary_error: nodeSummaryError } : {}),
-      });
+      };
     };
     // The leaf deadline stays armed until the drain and the final transcript
     // write finish, so a wedged transcript write cannot outlive it. Re-ref the
@@ -408,19 +432,13 @@ function capture(
         }
         const failure = captureFailure();
         if (failure) {
-          throw failure;
+          finish(() => reject(failure));
+          return;
         }
-        completeCapture(code, signal);
-        settled = true;
+        const result = completeCapture(code, signal);
+        finish(() => resolveResult(result));
       } catch (error) {
-        if (!settled) {
-          settled = true;
-          reject(error);
-        }
-      } finally {
-        clearTimeout(deadlineTimer);
-        clearTimeout(killSettleTimer);
-        releaseProcessGroup();
+        finish(() => reject(error));
       }
     };
 
@@ -449,14 +467,7 @@ function capture(
     ticker.unref?.();
 
     child.on("error", (error) => {
-      clearInterval(ticker);
-      clearTimeout(deadlineTimer);
-      clearTimeout(exitSettleTimer);
-      releaseProcessGroup();
-      if (!settled) {
-        settled = true;
-        reject(error);
-      }
+      finish(() => reject(error));
     });
     // After the leaf exits, the pipes normally end on their own once the output is
     // drained. Leftover group members are killed first so a descendant holding the
@@ -481,7 +492,7 @@ function capture(
         });
       };
       exitSettleTimer = setTimeout(() => {
-        killProcessGroup(child);
+        group.kill();
         exitSettleTimer = setTimeout(settleWhenDrained, KILL_SETTLE_GRACE_MS);
       }, KILL_SETTLE_GRACE_MS);
     });
@@ -541,7 +552,7 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
   reportProgress(`${suite.id}: preparing (${command.join(" ")})`);
   return new Promise((resolvePrepare, reject) => {
     const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    const releaseProcessGroup = trackProcessGroup(child);
+    const group = trackProcessGroup(child);
     let output = Buffer.alloc(0);
     let deadlineExpired = false;
     let settled = false;
@@ -558,7 +569,7 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
       if (killSettleTimer) {
         clearTimeout(killSettleTimer);
       }
-      releaseProcessGroup();
+      group.release();
       if (code === 0 && !signal && !deadlineExpired) {
         resolvePrepare();
         return;
@@ -586,7 +597,7 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
       deadlineExpired = true;
       reportProgress(`${suite.id}: prepare exceeded deadline ${Math.round(PREPARE_DEADLINE_MS / 1000)}s; killing`);
       try {
-        killProcessGroup(child);
+        group.kill();
       } finally {
         destroyChildPipes(child);
         killSettleTimer = setTimeout(() => {
@@ -602,7 +613,7 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
       if (killSettleTimer) {
         clearTimeout(killSettleTimer);
       }
-      releaseProcessGroup();
+      group.release();
       if (!settled) {
         settled = true;
         reject(error);
@@ -611,7 +622,7 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
     child.on("exit", (code, signal) => {
       clearTimeout(deadlineTimer);
       exitSettleTimer = setTimeout(() => {
-        killProcessGroup(child);
+        group.kill();
         destroyChildPipes(child);
         finish(code, signal);
       }, KILL_SETTLE_GRACE_MS);
