@@ -559,14 +559,16 @@ function ownerAbsence(
   bootId: string | null,
   pidNamespace: string | null
 ): "absent" | "owner-live" | "pid-namespace-mismatch" {
-  // A different boot proves the owner died, whatever namespace recorded it. Legacy markers and
-  // markers from a dead nested namespace would otherwise be retained forever.
-  if (marker.boot_id !== undefined && bootId !== null && marker.boot_id !== bootId) {
-    return "absent";
-  }
   if (platform() === "linux" && marker.pid_namespace !== pidNamespace) {
+    // This process cannot see the owner's PID, so a PID probe proves nothing. Only a different boot, read
+    // from a trustworthy current boot id, proves the owner died. Legacy markers and markers from a dead
+    // nested namespace would otherwise be retained forever.
+    if (marker.boot_id !== undefined && bootId !== null && marker.boot_id !== bootId) {
+      return "absent";
+    }
     return "pid-namespace-mismatch";
   }
+  // Same namespace: the PID probe is authoritative, so a live owner is never overridden by a boot id.
   try {
     process.kill(marker.owner_pid, 0);
     return "owner-live";

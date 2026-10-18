@@ -458,12 +458,19 @@ test("recovery retains a legacy marker without a PID namespace until the boot di
       results.find((result) => result.path === sameBoot.allocation.root),
       { path: sameBoot.allocation.root, reason: "pid-namespace-mismatch", removed: false }
     );
+    // A different boot resolves the namespace ambiguity only when the current boot id is itself readable.
     assert.deepEqual(
       results.find((result) => result.path === priorBoot.allocation.root),
-      { path: priorBoot.allocation.root, reason: "dead-verified", removed: true }
+      bootId
+        ? { path: priorBoot.allocation.root, reason: "dead-verified", removed: true }
+        : { path: priorBoot.allocation.root, reason: "pid-namespace-mismatch", removed: false }
     );
     await access(sameBoot.allocation.root);
-    await assert.rejects(access(priorBoot.allocation.root));
+    if (bootId) {
+      await assert.rejects(access(priorBoot.allocation.root));
+    } else {
+      await access(priorBoot.allocation.root);
+    }
   } finally {
     await rm(parent, { force: true, recursive: true });
   }
@@ -505,6 +512,65 @@ test("quarantine recovery retains a quarantine whose owner is in another PID nam
     await rename(ownership.allocation.root, quarantine);
     assert.deepEqual(await recoverStaleScratch({ parent }), [
       { path: quarantine, reason: "pid-namespace-mismatch", removed: false },
+    ]);
+    await access(quarantine);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("recovery retains a same-namespace live owner whose boot id differs", {
+  skip: platform() !== "linux",
+}, async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  try {
+    await oldMarker(ownership, { boot_id: differentBootId(await currentBootId()), owner_pid: process.pid });
+    assert.deepEqual(await recoverStaleScratch({ parent }), [
+      { path: ownership.allocation.root, reason: "owner-live", removed: false },
+    ]);
+    await access(ownership.allocation.root);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("journal recovery retains a same-namespace live owner whose boot id differs", {
+  skip: platform() !== "linux",
+}, async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const journal = join(parent, `.scratch-cleanup-${ownership.allocation.nonce}.json`);
+  try {
+    await oldMarker(ownership, { boot_id: differentBootId(await currentBootId()), owner_pid: process.pid });
+    await assert.rejects(
+      cleanupScratchOwnership(ownership, {
+        afterJournal: () => Promise.reject(new Error("simulate crash after journal")),
+      })
+    );
+    const results = await recoverStaleScratch({ parent });
+    assert.deepEqual(
+      results.find((result) => result.path === journal),
+      { path: journal, reason: "owner-live", removed: false }
+    );
+    await access(journal);
+    await access(ownership.allocation.root);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
+test("quarantine recovery retains a same-namespace live owner whose boot id differs", {
+  skip: platform() !== "linux",
+}, async () => {
+  const parent = await temporaryParent();
+  const ownership = await allocateScratchOwnership({ parent });
+  const quarantine = join(parent, `.quarantine-${ownership.allocation.nonce}`);
+  try {
+    await oldMarker(ownership, { boot_id: differentBootId(await currentBootId()), owner_pid: process.pid });
+    await rename(ownership.allocation.root, quarantine);
+    assert.deepEqual(await recoverStaleScratch({ parent }), [
+      { path: quarantine, reason: "owner-live", removed: false },
     ]);
     await access(quarantine);
   } finally {
