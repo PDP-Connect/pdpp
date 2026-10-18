@@ -591,13 +591,13 @@ function matchSandboxRecord(record: DemoRecord, trimmed: string, lower: string):
   };
 }
 
-function generateSandboxSnapshotId(createId: () => string = () => crypto.randomUUID()): string {
+function generateSandboxSnapshotId(createId: () => string): string {
   // `crypto.randomUUID` is available in modern runtimes (Node 19+, Edge,
   // browser); the sandbox runs on Next which guarantees it.
   return `snap_sb_${createId().replace(/-/g, "").slice(0, 16)}`;
 }
 
-export interface SandboxSearchSnapshotEntry {
+interface SandboxSearchSnapshotEntry {
   createdAt: number;
   snapshot: SearchLexicalSnapshot;
 }
@@ -606,7 +606,6 @@ export interface SandboxSearchLexicalOptions {
   createId?: () => string;
   maxSnapshots?: number;
   now?: () => number;
-  snapshotStore?: Map<string, SandboxSearchSnapshotEntry>;
   snapshotTtlMs?: number;
 }
 
@@ -624,9 +623,9 @@ export function createSandboxSearchLexicalDependencies(
 ): SearchLexicalDependencies & { snapshotCount: () => number } {
   const maxSnapshots = options.maxSnapshots ?? 256;
   const snapshotTtlMs = options.snapshotTtlMs ?? 15 * 60 * 1000;
-  const now = options.now ?? (() => globalThis.performance?.now?.() ?? Date.now());
+  const now = options.now ?? (() => performance.now());
   const createId = options.createId ?? (() => crypto.randomUUID());
-  const snapshotCache = options.snapshotStore ?? new Map<string, SandboxSearchSnapshotEntry>();
+  const snapshotCache = new Map<string, SandboxSearchSnapshotEntry>();
   return {
     buildOwnerReadGrantForManifest: (manifest: SearchLexicalManifest): SearchLexicalGrant => ({
       streams: (manifest.streams ?? []).map((s) => ({ name: s.name })),
