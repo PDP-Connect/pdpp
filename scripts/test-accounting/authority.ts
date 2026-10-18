@@ -841,8 +841,9 @@ const LOCAL_SUITE_CONCURRENCY = 2;
  *
  * Each run keeps its own issued authority, transcript, deadlines and process
  * group, so overlap changes scheduling only, not what each run proves. At the
- * local default (2) the full gate measured 35-37% less wall time, 8-9% more
- * CPU-seconds and 23% more peak memory than serial order. Locally the default is
+ * local default (2) the full gate measured 35-37% less wall time and 23% more
+ * peak memory than serial order, with non-overlapping run ranges. CPU-seconds
+ * rose by a median of 8-9%, within the run-to-run range. Locally the default is
  * LOCAL_SUITE_CONCURRENCY; in CI it is 1 unless the workflow sets the variable
  * explicitly, because a CI runner's core count is not known here and each Node
  * leaf already sizes itself to the machine there (see applyLocalNodeTestConcurrency).
