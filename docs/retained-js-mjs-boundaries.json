@@ -74,9 +74,9 @@
     {
       "path": "scripts/hermetic/guard-runtime.mjs",
       "owner": "Test infrastructure maintainers",
-      "runtimeReason": "Node preloads this generated guard before each test process; compiling the TypeScript source avoids repeated runtime type stripping while preserving a single authored implementation.",
+      "runtimeReason": "Node preloads this generated guard before each test process; compiling guard-source.mts avoids runtime type stripping. The source uses a different basename so tsx does not remap imports of guard-runtime.mjs back to a second TypeScript module instance.",
       "probe": "pnpm generated-artifacts:check && pnpm test-accounting:check",
-      "review": "Regenerate whenever guard-runtime.mts changes; revisit when native TypeScript preload startup cost falls below the measured budget."
+      "review": "Regenerate whenever guard-source.mts changes; revisit when native TypeScript preload startup cost falls below the measured budget."
     },
     {
       "path": "scripts/hermetic/preload.mjs",
