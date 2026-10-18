@@ -71,7 +71,12 @@ function startRawWrapper(argv: string[], env: NodeJS.ProcessEnv = process.env) {
   });
 }
 
-test("owner routes children through the sandbox unless explicitly disabled", async () => {
+// The vendored test-sandbox enforces nothing and ignores --scratch under bash < 5
+// (stock macOS bash 3.2); tests of its contract only mean something with bash 5.
+const sandboxBashMajor = Number(spawnSync("bash", ["-c", "echo $BASH_VERSINFO"], { encoding: "utf8" }).stdout.trim());
+const sandboxContract = { skip: sandboxBashMajor >= 5 ? false : "test-sandbox needs bash 5 to enforce its contract" };
+
+test("owner routes children through the sandbox unless explicitly disabled", sandboxContract, async () => {
   const runnerTemp = await temporaryParent();
   const probe = [
     process.execPath,
@@ -111,14 +116,14 @@ test("owner routes children through the sandbox unless explicitly disabled", asy
   }
 });
 
-test("sandbox creates a missing --scratch root 0700 once and never re-creates it", async () => {
+test("sandbox creates a missing --scratch root 0700 once and never re-creates it", sandboxContract, async () => {
   const parent = await temporaryParent();
   const scratch = join(parent, "root");
   try {
     const run = (script: string) =>
       spawnSync(SANDBOX_SCRIPT, ["--scratch", scratch, "--", process.execPath, "-e", script], {
         encoding: "utf8",
-        env: { ...process.env, TEST_SANDBOX_ACTIVE: "", TEST_SANDBOX_PIDNS: "0" },
+        env: { ...process.env, TEST_SANDBOX_ACTIVE: "", TEST_SANDBOX_DISABLE: "", TEST_SANDBOX_PIDNS: "0" },
       });
     // Loose parent umask: only the sandbox's own creation can make the root private.
     const previous = process.umask(0o022);
@@ -126,7 +131,10 @@ test("sandbox creates a missing --scratch root 0700 once and never re-creates it
       const created = run("console.log(require('node:fs').statSync(process.env.TMPDIR).mode%0o1000)");
       assert.equal(created.status, 0, created.stderr);
       assert.equal(created.stdout.trim(), String(0o700));
-      const removed = run("require('node:fs').rmSync(process.env.TMPDIR,{recursive:true})");
+      // Delete only the root this test asked for: never an ambient TMPDIR.
+      const removed = run(
+        `if (process.env.TMPDIR !== ${JSON.stringify(scratch)}) throw new Error("TMPDIR is not the requested scratch: " + process.env.TMPDIR); require('node:fs').rmSync(process.env.TMPDIR,{recursive:true})`
+      );
       assert.equal(removed.status, 0, removed.stderr);
     } finally {
       process.umask(previous);
