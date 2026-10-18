@@ -559,7 +559,19 @@ export type Defect =
   /** Coerces a malformed `limit` (`abc`, `-1`, `1.5`, `1junk`) instead of rejecting it with 400 (clause 8.9-7). */
   | "coerce-invalid-limit"
   /** Leaves `error="invalid_token"` out of the 401 challenge for a presented-and-rejected token (RS-16). */
-  | "omit-invalid-token-error";
+  | "omit-invalid-token-error"
+  /** Serves different bytes than the blob stores (RS-1, clause 8.12-2). */
+  | "blob-wrong-bytes"
+  /** Serves a blob without `Cache-Control: private, no-store` (RS-1, clause 8.12-2). */
+  | "blob-response-cacheable"
+  /** Publishes a `blob_ref.mime_type` that is not an IANA media type (RS-1, clause 4.8-1). */
+  | "blob-ref-invalid-mime-type"
+  /** Serves any stored blob to any valid token, whether or not a readable record references it (RS-1, clause 8.12-1). */
+  | "serve-blob-without-reference-check"
+  /** Counts a record as referencing a blob through a field the grant's projection excludes (RS-1, clause 8.12-1). */
+  | "serve-blob-ignoring-projection"
+  /** Counts a record outside the grant's time window as referencing a blob (RS-1, clause 8.12-1). */
+  | "serve-blob-ignoring-window";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -783,6 +795,7 @@ function parseSyncToken(raw: string): { readonly context?: string; readonly vers
 const RECORDS_PATH = /^\/v1\/streams\/([^/]+)\/records$/;
 const SINGLE_RECORD_PATH = /^\/v1\/streams\/([^/]+)\/records\/([^/]+)$/;
 const METADATA_PATH = /^\/v1\/streams\/([^/]+)$/;
+const BLOB_PATH = /^\/v1\/blobs\/([^/]+)$/;
 
 /** The seeded subject. A second subject exists so cross-subject scoping is testable. */
 /** The client this target issues grants to, as introspection reports it. */
@@ -816,8 +829,11 @@ export class ReferenceServer {
   private counter = 0;
   private readonly streams: readonly StreamFixture[];
   private readonly defects: ReadonlySet<Defect>;
-  /** Streams provisioned on demand (multi-instance): served, but not part of the seeded inventory or the owner stream list. */
+  /** Streams provisioned on demand (multi-instance, blobs): served, but not part of the seeded inventory or the owner stream list. */
   private readonly provisionedStreams: StreamFixture[] = [];
+
+  /** Stored blobs by id, provisioned on demand by `provisionBlobStreams`. */
+  private readonly blobs = new Map<string, { readonly bytes: Buffer; readonly mimeType: string }>();
 
   /**
    * The AS's current view definitions, keyed by the `viewKey` helper below.
@@ -1102,6 +1118,177 @@ export class ReferenceServer {
       }
     }
     return { stream: name, cursorField, instanceIds, records: seeded };
+  }
+
+  /**
+   * Provision (once) the streams and blobs the blob cases need.
+   *
+   * `blob_attachments` holds two records that reference blobs through two
+   * fields, so each way a reference can fail to authorize has a blob that
+   * exercises it: `blob_ref` (the primary blob, readable under the fixture
+   * grant), `thumbnail_ref` (a blob referenced ONLY through a field the fixture
+   * grant's projection excludes), and a second record dated outside the window
+   * the windowed grant consents to. `blob_private_attachments` is a stream no
+   * fixture grant lists, so its blob exists but no record in the grant
+   * references it.
+   */
+  provisionBlobStreams(): {
+    readonly bytes: Buffer;
+    readonly mimeType: string;
+    readonly ids: {
+      readonly blob: string;
+      readonly outOfGrant: string;
+      readonly outsideProjection: string;
+      readonly outsideWindow: string;
+    };
+    readonly stream: string;
+    readonly window: { readonly field: string; readonly from: string; readonly to: string };
+  } {
+    const stream = "blob_attachments";
+    const mimeType = "text/plain";
+    const store = (id: string, content: string) => {
+      const bytes = Buffer.from(content);
+      this.blobs.set(id, { bytes, mimeType });
+      return {
+        blob_id: id,
+        mime_type: this.has("blob-ref-invalid-mime-type") ? "not a media type" : mimeType,
+        size_bytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    };
+    const ids = {
+      blob: "blob_att_1",
+      outsideProjection: "blob_att_1_thumbnail",
+      outsideWindow: "blob_att_2",
+      outOfGrant: "blob_private_1",
+    } as const;
+    const text = (id: string) => `pdpp-conformance-blob:${id}`;
+    if (!this.provisionedStreams.some((s) => s.name === stream)) {
+      const fields = ["id", "title", "taken_at", "blob_ref", "thumbnail_ref"];
+      const fixtureFor = (name: string, fieldList: string[], records: Record_[]): StreamFixture => ({
+        name,
+        fields: fieldList,
+        fieldTypes: Object.fromEntries(fieldList.map((f) => [f, f.endsWith("_ref") ? "object" : "string"])),
+        requiredFields: ["id"],
+        primaryKey: ["id"],
+        consentTimeField: "taken_at",
+        semantics: "append_only",
+        records,
+      });
+      const attachments = fixtureFor(stream, fields, [
+        {
+          id: "att_1",
+          title: "In window",
+          taken_at: "2026-03-01T00:00:00Z",
+          blob_ref: store(ids.blob, text(ids.blob)),
+          thumbnail_ref: store(ids.outsideProjection, text(ids.outsideProjection)),
+        },
+        {
+          id: "att_2",
+          title: "Outside window",
+          taken_at: "2026-09-01T00:00:00Z",
+          blob_ref: store(ids.outsideWindow, text(ids.outsideWindow)),
+          thumbnail_ref: store("blob_att_2_thumbnail", text("blob_att_2_thumbnail")),
+        },
+      ]);
+      const priv = fixtureFor(
+        "blob_private_attachments",
+        ["id", "taken_at", "blob_ref"],
+        [{ id: "priv_1", taken_at: "2026-03-01T00:00:00Z", blob_ref: store(ids.outOfGrant, text(ids.outOfGrant)) }]
+      );
+      for (const fixture of [attachments, priv]) {
+        this.provisionedStreams.push(fixture);
+        for (const record of fixture.records) {
+          this.versionClock += 1;
+          this.recordVersions.set(recordKey(fixture.name, record.id), this.versionClock);
+          this.changedFields.set(recordKey(fixture.name, record.id), new Set(fixture.fields));
+          this.recordHistory(fixture.name, record.id, { ...record }, new Set(fixture.fields));
+        }
+      }
+    }
+    const stored = this.blobs.get(ids.blob);
+    return {
+      stream,
+      mimeType,
+      bytes: stored?.bytes ?? Buffer.alloc(0),
+      ids,
+      window: { field: "taken_at", from: "2026-01-01T00:00:00Z", to: "2026-06-01T00:00:00Z" },
+    };
+  }
+
+  /**
+   * Whether a record this token may currently read references `blobId`
+   * (Core Section 8 "Get a blob").
+   *
+   * Evaluated per request against the grant as it stands. For a client token a
+   * reference counts only when the grant lists the stream, the record is inside
+   * the grant's time window, and the field holding the `blob_ref` is in the
+   * grant's field projection; for an owner token, when the stream belongs to
+   * the owner's subject.
+   */
+  private blobReferencedByReadableRecord(
+    blobId: string,
+    principalKind: Principal["kind"],
+    grant: GrantState | undefined,
+    subjectScoped: boolean
+  ): boolean {
+    for (const fixture of [...this.streams, ...this.provisionedStreams]) {
+      const granted = grant?.streams.find((g) => g.name === fixture.name);
+      if (principalKind === "client" ? granted === undefined : !subjectScoped) {
+        continue;
+      }
+      const projection =
+        principalKind === "client" && !this.has("serve-blob-ignoring-projection")
+          ? this.grantedFields(granted)
+          : fixture.fields;
+      const constraint = this.has("serve-blob-ignoring-window") ? undefined : granted?.timeConstraint;
+      for (const record of fixture.records) {
+        if (constraint && !this.inWindow(record, constraint)) {
+          continue;
+        }
+        if (projection.some((field) => (record[field] as { blob_id?: unknown } | undefined)?.blob_id === blobId)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Whether a record's date-time value for the constraint's field lies in `[from, to)` (Core Section 8 "Comparison"). */
+  private inWindow(record: Record_, constraint: { field: string; from?: string; to?: string }): boolean {
+    const value = record[constraint.field];
+    const instant = typeof value === "string" ? parseDateTime(value) : null;
+    if (instant === null) {
+      return false;
+    }
+    const from = constraint.from === undefined ? null : parseDateTime(constraint.from);
+    const to = constraint.to === undefined ? null : parseDateTime(constraint.to);
+    return !((from && compareDateTimes(instant, from) < 0) || (to && compareDateTimes(instant, to) >= 0));
+  }
+
+  /** Answers GET/HEAD /v1/blobs/{blob_id}: a direct response, or 404 `blob_not_found` for every non-readable id. */
+  private serveBlob(
+    blobId: string,
+    readable: boolean,
+    method: string,
+    res: import("node:http").ServerResponse,
+    notFound: () => void
+  ): void {
+    const blob = this.blobs.get(blobId);
+    if (!(blob && (readable || this.has("serve-blob-without-reference-check")))) {
+      notFound();
+      return;
+    }
+    this.counter += 1;
+    const body = this.has("blob-wrong-bytes") ? Buffer.from("not the stored blob") : blob.bytes;
+    res.writeHead(200, {
+      "content-type": blob.mimeType,
+      "content-length": String(body.length),
+      ...(this.has("blob-response-cacheable") ? {} : { "cache-control": "private, no-store" }),
+      "pdpp-version": SUPPORTED_VERSION,
+      "request-id": `req_${this.counter}`,
+    });
+    res.end(method === "HEAD" ? undefined : body);
   }
 
   /** Current field list for a view, or undefined when the AS defines no such view. */
@@ -1736,6 +1923,20 @@ export class ReferenceServer {
     // An owner token reaches only its own subject's store (RS-12). The seeded
     // fixtures belong to SEEDED_SUBJECT, so a foreign owner sees an empty store.
     const subjectScoped = subjectId === SEEDED_SUBJECT;
+
+    // --- GET /v1/blobs/{blob_id} (RS-1, clauses 8.12-1 .. 8.12-3) ---
+    const blobMatch = BLOB_PATH.exec(path);
+    if (blobMatch && (method === "GET" || method === "HEAD")) {
+      const blobId = decodeURIComponent(blobMatch[1] ?? "");
+      this.serveBlob(
+        blobId,
+        this.blobReferencedByReadableRecord(blobId, principal.kind, grant, subjectScoped),
+        method,
+        res,
+        () => error(404, "blob_not_found", "not_found_error", "Blob not found.")
+      );
+      return;
+    }
 
     // --- GET /v1/streams (RS-1) ---
     if (path === "/v1/streams") {

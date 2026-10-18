@@ -59,6 +59,15 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
     defect: "accept-order-mismatched-cursor",
   },
   { caseId: "RS-10/unknown-parameter-rejected", defect: "ignore-unknown-params" },
+  // The bundled target serves blobs directly, so the redirect case reports
+  // `unsupported` against it; its proof stays bespoke (below).
+  { caseId: "RS-1/get-blob-bytes", defect: "blob-wrong-bytes" },
+  { caseId: "RS-1/get-blob-bytes", defect: "blob-response-cacheable" },
+  { caseId: "RS-1/blob-ref-mime-type-valid", defect: "blob-ref-invalid-mime-type" },
+  { caseId: "RS-1/blob-outside-grant-refused", defect: "serve-blob-without-reference-check" },
+  { caseId: "RS-1/blob-unauthenticated-refused", defect: "serve-without-authentication" },
+  { caseId: "RS-1/blob-referenced-outside-projection-refused", defect: "serve-blob-ignoring-projection" },
+  { caseId: "RS-1/blob-referencing-record-outside-window-refused", defect: "serve-blob-ignoring-window" },
   {
     caseId: "RS-10/owner-filter-unknown-field-rejected",
     defect: "ignore-owner-filter-unknown-field",

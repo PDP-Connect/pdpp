@@ -566,12 +566,34 @@ export interface BlobFixture {
    */
   readonly outOfGrantBlobId?: string;
   /**
+   * A real blob that a record references ONLY through a field the named grant's
+   * projection excludes, plus a grant that reads `blobId` (the positive
+   * control) but not that field.
+   *
+   * Section 8 "Get a blob", condition 3: "The `blob_ref` field is included in
+   * the grant's authorized field projection." A grant that can read the
+   * referencing record, but not the field holding the reference, must be
+   * refused the blob. Optional: a target that cannot seed such a blob reports
+   * `RS-1/blob-referenced-outside-projection-refused` `skip` naming this field.
+   */
+  readonly projectionExcluded?: { readonly blobId: string; readonly grantRequest: GrantRequest };
+  /**
    * The exact bytes stored at upload time, when the adapter can hold them in
    * memory. Mutually exclusive in practice with `digest` — supply whichever is
    * cheaper for the target to retain; the case only needs one independent way
    * to prove the returned bytes are the ones that were stored, not both.
    */
   readonly rawBytes?: Uint8Array;
+  /**
+   * A real blob whose only referencing record lies outside the consent window
+   * of the named grant, plus a grant that reads `blobId` (the positive
+   * control) with that window.
+   *
+   * Section 8 "Get a blob", condition 2: "The referencing record passes all
+   * grant filters." Optional, as `projectionExcluded` is; its absence reports
+   * `RS-1/blob-referencing-record-outside-window-refused` `skip`.
+   */
+  readonly windowExcluded?: { readonly blobId: string; readonly grantRequest: GrantRequest };
 }
 
 /** The grant shape a test needs. The adapter arranges consent out of band. */

@@ -20,7 +20,16 @@ import { isDeepStrictEqual } from "node:util";
 import type { BlobFixture, TargetAdapter } from "../harness/adapter.ts";
 import { errorBody, type PdppResponse, request, requestBytes } from "../harness/http.ts";
 import { isValidMediaType } from "../harness/media-type.ts";
-import { type CaseVerdict, type ConformanceCase, fail, pass, skip, unsupported } from "../harness/runner.ts";
+import {
+  arrange,
+  type CaseContext,
+  type CaseVerdict,
+  type ConformanceCase,
+  fail,
+  pass,
+  skip,
+  unsupported,
+} from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 import { resolvedFieldAllowlist } from "./resolved-grant.ts";
 
@@ -442,6 +451,59 @@ async function judgeForeignRecords(
     : pass(evidence);
 }
 
+/**
+ * Shared body of the two excluded-reference blob cases: the fixture names a
+ * blob and a grant that must be refused it although the same grant can fetch
+ * `fixture.blobId`.
+ */
+async function excludedReferenceCase(
+  { adapter, path }: CaseContext,
+  key: "projectionExcluded" | "windowExcluded"
+): Promise<CaseVerdict> {
+  if (!adapter.blobFixture) {
+    return skip(
+      "The adapter implements no blobFixture hook, so RS-1's blob-authorization boundary has no known blob to check."
+    );
+  }
+  const fixture = await adapter.blobFixture();
+  if (!fixture) {
+    return skip("The target reported no seeded blob to check RS-1's blob-authorization boundary against.");
+  }
+  const excluded = fixture[key];
+  if (!excluded) {
+    return skip(
+      `The adapter's blobFixture supplied no ${key}, so there is no blob whose reference the grant excludes.`
+    );
+  }
+  const grant = await adapter.issueGrant(excluded.grantRequest);
+  if (!grant) {
+    return skip("The target could not issue the grant the excluded-reference blob case needs.");
+  }
+  const positive = await arrange("positive-control blob fetch", () =>
+    verifyAuthorizedBlobFetch(adapter, path, fixture, grant.accessToken)
+  );
+  if (positive.outcome !== "pass") {
+    return positive;
+  }
+  const response = await requestBytes(adapter.baseUrl, path(`/blobs/${encodeURIComponent(excluded.blobId)}`), {
+    token: grant.accessToken,
+  });
+  const evidence = [...(positive.evidence ?? []), response.evidence];
+  if (response.status === 200 || response.status === 302) {
+    return fail(
+      `Overbroad access: a grant that can fetch blob "${fixture.blobId}" was served blob "${excluded.blobId}", which no record the grant may read references through its ${key === "projectionExcluded" ? "field projection" : "time window"}. Got ${response.status}.`,
+      evidence
+    );
+  }
+  if (response.status !== 403 && response.status !== 404) {
+    return fail(
+      `Expected 403 or 404 for a blob the grant's ${key === "projectionExcluded" ? "projection" : "window"} excludes, got ${response.status}.`,
+      evidence
+    );
+  }
+  return pass(evidence);
+}
+
 export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
   // ---------------------------------------------------------------- RS-1 ---
   {
@@ -695,6 +757,28 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
       return pass([...positiveEvidence, response.evidence]);
     },
+  },
+
+  // Section 8 "Get a blob", conditions 2 and 3 for a client token: the
+  // referencing record must pass the grant's filters, and the field holding the
+  // `blob_ref` must be in the grant's field projection. The out-of-grant case
+  // above covers condition 1 (a stream the grant lists); a target that checks
+  // only that can still serve a blob through a record the grant cannot see or a
+  // field it cannot read. Each case first proves the SAME token fetches
+  // `fixture.blobId`, so a deny-everything server cannot pass.
+  {
+    caseId: "RS-1/blob-referenced-outside-projection-refused",
+    requirementId: "RS-1",
+    assertion:
+      "A grant whose projection excludes the field holding a blob's only reference is refused that blob, while the same token still fetches the fixture blob (Section 8 'Get a blob': the blob_ref field is in the grant's authorized field projection).",
+    run: (context) => excludedReferenceCase(context, "projectionExcluded"),
+  },
+  {
+    caseId: "RS-1/blob-referencing-record-outside-window-refused",
+    requirementId: "RS-1",
+    assertion:
+      "A grant whose time window excludes a blob's only referencing record is refused that blob, while the same token still fetches the fixture blob (Section 8 'Get a blob': the referencing record passes all grant filters).",
+    run: (context) => excludedReferenceCase(context, "windowExcluded"),
   },
 
   // Section 8: client operations use `Authorization: Bearer <access_token>` —

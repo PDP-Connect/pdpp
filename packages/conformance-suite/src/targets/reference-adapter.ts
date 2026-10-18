@@ -16,6 +16,7 @@
 // biome-ignore-all lint/suspicious/useAwait: the TargetAdapter contract is async; this in-process target answers from memory.
 
 import type {
+  BlobFixture,
   DeclarationOutcome,
   GrantRequest,
   IssuedGrant,
@@ -194,7 +195,7 @@ const CAPABILITIES: TargetCapabilities = {
   views: true,
   singleUseGrants: false,
   refreshTokens: false,
-  blobs: false,
+  blobs: true,
 };
 
 const ROLES: readonly Role[] = ["resource-server", "authorization-server"];
@@ -1587,6 +1588,33 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       },
     });
     return wrap(issued.accessToken, refreshToken);
+  }
+
+  /**
+   * A seeded blob, the grant that reads it, and the blobs the negative cases
+   * need: one in a stream the grant does not list, one referenced only through
+   * a field the grant's projection excludes, and one whose record lies outside
+   * the consent window of the windowed grant.
+   *
+   * `rawBytes` is the adapter's own record of what it stored, never read back
+   * from the endpoint under test.
+   */
+  async blobFixture(): Promise<BlobFixture | null> {
+    const blobs = this.server.provisionBlobStreams();
+    const readable = ["id", "title", "taken_at", "blob_ref"];
+    const grantRequest: GrantRequest = { streams: [{ name: blobs.stream, fields: readable }] };
+    return {
+      blobId: blobs.ids.blob,
+      mimeType: blobs.mimeType,
+      rawBytes: new Uint8Array(blobs.bytes),
+      grantRequest,
+      outOfGrantBlobId: blobs.ids.outOfGrant,
+      projectionExcluded: { blobId: blobs.ids.outsideProjection, grantRequest },
+      windowExcluded: {
+        blobId: blobs.ids.outsideWindow,
+        grantRequest: { ...grantRequest, timeConstraint: blobs.window },
+      },
+    };
   }
 
   async expiredGrantToken(): Promise<string | null> {

@@ -2355,9 +2355,15 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#get-a-blob",
     applicability: "the target serves blobs",
     observable: "black-box-http",
-    caseIds: ["RS-1/blob-outside-grant-refused", "RS-1/blob-unauthenticated-refused"],
+    partial: true,
+    caseIds: [
+      "RS-1/blob-outside-grant-refused",
+      "RS-1/blob-unauthenticated-refused",
+      "RS-1/blob-referenced-outside-projection-refused",
+      "RS-1/blob-referencing-record-outside-window-refused",
+    ],
     gapNote:
-      "The mapped cases refuse a blob outside the grant and an unauthenticated fetch. Not covered: a record that references the blob only through a field outside the token's field projection. That needs a blobFixture variant naming the referencing field and a grant that excludes it (for example `outsideProjectionGrant`), and the bundled target seeds no blob at all.",
+      "The mapped cases refuse a blob no record in the grant references, an unauthenticated fetch, a blob referenced only through a field the grant's projection excludes, and a blob whose only referencing record lies outside the grant's time window. Not covered: that the referencing record is still readable at the moment of the request (a record deleted or filtered after the grant was issued, which needs a disposable blob and an owner delete), grant filters other than the time window, and the owner-token scope check.",
   },
   {
     clauseId: "8.12-2",
