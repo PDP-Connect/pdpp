@@ -4,17 +4,19 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { constants } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   allocateScratchOwnership,
   type CleanupHooks,
   cleanupScratchOwnership,
+  clearSandboxLaunchIntent,
   inheritedScratchOwnership,
   markScratchLaunching,
   markScratchRunning,
   markScratchUnlaunched,
   type RecoveryLimits,
+  recordSandboxLaunchIntent,
   recoverStaleScratch,
   type ScratchOwnership,
   ScratchOwnershipError,
@@ -121,7 +123,14 @@ async function stopPublishedGroup(
   if (pgid === undefined) {
     return false;
   }
-  if (pgid === 0 || pgid === sandboxPgid) {
+  if (pgid === 0) {
+    // Proven: no sidecar ever started, so the launch is no longer ambiguous.
+    return clearSandboxLaunchIntent(dirname(path)).then(
+      () => true,
+      () => false
+    );
+  }
+  if (pgid === sandboxPgid) {
     return true;
   }
   return terminateRemainingGroup(pgid, startedAt, initiatingSignal).catch(() => false);
@@ -376,6 +385,21 @@ function spawnOwnedCommand(launch: ReturnType<typeof sandboxLaunch>, ownership: 
   });
 }
 
+/** Durably note that the sandbox may start a sidecar whose group is not yet published. */
+async function recordLaunchIntent(launch: ReturnType<typeof sandboxLaunch>, ownership: ScratchOwnership) {
+  if (launch.groupPath) {
+    await recordSandboxLaunchIntent(ownership);
+  }
+}
+
+/** No process exists, so there is no pending sidecar publication either. */
+async function markSpawnFailed(launch: ReturnType<typeof sandboxLaunch>, ownership: ScratchOwnership) {
+  if (launch.groupPath) {
+    await clearSandboxLaunchIntent(ownership.allocation.root);
+  }
+  await markScratchUnlaunched(ownership);
+}
+
 async function runLaunchedCommand(
   command: string[],
   ownership: ScratchOwnership,
@@ -400,10 +424,11 @@ async function runLaunchedCommand(
     if (launch.groupPath) {
       control.setSandboxGroupPath(launch.groupPath);
     }
+    await recordLaunchIntent(launch, ownership);
     const child = spawnOwnedCommand(launch, ownership);
     const observed = observeChild(child);
     if (!child.pid) {
-      await markScratchUnlaunched(ownership);
+      await markSpawnFailed(launch, ownership);
       throw new ScratchOwnershipError("spawn-failed");
     }
     control.setPgid(child.pid);

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   access,
   chmod,
@@ -1122,26 +1122,20 @@ test("a sandbox that exits before publishing a command group leaves no scratch a
 test("a sidecar killed right after spawning the command does not orphan the command under a deleted scratch", async () => {
   const runnerTemp = await temporaryParent();
   const work = await temporaryParent();
-  const pidFile = join(work, "command.pid");
+  const recordFile = join(work, "command.record");
   let commandPid: number | undefined;
   try {
     const wrapper = spawn(
       process.execPath,
-      [
-        "--import",
-        "tsx",
-        sandboxChildWrapperPath,
-        killAfterSpawnSandboxChild,
-        "sh",
-        "-c",
-        'echo "$$ $PDPP_TEST_SCRATCH_ROOT" > "$1"; exec sleep 300',
-        "sh",
-        pidFile,
-      ],
-      { env: noCgroupEnv(runnerTemp), stdio: ["ignore", "ignore", "ignore"] }
+      ["--import", "tsx", sandboxChildWrapperPath, killAfterSpawnSandboxChild, "sh", "-c", "exec sleep 300"],
+      {
+        env: { ...noCgroupEnv(runnerTemp), KILL_AFTER_SPAWN_RECORD: recordFile },
+        stdio: ["ignore", "ignore", "ignore"],
+      }
     );
     await closed(wrapper);
-    const [pid, root] = (await eventuallyRead(pidFile, 20_000)).trim().split(" ");
+    // Written by the sidecar before the kill, so it exists even if cleanup stops the command before it runs.
+    const [pid, root] = (await eventuallyRead(recordFile, 20_000)).trim().split(" ");
     commandPid = Number(pid);
     assert.ok(Number.isSafeInteger(commandPid) && commandPid > 0);
     assert.ok(root);
@@ -1208,6 +1202,99 @@ test("owner SIGKILL then a command that leaves a background child does not let r
     killQuietly(backgroundPid);
     await rm(runnerTemp, { force: true, recursive: true });
     await rm(work, { force: true, recursive: true });
+  }
+});
+
+test("a sandbox killed before its sidecar publishes does not let recovery delete the scratch of a command that starts later", async () => {
+  const runnerTemp = await temporaryParent();
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  let sidecarPgid: number | undefined;
+  let groupPath: string | undefined;
+  let wrapper: ReturnType<typeof spawn> | undefined;
+  try {
+    wrapper = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        sandboxChildWrapperPath,
+        delayedPublishSandboxChild,
+        "sh",
+        "-c",
+        'echo $$ > "$PDPP_TEST_SCRATCH_ROOT/command.pid"; exec sleep 300',
+      ],
+      { env: noCgroupEnv(runnerTemp), stdio: ["ignore", "ignore", "ignore"] }
+    );
+    const wrapperClosed = closed(wrapper);
+    const root = await eventuallyRunRoot(parent);
+    groupPath = join(root, ".sandbox-child-group");
+    const markerPath = join(root, ".pdpp-test-scratch.json");
+    const marker = await eventuallyRunningMarker(markerPath);
+    sidecarPgid = Number((await eventuallyRead(`${groupPath}.held`, 20_000)).trim());
+    assert.ok(Number.isSafeInteger(sidecarPgid) && sidecarPgid > 0);
+    assert.notEqual(sidecarPgid, marker.pgid);
+    // The sidecar is stopped or slow before it publishes; its sandbox dies and the launcher gives up.
+    process.kill(-marker.pgid, "SIGKILL");
+    await eventuallyAbsentGroup(marker.pgid);
+    await wrapperClosed;
+    await access(root);
+    await assert.rejects(access(groupPath));
+    await writeFile(
+      markerPath,
+      `${JSON.stringify({ ...marker, created_at: new Date(Date.now() - 120_000).toISOString() })}\n`
+    );
+    const reasons = new Map((await recoverStaleScratch({ parent })).map((entry) => [entry.path, entry]));
+    assert.deepEqual(reasons.get(root), { path: root, reason: "sandbox-launch-pending", removed: false });
+    await access(root);
+    // The sidecar resumes, publishes and starts the command: its scratch must still exist.
+    await writeFile(`${groupPath}.release`, "release\n");
+    const commandPid = Number((await eventuallyRead(join(root, "command.pid"), 20_000)).trim());
+    assert.ok(Number.isSafeInteger(commandPid) && commandPid > 0);
+    await access(root);
+    assert.ok(processAlive(commandPid));
+  } finally {
+    if (groupPath) {
+      await writeFile(`${groupPath}.release`, "release\n").catch(() => undefined);
+    }
+    if (sidecarPgid) {
+      try {
+        process.kill(-sidecarPgid, "SIGKILL");
+      } catch {
+        // The group may have exited before this failure-path cleanup.
+      }
+    }
+    if (wrapper?.pid && wrapper.exitCode === null && wrapper.signalCode === null) {
+      wrapper.kill("SIGKILL");
+    }
+    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("a launch intent without a publication is retained until the boot differs", {
+  skip: platform() !== "linux",
+}, async () => {
+  const parent = await temporaryParent();
+  const sameBoot = await allocateScratchOwnership({ parent });
+  const otherBoot = await allocateScratchOwnership({ parent });
+  const bootId = await currentBootId();
+  assert.ok(bootId);
+  try {
+    for (const [ownership, boot] of [
+      [sameBoot, bootId],
+      [otherBoot, differentBootId(bootId)],
+    ] as const) {
+      // biome-ignore lint/performance/noAwaitInLoops: two small fixtures built in order.
+      await oldMarker(ownership, { boot_id: boot, pgid: 999_999_998, state: "running" });
+      await writeFile(join(ownership.allocation.root, ".sandbox-launch-intent"), "{}\n", { mode: 0o600 });
+    }
+    // The owner's own cleanup refuses it too.
+    await assert.rejects(cleanupScratchOwnership(sameBoot), { reason: "group-live" });
+    const reason = new Map((await recoverStaleScratch({ parent })).map((entry) => [entry.path, entry.reason]));
+    assert.equal(reason.get(sameBoot.allocation.root), "sandbox-launch-pending");
+    assert.equal(reason.get(otherBoot.allocation.root), "dead-verified");
+    await access(sameBoot.allocation.root);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
   }
 });
 
