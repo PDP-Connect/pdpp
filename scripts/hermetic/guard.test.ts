@@ -8,6 +8,7 @@
 // proves default fetch and launcher wiring in that missing-undici condition.
 
 import assert from "node:assert/strict";
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import { homedir } from "node:os";
@@ -60,9 +61,9 @@ function expectBlockedAsyncError(url: string): Promise<string> {
   });
 }
 
-function httpGetBody(url: string): Promise<string> {
+function httpGetBody(target: string | http.RequestOptions): Promise<string> {
   return new Promise((resolve, reject) => {
-    const req = http.get(url, (res) => {
+    const req = http.get(target, (res) => {
       let data = "";
       res.on("data", (chunk) => {
         data += chunk;
@@ -237,6 +238,38 @@ function blockedMessage(start: () => http.ClientRequest): Promise<string> {
     req.end();
   });
 }
+
+function listenAt(server: http.Server, port: number, host: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+}
+
+/**
+ * Hold `port` from another process, as a foreign holder would. The parent's
+ * guard never sees this bind. Resolves once that process reports it is listening.
+ */
+function startForeignProcess(port: number): Promise<ChildProcess> {
+  const script = `require("node:http").createServer((_req, res) => res.end("foreign")).listen(${port}, "127.0.0.1", () => console.log("listening"));`;
+  const child = spawn(process.execPath, ["-e", script]);
+  return new Promise((resolve, reject) => {
+    child.once("exit", (code) => reject(new Error(`foreign server exited with ${code}`)));
+    child.stdout.once("data", () => resolve(child));
+  });
+}
+
+/** A lookup that answers ::1, the address a resolver may return first for localhost. */
+const lookupIpv6Loopback: NonNullable<http.RequestOptions["lookup"]> = (_hostname, options, callback) => {
+  if (options.all) {
+    callback(null, [{ address: "::1", family: 6 }]);
+    return;
+  }
+  callback(null, "::1", 6);
+};
 
 test("fetch refuses automatic redirects, to foreign and to owned origins alike", async () => {
   const foreign = await startCountingServer("127.0.0.1");
@@ -534,5 +567,103 @@ test("a rejected re-listen does not change what the live bind grants", async (t)
     await closeServer(owned);
     handle.uninstall();
     await foreign.close();
+  }
+});
+
+test("close() withdraws the grant when it starts, not when the last open stream ends", async () => {
+  // close() releases the port at once, but the 'close' event waits for the open
+  // stream. A foreign process that binds the port next must stay unreachable.
+  const handle = await installHermeticNetworkGuard();
+  const owned = http.createServer((_req, res) => {
+    res.write("streaming");
+  });
+  await listenAt(owned, 0, "127.0.0.1");
+  const port = boundPort(owned);
+  const url = `http://127.0.0.1:${port}/`;
+  const stream = http.get(url);
+  let foreign: ChildProcess | undefined;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      stream.on("error", reject);
+      stream.once("response", (res) => res.once("data", () => resolve()));
+    });
+    owned.close();
+    foreign = await startForeignProcess(port);
+    assert.match(
+      await blockedMessage(() => http.request(url)),
+      BLOCKED_ORIGIN_MESSAGE_PATTERN,
+      "a fresh request reached a foreign process through a grant that close() had withdrawn"
+    );
+    assert.equal(isOriginAllowed(url), false, "close() left the origin granted");
+  } finally {
+    stream.destroy();
+    foreign?.kill();
+    await closeServer(owned);
+    handle.uninstall();
+  }
+});
+
+test("an IPv4-only bind does not grant localhost, which can resolve to a foreign ::1 listener", async (t) => {
+  // The foreign server holds [::1]:P before install, so nothing grants it. The
+  // owned server binds 127.0.0.1:P after install. The lookup forces the ::1
+  // answer that a resolver may give for localhost, so the outcome does not
+  // depend on this host's resolver order.
+  let foreign: CountingServer;
+  try {
+    foreign = await startCountingServer("::1");
+  } catch {
+    t.skip("host cannot bind IPv6 loopback");
+    return;
+  }
+  const handle = await installHermeticNetworkGuard();
+  const owned = http.createServer((_req, res) => res.end("owned-v4"));
+  try {
+    try {
+      await listenAt(owned, foreign.port, "127.0.0.1");
+    } catch {
+      t.skip("port is not free on IPv4 loopback");
+      return;
+    }
+    assert.match(
+      await blockedMessage(() =>
+        http.request({ host: "localhost", port: foreign.port, path: "/", lookup: lookupIpv6Loopback })
+      ),
+      BLOCKED_ORIGIN_MESSAGE_PATTERN
+    );
+    assert.equal(isOriginAllowed(`http://localhost:${foreign.port}`), false, "an IPv4-only bind granted localhost");
+    assert.equal(foreign.requests(), 0, "localhost reached the foreign IPv6 server");
+  } finally {
+    await closeServer(owned);
+    handle.uninstall();
+    await foreign.close();
+  }
+});
+
+test("localhost is granted only while this process owns both loopback families on the port", async (t) => {
+  const handle = await installHermeticNetworkGuard();
+  const v4 = http.createServer((_req, res) => res.end("owned-v4"));
+  const v6 = http.createServer((_req, res) => res.end("owned-v6"));
+  try {
+    await listenAt(v4, 0, "127.0.0.1");
+    const port = boundPort(v4);
+    try {
+      await listenAt(v6, port, "::1");
+    } catch {
+      t.skip("host cannot bind IPv6 loopback on the same port");
+      return;
+    }
+    assert.equal(isOriginAllowed(`http://localhost:${port}`), true, "both families owned, yet localhost not granted");
+    assert.equal(await httpGetBody({ host: "localhost", port, path: "/", lookup: lookupIpv6Loopback }), "owned-v6");
+
+    await closeServer(v6);
+    assert.equal(isOriginAllowed(`http://localhost:${port}`), false, "localhost stayed granted after ::1 closed");
+    assert.match(
+      await blockedMessage(() => http.request({ host: "localhost", port, path: "/", lookup: lookupIpv6Loopback })),
+      BLOCKED_ORIGIN_MESSAGE_PATTERN
+    );
+  } finally {
+    await closeServer(v6);
+    await closeServer(v4);
+    handle.uninstall();
   }
 });
