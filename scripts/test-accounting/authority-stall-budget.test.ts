@@ -500,6 +500,37 @@ test("a transcript write that resolves after the capture rejected sends no furth
   );
 });
 
+test("a group killed when its leaf exits is not signalled again by a failure kill during the drain", async () => {
+  // The leaf exits at once and leaves a same-group child holding its pipes, so
+  // the exit grace kills the group first. The first transcript write then takes
+  // 1.5s and fails: a second kill path while the capture is still draining. Once
+  // the group has been signalled its numeric PGID may be reused, so no later kill
+  // path may signal it again before the capture settles.
+  const outcome = await runCapture(
+    `
+      const { spawn } = require('node:child_process');
+      spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+      process.stdout.write('hello\\n');
+      process.exit(0);
+    `,
+    60_000,
+    60_000,
+    false,
+    1,
+    20_000,
+    "if (writes === 1) await new Promise((resolve) => setTimeout(resolve, 1500));"
+  );
+  const result = JSON.parse(outcome.stdout) as { capture_error?: string; kills_at_settle: number };
+
+  assert.equal(outcome.code, 1, `the failing write must fail the run; stderr was: ${outcome.stderr}`);
+  assert.match(result.capture_error ?? "", TRANSCRIPT_FAILURE_PATTERN);
+  assert.equal(
+    result.kills_at_settle,
+    1,
+    "the process group must receive exactly one SIGKILL before the capture settles"
+  );
+});
+
 async function assertProcessGone(pid: number): Promise<void> {
   const deadline = Date.now() + 1500;
   while (Date.now() < deadline) {

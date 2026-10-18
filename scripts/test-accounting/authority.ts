@@ -178,54 +178,68 @@ function reportProgress(text: string): void {
   process.stderr.write(`[test-accounting] ${text}\n`);
 }
 
-function killProcessGroup(child: ReturnType<typeof spawn>): void {
+/**
+ * SIGKILLs a child's process group. Returns true once the group needs no more
+ * signals: the kill landed, or the group was already gone (ESRCH). Any other
+ * failure falls back to killing the direct child and returns false, so the group
+ * stays registered for a later attempt.
+ */
+function killProcessGroup(child: ReturnType<typeof spawn>): boolean {
   if (child.pid === undefined) {
     child.kill("SIGKILL");
-    return;
+    return false;
   }
   try {
     process.kill(-child.pid, "SIGKILL");
+    return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") {
-      return;
+      return true;
     }
     reportProgress(`could not signal process group ${child.pid}; falling back to direct child kill`);
     child.kill("SIGKILL");
+    return false;
   }
 }
 
 /**
- * Register a detached child's process group for shutdown cleanup. `kill`
- * SIGKILLs the group while it is tracked; `release` SIGKILLs it and unregisters
- * it, because a same-group descendant that ignored or redirected its stdio can
- * outlive the leaf and nothing else would signal it once it is unregistered.
- * Release is one-shot and ends all signalling: the numeric PGID may belong to an
- * unrelated process group by the time a late timer or write callback runs.
+ * Register a detached child's process group for shutdown cleanup. A kill that
+ * lands, or finds the group already gone, unregisters it: once the leaf's members
+ * have exited, the numeric PGID can belong to an unrelated group, so no later
+ * kill, release or shutdown path may signal it again. `kill` SIGKILLs the group
+ * while it is registered. `release` SIGKILLs it only if no kill has landed, which
+ * catches a same-group descendant that ignored or redirected its stdio and would
+ * otherwise outlive the leaf, and then unregisters it for good.
  */
 function trackProcessGroup(child: ReturnType<typeof spawn>): { kill: () => void; release: () => void } {
   let pid: number | undefined;
-  let released = false;
+  let unregistered = false;
   const register = () => {
     const { pid: childPid } = child;
-    if (!released && childPid !== undefined) {
+    if (!unregistered && childPid !== undefined) {
       pid = childPid;
       liveProcessGroups.add(pid);
     }
   };
+  const unregister = () => {
+    unregistered = true;
+    if (pid !== undefined) {
+      liveProcessGroups.delete(pid);
+    }
+  };
   const kill = () => {
-    if (!released) {
-      killProcessGroup(child);
+    if (!unregistered && killProcessGroup(child)) {
+      unregister();
     }
   };
   const release = () => {
-    if (released) {
+    if (unregistered) {
       return;
     }
-    released = true;
     if (pid !== undefined) {
       killProcessGroup(child);
-      liveProcessGroups.delete(pid);
     }
+    unregister();
   };
   child.once("spawn", register);
   child.once("error", release);
