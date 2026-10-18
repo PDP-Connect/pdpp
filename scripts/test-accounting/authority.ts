@@ -194,6 +194,12 @@ function killProcessGroup(child: ReturnType<typeof spawn>): void {
   }
 }
 
+/**
+ * Register a detached child's process group for shutdown cleanup. The returned
+ * release function SIGKILLs the group before it unregisters it: a same-group
+ * descendant that ignored or redirected its stdio can outlive the leaf, and once
+ * the group is unregistered nothing else would ever signal it.
+ */
 function trackProcessGroup(child: ReturnType<typeof spawn>): () => void {
   let pid: number | undefined;
   const register = () => {
@@ -203,15 +209,16 @@ function trackProcessGroup(child: ReturnType<typeof spawn>): () => void {
       liveProcessGroups.add(pid);
     }
   };
-  const untrack = () => {
+  const release = () => {
     if (pid !== undefined) {
+      killProcessGroup(child);
       liveProcessGroups.delete(pid);
     }
   };
   child.once("spawn", register);
-  child.once("error", untrack);
+  child.once("error", release);
   register();
-  return untrack;
+  return release;
 }
 
 function destroyChildPipes(child: ReturnType<typeof spawn>): void {
@@ -239,7 +246,7 @@ function capture(
     const startedAt = Date.now();
     reportProgress(`${label}: started (${start.files.length} files)`);
     const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    const untrackProcessGroup = trackProcessGroup(child);
+    const releaseProcessGroup = trackProcessGroup(child);
     let stdoutTail = Buffer.alloc(0);
     let stderrTail = Buffer.alloc(0);
     let stdoutTruncated = false;
@@ -252,6 +259,7 @@ function capture(
     let nodeSummaryError: string | undefined;
     let writeFailure: unknown;
     let writeChain = Promise.resolve();
+    let pendingWrites = 0;
     const appendTail = (current: Buffer, chunk: Buffer, stream: "stdout" | "stderr") => {
       const combined = Buffer.concat([current, chunk]);
       if (combined.length > CAPTURE_TAIL_BYTES) {
@@ -285,6 +293,7 @@ function capture(
       const record = `${JSON.stringify({ event: stream, run_id: start.run_id, chunk: text })}\n`;
       child.stdout?.pause();
       child.stderr?.pause();
+      pendingWrites += 1;
       writeChain = writeChain
         .then(async () => {
           if (!writeFailure) {
@@ -296,6 +305,7 @@ function capture(
           killForFailure();
         })
         .finally(() => {
+          pendingWrites -= 1;
           if (!writeFailure) {
             child.stdout?.resume();
             child.stderr?.resume();
@@ -321,7 +331,7 @@ function capture(
         destroyChildPipes(child);
         if (!settled) {
           settled = true;
-          untrackProcessGroup();
+          releaseProcessGroup();
           reject(captureFailure() ?? new Error(`${label} child was killed`));
         }
       }, KILL_SETTLE_GRACE_MS);
@@ -379,19 +389,23 @@ function capture(
         ...(nodeSummaryError ? { node_summary_error: nodeSummaryError } : {}),
       });
     };
+    // The leaf deadline stays armed until the drain and the final transcript
+    // write finish, so a wedged transcript write cannot outlive it. Re-ref the
+    // timer here: with no child handle left, an unref'd timer would let the
+    // process exit while this promise is still pending.
     const settleFromExit = async (code: number | null, signal: NodeJS.Signals | null) => {
       if (settled || settling) {
         return;
       }
       settling = true;
       clearInterval(ticker);
-      clearTimeout(deadlineTimer);
       clearTimeout(exitSettleTimer);
-      if (killSettleTimer) {
-        clearTimeout(killSettleTimer);
-      }
+      deadlineTimer?.ref();
       try {
         await writeChain;
+        if (settled) {
+          return;
+        }
         const failure = captureFailure();
         if (failure) {
           throw failure;
@@ -399,10 +413,14 @@ function capture(
         completeCapture(code, signal);
         settled = true;
       } catch (error) {
-        settled = true;
-        reject(error);
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
       } finally {
-        untrackProcessGroup();
+        clearTimeout(deadlineTimer);
+        clearTimeout(killSettleTimer);
+        releaseProcessGroup();
       }
     };
 
@@ -434,21 +452,37 @@ function capture(
       clearInterval(ticker);
       clearTimeout(deadlineTimer);
       clearTimeout(exitSettleTimer);
-      untrackProcessGroup();
+      releaseProcessGroup();
       if (!settled) {
         settled = true;
         reject(error);
       }
     });
+    // After the leaf exits, the pipes normally end on their own once the output is
+    // drained. Leftover group members are killed first so a descendant holding the
+    // pipes releases them; only then, if the pipes are idle (nothing buffered, no
+    // transcript write pending), is a holder outside the group assumed and the
+    // pipes destroyed. Anything still draining is waited for, bounded by the leaf
+    // deadline, so complete events are never discarded.
     child.on("exit", (code, signal) => {
       clearInterval(ticker);
-      clearTimeout(deadlineTimer);
-      exitSettleTimer = setTimeout(() => {
-        killProcessGroup(child);
+      const settleWhenDrained = () => {
+        if (settled || settling) {
+          return;
+        }
+        const buffered = (child.stdout?.readableLength ?? 0) + (child.stderr?.readableLength ?? 0);
+        if (pendingWrites > 0 || buffered > 0) {
+          exitSettleTimer = setTimeout(settleWhenDrained, KILL_SETTLE_GRACE_MS);
+          return;
+        }
         destroyChildPipes(child);
         settleFromExit(code, signal).catch((error: unknown) => {
           reportProgress(`${label}: could not settle capture after child exit: ${String(error)}`);
         });
+      };
+      exitSettleTimer = setTimeout(() => {
+        killProcessGroup(child);
+        exitSettleTimer = setTimeout(settleWhenDrained, KILL_SETTLE_GRACE_MS);
       }, KILL_SETTLE_GRACE_MS);
     });
     child.on("close", async (code, signal) => {
@@ -507,7 +541,7 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
   reportProgress(`${suite.id}: preparing (${command.join(" ")})`);
   return new Promise((resolvePrepare, reject) => {
     const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    const untrackProcessGroup = trackProcessGroup(child);
+    const releaseProcessGroup = trackProcessGroup(child);
     let output = Buffer.alloc(0);
     let deadlineExpired = false;
     let settled = false;
@@ -524,7 +558,7 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
       if (killSettleTimer) {
         clearTimeout(killSettleTimer);
       }
-      untrackProcessGroup();
+      releaseProcessGroup();
       if (code === 0 && !signal && !deadlineExpired) {
         resolvePrepare();
         return;
@@ -568,7 +602,7 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
       if (killSettleTimer) {
         clearTimeout(killSettleTimer);
       }
-      untrackProcessGroup();
+      releaseProcessGroup();
       if (!settled) {
         settled = true;
         reject(error);

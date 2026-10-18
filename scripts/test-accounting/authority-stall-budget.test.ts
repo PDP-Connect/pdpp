@@ -55,7 +55,10 @@ function runCapture(
   deadlineMs?: number,
   parseNodeEvents = false,
   failWriteAt?: number,
-  hardTimeoutMs?: number
+  hardTimeoutMs?: number,
+  // Body of the injected transcript write (an async function body with `writes`
+  // in scope); runs before the failWriteAt check.
+  transcriptWriteBody = ""
 ): Promise<Outcome> {
   const driver = `
     const { runCaptureForTest } = await import(${JSON.stringify(new URL("./authority.ts", import.meta.url).href)});
@@ -67,6 +70,7 @@ function runCapture(
         ${JSON.stringify(parseNodeEvents)},
         async () => {
           writes += 1;
+          ${transcriptWriteBody}
           if (writes === ${JSON.stringify(failWriteAt ?? null)}) throw new Error("transcript test failure");
         }
       );
@@ -75,6 +79,7 @@ function runCapture(
         retained_capture_bytes: result.retained_capture_bytes,
         stdout_truncated: result.stdout_truncated,
         node_summary: result.node_summary,
+        writes,
       }) + "\\n");
     } catch (error) {
       process.stdout.write(JSON.stringify({ capture_error: error.message, writes }) + "\\n");
@@ -353,6 +358,79 @@ test("a transcript write failure kills the process group and rejects instead of 
     outcome.durationMs < 5000,
     `capture should settle promptly after write failure, took ${outcome.durationMs}ms`
   );
+});
+
+test("a fast leaf with a slow transcript writer is fully drained before the capture settles", async () => {
+  // Five bursts of ten events land in the pipe within ~100ms and the leaf exits,
+  // while each transcript write takes 600ms and keeps the pipes paused. The
+  // exit grace must not discard the bursts the capture has not read yet.
+  const child = `
+    const line = 'PDPP_TEST_ACCOUNTING_EVENT {"type":"test:pass","details":{"type":"test"}}\\n';
+    let burst = 0;
+    const timer = setInterval(() => {
+      process.stdout.write(line.repeat(10));
+      if (++burst === 5) { clearInterval(timer); process.exit(0); }
+    }, 20);
+  `;
+  const outcome = await runCapture(
+    child,
+    60_000,
+    60_000,
+    true,
+    undefined,
+    30_000,
+    "await new Promise((resolve) => setTimeout(resolve, 600));"
+  );
+  const result = JSON.parse(outcome.stdout) as { node_summary?: { assertions: number; passed: number } };
+
+  assert.equal(outcome.code, 0, `the slow-writer drain should succeed; stderr was: ${outcome.stderr}`);
+  assert.equal(result.node_summary?.assertions, 50, "every emitted event must be counted, never a partial total");
+  assert.equal(result.node_summary?.passed, 50);
+});
+
+test("a leaf's same-group descendant with ignored stdio is killed after a normal exit", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-leaf-ignored-stdio-"));
+  const pidFile = join(dir, "pid");
+  const script = `
+    const { spawn } = require('node:child_process');
+    const fs = require('node:fs');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+    process.exit(0);
+  `;
+  let pid: number | undefined;
+  try {
+    const outcome = await runCapture(script, 60_000, 60_000);
+    assert.equal(outcome.code, 0, `clean parent exit must succeed; stderr was: ${outcome.stderr}`);
+    pid = Number(readFileSync(pidFile, "utf8"));
+    await assertProcessGone(pid);
+  } finally {
+    if (pid) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the leaf deadline still bounds a transcript write that never resolves after the leaf exits", async () => {
+  const outcome = await runCapture(
+    "process.stdout.write('hello\\n');",
+    60_000,
+    1000,
+    false,
+    undefined,
+    8000,
+    "await new Promise(() => {});"
+  );
+  const result = JSON.parse(outcome.stdout) as { capture_error?: string };
+
+  assert.equal(outcome.code, 1, `a wedged transcript write must fail the run; stderr was: ${outcome.stderr}`);
+  assert.match(result.capture_error ?? "", DEADLINE_PATTERN);
+  assert.ok(outcome.durationMs < 5000, `deadline must bound the wedged write, took ${outcome.durationMs}ms`);
 });
 
 async function assertProcessGone(pid: number): Promise<void> {
