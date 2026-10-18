@@ -1,0 +1,69 @@
+{
+  "_comment": [
+    "The PDP-Connect reference operations, served over HTTP by apps/site's sandbox",
+    "routes. This is a real, runnable PDPP resource server in this repository today:",
+    "the routes under apps/site/src/app/sandbox/v1/ mount the same operations that",
+    "packages/reference-operations-sandbox vendors from the reference implementation.",
+    "",
+    "Start it with:  cd apps/site && npx next dev -p 3211",
+    "Then run:       tsx src/cli.ts --target targets/site-sandbox.json",
+    "",
+    "Two things about this target shape the expected result, and neither is a defect",
+    "in the suite:",
+    "",
+    "1. It is a PUBLIC DEMO with no authorization. Every route hardcodes",
+    "   `actor: { kind: 'owner', subject_id: null }` (see the route sources) and reads",
+    "   no Authorization header. So it cannot enforce a grant, and the grant-enforcement",
+    "   cases are expected to FAIL against it. Those failures are true of this target:",
+    "   an unauthenticated caller really does receive records. They are reported rather",
+    "   than suppressed, because a suite that hid them would be worthless.",
+    "",
+    "2. Its query base is `/sandbox/v1`, not `/v1`. RFC 9728 exists precisely so a",
+    "   client can discover that, and this target publishes it in",
+    "   `pdpp_core_query_base`. `queryBase` below records what the suite used.",
+    "",
+    "No grant issuance or revocation endpoint exists, so cases needing a specific grant",
+    "shape report `skip` naming the missing hook rather than passing vacuously."
+  ],
+  "targetId": "pdpp-site-sandbox",
+  "targetVersion": "apps/site sandbox routes @ 422c2774",
+  "baseUrl": "http://127.0.0.1:3211",
+  "queryBase": "/sandbox/v1",
+  "wellKnownPath": "/sandbox/well-known/oauth-protected-resource",
+  "roles": ["resource-server"],
+  "capabilities": {
+    "separatedDeployment": false,
+    "ownerTokens": false,
+    "selfExport": true,
+    "incrementalSync": false,
+    "views": false,
+    "singleUseGrants": false,
+    "refreshTokens": false,
+    "blobs": false
+  },
+  "streams": [
+    {
+      "name": "pay_statements",
+      "fields": [
+        "currency",
+        "employer",
+        "gross_pay_cents",
+        "net_pay_cents",
+        "period_end"
+      ],
+      "primaryKey": ["id"],
+      "semantics": "append_only",
+      "recordCount": 3
+    },
+    {
+      "name": "tax_documents",
+      "fields": ["document_type", "tax_year"],
+      "primaryKey": ["id"],
+      "semantics": "append_only",
+      "recordCount": 1
+    }
+  ],
+  "grants": {
+    "preprovisioned": []
+  }
+}
