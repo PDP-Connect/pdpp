@@ -18,8 +18,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$SCRIPT_DIR/generate-secrets.sh"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-EXAMPLE="$REPO_ROOT/.env.docker.example"
 
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*" >&2; FAILURES=$((FAILURES + 1)); }
@@ -31,6 +29,17 @@ FAILURES=0
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
+
+# Keep the sample config local to this test. The reference deployment example
+# was removed from this repository, while generate-secrets.sh remains a
+# documented helper for existing .env.docker files.
+EXAMPLE="$TMP_DIR/.env.docker.example"
+cat > "$EXAMPLE" <<'EOF'
+PDPP_OWNER_PASSWORD=
+PDPP_CREDENTIAL_ENCRYPTION_KEY=
+PDPP_WEB_PUSH_VAPID_PUBLIC_KEY=
+PDPP_WEB_PUSH_VAPID_PRIVATE_KEY=
+EOF
 
 # ---- helper -----------------------------------------------------------------
 
