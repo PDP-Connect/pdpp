@@ -28,8 +28,8 @@ exact head, before you merge.
 - Done with a broad change (more than one suite, or shared config such as
   `package.json`, `tsconfig` or the accounting scripts), and before any merge:
   the full gate.
-- A pull request into a branch other than `main` has no CI: run the full gate on
-  the pushed head and report it.
+- A pull request into a branch other than `main` starts no pull-request workflow,
+  so run the full gate on the pushed head and report it.
 
 | Tier | Command | Run it | What runs | Gate? |
 | --- | --- | --- | --- | --- |
@@ -70,11 +70,13 @@ forces the fallback. The fallback skips inventory closure and receipts, so it is
 still not the gate.
 
 **Suite runs** go through the accounting authority
-(`scripts/test-accounting/authority.ts`). It runs the suite's files, checks that
-every planned file ran, and writes a receipt, a JSON record of the run. The
-authority refuses to start on a dirty source tree, including untracked files, so
-commit first. A suite run does not
-replace the full gate: it does not check inventory closure across suites.
+(`scripts/test-accounting/authority.ts`). Before it selects a suite, it runs a
+global inventory check: every executable test file in the repository must belong
+to a suite or to the manifest's exclusion list, so one unaccounted test file fails
+a single-suite run too. Then it runs the selected suite's files, checks that every
+planned file ran, and writes a receipt, a JSON record of the run. The authority
+refuses to start on a dirty source tree, including untracked files, so commit
+first. A suite run does not replace the full gate, which runs every suite.
 
 **The full gate** (`pnpm test-accounting:check`) checks inventory closure (every
 tracked executable test file is listed in exactly one suite, or in the
@@ -93,11 +95,14 @@ the local full-suite lock and the local two-file concurrency, and the suites run
 one at a time. A few path-scoped workflows (`test-accounting`, `conformance`,
 `test-scratch-lifecycle`, `site-generated-docs-check`) also run on pull requests
 into `main`. Pull requests into any other branch, such as an integration branch,
-get no CI. They are gated by the full gate run locally on the exact head, plus
-review. To run a hosted check on any pushed branch, use
-`gh workflow run workspace-tests.yml --ref <branch>`. Because CI skips the local
-concurrency, run each suite you changed once with `CI=true` before you push (see
-`CONTRIBUTING.md`).
+start no pull-request workflow, so the full gate does not run for them. They are
+gated by the full gate run locally on the exact head, plus review. Two workflows,
+`consumer-drift-signal` and `community-invite-liveness`, have a `push` trigger with
+path filters and no branch filter, so a push to any branch that touches their
+paths starts them. Neither runs the test gate. To run a hosted check on any
+pushed branch, use `gh workflow run workspace-tests.yml --ref <branch>`. Because
+CI skips the local concurrency, run each suite you changed once with `CI=true`
+before you push (see `CONTRIBUTING.md`).
 
 ## Isolation contract
 
@@ -109,11 +114,22 @@ direct command is a bypass of this contract. If you wrap a command in your own
 
 | Scope | What is isolated or limited | How |
 | --- | --- | --- |
-| Shared by every run on the host | The pnpm store and the source tree. The tree is build-free: tests run TypeScript directly with `tsx`, no build step writes into it, and the authority fails a run that leaves the tree dirty. | Nothing to do; do not write into the tree from a test. |
-| Shared admission | One `agent-tests` cgroup slice and its host-wide slots (6 by default). A run waits when all slots are busy. | `test-sandbox` takes a slot with a file lock. `TEST_SANDBOX_SLOTS` changes the count. Start at most two test commands at once from one session. |
+| Shared by every run on the host | The pnpm store and the source tree. Tests run TypeScript directly with `tsx`, so no build step writes into the tree, except the generated site files described below. | Nothing to do; do not write into the tree from a test. |
+| Shared admission, per user | One `agent-tests` user slice (`systemd-run --user`) with six slots by default. The slots belong to one user, so another user on the same host gets its own. A run waits when all of its user's slots are busy. | `test-sandbox` takes a slot with a file lock in `agent-tests/slots/` under `$XDG_RUNTIME_DIR` (`~/.cache` when it is unset). `TEST_SANDBOX_SLOTS` changes the count and `TEST_SANDBOX_STATE_DIR` the directory. Start at most two test commands at once from one session. |
 | Per run | CPU, memory and task caps (defaults: 400% CPU, 8 GB, 4096 tasks), a loopback-only network, a private `/tmp`, and an owned scratch root that `TMPDIR` points to. When the run ends, the scope kills every descendant and the launcher removes the scratch root. | A transient systemd scope plus bubblewrap. `TEST_SANDBOX_CPU`, `_MEM` and `_TASKS` change the caps. One JSON receipt (wall time, CPU-seconds, peak memory, peak process count, the enforcement that applied) goes to stderr. |
 | Per test file | Process isolation. | `node --test` runs each file in its own process. |
 | Locked | One full gate at a time per Git common directory, so worktrees of one repository queue. | `scripts/test-accounting/with-local-full-suite-lock.mjs`. CI skips it. |
+
+**Generated files.** The `site` suite's `prepare` step
+(`apps/site/scripts/sync-spec-docs.mjs`) writes `apps/site/src/generated/` and
+generated `.mdx` pages under `apps/site/content/docs/`. Git ignores all of them, so
+a clean `git status` does not show them. The `root-node` suite's
+`authority-prepare` test deletes and rebuilds `spec-front-matter.ts` in that
+directory. The authority runs prepare suites alone, but only within one
+invocation, and the full-gate lock does not cover single-suite runs. So two
+invocations in one checkout can race on these files. To run `site` and
+`root-node` at the same time, use separate worktrees. The authority's clean-tree
+checks do not see ignored files.
 
 Without systemd or bubblewrap the sandbox still runs the command, and the
 receipt says which limits did not apply. Set `TEST_SANDBOX_REQUIRE=1` to make
@@ -330,13 +346,13 @@ two sides' ranges overlap, the difference is noise, and the table says so.
 | Full gate at `main` `4e3909cd` | 52.0 s wall, 73.5 CPU-s, 761 MB peak; 152 files, 1308 assertions; 21 failing | 2026-10-17, before the gate fixes; different code from the next row, so the change between them is not a measure of any one fix |
 | Full gate on the integration branch after PR #437 | 36.0 s wall, 98.6 CPU-s, 834 MB peak; 181 files, 1758 assertions; 0 failing | 2026-10-18, inside `test-sandbox` |
 | `workspace-tests` in CI | About 89 s | One hosted `ubuntu-latest` run, 2026-10-18 |
-| `pnpm test:fast`, no change | About 1 s | Busy shared host (load not recorded) |
-| `pnpm test:fast`, one-line change to a root script | 1.5 to 6 s | Busy shared host (load not recorded) |
-| `pnpm test:fast`, one-line change to a package | 6 to 15 s | Busy shared host (load not recorded) |
+| `pnpm test:fast`, no change | About 1 s | 2026-10-18, `test-ab -n 3`, loaded shared host (load not recorded) |
+| `pnpm test:fast`, one-line change to a root script | 1.5 to 6 s | 2026-10-18, `test-ab -n 3`, loaded shared host (load not recorded) |
+| `pnpm test:fast`, one-line change to a package | 6 to 15 s | 2026-10-18, `test-ab -n 3`, loaded shared host (load not recorded) |
 | `root-node` suite, PR #437 | 42.7 s to 9.4 s wall (-78%); CPU 17.1 s to 16.5 s (noise); peak memory 197 MB to 276 MB | `test-ab`, 3 runs a side, interleaved, 2026-10-18 |
 | `reference-contract` suite, PR #429 | Wall 3.86 s to 2.72 s and 4.72 s to 3.29 s (about -30%); CPU about -34% | `test-ab`, two comparisons of 3 runs a side, 2026-10-18 |
 | Two suites at a time, PR #430 | Wall 81.6 s to 51.4 s (-37%); CPU 100.9 s to 109.6 s (noise); peak memory 689 MB to 850 MB (+23%). Three suites at a time instead of two: no wall gain, about 6% more peak memory | `test-ab`, full gate, 3 runs a side, 2026-10-18 |
-| Sandbox overhead | Wall time and CPU-seconds are noise; peak memory is about 46 MB higher | Measured with `test-sandbox` receipts |
+| Sandbox overhead (PR #427) | Wall 72.6 s to 76.4 s (noise); CPU 90.2 s to 97.1 s (noise); peak memory 656 MB to 702 MB, +46 MB (the ranges do not overlap) | 2026-10-18, `test-ab -n 3` (3 runs a side): integration `d10d759c` without the sandbox against `a270cb63` with it, full gate through `run-command`, start-of-run host load 26 to 64 |
 
 The suite grew between the first two rows: 29 more files and 450 more
 assertions, including the conformance suite. The CPU-seconds rise (73.5 to 98.6)
@@ -355,7 +371,7 @@ the full suite and compares what each one catches.
 
 | Exemplar practice (project) | PDPP today | Measured | Status |
 | --- | --- | --- | --- |
-| Fast gate on the integrated candidate: each change is tested against the latest base before it merges (Rust bors, Kubernetes Tide, Shopify merge queue) | The full gate runs on pull requests into `main` and on pushes to `main`. There is no merge queue. The ruleset for `main` requires a pull request and the `DCO` status check only; `workspace-tests` is not a required check and branches need not be up to date (read from the repository rules, 2026-10-18). A red `main` is found by the push run. Pull requests into an integration branch get no CI. | None | Open |
+| Fast gate on the integrated candidate: each change is tested against the latest base before it merges (Rust bors, Kubernetes Tide, Shopify merge queue) | The full gate runs on pull requests into `main` and on pushes to `main`. There is no merge queue. The ruleset for `main` requires a pull request and the `DCO` status check only; `workspace-tests` is not a required check and branches need not be up to date (read from the repository rules, 2026-10-18). A red `main` is found by the push run. Pull requests into an integration branch start no pull-request workflow. | None | Open |
 | Slower scheduled tiers after the fast gate (CPython buildbots, CockroachDB nightlies, OpenJDK tier 2 to 4) | No scheduled test tier. The only scheduled workflows are a weekly probe that community links still work and a nightly supporters publish. There is no soak, ecosystem or live-connector tier. | None | Open |
 | Change-based selection with a full-run backstop (Shopify, Meta, Zed) | `pnpm test:fast` selects by import graph and falls back to every test when it cannot map a change. The backstop is the full gate on every pull request into `main`. | `test:fast` about 1 to 15 s | Closed |
 | The selector's miss rate is measured (Shopify 99.94% recall over 8,360 commits; Meta over 95% of failures caught) | `test:fast` has never run in shadow against the full gate, so its miss rate is unknown. This is why it is never a gate. | None | Open |
@@ -365,7 +381,7 @@ the full suite and compares what each one catches.
 | Tests are checked for silent non-discovery (CPython's discovery-count test, Astral's undiscovered Markdown tests) | Inventory closure fails when an executable test is not planned. The authority checks that every planned file ran, and `test:fast` fails when selected files ran zero tests. | None | Closed |
 | Test the tests with seeded faults or sampled mutation (SQLite, etcd, Rust) | A few authority tests seed a fault, for example removing the suite-concurrency bound makes `4 !== 2` fail (PR #430). This policy asks for sampled mutation on changed code, but this repository has no mutation tooling and no routine seeded-fault run. | None | Open |
 | Cost measured as a vector, not wall time alone (a libeatmydata case where wall time fell and CPU did not; a Jest case where fewer workers cut both) | Every sandboxed run prints wall time, CPU-seconds, peak memory and peak process count. Performance changes carry an interleaved A/B with all three. No history is stored and no budget is enforced. | See Measured cost | Partly: measured per change; no history and no budget |
-| Admission per host, not per runner: per-build worker limits do not bound several suites on one host | The shared `agent-tests` slice, six host-wide slots, per-run caps, and a full-gate lock per Git repository. A raw command still bypasses them, and the sandbox needs systemd and bubblewrap for full enforcement. | Sandbox overhead noise, +46 MB | Partly: closed for runs through the launchers; a raw command bypasses it; not applicable on CI (one job per runner) |
+| Admission per host, not per runner: per-build worker limits do not bound several suites on one host | The `agent-tests` user slice, six slots per user, per-run caps, and a full-gate lock per Git repository. A raw command still bypasses them, and the sandbox needs systemd and bubblewrap for full enforcement. | Sandbox overhead noise, +46 MB | Partly: per user, not per host. Closed for runs through the launchers; a raw command bypasses it; not applicable on CI (one job per runner) |
 | Oracles borrowed from outside the project (Deno and Bun with the Node.js suite, Oxc with Test262, Kubernetes conformance) | The `conformance-suite` runs the Core v0.1 MUST clauses against the reference implementation at a pinned commit, and the `conformance` workflow compares every result with an expected file on pull requests that touch the suite or `spec-core.md`. | None | Partly: the oracle is PDPP's own spec run against its own reference implementation, not an outside suite |
 | Randomized or simulated testing that replays from a seed (FoundationDB, TigerBeetle) | None. The runtime moved to `data-connect`, so there is little state to simulate here. | None | Not applicable |
 | Numeric coverage gate (SQLite, Hypothesis; contested elsewhere) | None, by policy (see Coverage and mutation). | None | Not applicable |
