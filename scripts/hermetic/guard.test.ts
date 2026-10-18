@@ -447,6 +447,7 @@ test("bind grants follow the bound family: ::1 only, 0.0.0.0 only IPv4, :: both"
         try {
           assert.equal(isOriginAllowed(`http://127.0.0.1:${server.port}`), v4, `${host}: 127.0.0.1`);
           assert.equal(isOriginAllowed(`http://[::1]:${server.port}`), v6, `${host}: [::1]`);
+          assert.equal(isOriginAllowed(`http://localhost:${server.port}`), v4, `${host}: localhost`);
         } finally {
           await server.close();
         }
@@ -524,7 +525,10 @@ test("a rejected re-listen does not change what the live bind grants", async (t)
     await listening;
     assert.equal(isOriginAllowed(`http://[::1]:${port}`), true, "the live IPv6-only bind is not granted");
     assert.equal(isOriginAllowed(`http://127.0.0.1:${port}`), false, "a rejected re-listen granted IPv4");
+    // localhost can resolve to 127.0.0.1, where the foreign server answers.
+    assert.equal(isOriginAllowed(`http://localhost:${port}`), false, "an IPv6-only bind granted localhost");
     await assert.rejects(fetch(`http://127.0.0.1:${port}/`), BLOCKED_ORIGIN_MESSAGE_PATTERN);
+    await assert.rejects(fetch(`http://localhost:${port}/`), BLOCKED_ORIGIN_MESSAGE_PATTERN);
     assert.equal(foreign.requests(), 0, "a rejected re-listen exposed the foreign IPv4 server");
   } finally {
     await closeServer(owned);
