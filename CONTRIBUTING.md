@@ -271,7 +271,7 @@ authority.
 - **Keep specs and code in lockstep.** If your PR implements an OpenSpec
   change, the change artifacts and the code should land together and stay
   consistent.
-- **CI and merge gate.** Every pull request into `main` must pass the required CI checks. Pull requests into an integration branch (for example `testeng/integration`) do not run CI; they are gated by the local oracle (the changed suites through `pnpm test-accounting:check` or the accounting authority) and an independent review, and CI runs on the batch pull request into `main`. To run one workflow on such a branch, use `gh workflow run <workflow>.yml --ref <branch>`.
+- **CI and merge gate.** Every pull request into `main` must pass the required CI checks. Pull requests into an integration branch (for example `testeng/integration`) do not trigger the pull-request workflows, including the test gate; they are gated by the local oracle (the changed suites through `pnpm test-accounting:check` or the accounting authority) and an independent review, and CI runs on the batch pull request into `main`. To run one workflow on such a branch, use `gh workflow run <workflow>.yml --ref <branch>`.
   Before pushing, run the focused tests and signoff gates required for the
   changed behavior; run `pnpm spec:check` when root or public spec parity is in
   scope. See the testing policy and `docs/reference/ci-mode.md`.
