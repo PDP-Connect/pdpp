@@ -2934,7 +2934,7 @@ const SECTION_12_AND_APPENDIX: readonly ClauseEntry[] = [
     observable: "client-capture",
     caseIds: [],
     gapNote:
-      "Needs a client fixture response that advertises an unknown capability; no Section 9 client item names it. Missing case: the client under test completes its flow against metadata carrying an undeclared capability.",
+      "No Section 9 client item names this obligation, so a case would have no requirement to roll up to; the ClientUnderTest contract also has no action that reads stream metadata. Closing it needs a client item in Section 9 and a metadata-reading action with a fixture response that advertises an unknown capability.",
   },
   {
     clauseId: "A.0-1",

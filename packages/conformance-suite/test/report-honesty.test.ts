@@ -72,12 +72,12 @@ describe("the report cannot present a partial run as complete", () => {
       17,
       "the inventory must account for all seventeen client-capture MUST clauses."
     );
-    // 12.4-3 (Section 12 Extensions) and five clauses transcribed from the 0.1.0-revisions candidate
-    // (4.3-14, 4.3-15, 6.6-4, 10.7-9, 10.7-10) have no case yet; each gap note names the fixture it needs.
+    // 12.4-3 (Section 12 Extensions) has no case: no Section 9 client item names it, so a case
+    // would have no requirement to roll up to. Its gap note says so.
     const uncovered = clientCaptureMusts.filter((clause) => clause.caseIds.length === 0);
     assert.deepEqual(
       uncovered.map((clause) => clause.clauseId),
-      ["4.3-14", "4.3-15", "6.6-4", "10.7-9", "10.7-10", "12.4-3"]
+      ["12.4-3"]
     );
     for (const clause of uncovered) {
       assert.ok(clause.gapNote?.trim(), `Uncovered client-capture MUST ${clause.clauseId} has no gap note.`);
