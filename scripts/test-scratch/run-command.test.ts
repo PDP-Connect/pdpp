@@ -71,9 +71,8 @@ function startRawWrapper(argv: string[], env: NodeJS.ProcessEnv = process.env) {
   });
 }
 
-// A test-sandbox run exports its context (TEST_SANDBOX_ACTIVE, _NET, _ISOLATE,
-// _ENFORCEMENT) to its children, and these tests run inside one. Each spawned
-// sandbox under test must start from its own defaults, not the outer run's.
+// Each sandbox these tests spawn must start from its own defaults, whatever
+// TEST_SANDBOX_* knobs the caller's shell or an outer run has set.
 const FRESH_SANDBOX_CONTEXT = {
   TEST_SANDBOX_ACTIVE: "",
   TEST_SANDBOX_ENFORCEMENT: undefined,
