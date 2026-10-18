@@ -110,13 +110,14 @@ export function blockedOriginError(origin) {
     return error;
 }
 // ─── Bind-derived origin authority ──────────────────────────────────────────
-// Loopback host spellings per address family. `localhost` is granted with
-// either family: a server on 127.0.0.1 or ::1 is what `localhost` reaches on
-// the machines this runs on. Residual: on a host whose resolver returns ::1
-// for `localhost`, an IPv4-only bind still grants `localhost:<port>`, so a
-// foreign ::1 listener on that port is reachable through that one spelling.
+// Loopback host spellings per address family. `localhost` is granted only with
+// IPv4: it can resolve to 127.0.0.1, where a foreign IPv4 server may hold the
+// same port, so an IPv6 bind grants only [::1]. Residual: on a host whose
+// resolver returns ::1 for `localhost`, an IPv4-only bind still grants
+// `localhost:<port>`, so a foreign ::1 listener on that port is reachable
+// through that one spelling.
 const IPV4_LOOPBACK_HOSTS = ["localhost", "127.0.0.1"];
-const IPV6_LOOPBACK_HOSTS = ["localhost", "[::1]"];
+const IPV6_LOOPBACK_HOSTS = ["[::1]"];
 /**
  * Given a bound AddressInfo and whether the server is TLS, produce the exact
  * set of origins to grant -- only the address family the server actually bound.
