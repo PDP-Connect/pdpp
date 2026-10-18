@@ -8,7 +8,10 @@
 // proves default fetch and launcher wiring in that missing-undici condition.
 
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { installHermeticNetworkGuard, isHermeticNetworkGuardInstalled, isOriginAllowed } from "./guard.ts";
@@ -22,6 +25,14 @@ function startEphemeralServer(): Promise<http.Server> {
   const server = http.createServer((_req, res) => {
     res.end("hello-from-ephemeral-server");
   });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  });
+}
+
+/** Like startEphemeralServer, with a caller-supplied request handler. */
+function startEphemeralServerWith(handler: http.RequestListener): Promise<http.Server> {
+  const server = http.createServer(handler);
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => resolve(server));
   });
@@ -83,7 +94,8 @@ test("a server bound BEFORE install is not retroactively trusted; a server bound
       const port = boundPort(server);
       assert.equal(isOriginAllowed(`http://127.0.0.1:${port}`), true, "bound port allowed after listening");
       assert.equal(isOriginAllowed(`http://localhost:${port}`), true, "localhost spelling allowed");
-      assert.equal(isOriginAllowed(`http://[::1]:${port}`), true, "ipv6 loopback spelling allowed");
+      // A 127.0.0.1 bind says nothing about ::1, which a foreign process may hold.
+      assert.equal(isOriginAllowed(`http://[::1]:${port}`), false, "ipv6 loopback not granted by an IPv4 bind");
 
       const body = await httpGetBody(`http://127.0.0.1:${port}`);
       assert.equal(body, "hello-from-ephemeral-server");
@@ -170,4 +182,311 @@ test("installHermeticNetworkGuard is idempotent", async () => {
   assert.equal(first, second);
   first.uninstall();
   assert.equal(isHermeticNetworkGuardInstalled(), false);
+});
+
+// ─── Bypass canaries ────────────────────────────────────────────────────────
+// Each canary starts a FOREIGN loopback server BEFORE the guard is installed,
+// so the guard never grants it, and counts the requests it receives. A guard
+// bypass shows up as a non-zero count. Every server here is owned by this test
+// and bound on loopback.
+
+/** Close a server and any keep-alive connections a canary request left open. */
+function closeServer(server: http.Server): Promise<void> {
+  return new Promise((resolve) => {
+    server.close(() => resolve());
+    server.closeAllConnections();
+  });
+}
+
+interface CountingServer {
+  close: () => Promise<void>;
+  port: number;
+  requests: () => number;
+  server: http.Server;
+}
+
+async function startCountingServer(host: string, port = 0, handler?: http.RequestListener): Promise<CountingServer> {
+  let count = 0;
+  const server = http.createServer((req, res) => {
+    count += 1;
+    if (handler) {
+      handler(req, res);
+      return;
+    }
+    res.end("foreign");
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, resolve);
+  });
+  return {
+    server,
+    port: boundPort(server),
+    requests: () => count,
+    close: () => closeServer(server),
+  };
+}
+
+/** Run a `http.request`-shaped call and resolve with the guard error message. */
+function blockedMessage(start: () => http.ClientRequest): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = start();
+    req.on("response", () => reject(new Error("request unexpectedly produced a response")));
+    req.on("error", (err) => resolve(err.message));
+    req.end();
+  });
+}
+
+test("fetch checks every redirect hop, not only the initial URL", async () => {
+  const foreign = await startCountingServer("127.0.0.1");
+  const handle = await installHermeticNetworkGuard();
+  try {
+    const owned = await startEphemeralServerWith((req, res) => {
+      if (req.url === "/to-foreign") {
+        res.writeHead(302, { location: `http://127.0.0.1:${foreign.port}/secret` });
+        res.end();
+      } else if (req.url === "/to-final") {
+        res.writeHead(302, { location: "/final" });
+        res.end();
+      } else {
+        res.end("final");
+      }
+    });
+    try {
+      const base = `http://127.0.0.1:${boundPort(owned)}`;
+      await assert.rejects(fetch(`${base}/to-foreign`), BLOCKED_ORIGIN_MESSAGE_PATTERN);
+      assert.equal(foreign.requests(), 0, "redirect reached the foreign server");
+
+      // Manual and error modes never follow, so the foreign hop is never taken.
+      const manual = await fetch(`${base}/to-foreign`, { redirect: "manual" });
+      assert.equal(manual.status, 302);
+      await assert.rejects(fetch(`${base}/to-foreign`, { redirect: "error" }));
+      assert.equal(foreign.requests(), 0);
+
+      // An owned -> owned redirect still works and reports as redirected.
+      const followed = await fetch(`${base}/to-final`);
+      assert.equal(await followed.text(), "final");
+      assert.equal(followed.redirected, true);
+      assert.equal(followed.url, `${base}/final`);
+    } finally {
+      await closeServer(owned);
+    }
+  } finally {
+    handle.uninstall();
+    await foreign.close();
+  }
+});
+
+test("guarded redirects keep fetch semantics: 307 replays the body, 303 becomes GET, authorization is not sent cross-origin", async () => {
+  const handle = await installHermeticNetworkGuard();
+  const seen: Array<{ method: string; url: string; body: string; authorization?: string }> = [];
+  const record = (req: http.IncomingMessage, res: http.ServerResponse) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      seen.push({ method: req.method ?? "", url: req.url ?? "", body, authorization: req.headers.authorization });
+      res.end("done");
+    });
+  };
+  try {
+    const target = await startEphemeralServerWith(record);
+    const targetUrl = `http://127.0.0.1:${boundPort(target)}`;
+    const redirects: Record<string, [number, string]> = {
+      "/temporary": [307, `${targetUrl}/landed`],
+      "/see-other": [303, `${targetUrl}/landed`],
+      "/loop": [302, "/loop"],
+    };
+    const redirector = await startEphemeralServerWith((req, res) => {
+      const [status, location] = redirects[req.url ?? ""] ?? [404, ""];
+      res.writeHead(status, { location });
+      res.end();
+    });
+    try {
+      const base = `http://127.0.0.1:${boundPort(redirector)}`;
+      const headers = { authorization: "Bearer fixture", "content-type": "text/plain" };
+      await (await fetch(`${base}/temporary`, { method: "POST", body: "payload", headers })).text();
+      await (await fetch(`${base}/see-other`, { method: "POST", body: "payload", headers })).text();
+      assert.deepEqual(seen, [
+        { method: "POST", url: "/landed", body: "payload", authorization: undefined },
+        { method: "GET", url: "/landed", body: "", authorization: undefined },
+      ]);
+      await assert.rejects(fetch(`${base}/loop`), TypeError);
+    } finally {
+      await closeServer(redirector);
+      await closeServer(target);
+    }
+  } finally {
+    handle.uninstall();
+  }
+});
+
+test("http.request resolves the destination the way Node does when options override the URL", async () => {
+  const foreign = await startCountingServer("127.0.0.1");
+  const handle = await installHermeticNetworkGuard();
+  try {
+    const owned = await startEphemeralServer();
+    try {
+      const ownedUrl = `http://127.0.0.1:${boundPort(owned)}/`;
+      const overrides = [
+        { port: foreign.port },
+        { hostname: "127.0.0.1", port: String(foreign.port) },
+        { host: "127.0.0.1", hostname: "", port: foreign.port },
+      ];
+      const attempts = overrides.flatMap((options) => [
+        { label: `string url + ${JSON.stringify(options)}`, start: () => http.request(ownedUrl, options) },
+        { label: `URL + ${JSON.stringify(options)}`, start: () => http.request(new URL(ownedUrl), options) },
+        { label: `http.get + ${JSON.stringify(options)}`, start: () => http.get(ownedUrl, options) },
+      ]);
+      const messages = await Promise.all(attempts.map(({ start }) => blockedMessage(start)));
+      messages.forEach((message, index) => {
+        assert.match(message, BLOCKED_ORIGIN_MESSAGE_PATTERN, attempts[index]?.label);
+      });
+      assert.equal(foreign.requests(), 0, "an options override reached the foreign server");
+      // An override that stays on the owned origin is still allowed.
+      const body = await new Promise<string>((resolve, reject) => {
+        const req = http.get("http://127.0.0.1:1/", { port: boundPort(owned) }, (res) => {
+          let data = "";
+          res.on("data", (chunk) => {
+            data += chunk;
+          });
+          res.on("end", () => resolve(data));
+        });
+        req.on("error", reject);
+      });
+      assert.equal(body, "hello-from-ephemeral-server");
+    } finally {
+      await closeServer(owned);
+    }
+  } finally {
+    handle.uninstall();
+    await foreign.close();
+  }
+});
+
+test("a socketPath request is refused unless a server in this process bound that socket", async () => {
+  const dir = await mkdtemp(join(homedir(), ".tmp", "pdpp-hermetic-socket-"));
+  const foreignPath = join(dir, "foreign.sock");
+  const ownedPath = join(dir, "owned.sock");
+  let foreignRequests = 0;
+  const foreign = http.createServer((_req, res) => {
+    foreignRequests += 1;
+    res.end("foreign");
+  });
+  await new Promise<void>((resolve) => foreign.listen(foreignPath, resolve));
+  const handle = await installHermeticNetworkGuard();
+  try {
+    assert.match(
+      await blockedMessage(() => http.request({ socketPath: foreignPath, path: "/" })),
+      BLOCKED_ORIGIN_MESSAGE_PATTERN
+    );
+    assert.match(
+      await blockedMessage(() => http.request("http://127.0.0.1:1/", { socketPath: foreignPath })),
+      BLOCKED_ORIGIN_MESSAGE_PATTERN
+    );
+    assert.equal(foreignRequests, 0, "a socketPath request reached the foreign socket");
+
+    const owned = http.createServer((_req, res) => res.end("owned-socket"));
+    await new Promise<void>((resolve) => owned.listen(ownedPath, resolve));
+    try {
+      const body = await new Promise<string>((resolve, reject) => {
+        const req = http.get({ socketPath: ownedPath, path: "/" }, (res) => {
+          let data = "";
+          res.on("data", (chunk) => {
+            data += chunk;
+          });
+          res.on("end", () => resolve(data));
+        });
+        req.on("error", reject);
+      });
+      assert.equal(body, "owned-socket");
+    } finally {
+      await closeServer(owned);
+    }
+    assert.match(
+      await blockedMessage(() => http.request({ socketPath: ownedPath, path: "/" })),
+      BLOCKED_ORIGIN_MESSAGE_PATTERN,
+      "socket grant revoked on close"
+    );
+  } finally {
+    handle.uninstall();
+    await closeServer(foreign);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a bind grants only the address family it bound", async (t) => {
+  // The foreign server holds ::1:P; the owned server then binds 127.0.0.1:P.
+  // The grant must not extend to [::1]:P, which the foreign server answers.
+  let foreign: CountingServer;
+  try {
+    foreign = await startCountingServer("::1");
+  } catch {
+    t.skip("host cannot bind IPv6 loopback");
+    return;
+  }
+  const handle = await installHermeticNetworkGuard();
+  try {
+    let owned: http.Server;
+    try {
+      owned = await new Promise<http.Server>((resolve, reject) => {
+        const server = http.createServer((_req, res) => res.end("owned-v4"));
+        server.once("error", reject);
+        server.listen(foreign.port, "127.0.0.1", () => resolve(server));
+      });
+    } catch {
+      t.skip("port is not free on IPv4 loopback");
+      return;
+    }
+    try {
+      assert.equal(isOriginAllowed(`http://127.0.0.1:${foreign.port}`), true);
+      assert.equal(isOriginAllowed(`http://[::1]:${foreign.port}`), false, "IPv4 bind granted ::1");
+      assert.match(
+        await blockedMessage(() => http.request(`http://[::1]:${foreign.port}/`)),
+        BLOCKED_ORIGIN_MESSAGE_PATTERN
+      );
+      await assert.rejects(fetch(`http://[::1]:${foreign.port}/`), BLOCKED_ORIGIN_MESSAGE_PATTERN);
+      assert.equal(foreign.requests(), 0, "an IPv4 bind exposed the foreign IPv6 server");
+    } finally {
+      await closeServer(owned);
+    }
+  } finally {
+    handle.uninstall();
+    await foreign.close();
+  }
+});
+
+test("bind grants follow the bound family: ::1 only, 0.0.0.0 only IPv4, :: both", async (t) => {
+  const handle = await installHermeticNetworkGuard();
+  try {
+    const cases: Array<{ host: string; v4: boolean; v6: boolean }> = [
+      { host: "127.0.0.1", v4: true, v6: false },
+      { host: "0.0.0.0", v4: true, v6: false },
+      { host: "::1", v4: false, v6: true },
+      { host: "::", v4: true, v6: true },
+    ];
+    await Promise.all(
+      cases.map(async ({ host, v4, v6 }) => {
+        let server: CountingServer;
+        try {
+          server = await startCountingServer(host);
+        } catch (error) {
+          if (!host.includes(":")) {
+            throw error;
+          }
+          t.diagnostic(`skipped ${host}: host cannot bind it`);
+          return;
+        }
+        try {
+          assert.equal(isOriginAllowed(`http://127.0.0.1:${server.port}`), v4, `${host}: 127.0.0.1`);
+          assert.equal(isOriginAllowed(`http://[::1]:${server.port}`), v6, `${host}: [::1]`);
+        } finally {
+          await server.close();
+        }
+      })
+    );
+  } finally {
+    handle.uninstall();
+  }
 });

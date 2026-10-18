@@ -63,8 +63,18 @@ let activeHandle: HermeticGuardHandle | undefined;
 
 const TRAILING_SLASH_PATTERN = /\/+$/;
 
-/** Normalize a URL-ish string down to its origin: `protocol//host:port`. */
+/** Registry key for a Unix-domain socket: `unix:<path>`, e.g. `unix:/run/x.sock`. */
+const UNIX_SOCKET_PREFIX = "unix:";
+
+/**
+ * Normalize a URL-ish string down to its origin: `protocol//host:port`. A
+ * `unix:<absolute path>` key (a socket a server bound, or one a test grants
+ * explicitly through registerEphemeralOrigin) passes through unchanged.
+ */
 function normalizeOrigin(input: string): string {
+  if (input.startsWith(UNIX_SOCKET_PREFIX)) {
+    return input;
+  }
   const url = new URL(input);
   return `${url.protocol}//${url.host}`.replace(TRAILING_SLASH_PATTERN, "");
 }
@@ -123,34 +133,38 @@ export function blockedOriginError(origin: string): Error & { code: string } {
 
 // ─── Bind-derived origin authority ──────────────────────────────────────────
 
-// Loopback host spellings that all resolve to the same local interface. When
-// a server binds a loopback or wildcard address, a test may reach it by any
-// of these spellings, so the grant covers all of them at the bound port --
-// and ONLY at the bound port.
-const LOOPBACK_HOST_SPELLINGS = ["localhost", "127.0.0.1", "[::1]"] as const;
-
-// Addresses that mean "every local interface". A server bound to one of
-// these is reachable via loopback, so the grant uses the loopback spelling
-// set rather than the literal wildcard (which is not a dialable host).
-const WILDCARD_BIND_ADDRESSES = new Set(["0.0.0.0", "::", ""]);
-
-function isLoopbackAddress(address: string): boolean {
-  return address === "127.0.0.1" || address === "::1" || address === "localhost";
-}
+// Loopback host spellings per address family. `localhost` is granted with
+// either family: a server on 127.0.0.1 or ::1 is what `localhost` reaches on
+// the machines this runs on. Residual: on a host whose resolver returns ::1
+// for `localhost`, an IPv4-only bind still grants `localhost:<port>`, so a
+// foreign ::1 listener on that port is reachable through that one spelling.
+const IPV4_LOOPBACK_HOSTS = ["localhost", "127.0.0.1"] as const;
+const IPV6_LOOPBACK_HOSTS = ["localhost", "[::1]"] as const;
 
 /**
  * Given a bound AddressInfo and whether the server is TLS, produce the exact
- * set of origins to grant. Loopback/wildcard binds grant every loopback
- * spelling at that port; a specific non-loopback bind grants only that exact
+ * set of origins to grant -- only the address family the server actually bound.
+ * 0.0.0.0 and 127.0.0.1 grant IPv4 loopback; ::1 grants IPv6 loopback; `::`
+ * is dual-stack (IPv4-mapped) and grants both unless the server asked for
+ * `ipv6Only`. Another family on the same port may belong to a foreign process,
+ * so it is never granted. A specific non-loopback bind grants only that exact
  * host:port. Never broadens to another port or an unrelated host.
  */
-function boundOrigins(protocol: "http:" | "https:", address: string, port: number): string[] {
-  if (WILDCARD_BIND_ADDRESSES.has(address) || isLoopbackAddress(address)) {
-    return LOOPBACK_HOST_SPELLINGS.map((host) => `${protocol}//${host}:${port}`);
+function boundOrigins(protocol: "http:" | "https:", address: string, port: number, ipv6Only: boolean): string[] {
+  let hosts: readonly string[] | undefined;
+  if (address === "0.0.0.0" || address === "127.0.0.1") {
+    hosts = IPV4_LOOPBACK_HOSTS;
+  } else if (address === "::1") {
+    hosts = IPV6_LOOPBACK_HOSTS;
+  } else if (address === "::" || address === "") {
+    hosts = ipv6Only ? IPV6_LOOPBACK_HOSTS : [...IPV4_LOOPBACK_HOSTS, "[::1]"];
+  }
+  if (hosts) {
+    return hosts.map((host) => `${protocol}//${host}:${port}`);
   }
   // A concrete, non-loopback interface (e.g. a specific LAN IP). Grant only
-  // that literal host:port -- do not widen to loopback spellings it was not
-  // bound on. IPv6 literals must be bracketed to form a valid origin host.
+  // that literal host:port. IPv6 literals must be bracketed to form a valid
+  // origin host.
   const literalHost = address.includes(":") ? `[${address}]` : address;
   return [`${protocol}//${literalHost}:${port}`];
 }
@@ -173,7 +187,7 @@ interface PatchedListen {
  * being called -- and withdrawn on 'close'. A bind that fails emits 'error'
  * and never 'listening', so it grants nothing.
  */
-function attachBindAuthority(server: NetServer): void {
+function attachBindAuthority(server: NetServer, ipv6Only: boolean): void {
   // Detect TLS at grant time (a tls.Server is an https listener). Imported
   // lazily to avoid a hard node:tls dependency in the hot patch path.
   let granted: string[] | undefined;
@@ -183,13 +197,16 @@ function attachBindAuthority(server: NetServer): void {
       return;
     }
     const info = server.address();
-    if (info === null || typeof info === "string") {
-      // A Unix-domain socket (string) or no address -- not an IP origin the
-      // HTTP guard can key on. Nothing to grant.
+    if (info === null) {
       return;
     }
-    const protocol = isTlsServer(server) ? "https:" : "http:";
-    granted = boundOrigins(protocol, info.address, info.port);
+    if (typeof info === "string") {
+      // A Unix-domain socket: grant exactly that path for socketPath requests.
+      granted = [`${UNIX_SOCKET_PREFIX}${info}`];
+    } else {
+      const protocol = isTlsServer(server) ? "https:" : "http:";
+      granted = boundOrigins(protocol, info.address, info.port, ipv6Only);
+    }
     for (const origin of granted) {
       grantOrigin(origin);
     }
@@ -216,6 +233,12 @@ function isTlsServer(server: NetServer): boolean {
   return tlsServerCtor !== null && server instanceof tlsServerCtor;
 }
 
+/** True when `listen({ ipv6Only: true })` made a `::` bind IPv6-only. */
+function listensIpv6Only(args: ListenArgs): boolean {
+  const [options] = args as unknown[];
+  return typeof options === "object" && options !== null && (options as { ipv6Only?: unknown }).ipv6Only === true;
+}
+
 /**
  * Patch net.Server.prototype.listen when the test first loads a network
  * server module. This avoids loading net/tls in test descendants that only
@@ -234,7 +257,7 @@ function installBindDerivedAuthority(restoreList: Array<() => void>): void {
   }
 
   const patched: PatchedListen = function patchedListen(this: NetServer, ...args: ListenArgs): NetServer {
-    attachBindAuthority(this);
+    attachBindAuthority(this, listensIpv6Only(args));
     return (original as (this: NetServer, ...a: ListenArgs) => NetServer).apply(this, args);
   };
   patched.__pdppHermeticPatched = true;
@@ -253,44 +276,53 @@ function installBindDerivedAuthority(restoreList: Array<() => void>): void {
 type NodeHttpModule = typeof import("node:http");
 type NodeHttpsModule = typeof import("node:https");
 
-/** Extract the plain options object from a `http.request(url, options?, cb?)` /
- * `http.request(options, cb?)` overload pair, whichever position it's in. */
-function extractRequestOptionsObject(firstArg: unknown, secondArg: unknown): Record<string, unknown> {
-  if (typeof firstArg === "object" && firstArg !== null && !(firstArg instanceof URL)) {
-    return firstArg as Record<string, unknown>;
-  }
-  if (typeof secondArg === "object" && secondArg !== null) {
-    return secondArg as Record<string, unknown>;
-  }
-  return {};
+type RequestOptions = Record<string, unknown>;
+
+/** What Node's `urlToHttpOptions` yields for the fields that pick a destination. */
+function destinationFromUrl(url: URL): RequestOptions {
+  return {
+    protocol: url.protocol,
+    hostname: url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname,
+    port: url.port === "" ? undefined : url.port,
+  };
 }
 
-function resolveHostFromOptions(opts: Record<string, unknown>): string {
-  if (typeof opts.hostname === "string") {
-    return opts.hostname;
-  }
-  if (typeof opts.host === "string") {
-    return opts.host;
+/**
+ * The options a `http(s).request(url, options?, cb?)` / `request(options, cb?)`
+ * call ends up dialing with. Mirrors ClientRequest: a URL argument is expanded
+ * first, then the options object is assigned over it, so an options field
+ * (including an explicit `undefined`) wins over the URL's.
+ */
+function effectiveRequestOptions(firstArg: unknown, secondArg: unknown): RequestOptions {
+  const isUrlArg = typeof firstArg === "string" || firstArg instanceof URL;
+  const fromUrl = isUrlArg ? destinationFromUrl(new URL(String(firstArg))) : {};
+  const explicit = isUrlArg ? secondArg : firstArg;
+  return typeof explicit === "object" && explicit !== null ? { ...fromUrl, ...explicit } : fromUrl;
+}
+
+/** `hostname` wins over `host`; an empty value falls through, as in Node. */
+function resolveHostFromOptions(opts: RequestOptions): string {
+  for (const candidate of [opts.hostname, opts.host]) {
+    if (typeof candidate === "string" && candidate !== "") {
+      return candidate;
+    }
   }
   return "localhost";
 }
 
-/** Resolve the origin a `http(s).request`/`.get` call is about to reach,
- * covering both the string-URL and options-object call signatures. */
+/** The allowlist key a `http(s).request`/`.get` call is about to reach: a
+ * `unix:<path>` key for a socketPath request, otherwise the origin Node dials. */
 function resolveRequestOrigin(firstArg: unknown, secondArg: unknown, defaultProtocol: "http:" | "https:"): string {
-  if (typeof firstArg === "string") {
-    return normalizeOrigin(firstArg);
+  const opts = effectiveRequestOptions(firstArg, secondArg);
+  if (typeof opts.socketPath === "string" && opts.socketPath !== "") {
+    return `${UNIX_SOCKET_PREFIX}${opts.socketPath}`;
   }
-  if (firstArg instanceof URL) {
-    return normalizeOrigin(firstArg.href);
-  }
-  // node:http also accepts (options, callback) where options is a plain
-  // object with host/port/protocol -- reconstruct just enough to check.
-  const opts = extractRequestOptionsObject(firstArg, secondArg);
   const protocol = typeof opts.protocol === "string" ? opts.protocol : defaultProtocol;
   const host = resolveHostFromOptions(opts);
-  const port = typeof opts.port === "number" || typeof opts.port === "string" ? `:${opts.port}` : "";
-  return normalizeOrigin(`${protocol}//${host}${port}`);
+  const bracketed = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const portValue = opts.port || opts.defaultPort;
+  const port = typeof portValue === "number" || typeof portValue === "string" ? `:${portValue}` : "";
+  return normalizeOrigin(`${protocol}//${bracketed}${port}`);
 }
 
 /**
@@ -306,7 +338,7 @@ function resolveRequestOrigin(firstArg: unknown, secondArg: unknown, defaultProt
  * default request to ANY unbound origin is still blocked.
  */
 function hasExplicitCustomAgent(firstArg: unknown, secondArg: unknown): boolean {
-  const { agent } = extractRequestOptionsObject(firstArg, secondArg);
+  const { agent } = effectiveRequestOptions(firstArg, secondArg);
   return typeof agent === "object" && agent !== null;
 }
 
@@ -372,6 +404,96 @@ function guardLegacyHttpModule<M extends NodeHttpModule | NodeHttpsModule>(
   });
 }
 
+const MAX_FETCH_REDIRECTS = 20;
+const REQUEST_BODY_HEADERS = ["content-encoding", "content-language", "content-location", "content-type"];
+
+/** The `Location` target of a redirect response, or null if it is not one. */
+function redirectLocation(response: Response): string | null {
+  const redirecting = [301, 302, 303, 307, 308].includes(response.status);
+  return redirecting ? response.headers.get("location") : null;
+}
+
+function fetchNetworkError(reason: string): TypeError {
+  return new TypeError("fetch failed", { cause: new Error(reason) });
+}
+
+/** The URL's origin if it is an http(s) URL; null for data: and other schemes. */
+function httpOriginOf(target: URL): string | null {
+  return target.protocol === "http:" || target.protocol === "https:" ? target.origin : null;
+}
+
+/** Resolve a redirect's `Location` and require it to be an allowlisted http(s) origin. */
+function guardedRedirectTarget(location: string, base: string): URL {
+  let next: URL;
+  try {
+    next = new URL(location, base);
+  } catch (error) {
+    throw new TypeError("fetch failed", { cause: error });
+  }
+  const origin = httpOriginOf(next);
+  if (origin === null) {
+    throw fetchNetworkError("redirect to a non-http(s) URL");
+  }
+  if (!isOriginAllowed(origin)) {
+    throw blockedOriginError(origin);
+  }
+  return next;
+}
+
+/** The request for the next redirect hop, per the Fetch standard's HTTP-redirect fetch. */
+function redirectedRequest(current: Request, status: number, next: URL, replayable: Request | null): Request {
+  const { method } = current;
+  const toGet =
+    status === 303 ? method !== "GET" && method !== "HEAD" : (status === 301 || status === 302) && method === "POST";
+  const headers = new Headers(current.headers);
+  if (new URL(current.url).origin !== next.origin) {
+    headers.delete("authorization");
+  }
+  const init: RequestInit & { duplex?: "half" } = { method, headers, redirect: "manual", signal: current.signal };
+  if (toGet) {
+    init.method = "GET";
+    for (const name of REQUEST_BODY_HEADERS) {
+      headers.delete(name);
+    }
+  } else if (replayable !== null) {
+    init.body = replayable.clone().body;
+    init.duplex = "half";
+  }
+  return new Request(next, init);
+}
+
+/**
+ * Follow redirects ourselves so every hop passes the allowlist. Built-in fetch
+ * follows redirects internally and would otherwise check only the first URL, so
+ * an owned server could bounce a request to a foreign loopback port. Follows
+ * the Fetch standard's redirect rules (method/body rewrite on 303 and
+ * 301/302-POST, `authorization` dropped across origins, 20 hops).
+ */
+function fetchWithGuardedRedirects(
+  originalFetch: typeof fetch,
+  input: RequestInfo | URL,
+  init: RequestInit | undefined
+): Promise<Response> {
+  const first = new Request(input, { ...init, redirect: "manual" });
+  // Keep a pristine copy so a 307/308 hop can replay the body.
+  const replayable = first.body === null ? null : first.clone();
+
+  const hop = async (current: Request, redirects: number): Promise<Response> => {
+    const response = await originalFetch(current);
+    const location = redirectLocation(response);
+    if (location === null) {
+      return redirects === 0 ? response : Object.defineProperty(response, "redirected", { value: true });
+    }
+    if (redirects >= MAX_FETCH_REDIRECTS) {
+      throw fetchNetworkError("redirect count exceeded");
+    }
+    await response.body?.cancel();
+    const next = guardedRedirectTarget(location, current.url);
+    return hop(redirectedRequest(current, response.status, next, replayable), redirects + 1);
+  };
+  return hop(first, 0);
+}
+
 /** Guard Node's built-in fetch even when npm's undici package is absent. */
 function guardFetch(restoreList: Array<() => void>): void {
   const originalFetch = globalThis.fetch;
@@ -400,15 +522,20 @@ function guardFetch(restoreList: Array<() => void>): void {
       // Preserve fetch's own rejected-promise contract for malformed inputs.
       return originalFetch(input, init);
     }
-    if (target.protocol !== "http:" && target.protocol !== "https:") {
+    const origin = httpOriginOf(target);
+    if (origin === null) {
       // data: and other non-HTTP URLs cannot open an ambient HTTP socket.
       return originalFetch(input, init);
     }
-    const { origin } = target;
     if (!isOriginAllowed(origin)) {
       return Promise.reject(blockedOriginError(origin));
     }
-    return originalFetch(input, init);
+    const redirect = init?.redirect ?? (input instanceof Request ? input.redirect : "follow");
+    if (redirect !== "follow") {
+      // 'manual' and 'error' never take a second hop.
+      return originalFetch(input, init);
+    }
+    return fetchWithGuardedRedirects(originalFetch, input, init);
   };
   restoreList.push(() => {
     globalThis.fetch = originalFetch;
