@@ -205,6 +205,10 @@ pnpm reference-implementation:test    # reference implementation tests
 pnpm spec:check                       # root-spec / web-spec parity
 ```
 
+CI runs on pull requests only when they target `main`, so run each suite you
+changed once with `CI=true` before you push: CI skips the local two-file test
+concurrency, and a test that only passes with it fails only in CI.
+
 ### Test scratch containment
 
 Use `pnpm test:scratch -- <command> [args...]` for supported ad hoc test or
@@ -263,7 +267,7 @@ and CI remain the executable suite authority.
 - **Keep specs and code in lockstep.** If your PR implements an OpenSpec
   change, the change artifacts and the code should land together and stay
   consistent.
-- **CI and merge gate.** Every pull request must pass the required CI checks.
+- **CI and merge gate.** Every pull request into `main` must pass the required CI checks. Pull requests into an integration branch (for example `testeng/integration`) do not run CI; they are gated by the local oracle (the changed suites through `pnpm test-accounting:check` or the accounting authority) and an independent review, and CI runs on the batch pull request into `main`. To run one workflow on such a branch, use `gh workflow run <workflow>.yml --ref <branch>`.
   Before pushing, run the focused tests and signoff gates required for the
   changed behavior; run `pnpm spec:check` when root or public spec parity is in
   scope. See the testing policy and `docs/reference/ci-mode.md`.
