@@ -24,6 +24,7 @@ on:
       - "pnpm-lock.yaml"
       - "test-accounting.manifest.json"
   pull_request:
+    branches: [main]
     paths:
       - ".github/workflows/test-scratch-lifecycle.yml"
       - ".github/workflows/**"

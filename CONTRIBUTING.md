@@ -205,6 +205,10 @@ pnpm reference-implementation:test    # reference implementation tests
 pnpm spec:check                       # root-spec / web-spec parity
 ```
 
+CI runs on pull requests only when they target `main`, so run each suite you
+changed once with `CI=true` before you push: CI skips the local two-file test
+concurrency, and a test that only passes with it fails only in CI.
+
 ### Test scratch containment
 
 Use `pnpm test:scratch -- <command> [args...]` for supported ad hoc test or
