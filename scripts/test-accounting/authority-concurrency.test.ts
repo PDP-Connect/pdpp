@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   applyLocalNodeTestConcurrency,
@@ -19,6 +19,7 @@ import type { Manifest } from "./inventory.ts";
 const ARGV_MISMATCH_PATTERN = /differs from the argv bound/;
 const SUITE_CONCURRENCY_PATTERN = /PDPP_ACCOUNTING_SUITE_CONCURRENCY must be a positive integer/;
 const SPAWN_FAILURE_PATTERN = /ENOENT/;
+const LEAF_DEADLINE_PATTERN = /fixture-b\/default exceeded total leaf deadline/;
 const DID_NOT_PASS_PATTERN = /fixture-a\/default did not pass/;
 const DIRTY_TREE_PATTERN = /worktree has untracked or changed paths: \?\? fixture-leftover\.txt/;
 const FIXTURE_COMMIT_CONFIG = [
@@ -186,10 +187,45 @@ const markerPath = (dir: string, id: string, kind: "start" | "end") => join(dir,
 const peakConcurrency = (dir: string) =>
   Math.max(...readFileSync(join(dir, "peak.log"), "utf8").trim().split("\n").map(Number));
 
+// How many authorities, completion records and receipts the run directory holds
+// per suite, found without runAuthority's help so a failed run is inspectable too.
+type RunLedger = Record<string, { authorities: number; completions: number; receipts: number }>;
+
+function runDirectory(root: string): string {
+  return resolve(
+    root,
+    execFileSync("git", ["rev-parse", "--git-path", "test-accounting/runs"], { cwd: root, encoding: "utf8" }).trim()
+  );
+}
+
+function readRunReceipts(root: string): FixtureReceipt[] {
+  const directory = runDirectory(root);
+  return readdirSync(directory)
+    .filter((name) => name.endsWith(".receipt.json"))
+    .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")) as FixtureReceipt);
+}
+
+function readRunLedger(root: string): RunLedger {
+  const directory = runDirectory(root);
+  const names = existsSync(directory) ? readdirSync(directory) : [];
+  const ledger: RunLedger = {};
+  for (const name of names.filter((entry) => entry.endsWith(".authority.json"))) {
+    const runId = name.slice(0, -".authority.json".length);
+    const { suite } = JSON.parse(readFileSync(join(directory, name), "utf8")) as { suite: string };
+    const entry = ledger[suite] ?? { authorities: 0, completions: 0, receipts: 0 };
+    ledger[suite] = entry;
+    entry.authorities += 1;
+    entry.completions += names.filter((other) => other === `${runId}.completion.json`).length;
+    entry.receipts += names.filter((other) => other === `${runId}.receipt.json`).length;
+  }
+  return ledger;
+}
+
 async function withFixtureSuites<T>(
   concurrency: string,
   makeSpecs: (markers: string) => FixtureSpec[],
-  inspect: (outcome: { markers: string; receipts: FixtureReceipt[]; error?: unknown }) => T
+  inspect: (outcome: { markers: string; receipts: FixtureReceipt[]; ledger: RunLedger; error?: unknown }) => T,
+  run: typeof runAuthority = runAuthority
 ): Promise<T> {
   const markers = mkdtempSync(join(tmpdir(), "pdpp-suite-concurrency-"));
   try {
@@ -219,24 +255,21 @@ async function withFixtureSuites<T>(
       writeManifestFile(root, manifestValue);
       commitAll(root, "fixture: add suites whose leaves exercise the suite pool");
 
-      let directory: string | undefined;
       let error: unknown;
       try {
-        ({ directory } = await runAuthority({
+        await run({
           root,
           suites: specs.map((spec) => spec.id),
           env: { ...process.env, PDPP_ACCOUNTING_SUITE_CONCURRENCY: concurrency },
-        }));
+        });
       } catch (caught) {
         error = caught;
       }
-      const receipts = directory
-        ? readdirSync(directory)
-            .filter((name) => name.endsWith(".receipt.json"))
-            .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")) as FixtureReceipt)
-            .sort((a, b) => a.suite.localeCompare(b.suite))
-        : [];
-      result = inspect({ markers, receipts, error });
+      const ledger = readRunLedger(root);
+      const receipts = (Object.keys(ledger).length ? readRunReceipts(root) : []).sort((x, y) =>
+        x.suite.localeCompare(y.suite)
+      );
+      result = inspect({ markers, receipts, ledger, error });
     });
     return result as T;
   } finally {
@@ -297,8 +330,10 @@ test("concurrency 1 runs suites one after another in manifest order", async () =
 test("width N never has more than N runs alive, and uses all N lanes", async () => {
   await withFixtureSuites(
     "2",
-    (markers) => ["fixture-a", "fixture-b", "fixture-c", "fixture-d"].map((id) => markedLeaf(markers, id, 500)),
+    (markers) => ["fixture-a", "fixture-b", "fixture-c", "fixture-d"].map((id) => markedLeaf(markers, id, 800)),
     ({ markers, receipts, error }) => {
+      // Four runs that each outlive the others' startup would all be alive at
+      // once without the bound; exactly 2 shows both the bound and full use.
       assert.equal(error, undefined);
       assert.equal(receipts.length, 4);
       assert.equal(peakConcurrency(markers), 2);
@@ -306,18 +341,34 @@ test("width N never has more than N runs alive, and uses all N lanes", async () 
   );
 });
 
-test("a failing spawn lets the in-flight sibling finish, starts nothing queued, then reports the failure", async () => {
+const SEALED = { authorities: 1, completions: 1, receipts: 1 };
+const PREPARE_MARKER_COMMAND = (marker: string) => [
+  "node",
+  "-e",
+  `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "")`,
+];
+
+test("a failing spawn lets the in-flight sibling finish and be sealed, starts nothing queued, then reports the failure", async () => {
   await withFixtureSuites(
     "2",
     (markers) => [
       { id: "fixture-a", command: ["definitely-not-a-real-binary"] },
       markedLeaf(markers, "fixture-b", 600),
       markedLeaf(markers, "fixture-c", 0),
+      {
+        ...markedLeaf(markers, "fixture-d", 0),
+        prepare: PREPARE_MARKER_COMMAND(markerPath(markers, "fixture-d", "start")),
+      },
     ],
-    ({ markers, error }) => {
+    ({ markers, ledger, error }) => {
       assert.match((error as Error | undefined)?.message ?? "", SPAWN_FAILURE_PATTERN);
       assert.ok(existsSync(markerPath(markers, "fixture-b", "end")), "the running sibling must finish, not be killed");
       assert.ok(!existsSync(markerPath(markers, "fixture-c", "start")), "a queued run must never start");
+      assert.ok(!existsSync(markerPath(markers, "fixture-d", "start")), "the prepare phase must never start");
+      assert.deepEqual(ledger, {
+        "fixture-a": { authorities: 1, completions: 0, receipts: 0 },
+        "fixture-b": SEALED,
+      });
     }
   );
 });
@@ -331,18 +382,15 @@ test("a leaf that exits non-zero stops new starts, lets its sibling finish, and 
       markedLeaf(markers, "fixture-c", 0),
       {
         ...markedLeaf(markers, "fixture-d", 0),
-        prepare: [
-          "node",
-          "-e",
-          `require("node:fs").writeFileSync(${JSON.stringify(markerPath(markers, "fixture-d", "start"))}, "")`,
-        ],
+        prepare: PREPARE_MARKER_COMMAND(markerPath(markers, "fixture-d", "start")),
       },
     ],
-    ({ markers, error }) => {
+    ({ markers, ledger, error }) => {
       assert.match((error as Error | undefined)?.message ?? "", DID_NOT_PASS_PATTERN);
       assert.ok(existsSync(markerPath(markers, "fixture-b", "end")), "the running sibling must finish, not be killed");
       assert.ok(!existsSync(markerPath(markers, "fixture-c", "start")), "a queued run must never start");
       assert.ok(!existsSync(markerPath(markers, "fixture-d", "start")), "the prepare phase must never start");
+      assert.deepEqual(ledger, { "fixture-a": SEALED, "fixture-b": SEALED });
     }
   );
 });
@@ -355,11 +403,49 @@ test("a leaf with malformed structured output is a failure that stops new starts
       markedLeaf(markers, "fixture-b", 600),
       markedLeaf(markers, "fixture-c", 0),
     ],
-    ({ markers, error }) => {
+    ({ markers, ledger, error }) => {
       assert.match((error as Error | undefined)?.message ?? "", DID_NOT_PASS_PATTERN);
       assert.ok(existsSync(markerPath(markers, "fixture-b", "end")), "the running sibling must finish, not be killed");
       assert.ok(!existsSync(markerPath(markers, "fixture-c", "start")), "a queued run must never start");
+      assert.deepEqual(ledger, { "fixture-a": SEALED, "fixture-b": SEALED });
     }
+  );
+});
+
+// The leaf deadline is read once, at module load, so the throwing run needs its
+// own copy of the authority module loaded under a short deadline.
+async function loadAuthorityWithLeafDeadline(ms: number): Promise<typeof runAuthority> {
+  const previous = process.env.PDPP_ACCOUNTING_LEAF_DEADLINE_MS;
+  process.env.PDPP_ACCOUNTING_LEAF_DEADLINE_MS = String(ms);
+  try {
+    const url = new URL("./authority.ts", import.meta.url);
+    url.search = `?leaf-deadline-${ms}`;
+    return ((await import(url.href)) as typeof import("./authority.ts")).runAuthority;
+  } finally {
+    if (previous === undefined) {
+      Reflect.deleteProperty(process.env, "PDPP_ACCOUNTING_LEAF_DEADLINE_MS");
+    } else {
+      process.env.PDPP_ACCOUNTING_LEAF_DEADLINE_MS = previous;
+    }
+  }
+}
+
+test("the last run to leave may throw: the completed sibling is still sealed, verified, and the original error surfaces", async () => {
+  // fixture-a completes while fixture-b runs; fixture-b then outlives the leaf
+  // deadline and is killed, so the run that leaves last is the one that throws.
+  const runWithDeadline = await loadAuthorityWithLeafDeadline(4000);
+  await withFixtureSuites(
+    "2",
+    (markers) => [markedLeaf(markers, "fixture-a", 0), markedLeaf(markers, "fixture-b", 60_000)],
+    ({ markers, ledger, error }) => {
+      assert.match((error as Error | undefined)?.message ?? "", LEAF_DEADLINE_PATTERN);
+      assert.ok(existsSync(markerPath(markers, "fixture-a", "end")), "the completed sibling ran to the end");
+      assert.deepEqual(ledger, {
+        "fixture-a": SEALED,
+        "fixture-b": { authorities: 1, completions: 0, receipts: 0 },
+      });
+    },
+    runWithDeadline
   );
 });
 

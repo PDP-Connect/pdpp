@@ -838,7 +838,8 @@ const LOCAL_SUITE_CONCURRENCY = 3;
  * How many suite/profile runs may execute at once.
  *
  * Each run keeps its own issued authority, transcript, deadlines and process
- * group, so overlap changes only wall time. Locally the default is
+ * group, so overlap changes scheduling only, not what each run proves; it costs
+ * about +10% CPU-seconds and +70% peak memory for a shorter wall time. Locally the default is
  * LOCAL_SUITE_CONCURRENCY; in CI it is 1 unless the workflow sets the variable
  * explicitly, because a CI runner's core count is not known here and each Node
  * leaf already sizes itself to the machine there (see applyLocalNodeTestConcurrency).
@@ -1259,43 +1260,66 @@ export async function runAuthority({
   };
   const finishRun = async (indexed: Run) => {
     inFlight += 1;
-    let done: CompletedRun;
+    let done: CompletedRun | undefined;
+    let failure: { error: unknown } | undefined;
     try {
       done = await executeRun(indexed, context);
     } catch (error) {
+      failure = { error };
       stopped = true;
-      inFlight -= 1;
-      if (inFlight === 0) {
-        endRest();
-      }
-      throw error;
     }
     inFlight -= 1;
-    unsealed.push(done);
-    // The first failed outcome stops new starts at once; siblings finish.
-    stopped ||= runFailed(done);
+    if (done) {
+      unsealed.push(done);
+      // The first failed outcome stops new starts at once; siblings finish.
+      stopped ||= runFailed(done);
+    }
     if (inFlight > 0) {
+      if (failure) {
+        throw failure.error;
+      }
       suspect ||= sourceTreeDirty(root);
       if (suspect) {
         await waitForRest();
       }
       return;
     }
+    // The last run to leave, finished or thrown, judges the checkout at rest and
+    // seals every completed run, so a throw never strands its completed siblings.
     try {
       await settle();
     } catch (error) {
       stopped = true;
-      throw error;
+      failure ??= { error };
     } finally {
       endRest();
     }
+    if (failure) {
+      throw failure.error;
+    }
   };
-  // Phases are ordered: the exclusive phase starts only after the shared phase has drained.
-  await schedulePhases(runs, concurrency).reduce(
-    (previous, [phaseRuns, limit]) => previous.then(() => runPool(phaseRuns, limit, finishRun, () => stopped)),
-    Promise.resolve()
-  );
+  let poolFailure: { error: unknown } | undefined;
+  try {
+    // Phases are ordered: the exclusive phase starts only after the shared phase has drained.
+    await schedulePhases(runs, concurrency).reduce(
+      (previous, [phaseRuns, limit]) => previous.then(() => runPool(phaseRuns, limit, finishRun, () => stopped)),
+      Promise.resolve()
+    );
+  } catch (error) {
+    poolFailure = { error };
+  }
   receipts.push(...[...sealed.entries()].sort(([a], [b]) => a - b).map(([, receipt]) => receipt));
+  if (poolFailure) {
+    // Verify what was sealed once, then surface the original error.
+    await verifyReceipts(manifest, files, receipts, {
+      root,
+      head,
+      authorityDirectory: directory,
+      sourceTree,
+      requiredKeys: runs.map((run) => `${run.suite.id}/${run.profile.id}`),
+    }).catch(() => undefined);
+    throw poolFailure.error;
+  }
   return {
     directory,
     result: await verifyReceipts(manifest, files, receipts, {
