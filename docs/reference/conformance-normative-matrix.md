@@ -53,9 +53,9 @@ Clauses enumerated: **214**.
 | MUST clauses | Count |
 | --- | --- |
 | Total | **181** |
-| With at least one case | **116** |
+| With at least one case | **117** |
 | Untestable (review-only, no case) | **59** |
-| Not yet tested (observable, no case) | **6** |
+| Not yet tested (observable, no case) | **5** |
 
 The last three rows partition the total. 2 of the clauses with a case are
 review-only: a case exercises part of them, and a run still reports them `untestable`.
@@ -187,7 +187,7 @@ Tracks grant lifecycle (active, expired, revoked) and reflects revocation immedi
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `2.2-3` | 106 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path. |
-| `7.5-7` | 1006 | MUST | black-box-http | — | Needs a clock hook the case controls (for example `advancePastSingleUseWindow`) or a single_use token with a very short lifetime, then introspection of a token after the window ends. The adapter contract has neither, and the bundled target declares no single_use support. |
+| `7.5-7` | 1006 | MUST | black-box-http | `AS-10/single-use-window-end-deactivates-the-grant` | The window end is reached through the adapter's `advancePastSingleUseWindow` hook, since a suite cannot wait out a token's lifetime; a target whose adapter has none reports the case `skip`. "No token carries the grant" is observed on one token, the first one; later tokens of a refresh-token family are not issued here. |
 | `10.2-2` | 1699 | MUST | review-only | — | Review-only, for the same reason as 8.1-1: the revocation-propagation bound is the introspection cache TTL of a separated RS, observable only with a separated target and a timed wait of more than 60 seconds. |
 | `10.2-7` | 1708 | MUST | black-box-http | `AS-20/refresh-reuse-revokes-the-family` | Introspection of the family-linked token is checked only where the target offers an introspection route; otherwise the case judges the resource read alone, which is not the introspection interface this clause names. The prohibition on issuing a refresh token unless a covered grant is `continuous` is not covered, and needs a target supporting both `single_use` and refresh tokens at once. The revision drops the separate sentence about grant packages. |
 | `10.2-10` | 1697 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path. |
@@ -215,7 +215,7 @@ For `single_use` grants, consumes the grant atomically with first client-token i
 | `7.5-4` | 1006 | SHOULD | review-only | — | Not decidable: the text sets no bound for "short". |
 | `7.5-5` | 1006 | MAY | review-only | — | — |
 | `7.5-6` | 1006 | MUST | review-only | — | The obligation binds a binding, which Core does not define; checking it needs a separated AS/RS target and a clock the case controls. |
-| `7.5-7` | 1006 | MUST | black-box-http | — | Needs a clock hook the case controls (for example `advancePastSingleUseWindow`) or a single_use token with a very short lifetime, then introspection of a token after the window ends. The adapter contract has neither, and the bundled target declares no single_use support. |
+| `7.5-7` | 1006 | MUST | black-box-http | `AS-10/single-use-window-end-deactivates-the-grant` | The window end is reached through the adapter's `advancePastSingleUseWindow` hook, since a suite cannot wait out a token's lifetime; a target whose adapter has none reports the case `skip`. "No token carries the grant" is observed on one token, the first one; later tokens of a refresh-token family are not issued here. |
 
 ### AS-11 (authorization-server, MUST)
 

@@ -78,6 +78,9 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "AS-16/embedded-schema-wrong-dialect-refused", defect: "accept-wrong-schema-dialect" },
   { caseId: "AS-16/embedded-schema-failing-metaschema-refused", defect: "accept-meta-invalid-schema" },
   { caseId: "AS-15/stale-review-approval-refused", defect: "approve-stale-review" },
+  { caseId: "AS-10/single-use-window-end-deactivates-the-grant", defect: "single-use-window-never-ends" },
+  { caseId: "AS-10/single-use-grant-consumed", defect: "single-use-grant-reissuable" },
+  { caseId: "AS-10/single-use-first-token-has-finite-expiry", defect: "single-use-token-without-expiry" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-wrong-bytes" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-response-cacheable" },
   { caseId: "RS-1/blob-ref-mime-type-valid", defect: "blob-ref-invalid-mime-type" },
@@ -678,7 +681,7 @@ export const BESPOKE_PROOFS: readonly { readonly caseId: string; readonly proof:
 export const HOOKED_DISCRIMINATION_MATRIX: readonly {
   readonly caseId: string;
   readonly defect: Defect;
-  readonly adapter: "refreshable" | "single-use";
+  readonly adapter: "refreshable";
 }[] = [
   { caseId: "AS-20/refresh-reuse-revokes-the-family", defect: "refresh-without-rotation", adapter: "refreshable" },
   {
@@ -690,11 +693,6 @@ export const HOOKED_DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-20/refresh-reuse-revokes-the-family",
     defect: "refresh-reuse-keeps-family-alive",
     adapter: "refreshable",
-  },
-  {
-    caseId: "AS-10/single-use-first-token-has-finite-expiry",
-    defect: "single-use-token-without-expiry",
-    adapter: "single-use",
   },
   {
     caseId: "AS-25/refresh-token-revocation-ends-the-family-grants",

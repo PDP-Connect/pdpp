@@ -578,6 +578,10 @@ export type Defect =
   | "client-filter-consults-metadata-first"
   /** Binds a page cursor to the grant and `fields` only, so it replays on another stream or under a view or filter (RS-6, clause 8.9-11). */
   | "cursor-context-omits-query-shape"
+  /** Lets a `single_use` grant be issued a token again after its first issuance (AS-10, clause 7.5-1). */
+  | "single-use-grant-reissuable"
+  /** Keeps a `single_use` grant active in introspection and on reads after its window has ended (AS-10, clause 7.5-7). */
+  | "single-use-window-never-ends"
   /** Approves a staged review after the eligibility it was bound to went stale, instead of requiring a new review (AS-15, clause 7.2-5). */
   | "approve-stale-review"
   /** Accepts an owner-token read naming both `view` and `fields`, honouring `fields` (RS-9, clause 8.9-3). */
@@ -667,6 +671,8 @@ interface GrantState {
    * resource server, which is the whole job of the introspection projection.
    */
   readonly accessMode: string;
+  /** Whether a `single_use` grant's one window has been opened by a first token issuance. */
+  consumed: boolean;
   expired: boolean;
   readonly grantId: string;
   /** RFC 3339 instant the grant was issued, for the published grant artifact's `issued_at`. */
@@ -703,6 +709,8 @@ interface GrantState {
     resolvedFromView?: string;
   }[];
   readonly subjectId: string;
+  /** When that window ends (epoch ms on this server's clock): the first token's expiry. */
+  windowEndsAtMs?: number;
 }
 
 /**
@@ -918,6 +926,13 @@ export class ReferenceServer {
    */
   private readonly recordVersions = new Map<string, number>();
   private versionClock = 0;
+
+  /** Milliseconds added to the wall clock by `advancePastWindow`, so a case can reach the end of a `single_use` window. */
+  private clockOffsetMs = 0;
+
+  private now(): number {
+    return Date.now() + this.clockOffsetMs;
+  }
 
   /** Seconds since the epoch when this server started; every token it issues lives `TOKEN_LIFETIME_SECONDS` from it. */
   private readonly tokenIssuedAtSeconds = Math.floor(Date.now() / 1000);
@@ -1440,6 +1455,9 @@ export class ReferenceServer {
     if (grant.revoked && !lagging && !this.has("ignore-revocation")) {
       return { denial: { code: "grant_revoked", message: "Grant was revoked.", inactive: true } };
     }
+    if (this.windowEnded(grant)) {
+      return { denial: { code: "grant_expired", message: "The single_use window has ended.", inactive: true } };
+    }
     if (grant.expired && !this.has("serve-expired-grant")) {
       return { denial: { code: "grant_expired", message: "Grant has expired.", inactive: true } };
     }
@@ -1529,6 +1547,7 @@ export class ReferenceServer {
         ...(s.resolvedFromView === undefined ? {} : { resolvedFromView: s.resolvedFromView }),
       })),
       issuedAt: new Date().toISOString(),
+      consumed: false,
       revoked: false,
       expired: options.expired ?? false,
       schemaVersion: options.schemaVersion ?? GRANT_SCHEMA_VERSION,
@@ -1649,6 +1668,45 @@ export class ReferenceServer {
     return Number.isNaN(instant) ? bound : new Date(instant).toISOString();
   }
 
+  /**
+   * Open a `single_use` grant's one read window on first token issuance (Core
+   * Section 7 "Access modes"): mark the grant consumed and set the window to end
+   * with the first token. Returns false when the grant is already consumed.
+   * Any other access mode is unaffected.
+   */
+  private openWindow(grant: GrantState): boolean {
+    if (grant.accessMode !== "single_use") {
+      return true;
+    }
+    if (grant.consumed && !this.has("single-use-grant-reissuable")) {
+      return false;
+    }
+    if (!grant.consumed) {
+      grant.consumed = true;
+      grant.windowEndsAtMs = this.now() + TOKEN_LIFETIME_SECONDS * 1000;
+    }
+    return true;
+  }
+
+  /** Whether a `single_use` grant's window has ended (clause 7.5-7). */
+  private windowEnded(grant: GrantState): boolean {
+    return (
+      grant.windowEndsAtMs !== undefined &&
+      this.now() >= grant.windowEndsAtMs &&
+      !this.has("single-use-window-never-ends")
+    );
+  }
+
+  /** Move this server's clock past the end of a grant's window; false when the grant has no open window. */
+  advancePastWindow(grantId: string): boolean {
+    const end = this.grants.get(grantId)?.windowEndsAtMs;
+    if (end === undefined) {
+      return false;
+    }
+    this.clockOffsetMs = Math.max(this.clockOffsetMs, end - Date.now() + 1000);
+    return true;
+  }
+
   /** Mint an authorization code for an approved grant, bound to an S256 PKCE challenge. */
   mintAuthorizationCode(grantId: string, challenge: string): string | null {
     if (!this.grants.has(grantId)) {
@@ -1675,6 +1733,10 @@ export class ReferenceServer {
       return null;
     }
     if (entry.consumed && !this.has("redeem-authorization-code-repeatedly")) {
+      return null;
+    }
+    const grant = this.grants.get(entry.grantId);
+    if (grant && !this.openWindow(grant)) {
       return null;
     }
     entry.consumed = true;
@@ -1717,7 +1779,10 @@ export class ReferenceServer {
     // surface: Section 9 AS item 8 requires revocation to be reflected in
     // introspection, and a stub that always answered `active: true` would make
     // the AS-8 oracle pass against a server that never propagates it.
-    const active = grant !== undefined && !(grant.revoked || grant.expired) && !this.endedTokens.has(accessToken);
+    const active =
+      grant !== undefined &&
+      !(grant.revoked || grant.expired || this.windowEnded(grant)) &&
+      !this.endedTokens.has(accessToken);
     const detail = this.grantedAuthorizationDetails(principal.grantId);
     const body = active
       ? {
@@ -1922,8 +1987,15 @@ export class ReferenceServer {
     if (path === "/oauth/token") {
       const grantId = parsed.searchParams.get("grant_id") ?? "";
       const issuedToken = this.tokenForGrant(grantId);
+      const issuedFor = this.grants.get(grantId);
       if (!issuedToken) {
         error(400, "invalid_grant", "invalid_request_error", "Unknown grant.");
+        return;
+      }
+      // A `single_use` grant opens its one window with this first issuance;
+      // a later one is refused (clause 7.5-1).
+      if (issuedFor && !this.openWindow(issuedFor)) {
+        error(400, "invalid_grant", "invalid_request_error", "The single_use grant is already consumed.");
         return;
       }
       // RFC 6749 Section 5.1 and clause 10.2-4. Omitted under the defect, and

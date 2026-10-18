@@ -6,10 +6,9 @@
 //
 // Protected risk: the same as `oracle-discrimination.test.ts` — an oracle that
 // can never fail. AS-20 drives a refresh-token family through
-// `issueRefreshableGrant` under a `refreshTokens` capability, and AS-10 needs a
-// `singleUseGrants` capability. Declaring either on the bundled target would turn
-// an `unsupported` into a `pass` in the published run, so the proof wraps the
-// adapter instead. The server and its defects are the bundled ones; only
+// `issueRefreshableGrant` under a `refreshTokens` capability. Declaring it on the
+// bundled target would turn an `unsupported` into a `pass` in the published run,
+// so the proof wraps the adapter instead. The server and its defects are the bundled ones; only
 // the hook that lets the case observe them is added here.
 
 import assert from "node:assert/strict";
@@ -26,17 +25,11 @@ class RefreshableAdapter extends ReferenceTargetAdapter {
   override readonly capabilities = { ...new ReferenceTargetAdapter().capabilities, refreshTokens: true };
 }
 
-/** Declares single_use support, which the bundled target does not. */
-class SingleUseAdapter extends ReferenceTargetAdapter {
-  override readonly capabilities = { ...new ReferenceTargetAdapter().capabilities, singleUseGrants: true };
+function build(_kind: "refreshable", defects: readonly Defect[]): TargetAdapter {
+  return new RefreshableAdapter(undefined, new Set(defects));
 }
 
-function build(kind: "refreshable" | "single-use", defects: readonly Defect[]): TargetAdapter {
-  const set = new Set(defects);
-  return kind === "single-use" ? new SingleUseAdapter(undefined, set) : new RefreshableAdapter(undefined, set);
-}
-
-async function run(caseId: string, kind: "refreshable" | "single-use", defects: readonly Defect[]) {
+async function run(caseId: string, kind: "refreshable", defects: readonly Defect[]) {
   const conformanceCase = ALL_CASES.find((c) => c.caseId === caseId);
   assert.ok(conformanceCase, `No case with id ${caseId}`);
   const adapter = build(kind, defects);

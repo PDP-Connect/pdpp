@@ -1751,6 +1751,7 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#access-modes",
     applicability: "the AS supports `single_use` grants",
     observable: "black-box-http",
+    partial: true,
     caseIds: ["AS-10/single-use-grant-consumed"],
     gapNote:
       "AS-10/single-use-grant-consumed tests the rejection of a later issuance. The exception \u2014 a successor access token of the same refresh-token family issued before the window ends must be accepted \u2014 needs a single_use grant that issues a refresh token (issueRefreshableGrant with accessMode single_use), which Core also bars for a single_use grant's read window (AS-20), so a conforming target may offer none; no hook states one.",
@@ -1777,6 +1778,7 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#access-modes",
     applicability: "the AS supports `single_use` grants",
     observable: "black-box-http",
+    partial: true,
     caseIds: ["AS-10/single-use-first-token-has-finite-expiry"],
     gapNote:
       "The finite half is tested from the token response's `expires_in`, on a target that declares single_use grants. The bound `no later than expires_at` needs a way to request a grant with an expiry: `GrantRequest` has no `expiresAt`.",
@@ -1830,9 +1832,9 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#access-modes",
     applicability: "the AS supports `single_use` grants",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-10/single-use-window-end-deactivates-the-grant"],
     gapNote:
-      "Needs a clock hook the case controls (for example `advancePastSingleUseWindow`) or a single_use token with a very short lifetime, then introspection of a token after the window ends. The adapter contract has neither, and the bundled target declares no single_use support.",
+      "The window end is reached through the adapter's `advancePastSingleUseWindow` hook, since a suite cannot wait out a token's lifetime; a target whose adapter has none reports the case `skip`. \"No token carries the grant\" is observed on one token, the first one; later tokens of a refresh-token family are not issued here.",
   },
   {
     clauseId: "7.6-1",

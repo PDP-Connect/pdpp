@@ -725,6 +725,18 @@ export function changesSinceBootstrapOf(adapter: { readonly changesSinceBootstra
 
 export interface TargetAdapter {
   /**
+   * Move the target past the end of a `single_use` grant's read window -- the
+   * first token's expiry -- so the state AFTER the window can be observed.
+   * Resolves `false` when the target offers no way to do so.
+   *
+   * Section 7 (Access modes): "After the window ends, no token carries the
+   * grant, and introspection MUST NOT report the grant active." The window ends
+   * at a token's expiry, which a black-box suite cannot wait out, so this hook
+   * is the clock the case controls. An adapter must advance the target's own
+   * notion of time (or expire the token), never answer on its behalf.
+   */
+  advancePastSingleUseWindow?: (grantId: string) => Promise<boolean>;
+  /**
    * Base URL of the authorization server, when it is a separate service.
    *
    * The AS cases discover its endpoints from RFC 8414 metadata published here.

@@ -477,6 +477,77 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // --------------------------------------------------------------- 7.5-7 ---
+  // Core Section 7 "Access modes": a `single_use` grant permits one fixed read
+  // window that ends at the first token's expiry. "After the window ends, no
+  // token carries the grant, and introspection MUST NOT report the grant
+  // active." The window cannot be waited out, so the case moves the target past
+  // its end through `advancePastSingleUseWindow`. Inside the window the token
+  // must read and introspect active (the control), or a target that never
+  // activates the grant would pass.
+  {
+    caseId: "AS-10/single-use-window-end-deactivates-the-grant",
+    requirementId: "AS-10",
+    appliesWhen: (adapter) => adapter.capabilities.singleUseGrants,
+    assertion:
+      "After a single_use grant's window ends, introspection reports the token inactive and a read with it is refused, while both were served inside the window.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.advancePastSingleUseWindow) {
+        return skip(
+          "The adapter has no advancePastSingleUseWindow hook, so the end of a single_use window cannot be reached and the state after it is unobserved."
+        );
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+        accessMode: "single_use",
+      });
+      if (!grant) {
+        return skip("The target declares single_use support but could not issue such a grant.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const insideRead = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+      const inside = await arrange("introspection (prerequisite)", () =>
+        introspectByAnyRoute(adapter, grant.accessToken)
+      );
+      if (!inside) {
+        return skip(
+          "The target publishes no introspection route the suite can use and the adapter names no co-located equivalent, so the grant's state after the window cannot be observed."
+        );
+      }
+      if (insideRead.status !== 200 || (inside.json as IntrospectionBody | undefined)?.active !== true) {
+        return skip(
+          "Inside its window the single_use token was not both served and reported active, so the end of the window cannot be isolated."
+        );
+      }
+      if (!(await adapter.advancePastSingleUseWindow(grant.grantId))) {
+        return skip("The target offers no way to reach the end of this single_use grant's window.");
+      }
+      const after = await introspectByAnyRoute(adapter, grant.accessToken);
+      const afterRead = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+      if (!after) {
+        return skip("Introspection could not be observed after the window ended.");
+      }
+      const evidence = [inside.evidence, after.evidence, afterRead.evidence];
+      if ((after.json as IntrospectionBody | undefined)?.active !== false) {
+        return fail(
+          'Introspection still reports the single_use grant\'s token active after its window ended. Core Section 7: "After the window ends, no token carries the grant, and introspection MUST NOT report the grant active."',
+          evidence
+        );
+      }
+      if (afterRead.status === 200) {
+        return fail(
+          "A read with the single_use grant's token was served after its window ended. Core Section 7: after the window ends, no token carries the grant.",
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
   // --------------------------------------------------------------- AS-15 ---
   // Section 9 AS item 15: the AS "binds exact resolved instances and all final
   // decision fields to an immutable review revision" and "rejects stale approval

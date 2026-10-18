@@ -196,7 +196,7 @@ const CAPABILITIES: TargetCapabilities = {
   // clauses reachable at all; every target declaring `views: false` reports
   // them `skip` naming the missing capability, which is where they sat before.
   views: true,
-  singleUseGrants: false,
+  singleUseGrants: true,
   refreshTokens: false,
   blobs: true,
 };
@@ -1710,6 +1710,29 @@ export class ReferenceTargetAdapter implements TargetAdapter {
         grantRequest: { ...grantRequest, timeConstraint: blobs.window },
       },
     };
+  }
+
+  /**
+   * Another token issuance against a grant that has already opened its window.
+   * Conforming behaviour is a refusal, which this hook reports as null; the
+   * `single-use-grant-reissuable` defect hands out the token again.
+   */
+  async reissueAgainstConsumedGrant(grantId: string): Promise<IssuedGrant | null> {
+    const again = await this.fetchTokenResponse(grantId);
+    const accessToken = (again?.body as { access_token?: unknown } | undefined)?.access_token;
+    return typeof accessToken === "string"
+      ? {
+          grantId,
+          accessToken,
+          streams: [],
+          tokenResponseHeaders: again?.headers ?? {},
+          tokenResponseBody: again?.body,
+        }
+      : null;
+  }
+
+  async advancePastSingleUseWindow(grantId: string): Promise<boolean> {
+    return this.server.advancePastWindow(grantId);
   }
 
   async expiredGrantToken(): Promise<string | null> {
