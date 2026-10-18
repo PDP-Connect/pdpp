@@ -21,7 +21,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { runPrepareForTest } from "./authority.ts";
+import { runPrepareForTest, suiteEnvironment } from "./authority.ts";
 import { readManifest, type Suite } from "./inventory.ts";
 
 const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
@@ -62,7 +62,7 @@ function importThroughAlias(suite: Suite): Promise<string | null> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", driver], {
       cwd: join(root, suite.cwd),
-      env: { ...process.env, ...(suite.environment ?? {}) },
+      env: suiteEnvironment(process.env, "default", suite, root),
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = "";

@@ -513,10 +513,7 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
  * through this seam fails exactly when `prepareSuite` regresses.
  */
 export function runPrepareForTest(suite: Suite, root: string): Promise<void> {
-  return prepareSuite(suite, resolve(root, suite.cwd), {
-    ...process.env,
-    ...(suite.environment ?? {}),
-  });
+  return prepareSuite(suite, resolve(root, suite.cwd), suiteEnvironment(process.env, "default", suite, root));
 }
 
 function requiredByDefault(entry: ProfileEntry): boolean {
