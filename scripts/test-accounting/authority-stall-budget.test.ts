@@ -536,6 +536,7 @@ describe("leaf capture lifecycle", { concurrency: 4 }, () => {
     assert.equal(outcome.code, 1, `the deadline must fail the run; stderr was: ${outcome.stderr}`);
     assert.match(result.capture_error ?? "", DEADLINE_PATTERN);
     assert.ok(result.kills_at_settle >= 1, "the deadline must have killed the group");
+    assert.ok(result.writes >= 1, "the leaf must have produced a transcript write");
     assert.equal(result.released_with_kills.length, result.writes, "the late transcript write must have resolved");
     assert.equal(
       result.kills_total,
