@@ -15,6 +15,7 @@
 // through `TargetCapabilities` or through what its stream metadata declares. A
 // requirement is never reported against a target that does not claim the feature.
 
+import { changesSinceBootstrapOf } from "../harness/adapter.ts";
 import { errorBody, request } from "../harness/http.ts";
 import { type CaseVerdict, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
@@ -191,7 +192,7 @@ async function armTombstone({
   // 1. Open a sync session and take the resume token from its terminal page.
   const opened = await request(adapter.baseUrl, recordsPath, {
     token: owner,
-    query: { ...ownerQuery, changes_since: adapter.changesSinceBootstrap ?? "" },
+    query: { ...ownerQuery, changes_since: changesSinceBootstrapOf(adapter) },
   });
   if (opened.status !== 200) {
     return fail(
@@ -389,7 +390,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
 
       const opened = await request(adapter.baseUrl, recordsPath, {
         token: grant.accessToken,
-        query: { changes_since: adapter.changesSinceBootstrap ?? "" },
+        query: { changes_since: changesSinceBootstrapOf(adapter) },
       });
       if (opened.status !== 200) {
         return fail(`Opening a changes_since session on a mutable_state stream returned ${opened.status}.`, [
@@ -507,7 +508,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
       // Page 1 of a sync session, deliberately short so the session paginates.
       const page1 = await request(adapter.baseUrl, recordsPath, {
         token: grant.accessToken,
-        query: { changes_since: adapter.changesSinceBootstrap ?? "", limit: "1" },
+        query: { changes_since: changesSinceBootstrapOf(adapter), limit: "1" },
       });
       if (page1.status !== 200) {
         return fail(`Opening a paginated changes_since session returned ${page1.status}.`, [page1.evidence]);
@@ -721,7 +722,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
       }
       const opening = await request(adapter.baseUrl, recordsPath, {
         token: got.grant.accessToken,
-        query: { changes_since: adapter.changesSinceBootstrap ?? "" },
+        query: { changes_since: changesSinceBootstrapOf(adapter) },
       });
       const seed = asList(opening.json)?.data?.find((r) => typeof r.id === "string" && !r.deleted)?.id;
       if (seed === undefined) {
@@ -739,7 +740,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
 
       const opened = await request(adapter.baseUrl, recordsPath, {
         token: got.grant.accessToken,
-        query: { changes_since: adapter.changesSinceBootstrap ?? "" },
+        query: { changes_since: changesSinceBootstrapOf(adapter) },
       });
       if (opened.status !== 200) {
         return fail(`Opening a changes_since session returned ${opened.status}.`, [opened.evidence]);
@@ -833,7 +834,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
         adapter.baseUrl,
         path(`/streams/${encodeURIComponent(got.stream.name)}/records`),
         // An empty cursor opens a fresh sync session from the beginning.
-        { token: got.grant.accessToken, query: { changes_since: adapter.changesSinceBootstrap ?? "" } }
+        { token: got.grant.accessToken, query: { changes_since: changesSinceBootstrapOf(adapter) } }
       );
       if (response.status !== 200) {
         return fail(

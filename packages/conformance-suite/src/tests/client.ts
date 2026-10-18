@@ -11,6 +11,7 @@ import { type ConformanceCase, fail, pass, skip, unsupported } from "../harness/
 
 const STREAM = "fixture_stream";
 const CHANGES_SINCE = "changes-since-fixture-token";
+const BEGINNING = "beginning";
 const NEXT_CURSOR = "opaque-page-cursor-fixture-token";
 
 function requestAfter(client: ClientUnderTest, index: number) {
@@ -25,25 +26,31 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
   {
     caseId: "CL-2/grant-revocation-stops-further-requests",
     requirementId: "CL-2",
-    assertion: "After 403 grant_revoked, the client makes no further request against that grant.",
+    assertion: "After 401 grant_revoked, the client makes no further request against that grant.",
     async run(context) {
       const { client } = context;
       if (!client) {
         return skip("Requires a ClientUnderTest adapter with a fixture request log.");
       }
-      client.fixture.configure({ code: "grant_revoked", kind: "error", status: 403, type: "permission_error" });
+      client.fixture.configure({
+        challenge: 'Bearer error="invalid_token"',
+        code: "grant_revoked",
+        kind: "error",
+        status: 401,
+        type: "authentication_error",
+      });
       const before = client.fixture.requestLog().length;
       const result = await client.readPage(STREAM);
       const requests = requestAfter(client, before);
       const usedAccessToken = requests[0]?.headers.authorization === "Bearer client-fixture-access-token";
       return !result.ok &&
-        result.status === 403 &&
+        result.status === 401 &&
         result.errorCode === "grant_revoked" &&
         requests.length === 1 &&
         usedAccessToken
         ? pass()
         : fail(
-            `Expected one access-token request ending in 403 grant_revoked; observed ${requests.length} request(s), status ${result.status}, code ${String(result.errorCode)}.`
+            `Expected one access-token request ending in 401 grant_revoked; observed ${requests.length} request(s), status ${result.status}, code ${String(result.errorCode)}.`
           );
     },
   },
@@ -84,10 +91,10 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
       await client.syncOnce(STREAM);
       await client.syncAgain(STREAM);
       const requests = requestAfter(client, before);
-      return requests[0]?.query.changes_since === undefined && requests[1]?.query.changes_since === CHANGES_SINCE
+      return requests[0]?.query.changes_since === BEGINNING && requests[1]?.query.changes_since === CHANGES_SINCE
         ? pass()
         : fail(
-            `Expected an initial read followed by changes_since=${CHANGES_SINCE}; observed ${JSON.stringify(requests)}.`
+            `Expected a first session at changes_since=beginning followed by changes_since=${CHANGES_SINCE}; observed ${JSON.stringify(requests)}.`
           );
     },
   },
@@ -96,7 +103,7 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
   {
     caseId: "CL-5/full-resync-after-cursor-expired",
     requirementId: "CL-5",
-    assertion: "After 410 cursor_expired, the client performs a full re-sync without the expired cursor.",
+    assertion: "After 410 cursor_expired, the client restarts from changes_since=beginning without the expired cursor.",
     async run(context) {
       const { client } = context;
       if (!client) {
@@ -107,9 +114,11 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
       await client.syncOnce(STREAM);
       await client.syncAgain(STREAM);
       const [, , recovery] = requestAfter(client, before);
-      return recovery && recovery.query.changes_since === undefined && recovery.query.cursor === undefined
+      return recovery && recovery.query.changes_since === BEGINNING && recovery.query.cursor === undefined
         ? pass()
-        : fail(`Expected 410 followed by a full resync; observed ${JSON.stringify(requestAfter(client, before))}.`);
+        : fail(
+            `Expected 410 followed by a restart at changes_since=beginning; observed ${JSON.stringify(requestAfter(client, before))}.`
+          );
     },
   },
 
@@ -117,7 +126,7 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
   {
     caseId: "CL-5/endpoint-cursor-expiry-also-full-resyncs",
     requirementId: "CL-5",
-    assertion: "The list-records cursor_expired path also restarts a full sync rather than retrying the cursor.",
+    assertion: "The list-records cursor_expired path also restarts from changes_since=beginning rather than retrying the cursor.",
     async run(context) {
       const { client } = context;
       if (!client) {
@@ -128,10 +137,10 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
       await client.syncOnce(STREAM);
       await client.syncAgain(STREAM);
       const [, , recovery] = requestAfter(client, before);
-      return recovery && recovery.query.changes_since === undefined && recovery.query.cursor === undefined
+      return recovery && recovery.query.changes_since === BEGINNING && recovery.query.cursor === undefined
         ? pass()
         : fail(
-            `Expected the recovery request to omit both cursor spaces; observed ${JSON.stringify(recovery?.query ?? {})}.`
+            `Expected the recovery request to restart at changes_since=beginning with no page cursor; observed ${JSON.stringify(recovery?.query ?? {})}.`
           );
     },
   },

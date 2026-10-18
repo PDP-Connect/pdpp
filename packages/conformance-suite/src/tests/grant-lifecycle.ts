@@ -86,6 +86,37 @@ export async function pollResourceServerRefusal(
   return { stillServed: last };
 }
 
+const BEARER_INVALID_TOKEN = /^Bearer\b.*\berror="?invalid_token"?/i;
+
+/**
+ * Judge a refused read of an inactive token against Section 8 "Inactive tokens":
+ * every inactive access token is HTTP 401 with `WWW-Authenticate: Bearer
+ * error="invalid_token"`. The structured error MAY name the cause
+ * (`grant_revoked` / `grant_expired`, both 401 `authentication_error`) and
+ * otherwise is `authentication_error`; any other code, or a 403, is a failure.
+ * Returns a failure message, or undefined when the refusal is conformant.
+ */
+function inactiveTokenFault(
+  response: Awaited<ReturnType<typeof request>>,
+  causeCode: "grant_expired" | "grant_revoked"
+): string | undefined {
+  if (response.status !== 401) {
+    return `An inactive token was refused with ${response.status}; Section 8 "Inactive tokens" makes every inactive access token HTTP 401 (\`${causeCode}\` is 401 \`authentication_error\`, not 403).`;
+  }
+  const challenge = response.headers.get("www-authenticate");
+  if (!(challenge && BEARER_INVALID_TOKEN.test(challenge))) {
+    return `The 401 for an inactive token must carry \`WWW-Authenticate: Bearer error="invalid_token"\`; observed ${challenge === null ? "no WWW-Authenticate header" : `"${challenge}"`}.`;
+  }
+  const error = errorBody(response);
+  if (error?.code !== undefined && error.code !== "authentication_error" && error.code !== causeCode) {
+    return `The structured error code for an inactive token must be \`authentication_error\` or, when the cause is established, \`${causeCode}\`; got ${error.code}.`;
+  }
+  if (error?.type !== undefined && error.type !== "authentication_error") {
+    return `The structured error type for an inactive token must be \`authentication_error\`; got ${error.type}.`;
+  }
+  return undefined;
+}
+
 export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "AS-8/revoked-grant-refused",
@@ -122,20 +153,8 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
       const polled = await pollResourceServerRefusal(adapter.baseUrl, recordsPath, grant.accessToken, before);
       if ("refused" in polled) {
         const after = polled.refused;
-        if (after.status !== 401 && after.status !== 403) {
-          return fail(
-            `After revocation the read was refused with ${after.status}; Section 8 maps a revoked grant to 403 grant_revoked (401 is acceptable when the token itself is invalidated).`,
-            [before.evidence, after.evidence]
-          );
-        }
-        const error = errorBody(after);
-        if (after.status === 403 && error?.code !== "grant_revoked") {
-          return fail(
-            `Expected error code grant_revoked on a 403 after revocation, got ${error?.code ?? "no structured error"}.`,
-            [before.evidence, after.evidence]
-          );
-        }
-        return pass([before.evidence, after.evidence]);
+        const fault = inactiveTokenFault(after, "grant_revoked");
+        return fault ? fail(fault, [before.evidence, after.evidence]) : pass([before.evidence, after.evidence]);
       }
       const last = polled.stillServed;
 
@@ -149,7 +168,8 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "AS-8/expired-grant-refused",
     requirementId: "AS-8",
-    assertion: "A token bound to an expired grant is refused with 403 grant_expired.",
+    assertion:
+      "A token bound to an expired grant is refused with 401 and a Bearer invalid_token challenge, not served.",
     async run({ adapter, streams, path }) {
       const [stream] = streams;
       if (!stream) {
@@ -169,20 +189,13 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
       });
       if (response.status === 200) {
         return fail(
-          "An expired grant served records. Section 9 AS item 8 requires the AS to track expiry and Section 8 maps it to 403 grant_expired.",
+          "An expired grant served records. Section 9 AS item 8 requires the AS to track expiry and Section 8 \"Inactive tokens\" makes it a 401.",
           [response.evidence]
         );
       }
-      if (response.status !== 403 && response.status !== 401) {
-        return fail(`Expected 403 grant_expired (or 401 if the token itself is rejected), got ${response.status}.`, [
-          response.evidence,
-        ]);
-      }
-      const error = errorBody(response);
-      if (response.status === 403 && error?.code !== "grant_expired") {
-        return fail(`Expected error code grant_expired, got ${error?.code ?? "no structured error"}.`, [
-          response.evidence,
-        ]);
+      const fault = inactiveTokenFault(response, "grant_expired");
+      if (fault) {
+        return fail(fault, [response.evidence]);
       }
       return pass([response.evidence]);
     },

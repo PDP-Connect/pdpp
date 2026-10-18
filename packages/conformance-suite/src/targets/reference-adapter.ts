@@ -1094,13 +1094,8 @@ export class ReferenceTargetAdapter implements TargetAdapter {
 
     // Core Section 6 request parameters (clause 6.8-1): `view` is "mutually
     // exclusive with `fields` in a request; both MUST NOT be present
-    // simultaneously. AS returns 400 `invalid_request` if both are present."
-    //
-    // Note the error code: `invalid_request`, NOT the `invalid_authorization_details`
-    // that the other refusals in this function use. That is the spec's own
-    // wording for this clause and the cases assert it exactly, because a client
-    // correcting a malformed request needs to tell "your request shape is
-    // wrong" apart from "your selection failed validation".
+    // simultaneously. The OAuth/RAR binding maps a request with both to RFC 9396
+    // `invalid_authorization_details`."
     //
     // Checked before the fields are validated against the snapshot: both parts
     // are individually valid in the case that matters, so a server validating
@@ -1110,7 +1105,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       : wanted.find((s) => s.view !== undefined && s.fields !== undefined);
     if (bothPresent) {
       return reject(
-        "invalid_request",
+        this.defects.has("misclassify-view-and-fields-refusal") ? "invalid_request" : "invalid_authorization_details",
         `stream '${bothPresent.name}' names both view and fields, which are mutually exclusive`
       );
     }

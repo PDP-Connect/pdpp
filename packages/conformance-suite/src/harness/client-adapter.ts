@@ -35,6 +35,7 @@ export type ClientFixtureResponse =
       readonly nextCursor?: string;
     }
   | {
+      readonly challenge?: string;
       readonly code: unknown;
       readonly kind: "error";
       readonly status: number;
@@ -79,6 +80,8 @@ type ClientDefect =
   | "add-selection-display"
   | "assume-source-kind"
   | "construct-cursor"
+  | "omit-beginning-on-first-sync"
+  | "omit-beginning-on-resync"
   | "override-status-with-error-code"
   | "parse-unknown-identifier"
   | "reuse-next-cursor-as-changes-since"
@@ -269,6 +272,9 @@ async function startFixture(): Promise<ClientFixture> {
     }
 
     if (configuredResponse.kind === "error") {
+      if (configuredResponse.challenge !== undefined) {
+        response.setHeader("WWW-Authenticate", configuredResponse.challenge);
+      }
       writeJson(response, configuredResponse.status, {
         error: {
           code: configuredResponse.code,
@@ -289,7 +295,7 @@ async function startFixture(): Promise<ClientFixture> {
     let nextChangesSince: string | undefined;
     if (configuredResponse.kind === "page") {
       ({ nextChangesSince } = configuredResponse);
-    } else if (url.searchParams.has("changes_since")) {
+    } else if (url.searchParams.has("changes_since") && url.searchParams.get("changes_since") !== "beginning") {
       nextChangesSince = "changes-since-after-full-resync";
     } else {
       nextChangesSince = configuredResponse.expiredCursor;
@@ -338,8 +344,11 @@ export async function createPdppClientUnderTest(
     return client.getJson(`/v1/streams/${encodeURIComponent(stream)}/records`, query);
   }
 
-  async function syncOnce(stream: string): Promise<ClientActionResult> {
-    const response = await getPage(stream, {});
+  // Core Section 4 "Starting a sync": a client starts incremental sync, and
+  // restarts after `cursor_expired`, with `changes_since=beginning`.
+  async function syncOnce(stream: string, restart = false): Promise<ClientActionResult> {
+    const omitBeginning = defectSet.has(restart ? "omit-beginning-on-resync" : "omit-beginning-on-first-sync");
+    const response = await getPage(stream, omitBeginning ? {} : { changes_since: "beginning" });
     if (response.ok) {
       nextChangesSince = responseBodyField(response.body, "next_changes_since");
       nextCursor = responseBodyField(response.body, "next_cursor");
@@ -381,7 +390,7 @@ export async function createPdppClientUnderTest(
       if (
         !response.ok &&
         defectSet.has("retry-revoked-grant") &&
-        response.status === 403 &&
+        response.status === 401 &&
         response.error.code === "grant_revoked"
       ) {
         return actionResult(await getPage(stream, sentCursor === undefined ? {} : { cursor: sentCursor }));
@@ -408,14 +417,14 @@ export async function createPdppClientUnderTest(
         if (defectSet.has("retry-expired-cursor")) {
           return actionResult(await getPage(stream, changesSince === undefined ? {} : { changes_since: changesSince }));
         }
-        return syncOnce(stream);
+        return syncOnce(stream, true);
       }
       if (!response.ok && defectSet.has("throw-on-unknown-error") && shouldRetryUnknownError(response)) {
         throw new Error("unknown error code parser failed");
       }
       return actionResult(response);
     },
-    syncOnce,
+    syncOnce: (stream) => syncOnce(stream),
   };
 }
 

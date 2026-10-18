@@ -128,6 +128,13 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
     defect: "weak-401-challenge",
   },
   { caseId: "AS-8/revoked-grant-refused", defect: "ignore-revocation" },
+  // Revised 8.13-6: an inactive token is 401 behind a Bearer `invalid_token`
+  // challenge. One row per half: the former 403 with no challenge, and a 401
+  // whose challenge omits `error="invalid_token"`.
+  { caseId: "AS-8/revoked-grant-refused", defect: "inactive-grant-as-403" },
+  { caseId: "AS-8/revoked-grant-refused", defect: "omit-invalid-token-error" },
+  { caseId: "AS-8/expired-grant-refused", defect: "inactive-grant-as-403" },
+  { caseId: "AS-8/expired-grant-refused", defect: "omit-invalid-token-error" },
   // Added after independent review: these three are negative-shaped oracles
   // (they exist to catch a cross-subject leak, a fake self-export declaration,
   // and syntax-derived token kind) and previously had only a passes-clean
@@ -217,6 +224,13 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-2/view-and-fields-mutually-exclusive",
     defect: "accept-view-and-fields-together",
   },
+  // Revised 6.8-1: the refusal is classified `invalid_authorization_details`,
+  // so a server that refuses with the former `invalid_request` must now fail.
+  {
+    caseId: "AS-2/view-and-fields-mutually-exclusive",
+    defect: "misclassify-view-and-fields-refusal",
+  },
+
   // Clauses 5.2-4 and 6.8-2. The defect accepts `time_range` on a stream that
   // declares no `consent_time_field`, which is the violation both clauses name.
   // No existing defect produces it: every field- and name-validation defect
@@ -523,6 +537,11 @@ export const CLIENT_DISCRIMINATION_MATRIX: readonly { caseId: string; defect: Cl
   { caseId: "CL-2/grant-revocation-stops-further-requests", defect: "retry-revoked-grant" },
   { caseId: "CL-3/changes-since-does-not-reuse-next-cursor", defect: "reuse-next-cursor-as-changes-since" },
   { caseId: "CL-4/stores-terminal-next-changes-since", defect: "reuse-next-cursor-as-changes-since" },
+  // Revised 4.3-3: a session starts, and restarts after `cursor_expired`, at
+  // `changes_since=beginning`; omitting the parameter is no longer accepted.
+  { caseId: "CL-4/stores-terminal-next-changes-since", defect: "omit-beginning-on-first-sync" },
+  { caseId: "CL-5/full-resync-after-cursor-expired", defect: "omit-beginning-on-resync" },
+  { caseId: "CL-5/endpoint-cursor-expiry-also-full-resyncs", defect: "omit-beginning-on-resync" },
   { caseId: "CL-5/full-resync-after-cursor-expired", defect: "retry-expired-cursor" },
   { caseId: "CL-5/endpoint-cursor-expiry-also-full-resyncs", defect: "retry-expired-cursor" },
   { caseId: "AS-7/client-does-not-override-display-descriptions", defect: "add-selection-display" },

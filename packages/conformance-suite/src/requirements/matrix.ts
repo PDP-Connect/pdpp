@@ -233,8 +233,6 @@ const SECTION_4: readonly ClauseEntry[] = [
     applicability: "the client performs incremental sync",
     observable: "client-capture",
     caseIds: ["CL-5/full-resync-after-cursor-expired"],
-    gapNote:
-      "Candidate-text mismatch, for case work after the lock: the revised text says to start again from `beginning`, i.e. to send `changes_since=beginning`, while CL-5/full-resync-after-cursor-expired accepts a recovery request that carries no `changes_since` at all.",
   },
   {
     clauseId: "4.3-4",
@@ -1319,8 +1317,6 @@ const SECTION_6: readonly ClauseEntry[] = [
     applicability: "the AS supports views",
     observable: "black-box-http",
     caseIds: ["AS-2/view-and-fields-mutually-exclusive"],
-    gapNote:
-      "Candidate-text mismatch, for case work after the lock: AS-2/view-and-fields-mutually-exclusive asserts a 400 `invalid_request` classification (its assertion text and its error-code check), while the revised text maps the refusal to RFC 9396 `invalid_authorization_details` in the OAuth/RAR binding.",
   },
   {
     clauseId: "6.8-2",
@@ -2274,8 +2270,6 @@ const SECTION_8: readonly ClauseEntry[] = [
     applicability: "the client performs incremental sync",
     observable: "client-capture",
     caseIds: ["CL-5/endpoint-cursor-expiry-also-full-resyncs"],
-    gapNote:
-      "Candidate-text mismatch, for case work after the lock: the revised text says to start again from `beginning`, while CL-5/endpoint-cursor-expiry-also-full-resyncs accepts a recovery request that carries neither `changes_since` nor `cursor`.",
   },
   {
     clauseId: "8.9-13",
@@ -2496,7 +2490,7 @@ const SECTION_8: readonly ClauseEntry[] = [
     observable: "black-box-http",
     caseIds: ["AS-8/revoked-grant-refused", "AS-8/expired-grant-refused"],
     gapNote:
-      "Level is the conformance list's, not the quoted text's: this sentence carries no RFC 2119 keyword, yet Section 9 RS item 19 states the same obligation as a MUST. Candidate-text mismatch, for case work after the lock: the mapped cases accept a 403 `grant_revoked` / `grant_expired` and do not check the `WWW-Authenticate` challenge, while the revised text makes both a 401 behind a Bearer `invalid_token` challenge.",
+      "Level is the conformance list's, not the quoted text's: this sentence carries no RFC 2119 keyword, yet Section 9 RS item 19 states the same obligation as a MUST.",
   },
   {
     clauseId: "8.13-7",
@@ -2509,8 +2503,6 @@ const SECTION_8: readonly ClauseEntry[] = [
     applicability: "always",
     observable: "black-box-http",
     caseIds: ["AS-8/revoked-grant-refused", "AS-8/expired-grant-refused"],
-    gapNote:
-      "The mapped cases expect these codes with HTTP 403 `permission_error` (and accept 401 only when the token itself is rejected). The revised text fixes status 401 and type `authentication_error`.",
   },
   {
     clauseId: "8.14-1",
@@ -2791,8 +2783,6 @@ const SECTION_10: readonly ClauseEntry[] = [
     applicability: "always",
     observable: "client-capture",
     caseIds: ["CL-2/grant-revocation-stops-further-requests"],
-    gapNote:
-      "Candidate-text mismatch, for case work after the lock: CL-2/grant-revocation-stops-further-requests feeds the client a 403 `permission_error` `grant_revoked`. The revised text makes `grant_revoked` an HTTP 401 `authentication_error` (Section 8 error table) behind a Bearer `invalid_token` challenge.",
   },
   {
     clauseId: "10.7-3",

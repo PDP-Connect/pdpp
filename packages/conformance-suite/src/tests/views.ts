@@ -21,7 +21,7 @@
 //   5.6-3   unrecognized view URIs are opaque identifiers — not parsed, not
 //           prefix-matched, not resolved to something similar.
 //   6.8-1   `view` and `fields` are mutually exclusive in a request; both
-//           present is 400 `invalid_request`.
+//           present is refused as RFC 9396 `invalid_authorization_details`.
 //
 // EVERY case here is gated on the target actually supporting views. A target
 // that declares `capabilities.views: false`, or that offers no view through the
@@ -286,7 +286,7 @@ export const VIEW_CASES: readonly ConformanceCase[] = [
     caseId: "AS-2/view-and-fields-mutually-exclusive",
     requirementId: "AS-2",
     appliesWhen: supportsViews,
-    assertion: "A selection request naming both `view` and `fields` on one stream is refused with 400 invalid_request.",
+    assertion: "A selection request naming both `view` and `fields` on one stream is refused with 400 invalid_authorization_details.",
     async run({ adapter, streams }) {
       const declared = await firstDeclaredView(adapter);
       if (!declared) {
@@ -330,12 +330,11 @@ export const VIEW_CASES: readonly ConformanceCase[] = [
           evidence
         );
       }
-      // The spec names this code explicitly for this clause, and it is NOT the
-      // invalid_authorization_details the other selection refusals carry: the
-      // request SHAPE is malformed rather than its selection content invalid.
-      if (outcome.errorCode !== "invalid_request") {
+      // The OAuth/RAR binding maps this refusal to the same RFC 9396 code as
+      // every other invalid selection (revised 6.8-1).
+      if (outcome.errorCode !== SELECTION_ERROR) {
         return fail(
-          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than invalid_request. Core Section 6 states this code for this clause specifically: "AS returns 400 \`invalid_request\` if both are present."`,
+          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than ${SELECTION_ERROR}. Core Section 6: the OAuth/RAR binding maps a request carrying both \`view\` and \`fields\` to RFC 9396 \`invalid_authorization_details\`.`,
           evidence
         );
       }

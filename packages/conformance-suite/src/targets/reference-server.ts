@@ -53,6 +53,13 @@ export type Defect =
    * fail a target inside the ceiling.
    */
   | "lag-revocation-within-ceiling"
+  /**
+   * Refuses an inactive (revoked or expired) grant with the former 403
+   * `permission_error` and no Bearer challenge, instead of the revised 401
+   * `authentication_error` behind `WWW-Authenticate: Bearer error="invalid_token"`
+   * (AS-8, clause 8.13-6).
+   */
+  | "inactive-grant-as-403"
   /** Omits resource_metadata from the 401 challenge (RS-16). */
   | "weak-401-challenge"
   /** Discloses current views/relationships to a client token (RS-15). */
@@ -150,7 +157,7 @@ export type Defect =
   | "accept-malformed-stream-list"
   /**
    * Accepts a selection request carrying BOTH `view` and `fields` on one
-   * stream, instead of 400 `invalid_request` (clause 6.8-1).
+   * stream, instead of refusing it (clause 6.8-1).
    *
    * Distinct from every field-validation defect: both halves of the request are
    * individually valid here — a real view name and real declared fields — so a
@@ -159,6 +166,13 @@ export type Defect =
    * no existing defect produces it.
    */
   | "accept-view-and-fields-together"
+  /**
+   * Refuses a selection carrying BOTH `view` and `fields`, but as
+   * `invalid_request` rather than the RFC 9396 `invalid_authorization_details`
+   * the revised OAuth/RAR binding names (clause 6.8-1). Enforcement is intact;
+   * only the classification is wrong, which is what the changed oracle checks.
+   */
+  | "misclassify-view-and-fields-refusal"
   /**
    * Defines a view naming a field absent from the stream's declared schema,
    * and lets it be used (clause 5.6-2).
@@ -662,14 +676,18 @@ function syncToken(version: number): string {
   return `${SYNC_PREFIX}${version}`;
 }
 
+/** The Section 4 "Starting a sync" value: an empty horizon at which no record is visible. */
+const SYNC_BEGINNING = "beginning";
+
 /**
  * Decode a sync token to its horizon, or null when it is not one of ours.
  *
- * An empty token opens a fresh session from the beginning (horizon 0), which is
- * how a client with no prior cursor establishes its baseline.
+ * `beginning` opens a fresh session from horizon 0, which is how a client with
+ * no prior cursor establishes its baseline. It never expires. An empty value is
+ * not a bootstrap and is refused as malformed.
  */
 function parseSyncToken(raw: string): number | null {
-  if (raw === "") {
+  if (raw === SYNC_BEGINNING) {
     return 0;
   }
   if (!raw.startsWith(SYNC_PREFIX)) {
@@ -1048,7 +1066,9 @@ export class ReferenceServer {
    */
   private resolvePrincipal(
     principal: Principal
-  ): { grant: GrantState | undefined; subjectId: string } | { denial: { code: string; message: string } } {
+  ):
+    | { grant: GrantState | undefined; subjectId: string }
+    | { denial: { code: string; inactive?: true; message: string } } {
     if (principal.kind === "owner") {
       return { grant: undefined, subjectId: principal.subjectId };
     }
@@ -1070,10 +1090,10 @@ export class ReferenceServer {
     const lagging =
       this.has("lag-revocation-within-ceiling") && grant.revokedAt !== undefined && Date.now() - grant.revokedAt < 3000;
     if (grant.revoked && !lagging && !this.has("ignore-revocation")) {
-      return { denial: { code: "grant_revoked", message: "Grant was revoked." } };
+      return { denial: { code: "grant_revoked", message: "Grant was revoked.", inactive: true } };
     }
     if (grant.expired && !this.has("serve-expired-grant")) {
-      return { denial: { code: "grant_expired", message: "Grant has expired." } };
+      return { denial: { code: "grant_expired", message: "Grant has expired.", inactive: true } };
     }
     return { grant, subjectId: grant.subjectId };
   }
@@ -1500,6 +1520,16 @@ export class ReferenceServer {
     // would read from an RFC 7662 introspection response.
     const resolved = this.resolvePrincipal(principal);
     if ("denial" in resolved) {
+      // Section 8 "Inactive tokens": a token whose grant is revoked or expired
+      // is inactive, and every inactive access token is 401 behind a Bearer
+      // `invalid_token` challenge. `grant_invalid` is a different condition (a
+      // grant the server cannot serve) and stays 403.
+      if (resolved.denial.inactive && !this.has("inactive-grant-as-403")) {
+        error(401, resolved.denial.code, "authentication_error", resolved.denial.message, {
+          "www-authenticate": this.bearerChallenge(),
+        });
+        return;
+      }
       error(403, resolved.denial.code, "permission_error", resolved.denial.message);
       return;
     }
@@ -1705,7 +1735,7 @@ export class ReferenceServer {
       // with a different remedy. A well-formed token that is merely too old is
       // NOT a client error, and reporting it as one invites a retry that can
       // never succeed.
-      if (syncCursor !== null && syncCursor !== "" && this.expiredSyncTokens.has(syncCursor)) {
+      if (syncCursor !== null && this.expiredSyncTokens.has(syncCursor)) {
         if (this.has("misclassify-expired-sync-cursor")) {
           error(400, "invalid_cursor", "invalid_request_error", "changes_since token is malformed or unrecognized.");
           return;

@@ -665,6 +665,14 @@ export interface MultiInstanceFixture {
  * in-repo reference target under `src/targets/` is one implementation and
  * carries no privileges the contract does not give every other.
  */
+/** The `changes_since` value Core Section 4 says opens an incremental-sync session. */
+export const DEFAULT_CHANGES_SINCE_BOOTSTRAP = "beginning";
+
+/** The value a case sends to open a sync session: the adapter's override, else `beginning`. */
+export function changesSinceBootstrapOf(adapter: { readonly changesSinceBootstrap?: string | undefined }): string {
+  return adapter.changesSinceBootstrap ?? DEFAULT_CHANGES_SINCE_BOOTSTRAP;
+}
+
 export interface TargetAdapter {
   /**
    * Base URL of the authorization server, when it is a separate service.
@@ -693,13 +701,11 @@ export interface TargetAdapter {
   /**
    * The `changes_since` value that opens a fresh sync session from the start.
    *
-   * Core Section 8 says to "pass `changes_since` on the first request" but does
-   * not say what value does that; the suite's own default is the empty string.
-   * A deployment that defines a different bootstrap sentinel (the reference
-   * implementation publishes `beginning` in its discovery hints) and treats an
-   * empty value as an absent parameter would otherwise return a plain list with
-   * no `next_changes_since`, which reads as an RS-8 violation when the session
-   * was never opened.
+   * Core Section 4 "Starting a sync" says a client starts incremental sync with
+   * `changes_since=beginning`, so that is the suite's default
+   * (`DEFAULT_CHANGES_SINCE_BOOTSTRAP`). A deployment that defines a different
+   * opening sentinel sets this to override it; an empty value is not a
+   * bootstrap and a server may treat it as an absent parameter.
    */
   readonly changesSinceBootstrap?: string | undefined;
 
