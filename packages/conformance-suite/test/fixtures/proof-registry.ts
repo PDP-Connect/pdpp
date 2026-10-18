@@ -544,6 +544,18 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "AS-27/time-range-invalid-bound-refused", defect: "accept-invalid-time-range-bound" },
   { caseId: "AS-27/time-range-since-not-before-until-refused", defect: "accept-since-not-before-until" },
   { caseId: "AS-27/time-range-bound-not-converted", defect: "normalize-time-constraint-bounds" },
+  // Incremental-sync visibility and token binding (clauses 4.3-6, 4.3-9, 4.3-11,
+  // 4.3-16, 8.9-11, 8.9-17, 8.9-18).
+  { caseId: "RS-8/non-terminal-page-omits-next-changes-since", defect: "next-changes-since-on-every-page" },
+  { caseId: "RS-6/page-cursor-rejected-under-another-context", defect: "accept-cursor-under-other-context" },
+  { caseId: "RS-21/changes-since-token-rejected-under-another-context", defect: "accept-sync-token-under-other-context" },
+  { caseId: "RS-21/token-does-not-reveal-writes-the-grant-cannot-see", defect: "token-reveals-hidden-writes" },
+  {
+    caseId: "RS-7/record-deleted-after-page-1-not-served-on-a-later-page",
+    defect: "serve-deleted-record-from-session-snapshot",
+  },
+  { caseId: "RS-7/never-visible-record-produces-no-tombstone", defect: "tombstone-for-never-visible-record" },
+  { caseId: "RS-7/record-leaving-time-window-surfaces-as-a-tombstone", defect: "omit-tombstone-on-leaving-window" },
 ];
 
 export const CLIENT_DISCRIMINATION_MATRIX: readonly { caseId: string; defect: ClientDefect }[] = [

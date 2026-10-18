@@ -87,13 +87,20 @@ export const DEFAULT_FIXTURES: readonly StreamFixture[] = [
         title: "Book club",
         source_created_at: "2026-03-26T09:10:00Z",
       },
-      // A third record, so the two RS-7 cases that each delete one record
+      // Records beyond the first, so the RS-7 cases that each delete one record
       // (tombstone, and tombstone-under-`fields`) leave a live record behind.
       {
         id: "conv_3",
         title: "Recipes",
         source_created_at: "2026-03-27T11:00:00Z",
       },
+      // Four more, spread on both sides of the middle of the date range, so the
+      // sync-visibility cases can build a time window with records in and out
+      // of it and still delete a few without emptying the stream.
+      { id: "conv_4", title: "Garden notes", source_created_at: "2026-03-20T08:00:00Z" },
+      { id: "conv_5", title: "Reading list", source_created_at: "2026-03-22T16:30:00Z" },
+      { id: "conv_6", title: "Budget", source_created_at: "2026-03-28T07:45:00Z" },
+      { id: "conv_7", title: "Packing", source_created_at: "2026-03-29T21:15:00Z" },
     ],
   },
   {

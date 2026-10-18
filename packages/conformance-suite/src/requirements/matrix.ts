@@ -266,9 +266,9 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#incremental-sync",
     applicability: "the target serves at least one `mutable_state` stream",
     observable: "black-box-http",
-    caseIds: ["RS-7/deletion-surfaces-as-a-tombstone", "RS-7/tombstone-envelope-survives-sparse-fields"],
+    caseIds: ["RS-7/deletion-surfaces-as-a-tombstone", "RS-7/tombstone-envelope-survives-sparse-fields", "RS-7/record-leaving-time-window-surfaces-as-a-tombstone"],
     gapNote:
-      "The revised rule covers every record that is visible at h0 and not at h1 (deleted, moved out of the time window, or excluded for another reason). The mapped cases exercise deletion only, so the other removal reasons are untested.",
+      "Deletion and a record rewritten out of the grant's time window are exercised. A record excluded from an owner session by a request filter is not.",
   },
   {
     clauseId: "4.3-8",
@@ -294,9 +294,9 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#incremental-sync",
     applicability: "the target supports `changes_since`",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-21/token-does-not-reveal-writes-the-grant-cannot-see"],
     gapNote:
-      "Missing case: change a field the grant does not carry, then compare the `next_changes_since` tokens of two sessions. RS-7/sync-eligibility-computed-on-the-authorized-projection changes a hidden field but does not compare the issued tokens.",
+      "Equality is probed: the terminal token of a session that returns nothing is compared before and after a write to a field outside the grant's projection, against two identical sessions with no write between them. A target whose tokens differ between identical sessions skips. Token ordering is not probed, and the owner-session half (effective scope) is not exercised.",
   },
   {
     clauseId: "4.3-10",
@@ -322,9 +322,9 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#incremental-sync",
     applicability: "the target supports `changes_since`",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-7/never-visible-record-produces-no-tombstone"],
     gapNote:
-      "Missing case: sync a record that was never visible under the query context and one that was visible only between h0 and h1, and assert no tombstone for either.",
+      "The never-visible half is tested by deleting a record outside a grant's time window. A record visible only between h0 and h1 needs an adapter hook that creates and then deletes a record between two sessions; the adapter contract has no create-record hook.",
   },
   {
     clauseId: "4.3-12",
@@ -392,9 +392,7 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#incremental-sync",
     applicability: "the target supports `changes_since`",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "RS-8/terminal-page-carries-next-changes-since skips when the first page is not terminal and never inspects a non-terminal page. A case that pages a multi-page session and asserts the field is absent before the terminal page is missing.",
+    caseIds: ["RS-8/non-terminal-page-omits-next-changes-since"],
   },
   {
     clauseId: "4.5-1",
@@ -2244,9 +2242,9 @@ const SECTION_8: readonly ClauseEntry[] = [
     applicability: "always",
     observable: "black-box-http",
     partial: true,
-    caseIds: ["RS-6/order-mismatched-cursor-rejected"],
+    caseIds: ["RS-6/order-mismatched-cursor-rejected", "RS-6/page-cursor-rejected-under-another-context"],
     gapNote:
-      "The revised rule binds a page cursor to its whole query context (grant or owner scope, stream, `fields`, `view`, `expand[]`, `expand_limit[...]`, `order`, every `filter[...]`, and any `changes_since` token). RS-6/order-mismatched-cursor-rejected exercises only the `order` dimension, so a cursor replayed under a different `fields`, `view`, filter or grant is untested. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test.",
+      "Cursor replay under a different `fields` selection, another grant and an owner token is tested, in addition to `order`. `view`, `expand[]`, `expand_limit[...]`, `filter[...]` and the `changes_since` dimension are not replayed. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test.",
   },
   {
     clauseId: "8.9-12",
@@ -2318,9 +2316,9 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "the target supports `changes_since`",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-6/page-cursor-rejected-under-another-context", "RS-21/changes-since-token-rejected-under-another-context"],
     gapNote:
-      "Missing case: replay a `next_changes_since` token under another grant, another subject, or a changed `fields`, `view` or filter, and expect 400 `invalid_cursor`. RS-6/order-mismatched-cursor-rejected covers a page cursor and the `order` dimension only.",
+      "A page cursor is replayed under a different `fields`, another grant and an owner token; a `changes_since` token under another grant and an owner token. A token replayed under another subject, another owner scope, or a changed `fields`, `view` or filter is not tested: Core does not say whether `fields` is part of a `changes_since` token's query context, and RS-7/tombstone-envelope-survives-sparse-fields reads one token under several `fields` selections.",
   },
   {
     clauseId: "8.9-18",
@@ -2332,9 +2330,7 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "the target supports `changes_since`",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "RS-7/paginated-sync-session-anchored-to-one-horizon covers new writes after page 1, not a deletion after page 1. A case that deletes a record that sits on a later page is missing.",
+    caseIds: ["RS-7/record-deleted-after-page-1-not-served-on-a-later-page"],
   },
   {
     clauseId: "8.12-1",

@@ -20,6 +20,7 @@
 // path it would against a remote vendor: no in-process short circuit, no
 // privileged access to internal state.
 
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -166,6 +167,20 @@ export type Defect =
    * no existing defect produces it.
    */
   | "accept-view-and-fields-together"
+  /** Reports the global version clock as `next_changes_since`, so token equality reveals writes the grant cannot see (clause 4.3-9). */
+  | "token-reveals-hidden-writes"
+  /** Accepts a page cursor presented under another grant, scope or `fields` selection (clauses 8.9-11, 8.9-17). */
+  | "accept-cursor-under-other-context"
+  /** Accepts a `changes_since` token presented under another grant, scope or stream (clause 8.9-17). */
+  | "accept-sync-token-under-other-context"
+  /** Emits `next_changes_since` on every page of a paginated session, not only the terminal one (clause 4.3-16). */
+  | "next-changes-since-on-every-page"
+  /** Serves a record on a later page after it was deleted post page 1, by reading the session snapshot (clause 8.9-18). */
+  | "serve-deleted-record-from-session-snapshot"
+  /** Emits a tombstone for a deleted record the grant could never see (clause 4.3-11). */
+  | "tombstone-for-never-visible-record"
+  /** Does not emit a tombstone when a record moves out of the grant's time window (clause 4.3-6). */
+  | "omit-tombstone-on-leaving-window"
   /** Accepts `fields: ["*", "<name>"]`, instead of requiring `*` to be the only element (clause 6.8-7). */
   | "accept-star-beside-fields"
   /** Accepts a stream request carrying neither `fields` nor `view` (clause 6.8-12). */
@@ -574,6 +589,14 @@ export interface StreamFixture {
   readonly views?: readonly { readonly id: string; readonly fields: readonly string[] }[];
 }
 
+/** One state of a record at a version (Core Section 4 "Visibility"); `snapshot` is null once deleted. */
+interface HistoryEntry {
+  readonly at: string;
+  readonly changed: ReadonlySet<string>;
+  readonly snapshot: Record<string, unknown> | null;
+  readonly version: number;
+}
+
 interface GrantState {
   /**
    * Core Section 7 required grant facts, retained so the introspection
@@ -695,30 +718,44 @@ function recordKey(stream: string, recordId: string): string {
  */
 const SYNC_PREFIX = "sync:";
 
-/** Encode a sync horizon as an opaque token. */
-function syncToken(version: number): string {
-  return `${SYNC_PREFIX}${version}`;
+/**
+ * Encode a sync horizon as an opaque token, bound to the query context that
+ * produced it (Section 8: a token is bound to the grant or owner scope and to
+ * the query context). `beginning` is the one token with no binding.
+ */
+function syncToken(version: number, context: string): string {
+  return `${SYNC_PREFIX}${version}:${context}`;
 }
 
 /** The Section 4 "Starting a sync" value: an empty horizon at which no record is visible. */
 const SYNC_BEGINNING = "beginning";
 
+/** A short stable digest of a query context, for binding tokens to it. */
+function contextDigest(parts: readonly string[]): string {
+  return createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 12);
+}
+
 /**
- * Decode a sync token to its horizon, or null when it is not one of ours.
+ * Decode a sync token to its horizon and bound context, or null when it is not
+ * one of ours.
  *
  * `beginning` opens a fresh session from horizon 0, which is how a client with
- * no prior cursor establishes its baseline. It never expires. An empty value is
- * not a bootstrap and is refused as malformed.
+ * no prior cursor establishes its baseline. It never expires and carries no
+ * binding. An empty value is not a bootstrap and is refused as malformed.
  */
-function parseSyncToken(raw: string): number | null {
+function parseSyncToken(raw: string): { readonly context?: string; readonly version: number } | null {
   if (raw === SYNC_BEGINNING) {
-    return 0;
+    return { version: 0 };
   }
   if (!raw.startsWith(SYNC_PREFIX)) {
     return null;
   }
-  const version = Number(raw.slice(SYNC_PREFIX.length));
-  return Number.isInteger(version) && version >= 0 ? version : null;
+  const [versionText, context] = raw.slice(SYNC_PREFIX.length).split(":");
+  const version = Number(versionText);
+  if (!(Number.isInteger(version) && version >= 0) || context === undefined || context.length === 0) {
+    return null;
+  }
+  return { context, version };
 }
 
 const RECORDS_PATH = /^\/v1\/streams\/([^/]+)\/records$/;
@@ -798,6 +835,17 @@ export class ReferenceServer {
   private versionClock = 0;
 
   /**
+   * Every state a record has had, oldest first, keyed `stream\nrecordId`.
+   *
+   * Core Section 4 "Visibility": whether a record is visible is judged at a
+   * HORIZON, from the record's version at that horizon, so a session needs the
+   * state each record was in then -- not just the latest. A deletion is a final
+   * entry with a null snapshot. The history is what lets a session tell "left
+   * the grant's window" from "never in it", which a latest-version stamp cannot.
+   */
+  private readonly history = new Map<string, HistoryEntry[]>();
+
+  /**
    * Fields whose change is NOT visible to a given grant, recorded per record so
    * clause 8.9-13 is observable.
    *
@@ -865,6 +913,7 @@ export class ReferenceServer {
         this.versionClock += 1;
         this.recordVersions.set(recordKey(stream.name, record.id), this.versionClock);
         this.changedFields.set(recordKey(stream.name, record.id), new Set(stream.fields));
+        this.recordHistory(stream.name, record.id, { ...record }, new Set(stream.fields));
       }
     }
   }
@@ -888,7 +937,21 @@ export class ReferenceServer {
     const key = recordKey(stream, recordId);
     this.recordVersions.set(key, this.versionClock);
     this.changedFields.set(key, new Set([field]));
+    this.recordHistory(stream, recordId, { ...record }, new Set([field]));
     return true;
+  }
+
+  /** Append a state to a record's history at the current version. */
+  private recordHistory(
+    stream: string,
+    recordId: string,
+    snapshot: Record<string, unknown> | null,
+    changed: ReadonlySet<string>
+  ): void {
+    const key = recordKey(stream, recordId);
+    const entries = this.history.get(key) ?? [];
+    entries.push({ at: new Date().toISOString(), changed, snapshot, version: this.versionClock });
+    this.history.set(key, entries);
   }
 
   /**
@@ -946,6 +1009,7 @@ export class ReferenceServer {
       deletedAt: new Date().toISOString(),
     });
     this.recordVersions.set(recordKey(stream, recordId), this.versionClock);
+    this.recordHistory(stream, recordId, null, new Set(fixture.fields));
     return true;
   }
 
@@ -1009,6 +1073,7 @@ export class ReferenceServer {
         this.versionClock += 1;
         this.recordVersions.set(recordKey(name, record.id), this.versionClock);
         this.changedFields.set(recordKey(name, record.id), new Set(["id", "label", cursorField]));
+        this.recordHistory(name, record.id, { ...record }, new Set(["id", "label", cursorField]));
       }
     }
     return { stream: name, cursorField, instanceIds, records: seeded };
@@ -1758,8 +1823,9 @@ export class ReferenceServer {
       // A changes_since token this server did not mint is malformed, not a
       // reason to fall back to a full read — falling back would silently return
       // the whole stream to a client that asked for a delta.
-      let syncHorizon = syncCursor === null ? null : parseSyncToken(syncCursor);
-      if (syncCursor !== null && syncHorizon === null) {
+      const parsedSyncToken = syncCursor === null ? null : parseSyncToken(syncCursor);
+      let syncHorizon = parsedSyncToken === null ? null : parsedSyncToken.version;
+      if (syncCursor !== null && parsedSyncToken === null) {
         error(400, "invalid_cursor", "invalid_request_error", "changes_since token is malformed or unrecognized.");
         return;
       }
@@ -1779,6 +1845,28 @@ export class ReferenceServer {
         return;
       }
 
+      // Section 8: a token is bound to the grant (owner: subject and scope) and
+      // to the stream it was issued for, and the RS MUST reject it under
+      // another as `invalid_cursor`. `fields` is deliberately not part of the
+      // binding for a sync token: Core's rule for a token names the query
+      // context without listing it, and the tombstone cases read one token
+      // under several `fields` selections.
+      const scopeKey = principal.kind === "client" ? `grant:${grant?.grantId}` : `owner:${subjectId}`;
+      const syncContext = contextDigest(["sync", scopeKey, fixture.name]);
+      if (
+        parsedSyncToken?.context !== undefined &&
+        parsedSyncToken.context !== syncContext &&
+        !this.has("accept-sync-token-under-other-context")
+      ) {
+        error(
+          400,
+          "invalid_cursor",
+          "invalid_request_error",
+          "changes_since token was issued under another grant, scope or stream."
+        );
+        return;
+      }
+
       // Section 8 "Stable sort": page cursors are direction-bound. This server
       // mints `ok:<order>:<offset>`, so the direction a cursor was produced
       // under travels with it and a mismatch is detectable — which is what
@@ -1789,8 +1877,26 @@ export class ReferenceServer {
       let cursorOffset = 0;
       /** Session horizon carried by a sync-session page cursor (clause 8.9-14). */
       let cursorHorizon: number | null = null;
+      // Clause 8.9-11: a page cursor is bound to the whole query context that
+      // produced it -- grant or owner scope, stream, `fields`, `order`, and any
+      // `filter[...]` / `expand` parameter -- and is rejected under another as
+      // `invalid_cursor`. `order` keeps its own, more specific refusal below.
+      const contextParams = [...parsed.searchParams.entries()]
+        .filter(([key]) => key === "fields" || key.startsWith("filter[") || key.startsWith("expand"))
+        .map(([key, value]) => `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort().join(",") : value}`)
+        .sort();
+      const pageContext = contextDigest(["page", scopeKey, fixture.name, ...contextParams]);
       if (rawCursor?.startsWith("ok:")) {
-        const [, cursorOrder, offsetText, horizonText, fromText] = rawCursor.split(":");
+        const [, cursorOrder, offsetText, horizonText, fromText, cursorContext] = rawCursor.split(":");
+        if (cursorContext !== pageContext && !this.has("accept-cursor-under-other-context")) {
+          error(
+            400,
+            "invalid_cursor",
+            "invalid_request_error",
+            "Cursor was issued under another grant, scope or query context."
+          );
+          return;
+        }
         if (
           cursorOrder !== undefined &&
           cursorOrder !== requestedOrder &&
@@ -1865,27 +1971,6 @@ export class ReferenceServer {
       const isSync = syncHorizon !== null;
       const sessionHorizon = cursorHorizon ?? this.versionClock;
 
-      const eligibleForSync = (record: Record_): boolean => {
-        if (syncHorizon === null) {
-          return true;
-        }
-        const key = recordKey(fixture.name, record.id);
-        const version = this.recordVersions.get(key) ?? 0;
-        if (!(version > syncHorizon && version <= sessionHorizon)) {
-          return false;
-        }
-        // Clause 8.9-13: eligibility is computed on the GRANT-AUTHORIZED
-        // PROJECTION, not the unprojected record. A change confined to fields
-        // this caller cannot see must not surface the record, because doing so
-        // tells the client that something it is not authorized to read has
-        // changed.
-        if (this.has("ignore-projection-for-sync-eligibility")) {
-          return true;
-        }
-        const touched = this.changedFields.get(key);
-        return touched === undefined || [...touched].some((field) => projection.includes(field));
-      };
-
       // Sparse fieldset (Section 8 `fields`): the request narrows what the
       // caller may already see, never widens it. Schema-required fields are
       // always included for an owner read; a client read stays inside the
@@ -1936,7 +2021,75 @@ export class ReferenceServer {
         data: Object.fromEntries(Object.entries(record).filter(([key]) => dataFields.includes(key))),
       });
 
-      const eligible = fixture.records.filter(inGrantInstances).filter(withinWindow).filter(eligibleForSync);
+      // Core Section 4 "Visibility": a session compares the two horizons only.
+      // A record is visible at a horizon if its version AT that horizon exists
+      // and passes the grant's instances and time window. Not visible -> visible
+      // returns the record; visible -> visible returns it only if its
+      // grant-authorized projection changed (clause 8.9-13); visible -> not
+      // visible (deleted, or moved out of the window) is one tombstone; and a
+      // record never visible produces nothing (clause 4.3-11).
+      const streamKeys = [...this.history.keys()].filter((key) => key.startsWith(`${fixture.name}\n`));
+      const entryAt = (key: string, horizon: number): HistoryEntry | undefined => {
+        let found: HistoryEntry | undefined;
+        for (const entry of this.history.get(key) ?? []) {
+          if (entry.version > horizon) {
+            break;
+          }
+          found = entry;
+        }
+        return found;
+      };
+      const visibleIn = (entry: HistoryEntry | undefined): boolean =>
+        entry?.snapshot != null && inGrantInstances(entry.snapshot as Record_) && withinWindow(entry.snapshot as Record_);
+      const syncDelta = (h0: number, h1: number) => {
+        const records: Record_[] = [];
+        const tombstones: Record<string, unknown>[] = [];
+        let visibleHorizon = 0;
+        for (const key of streamKeys) {
+          const entries = this.history.get(key) ?? [];
+          const [at0, at1] = [entryAt(key, h0), entryAt(key, h1)];
+          const [v0, v1] = [visibleIn(at0), visibleIn(at1)];
+          const inRange = entries.filter((entry) => entry.version > h0 && entry.version <= h1);
+          const changesProjection = inRange.some(
+            (entry) => this.has("ignore-projection-for-sync-eligibility") || [...entry.changed].some((f) => projection.includes(f))
+          );
+          // Clause 8.9-18: a record deleted AFTER page 1 (past the session
+          // horizon) is not served on a later page, even though it was visible
+          // at the horizon.
+          const last = entries.at(-1);
+          const deletedAfterHorizon = last?.snapshot === null && last.version > h1;
+          if (v1 && (!v0 || changesProjection) && (!deletedAfterHorizon || this.has("serve-deleted-record-from-session-snapshot"))) {
+            records.push(at1?.snapshot as Record_);
+          }
+          const leftWindow = v0 && !v1;
+          const stillExists = at1?.snapshot !== null;
+          const skippedMove = this.has("omit-tombstone-on-leaving-window") && stillExists;
+          const neverVisibleDeletion =
+            this.has("tombstone-for-never-visible-record") && at1?.snapshot === null && inRange.length > 0;
+          if (!this.has("omit-tombstones") && ((leftWindow && !skippedMove) || neverVisibleDeletion)) {
+            const at = inRange.at(-1)?.at ?? new Date().toISOString();
+            const id = key.slice(fixture.name.length + 1);
+            tombstones.push({ object: "record", id, stream: fixture.name, deleted: true, deleted_at: at, emitted_at: at });
+          }
+          // The token names the last event this context could SEE (clause
+          // 4.3-9), not the global clock: a write confined to fields the grant
+          // does not carry must not move it.
+          let previouslyVisible = false;
+          for (const entry of entries) {
+            if (entry.version > h1) {
+              break;
+            }
+            const nowVisible = visibleIn(entry);
+            if (nowVisible !== previouslyVisible || (nowVisible && [...entry.changed].some((f) => projection.includes(f)))) {
+              visibleHorizon = Math.max(visibleHorizon, entry.version);
+            }
+            previouslyVisible = nowVisible;
+          }
+        }
+        return { records, tombstones, visibleHorizon };
+      };
+      const sync = syncHorizon === null ? undefined : syncDelta(syncHorizon, sessionHorizon);
+      const eligible = sync ? sync.records : fixture.records.filter(inGrantInstances).filter(withinWindow);
       // Clause 4.3-6: a changes_since feed on a grant that lists several
       // instances is still a changes_since feed (Section 9 RS item 7).
       if (isSync && (instanceIds?.length ?? 0) > 1 && this.has("reject-multi-instance-changes-since")) {
@@ -1971,29 +2124,11 @@ export class ReferenceServer {
       // `project-tombstones-through-fields` it does, which empties the
       // envelope for `fields=name` and strips everything but `id` for
       // `fields=id`.
-      const deletions =
-        syncHorizon === null || this.has("omit-tombstones")
-          ? []
-          : [...this.tombstones.values()]
-              .filter(
-                (tombstone) =>
-                  tombstone.stream === fixture.name &&
-                  tombstone.version > syncHorizon &&
-                  tombstone.version <= sessionHorizon
-              )
-              .map((tombstone) => {
-                const envelope = {
-                  object: "record",
-                  id: tombstone.recordId,
-                  stream: tombstone.stream,
-                  deleted: true,
-                  deleted_at: tombstone.deletedAt,
-                  emitted_at: tombstone.deletedAt,
-                };
-                return requestedFields !== undefined && this.has("project-tombstones-through-fields")
-                  ? Object.fromEntries(Object.entries(envelope).filter(([key]) => requestedFields.has(key)))
-                  : envelope;
-              });
+      const deletions = (sync?.tombstones ?? []).map((envelope) =>
+        requestedFields !== undefined && this.has("project-tombstones-through-fields")
+          ? Object.fromEntries(Object.entries(envelope).filter(([key]) => requestedFields.has(key)))
+          : envelope
+      );
       const data = [...live, ...deletions];
 
       // An oversized limit is clamped with a non-fatal warning (Section 8). The
@@ -2037,14 +2172,21 @@ export class ReferenceServer {
         // direction-binding check above has something to compare against, and
         // — within a sync session — the horizon that session is anchored to.
         ...(hasMore && !omitNextCursor
-          ? { next_cursor: `ok:${requestedOrder}:${nextOffset}${isSync ? `:${sessionHorizon}:${syncHorizon}` : ""}` }
+          ? {
+              next_cursor: `ok:${requestedOrder}:${nextOffset}:${isSync ? `${sessionHorizon}:${syncHorizon}` : "-:-"}:${pageContext}`,
+            }
           : {}),
         // Clause 8.9-15: the terminal page of a changes_since response carries
         // the token for the NEXT session. It names this session's horizon, so
         // writes that arrived mid-session are picked up next time rather than
         // being lost between the two.
-        ...(isSync && !hasMore && !this.has("omit-next-changes-since")
-          ? { next_changes_since: syncToken(sessionHorizon) }
+        ...(isSync && (!hasMore || this.has("next-changes-since-on-every-page")) && !this.has("omit-next-changes-since")
+          ? {
+              next_changes_since: syncToken(
+                this.has("token-reveals-hidden-writes") ? sessionHorizon : (sync?.visibleHorizon ?? 0),
+                syncContext
+              ),
+            }
           : {}),
         ...(clamped && !this.has("silent-limit-clamp")
           ? { meta: { warnings: [{ code: "limit_clamped", message: "limit clamped to 100" }] } }

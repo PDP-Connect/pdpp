@@ -53,9 +53,9 @@ Clauses enumerated: **214**.
 | MUST clauses | Count |
 | --- | --- |
 | Total | **181** |
-| With at least one case | **98** |
+| With at least one case | **103** |
 | Untestable (review-only, no case) | **56** |
-| Not yet tested (observable, no case) | **27** |
+| Not yet tested (observable, no case) | **22** |
 
 The last three rows partition the total. 2 of the clauses with a case are
 review-only: a case exercises part of them, and a run still reports them `untestable`.
@@ -480,7 +480,7 @@ Returns structured errors as defined in the Section 8 unified error table.
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.9-11` | 1400 | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected` | The revised rule binds a page cursor to its whole query context (grant or owner scope, stream, `fields`, `view`, `expand[]`, `expand_limit[...]`, `order`, every `filter[...]`, and any `changes_since` token). RS-6/order-mismatched-cursor-rejected exercises only the `order` dimension, so a cursor replayed under a different `fields`, `view`, filter or grant is untested. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test. |
+| `8.9-11` | 1400 | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected`<br>`RS-6/page-cursor-rejected-under-another-context` | Cursor replay under a different `fields` selection, another grant and an owner token is tested, in addition to `order`. `view`, `expand[]`, `expand_limit[...]`, `filter[...]` and the `changes_since` dimension are not replayed. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test. |
 
 ### RS-7 (resource-server, MUST)
 
@@ -490,12 +490,12 @@ Supports incremental sync via `changes_since` on every stream, starting from `be
 | --- | --- | --- | --- | --- | --- |
 | `4.3-1` | 272 | MAY | black-box-http | — | — |
 | `4.3-2` | 272 | MUST | black-box-http | `RS-7/expired-sync-cursor-reported-as-gone` | — |
-| `4.3-6` | 264 | MUST | black-box-http | `RS-7/deletion-surfaces-as-a-tombstone`<br>`RS-7/tombstone-envelope-survives-sparse-fields` | The revised rule covers every record that is visible at h0 and not at h1 (deleted, moved out of the time window, or excluded for another reason). The mapped cases exercise deletion only, so the other removal reasons are untested. |
-| `4.3-11` | 264 | MUST | black-box-http | — | Missing case: sync a record that was never visible under the query context and one that was visible only between h0 and h1, and assert no tombstone for either. |
+| `4.3-6` | 264 | MUST | black-box-http | `RS-7/deletion-surfaces-as-a-tombstone`<br>`RS-7/tombstone-envelope-survives-sparse-fields`<br>`RS-7/record-leaving-time-window-surfaces-as-a-tombstone` | Deletion and a record rewritten out of the grant's time window are exercised. A record excluded from an owner session by a request filter is not. |
+| `4.3-11` | 264 | MUST | black-box-http | `RS-7/never-visible-record-produces-no-tombstone` | The never-visible half is tested by deleting a record outside a grant's time window. A record visible only between h0 and h1 needs an adapter hook that creates and then deletes a record between two sessions; the adapter contract has no create-record hook. |
 | `4.3-13` | 266 | MUST | black-box-http | `RS-7/expired-sync-cursor-reported-as-gone` | The mapped case retires a token through the adapter's expireSyncCursor hook, so the target no longer holds the history behind it; it does not cover a session that fails because visibility at h0 cannot be determined for another reason. |
 | `8.9-13` | 1404 | MUST | black-box-http | `RS-7/sync-eligibility-computed-on-the-authorized-projection` | — |
 | `8.9-14` | 1408 | MUST | black-box-http | `RS-7/paginated-sync-session-anchored-to-one-horizon` | — |
-| `8.9-18` | 1408 | MUST | black-box-http | — | RS-7/paginated-sync-session-anchored-to-one-horizon covers new writes after page 1, not a deletion after page 1. A case that deletes a record that sits on a later page is missing. |
+| `8.9-18` | 1408 | MUST | black-box-http | `RS-7/record-deleted-after-page-1-not-served-on-a-later-page` | — |
 
 ### RS-8 (resource-server, MUST)
 
@@ -504,7 +504,7 @@ Returns `next_changes_since` on the terminal page of every `changes_since` respo
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `4.3-5` | 274 | MUST | black-box-http | `RS-8/terminal-page-carries-next-changes-since`<br>`RS-7/changes-since-accepted-on-multi-instance-grant` | — |
-| `4.3-16` | 274 | MUST | black-box-http | — | RS-8/terminal-page-carries-next-changes-since skips when the first page is not terminal and never inspects a non-terminal page. A case that pages a multi-page session and asserts the field is absent before the terminal page is missing. |
+| `4.3-16` | 274 | MUST | black-box-http | `RS-8/non-terminal-page-omits-next-changes-since` | — |
 | `8.9-14` | 1408 | MUST | black-box-http | `RS-7/paginated-sync-session-anchored-to-one-horizon` | — |
 | `8.9-15` | 1444 | MUST | black-box-http | `RS-8/terminal-page-carries-next-changes-since`<br>`RS-7/changes-since-accepted-on-multi-instance-grant` | — |
 
@@ -619,8 +619,8 @@ Emits a tombstone for each record visible at the previous horizon and not visibl
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `4.3-6` | 264 | MUST | black-box-http | `RS-7/deletion-surfaces-as-a-tombstone`<br>`RS-7/tombstone-envelope-survives-sparse-fields` | The revised rule covers every record that is visible at h0 and not at h1 (deleted, moved out of the time window, or excluded for another reason). The mapped cases exercise deletion only, so the other removal reasons are untested. |
-| `4.3-11` | 264 | MUST | black-box-http | — | Missing case: sync a record that was never visible under the query context and one that was visible only between h0 and h1, and assert no tombstone for either. |
+| `4.3-6` | 264 | MUST | black-box-http | `RS-7/deletion-surfaces-as-a-tombstone`<br>`RS-7/tombstone-envelope-survives-sparse-fields`<br>`RS-7/record-leaving-time-window-surfaces-as-a-tombstone` | Deletion and a record rewritten out of the grant's time window are exercised. A record excluded from an owner session by a request filter is not. |
+| `4.3-11` | 264 | MUST | black-box-http | `RS-7/never-visible-record-produces-no-tombstone` | The never-visible half is tested by deleting a record outside a grant's time window. A record visible only between h0 and h1 needs an adapter hook that creates and then deletes a record between two sessions; the adapter contract has no create-record hook. |
 | `4.3-12` | 266 | MUST | review-only | — | Not observable as stated: retained state is internal. It is visible only through the result of a session, which 4.3-6 and 4.3-11 judge. |
 | `4.3-13` | 266 | MUST | black-box-http | `RS-7/expired-sync-cursor-reported-as-gone` | The mapped case retires a token through the adapter's expireSyncCursor hook, so the target no longer holds the history behind it; it does not cover a session that fails because visibility at h0 cannot be determined for another reason. |
 
@@ -631,10 +631,10 @@ Binds each page cursor and `changes_since` token to its grant, or owner subject 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `4.3-8` | 245 | MUST | review-only | — | Not observable from outside: whether an issued token reveals a readable position, time or field value cannot be decided by inspecting the bytes of a token that looks opaque, and the suite has no access to the issuer's token construction. |
-| `4.3-9` | 245 | MUST | black-box-http | — | Missing case: change a field the grant does not carry, then compare the `next_changes_since` tokens of two sessions. RS-7/sync-eligibility-computed-on-the-authorized-projection changes a hidden field but does not compare the issued tokens. |
+| `4.3-9` | 245 | MUST | black-box-http | `RS-21/token-does-not-reveal-writes-the-grant-cannot-see` | Equality is probed: the terminal token of a session that returns nothing is compared before and after a write to a field outside the grant's projection, against two identical sessions with no write between them. A target whose tokens differ between identical sessions skips. Token ordering is not probed, and the owner-session half (effective scope) is not exercised. |
 | `4.3-10` | 245 | MUST | review-only | — | Not observable from outside: whether an issued token reveals a readable position, time or field value cannot be decided by inspecting the bytes of a token that looks opaque, and the suite has no access to the issuer's token construction. |
-| `8.9-17` | 1406 | MUST | black-box-http | — | Missing case: replay a `next_changes_since` token under another grant, another subject, or a changed `fields`, `view` or filter, and expect 400 `invalid_cursor`. RS-6/order-mismatched-cursor-rejected covers a page cursor and the `order` dimension only. |
-| `8.9-18` | 1408 | MUST | black-box-http | — | RS-7/paginated-sync-session-anchored-to-one-horizon covers new writes after page 1, not a deletion after page 1. A case that deletes a record that sits on a later page is missing. |
+| `8.9-17` | 1406 | MUST | black-box-http | `RS-6/page-cursor-rejected-under-another-context`<br>`RS-21/changes-since-token-rejected-under-another-context` | A page cursor is replayed under a different `fields`, another grant and an owner token; a `changes_since` token under another grant and an owner token. A token replayed under another subject, another owner scope, or a changed `fields`, `view` or filter is not tested: Core does not say whether `fields` is part of a `changes_since` token's query context, and RS-7/tombstone-envelope-survives-sparse-fields reads one token under several `fields` selections. |
+| `8.9-18` | 1408 | MUST | black-box-http | `RS-7/record-deleted-after-page-1-not-served-on-a-later-page` | — |
 
 ### RS-22 (resource-server, MUST)
 
@@ -670,7 +670,7 @@ Treats `cursor` and `changes_since` tokens as opaque and from distinct token spa
 | --- | --- | --- | --- | --- | --- |
 | `4.3-4` | 274 | MUST | client-capture | `CL-3/changes-since-does-not-reuse-next-cursor` | — |
 | `8.9-1` | 1372 | MUST | client-capture | `CL-3/forwards-cursors-as-opaque-values` | — |
-| `8.9-11` | 1400 | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected` | The revised rule binds a page cursor to its whole query context (grant or owner scope, stream, `fields`, `view`, `expand[]`, `expand_limit[...]`, `order`, every `filter[...]`, and any `changes_since` token). RS-6/order-mismatched-cursor-rejected exercises only the `order` dimension, so a cursor replayed under a different `fields`, `view`, filter or grant is untested. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test. |
+| `8.9-11` | 1400 | MUST | black-box-http | `RS-6/order-mismatched-cursor-rejected`<br>`RS-6/page-cursor-rejected-under-another-context` | Cursor replay under a different `fields` selection, another grant and an owner token is tested, in addition to `order`. `view`, `expand[]`, `expand_limit[...]`, `filter[...]` and the `changes_since` dimension are not replayed. The client half stays `client-capture`: the adapter has no reverse channel onto a client under test. |
 
 ### CL-4 (client, MUST)
 
