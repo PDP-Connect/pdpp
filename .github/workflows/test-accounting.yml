@@ -6,9 +6,8 @@ name: test-accounting
 # `runAuthority` now enforces on every real `--run` (see authority.ts), run
 # here independently so a discovery gap is caught on PRs that touch the
 # accounting scripts or the manifest directly, without requiring a full
-# `--suite all` run (which would spawn every package's real test suite,
-# including PostgreSQL-gated reference-implementation profiles this
-# workflow has no business depending on).
+# `--suite all` run (which would spawn every suite's real tests; that full
+# gate runs in workspace-tests.yml).
 #
 # Path-scoped like spec-check.yml/openspec-archive-check.yml: this only
 # needs to run when the accounting scripts or the manifest itself change.

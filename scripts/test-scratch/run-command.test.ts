@@ -365,8 +365,15 @@ async function eventuallyRunningMarker(
 ): Promise<Record<string, unknown> & { pgid: number; state: string }> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
+    // The root directory exists before its marker is created and written.
     // biome-ignore lint/performance/noAwaitInLoops: marker state is published after the fixture reports its root.
-    const marker = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown> & {
+    const text = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        return "";
+      }
+      throw error;
+    });
+    const marker = (text ? JSON.parse(text) : { state: "absent" }) as Record<string, unknown> & {
       pgid?: number;
       state: string;
     };

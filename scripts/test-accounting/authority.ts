@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
+import { withoutServiceCredentials, withTestGuard } from "../hermetic/launcher.ts";
 import {
   assertCleanSourceTree,
   type Counts,
@@ -163,7 +164,9 @@ const KILL_SETTLE_GRACE_MS = 250;
 // How often the watchdog re-checks for silence, and the cadence of the heartbeat
 // line printed while a leaf is quiet. Short enough that an operator sees the run
 // is alive within seconds of starting it, long enough to add no measurable cost.
-const PROGRESS_TICK_MS = 5000;
+// Overridable so lifecycle tests can observe a watchdog tick in milliseconds
+// instead of waiting out the production cadence.
+const PROGRESS_TICK_MS = configuredDeadline("PDPP_ACCOUNTING_PROGRESS_TICK_MS", 5000);
 
 /**
  * Emit an operator-facing progress line.
@@ -751,7 +754,11 @@ export function suiteEnvironment(
   suite: Suite,
   root = process.cwd()
 ): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...inherited, PDPP_TEST_PROFILE: profile, ...(suite.environment ?? {}) };
+  const environment: NodeJS.ProcessEnv = {
+    ...withoutServiceCredentials(inherited),
+    PDPP_TEST_PROFILE: profile,
+    ...(suite.environment ?? {}),
+  };
   const tsconfigPath = environment.TSX_TSCONFIG_PATH;
   if (tsconfigPath && !isAbsolute(tsconfigPath)) {
     environment.TSX_TSCONFIG_PATH = resolve(root, suite.cwd, tsconfigPath);
@@ -759,7 +766,7 @@ export function suiteEnvironment(
   for (const name of suite.environment_unset ?? []) {
     delete environment[name];
   }
-  return environment;
+  return withTestGuard(environment);
 }
 function leafCommand(run: Run, authorityPath: string, issuedArgv: string[]): string[] | null {
   if (run.suite.zero_tests) {

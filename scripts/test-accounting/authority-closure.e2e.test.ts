@@ -91,8 +91,14 @@ function writeManifestFile(root: string, manifestValue: Manifest): void {
 
 test("e2e: a real reference-contract .test.ts renamed to .test.js (N->N-1, sibling glob still matches) fails closed on the runAuthority path", async () => {
   await withRealWorktree(async (root) => {
-    const before = trackedFiles(root).filter((path) => path.startsWith("packages/reference-contract/test/"));
-    assert.equal(before.length, 16, "expected the real reference-contract suite to start at 16 tracked files");
+    const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
+    const before =
+      planFor(manifestValue, trackedFiles(root), ["reference-contract"]).plans.get("reference-contract") ?? [];
+    assert.ok(before.length > 1, "expected the real reference-contract suite to plan more than one file");
+    assert.ok(
+      before.includes("packages/reference-contract/test/builders.test.ts"),
+      "the test to rename must be a planned file before the mutation"
+    );
 
     execFileSync(
       "git",
@@ -109,12 +115,11 @@ test("e2e: a real reference-contract .test.ts renamed to .test.js (N->N-1, sibli
 
     // Lower-level confirmation of the exact pre-wiring gap R1 found: with the
     // real mutated manifest/files, `selectedRuns`/`planFor` alone — what
-    // `runAuthority` called BEFORE this fix — silently drop the plan from 16
-    // to 15 files and do not throw. This is not the assertion under test; it
+    // `runAuthority` called BEFORE this fix — silently drop the plan from N
+    // to N-1 files and do not throw. This is not the assertion under test; it
     // documents why a bare `selectedRuns` call is not a sufficient gate.
-    const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
     const silentPlan = planFor(manifestValue, files, ["reference-contract"]);
-    assert.equal(silentPlan.plans.get("reference-contract")?.length, 15);
+    assert.equal(silentPlan.plans.get("reference-contract")?.length, before.length - 1);
     assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["reference-contract"] }));
 
     // The actual assertion: the real authority entry point now fails closed.

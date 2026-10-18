@@ -1,13 +1,14 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The only intended `--import` entry point for the hermetic network guard.
-// Two wiring paths use it, both gated on PDPP_HERMETIC_GUARD:
+// TypeScript source for the generated preload.mjs entry point. The generated
+// JavaScript avoids type stripping in every Node test descendant.
+// Canonical test launchers install it through NODE_OPTIONS, gated on
+// PDPP_HERMETIC_GUARD:
 //
-//  1. The RI test runner (reference-implementation/scripts/run-tests.ts) sets
-//     PDPP_HERMETIC_GUARD=1 and prepends `--import <this file>` to every test
-//     child, so every test process runs fail-closed and each test-owned
-//     server auto-grants its own bound origin (see guard.ts).
+//  1. The accounting authority, package test runner, and scratch owner set
+//     PDPP_HERMETIC_GUARD=1 and prepend `--import <this file>` to their children.
+//     Node descendants inherit the same environment.
 //
 //  2. The lane/maker/gate process boundary. A direct Node CLI smoke -- the
 //     exact shape that caused the incident (a migrated CLI whose default
@@ -15,7 +16,7 @@
 //     -- is guarded by exporting, in the orchestrator's environment:
 //
 //       export PDPP_HERMETIC_GUARD=1
-//       export NODE_OPTIONS="--import <repo>/scripts/hermetic/preload.ts ${NODE_OPTIONS:-}"
+//       export NODE_OPTIONS="--import <repo>/scripts/hermetic/preload.mjs ${NODE_OPTIONS:-}"
 //
 //     Every `node ...` the lane then spawns inherits the guard. A CLI that
 //     starts its own server still works (bind-derived authority); a CLI that
@@ -27,7 +28,7 @@
 // for a real operator/product run -- activation is opt-in and explicit, not
 // "on by default because loaded". It is never imported by any product/runtime
 // startup path.
-import { installHermeticNetworkGuard } from "./guard.ts";
+import { installHermeticNetworkGuard } from "./guard-runtime.mjs";
 
 if (process.env.PDPP_HERMETIC_GUARD === "1") {
   await installHermeticNetworkGuard();

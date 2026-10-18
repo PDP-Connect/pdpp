@@ -198,12 +198,14 @@ workspace).
 Common commands:
 
 ```bash
-pnpm dev                              # reference AS/RS + operator console
-pnpm reference-implementation:server  # reference server only
-pnpm reference-implementation:cli --help
-pnpm reference-implementation:test    # reference implementation tests
+pnpm site:dev                         # docs and marketing site (apps/site), port 3001
 pnpm spec:check                       # root-spec / web-spec parity
+pnpm test:fast                        # affected-only tests for the edit loop; never a gate
+pnpm test-accounting:check            # the full test gate: every suite, with receipts
 ```
+
+The reference implementation (server, CLI, and its tests) no longer lives in
+this repository; see the `PDP-Connect/data-connect` link below.
 
 CI runs on pull requests only when they target `main`, so run each suite you
 changed once with `CI=true` before you push: CI skips the local two-file test
@@ -247,10 +249,12 @@ full local and Docker workflows, and the
 [reference implementation README](https://github.com/PDP-Connect/data-connect/blob/main/reference-implementation/README.md)
 in `PDP-Connect/data-connect` for the reference-implementation workflows.
 
-The [testing policy](docs/reference/testing-policy.md) defines oracle selection,
-fixture and live-service rules, profile-gated evidence, test changes, and the
-coverage/mutation/selection strategy. `test-accounting.manifest.json`, runners,
-and CI remain the executable suite authority.
+The [testing policy](docs/reference/testing-policy.md) says which test command
+to run when, how test runs are isolated on a shared host, and what they cost. It
+also defines oracle selection, fixture and live-service rules, profile-gated
+evidence, test changes, and the coverage/mutation/selection strategy.
+`test-accounting.manifest.json`, runners, and CI remain the executable suite
+authority.
 
 ## Pull request conventions
 
@@ -267,7 +271,7 @@ and CI remain the executable suite authority.
 - **Keep specs and code in lockstep.** If your PR implements an OpenSpec
   change, the change artifacts and the code should land together and stay
   consistent.
-- **CI and merge gate.** Every pull request into `main` must pass the required CI checks. Pull requests into an integration branch (for example `testeng/integration`) do not run CI; they are gated by the local oracle (the changed suites through `pnpm test-accounting:check` or the accounting authority) and an independent review, and CI runs on the batch pull request into `main`. To run one workflow on such a branch, use `gh workflow run <workflow>.yml --ref <branch>`.
+- **CI and merge gate.** Every pull request into `main` must pass the required CI checks. Pull requests into an integration branch (for example `testeng/integration`) do not trigger the pull-request workflows, including the test gate; they are gated by the local oracle (the changed suites through `pnpm test-accounting:check` or the accounting authority) and an independent review, and CI runs on the batch pull request into `main`. To run one workflow on such a branch, use `gh workflow run <workflow>.yml --ref <branch>`.
   Before pushing, run the focused tests and signoff gates required for the
   changed behavior; run `pnpm spec:check` when root or public spec parity is in
   scope. See the testing policy and `docs/reference/ci-mode.md`.

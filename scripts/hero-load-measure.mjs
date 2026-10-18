@@ -1,4 +1,7 @@
 // Throwaway measurement script. Not part of the app; run with `node scripts/hero-load-measure.mjs`.
+// Manual only: no test, suite or workflow runs it. It needs a Playwright install at the absolute
+// path in the import below (a local path; edit it for your machine) and a site already serving on
+// the URL argument (default http://127.0.0.1:4000/).
 import path from "node:path";
 import { chromium } from "/home/tnunamak/.tmp/builder-0805/node_modules/.pnpm/playwright@1.62.0/node_modules/playwright/index.mjs";
 
