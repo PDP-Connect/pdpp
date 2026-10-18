@@ -38,6 +38,7 @@ import {
 
 const AUTHORITY_TTL_MS = 2 * 60 * 60 * 1000;
 const OPTIONAL_PREDICATE_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
+const POSITIVE_INTEGER_PATTERN = /^[1-9][0-9]*$/;
 // Numeric PGID -> the tracker that owns it. See trackProcessGroup.
 const liveProcessGroups = new Map<number, object>();
 
@@ -740,6 +741,7 @@ export function applyLocalNodeTestConcurrency(command: string[], isCi = Boolean(
 }
 interface Run {
   files: string[];
+  index: number;
   profile: Profile;
   suite: Suite;
 }
@@ -827,7 +829,305 @@ function observedCounts(
   };
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is the authority run loop's real invariant chain (issue -> spawn -> transcript -> verify-clean-tree -> receipt), pre-existing structure carried over from the .mjs source, not introduced by this migration.
+const SUITE_CONCURRENCY_ENV = "PDPP_ACCOUNTING_SUITE_CONCURRENCY";
+// Measured on the full gate (test-ab -n 3): width 3 vs 2 is noise on wall time
+// and CPU-seconds and costs ~6% more peak memory, because root-node (~22s,
+// wait-bound) is the critical path and one lane for it plus one for the rest
+// already reaches that floor.
+const LOCAL_SUITE_CONCURRENCY = 2;
+
+/**
+ * How many suite/profile runs may execute at once.
+ *
+ * Each run keeps its own issued authority, transcript, deadlines and process
+ * group, so overlap changes scheduling only, not what each run proves. At the
+ * local default (2) the full gate measured 35-37% less wall time and 23% more
+ * peak memory than serial order, with non-overlapping run ranges. CPU-seconds
+ * rose by a median of 8-9%, within the run-to-run range. Locally the default is
+ * LOCAL_SUITE_CONCURRENCY; in CI it is 1 unless the workflow sets the variable
+ * explicitly, because a CI runner's core count is not known here and each Node
+ * leaf already sizes itself to the machine there (see applyLocalNodeTestConcurrency).
+ */
+export function suiteConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[SUITE_CONCURRENCY_ENV];
+  if (raw === undefined || raw === "") {
+    return env.CI ? 1 : LOCAL_SUITE_CONCURRENCY;
+  }
+  if (!POSITIVE_INTEGER_PATTERN.test(raw)) {
+    fail(`${SUITE_CONCURRENCY_ENV} must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return Number.parseInt(raw, 10);
+}
+
+/**
+ * Split runs into ordered phases of [runs, concurrency limit].
+ *
+ * Runs go in manifest order, which lists the long suites (root-node,
+ * scratch-lifecycle) first, so a greedy pool starts the critical path at once.
+ * A suite with a `prepare` step writes generated files into the shared checkout
+ * (site: apps/site/src/generated and content/docs), and root-node's
+ * authority-prepare test deletes and rebuilds that same artifact, so a
+ * concurrent site run can lose its import mid-run. Such suites therefore run
+ * alone, after every other run has finished. Concurrency 1 keeps the exact
+ * manifest order.
+ */
+export function schedulePhases(runs: Run[], concurrency: number): [Run[], number][] {
+  if (concurrency <= 1) {
+    return [[runs, 1]];
+  }
+  const phases: [Run[], number][] = [
+    [runs.filter((run) => !run.suite.prepare), concurrency],
+    [runs.filter((run) => run.suite.prepare), 1],
+  ];
+  return phases.filter(([phaseRuns]) => phaseRuns.length > 0);
+}
+
+/**
+ * Run `work` over `runs` with at most `limit` in flight. Once `stopped()` is
+ * true, or any run throws, no new run starts; runs already in flight finish
+ * (each is bounded by its own deadlines) and the first thrown error is rethrown.
+ */
+async function runPool(
+  runs: Run[],
+  limit: number,
+  work: (run: Run) => Promise<void>,
+  stopped: () => boolean
+): Promise<void> {
+  let next = 0;
+  const errors: unknown[] = [];
+  // A worker takes the next run only after its previous run finishes;
+  // parallelism comes from starting `limit` workers.
+  const worker = async (): Promise<void> => {
+    const run = runs[next];
+    if (errors.length > 0 || stopped() || !run) {
+      return;
+    }
+    next += 1;
+    try {
+      await work(run);
+    } catch (error) {
+      errors.push(error);
+    }
+    await worker();
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, runs.length) }, worker));
+  if (errors.length > 0) {
+    throw errors[0];
+  }
+}
+
+function runFailed({ observed, counts }: CompletedRun): boolean {
+  return observed.exit_code !== 0 || observed.signal !== null || counts.protocol_error !== undefined;
+}
+
+function sourceTreeDirty(root: string): boolean {
+  try {
+    assertCleanSourceTree(root);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+interface RunContext {
+  baseSha: string;
+  directory: string;
+  env: NodeJS.ProcessEnv;
+  head: string;
+  manifestSha256: string;
+  root: string;
+  sourceTree: string;
+  total: number;
+}
+interface CompletedRun {
+  authorityPath: string;
+  counts: Counts;
+  endedAt: string;
+  index: number;
+  issued: {
+    schema: string;
+    run_id: string;
+    nonce: string;
+    issued_at: string;
+    expires_at: string;
+    suite: string;
+    profile: string;
+    files: string[];
+    cwd: string;
+    argv: string[];
+    base_sha: string;
+    head_sha: string;
+    source_tree_sha256: string;
+    selection_tree_sha256: string;
+    manifest_sha256: string;
+  };
+  observed: CaptureResult;
+  startedAt: string;
+  transcriptPath: string;
+}
+
+/** Issue the run's authority, execute its leaf, and close its transcript. */
+async function executeRun(run: Run, context: RunContext): Promise<CompletedRun> {
+  const { root, env, directory } = context;
+  reportProgress(`[${run.index + 1}/${context.total}] ${run.suite.id}/${run.profile.id ?? ""}`);
+  const runId = randomUUID();
+  const nonce = randomUUID();
+  const issuedAt = instant(Date.now());
+  const expiresAt = instant(Date.now() + AUTHORITY_TTL_MS);
+  const profileId = run.profile.id ?? "";
+  const effectiveCommand = applyLocalNodeTestConcurrency(
+    resolveReporterArgument(run.suite.command ?? [], root),
+    Boolean(process.env.CI)
+  );
+  const issued = {
+    schema: RUN_AUTHORITY_SCHEMA,
+    run_id: runId,
+    nonce,
+    issued_at: issuedAt,
+    expires_at: expiresAt,
+    suite: run.suite.id,
+    profile: profileId,
+    files: run.files,
+    cwd: run.suite.cwd,
+    argv: effectiveCommand,
+    base_sha: context.baseSha,
+    head_sha: context.head,
+    source_tree_sha256: context.sourceTree,
+    selection_tree_sha256: treeDigest(root, context.head, run.files),
+    manifest_sha256: context.manifestSha256,
+  };
+  const authorityPath = resolve(directory, `${runId}.authority.json`);
+  await writeNew(authorityPath, issued);
+  const transcriptPath = resolve(directory, `${runId}.transcript`);
+  const transcript = await open(transcriptPath, "wx");
+  const startedAt = instant(Date.now());
+  await transcript.write(
+    `${JSON.stringify({ event: "start", run_id: runId, nonce, started_at: startedAt, suite: issued.suite, profile: issued.profile, files: issued.files, cwd: issued.cwd, argv: issued.argv })}\n`
+  );
+  const command = leafCommand(run, authorityPath, issued.argv);
+  assertIssuedArgvMatchesCommand(issued.argv, command);
+  // Keep the effective environment and cwd explicit so the issued command,
+  // transcript, and child process all describe the same execution context.
+  // One environment and cwd for both the prepare step and the children, so a
+  // prerequisite is always built under the same resolver config that will load it.
+  const suiteCwd = resolve(root, run.suite.cwd);
+  const suiteEnv = suiteEnvironment(env, profileId, run.suite, root);
+  let observed: CaptureResult;
+  try {
+    await prepareSuite(run.suite, suiteCwd, suiteEnv);
+    observed = command
+      ? await capture(
+          command,
+          suiteCwd,
+          suiteEnv,
+          transcript,
+          issued,
+          run.suite.loader === "node-test" && run.suite.execution !== "authority-runner"
+        )
+      : {
+          exit_code: 0,
+          signal: null,
+          stdout_truncated: false,
+          stderr_truncated: false,
+          stdout: "",
+          stderr: "",
+          retained_capture_bytes: 0,
+        };
+    if (!command) {
+      reportProgress(`${issued.suite}/${issued.profile}: zero-test declaration, nothing spawned`);
+    }
+  } catch (error) {
+    await transcript.close();
+    throw error;
+  }
+  // Resolve the final exit_code (including the protocol-error coercion
+  // below) BEFORE the transcript's `end` event is written. The transcript
+  // is a digest-verified, append-only artifact — once its `end` event is
+  // written and the file is hashed into the receipt, that exit_code can
+  // never change. Writing `end` from `observed.exit_code` before this
+  // coercion ran let the transcript record the child process's literal
+  // exit code (often 0) while the receipt later recorded the coerced code
+  // (1, after a protocol error), so `verifyTranscript`'s equality check
+  // failed on every run where a suite exited 0 but its structured output
+  // failed to parse — a receipt/transcript split, not a concurrency
+  // artifact.
+  let counts: Counts;
+  try {
+    counts = observedCounts(run, observed, issued);
+  } catch (error) {
+    const err = error as Error;
+    counts = {
+      assertions: 0,
+      passed: 0,
+      failed: 1,
+      skipped: 0,
+      skip_reasons: {},
+      planned_files: issued.files.length,
+      completed_files: 0,
+      protocol_error: err.message,
+    };
+    observed.exit_code ||= 1;
+  }
+  const endedAt = instant(Date.now());
+  await transcript.write(
+    `${JSON.stringify({ event: "end", run_id: runId, nonce, ended_at: endedAt, exit_code: observed.exit_code, signal: observed.signal })}\n`
+  );
+  await transcript.sync();
+  await transcript.close();
+  return { authorityPath, counts, endedAt, index: run.index, issued, observed, startedAt, transcriptPath };
+}
+
+/** Write the completion record and receipt for a run whose transcript is closed. */
+async function sealRun(done: CompletedRun, { directory }: RunContext): Promise<Receipt> {
+  const { issued, observed, counts, startedAt, endedAt, authorityPath, transcriptPath } = done;
+  const transcriptRelative = relative(directory, transcriptPath);
+  const completion = {
+    schema: RUN_COMPLETION_SCHEMA,
+    run_id: issued.run_id,
+    nonce: issued.nonce,
+    observed: {
+      exit_code: observed.exit_code,
+      signal: observed.signal,
+      transcript: transcriptRelative,
+      transcript_sha256: contentDigest(await readFile(transcriptPath)),
+      counts,
+      files: issued.files,
+    },
+  };
+  const completionPath = resolve(directory, `${issued.run_id}.completion.json`);
+  await writeNew(completionPath, completion);
+  const receipt: Receipt = {
+    schema: "pdpp.test-receipt/v3",
+    run_id: issued.run_id,
+    nonce: issued.nonce,
+    suite: issued.suite,
+    profile: issued.profile,
+    issued_at: issued.issued_at,
+    started_at: startedAt,
+    ended_at: endedAt,
+    expires_at: issued.expires_at,
+    base_sha: issued.base_sha,
+    head_sha: issued.head_sha,
+    source_tree_sha256: issued.source_tree_sha256,
+    selection_tree_sha256: issued.selection_tree_sha256,
+    manifest_sha256: issued.manifest_sha256,
+    cwd: issued.cwd,
+    argv: issued.argv,
+    files: issued.files,
+    transcript: transcriptRelative,
+    transcript_sha256: completion.observed.transcript_sha256,
+    exit_code: observed.exit_code,
+    signal: observed.signal,
+    counts,
+    authority_sha256: contentDigest(await readFile(authorityPath)),
+    completion_sha256: contentDigest(await readFile(completionPath)),
+    binding_sha256: "",
+  };
+  receipt.binding_sha256 = receiptBinding(receipt);
+  await writeNew(resolve(directory, `${issued.run_id}.receipt.json`), receipt);
+  return receipt;
+}
+
 export async function runAuthority({
   root = gitRoot(),
   suites = [],
@@ -894,10 +1194,11 @@ export async function runAuthority({
   const head = gitHead(root);
   const runs: Run[] = selection.runs
     .filter((run) => profile || requiredByDefault(run.profile))
-    .map((run) => ({
+    .map((run, index) => ({
       suite: run.suite,
       profile: typeof run.profile === "string" ? { id: run.profile } : run.profile,
       files: run.files,
+      index,
     }));
   if (runs.length === 0) {
     fail("no required suite/profile runs were selected");
@@ -907,166 +1208,122 @@ export async function runAuthority({
   const sourceTree = sourceTreeDigest(root, head);
   const manifestHash = contentDigest(await readFile(resolve(root, "test-accounting.manifest.json")));
   const receipts: Receipt[] = [];
-  reportProgress(`${runs.length} suite/profile runs selected`);
-  let runIndex = 0;
-  for (const run of runs) {
-    runIndex += 1;
-    reportProgress(`[${runIndex}/${runs.length}] ${run.suite.id}/${run.profile.id ?? ""}`);
-    const runId = randomUUID();
-    const nonce = randomUUID();
-    const issuedAt = instant(Date.now());
-    const expiresAt = instant(Date.now() + AUTHORITY_TTL_MS);
-    const profileId = run.profile.id ?? "";
-    const effectiveCommand = applyLocalNodeTestConcurrency(
-      resolveReporterArgument(run.suite.command ?? [], root),
-      Boolean(process.env.CI)
-    );
-    const issued = {
-      schema: RUN_AUTHORITY_SCHEMA,
-      run_id: runId,
-      nonce,
-      issued_at: issuedAt,
-      expires_at: expiresAt,
-      suite: run.suite.id,
-      profile: profileId,
-      files: run.files,
-      cwd: run.suite.cwd,
-      argv: effectiveCommand,
-      base_sha: manifest.inventory_base_sha,
-      head_sha: head,
-      source_tree_sha256: sourceTree,
-      selection_tree_sha256: treeDigest(root, head, run.files),
-      manifest_sha256: manifestHash,
-    };
-    const authorityPath = resolve(directory, `${runId}.authority.json`);
-    // biome-ignore lint/performance/noAwaitInLoops: runs must execute sequentially — each captures its own transcript and asserts a clean source tree before the next run starts.
-    await writeNew(authorityPath, issued);
-    const transcriptPath = resolve(directory, `${runId}.transcript`);
-    const transcript = await open(transcriptPath, "wx");
-    const startedAt = instant(Date.now());
-    await transcript.write(
-      `${JSON.stringify({ event: "start", run_id: runId, nonce, started_at: startedAt, suite: issued.suite, profile: issued.profile, files: issued.files, cwd: issued.cwd, argv: issued.argv })}\n`
-    );
-    const command = leafCommand(run, authorityPath, issued.argv);
-    assertIssuedArgvMatchesCommand(issued.argv, command);
-    // Keep the effective environment and cwd explicit so the issued command,
-    // transcript, and child process all describe the same execution context.
-    // One environment and cwd for both the prepare step and the children, so a
-    // prerequisite is always built under the same resolver config that will load it.
-    const suiteCwd = resolve(root, run.suite.cwd);
-    const suiteEnv = suiteEnvironment(env, profileId, run.suite, root);
-    let observed: CaptureResult;
-    try {
-      await prepareSuite(run.suite, suiteCwd, suiteEnv);
-      observed = command
-        ? await capture(
-            command,
-            suiteCwd,
-            suiteEnv,
-            transcript,
-            issued,
-            run.suite.loader === "node-test" && run.suite.execution !== "authority-runner"
-          )
-        : {
-            exit_code: 0,
-            signal: null,
-            stdout_truncated: false,
-            stderr_truncated: false,
-            stdout: "",
-            stderr: "",
-            retained_capture_bytes: 0,
-          };
-      if (!command) {
-        reportProgress(`${issued.suite}/${issued.profile}: zero-test declaration, nothing spawned`);
-      }
-    } catch (error) {
-      await transcript.close();
-      throw error;
-    }
-    // Resolve the final exit_code (including the protocol-error coercion
-    // below) BEFORE the transcript's `end` event is written. The transcript
-    // is a digest-verified, append-only artifact — once its `end` event is
-    // written and the file is hashed into the receipt, that exit_code can
-    // never change. Writing `end` from `observed.exit_code` before this
-    // coercion ran let the transcript record the child process's literal
-    // exit code (often 0) while the receipt later recorded the coerced code
-    // (1, after a protocol error), so `verifyTranscript`'s equality check
-    // failed on every run where a suite exited 0 but its structured output
-    // failed to parse — a receipt/transcript split, not a concurrency
-    // artifact.
-    let counts: Counts;
-    try {
-      counts = observedCounts(run, observed, issued);
-    } catch (error) {
-      const err = error as Error;
-      counts = {
-        assertions: 0,
-        passed: 0,
-        failed: 1,
-        skipped: 0,
-        skip_reasons: {},
-        planned_files: issued.files.length,
-        completed_files: 0,
-        protocol_error: err.message,
+  const concurrency = suiteConcurrency(env);
+  reportProgress(`${runs.length} suite/profile runs selected (suite concurrency ${concurrency})`);
+  const context: RunContext = {
+    root,
+    env,
+    directory,
+    manifestSha256: manifestHash,
+    baseSha: manifest.inventory_base_sha,
+    head,
+    sourceTree,
+    total: runs.length,
+  };
+  // Serial blame, kept under overlap. Serial order checks the checkout after
+  // every run, so a run's leftovers are rejected before the next run's setup can
+  // remove them. Here a run that ends dirty while siblings still run may have
+  // left the files itself or merely caught a sibling's transient ones, and the
+  // two cannot be told apart yet. So it stops every lane from starting another
+  // run until the last sibling ends and the checkout is judged at rest: still
+  // dirty then fails the gate before any further run can hide the files. Sealing
+  // (completion + receipt) also waits for that moment. With concurrency 1 every
+  // run ends at rest, which is exactly the old check-after-each-run behavior.
+  const unsealed: CompletedRun[] = [];
+  const sealed = new Map<number, Receipt>();
+  let inFlight = 0;
+  let suspect = false;
+  let stopped = false;
+  let atRest: Promise<void> | undefined;
+  let endRest = () => {
+    suspect = false;
+  };
+  const waitForRest = () => {
+    atRest ??= new Promise<void>((resolveRest) => {
+      endRest = () => {
+        suspect = false;
+        atRest = undefined;
+        resolveRest();
       };
-      observed.exit_code ||= 1;
-    }
-    const endedAt = instant(Date.now());
-    await transcript.write(
-      `${JSON.stringify({ event: "end", run_id: runId, nonce, ended_at: endedAt, exit_code: observed.exit_code, signal: observed.signal })}\n`
-    );
-    await transcript.sync();
-    await transcript.close();
+    });
+    return atRest;
+  };
+  const settle = async () => {
     assertCleanSourceTree(root);
     if (sourceTreeDigest(root, head) !== sourceTree) {
-      fail(`${issued.suite}/${issued.profile} changed the full source tree during execution`);
+      fail(
+        `${unsealed.map(({ issued }) => `${issued.suite}/${issued.profile}`).join(", ")} changed the full source tree during execution`
+      );
     }
-    const transcriptRelative = relative(directory, transcriptPath);
-    const completion = {
-      schema: RUN_COMPLETION_SCHEMA,
-      run_id: runId,
-      nonce,
-      observed: {
-        exit_code: observed.exit_code,
-        signal: observed.signal,
-        transcript: transcriptRelative,
-        transcript_sha256: contentDigest(await readFile(transcriptPath)),
-        counts,
-        files: issued.files,
-      },
-    };
-    const completionPath = resolve(directory, `${runId}.completion.json`);
-    await writeNew(completionPath, completion);
-    const receipt: Receipt = {
-      schema: "pdpp.test-receipt/v3",
-      run_id: runId,
-      nonce,
-      suite: issued.suite,
-      profile: issued.profile,
-      issued_at: issued.issued_at,
-      started_at: startedAt,
-      ended_at: endedAt,
-      expires_at: issued.expires_at,
-      base_sha: issued.base_sha,
-      head_sha: issued.head_sha,
-      source_tree_sha256: issued.source_tree_sha256,
-      selection_tree_sha256: issued.selection_tree_sha256,
-      manifest_sha256: issued.manifest_sha256,
-      cwd: issued.cwd,
-      argv: issued.argv,
-      files: issued.files,
-      transcript: transcriptRelative,
-      transcript_sha256: completion.observed.transcript_sha256,
-      exit_code: observed.exit_code,
-      signal: observed.signal,
-      counts,
-      authority_sha256: contentDigest(await readFile(authorityPath)),
-      completion_sha256: contentDigest(await readFile(completionPath)),
-      binding_sha256: "",
-    };
-    receipt.binding_sha256 = receiptBinding(receipt);
-    await writeNew(resolve(directory, `${runId}.receipt.json`), receipt);
-    receipts.push(receipt);
+    const batch = unsealed.splice(0);
+    await Promise.all(
+      batch.map(async (done) => {
+        sealed.set(done.index, await sealRun(done, context));
+      })
+    );
+  };
+  const finishRun = async (indexed: Run) => {
+    inFlight += 1;
+    let done: CompletedRun | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      done = await executeRun(indexed, context);
+    } catch (error) {
+      failure = { error };
+      stopped = true;
+    }
+    inFlight -= 1;
+    if (done) {
+      unsealed.push(done);
+      // The first failed outcome stops new starts at once; siblings finish.
+      stopped ||= runFailed(done);
+    }
+    if (inFlight > 0) {
+      if (failure) {
+        throw failure.error;
+      }
+      suspect ||= sourceTreeDirty(root);
+      if (suspect) {
+        await waitForRest();
+      }
+      return;
+    }
+    // The last run to leave, finished or thrown, judges the checkout at rest and
+    // seals every completed run, so a throw never strands its completed siblings.
+    try {
+      await settle();
+    } catch (error) {
+      stopped = true;
+      failure ??= { error };
+    } finally {
+      endRest();
+    }
+    if (failure) {
+      throw failure.error;
+    }
+  };
+  let poolFailure: { error: unknown } | undefined;
+  try {
+    // Phases are ordered: the exclusive phase starts only after the shared phase has drained.
+    await schedulePhases(runs, concurrency).reduce(
+      (previous, [phaseRuns, limit]) => previous.then(() => runPool(phaseRuns, limit, finishRun, () => stopped)),
+      Promise.resolve()
+    );
+  } catch (error) {
+    poolFailure = { error };
+  }
+  receipts.push(...[...sealed.entries()].sort(([a], [b]) => a - b).map(([, receipt]) => receipt));
+  if (poolFailure) {
+    // Verify what was sealed once, then surface the original error. Only sealed
+    // runs are required: a run that never started or threw has no receipt.
+    await verifyReceipts(manifest, files, receipts, {
+      root,
+      head,
+      authorityDirectory: directory,
+      sourceTree,
+      requiredKeys: receipts.map((receipt) => `${receipt.suite}/${receipt.profile}`),
+    }).catch(() => undefined);
+    throw poolFailure.error;
   }
   return {
     directory,
