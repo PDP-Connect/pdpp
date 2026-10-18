@@ -53,9 +53,9 @@ Clauses enumerated: **214**.
 | MUST clauses | Count |
 | --- | --- |
 | Total | **181** |
-| With at least one case | **88** |
+| With at least one case | **98** |
 | Untestable (review-only, no case) | **56** |
-| Not yet tested (observable, no case) | **37** |
+| Not yet tested (observable, no case) | **27** |
 
 The last three rows partition the total. 2 of the clauses with a case are
 review-only: a case exercises part of them, and a run still reports them `untestable`.
@@ -108,11 +108,11 @@ Validates selection requests against one retained SourceDeclaration snapshot: re
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `5.2-4` | 561 | MUST | black-box-http | `AS-2/time-range-without-consent-time-field-refused` | — |
-| `6.8-1` | 843 | MUST | black-box-http | `AS-2/view-and-fields-mutually-exclusive` | Candidate-text mismatch, for case work after the lock: AS-2/view-and-fields-mutually-exclusive asserts a 400 `invalid_request` classification (its assertion text and its error-code check), while the revised text maps the refusal to RFC 9396 `invalid_authorization_details` in the OAuth/RAR binding. |
+| `6.8-1` | 843 | MUST | black-box-http | `AS-2/view-and-fields-mutually-exclusive` | — |
 | `6.8-2` | 849 | MUST | black-box-http | `AS-2/time-range-without-consent-time-field-refused` | — |
 | `6.8-3` | 855 | MUST | black-box-http | `AS-2/wildcard-beside-named-stream-refused`<br>`AS-2/duplicate-stream-name-refused` | — |
-| `6.8-7` | 844 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that sends `fields` with `*` beside a named field and expects refusal is missing. |
-| `6.8-12` | 859 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that sends a stream request with neither `fields` nor `view` and expects `invalid_authorization_details` is missing. |
+| `6.8-7` | 844 | MUST | black-box-http | `AS-2/star-beside-named-field-refused` | — |
+| `6.8-12` | 859 | MUST | black-box-http | `AS-2/stream-request-without-fields-or-view-refused` | The AS half is tested for a `streams` request. A stream inside a selection preset is not probed: the bundled declaration defines no presets. The client half (always send `fields` or `view`) is not exercised: the ClientUnderTest fixture's authorize action always sends a selection built by the caller. |
 | `6.9-1` | 876 | MUST | black-box-http | `AS-16/duplicate-stream-in-a-selection-preset-refused` | — |
 
 ### AS-3 (authorization-server, MUST)
@@ -141,7 +141,7 @@ Produces a Source validation failure when a request contains both or neither of 
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `6.8-1` | 843 | MUST | black-box-http | `AS-2/view-and-fields-mutually-exclusive` | Candidate-text mismatch, for case work after the lock: AS-2/view-and-fields-mutually-exclusive asserts a 400 `invalid_request` classification (its assertion text and its error-code check), while the revised text maps the refusal to RFC 9396 `invalid_authorization_details` in the OAuth/RAR binding. |
+| `6.8-1` | 843 | MUST | black-box-http | `AS-2/view-and-fields-mutually-exclusive` | — |
 
 ### AS-6 (authorization-server, MUST)
 
@@ -223,8 +223,8 @@ Validates stream/field/view/resource-id shape at grant issuance.
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `6.8-7` | 844 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that sends `fields` with `*` beside a named field and expects refusal is missing. |
-| `6.8-12` | 859 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that sends a stream request with neither `fields` nor `view` and expects `invalid_authorization_details` is missing. |
+| `6.8-7` | 844 | MUST | black-box-http | `AS-2/star-beside-named-field-refused` | — |
+| `6.8-12` | 859 | MUST | black-box-http | `AS-2/stream-request-without-fields-or-view-refused` | The AS half is tested for a `streams` request. A stream inside a selection preset is not probed: the bundled declaration defines no presets. The client half (always send `fields` or `view`) is not exercised: the ClientUnderTest fixture's authorize action always sends a selection built by the caller. |
 | `7.1-1` | 927 | MUST | black-box-http | `AS-3/issued-grant-artifact-matches-section-7-schema`<br>`AS-3/resolved-grant-matches-observable-schema-fields` | — |
 | `7.2-0` | 954 | MUST | black-box-http | `AS-2/dotted-nested-field-refused` | The `fields` row of the normative StreamGrant table; carries no RFC 2119 keyword, so its MUST level is Section 9 AS item 11's. The top-level-only constraint is tested; uniqueness and non-emptiness of the issued allowlist are not. |
 
@@ -341,8 +341,8 @@ Rejects a source declaration containing an unrecognized `source.kind` or `stream
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `4.2-1` | 239 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that submits a declaration with an unrecognized `streams[].semantics` value and expects refusal is missing. |
-| `6.6-2` | 826 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that submits a declaration with an unrecognized `source.kind` and expects refusal is missing. |
+| `4.2-1` | 239 | MUST | black-box-http | `AS-22/unrecognized-stream-semantics-refused` | — |
+| `6.6-2` | 826 | MUST | black-box-http | `AS-22/unrecognized-source-kind-refused` | — |
 
 ### AS-23 (authorization-server, MUST)
 
@@ -395,14 +395,14 @@ Rejects a declaration that names an ineligible `consent_time_field` or a non-boo
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `5.2-3` | 559 | MUST | declaration-static | `AS-16/consent-time-field-not-declared-in-schema-refused` | AS-16/consent-time-field-not-declared-in-schema-refused exercises only the "declared in the schema" part. The revised text also requires a top-level field with format `date` or `date-time`; no case submits an ineligible but declared field (for example an epoch integer or a timestamp without an offset). No Section 9 item covered `consent_time_field` declaration validity before the revision; `requirementIds` now cites AS-27. |
-| `5.2-6` | 560 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that submits a declaration with a non-boolean `consent_time_content_may_exceed` and expects refusal is missing. |
-| `5.4-3` | 609 | MUST | declaration-static | — | No case declares an ineligible field type; see 5.4-4. |
-| `5.4-4` | 609 | MUST | black-box-http | `AS-16/consent-time-field-not-declared-in-schema-refused` | The mapped case covers one kind of ineligible field (one the schema does not declare). The other kinds the revised text names are untested: a nested field, a non-string type such as an epoch integer, a timestamp without an offset, and a field with a format other than `date` or `date-time`. |
-| `6.8-8` | 851 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that sends a `time_range` bound of the wrong type and expects refusal is missing. |
-| `6.8-9` | 851 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that sends an empty `time_range` and expects refusal is missing. |
-| `6.8-10` | 851 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that sends each of the four invalid `time_range` shapes and expects `invalid_authorization_details` is missing. |
-| `6.8-11` | 851 | MUST | black-box-http | — | No existing case submits a declaration or selection exercising this clause; a case that submits a bound at full precision and compares it with `time_constraint` in the issued grant is missing. |
+| `5.2-3` | 559 | MUST | declaration-static | `AS-16/consent-time-field-not-declared-in-schema-refused`<br>`AS-27/ineligible-consent-time-field-refused` | — |
+| `5.2-6` | 560 | MUST | black-box-http | `AS-27/non-boolean-consent-time-content-may-exceed-refused` | — |
+| `5.4-3` | 609 | MUST | declaration-static | `AS-27/ineligible-consent-time-field-refused` | Offered ineligible forms: an epoch integer, a string with no format, a string with format `time`, and a nested field. Eligible controls are `date`, `date-time` and nullable `date-time`. A timestamp without an offset has no JSON Schema format of its own, so it is probed as a string with no format. |
+| `5.4-4` | 609 | MUST | black-box-http | `AS-16/consent-time-field-not-declared-in-schema-refused`<br>`AS-27/ineligible-consent-time-field-refused` | — |
+| `6.8-8` | 851 | MUST | black-box-http | `AS-27/time-range-bound-wrong-type-refused` | The AS half is tested by offering a date and a date-time bound and requiring exactly one to be refused. The client half (send bounds of the field's declared format) is not exercised: the ClientUnderTest fixture does not publish a declaration to read a format from. |
+| `6.8-9` | 851 | MUST | black-box-http | `AS-27/time-range-without-bound-refused` | The AS half is tested. The client half (never send a time_range with no bound) is not exercised: the ClientUnderTest contract has no action that builds a time_range. |
+| `6.8-10` | 851 | MUST | black-box-http | `AS-27/time-range-without-bound-refused`<br>`AS-27/time-range-bound-wrong-type-refused`<br>`AS-27/time-range-invalid-bound-refused`<br>`AS-27/time-range-since-not-before-until-refused` | The invalid-bound probes are an impossible calendar date and, for a date-time field, a date-time with no offset. Leap-second validity (23:59:60 only on a date with an inserted leap second) is not probed. |
+| `6.8-11` | 851 | MUST | black-box-http | `AS-27/time-range-bound-not-converted` | Judged on the token response's `authorization_details` time_constraint (IssuedGrant.tokenResponseBody); a target whose adapter does not surface the token response reports skip. Date-only bounds are not probed. |
 | `7.6-2` | 1020 | MUST | review-only | — | Not observable without a hook that stores an RFC 3339-invalid value (for example a leap second on a date with none) in a time field and reads it back through the filter. |
 
 ### AS-28 (authorization-server, MUST)
@@ -610,8 +610,8 @@ Returns 401 with `WWW-Authenticate: Bearer error="invalid_token"` for every inac
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.13-6` | 1576 | MUST | black-box-http | `AS-8/revoked-grant-refused`<br>`AS-8/expired-grant-refused` | Level is the conformance list's, not the quoted text's: this sentence carries no RFC 2119 keyword, yet Section 9 RS item 19 states the same obligation as a MUST. Candidate-text mismatch, for case work after the lock: the mapped cases accept a 403 `grant_revoked` / `grant_expired` and do not check the `WWW-Authenticate` challenge, while the revised text makes both a 401 behind a Bearer `invalid_token` challenge. |
-| `8.13-7` | 1576 | MAY | black-box-http | `AS-8/revoked-grant-refused`<br>`AS-8/expired-grant-refused` | The mapped cases expect these codes with HTTP 403 `permission_error` (and accept 401 only when the token itself is rejected). The revised text fixes status 401 and type `authentication_error`. |
+| `8.13-6` | 1576 | MUST | black-box-http | `AS-8/revoked-grant-refused`<br>`AS-8/expired-grant-refused` | Level is the conformance list's, not the quoted text's: this sentence carries no RFC 2119 keyword, yet Section 9 RS item 19 states the same obligation as a MUST. |
+| `8.13-7` | 1576 | MAY | black-box-http | `AS-8/revoked-grant-refused`<br>`AS-8/expired-grant-refused` | — |
 
 ### RS-20 (resource-server, MUST)
 
@@ -660,7 +660,7 @@ Uses access tokens (not raw grants) to authenticate with the resource server.
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `10.7-2` | 1748 | MUST | client-capture | `CL-2/grant-revocation-stops-further-requests` | Candidate-text mismatch, for case work after the lock: CL-2/grant-revocation-stops-further-requests feeds the client a 403 `permission_error` `grant_revoked`. The revised text makes `grant_revoked` an HTTP 401 `authentication_error` (Section 8 error table) behind a Bearer `invalid_token` challenge. |
+| `10.7-2` | 1748 | MUST | client-capture | `CL-2/grant-revocation-stops-further-requests` | — |
 
 ### CL-3 (client, MUST)
 
@@ -686,9 +686,9 @@ Respects HTTP 410 `cursor_expired` by starting again from `beginning` rather tha
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `4.3-3` | 272 | MUST | client-capture | `CL-5/full-resync-after-cursor-expired` | Candidate-text mismatch, for case work after the lock: the revised text says to start again from `beginning`, i.e. to send `changes_since=beginning`, while CL-5/full-resync-after-cursor-expired accepts a recovery request that carries no `changes_since` at all. |
+| `4.3-3` | 272 | MUST | client-capture | `CL-5/full-resync-after-cursor-expired` | — |
 | `4.3-15` | 270 | MUST | client-capture | — | Missing case: the CL-5 cases observe the client's requests after `cursor_expired`, not the contents of its stored copy. A case needs a fixture that serves two different `beginning` results and a view of the client's stored stream. |
-| `8.9-12` | 1402 | MUST | client-capture | `CL-5/endpoint-cursor-expiry-also-full-resyncs` | Candidate-text mismatch, for case work after the lock: the revised text says to start again from `beginning`, while CL-5/endpoint-cursor-expiry-also-full-resyncs accepts a recovery request that carries neither `changes_since` nor `cursor`. |
+| `8.9-12` | 1402 | MUST | client-capture | `CL-5/endpoint-cursor-expiry-also-full-resyncs` | — |
 
 ### CL-6 (client, MUST)
 

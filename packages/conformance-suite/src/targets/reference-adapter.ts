@@ -41,6 +41,7 @@ import {
   ReferenceServer,
   type StreamFixture,
 } from "./reference-server.ts";
+import { compareDateTimes, parseDateTime, parseFullDate } from "./rfc3339.ts";
 
 /**
  * Two streams with overlapping shape: the negative oracles need a second stream
@@ -279,6 +280,40 @@ const JSON_SCHEMA_TYPES: ReadonlySet<string> = new Set([
  * schema falls back to its `fields` list, which is the shape the trust cases
  * submit and the only description of the record those documents carry.
  */
+/** Whether `field` is a top-level string field (null allowed) with format `date` or `date-time` (clause 5.4-3). */
+function consentTimeFieldEligible(schema: unknown, field: string): boolean {
+  const properties =
+    schema !== null && typeof schema === "object" ? (schema as { properties?: unknown }).properties : undefined;
+  if (properties === null || typeof properties !== "object" || Array.isArray(properties)) {
+    return true;
+  }
+  const property = (properties as Record<string, unknown>)[field];
+  // An absent property is clause 5.2-3's finding and a `$ref` property is
+  // clause 5.2-5's; neither is judged here.
+  if (property === undefined || (property !== null && typeof property === "object" && ("$ref" in property || "$dynamicRef" in property))) {
+    return true;
+  }
+  if (property === null || typeof property !== "object") {
+    return false;
+  }
+  const { type, format } = property as { type?: unknown; format?: unknown };
+  const types = (Array.isArray(type) ? type : [type]).filter((t) => t !== "null");
+  return types.length === 1 && types[0] === "string" && (format === "date" || format === "date-time");
+}
+
+/** Order two time_range bounds of one RFC 3339 format, or null when either is not a valid value of it. */
+function compareBounds(format: "date" | "date-time", a: unknown, b: unknown): number | null {
+  if (format === "date") {
+    const [da, db] = [parseFullDate(a), parseFullDate(b)];
+    if (da === null || db === null) {
+      return null;
+    }
+    return da === db ? 0 : da < db ? -1 : 1;
+  }
+  const [ta, tb] = [parseDateTime(a), parseDateTime(b)];
+  return ta === null || tb === null ? null : compareDateTimes(ta, tb);
+}
+
 function declaredFieldNames(stream: SourceDeclarationStream): ReadonlySet<string> {
   const { schema } = stream;
   const properties =
@@ -308,8 +343,12 @@ function schemaKeyViolation(key: string, child: unknown, childPath: string): str
   }
   // A `type` that names no JSON Schema type fails meta-validation: the
   // metaschema constrains it to the seven core types.
-  if (key === "type" && typeof child === "string" && !JSON_SCHEMA_TYPES.has(child)) {
-    return `${childPath} declares '${child}', which is not a JSON Schema type`;
+  if (key === "type") {
+    const names = Array.isArray(child) ? child : [child];
+    const unknown = names.find((name) => typeof name === "string" && !JSON_SCHEMA_TYPES.has(name));
+    if (unknown !== undefined) {
+      return `${childPath} declares '${String(unknown)}', which is not a JSON Schema type`;
+    }
   }
   return undefined;
 }
@@ -330,6 +369,11 @@ function schemaViolation(schema: unknown, path: string): string | undefined {
   }
   if (Array.isArray(schema)) {
     for (const [index, child] of schema.entries()) {
+      // Array members are schemas (`allOf`) or plain values (`type`, `enum`,
+      // `required`); only an object member is itself a schema to walk.
+      if (child === null || typeof child !== "object") {
+        continue;
+      }
       const nested = schemaViolation(child, `${path}/${index}`);
       if (nested) {
         return nested;
@@ -521,6 +565,15 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       ...retained(),
     });
 
+    // Clause 6.6-2: an unrecognized `source.kind` is refused, not defaulted.
+    if (
+      declaration.source.kind !== "connector" &&
+      declaration.source.kind !== "provider_native" &&
+      !this.defects.has("accept-unrecognized-source-kind")
+    ) {
+      return refuse("invalid_declaration", `source.kind '${declaration.source.kind}' is not recognized`);
+    }
+
     if (
       declaration.source.kind === "provider_native" &&
       declaration.source.id !== ACCEPTED_RESOURCE_ID &&
@@ -606,6 +659,31 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   ): { readonly errorCode: string; readonly message: string } | undefined {
     const declared = declaredFieldNames(stream);
 
+    // Clause 4.2-1: an unrecognized `streams[].semantics` is refused.
+    if (
+      stream.semantics !== undefined &&
+      stream.semantics !== "append_only" &&
+      stream.semantics !== "mutable_state" &&
+      !this.defects.has("accept-unrecognized-semantics")
+    ) {
+      return {
+        errorCode: "invalid_declaration",
+        message: `stream '${stream.name}' declares unrecognized semantics '${stream.semantics}'`,
+      };
+    }
+
+    // Clause 5.2-6: `consent_time_content_may_exceed` is a boolean.
+    if (
+      stream.consentTimeContentMayExceed !== undefined &&
+      typeof stream.consentTimeContentMayExceed !== "boolean" &&
+      !this.defects.has("accept-non-boolean-may-exceed")
+    ) {
+      return {
+        errorCode: "invalid_declaration",
+        message: `stream '${stream.name}' declares a non-boolean consent_time_content_may_exceed`,
+      };
+    }
+
     // Clause 5.2-5. First, because a schema that does not meta-validate cannot
     // settle what "a field declared here" even means for 5.2-2 and 5.2-3.
     if (stream.schema !== undefined && !this.defects.has("accept-invalid-embedded-schema")) {
@@ -644,6 +722,22 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       return {
         errorCode: "invalid_declaration",
         message: `stream '${stream.name}' names consent_time_field '${stream.consentTimeField}', which its schema does not declare`,
+      };
+    }
+
+    // Clauses 5.2-3, 5.4-3, 5.4-4: the field must be a top-level string field
+    // whose schema declares format `date` or `date-time` (null allowed).
+    // Judged on the embedded schema, so a declaration without one is left to
+    // the reference check above.
+    if (
+      stream.consentTimeField !== undefined &&
+      stream.schema !== undefined &&
+      !this.defects.has("accept-ineligible-consent-time-field") &&
+      !consentTimeFieldEligible(stream.schema, stream.consentTimeField)
+    ) {
+      return {
+        errorCode: "invalid_declaration",
+        message: `stream '${stream.name}' names consent_time_field '${stream.consentTimeField}', which is not a top-level field with format date or date-time`,
       };
     }
     return undefined;
@@ -925,7 +1019,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       if (!declared) {
         return `stream '${wanted.name}' is not declared by the retained snapshot`;
       }
-      const undeclared = (wanted.fields ?? []).filter((f) => !declared.fields.includes(f));
+      const undeclared = (wanted.fields ?? []).filter((f) => f !== "*" && !declared.fields.includes(f));
       if (undeclared.length > 0) {
         return `stream '${wanted.name}' requests fields absent from the retained schema: ${undeclared.join(", ")}`;
       }
@@ -948,15 +1042,65 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    */
   private firstBadTimeRangeReason(
     wantedStreams: readonly { readonly name: string }[],
-    hasTimeRange: boolean
+    timeRange: { readonly since?: unknown; readonly until?: unknown } | undefined
   ): string | null {
-    if (!hasTimeRange || this.defects.has("accept-time-range-without-consent-time-field")) {
+    if (timeRange === undefined || this.defects.has("accept-time-range-without-consent-time-field")) {
       return null;
     }
     for (const wanted of wantedStreams) {
       const declared = this.fixtures.find((f) => f.name === wanted.name);
       if (declared && declared.consentTimeField === undefined) {
         return `stream '${wanted.name}' declares no consent_time_field, so time_range is not applicable to it`;
+      }
+    }
+    for (const wanted of wantedStreams) {
+      const declared = this.fixtures.find((f) => f.name === wanted.name);
+      const reason = declared ? this.timeRangeShapeReason(declared.consentTimeFormat ?? "date-time", timeRange) : null;
+      if (reason) {
+        return `stream '${wanted.name}': ${reason}`;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Why a `time_range` is unusable against a field of the given RFC 3339
+   * format, or null (Core Section 6 "Time range bounds"): it must carry at
+   * least one bound, each bound must have the field's type and be a valid
+   * RFC 3339 value of it, and `since` must be before `until`.
+   *
+   * One defect per rule: the rules are checked in sequence, so a shared defect
+   * would let an earlier refusal mask a later oracle.
+   */
+  private timeRangeShapeReason(
+    format: "date" | "date-time",
+    timeRange: { readonly since?: unknown; readonly until?: unknown }
+  ): string | null {
+    const { since, until } = timeRange;
+    if (since === undefined && until === undefined) {
+      return this.defects.has("accept-empty-time-range") ? null : "time_range carries neither since nor until";
+    }
+    const other = format === "date" ? "date-time" : "date";
+    for (const [name, bound] of [
+      ["since", since],
+      ["until", until],
+    ] as const) {
+      if (bound === undefined) {
+        continue;
+      }
+      const isOther = format === "date" ? parseDateTime(bound) !== null : parseFullDate(bound) !== null;
+      if (isOther && !this.defects.has("accept-wrong-type-time-range-bound")) {
+        return `${name} is a ${other} but the consent_time_field has format ${format}`;
+      }
+      const valid = format === "date" ? parseFullDate(bound) !== null : parseDateTime(bound) !== null;
+      if (!(valid || isOther) && !this.defects.has("accept-invalid-time-range-bound")) {
+        return `${name} is not a valid RFC 3339 ${format}`;
+      }
+    }
+    if (since !== undefined && until !== undefined && !this.defects.has("accept-since-not-before-until")) {
+      const order = compareBounds(format, since, until);
+      if (order !== null && order >= 0) {
+        return "since is not before until";
       }
     }
     return null;
@@ -1110,6 +1254,33 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       );
     }
 
+    // Clause 6.8-7: `["*"]` requests all permitted fields; `*` MUST then be the
+    // only element. Its own check and defect: a server that validates names
+    // against the snapshot would otherwise refuse `*` beside a name as an
+    // undeclared field for the wrong reason, so the defect must also stop that
+    // fallback from catching it (see `firstUndeclaredReason`).
+    const starBeside = this.defects.has("accept-star-beside-fields")
+      ? undefined
+      : wanted.find((s) => s.fields !== undefined && s.fields.includes("*") && s.fields.length > 1);
+    if (starBeside) {
+      return reject(
+        "invalid_authorization_details",
+        `stream '${starBeside.name}' lists '*' beside other fields; '*' must be the only element`
+      );
+    }
+
+    // Clause 6.8-12: each stream request MUST carry either `fields` or `view`.
+    // There is no implicit "all fields" default.
+    const bare = this.defects.has("accept-stream-without-fields-or-view")
+      ? undefined
+      : wanted.find((s) => s.fields === undefined && s.view === undefined);
+    if (bare) {
+      return reject(
+        "invalid_authorization_details",
+        `stream '${bare.name}' carries neither fields nor view; there is no implicit all-fields default`
+      );
+    }
+
     // A lone wildcard is well-formed and resolves against the retained snapshot
     // rather than being looked up as a stream name.
     const undeclaredReason = this.firstUndeclaredReason(wanted.filter((s) => s.name !== "*"));
@@ -1122,7 +1293,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       return reject("invalid_authorization_details", badViewReason);
     }
 
-    const badTimeRangeReason = this.firstBadTimeRangeReason(wanted, request.timeRange !== undefined);
+    const badTimeRangeReason = this.firstBadTimeRangeReason(wanted, request.timeRange);
     if (badTimeRangeReason) {
       return reject("invalid_authorization_details", badTimeRangeReason);
     }

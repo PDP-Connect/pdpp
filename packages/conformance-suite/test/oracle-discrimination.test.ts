@@ -41,6 +41,7 @@ import { MULTI_INSTANCE_CASES } from "../src/tests/multi-instance.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
 import { SELECTION_VALIDATION_CASES } from "../src/tests/selection-validation.ts";
+import { TIME_RANGE_CASES } from "../src/tests/time-range.ts";
 import { VIEW_CASES } from "../src/tests/views.ts";
 import { TARGET_DISCRIMINATION_MATRIX } from "./fixtures/proof-registry.ts";
 
@@ -56,6 +57,7 @@ const CASES: readonly ConformanceCase[] = [
   ...QUERY_SURFACE_CASES,
   ...MULTI_INSTANCE_CASES,
   ...SELECTION_VALIDATION_CASES,
+  ...TIME_RANGE_CASES,
   ...VIEW_CASES,
   ...CLIENT_IDENTITY_CASES,
   ...CONSENT_ARTIFACT_CASES,

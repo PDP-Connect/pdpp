@@ -180,9 +180,7 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#stream-semantics",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "No existing case submits a declaration or selection exercising this clause; a case that submits a declaration with an unrecognized `streams[].semantics` value and expects refusal is missing.",
+    caseIds: ["AS-22/unrecognized-stream-semantics-refused"],
   },
   {
     clauseId: "4.2-2",
@@ -510,9 +508,7 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#sourcedeclaration-fields",
     applicability: "the stream declares `consent_time_field`",
     observable: "declaration-static",
-    caseIds: ["AS-16/consent-time-field-not-declared-in-schema-refused"],
-    gapNote:
-      'AS-16/consent-time-field-not-declared-in-schema-refused exercises only the "declared in the schema" part. The revised text also requires a top-level field with format `date` or `date-time`; no case submits an ineligible but declared field (for example an epoch integer or a timestamp without an offset). No Section 9 item covered `consent_time_field` declaration validity before the revision; `requirementIds` now cites AS-27.',
+    caseIds: ["AS-16/consent-time-field-not-declared-in-schema-refused", "AS-27/ineligible-consent-time-field-refused"],
   },
   {
     clauseId: "5.2-4",
@@ -551,9 +547,7 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#sourcedeclaration-fields",
     applicability: "the stream declares `consent_time_content_may_exceed`",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "No existing case submits a declaration or selection exercising this clause; a case that submits a declaration with a non-boolean `consent_time_content_may_exceed` and expects refusal is missing.",
+    caseIds: ["AS-27/non-boolean-consent-time-content-may-exceed-refused"],
   },
   {
     clauseId: "5.3-1",
@@ -643,8 +637,9 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#consent-time-field",
     applicability: "the stream declares `consent_time_field`",
     observable: "declaration-static",
-    caseIds: [],
-    gapNote: "No case declares an ineligible field type; see 5.4-4.",
+    caseIds: ["AS-27/ineligible-consent-time-field-refused"],
+    gapNote:
+      "Offered ineligible forms: an epoch integer, a string with no format, a string with format `time`, and a nested field. Eligible controls are `date`, `date-time` and nullable `date-time`. A timestamp without an offset has no JSON Schema format of its own, so it is probed as a string with no format.",
   },
   {
     clauseId: "5.4-4",
@@ -656,9 +651,7 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#consent-time-field",
     applicability: "the stream declares `consent_time_field`",
     observable: "black-box-http",
-    caseIds: ["AS-16/consent-time-field-not-declared-in-schema-refused"],
-    gapNote:
-      "The mapped case covers one kind of ineligible field (one the schema does not declare). The other kinds the revised text names are untested: a nested field, a non-string type such as an epoch integer, a timestamp without an offset, and a field with a format other than `date` or `date-time`.",
+    caseIds: ["AS-16/consent-time-field-not-declared-in-schema-refused", "AS-27/ineligible-consent-time-field-refused"],
   },
   {
     clauseId: "5.4-5",
@@ -1234,9 +1227,7 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#source-kinds",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "No existing case submits a declaration or selection exercising this clause; a case that submits a declaration with an unrecognized `source.kind` and expects refusal is missing.",
+    caseIds: ["AS-22/unrecognized-source-kind-refused"],
   },
   {
     clauseId: "6.6-3",
@@ -1392,9 +1383,7 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#stream-selection-parameters",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote:
-      "No existing case submits a declaration or selection exercising this clause; a case that sends `fields` with `*` beside a named field and expects refusal is missing.",
+    caseIds: ["AS-2/star-beside-named-field-refused"],
   },
   {
     clauseId: "6.8-8",
@@ -1406,9 +1395,9 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#stream-selection-parameters",
     applicability: "the stream declares `consent_time_field`",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-27/time-range-bound-wrong-type-refused"],
     gapNote:
-      "No existing case submits a declaration or selection exercising this clause; a case that sends a `time_range` bound of the wrong type and expects refusal is missing.",
+      "The AS half is tested by offering a date and a date-time bound and requiring exactly one to be refused. The client half (send bounds of the field's declared format) is not exercised: the ClientUnderTest fixture does not publish a declaration to read a format from.",
   },
   {
     clauseId: "6.8-9",
@@ -1420,9 +1409,9 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#stream-selection-parameters",
     applicability: "the stream declares `consent_time_field`",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-27/time-range-without-bound-refused"],
     gapNote:
-      "No existing case submits a declaration or selection exercising this clause; a case that sends an empty `time_range` and expects refusal is missing.",
+      "The AS half is tested. The client half (never send a time_range with no bound) is not exercised: the ClientUnderTest contract has no action that builds a time_range.",
   },
   {
     clauseId: "6.8-10",
@@ -1434,9 +1423,9 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#stream-selection-parameters",
     applicability: "the stream declares `consent_time_field`",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-27/time-range-without-bound-refused", "AS-27/time-range-bound-wrong-type-refused", "AS-27/time-range-invalid-bound-refused", "AS-27/time-range-since-not-before-until-refused"],
     gapNote:
-      "No existing case submits a declaration or selection exercising this clause; a case that sends each of the four invalid `time_range` shapes and expects `invalid_authorization_details` is missing.",
+      "The invalid-bound probes are an impossible calendar date and, for a date-time field, a date-time with no offset. Leap-second validity (23:59:60 only on a date with an inserted leap second) is not probed.",
   },
   {
     clauseId: "6.8-11",
@@ -1448,9 +1437,9 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#stream-selection-parameters",
     applicability: "the stream declares `consent_time_field`",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-27/time-range-bound-not-converted"],
     gapNote:
-      "No existing case submits a declaration or selection exercising this clause; a case that submits a bound at full precision and compares it with `time_constraint` in the issued grant is missing.",
+      "Judged on the token response's `authorization_details` time_constraint (IssuedGrant.tokenResponseBody); a target whose adapter does not surface the token response reports skip. Date-only bounds are not probed.",
   },
   {
     clauseId: "6.8-12",
@@ -1462,9 +1451,9 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#stream-selection-parameters",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-2/stream-request-without-fields-or-view-refused"],
     gapNote:
-      "No existing case submits a declaration or selection exercising this clause; a case that sends a stream request with neither `fields` nor `view` and expects `invalid_authorization_details` is missing.",
+      "The AS half is tested for a `streams` request. A stream inside a selection preset is not probed: the bundled declaration defines no presets. The client half (always send `fields` or `view`) is not exercised: the ClientUnderTest fixture's authorize action always sends a selection built by the caller.",
   },
   {
     clauseId: "6.9-1",

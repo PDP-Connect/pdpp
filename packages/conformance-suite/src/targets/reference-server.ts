@@ -166,6 +166,28 @@ export type Defect =
    * no existing defect produces it.
    */
   | "accept-view-and-fields-together"
+  /** Accepts `fields: ["*", "<name>"]`, instead of requiring `*` to be the only element (clause 6.8-7). */
+  | "accept-star-beside-fields"
+  /** Accepts a stream request carrying neither `fields` nor `view` (clause 6.8-12). */
+  | "accept-stream-without-fields-or-view"
+  /** Accepts a `time_range` with no `since` and no `until` (clauses 6.8-9, 6.8-10). */
+  | "accept-empty-time-range"
+  /** Accepts a `time_range` bound whose type does not match the field's format (clauses 6.8-8, 6.8-10). */
+  | "accept-wrong-type-time-range-bound"
+  /** Accepts a `time_range` bound that is not a valid RFC 3339 value (clause 6.8-10). */
+  | "accept-invalid-time-range-bound"
+  /** Accepts a `time_range` whose `since` is not before its `until` (clause 6.8-10). */
+  | "accept-since-not-before-until"
+  /** Rewrites an issued `time_constraint` bound to a UTC instant instead of keeping it as requested (clause 6.8-11). */
+  | "normalize-time-constraint-bounds"
+  /** Accepts a declaration with an unrecognized `streams[].semantics` value (clause 4.2-1). */
+  | "accept-unrecognized-semantics"
+  /** Accepts a declaration with an unrecognized `source.kind` (clause 6.6-2). */
+  | "accept-unrecognized-source-kind"
+  /** Accepts a non-boolean `consent_time_content_may_exceed` (clause 5.2-6). */
+  | "accept-non-boolean-may-exceed"
+  /** Accepts a `consent_time_field` that is nested, not a string, or not format `date`/`date-time` (clauses 5.2-3, 5.4-3, 5.4-4). */
+  | "accept-ineligible-consent-time-field"
   /**
    * Refuses a selection carrying BOTH `view` and `fields`, but as
    * `invalid_request` rather than the RFC 9396 `invalid_authorization_details`
@@ -517,6 +539,8 @@ export interface StreamFixture {
    * what clauses 5.2-4 and 6.8-2 need a stream to demonstrate.
    */
   readonly consentTimeField?: string;
+  /** RFC 3339 format of `consentTimeField` (Core Section 5); defaults to `date-time`. */
+  readonly consentTimeFormat?: "date" | "date-time";
   readonly cursorField?: string;
   /** Declared item type for array-typed fields (JSON Schema `items.type`), a nested constraint RS-14 checks. */
   readonly fieldItemTypes?: Readonly<Record<string, string>>;
@@ -1249,13 +1273,24 @@ export class ReferenceServer {
           ? {
               time_constraint: {
                 field: stream.timeConstraint.field,
-                ...(stream.timeConstraint.from === undefined ? {} : { since: stream.timeConstraint.from }),
-                ...(stream.timeConstraint.to === undefined ? {} : { until: stream.timeConstraint.to }),
+                ...(stream.timeConstraint.from === undefined ? {} : { since: this.issuedBound(stream.timeConstraint.from) }),
+                ...(stream.timeConstraint.to === undefined ? {} : { until: this.issuedBound(stream.timeConstraint.to) }),
               },
             }
           : {}),
       })),
     };
+  }
+
+  /**
+   * A frozen `time_constraint` bound as the grant reports it (clause 6.8-11):
+   * verbatim. `normalize-time-constraint-bounds` converts a `date-time` to a UTC
+   * instant at millisecond precision, which is the conversion and rounding the
+   * clause forbids.
+   */
+  private issuedBound(bound: string): string {
+    const instant = this.has("normalize-time-constraint-bounds") ? Date.parse(bound) : Number.NaN;
+    return Number.isNaN(instant) ? bound : new Date(instant).toISOString();
   }
 
   /** The access token bound to a grant, for the token endpoint to re-serve. */

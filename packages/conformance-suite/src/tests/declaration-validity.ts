@@ -37,7 +37,12 @@
 // all declarations, which is not conformance — it is an AS that onboards
 // nothing.
 
-import type { DeclarationOutcome, SourceDeclarationSubmission, TargetAdapter } from "../harness/adapter.ts";
+import type {
+  DeclarationOutcome,
+  SourceDeclarationStream,
+  SourceDeclarationSubmission,
+  TargetAdapter,
+} from "../harness/adapter.ts";
 import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 
@@ -67,11 +72,16 @@ function outcomeEvidence(label: string, outcome: DeclarationOutcome): Evidence {
  * Every case's control carries one, so a refusal can never be attributed to the
  * target simply not accepting embedded schemas.
  */
-function schemaFor(fields: readonly string[]): Record<string, unknown> {
+function schemaFor(
+  fields: readonly string[],
+  formats: Readonly<Record<string, string>> = {}
+): Record<string, unknown> {
   return {
     $schema: SCHEMA_DIALECT,
     type: "object",
-    properties: Object.fromEntries(fields.map((field) => [field, { type: "string" }])),
+    properties: Object.fromEntries(
+      fields.map((field) => [field, formats[field] === undefined ? { type: "string" } : { type: "string", format: formats[field] }])
+    ),
     additionalProperties: false,
   };
 }
@@ -91,7 +101,9 @@ function validDeclaration(streamName: string, fields: readonly string[], version
       {
         name: streamName,
         fields: [...fields],
-        schema: schemaFor(fields),
+        // The consent boundary must be an eligible type (clause 5.4-3), or the
+        // control itself would be a declaration a conforming AS has to refuse.
+        schema: schemaFor(fields, first === undefined ? {} : { [first]: "date-time" }),
         ...(first === undefined ? {} : { primaryKey: [first], cursorField: first, consentTimeField: first }),
       },
     ],
@@ -118,6 +130,57 @@ async function acceptedControl(
     };
   }
   return { outcome };
+}
+
+/**
+ * A case that changes one stream member of an accepted declaration to a value
+ * the AS must refuse, paired with an accepted control that differs only in
+ * that member.
+ */
+function memberValueCase(spec: {
+  readonly assertion: string;
+  readonly caseId: string;
+  readonly control: (stream: SourceDeclarationStream) => SourceDeclarationStream;
+  readonly idPrefix: string;
+  readonly label: string;
+  readonly negative: (stream: SourceDeclarationStream) => SourceDeclarationStream;
+  readonly requirementId: string;
+  readonly violation: string;
+}): ConformanceCase {
+  return {
+    caseId: spec.caseId,
+    requirementId: spec.requirementId,
+    assertion: spec.assertion,
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream to build a declaration from.");
+      }
+      const version = `${spec.idPrefix}-${Date.now()}`;
+      const base = validDeclaration(seeded.name, seeded.fields, version);
+      const [stream] = base.streams;
+      if (!stream) {
+        return skip("The baseline declaration carries no stream.");
+      }
+      const control = await acceptedControl(adapter, { ...base, streams: [spec.control(stream)] });
+      if ("reason" in control) {
+        return skip(control.reason);
+      }
+      const outcome = await adapter.submitDeclaration?.({
+        ...base,
+        declarationVersion: `${version}-negative`,
+        streams: [spec.negative(stream)],
+      });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [
+        outcomeEvidence("declaration: member set to a defined value (control)", control.outcome),
+        outcomeEvidence(`declaration: ${spec.label}`, outcome),
+      ];
+      return outcome.accepted ? fail(spec.violation, evidence) : pass(evidence);
+    },
+  };
 }
 
 export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
@@ -288,6 +351,181 @@ export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
           'A declaration whose embedded stream schema resolves a field through `$ref: https://schemas.example/mutable/field.json` was accepted. Core Section 5: "Embedded `$ref` and `$dynamicRef` values MUST be local fragment references. A declaration MUST NOT make consent interpretation depend on a mutable remote schema." Retaining it means the meaning of the data the owner consented to is held at a URL the AS never fetched, never froze, and does not control — a third party can change what the consent covers without the declaration changing at all.',
           evidence
         );
+      }
+      return pass(evidence);
+    },
+  },
+  // ------------------------------------------------- 4.2-1, 6.6-2, 5.2-6 ---
+  // Three "unrecognized or malformed member value" refusals that share a shape:
+  // the control sets the member to a value Core defines, the negative to one it
+  // does not. Each has its own case and defect because a server can validate
+  // one member and wave through the others.
+  memberValueCase({
+    caseId: "AS-22/unrecognized-stream-semantics-refused",
+    requirementId: "AS-22",
+    assertion:
+      "A declaration whose stream states an unrecognized `semantics` value is refused, while the same declaration stating `append_only` is accepted.",
+    idPrefix: "semantics",
+    control: (stream) => ({ ...stream, semantics: "append_only" }),
+    negative: (stream) => ({ ...stream, semantics: "event_log_v2" }),
+    label: "streams[].semantics 'event_log_v2'",
+    violation:
+      "A declaration whose stream states `semantics: event_log_v2` was accepted. Core Section 4: \"An authorization server MUST reject a declaration containing an unrecognized `streams[].semantics` value.\" Accepting it means a resource server later has to choose a write and sync behaviour for a stream type it cannot interpret, and guessing `append_only` or `mutable_state` applies the wrong one to the owner's data.",
+  }),
+  {
+    caseId: "AS-22/unrecognized-source-kind-refused",
+    requirementId: "AS-22",
+    assertion:
+      "A declaration stating an unrecognized `source.kind` is refused, while the same declaration stating `connector` is accepted.",
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream to build a declaration from.");
+      }
+      const version = `source-kind-${Date.now()}`;
+      const base = validDeclaration(seeded.name, seeded.fields, version);
+      const control = await acceptedControl(adapter, base);
+      if ("reason" in control) {
+        return skip(control.reason);
+      }
+      const outcome = await adapter.submitDeclaration?.({
+        ...base,
+        declarationVersion: `${version}-negative`,
+        source: { ...base.source, kind: "vendor_native" },
+      });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [
+        outcomeEvidence("declaration: source.kind 'connector' (control)", control.outcome),
+        outcomeEvidence("declaration: source.kind 'vendor_native'", outcome),
+      ];
+      if (outcome.accepted) {
+        return fail(
+          "A declaration stating `source.kind: vendor_native` was accepted. Core Section 6: \"An authorization server MUST reject a declaration containing an unrecognized `source.kind`.\" The provenance class is recorded in consent evidence and every issued grant, so accepting a class no client can interpret frees each consumer to read it as whichever known class suits it.",
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+  memberValueCase({
+    caseId: "AS-27/non-boolean-consent-time-content-may-exceed-refused",
+    requirementId: "AS-27",
+    assertion:
+      "A declaration whose stream states a non-boolean `consent_time_content_may_exceed` is refused, while the same declaration stating a boolean is accepted.",
+    idPrefix: "may-exceed",
+    control: (stream) => ({ ...stream, consentTimeContentMayExceed: true }),
+    negative: (stream) => ({ ...stream, consentTimeContentMayExceed: "yes" }),
+    label: "consent_time_content_may_exceed 'yes'",
+    violation:
+      "A declaration whose stream states `consent_time_content_may_exceed: \"yes\"` was accepted. Core Section 5: \"The AS MUST reject a non-boolean value.\" The member decides whether the owner is told that matched records can hold data from outside the consented window, and a truthy string that one component reads as true and another as absent changes what the owner is shown.",
+  }),
+
+  // --------------------------------------------- 5.2-3, 5.4-3, 5.4-4 ---
+  // The eligible forms are controls in the same case: a server that refuses
+  // `date`, or a nullable `date-time`, is over-refusing something Core says is
+  // allowed, and the negatives would otherwise credit a server that refuses
+  // every consent_time_field it is offered.
+  {
+    caseId: "AS-27/ineligible-consent-time-field-refused",
+    requirementId: "AS-27",
+    assertion:
+      "A declaration naming a consent_time_field that is nested, not a string, or not format date/date-time is refused, while eligible date, date-time and nullable date-time fields are accepted.",
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream to build a declaration from.");
+      }
+      const [first] = seeded.fields;
+      if (first === undefined) {
+        return skip(`Stream '${seeded.name}' declares no fields, so no consent boundary can be named.`);
+      }
+      const version = `consent-time-type-${Date.now()}`;
+      const withProperty = (property: Record<string, unknown>, field = first): SourceDeclarationSubmission => {
+        const base = validDeclaration(seeded.name, seeded.fields, version);
+        const [stream] = base.streams;
+        const schema = schemaFor(seeded.fields, { [first]: "date-time" }) as { properties: Record<string, unknown> };
+        return {
+          ...base,
+          streams: [
+            {
+              ...(stream as SourceDeclarationStream),
+              consentTimeField: field,
+              schema: { ...schema, properties: { ...schema.properties, [first]: property } },
+            },
+          ],
+        };
+      };
+      const control = await acceptedControl(adapter, withProperty({ type: "string", format: "date-time" }));
+      if ("reason" in control) {
+        return skip(control.reason);
+      }
+      const evidence = [outcomeEvidence("declaration: string/date-time consent_time_field (control)", control.outcome)];
+
+      const eligible: readonly [string, Record<string, unknown>][] = [
+        ["string/date", { type: "string", format: "date" }],
+        ["nullable string/date-time", { type: ["string", "null"], format: "date-time" }],
+      ];
+      let n = 0;
+      for (const [label, property] of eligible) {
+        n += 1;
+        // biome-ignore lint/performance/noAwaitInLoops: each submission is judged before the next so a refusal names its variant.
+        const outcome = await adapter.submitDeclaration?.({ ...withProperty(property), declarationVersion: `${version}-eligible-${n}` });
+        if (!outcome) {
+          return skip(NO_HOOK);
+        }
+        evidence.push(outcomeEvidence(`declaration: ${label} consent_time_field (eligible)`, outcome));
+        if (!outcome.accepted) {
+          return fail(
+            `A declaration whose consent_time_field is an eligible ${label} field was refused (${outcome.errorCode ?? outcome.status ?? "no code"}). Core Section 5: a consent_time_field MUST be a top-level field whose schema declares format date or date-time, and the schema MAY allow null; refusing an eligible type leaves a stream with that field unable to offer time-range selection.`,
+            evidence
+          );
+        }
+      }
+
+      const ineligible: readonly [string, Record<string, unknown>, string?][] = [
+        ["an epoch integer", { type: "integer" }],
+        ["a string with no format", { type: "string" }],
+        ["a string with format time", { type: "string", format: "time" }],
+        ["a nested field", { type: "string", format: "date-time" }, "meta.created"],
+      ];
+      for (const [label, property, field] of ineligible) {
+        n += 1;
+        const submission = withProperty(property, field);
+        const [stream] = submission.streams;
+        const nested =
+          field === undefined
+            ? submission
+            : {
+                ...submission,
+                streams: [
+                  {
+                    ...(stream as SourceDeclarationStream),
+                    fields: [...seeded.fields, "meta"],
+                    schema: {
+                      ...(schemaFor(seeded.fields, { [first]: "date-time" }) as { properties: Record<string, unknown> }),
+                      properties: {
+                        ...(schemaFor(seeded.fields, { [first]: "date-time" }) as { properties: Record<string, unknown> })
+                          .properties,
+                        meta: { type: "object", properties: { created: property } },
+                      },
+                    },
+                  },
+                ],
+              };
+        // biome-ignore lint/performance/noAwaitInLoops: each submission is judged before the next so a refusal names its variant.
+        const outcome = await adapter.submitDeclaration?.({ ...nested, declarationVersion: `${version}-ineligible-${n}` });
+        if (!outcome) {
+          return skip(NO_HOOK);
+        }
+        evidence.push(outcomeEvidence(`declaration: consent_time_field is ${label}`, outcome));
+        if (outcome.accepted) {
+          return fail(
+            `A declaration whose consent_time_field is ${label} was accepted. Core Section 5: a consent_time_field MUST be a top-level field whose schema declares format date or date-time, and "the AS MUST reject a declaration that names an ineligible consent_time_field". Accepting one means a time_range grant compares bounds against values with no defined order, so the owner's window is applied to nothing reliable.`,
+            evidence
+          );
+        }
       }
       return pass(evidence);
     },

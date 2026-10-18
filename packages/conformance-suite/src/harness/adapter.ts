@@ -331,7 +331,11 @@ export interface SourceDeclarationSubmission {
    * the shape every existing declaration-trust case submits.
    */
   readonly selectionPresets?: readonly { readonly name: string; readonly streams: readonly string[] }[];
-  readonly source: { readonly kind: "connector" | "provider_native"; readonly id: string };
+  /**
+   * `kind` is a plain string, not the two known values: the unrecognized-kind
+   * negative (clause 6.6-2) has to offer a value Core does not define.
+   */
+  readonly source: { readonly kind: "connector" | "provider_native" | (string & {}); readonly id: string };
   /**
    * The declaration's parsed content, as whatever shape the target onboards.
    *
@@ -369,6 +373,17 @@ export interface SourceDeclarationSubmission {
 export interface SourceDeclarationStream {
   /** `consent_time_field`, when the stream declares one (clause 5.2-3). */
   readonly consentTimeField?: string;
+  /**
+   * `consent_time_content_may_exceed` as the declaration states it (clause
+   * 5.2-6). `unknown` so a case can offer a non-boolean, which the AS MUST
+   * reject.
+   */
+  readonly consentTimeContentMayExceed?: unknown;
+  /**
+   * `semantics` as the declaration states it (clause 4.2-1). A plain string so
+   * a case can offer a value Core does not define.
+   */
+  readonly semantics?: string;
   /** `cursor_field`, when the stream declares one (clause 5.2-2). */
   readonly cursorField?: string;
   readonly fields: readonly string[];

@@ -531,6 +531,19 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "RS-6/cursor-not-accepted-as-changes-since", defect: "accept-page-cursor-as-changes-since" },
   { caseId: "RS-1/single-record-read", defect: "serve-unknown-record-id" },
   { caseId: "RS-2/time-constraint-enforced", defect: "ignore-time-constraint" },
+  // Revised-text clauses (declaration members, selection shape, time_range
+  // bounds). One defect per case, each switching off only that case's check.
+  { caseId: "AS-22/unrecognized-stream-semantics-refused", defect: "accept-unrecognized-semantics" },
+  { caseId: "AS-22/unrecognized-source-kind-refused", defect: "accept-unrecognized-source-kind" },
+  { caseId: "AS-27/non-boolean-consent-time-content-may-exceed-refused", defect: "accept-non-boolean-may-exceed" },
+  { caseId: "AS-27/ineligible-consent-time-field-refused", defect: "accept-ineligible-consent-time-field" },
+  { caseId: "AS-2/star-beside-named-field-refused", defect: "accept-star-beside-fields" },
+  { caseId: "AS-2/stream-request-without-fields-or-view-refused", defect: "accept-stream-without-fields-or-view" },
+  { caseId: "AS-27/time-range-without-bound-refused", defect: "accept-empty-time-range" },
+  { caseId: "AS-27/time-range-bound-wrong-type-refused", defect: "accept-wrong-type-time-range-bound" },
+  { caseId: "AS-27/time-range-invalid-bound-refused", defect: "accept-invalid-time-range-bound" },
+  { caseId: "AS-27/time-range-since-not-before-until-refused", defect: "accept-since-not-before-until" },
+  { caseId: "AS-27/time-range-bound-not-converted", defect: "normalize-time-constraint-bounds" },
 ];
 
 export const CLIENT_DISCRIMINATION_MATRIX: readonly { caseId: string; defect: ClientDefect }[] = [

@@ -20,6 +20,7 @@ import { MULTI_INSTANCE_CASES } from "./tests/multi-instance.ts";
 import { QUERY_SURFACE_CASES } from "./tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "./tests/resource-server.ts";
 import { SELECTION_VALIDATION_CASES } from "./tests/selection-validation.ts";
+import { TIME_RANGE_CASES } from "./tests/time-range.ts";
 import { VIEW_CASES } from "./tests/views.ts";
 
 /**
@@ -36,6 +37,7 @@ export const ALL_CASES: readonly ConformanceCase[] = [
   ...GRANT_LIFECYCLE_CASES,
   ...GRANT_INTEGRITY_CASES,
   ...SELECTION_VALIDATION_CASES,
+  ...TIME_RANGE_CASES,
   ...VIEW_CASES,
   ...CLIENT_IDENTITY_CASES,
   ...CONSENT_ARTIFACT_CASES,
