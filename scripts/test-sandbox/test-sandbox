@@ -161,10 +161,12 @@ PY
   exit 3
 fi
 
-# Tell the command (and any nested harness) what it runs under, so it can
+# Tell the command (and any nested harness) what it runs under (TEST_SANDBOX_RUN_*), so it can
 # verify instead of trust: a nested test-sandbox call runs directly.
-export TEST_SANDBOX_ACTIVE=1 TEST_SANDBOX_ENFORCEMENT="$enforcement" TEST_SANDBOX_ISOLATE="$isolate" TEST_SANDBOX_PIDNS="$pidns"
-if [[ "$enforcement" == *netns* ]]; then export TEST_SANDBOX_NET=none; else export TEST_SANDBOX_NET=host; fi
+# Output names differ from the input knobs (TEST_SANDBOX_NET, _ISOLATE, ...),
+# so a sandbox a test starts with TEST_SANDBOX_ACTIVE cleared keeps its defaults.
+export TEST_SANDBOX_ACTIVE=1 TEST_SANDBOX_RUN_ENFORCEMENT="$enforcement" TEST_SANDBOX_RUN_ISOLATE="$isolate" TEST_SANDBOX_RUN_PIDNS="$pidns"
+if [[ "$enforcement" == *netns* ]]; then export TEST_SANDBOX_RUN_NET=none; else export TEST_SANDBOX_RUN_NET=host; fi
 runtime=${XDG_RUNTIME_DIR:-$HOME/.cache}
 state_dir=${TEST_SANDBOX_STATE_DIR:-$runtime/agent-tests}
 mkdir -p "$state_dir/slots" || die "cannot create slot directory $state_dir/slots"

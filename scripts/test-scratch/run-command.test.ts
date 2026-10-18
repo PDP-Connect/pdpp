@@ -71,6 +71,15 @@ function startRawWrapper(argv: string[], env: NodeJS.ProcessEnv = process.env) {
   });
 }
 
+// Each sandbox these tests spawn must start from its own defaults, whatever
+// TEST_SANDBOX_* knobs the caller's shell or an outer run has set.
+const FRESH_SANDBOX_CONTEXT = {
+  TEST_SANDBOX_ACTIVE: "",
+  TEST_SANDBOX_ENFORCEMENT: undefined,
+  TEST_SANDBOX_ISOLATE: undefined,
+  TEST_SANDBOX_NET: undefined,
+};
+
 // The vendored test-sandbox enforces nothing and ignores --scratch under bash < 5
 // (stock macOS bash 3.2); tests of its contract only mean something with bash 5.
 const sandboxBashMajor = Number(spawnSync("bash", ["-c", "echo $BASH_VERSINFO"], { encoding: "utf8" }).stdout.trim());
@@ -93,7 +102,7 @@ test("owner routes children through the sandbox unless explicitly disabled", san
         PDPP_TEST_SCRATCH_NONCE: undefined,
         PDPP_TEST_SCRATCH_OWNER_PID: undefined,
         RUNNER_TEMP: runnerTemp,
-        TEST_SANDBOX_ACTIVE: "",
+        ...FRESH_SANDBOX_CONTEXT,
         TEST_SANDBOX_DISABLE: disabled ? "1" : "0",
       };
       const wrapper = startRawWrapper(probe, env);
@@ -123,7 +132,7 @@ test("sandbox creates a missing --scratch root 0700 once and never re-creates it
     const run = (script: string) =>
       spawnSync(SANDBOX_SCRIPT, ["--scratch", scratch, "--", process.execPath, "-e", script], {
         encoding: "utf8",
-        env: { ...process.env, TEST_SANDBOX_ACTIVE: "", TEST_SANDBOX_DISABLE: "", TEST_SANDBOX_PIDNS: "0" },
+        env: { ...process.env, ...FRESH_SANDBOX_CONTEXT, TEST_SANDBOX_DISABLE: "", TEST_SANDBOX_PIDNS: "0" },
       });
     // Loose parent umask: only the sandbox's own creation can make the root private.
     const previous = process.umask(0o022);
@@ -157,7 +166,7 @@ test("sandbox preserves literal shell variable syntax in child argv", async () =
       PDPP_TEST_SCRATCH_NONCE: undefined,
       PDPP_TEST_SCRATCH_OWNER_PID: undefined,
       RUNNER_TEMP: runnerTemp,
-      TEST_SANDBOX_ACTIVE: "",
+      ...FRESH_SANDBOX_CONTEXT,
       TEST_SANDBOX_DISABLE: "0",
     });
     let output = "";
@@ -233,7 +242,7 @@ test("sandbox sees its owned scratch root below /tmp", {
         PDPP_TEST_SCRATCH_NONCE: undefined,
         PDPP_TEST_SCRATCH_OWNER_PID: undefined,
         RUNNER_TEMP: runnerTemp,
-        TEST_SANDBOX_ACTIVE: "",
+        ...FRESH_SANDBOX_CONTEXT,
         TEST_SANDBOX_DISABLE: "0",
       }
     );
@@ -1007,7 +1016,7 @@ function noCgroupEnv(runnerTemp: string): NodeJS.ProcessEnv {
     PDPP_TEST_SCRATCH_OWNER_PID: undefined,
     RUNNER_TEMP: runnerTemp,
     TEST_RECEIPT_ACTIVE: "1",
-    TEST_SANDBOX_ACTIVE: "",
+    ...FRESH_SANDBOX_CONTEXT,
     TEST_SANDBOX_DISABLE: "0",
   };
 }
@@ -1106,7 +1115,7 @@ test("a sandbox that exits before publishing a command group leaves no scratch a
         PDPP_TEST_SCRATCH_NONCE: undefined,
         PDPP_TEST_SCRATCH_OWNER_PID: undefined,
         RUNNER_TEMP: runnerTemp,
-        TEST_SANDBOX_ACTIVE: "",
+        ...FRESH_SANDBOX_CONTEXT,
         TEST_SANDBOX_DISABLE: "0",
         TEST_SANDBOX_REQUIRE: "1",
       },
