@@ -1,0 +1,76 @@
+name: workspace-tests
+
+# Behavioral gate for the whole workspace. Runs `pnpm test-accounting:check`
+# (the full accounting authority: inventory closure, every suite, receipts)
+# unfiltered on every pull request, whatever its base branch or touched paths,
+# and on every push to main. Without it no workflow ran the complete suite and
+# a red main went unnoticed for weeks; the path-scoped test-accounting.yml only
+# covers the accounting scripts and the manifest.
+#
+# CI=true (set by GitHub Actions) makes the authority skip the local
+# full-suite lock and the local two-file concurrency default. Measured locally
+# the gate takes about 52-79 s; the timeout leaves headroom for slower hosted
+# runners and a cold pnpm cache.
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+  workflow_dispatch: {}
+
+concurrency:
+  group: workspace-tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  workspace:
+    name: test-accounting:check (all suites)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # inventory_base_sha must resolve as an ancestor of HEAD.
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Fetch inventory baseline
+        run: |
+          base_sha="$(node -p 'require("./test-accounting.manifest.json").inventory_base_sha')"
+          git fetch --no-tags origin "$base_sha"
+          git merge-base --is-ancestor "$base_sha" HEAD
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Run every accounted suite
+        run: pnpm test-accounting:check
+
+      # The runs directory lives in this fresh checkout's git dir, so it holds
+      # only this run's receipts and transcripts.
+      - name: Locate failure evidence
+        if: failure()
+        id: evidence
+        run: echo "runs=$(git rev-parse --absolute-git-dir)/test-accounting/runs" >> "$GITHUB_OUTPUT"
+
+      - name: Upload receipts and transcripts
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-accounting-runs
+          path: ${{ steps.evidence.outputs.runs }}
+          if-no-files-found: warn
+          retention-days: 7

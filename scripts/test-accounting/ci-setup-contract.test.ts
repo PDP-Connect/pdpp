@@ -11,6 +11,9 @@ const INSTALL_PATTERN = /pnpm install/;
 const IGNORE_SCRIPTS_PATTERN = /--ignore-scripts/;
 const INVENTORY_BASE_PATTERN = /node -p 'require\("\.\/test-accounting\.manifest\.json"\)\.inventory_base_sha'/;
 const FETCH_BASE_PATTERN = /git fetch --no-tags origin "\$base_sha"/;
+const WORKSPACE_RUN_PATTERN = /^\s+run: pnpm test-accounting:check$/m;
+const PULL_REQUEST_UNFILTERED_PATTERN = /^ {2}pull_request: \{\}$/m;
+const PATHS_FILTER_PATTERN = /^\s+paths(-ignore)?:/m;
 const ANCESTOR_PATTERN = /git merge-base --is-ancestor "\$base_sha" HEAD/;
 
 test("root pnpm config serializes workspace lifecycle children for every installer", async () => {
@@ -24,6 +27,16 @@ test("root pnpm config serializes workspace lifecycle children for every install
 
 test("inventory workflow explicitly fetches and verifies the manifest baseline", async () => {
   const workflow = await readFile(new URL(".github/workflows/test-accounting.yml", root), "utf8");
+  assert.match(workflow, INVENTORY_BASE_PATTERN);
+  assert.match(workflow, FETCH_BASE_PATTERN);
+  assert.match(workflow, ANCESTOR_PATTERN);
+});
+
+test("workspace gate runs the full accounting authority on every pull request", async () => {
+  const workflow = await readFile(new URL(".github/workflows/workspace-tests.yml", root), "utf8");
+  assert.match(workflow, WORKSPACE_RUN_PATTERN);
+  assert.match(workflow, PULL_REQUEST_UNFILTERED_PATTERN);
+  assert.doesNotMatch(workflow, PATHS_FILTER_PATTERN);
   assert.match(workflow, INVENTORY_BASE_PATTERN);
   assert.match(workflow, FETCH_BASE_PATTERN);
   assert.match(workflow, ANCESTOR_PATTERN);
