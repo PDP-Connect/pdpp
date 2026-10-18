@@ -878,18 +878,23 @@ export function schedulePhases(runs: Run[], concurrency: number): [Run[], number
 }
 
 /**
- * Run `work` over `runs` with at most `limit` in flight. After a failure no new
- * run starts; runs already in flight finish (each is bounded by its own
- * deadlines) and the first error is rethrown.
+ * Run `work` over `runs` with at most `limit` in flight. Once `stopped()` is
+ * true, or any run throws, no new run starts; runs already in flight finish
+ * (each is bounded by its own deadlines) and the first thrown error is rethrown.
  */
-async function runPool(runs: Run[], limit: number, work: (run: Run) => Promise<void>): Promise<void> {
+async function runPool(
+  runs: Run[],
+  limit: number,
+  work: (run: Run) => Promise<void>,
+  stopped: () => boolean
+): Promise<void> {
   let next = 0;
   const errors: unknown[] = [];
   // A worker takes the next run only after its previous run finishes;
   // parallelism comes from starting `limit` workers.
   const worker = async (): Promise<void> => {
     const run = runs[next];
-    if (errors.length > 0 || !run) {
+    if (errors.length > 0 || stopped() || !run) {
       return;
     }
     next += 1;
@@ -903,6 +908,19 @@ async function runPool(runs: Run[], limit: number, work: (run: Run) => Promise<v
   await Promise.all(Array.from({ length: Math.min(limit, runs.length) }, worker));
   if (errors.length > 0) {
     throw errors[0];
+  }
+}
+
+function runFailed({ observed, counts }: CompletedRun): boolean {
+  return observed.exit_code !== 0 || observed.signal !== null || counts.protocol_error !== undefined;
+}
+
+function sourceTreeDirty(root: string): boolean {
+  try {
+    assertCleanSourceTree(root);
+    return false;
+  } catch {
+    return true;
   }
 }
 
@@ -1197,40 +1215,84 @@ export async function runAuthority({
     sourceTree,
     total: runs.length,
   };
-  // A completed run is sealed (completion + receipt written) only once the
-  // checkout has been verified clean at a moment when no leaf is running, so a
-  // sibling's transient files can never be attributed to the run that happened
-  // to finish first. With concurrency 1 every run ends quiescent, which is
-  // exactly the old check-after-each-run behavior.
+  // Serial blame, kept under overlap. Serial order checks the checkout after
+  // every run, so a run's leftovers are rejected before the next run's setup can
+  // remove them. Here a run that ends dirty while siblings still run may have
+  // left the files itself or merely caught a sibling's transient ones, and the
+  // two cannot be told apart yet. So it stops every lane from starting another
+  // run until the last sibling ends and the checkout is judged at rest: still
+  // dirty then fails the gate before any further run can hide the files. Sealing
+  // (completion + receipt) also waits for that moment. With concurrency 1 every
+  // run ends at rest, which is exactly the old check-after-each-run behavior.
   const unsealed: CompletedRun[] = [];
   const sealed = new Map<number, Receipt>();
   let inFlight = 0;
-  const finishRun = async (indexed: Run) => {
-    inFlight += 1;
-    try {
-      unsealed.push(await executeRun(indexed, context));
-    } finally {
-      inFlight -= 1;
-    }
-    if (inFlight > 0) {
-      return;
-    }
-    const batch = unsealed.splice(0).sort((a, b) => a.index - b.index);
+  let suspect = false;
+  let stopped = false;
+  let atRest: Promise<void> | undefined;
+  let endRest = () => {
+    suspect = false;
+  };
+  const waitForRest = () => {
+    atRest ??= new Promise<void>((resolveRest) => {
+      endRest = () => {
+        suspect = false;
+        atRest = undefined;
+        resolveRest();
+      };
+    });
+    return atRest;
+  };
+  const settle = async () => {
     assertCleanSourceTree(root);
     if (sourceTreeDigest(root, head) !== sourceTree) {
       fail(
-        `${batch.map(({ issued }) => `${issued.suite}/${issued.profile}`).join(", ")} changed the full source tree during execution`
+        `${unsealed.map(({ issued }) => `${issued.suite}/${issued.profile}`).join(", ")} changed the full source tree during execution`
       );
     }
+    const batch = unsealed.splice(0);
     await Promise.all(
       batch.map(async (done) => {
         sealed.set(done.index, await sealRun(done, context));
       })
     );
   };
+  const finishRun = async (indexed: Run) => {
+    inFlight += 1;
+    let done: CompletedRun;
+    try {
+      done = await executeRun(indexed, context);
+    } catch (error) {
+      stopped = true;
+      inFlight -= 1;
+      if (inFlight === 0) {
+        endRest();
+      }
+      throw error;
+    }
+    inFlight -= 1;
+    unsealed.push(done);
+    // The first failed outcome stops new starts at once; siblings finish.
+    stopped ||= runFailed(done);
+    if (inFlight > 0) {
+      suspect ||= sourceTreeDirty(root);
+      if (suspect) {
+        await waitForRest();
+      }
+      return;
+    }
+    try {
+      await settle();
+    } catch (error) {
+      stopped = true;
+      throw error;
+    } finally {
+      endRest();
+    }
+  };
   // Phases are ordered: the exclusive phase starts only after the shared phase has drained.
   await schedulePhases(runs, concurrency).reduce(
-    (previous, [phaseRuns, limit]) => previous.then(() => runPool(phaseRuns, limit, finishRun)),
+    (previous, [phaseRuns, limit]) => previous.then(() => runPool(phaseRuns, limit, finishRun, () => stopped)),
     Promise.resolve()
   );
   receipts.push(...[...sealed.entries()].sort(([a], [b]) => a - b).map(([, receipt]) => receipt));
