@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "Generic example target config. Replace the loopback URL, tokens, stream declarations,",
+    "and grant endpoints with values supplied by the target operator.",
+    "Run: pdpp-conformance --target targets/http-target.example.json"
+  ],
+  "targetId": "example-http-target",
+  "targetVersion": "example",
+  "baseUrl": "http://127.0.0.1:3000",
+  "roles": ["resource-server"],
+  "capabilities": {
+    "separatedDeployment": false,
+    "ownerTokens": true,
+    "selfExport": true,
+    "incrementalSync": true,
+    "views": false,
+    "singleUseGrants": true,
+    "refreshTokens": false,
+    "blobs": true
+  },
+  "streams": [
+    {
+      "name": "conversations",
+      "fields": ["id", "title", "source_created_at"],
+      "primaryKey": ["id"],
+      "cursorField": "source_created_at",
+      "semantics": "mutable_state",
+      "recordCount": 2
+    },
+    {
+      "name": "messages",
+      "fields": ["id", "body", "source_created_at"],
+      "primaryKey": ["id"],
+      "cursorField": "source_created_at",
+      "semantics": "append_only",
+      "recordCount": 1
+    }
+  ],
+  "ownerToken": "REPLACE_WITH_OWNER_TOKEN",
+  "foreignSubjectOwnerToken": "REPLACE_WITH_SECOND_SUBJECT_OWNER_TOKEN",
+  "grants": {
+    "preprovisioned": [],
+    "issueEndpoint": "/pdpp/test/grants",
+    "revokeEndpoint": "/pdpp/test/grants/revoke",
+    "adminToken": "REPLACE_WITH_ADMIN_TOKEN"
+  }
+}
