@@ -1546,21 +1546,27 @@ test("journal recovery resumes an interrupted rename and survives embedded-marke
   await writeFile(sentinel, "unchanged");
   const beforeRename = await allocateScratchOwnership({ parent });
   const afterRename = await allocateScratchOwnership({ parent });
+  const quarantine = join(parent, `.quarantine-${afterRename.allocation.nonce}`);
   try {
     await oldMarker(beforeRename);
     await assert.rejects(
       cleanupScratchOwnership(beforeRename, {
         afterJournal: () => Promise.reject(new Error("simulate crash after journal")),
-      })
+      }),
+      { name: "Error", message: "simulate crash after journal" }
     );
     await oldMarker(afterRename);
     await assert.rejects(
       cleanupScratchOwnership(afterRename, {
         afterRename: async () => {
-          await rm(afterRename.allocation.markerPath);
+          // The root has already moved, so its embedded marker now lives under the quarantine path.
+          const embeddedMarker = join(quarantine, ".pdpp-test-scratch.json");
+          await rm(embeddedMarker);
+          await assert.rejects(access(embeddedMarker), { code: "ENOENT" });
           throw new Error("simulate crash after rename and marker loss");
         },
-      })
+      }),
+      { name: "Error", message: "simulate crash after rename and marker loss" }
     );
     const results = await recoverStaleScratch({ parent });
     assert.ok(results.some((result) => result.reason === "dead-verified" && result.removed));
