@@ -38,10 +38,11 @@ import {
 
 const AUTHORITY_TTL_MS = 2 * 60 * 60 * 1000;
 const OPTIONAL_PREDICATE_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
-const liveProcessGroups = new Set<number>();
+// Numeric PGID -> the tracker that owns it. See trackProcessGroup.
+const liveProcessGroups = new Map<number, object>();
 
 function signalProcessGroups(): void {
-  for (const pid of liveProcessGroups) {
+  for (const pid of liveProcessGroups.keys()) {
     try {
       process.kill(-pid, "SIGKILL");
     } catch (error) {
@@ -203,32 +204,41 @@ function killProcessGroup(child: ReturnType<typeof spawn>): boolean {
 }
 
 /**
- * Register a detached child's process group for shutdown cleanup. A kill that
- * lands, or finds the group already gone, unregisters it: once the leaf's members
- * have exited, the numeric PGID can belong to an unrelated group, so no later
- * kill, release or shutdown path may signal it again. `kill` SIGKILLs the group
- * while it is registered. `release` SIGKILLs it only if no kill has landed, which
- * catches a same-group descendant that ignored or redirected its stdio and would
- * otherwise outlive the leaf, and then unregisters it for good.
+ * Register a detached child's process group for shutdown cleanup. The registry
+ * maps each numeric PGID to the tracker that owns it. Once a group's members have
+ * exited, its PGID can belong to an unrelated group, and a newer tracker may
+ * already have registered the same number. So a tracker signals and unregisters
+ * only while it still owns its PGID, and never removes an entry it does not own.
+ * A kill that lands, or finds the group already gone, unregisters it at that
+ * moment, so no later kill, release or shutdown path may signal it again. `kill`
+ * SIGKILLs the group while it is owned. `release` SIGKILLs it only if no kill has
+ * landed, which catches a same-group descendant that ignored or redirected its
+ * stdio and would otherwise outlive the leaf, and then unregisters it for good.
  */
-function trackProcessGroup(child: ReturnType<typeof spawn>): { kill: () => void; release: () => void } {
+export function trackProcessGroup(child: ReturnType<typeof spawn>): { kill: () => void; release: () => void } {
+  const owner = {};
   let pid: number | undefined;
   let unregistered = false;
+  const owns = () => pid !== undefined && liveProcessGroups.get(pid) === owner;
   const register = () => {
     const { pid: childPid } = child;
     if (!unregistered && childPid !== undefined) {
       pid = childPid;
-      liveProcessGroups.add(pid);
+      liveProcessGroups.set(pid, owner);
     }
   };
   const unregister = () => {
     unregistered = true;
-    if (pid !== undefined) {
+    if (pid !== undefined && liveProcessGroups.get(pid) === owner) {
       liveProcessGroups.delete(pid);
     }
   };
   const kill = () => {
-    if (!unregistered && killProcessGroup(child)) {
+    if (unregistered) {
+      return;
+    }
+    // A tracker that lost its PGID to a newer tracker has no group left to signal.
+    if (!owns() || killProcessGroup(child)) {
       unregister();
     }
   };
@@ -236,7 +246,7 @@ function trackProcessGroup(child: ReturnType<typeof spawn>): { kill: () => void;
     if (unregistered) {
       return;
     }
-    if (pid !== undefined) {
+    if (owns()) {
       killProcessGroup(child);
     }
     unregister();
@@ -245,6 +255,11 @@ function trackProcessGroup(child: ReturnType<typeof spawn>): { kill: () => void;
   child.once("error", release);
   register();
   return { kill, release };
+}
+
+/** Test seam: the numeric PGIDs the shutdown handler would signal right now. */
+export function liveProcessGroupsForTest(): number[] {
+  return [...liveProcessGroups.keys()];
 }
 
 function destroyChildPipes(child: ReturnType<typeof spawn>): void {
@@ -439,6 +454,10 @@ function capture(
       clearInterval(ticker);
       clearTimeout(exitSettleTimer);
       deadlineTimer?.ref();
+      // Signal the group before waiting on the write chain. The pipes are closed, so
+      // the drain needs nothing more from the group, and a slow drain must not hold
+      // a registration whose PGID may be reused once the group's members exit.
+      group.kill();
       try {
         await writeChain;
         if (settled) {

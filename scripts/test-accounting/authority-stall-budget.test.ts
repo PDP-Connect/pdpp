@@ -25,10 +25,12 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { liveProcessGroupsForTest, trackProcessGroup } from "./authority.ts";
 
 const STALLED_PATTERN = /STALLED/;
 const NO_OUTPUT_PATTERN = /produced no output/;
@@ -74,6 +76,9 @@ function runCapture(
     };
     const { runCaptureForTest } = await import(${JSON.stringify(new URL("./authority.ts", import.meta.url).href)});
     let writes = 0;
+    // The group kill count at the moment each transcript write is released.
+    const releasedWithKills = [];
+    let outcome;
     try {
       const result = await runCaptureForTest(
         [process.execPath, "-e", ${JSON.stringify(childScript)}],
@@ -82,28 +87,30 @@ function runCapture(
         async () => {
           writes += 1;
           ${transcriptWriteBody}
+          releasedWithKills.push(groupKills.length);
           if (writes === ${JSON.stringify(failWriteAt ?? null)}) throw new Error("transcript test failure");
         }
       );
-      process.stdout.write(JSON.stringify({
+      outcome = {
         stdout: result.stdout.slice(-1024),
         retained_capture_bytes: result.retained_capture_bytes,
         stdout_truncated: result.stdout_truncated,
         node_summary: result.node_summary,
-        writes,
-      }) + "\\n");
+      };
     } catch (error) {
-      const killsAtSettle = groupKills.length;
-      await new Promise((resolve) => setTimeout(resolve, ${JSON.stringify(lingerMs)}));
-      process.stdout.write(JSON.stringify({
-        capture_error: error.message,
-        writes,
-        kills_at_settle: killsAtSettle,
-        kills_total: groupKills.length,
-      }) + "\\n");
+      outcome = { capture_error: error.message };
       process.stderr.write(String(error.message) + "\\n");
       process.exitCode = 1;
     }
+    const killsAtSettle = groupKills.length;
+    await new Promise((resolve) => setTimeout(resolve, ${JSON.stringify(lingerMs)}));
+    process.stdout.write(JSON.stringify({
+      ...outcome,
+      writes,
+      released_with_kills: releasedWithKills,
+      kills_at_settle: killsAtSettle,
+      kills_total: groupKills.length,
+    }) + "\\n");
   `;
   const started = Date.now();
   return new Promise((resolve) => {
@@ -530,6 +537,95 @@ test("a group killed when its leaf exits is not signalled again by a failure kil
     "the process group must receive exactly one SIGKILL before the capture settles"
   );
 });
+
+test("a leaf that closes its pipes inside the exit grace signals its group before a slow transcript write is released", async () => {
+  // The leaf writes once and exits at once. Its pipes close inside the exit grace
+  // while the transcript write is still pending, so the capture settles through
+  // the close path. The same-group child has ignored stdio and holds no pipe, so
+  // only a group signal can reach it. That signal must land before the write is
+  // released, and no group signal may follow the release.
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-leaf-early-close-"));
+  const pidFile = join(dir, "pid");
+  const script = `
+    const { spawn } = require('node:child_process');
+    const fs = require('node:fs');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+    process.stdout.write('hello\\n');
+    process.exit(0);
+  `;
+  let pid: number | undefined;
+  try {
+    const outcome = await runCapture(
+      script,
+      60_000,
+      60_000,
+      false,
+      undefined,
+      20_000,
+      "if (writes === 1) await new Promise((resolve) => setTimeout(resolve, 1500));",
+      500
+    );
+    pid = Number(readFileSync(pidFile, "utf8"));
+    const result = JSON.parse(outcome.stdout) as { released_with_kills: number[]; kills_total: number };
+
+    assert.equal(outcome.code, 0, `the early-close drain should succeed; stderr was: ${outcome.stderr}`);
+    assert.deepEqual(
+      result.released_with_kills,
+      [1],
+      "the process group must be signalled before the slow transcript write is released"
+    );
+    assert.equal(result.kills_total, 1, "no process-group signal may follow the release");
+    await assertProcessGone(pid);
+  } finally {
+    if (pid) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a newer tracker that reuses an older tracker's numeric PGID keeps its registry entry when the older one releases", () => {
+  // Two trackers for one numeric PGID, in sequence. The fake leaders control the
+  // identity, and negative-PID kills are intercepted so no real group is signalled.
+  // The PGID is above any kernel pid_max, so an unintercepted kill would find no group.
+  const pgid = 4_194_305;
+  const groupSignals: number[] = [];
+  const realKill = process.kill;
+  process.kill = ((pid: number, signal?: string | number) => {
+    if (pid < 0) {
+      groupSignals.push(pid);
+      return true;
+    }
+    return realKill.call(process, pid, signal);
+  }) as typeof process.kill;
+  const older = trackProcessGroup(fakeGroupLeader(pgid));
+  const newer = trackProcessGroup(fakeGroupLeader(pgid));
+  try {
+    older.release();
+
+    assert.deepEqual(
+      liveProcessGroupsForTest(),
+      [pgid],
+      "the older tracker's release must not remove the newer tracker's entry"
+    );
+    assert.deepEqual(groupSignals, [], "the older tracker must not signal a group it no longer owns");
+    newer.kill();
+    assert.deepEqual(groupSignals, [-pgid], "the newer tracker must still signal its group");
+    assert.deepEqual(liveProcessGroupsForTest(), [], "a landed kill unregisters the newer tracker's group");
+  } finally {
+    process.kill = realKill;
+    newer.release();
+  }
+});
+
+function fakeGroupLeader(pid: number): ReturnType<typeof spawn> {
+  return Object.assign(new EventEmitter(), { pid }) as unknown as ReturnType<typeof spawn>;
+}
 
 async function assertProcessGone(pid: number): Promise<void> {
   const deadline = Date.now() + 1500;
