@@ -45,6 +45,7 @@ const DEFAULT_PORT = 8765;
 const DEFAULT_HOST = "127.0.0.1";
 const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 const SIGNATURE_TOKEN_SPLIT_PATTERN = /\s+/;
+const DECIMAL_INTEGER_PATTERN = /^\d+$/;
 
 interface Args {
   host: string;
@@ -68,10 +69,12 @@ function parseArgs(argv: string[]): Args {
     const arg = argv[i];
     if (arg === "--port") {
       i += 1;
-      out.port = Number.parseInt(argv[i] ?? "", 10);
-      if (!Number.isInteger(out.port) || out.port < 0 || out.port > 65_535) {
+      // parseInt would read "0.5" and "0oops" as 0, so the whole token is checked first.
+      const token = argv[i] ?? "";
+      if (!DECIMAL_INTEGER_PATTERN.test(token) || Number(token) > 65_535) {
         die(`invalid --port value: ${argv[i]}`);
       }
+      out.port = Number(token);
     } else if (arg === "--host") {
       i += 1;
       out.host = argv[i] ?? "";

@@ -82,6 +82,35 @@ async function stopReceiver(proc: ChildProcess | undefined): Promise<void> {
   await once(proc, "exit");
 }
 
+// Runs the receiver with flags it must refuse. If it starts listening instead, it is stopped and
+// `listening` is true, so a regression fails at once rather than leaving the test waiting on it.
+async function runRefused(args: string[]): Promise<{ code: number | null; listening: boolean; stderr: string }> {
+  const proc = spawn("node", ["--import", "tsx", RECEIVER, ...args], {
+    env: { ...process.env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  proc.stdout?.on("data", (chunk: Buffer) => {
+    stdout += chunk.toString("utf8");
+  });
+  proc.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8");
+  });
+  const listening = await new Promise<boolean>((resolve) => {
+    proc.stdout?.on("data", () => {
+      if (READY_LINE_PATTERN.test(stdout)) {
+        resolve(true);
+      }
+    });
+    proc.once("close", () => resolve(false));
+  });
+  if (listening) {
+    await stopReceiver(proc);
+  }
+  return { code: proc.exitCode, listening, stderr };
+}
+
 test("event-subscription-test-receiver: /health reports listening", async () => {
   const { port, proc } = await startReceiver(SECRET);
   try {
@@ -108,6 +137,16 @@ test("event-subscription-test-receiver: --port 0 reports the bound port and serv
     await stopReceiver(proc);
   }
 });
+
+// parseInt reads each of these as 0 or -0, so the whole token has to be a decimal integer.
+for (const value of ["0.5", "-0.5", "0oops"]) {
+  test(`event-subscription-test-receiver: --port ${value} is refused`, async () => {
+    const run = await runRefused(["--port", value]);
+    assert.equal(run.listening, false, "receiver started listening");
+    assert.equal(run.code, 2);
+    assert.equal(run.stderr.split("\n")[0], `error: invalid --port value: ${value}`);
+  });
+}
 
 test("event-subscription-test-receiver: --host controls bind address", async () => {
   const { port, proc } = await startReceiver(SECRET, { host: "0.0.0.0" });
