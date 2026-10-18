@@ -152,17 +152,18 @@ const bindOptions = new WeakMap();
  * its listen() call has been issued. The grant is applied on 'listening'
  * (bind SUCCEEDED and address() is populated) -- never merely on listen()
  * being called -- and withdrawn on 'close'. A bind that fails emits 'error'
- * and never 'listening', so it grants nothing.
+ * and never 'listening', so it grants nothing. Returns the server's options;
+ * the caller commits a listen()'s options only once that listen() has returned.
  */
-function attachBindAuthority(server, ipv6Only) {
+function attachBindAuthority(server) {
     // A server can listen, close and listen again with different options. One
-    // handler pair serves every listen and reads the options of the latest one.
+    // handler pair serves every listen and reads the options the latest
+    // successful listen() committed.
     const existing = bindOptions.get(server);
     if (existing) {
-        existing.ipv6Only = ipv6Only;
-        return;
+        return existing;
     }
-    const options = { ipv6Only };
+    const options = { ipv6Only: false };
     bindOptions.set(server, options);
     // Detect TLS at grant time (a tls.Server is an https listener). Imported
     // lazily to avoid a hard node:tls dependency in the hot patch path.
@@ -198,6 +199,7 @@ function attachBindAuthority(server, ipv6Only) {
     };
     server.on("listening", onListening);
     server.on("close", revoke);
+    return options;
 }
 // node:tls's Server extends net.Server; an https listener IS a tls.Server.
 // Resolve its constructor only when a test loads TLS or HTTPS.
@@ -226,8 +228,14 @@ function installBindDerivedAuthority(restoreList) {
         return;
     }
     const patched = function patchedListen(...args) {
-        attachBindAuthority(this, listensIpv6Only(args));
-        return original.apply(this, args);
+        const options = attachBindAuthority(this);
+        const ipv6Only = listensIpv6Only(args);
+        const result = original.apply(this, args);
+        // Commit only after listen() returns. Node throws ERR_SERVER_ALREADY_LISTEN
+        // when a live server is listened on again, and that rejected call must not
+        // change how the live bind is granted.
+        options.ipv6Only = ipv6Only;
+        return result;
     };
     patched.__pdppHermeticPatched = true;
     patched.__pdppOriginalListen = original;
