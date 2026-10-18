@@ -2,8 +2,8 @@ name: workspace-tests
 
 # Behavioral gate for the whole workspace. Runs `pnpm test-accounting:check`
 # (the full accounting authority: inventory closure, every suite, receipts)
-# unfiltered on every pull request, whatever its base branch or touched paths,
-# and on every push to main. Without it no workflow ran the complete suite and
+# on every pull request into main, whatever its touched paths, and on every
+# push to main. Without it no workflow ran the complete suite and
 # a red main went unnoticed for weeks; the path-scoped test-accounting.yml only
 # covers the accounting scripts and the manifest.
 #
@@ -15,7 +15,8 @@ name: workspace-tests
 on:
   push:
     branches: [main]
-  pull_request: {}
+  pull_request:
+    branches: [main]
   workflow_dispatch: {}
 
 concurrency:

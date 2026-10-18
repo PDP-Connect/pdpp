@@ -205,6 +205,10 @@ pnpm reference-implementation:test    # reference implementation tests
 pnpm spec:check                       # root-spec / web-spec parity
 ```
 
+CI runs on pull requests only when they target `main`, so run each suite you
+changed once with `CI=true` before you push: CI skips the local two-file test
+concurrency, and a test that only passes with it fails only in CI.
+
 ### Test scratch containment
 
 Use `pnpm test:scratch -- <command> [args...]` for supported ad hoc test or
@@ -213,6 +217,15 @@ reviewed CI test commands enter this boundary automatically. It creates one
 private, command-scoped host scratch root, passes it to ordinary descendants
 through the normal temporary-directory environment, and removes the verified
 root after normal completion, failure, SIGINT, or SIGTERM.
+
+The test launcher also runs each command through the vendored `test-sandbox`.
+On hosts with systemd and working bubblewrap, runs share `agent-tests.slice`
+limits and get private `/tmp` and loopback-only networking while retaining host
+PID visibility. One JSON enforcement and resource receipt goes to stderr per
+run. When either tool is unavailable, the receipt states which limits still
+apply; set `TEST_SANDBOX_REQUIRE=1` to require both.
+`TEST_SANDBOX_DISABLE=1` bypasses the sandbox for diagnosis while retaining
+scratch ownership and cleanup.
 
 The wrapper preserves the exact child exit code and signal semantics. If a
 successful child leaves a root that cannot be verified and removed, the wrapper
@@ -254,7 +267,7 @@ and CI remain the executable suite authority.
 - **Keep specs and code in lockstep.** If your PR implements an OpenSpec
   change, the change artifacts and the code should land together and stay
   consistent.
-- **CI and merge gate.** Every pull request must pass the required CI checks.
+- **CI and merge gate.** Every pull request into `main` must pass the required CI checks. Pull requests into an integration branch (for example `testeng/integration`) do not run CI; they are gated by the local oracle (the changed suites through `pnpm test-accounting:check` or the accounting authority) and an independent review, and CI runs on the batch pull request into `main`. To run one workflow on such a branch, use `gh workflow run <workflow>.yml --ref <branch>`.
   Before pushing, run the focused tests and signoff gates required for the
   changed behavior; run `pnpm spec:check` when root or public spec parity is in
   scope. See the testing policy and `docs/reference/ci-mode.md`.

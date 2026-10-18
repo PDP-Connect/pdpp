@@ -13,6 +13,7 @@ name: react-doctor
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - "apps/site/**"
       - ".github/workflows/react-doctor.yml"

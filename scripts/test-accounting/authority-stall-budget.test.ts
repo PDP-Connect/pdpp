@@ -25,10 +25,12 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { liveProcessGroupsForTest, trackProcessGroup } from "./authority.ts";
 
 const STALLED_PATTERN = /STALLED/;
 const NO_OUTPUT_PATTERN = /produced no output/;
@@ -55,11 +57,28 @@ function runCapture(
   deadlineMs?: number,
   parseNodeEvents = false,
   failWriteAt?: number,
-  hardTimeoutMs?: number
+  hardTimeoutMs?: number,
+  // Body of the injected transcript write (an async function body with `writes`
+  // in scope); runs before the failWriteAt check.
+  transcriptWriteBody = "",
+  // Keep the driver alive this long after capture settles, so a late transcript
+  // write can resolve and reveal any signal sent after the settlement.
+  lingerMs = 0
 ): Promise<Outcome> {
   const driver = `
+    // Record every process-group SIGKILL so a test can see signals sent after
+    // the capture settled; the real kill still happens.
+    const groupKills = [];
+    const realKill = process.kill;
+    process.kill = (pid, signal) => {
+      if (typeof pid === "number" && pid < 0 && signal === "SIGKILL") groupKills.push(pid);
+      return realKill.call(process, pid, signal);
+    };
     const { runCaptureForTest } = await import(${JSON.stringify(new URL("./authority.ts", import.meta.url).href)});
     let writes = 0;
+    // The group kill count at the moment each transcript write is released.
+    const releasedWithKills = [];
+    let outcome;
     try {
       const result = await runCaptureForTest(
         [process.execPath, "-e", ${JSON.stringify(childScript)}],
@@ -67,20 +86,31 @@ function runCapture(
         ${JSON.stringify(parseNodeEvents)},
         async () => {
           writes += 1;
+          ${transcriptWriteBody}
+          releasedWithKills.push(groupKills.length);
           if (writes === ${JSON.stringify(failWriteAt ?? null)}) throw new Error("transcript test failure");
         }
       );
-      process.stdout.write(JSON.stringify({
+      outcome = {
         stdout: result.stdout.slice(-1024),
         retained_capture_bytes: result.retained_capture_bytes,
         stdout_truncated: result.stdout_truncated,
         node_summary: result.node_summary,
-      }) + "\\n");
+      };
     } catch (error) {
-      process.stdout.write(JSON.stringify({ capture_error: error.message, writes }) + "\\n");
+      outcome = { capture_error: error.message };
       process.stderr.write(String(error.message) + "\\n");
       process.exitCode = 1;
     }
+    const killsAtSettle = groupKills.length;
+    await new Promise((resolve) => setTimeout(resolve, ${JSON.stringify(lingerMs)}));
+    process.stdout.write(JSON.stringify({
+      ...outcome,
+      writes,
+      released_with_kills: releasedWithKills,
+      kills_at_settle: killsAtSettle,
+      kills_total: groupKills.length,
+    }) + "\\n");
   `;
   const started = Date.now();
   return new Promise((resolve) => {
@@ -354,6 +384,248 @@ test("a transcript write failure kills the process group and rejects instead of 
     `capture should settle promptly after write failure, took ${outcome.durationMs}ms`
   );
 });
+
+test("a fast leaf with a slow transcript writer is fully drained before the capture settles", async () => {
+  // Five bursts of ten events land in the pipe within ~100ms and the leaf exits,
+  // while each transcript write takes 600ms and keeps the pipes paused. The
+  // exit grace must not discard the bursts the capture has not read yet.
+  const child = `
+    const line = 'PDPP_TEST_ACCOUNTING_EVENT {"type":"test:pass","details":{"type":"test"}}\\n';
+    let burst = 0;
+    const timer = setInterval(() => {
+      process.stdout.write(line.repeat(10));
+      if (++burst === 5) { clearInterval(timer); process.exit(0); }
+    }, 20);
+  `;
+  const outcome = await runCapture(
+    child,
+    60_000,
+    60_000,
+    true,
+    undefined,
+    30_000,
+    "await new Promise((resolve) => setTimeout(resolve, 600));"
+  );
+  const result = JSON.parse(outcome.stdout) as { node_summary?: { assertions: number; passed: number } };
+
+  assert.equal(outcome.code, 0, `the slow-writer drain should succeed; stderr was: ${outcome.stderr}`);
+  assert.equal(result.node_summary?.assertions, 50, "every emitted event must be counted, never a partial total");
+  assert.equal(result.node_summary?.passed, 50);
+});
+
+test("a leaf's same-group descendant with ignored stdio is killed after a normal exit", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-leaf-ignored-stdio-"));
+  const pidFile = join(dir, "pid");
+  const script = `
+    const { spawn } = require('node:child_process');
+    const fs = require('node:fs');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+    process.exit(0);
+  `;
+  let pid: number | undefined;
+  try {
+    const outcome = await runCapture(script, 60_000, 60_000);
+    assert.equal(outcome.code, 0, `clean parent exit must succeed; stderr was: ${outcome.stderr}`);
+    pid = Number(readFileSync(pidFile, "utf8"));
+    await assertProcessGone(pid);
+  } finally {
+    if (pid) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the leaf deadline still bounds a transcript write that never resolves after the leaf exits", async () => {
+  const outcome = await runCapture(
+    "process.stdout.write('hello\\n');",
+    60_000,
+    1000,
+    false,
+    undefined,
+    8000,
+    "await new Promise(() => {});"
+  );
+  const result = JSON.parse(outcome.stdout) as { capture_error?: string };
+
+  assert.equal(outcome.code, 1, `a wedged transcript write must fail the run; stderr was: ${outcome.stderr}`);
+  assert.match(result.capture_error ?? "", DEADLINE_PATTERN);
+  assert.ok(outcome.durationMs < 5000, `deadline must bound the wedged write, took ${outcome.durationMs}ms`);
+});
+
+test("a stall rejection releases the leaf deadline so the authority process exits promptly", async () => {
+  // The leaf writes once and stays alive while its transcript write never
+  // resolves. The stall watchdog kills it and the run rejects, but the 60s leaf
+  // deadline must not keep the authority process alive after that.
+  const outcome = await runCapture(
+    "process.stdout.write('hello\\n'); setInterval(() => {}, 1000);",
+    1000,
+    60_000,
+    false,
+    undefined,
+    20_000,
+    "await new Promise(() => {});"
+  );
+  const result = JSON.parse(outcome.stdout) as { capture_error?: string };
+
+  assert.equal(outcome.code, 1, `a stalled leaf must fail the run; stderr was: ${outcome.stderr}`);
+  assert.match(result.capture_error ?? "", NO_OUTPUT_PATTERN);
+  assert.ok(
+    outcome.durationMs < 9000,
+    `the authority process must exit after the stall failure, took ${outcome.durationMs}ms`
+  );
+});
+
+test("a transcript write that resolves after the capture rejected sends no further signal", async () => {
+  // The deadline rejects the capture while the first transcript write is still
+  // pending. Releasing the process group is one-shot: when that write resolves
+  // later, the old numeric PGID must not be signalled again.
+  const outcome = await runCapture(
+    "process.stdout.write('hello\\n'); setInterval(() => {}, 1000);",
+    60_000,
+    1000,
+    false,
+    undefined,
+    10_000,
+    "if (writes === 1) await new Promise((resolve) => setTimeout(resolve, 2500));",
+    3500
+  );
+  const result = JSON.parse(outcome.stdout) as { capture_error?: string; kills_at_settle: number; kills_total: number };
+
+  assert.equal(outcome.code, 1, `the deadline must fail the run; stderr was: ${outcome.stderr}`);
+  assert.match(result.capture_error ?? "", DEADLINE_PATTERN);
+  assert.ok(result.kills_at_settle >= 1, "the deadline must have killed the group");
+  assert.equal(
+    result.kills_total,
+    result.kills_at_settle,
+    "no process-group signal may be sent after the capture settled"
+  );
+});
+
+test("a group killed when its leaf exits is not signalled again by a failure kill during the drain", async () => {
+  // The leaf exits at once and leaves a same-group child holding its pipes, so
+  // the exit grace kills the group first. The first transcript write then takes
+  // 1.5s and fails: a second kill path while the capture is still draining. Once
+  // the group has been signalled its numeric PGID may be reused, so no later kill
+  // path may signal it again before the capture settles.
+  const outcome = await runCapture(
+    `
+      const { spawn } = require('node:child_process');
+      spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+      process.stdout.write('hello\\n');
+      process.exit(0);
+    `,
+    60_000,
+    60_000,
+    false,
+    1,
+    20_000,
+    "if (writes === 1) await new Promise((resolve) => setTimeout(resolve, 1500));"
+  );
+  const result = JSON.parse(outcome.stdout) as { capture_error?: string; kills_at_settle: number };
+
+  assert.equal(outcome.code, 1, `the failing write must fail the run; stderr was: ${outcome.stderr}`);
+  assert.match(result.capture_error ?? "", TRANSCRIPT_FAILURE_PATTERN);
+  assert.equal(
+    result.kills_at_settle,
+    1,
+    "the process group must receive exactly one SIGKILL before the capture settles"
+  );
+});
+
+test("a leaf that closes its pipes inside the exit grace signals its group before a slow transcript write is released", async () => {
+  // The leaf writes once and exits at once. Its pipes close inside the exit grace
+  // while the transcript write is still pending, so the capture settles through
+  // the close path. The same-group child has ignored stdio and holds no pipe, so
+  // only a group signal can reach it. That signal must land before the write is
+  // released, and no group signal may follow the release.
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-leaf-early-close-"));
+  const pidFile = join(dir, "pid");
+  const script = `
+    const { spawn } = require('node:child_process');
+    const fs = require('node:fs');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+    process.stdout.write('hello\\n');
+    process.exit(0);
+  `;
+  let pid: number | undefined;
+  try {
+    const outcome = await runCapture(
+      script,
+      60_000,
+      60_000,
+      false,
+      undefined,
+      20_000,
+      "if (writes === 1) await new Promise((resolve) => setTimeout(resolve, 1500));",
+      500
+    );
+    pid = Number(readFileSync(pidFile, "utf8"));
+    const result = JSON.parse(outcome.stdout) as { released_with_kills: number[]; kills_total: number };
+
+    assert.equal(outcome.code, 0, `the early-close drain should succeed; stderr was: ${outcome.stderr}`);
+    assert.deepEqual(
+      result.released_with_kills,
+      [1],
+      "the process group must be signalled before the slow transcript write is released"
+    );
+    assert.equal(result.kills_total, 1, "no process-group signal may follow the release");
+    await assertProcessGone(pid);
+  } finally {
+    if (pid) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a newer tracker that reuses an older tracker's numeric PGID keeps its registry entry when the older one releases", () => {
+  // Two trackers for one numeric PGID, in sequence. The fake leaders control the
+  // identity, and negative-PID kills are intercepted so no real group is signalled.
+  // The PGID is above any kernel pid_max, so an unintercepted kill would find no group.
+  const pgid = 4_194_305;
+  const groupSignals: number[] = [];
+  const realKill = process.kill;
+  process.kill = ((pid: number, signal?: string | number) => {
+    if (pid < 0) {
+      groupSignals.push(pid);
+      return true;
+    }
+    return realKill.call(process, pid, signal);
+  }) as typeof process.kill;
+  const older = trackProcessGroup(fakeGroupLeader(pgid));
+  const newer = trackProcessGroup(fakeGroupLeader(pgid));
+  try {
+    older.release();
+
+    assert.deepEqual(
+      liveProcessGroupsForTest(),
+      [pgid],
+      "the older tracker's release must not remove the newer tracker's entry"
+    );
+    assert.deepEqual(groupSignals, [], "the older tracker must not signal a group it no longer owns");
+    newer.kill();
+    assert.deepEqual(groupSignals, [-pgid], "the newer tracker must still signal its group");
+    assert.deepEqual(liveProcessGroupsForTest(), [], "a landed kill unregisters the newer tracker's group");
+  } finally {
+    process.kill = realKill;
+    newer.release();
+  }
+});
+
+function fakeGroupLeader(pid: number): ReturnType<typeof spawn> {
+  return Object.assign(new EventEmitter(), { pid }) as unknown as ReturnType<typeof spawn>;
+}
 
 async function assertProcessGone(pid: number): Promise<void> {
   const deadline = Date.now() + 1500;

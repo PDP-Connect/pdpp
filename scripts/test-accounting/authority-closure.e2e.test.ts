@@ -92,7 +92,7 @@ function writeManifestFile(root: string, manifestValue: Manifest): void {
 test("e2e: a real reference-contract .test.ts renamed to .test.js (N->N-1, sibling glob still matches) fails closed on the runAuthority path", async () => {
   await withRealWorktree(async (root) => {
     const before = trackedFiles(root).filter((path) => path.startsWith("packages/reference-contract/test/"));
-    assert.equal(before.length, 15, "expected the real reference-contract suite to start at 15 tracked files");
+    assert.equal(before.length, 16, "expected the real reference-contract suite to start at 16 tracked files");
 
     execFileSync(
       "git",
@@ -109,12 +109,12 @@ test("e2e: a real reference-contract .test.ts renamed to .test.js (N->N-1, sibli
 
     // Lower-level confirmation of the exact pre-wiring gap R1 found: with the
     // real mutated manifest/files, `selectedRuns`/`planFor` alone — what
-    // `runAuthority` called BEFORE this fix — silently drop the plan from 15
-    // to 14 files and do not throw. This is not the assertion under test; it
+    // `runAuthority` called BEFORE this fix — silently drop the plan from 16
+    // to 15 files and do not throw. This is not the assertion under test; it
     // documents why a bare `selectedRuns` call is not a sufficient gate.
     const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
     const silentPlan = planFor(manifestValue, files, ["reference-contract"]);
-    assert.equal(silentPlan.plans.get("reference-contract")?.length, 14);
+    assert.equal(silentPlan.plans.get("reference-contract")?.length, 15);
     assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["reference-contract"] }));
 
     // The actual assertion: the real authority entry point now fails closed.

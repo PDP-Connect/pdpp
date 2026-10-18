@@ -18,7 +18,6 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -28,6 +27,8 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const RECEIVER = `${HERE}event-subscription-test-receiver.ts`;
 const SECRET = "whsec_dGVzdC1zZWNyZXQtZm9yLXJlY2VpdmVyLXNwZWMtMTIzNDU="; // base64 of a test key
+// The readiness line the receiver prints once bound; group 1 is the bound port.
+const READY_LINE_PATTERN = /listening on http:\/\/\S+:(\d+)\/webhook/;
 
 function decode(secret: string): Buffer {
   return Buffer.from(secret.slice("whsec_".length), "base64");
@@ -38,24 +39,12 @@ function sign(secret: string, eventId: string, timestamp: number, body: string):
   return `v1,${createHmac("sha256", key).update(`${eventId}.${timestamp}.${body}`).digest("base64")}`;
 }
 
-async function pickFreePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const address = srv.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
+// Port 0: the child binds a free port itself, so no port is reserved before it listens.
 async function startReceiver(
-  port: number,
   secret: string | null,
   { host, extraArgs = [] }: { extraArgs?: string[]; host?: string } = {}
-): Promise<ChildProcess> {
-  const args = ["--import", "tsx", RECEIVER, "--port", String(port)];
+): Promise<{ port: number; proc: ChildProcess }> {
+  const args = ["--import", "tsx", RECEIVER, "--port", "0"];
   if (secret) {
     args.push("--secret", secret);
   }
@@ -67,20 +56,22 @@ async function startReceiver(
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  // Wait for the "listening on …" line so callers know the port is open.
-  await new Promise<void>((resolve, reject) => {
+  // Wait for the "listening on …" line; it names the port the child bound.
+  const port = await new Promise<number>((resolve, reject) => {
+    let stdout = "";
     const onData = (chunk: Buffer) => {
-      const text = chunk.toString("utf8");
-      if (text.includes("listening on")) {
+      stdout += chunk.toString("utf8");
+      const ready = READY_LINE_PATTERN.exec(stdout);
+      if (ready) {
         proc.stdout?.off("data", onData);
-        resolve();
+        resolve(Number(ready[1]));
       }
     };
     proc.stdout?.on("data", onData);
     proc.once("error", reject);
     proc.once("exit", (code) => reject(new Error(`receiver exited early code=${code}`)));
   });
-  return proc;
+  return { port, proc };
 }
 
 async function stopReceiver(proc: ChildProcess | undefined): Promise<void> {
@@ -91,9 +82,37 @@ async function stopReceiver(proc: ChildProcess | undefined): Promise<void> {
   await once(proc, "exit");
 }
 
+// Runs the receiver with flags it must refuse. If it starts listening instead, it is stopped and
+// `listening` is true, so a regression fails at once rather than leaving the test waiting on it.
+async function runRefused(args: string[]): Promise<{ code: number | null; listening: boolean; stderr: string }> {
+  const proc = spawn("node", ["--import", "tsx", RECEIVER, ...args], {
+    env: { ...process.env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  proc.stdout?.on("data", (chunk: Buffer) => {
+    stdout += chunk.toString("utf8");
+  });
+  proc.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8");
+  });
+  const listening = await new Promise<boolean>((resolve) => {
+    proc.stdout?.on("data", () => {
+      if (READY_LINE_PATTERN.test(stdout)) {
+        resolve(true);
+      }
+    });
+    proc.once("close", () => resolve(false));
+  });
+  if (listening) {
+    await stopReceiver(proc);
+  }
+  return { code: proc.exitCode, listening, stderr };
+}
+
 test("event-subscription-test-receiver: /health reports listening", async () => {
-  const port = await pickFreePort();
-  const proc = await startReceiver(port, SECRET);
+  const { port, proc } = await startReceiver(SECRET);
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`);
     assert.equal(res.status, 200);
@@ -107,9 +126,30 @@ test("event-subscription-test-receiver: /health reports listening", async () => 
   }
 });
 
+test("event-subscription-test-receiver: --port 0 reports the bound port and serves on it", async () => {
+  const { port, proc } = await startReceiver(SECRET);
+  try {
+    assert.notEqual(port, 0);
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).listening, port);
+  } finally {
+    await stopReceiver(proc);
+  }
+});
+
+// parseInt reads each of these as 0 or -0, so the whole token has to be a decimal integer.
+for (const value of ["0.5", "-0.5", "0oops"]) {
+  test(`event-subscription-test-receiver: --port ${value} is refused`, async () => {
+    const run = await runRefused(["--port", value]);
+    assert.equal(run.listening, false, "receiver started listening");
+    assert.equal(run.code, 2);
+    assert.equal(run.stderr.split("\n")[0], `error: invalid --port value: ${value}`);
+  });
+}
+
 test("event-subscription-test-receiver: --host controls bind address", async () => {
-  const port = await pickFreePort();
-  const proc = await startReceiver(port, SECRET, { host: "0.0.0.0" });
+  const { port, proc } = await startReceiver(SECRET, { host: "0.0.0.0" });
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`);
     assert.equal(res.status, 200);
@@ -123,8 +163,7 @@ test("event-subscription-test-receiver: --host controls bind address", async () 
 });
 
 test("event-subscription-test-receiver: signed verify event echoes challenge", async () => {
-  const port = await pickFreePort();
-  const proc = await startReceiver(port, SECRET);
+  const { port, proc } = await startReceiver(SECRET);
   try {
     const eventId = "evt_test_verify_001";
     const ts = Math.floor(Date.now() / 1000);
@@ -153,8 +192,7 @@ test("event-subscription-test-receiver: signed verify event echoes challenge", a
 });
 
 test("event-subscription-test-receiver: wrong-secret delivery is rejected", async () => {
-  const port = await pickFreePort();
-  const proc = await startReceiver(port, SECRET);
+  const { port, proc } = await startReceiver(SECRET);
   try {
     const eventId = "evt_test_bad_sig";
     const ts = Math.floor(Date.now() / 1000);
@@ -182,10 +220,9 @@ test("event-subscription-test-receiver: wrong-secret delivery is rejected", asyn
 });
 
 test("event-subscription-test-receiver: --secret-file is read at delivery time", async () => {
-  const port = await pickFreePort();
   const dir = await mkdtemp(join(tmpdir(), "pdpp-event-receiver-"));
   const secretPath = join(dir, "webhook-secret");
-  const proc = await startReceiver(port, null, { extraArgs: ["--secret-file", secretPath] });
+  const { port, proc } = await startReceiver(null, { extraArgs: ["--secret-file", secretPath] });
   try {
     let health = await fetch(`http://127.0.0.1:${port}/health`);
     assert.equal(health.status, 200);
@@ -224,8 +261,7 @@ test("event-subscription-test-receiver: --secret-file is read at delivery time",
 });
 
 test("event-subscription-test-receiver: signed non-verify event returns 204", async () => {
-  const port = await pickFreePort();
-  const proc = await startReceiver(port, SECRET);
+  const { port, proc } = await startReceiver(SECRET);
   try {
     const eventId = "evt_records_changed_001";
     const ts = Math.floor(Date.now() / 1000);
