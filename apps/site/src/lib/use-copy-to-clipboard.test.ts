@@ -104,11 +104,15 @@ function setClipboard(writeText?: (text: string) => Promise<void>) {
 }
 
 afterEach(async () => {
-  if (!browser) {
+  const current = browser;
+  if (!current) {
     return;
   }
-  await act(async () => browser?.root.unmount());
-  browser.restore();
+  try {
+    await act(async () => current.root.unmount());
+  } finally {
+    current.restore();
+  }
 });
 
 test("copy writes the exact payload and announces success", async () => {
@@ -168,10 +172,10 @@ test("unmount clears the reset timer before it can update the removed consumer",
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { clearTimeout } = globalThis;
   const clearedTimers = new Set<ReturnType<typeof setTimeout>>();
-  globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => {
+  t.mock.method(globalThis, "clearTimeout", (timer: ReturnType<typeof setTimeout>) => {
     clearedTimers.add(timer);
     return clearTimeout(timer);
-  }) as typeof globalThis.clearTimeout;
+  });
 
   const { button, root } = renderCopyButton();
   setClipboard(() => Promise.resolve());

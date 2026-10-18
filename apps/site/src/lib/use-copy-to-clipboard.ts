@@ -30,13 +30,6 @@ export function useCopyToClipboard() {
   const [status, setStatus] = useState<CopyStatus>("idle");
   const latestRequest = useRef(0);
 
-  useEffect(
-    () => () => {
-      latestRequest.current += 1;
-    },
-    []
-  );
-
   useEffect(() => {
     if (status === "idle") {
       return;
