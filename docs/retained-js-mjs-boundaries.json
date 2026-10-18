@@ -116,9 +116,9 @@
     {
       "path": "scripts/manage-supporters-pr.test.mjs",
       "owner": "Site application maintainers",
-      "runtimeReason": "Tests .github/scripts/manage-supporters-pr.mjs, which must stay plain JavaScript for publish-supporters.yml. It imports that module directly, so it shares the same constraint.",
+      "runtimeReason": "Tests .github/scripts/manage-supporters-pr.mjs. test-accounting.yml runs it with plain node --test, without tsx, so it stays JavaScript for that invocation; importing the MJS module does not by itself require it.",
       "probe": "pnpm test:scratch -- node --test scripts/manage-supporters-pr.test.mjs",
-      "review": "Re-evaluate together with .github/scripts/manage-supporters-pr.mjs."
+      "review": "Conversion candidate: convert to TypeScript if test-accounting.yml runs it through tsx or a suite."
     },
     {
       "path": "scripts/publish-supporters-workflow.test.mjs",
