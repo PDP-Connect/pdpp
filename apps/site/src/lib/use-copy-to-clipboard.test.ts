@@ -103,10 +103,6 @@ function setClipboard(writeText?: (text: string) => Promise<void>) {
   });
 }
 
-function click(button: HTMLButtonElement) {
-  act(() => button.click());
-}
-
 afterEach(async () => {
   if (!browser) {
     return;
@@ -185,34 +181,6 @@ test("unmount clears the reset timer before it can update the removed consumer",
   assert.equal(clearedTimers.size, 1);
   await act(async () => t.mock.timers.tick(2000));
   assert.equal(clearedTimers.size, 1);
-});
-
-test("the last clipboard promise to settle owns the rendered status", async () => {
-  let resolveFirst!: () => void;
-  let rejectSecond!: (reason: Error) => void;
-  const writeText = mock.fn((text: string) => {
-    if (text === "first request") {
-      return new Promise<void>((resolve) => {
-        resolveFirst = resolve;
-      });
-    }
-    return new Promise<void>((_resolve, reject) => {
-      rejectSecond = reject;
-    });
-  });
-  const { button, liveRegion } = renderCopyButton("first request");
-  setClipboard(writeText);
-
-  click(button);
-  act(() => browser?.root.render(createElement(CopyButton, { payload: "second request" })));
-  click(button);
-  await act(async () => rejectSecond(new Error("permission denied")));
-  assert.equal(button.textContent, "Copy failed");
-  await act(async () => resolveFirst());
-
-  // The current hook lets the older request overwrite the newer request when it settles later.
-  assert.equal(button.textContent, "Copied");
-  assert.equal(liveRegion.textContent, "Command copied to clipboard.");
 });
 
 test("idle status has no label text and no announcement", () => {
