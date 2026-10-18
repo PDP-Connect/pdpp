@@ -365,7 +365,7 @@ async function eventuallyRunningMarker(
 ): Promise<Record<string, unknown> & { pgid: number; state: string }> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    // The root directory exists before its marker is renamed into place.
+    // The root directory exists before its marker is created and written.
     // biome-ignore lint/performance/noAwaitInLoops: marker state is published after the fixture reports its root.
     const text = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") {
