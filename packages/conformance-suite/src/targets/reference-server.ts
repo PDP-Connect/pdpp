@@ -578,6 +578,8 @@ export type Defect =
   | "client-filter-consults-metadata-first"
   /** Binds a page cursor to the grant and `fields` only, so it replays on another stream or under a view or filter (RS-6, clause 8.9-11). */
   | "cursor-context-omits-query-shape"
+  /** Approves a staged review after the eligibility it was bound to went stale, instead of requiring a new review (AS-15, clause 7.2-5). */
+  | "approve-stale-review"
   /** Accepts an owner-token read naming both `view` and `fields`, honouring `fields` (RS-9, clause 8.9-3). */
   | "accept-owner-view-and-fields-together"
   /** Answers an owner exact filter that matches no record with the unfiltered read, so the filter widens the result (RS-5, clause 8.1-1a). */

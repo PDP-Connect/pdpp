@@ -11,11 +11,13 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { TargetAdapter } from "../src/harness/adapter.ts";
+import type { GrantRequest, StagedApproval, TargetAdapter } from "../src/harness/adapter.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
 import { ALL_CASES } from "../src/suite.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import type { Defect } from "../src/targets/reference-server.ts";
+
+const MAKE_STALE_HOOK = /makeStale/;
 
 async function runWith(caseId: string, defects: readonly Defect[], wrap?: (inner: TargetAdapter) => TargetAdapter) {
   const conformanceCase = ALL_CASES.find((c) => c.caseId === caseId);
@@ -47,5 +49,32 @@ describe("owner filters and views are optional", () => {
       "decline-owner-view",
     ]);
     assert.equal(result.outcome, "pass", result.detail ?? "(no detail)");
+  });
+});
+
+describe("a target that cannot make a review stale", () => {
+  class NoStalenessAdapter extends ReferenceTargetAdapter {
+    override async stageApproval(request: GrantRequest): Promise<StagedApproval | null> {
+      const staged = await super.stageApproval(request);
+      if (!staged) {
+        return staged;
+      }
+      const { makeStale: _unused, ...withoutHook } = staged;
+      return withoutHook;
+    }
+  }
+
+  it("reports the stale-approval case skip, naming the hook, not fail", async () => {
+    const conformanceCase = ALL_CASES.find((c) => c.caseId === "AS-15/stale-review-approval-refused");
+    assert.ok(conformanceCase);
+    const adapter = new NoStalenessAdapter();
+    const { streams } = await adapter.setup();
+    try {
+      const result = await runCase(conformanceCase, makeContext(adapter, streams));
+      assert.equal(result.outcome, "skip", result.detail ?? "(no detail)");
+      assert.match(result.detail ?? "", MAKE_STALE_HOOK);
+    } finally {
+      await adapter.teardown();
+    }
   });
 });

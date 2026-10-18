@@ -943,11 +943,21 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       artifact.streams.map((s) => ({ name: s.name, fields: [...s.fields] }))
     );
     let redemption: { code: string; verifier: string } | null = null;
+    // Whether the eligibility this review was bound to has since changed. Held
+    // per staged request: a new `stageApproval` is a new review.
+    let stale = false;
     return {
       handle,
       reviewRevision: revision,
       approvalArtifact: async () => artifact,
+      makeStale: async () => {
+        stale = true;
+        return true;
+      },
       approve: async (approveRevision?: string) => {
+        if (stale && !this.defects.has("approve-stale-review")) {
+          return null;
+        }
         if (
           approveRevision !== undefined &&
           approveRevision !== revision &&

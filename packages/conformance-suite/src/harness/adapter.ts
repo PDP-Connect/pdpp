@@ -253,6 +253,19 @@ export interface StagedApproval {
    */
   readonly lastApproveError?: () => { readonly status: number; readonly errorCode?: string } | null;
   /**
+   * Change a fact this staged review was bound to -- withdraw an eligible
+   * instance, or move the reviewed revision -- through the AS's own owner-side
+   * surface, so that the revision this request was issued is now stale. Resolves
+   * `false` when the target offers no such change.
+   *
+   * Section 7.2: "If instance eligibility or the reviewed revision becomes stale
+   * before approval, the AS MUST reject approval and require a new review." A
+   * suite cannot make eligibility change on a target it only reads, so this is a
+   * hook the adapter must implement honestly; it never fakes a rejection. It
+   * affects only this staged request, so a fresh `stageApproval` is a new review.
+   */
+  readonly makeStale?: () => Promise<boolean>;
+  /**
    * Replay the token-endpoint redemption of the authorization code from the
    * most recent successful `approve`, with the same PKCE verifier, so AS-19
    * can observe what the token endpoint does on a genuine second redemption

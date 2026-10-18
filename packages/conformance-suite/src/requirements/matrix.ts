@@ -1602,10 +1602,9 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#streamgrant-fields",
     applicability: "always",
     observable: "black-box-http",
-    partial: true,
-    caseIds: ["AS-15/approval-requires-the-issued-revision"],
+    caseIds: ["AS-15/approval-requires-the-issued-revision", "AS-15/stale-review-approval-refused"],
     gapNote:
-      "The case rejects approval of a revision the AS never issued. It never makes a previously valid revision stale, nor changes instance eligibility after review, so the stale-after-change obligation is not exercised. Missing case: approve a revision after eligibility changes.",
+      "A forged revision is refused (the binding), and a revision that was valid at review time is refused after the eligibility it was bound to changed (the staleness), with a fresh review of the same request approved as the control. The change is made through the adapter's `makeStale` hook, so the case is only as real as that hook; a target whose adapter has none reports the second case `skip` naming it.",
   },
   {
     clauseId: "7.2-6",

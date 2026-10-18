@@ -77,6 +77,7 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "AS-16/embedded-schema-remote-dynamic-reference-refused", defect: "accept-remote-schema-reference" },
   { caseId: "AS-16/embedded-schema-wrong-dialect-refused", defect: "accept-wrong-schema-dialect" },
   { caseId: "AS-16/embedded-schema-failing-metaschema-refused", defect: "accept-meta-invalid-schema" },
+  { caseId: "AS-15/stale-review-approval-refused", defect: "approve-stale-review" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-wrong-bytes" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-response-cacheable" },
   { caseId: "RS-1/blob-ref-mime-type-valid", defect: "blob-ref-invalid-mime-type" },

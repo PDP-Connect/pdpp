@@ -266,7 +266,7 @@ Resolves omitted instance IDs before final approval, binds resolved instances an
 | `7.2-2` | 960 | MUST | black-box-http | `AS-15/final-approval-artifact-carries-resolved-terms`<br>`AS-15/final-approval-artifact-states-bound-inclusivity` | Core defines no wire shape for the artifact, so inclusivity is looked for as the words `inclusive` and `exclusive` anywhere in the artifact; the association with `since` and `until` is not checked. |
 | `7.2-3` | 960 | MUST | black-box-http | `AS-15/approval-requires-the-issued-revision` | — |
 | `7.2-4` | 960 | MUST | black-box-http | `AS-3/client-claims-stay-outside-the-resolved-grant` | — |
-| `7.2-5` | 960 | MUST | black-box-http | `AS-15/approval-requires-the-issued-revision` | The case rejects approval of a revision the AS never issued. It never makes a previously valid revision stale, nor changes instance eligibility after review, so the stale-after-change obligation is not exercised. Missing case: approve a revision after eligibility changes. |
+| `7.2-5` | 960 | MUST | black-box-http | `AS-15/approval-requires-the-issued-revision`<br>`AS-15/stale-review-approval-refused` | A forged revision is refused (the binding), and a revision that was valid at review time is refused after the eligibility it was bound to changed (the staleness), with a fresh review of the same request approved as the control. The change is made through the adapter's `makeStale` hook, so the case is only as real as that hook; a target whose adapter has none reports the second case `skip` naming it. |
 | `7.2-6` | 960 | MUST | black-box-http | `AS-15/rendered-client-claims-bound-with-attribution` | — |
 
 ### AS-16 (authorization-server, MUST)

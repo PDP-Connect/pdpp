@@ -534,6 +534,55 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // The other half of AS item 15 / clause 7.2-5: a review whose bound eligibility
+  // has since changed is stale, and approving it MUST be refused so a new review
+  // is shown. The staleness is arranged by `makeStale`; the control is a fresh
+  // review of the same request, which must still be approvable (a refusal of
+  // everything would satisfy the negative alone).
+  {
+    caseId: "AS-15/stale-review-approval-refused",
+    requirementId: "AS-15",
+    assertion:
+      "Approving a staged review after the eligibility it was bound to has changed is refused, while a fresh review of the same request is approved.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const selection = { streams: [{ name: stream.name, fields: [...stream.fields] }] };
+      const staged = await adapter.stageApproval?.(selection);
+      if (!staged?.reviewRevision) {
+        return skip(
+          "The target stages no authorization request with a review revision, so there is no review to stale."
+        );
+      }
+      if (!staged.makeStale) {
+        return skip(
+          "The adapter has no makeStale hook, so it cannot change what the review was bound to and a stale approval cannot be attempted."
+        );
+      }
+      if (!(await arrange("staged.makeStale", () => staged.makeStale?.() ?? Promise.resolve(false)))) {
+        return skip("The target offers no way to change the eligibility a review was bound to.");
+      }
+      const stale = await staged.approve(staged.reviewRevision);
+      if (stale) {
+        return fail(
+          `Approving review revision "${staged.reviewRevision}" after the eligibility it was bound to changed produced grant ${stale.grantId}. Core Section 7.2: "If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review." The owner approved what they reviewed, not what is now true.`
+        );
+      }
+      const fresh = await adapter.stageApproval?.(selection);
+      const approved = await arrange("fresh review approval (positive control)", async () =>
+        fresh ? await fresh.approve(fresh.reviewRevision) : null
+      );
+      if (!approved) {
+        return skip(
+          "The stale approval was refused, but so was a fresh review of the same request, so the refusal cannot be attributed to staleness."
+        );
+      }
+      return pass();
+    },
+  },
+
   // --------------------------------------------------------------- AS-19 ---
   // Section 9 AS item 19: each OAuth authorization code is consumed atomically
   // on its first successful redemption, and every later redemption at the
