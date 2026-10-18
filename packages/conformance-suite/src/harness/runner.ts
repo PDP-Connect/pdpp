@@ -137,6 +137,7 @@ const ARRANGEMENT_HOOKS: ReadonlySet<string | symbol> = new Set([
   "issueRefreshableGrant",
   "ownerToken",
   "revokeGrant",
+  "revokeToken",
   "stageApproval",
   "tokenWithIntrospectedKind",
   "widenView",

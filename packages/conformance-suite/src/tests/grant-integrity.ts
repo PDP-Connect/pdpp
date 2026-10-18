@@ -13,7 +13,7 @@
 
 import type { RefreshableGrant, RefreshRefusal } from "../harness/adapter.ts";
 import { type PdppResponse, request } from "../harness/http.ts";
-import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import { arrange, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 import { introspectByAnyRoute } from "./authorization-server.ts";
 import { pollResourceServerRefusal, REVOCATION_TIMING } from "./grant-lifecycle.ts";
@@ -388,7 +388,7 @@ export const GRANT_INTEGRITY_CASES: readonly ConformanceCase[] = [
         streams: [{ name: seeded.name, fields: [...seeded.fields] }],
         accessMode: "continuous",
       });
-      const refreshed = await first?.refresh(first.refreshToken);
+      const refreshed = first && (await arrange("refresh", () => first.refresh(first.refreshToken)));
       const second = refreshed && isGrant(refreshed) ? refreshed : undefined;
       if (!(first && second)) {
         return skip("The target did not yield two access tokens of one refresh-token family.");
