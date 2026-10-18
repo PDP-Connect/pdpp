@@ -10,7 +10,7 @@ names the enforcement that remains. `TEST_SANDBOX_REQUIRE=1` makes missing
 enforcement an error. `TEST_SANDBOX_DISABLE=1` runs the command directly while
 keeping scratch ownership and cleanup.
 
-The executable is copied byte-for-byte from `ai/skills/local/test-architecture/scripts/test-sandbox` in Tim Nunamaker's dotfiles at commit `7ed10f5`. Change and test that source first, then update this copy and digest:
+The executable is copied byte-for-byte from `ai/skills/local/test-architecture/scripts/test-sandbox` in Tim Nunamaker's dotfiles at commit `a958d5c`. Change and test that source first, then update this copy and digest:
 
 ```sh
 cp <dotfiles>/ai/skills/local/test-architecture/scripts/test-sandbox scripts/test-sandbox/test-sandbox

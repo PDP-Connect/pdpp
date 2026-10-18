@@ -22,9 +22,27 @@
 if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
   echo "test-sandbox: bash 5 not found; running without enforcement" >&2
   # Drop our options (bash 3.2 syntax only): everything after "--" is the command.
-  for a in "$@"; do shift; [ "$a" = "--" ] && exec "$@"; done
+  # The scratch contract still holds: TMPDIR is --scratch (created 0700 if
+  # absent) or a fresh directory removed afterwards.
+  _prev="" _scr="" _own=""
+  for a in "$@"; do
+    shift
+    if [ "$a" = "--" ]; then
+      if [ -n "$_scr" ]; then [ -e "$_scr" ] || (umask 077; mkdir -p "$_scr") || exit 2
+      else _scr=$(mktemp -d "${TMPDIR:-/tmp}/test-sandbox.XXXXXX") || exit 2; _own=1; fi
+      TMPDIR=$_scr TMP=$_scr TEMP=$_scr TEST_TMPDIR=$_scr; export TMPDIR TMP TEMP TEST_TMPDIR
+      "$@"; _rc=$?
+      [ -n "$_own" ] && rm -rf "$_scr"
+      exit $_rc
+    fi
+    [ "$_prev" = "--scratch" ] && _scr=$a
+    _prev=$a
+  done
   echo "test-sandbox: usage: test-sandbox [options] -- cmd..." >&2; exit 2
 fi
+# The body is one { ... } block so bash parses all of it before running:
+# editing this file while a run is in flight cannot break that run.
+{
 set -uo pipefail
 # systemd-run (>= 254) expands ${VAR} in the command line by default, which
 # mangles shell code and test arguments; turn that off where supported.
@@ -78,7 +96,6 @@ have_flock=1; command -v flock >/dev/null || have_flock=0
 # A command already inside a sandbox runs directly: a nested call would take a
 # second slot (and could deadlock with --slots 1) and gain nothing.
 if [[ -n "${TEST_SANDBOX_ACTIVE:-}" ]]; then exec "$@"; fi
-export TEST_SANDBOX_ACTIVE=1
 slice=${TEST_SANDBOX_SLICE:-agent-tests}
 slice=${slice%.slice}
 slice_unit="$slice.slice"
@@ -144,6 +161,10 @@ PY
   exit 3
 fi
 
+# Tell the command (and any nested harness) what it runs under, so it can
+# verify instead of trust: a nested test-sandbox call runs directly.
+export TEST_SANDBOX_ACTIVE=1 TEST_SANDBOX_ENFORCEMENT="$enforcement" TEST_SANDBOX_ISOLATE="$isolate" TEST_SANDBOX_PIDNS="$pidns"
+if [[ "$enforcement" == *netns* ]]; then export TEST_SANDBOX_NET=none; else export TEST_SANDBOX_NET=host; fi
 runtime=${XDG_RUNTIME_DIR:-$HOME/.cache}
 state_dir=${TEST_SANDBOX_STATE_DIR:-$runtime/agent-tests}
 mkdir -p "$state_dir/slots" || die "cannot create slot directory $state_dir/slots"
@@ -283,7 +304,11 @@ if [[ $created_scratch -eq 1 ]]; then rm -rf "$scratch"; fi
 exit "$rc"'
 
 if [[ "$disabled" == 1 ]]; then
-  "$@"; rc=$?
+  # Same scratch contract as an enforced run.
+  own_scratch=0
+  if [[ -z "$scratch" ]]; then scratch=$(mktemp -d "${TMPDIR:-/tmp}/test-sandbox.XXXXXX") || die "mktemp failed"; own_scratch=1; fi
+  ( export TMPDIR="$scratch" TMP="$scratch" TEMP="$scratch" TEST_TMPDIR="$scratch"; "$@" ); rc=$?
+  (( own_scratch )) && rm -rf "$scratch"
   wall=$(python3 - "$started" <<'PY'
 import sys,time;print(max(0,time.monotonic()-float(sys.argv[1])))
 PY
@@ -398,3 +423,5 @@ PY
 if [[ -n "$receipt" ]]; then printf '%s\n' "$line" >"$receipt" || { echo "test-sandbox: cannot write receipt $receipt" >&2; exit 125; }
 else printf '%s\n' "$line" >&2; fi
 exit "$rc"
+exit
+}
