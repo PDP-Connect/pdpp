@@ -53,9 +53,9 @@ Clauses enumerated: **214**.
 | MUST clauses | Count |
 | --- | --- |
 | Total | **181** |
-| With at least one case | **108** |
+| With at least one case | **110** |
 | Untestable (review-only, no case) | **56** |
-| Not yet tested (observable, no case) | **17** |
+| Not yet tested (observable, no case) | **15** |
 
 The last three rows partition the total. 2 of the clauses with a case are
 review-only: a case exercises part of them, and a run still reports them `untestable`.
@@ -199,7 +199,7 @@ Issues access tokens bound to specific grants, carrying the PDPP introspection e
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.12-5` | 1519 | MUST | black-box-http | — | AS-9/introspection-carries-pdpp-extensions checks `active`, `pdpp_token_kind`, `subject_id`, `client_id` and `grant_id`, not `exp`. A case that introspects a token with an expiration and asserts `exp` is missing. |
+| `8.12-5` | 1519 | MUST | black-box-http | `AS-9/introspection-carries-exp-for-an-expiring-token` | Whether the token is expiring is read from the token response's `expires_in`; a target whose adapter does not surface the token response, or whose tokens state no lifetime, skips. `exp` is checked for presence and numeric type, not for agreement with `expires_in`. |
 | `10.2-3` | 1701 | MUST | black-box-http | `AS-20/refresh-reuse-revokes-the-family` | Family linkage is tested through reuse revocation; the `expires_in`/`exp` derivation and omission rules are not, and would need a target that can issue a non-expiring access token. |
 | `10.2-4` | 1703 | MUST | black-box-http | `AS-9/token-response-forbids-caching` | — |
 
@@ -263,7 +263,7 @@ Resolves omitted instance IDs before final approval, binds resolved instances an
 | --- | --- | --- | --- | --- | --- |
 | `6.3-2` | 784 | MUST | black-box-http | `AS-15/rendered-client-claims-bound-with-attribution` | — |
 | `7.2-1` | 960 | MUST | black-box-http | `AS-4/omitted-fields-expanded-before-issuance` | — |
-| `7.2-2` | 960 | MUST | black-box-http | `AS-15/final-approval-artifact-carries-resolved-terms` | The revised text adds that `since` is stated as inclusive and `until` as exclusive. AS-15/final-approval-artifact-carries-resolved-terms does not check the inclusive/exclusive statement (nothing in the suite matches `inclusive` or `exclusive`). |
+| `7.2-2` | 960 | MUST | black-box-http | `AS-15/final-approval-artifact-carries-resolved-terms`<br>`AS-15/final-approval-artifact-states-bound-inclusivity` | Core defines no wire shape for the artifact, so inclusivity is looked for as the words `inclusive` and `exclusive` anywhere in the artifact; the association with `since` and `until` is not checked. |
 | `7.2-3` | 960 | MUST | black-box-http | `AS-15/approval-requires-the-issued-revision` | — |
 | `7.2-4` | 960 | MUST | black-box-http | `AS-3/client-claims-stay-outside-the-resolved-grant` | — |
 | `7.2-5` | 960 | MUST | black-box-http | `AS-15/approval-requires-the-issued-revision` | The case rejects approval of a revision the AS never issued. It never makes a previously valid revision stale, nor changes instance eligibility after review, so the stale-after-change obligation is not exercised. Missing case: approve a revision after eligibility changes. |
@@ -293,7 +293,7 @@ Returns 400 `unsupported_version` when the `PDPP-Version` header specifies an un
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.14-1` | 1586 | MUST | black-box-http | `RS-11/unsupported-version-rejected`<br>`AS-17/unsupported-version-rejected` | Carries no RFC 2119 keyword; its MUST level is Section 9 AS item 17 and RS item 11. The unsupported-version half is tested on both roles; the absent-header half — that the response echoes the selected version in a `PDPP-Version` response header — is not asserted by any case, and needs only an unwritten case, not a new hook. |
+| `8.14-1` | 1586 | MUST | black-box-http | `RS-11/unsupported-version-rejected`<br>`AS-17/unsupported-version-rejected`<br>`RS-11/absent-version-header-reports-the-selected-version` | Level is the conformance list's, not the quoted text's: this subsection carries no RFC 2119 keyword, yet Section 9 AS item 17 and RS item 11 state the same obligation as a MUST. Both halves are now tested on the RS; the AS has no response-header case. |
 
 ### AS-18 (authorization-server, MUST)
 
@@ -304,7 +304,7 @@ Authenticates the RS at the RFC 7662 introspection endpoint and returns the comp
 | `2.2-1` | 106 | MUST | black-box-http | `AS-18/introspection-requires-authentication` | The authentication half is tested; that the RS resolves the COMPLETE enforcement context from the response has no dedicated case, and the same obligation at 8.2-2 is review-only. |
 | `8.2-1` | 1174 | MUST | black-box-http | `AS-18/introspection-requires-authentication` | — |
 | `8.2-2` | 1186 | MUST | review-only | — | The no-second-lookup half is an internal call-count obligation; black-box observation cannot distinguish one lookup from two that produced the same answer. |
-| `8.12-5` | 1519 | MUST | black-box-http | — | AS-9/introspection-carries-pdpp-extensions checks `active`, `pdpp_token_kind`, `subject_id`, `client_id` and `grant_id`, not `exp`. A case that introspects a token with an expiration and asserts `exp` is missing. |
+| `8.12-5` | 1519 | MUST | black-box-http | `AS-9/introspection-carries-exp-for-an-expiring-token` | Whether the token is expiring is read from the token response's `expires_in`; a target whose adapter does not surface the token response, or whose tokens state no lifetime, skips. `exp` is checked for presence and numeric type, not for agreement with `expires_in`. |
 | `10.2-1` | 1697 | MUST | black-box-http | `AS-18/introspection-requires-authentication` | The authentication half is tested; the no-second-lookup half is an internal call-count obligation, as at 8.2-2. |
 
 ### AS-19 (authorization-server, MUST)
@@ -538,7 +538,7 @@ Implements `PDPP-Version` header negotiation.
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `7.4-2` | 996 | MUST | black-box-http | `RS-11/unsupported-grant-schema-version-rejected` | — |
-| `8.14-1` | 1586 | MUST | black-box-http | `RS-11/unsupported-version-rejected`<br>`AS-17/unsupported-version-rejected` | Carries no RFC 2119 keyword; its MUST level is Section 9 AS item 17 and RS item 11. The unsupported-version half is tested on both roles; the absent-header half — that the response echoes the selected version in a `PDPP-Version` response header — is not asserted by any case, and needs only an unwritten case, not a new hook. |
+| `8.14-1` | 1586 | MUST | black-box-http | `RS-11/unsupported-version-rejected`<br>`AS-17/unsupported-version-rejected`<br>`RS-11/absent-version-header-reports-the-selected-version` | Level is the conformance list's, not the quoted text's: this subsection carries no RFC 2119 keyword, yet Section 9 AS item 17 and RS item 11 state the same obligation as a MUST. Both halves are now tested on the RS; the AS has no response-header case. |
 
 ### RS-12 (resource-server, MUST)
 
@@ -602,7 +602,7 @@ Serves a blob only when a record the requesting token may currently read, includ
 | --- | --- | --- | --- | --- | --- |
 | `8.12-1` | 1499 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused` | The revision moves this obligation from the client ("The client MUST have discovered the blob through an authorized record") to the resource server. The mapped cases refuse a blob outside the grant and an unauthenticated fetch; neither covers a record the token may read but whose field projection excludes the `blob_ref` field, which the revised text includes. |
 | `8.12-4` | 1519 | MUST | review-only | — | Not observable: the suite deliberately does not follow the signed URL and so cannot observe its expiry. |
-| `8.12-5` | 1519 | MUST | black-box-http | — | AS-9/introspection-carries-pdpp-extensions checks `active`, `pdpp_token_kind`, `subject_id`, `client_id` and `grant_id`, not `exp`. A case that introspects a token with an expiration and asserts `exp` is missing. |
+| `8.12-5` | 1519 | MUST | black-box-http | `AS-9/introspection-carries-exp-for-an-expiring-token` | Whether the token is expiring is read from the token response's `expires_in`; a target whose adapter does not surface the token response, or whose tokens state no lifetime, skips. `exp` is checked for presence and numeric type, not for agreement with `expires_in`. |
 
 ### RS-19 (resource-server, MUST)
 
@@ -642,7 +642,7 @@ Compares time values and bounds by the grant's frozen `time_constraint.type` as 
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `7.6-1` | 1018 | MUST | black-box-http | — | RS-2/time-constraint-enforced does not vary the time zone or offset. A case needs `date-time` values with differing offsets around a bound, and a `date` value, read under an RS whose host time zone differs from UTC. |
+| `7.6-1` | 1018 | MUST | black-box-http | `RS-22/time-window-compared-as-instants-not-text` | Tested with a bound carrying a +14:00 offset one hour before a record's instant, so text order and instant order disagree. The host time zone itself cannot be changed from outside, and a `date` field is not probed. |
 | `7.6-2` | 1020 | MUST | review-only | — | Not observable without a hook that stores an RFC 3339-invalid value (for example a leap second on a date with none) in a time field and reads it back through the filter. |
 | `7.6-3` | 1022 | SHOULD | review-only | — | An operator-facing report is not observable over the protocol. |
 

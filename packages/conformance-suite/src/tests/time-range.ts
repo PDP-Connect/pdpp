@@ -17,7 +17,8 @@
 // use bounds of the type the AS accepted, so a refusal can only come from the
 // property under test.
 
-import type { SelectionOutcome, SeededStream, TargetAdapter } from "../harness/adapter.ts";
+import type { SeededStream, SelectionOutcome, TargetAdapter } from "../harness/adapter.ts";
+import { request } from "../harness/http.ts";
 import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 
@@ -57,12 +58,13 @@ async function submitRange(
   stream: SeededStream,
   timeRange: { since?: string; until?: string }
 ): Promise<SelectionOutcome | null> {
-  return (await adapter.submitSelection?.({ streams: [{ name: stream.name, fields: [...stream.fields] }], timeRange })) ?? null;
+  return (
+    (await adapter.submitSelection?.({ streams: [{ name: stream.name, fields: [...stream.fields] }], timeRange })) ??
+    null
+  );
 }
 
-type Discovery =
-  | { readonly evidence: readonly Evidence[]; readonly format: BoundFormat }
-  | { readonly reason: string };
+type Discovery = { readonly evidence: readonly Evidence[]; readonly format: BoundFormat } | { readonly reason: string };
 
 /** Learn which bound format the AS accepts for the stream: exactly one of the two must be. */
 async function discoverFormat(adapter: TargetAdapter, stream: SeededStream): Promise<Discovery> {
@@ -191,8 +193,7 @@ export const TIME_RANGE_CASES: readonly ConformanceCase[] = [
     run: (context) =>
       refusalCase(
         context,
-        (format) =>
-          SAMPLES[format].invalid.map((value) => ({ label: `since ${value}`, timeRange: { since: value } })),
+        (format) => SAMPLES[format].invalid.map((value) => ({ label: `since ${value}`, timeRange: { since: value } })),
         (label, outcome) =>
           `A selection with an invalid bound (${label}) was accepted (${outcome.status}). Core Section 6: the AS MUST reject a bound that is not valid under Time constraint semantics, which require a valid RFC 3339 value of the field's type. An impossible calendar date or a date-time without an offset has no defined instant, so the window it names has no defined edge.`
       ),
@@ -266,6 +267,82 @@ export const TIME_RANGE_CASES: readonly ConformanceCase[] = [
       if (grantedSince !== since || grantedUntil !== until) {
         return fail(
           `The issued time_constraint reports since ${JSON.stringify(grantedSince)} and until ${JSON.stringify(grantedUntil)} for bounds requested as ${since} and ${until}. Core Section 6: the AS MUST NOT convert or round a bound. A converted or rounded bound moves the edge of the window the owner approved.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+  // ------------------------------------------------------------- 7.6-1 ---
+  // Core Section 8 "Comparison": date-time values are compared as instants,
+  // "Comparing RFC 3339 strings as text is wrong when their offsets differ."
+  // The bound is stated at +14:00 an hour before a record's instant, so text
+  // order and instant order disagree about that record.
+  {
+    caseId: "RS-22/time-window-compared-as-instants-not-text",
+    requirementId: "RS-22",
+    assertion:
+      "A grant whose time window bound carries a +14:00 offset admits exactly the records whose instants fall in the window, not the records whose text sorts after the bound.",
+    async run({ adapter, streams, path }) {
+      const stream = streams.find((s) => s.consentTimeField !== undefined && s.recordCount >= 3);
+      const owner = await adapter.ownerToken();
+      if (!(stream?.consentTimeField && owner)) {
+        return skip("No stream with three records and a consent_time_field, or no owner token to read them with.");
+      }
+      const field = stream.consentTimeField;
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const listed = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...(adapter.ownerReadParams ?? {}), limit: "100" },
+      });
+      const rows = ((listed.json as { data?: { id?: string; data?: Record<string, unknown> }[] }).data ?? []).flatMap(
+        (r) => {
+          const value = r.data?.[field];
+          return r.id && typeof value === "string" && !Number.isNaN(Date.parse(value))
+            ? [{ id: r.id, value, ms: Date.parse(value) }]
+            : [];
+        }
+      );
+      rows.sort((a, b) => a.ms - b.ms);
+      const pivot = rows[Math.floor(rows.length / 2)];
+      if (rows.length < 3 || !pivot) {
+        return skip("Fewer than three records carry a parseable consent_time_field.");
+      }
+      const hour = 3_600_000;
+      const boundMs = pivot.ms - hour;
+      const bound = `${new Date(boundMs + 14 * hour).toISOString().slice(0, 19)}+14:00`;
+      const expected = rows
+        .filter((r) => r.ms >= boundMs)
+        .map((r) => r.id)
+        .sort();
+      // The case discriminates only when text order disagrees with instant order.
+      const textAdmits = rows
+        .filter((r) => r.value >= bound)
+        .map((r) => r.id)
+        .sort();
+      if (expected.join() === textAdmits.join()) {
+        return skip(
+          "Text order and instant order agree for this stream's records, so the bound cannot tell them apart."
+        );
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+        timeConstraint: { field, from: bound },
+      });
+      if (!grant) {
+        return skip("The target issued no grant for a date-time bound with a non-UTC offset.");
+      }
+      const read = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken, query: { limit: "100" } });
+      const served = ((read.json as { data?: { id?: string }[] }).data ?? [])
+        .flatMap((r) => (r.id ? [r.id] : []))
+        .sort();
+      const evidence: Evidence[] = [listed.evidence, read.evidence];
+      if (read.status !== 200) {
+        return fail(`The time-bounded read returned ${read.status}.`, evidence);
+      }
+      if (served.join() !== expected.join()) {
+        return fail(
+          `A grant with since ${bound} served ${JSON.stringify(served)}; the records at or after that instant are ${JSON.stringify(expected)}. Core Section 8: date-time values are compared as instants at their full stated precision; comparing RFC 3339 strings as text is wrong when their offsets differ, and the RS MUST NOT apply a host, viewer or owner time zone.`,
           evidence
         );
       }

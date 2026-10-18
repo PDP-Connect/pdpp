@@ -81,14 +81,14 @@ export interface ClientUnderTest {
    */
   grantState?: () => "active" | "revoked" | "unknown";
   readPage: (stream: string, cursor?: string) => Promise<ClientActionResult>;
-  syncAgain: (stream: string) => Promise<ClientActionResult>;
-  syncOnce: (stream: string) => Promise<ClientActionResult>;
   /**
    * The ids the client holds for a stream after its sync sessions. Optional: a
    * client that does not expose its stored copy makes the copy-handling cases
    * `skip`.
    */
   storedCopy?: (stream: string) => readonly string[];
+  syncAgain: (stream: string) => Promise<ClientActionResult>;
+  syncOnce: (stream: string) => Promise<ClientActionResult>;
 }
 
 type ClientDefect =
@@ -383,10 +383,14 @@ export async function createPdppClientUnderTest(
   }
 
   /** Apply a completed sync page to the stored copy (Core Section 4 "Starting a sync"). */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one handler per client defect switch keeps each receipt naming a single behaviour change.
   function applyPage(stream: string, body: unknown, beginning: boolean): void {
     const data = body && typeof body === "object" ? (body as { data?: unknown }).data : undefined;
     const rows = Array.isArray(data) ? (data as { deleted?: boolean; id?: string }[]) : [];
-    const held = beginning && !defectSet.has("merge-copy-on-beginning") ? new Set<string>() : (copies.get(stream) ?? new Set<string>());
+    const held =
+      beginning && !defectSet.has("merge-copy-on-beginning")
+        ? new Set<string>()
+        : (copies.get(stream) ?? new Set<string>());
     for (const row of rows) {
       if (typeof row.id !== "string") {
         continue;
@@ -455,6 +459,7 @@ export async function createPdppClientUnderTest(
     fixture,
     grantState: () => (grantRevoked ? "revoked" : "active"),
     storedCopy: (stream) => [...(copies.get(stream) ?? [])].sort(),
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one handler per client defect switch keeps each receipt naming a single behaviour change.
     readPage: async (stream, cursor) => {
       const sentCursor =
         cursor === undefined || !defectSet.has("construct-cursor") ? cursor : `${cursor}-constructed-by-client`;

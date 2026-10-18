@@ -23,6 +23,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { compareDateTimes, parseDateTime, parseFullDate } from "./rfc3339.ts";
 
 /** Behaviours that violate a specific normative requirement, for oracle proof. */
 export type Defect =
@@ -389,6 +390,14 @@ export type Defect =
   | "refuse-bare-granted-read"
   /** Serves a request carrying no Authorization header as if it were the owner (RS-16). */
   | "serve-without-authentication"
+  /** Leaves out the statement that `since` is inclusive and `until` exclusive from the final approval artifact (clause 7.2-2). */
+  | "omit-bound-inclusivity-statement"
+  /** Compares a time window's bounds as text instead of as RFC 3339 instants (clause 7.6-1). */
+  | "compare-time-bounds-as-text"
+  /** Leaves `exp` out of a positive introspection response for a token that expires (clause 8.12-5). */
+  | "omit-introspection-exp"
+  /** Omits the `PDPP-Version` response header, so a client that sent none cannot learn the selected version (clause 8.14-1). */
+  | "omit-pdpp-version-response-header"
   /** Ignores the PDPP-Version header instead of refusing an unsupported value (RS-11). */
   | "ignore-pdpp-version-header"
   /** Publishes protected resource metadata without the `pdpp_` members (RS-16). */
@@ -659,6 +668,9 @@ type Principal =
   | { kind: "owner"; subjectId: string }
   | { kind: "unrecognized"; reportedKind: string };
 
+/** Lifetime a token response states and introspection reports as `exp` (clause 8.12-5). */
+const TOKEN_LIFETIME_SECONDS = 3600;
+
 export const PDPP_VERSION = "2026-04-06";
 const SUPPORTED_VERSION = PDPP_VERSION;
 
@@ -833,6 +845,9 @@ export class ReferenceServer {
    */
   private readonly recordVersions = new Map<string, number>();
   private versionClock = 0;
+
+  /** Seconds since the epoch when this server started; every token it issues lives `TOKEN_LIFETIME_SECONDS` from it. */
+  private readonly tokenIssuedAtSeconds = Math.floor(Date.now() / 1000);
 
   /**
    * Every state a record has had, oldest first, keyed `stream\nrecordId`.
@@ -1338,8 +1353,12 @@ export class ReferenceServer {
           ? {
               time_constraint: {
                 field: stream.timeConstraint.field,
-                ...(stream.timeConstraint.from === undefined ? {} : { since: this.issuedBound(stream.timeConstraint.from) }),
-                ...(stream.timeConstraint.to === undefined ? {} : { until: this.issuedBound(stream.timeConstraint.to) }),
+                ...(stream.timeConstraint.from === undefined
+                  ? {}
+                  : { since: this.issuedBound(stream.timeConstraint.from) }),
+                ...(stream.timeConstraint.to === undefined
+                  ? {}
+                  : { until: this.issuedBound(stream.timeConstraint.to) }),
               },
             }
           : {}),
@@ -1402,6 +1421,10 @@ export class ReferenceServer {
           // subject whose data is reachable and the client it was issued to.
           subject_id: grant?.subjectId ?? SEEDED_SUBJECT,
           client_id: CLIENT_ID,
+          // Clause 8.12-5: every positive introspection response for an
+          // expiring token carries `exp`. Tokens here are issued with an
+          // `expires_in`, so they are expiring tokens.
+          ...(this.has("omit-introspection-exp") ? {} : { exp: this.tokenIssuedAtSeconds + TOKEN_LIFETIME_SECONDS }),
           ...(detail ? { authorization_details: [detail] } : {}),
         }
       : { active: false };
@@ -1497,7 +1520,7 @@ export class ReferenceServer {
       this.counter += 1;
       res.writeHead(status, {
         "content-type": "application/json",
-        "pdpp-version": SUPPORTED_VERSION,
+        ...(this.has("omit-pdpp-version-response-header") ? {} : { "pdpp-version": SUPPORTED_VERSION }),
         "request-id": `req_${this.counter}`,
         ...extraHeaders,
       });
@@ -1562,6 +1585,7 @@ export class ReferenceServer {
         {
           access_token: issuedToken,
           token_type: "Bearer",
+          expires_in: TOKEN_LIFETIME_SECONDS,
           ...(detail && !this.has("omit-token-response-authorization-details")
             ? { authorization_details: [detail] }
             : {}),
@@ -1883,8 +1907,10 @@ export class ReferenceServer {
       // `invalid_cursor`. `order` keeps its own, more specific refusal below.
       const contextParams = [...parsed.searchParams.entries()]
         .filter(([key]) => key === "fields" || key.startsWith("filter[") || key.startsWith("expand"))
-        .map(([key, value]) => `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort().join(",") : value}`)
-        .sort();
+        .map(
+          ([key, value]) => `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort().join(",") : value}`
+        )
+        .sort((a, b) => a.localeCompare(b));
       const pageContext = contextDigest(["page", scopeKey, fixture.name, ...contextParams]);
       if (rawCursor?.startsWith("ok:")) {
         const [, cursorOrder, offsetText, horizonText, fromText, cursorContext] = rawCursor.split(":");
@@ -1944,6 +1970,7 @@ export class ReferenceServer {
       // enforcement"): records outside the consented window are not the client's
       // to see, whatever the request asked for.
       const constraint = this.has("ignore-time-constraint") ? undefined : grantedStream?.timeConstraint;
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the window and sync-visibility rules are one ordered pass; each branch carries its own defect switch.
       const withinWindow = (record: Record_): boolean => {
         if (!constraint) {
           return true;
@@ -1952,10 +1979,32 @@ export class ReferenceServer {
         if (typeof value !== "string") {
           return false;
         }
-        if (constraint.from && value < constraint.from) {
+        // Section 8 "Comparison": date-time values are compared as instants at
+        // their full stated precision, never as text -- text order is wrong when
+        // offsets differ. A value that is not a valid RFC 3339 value fails the
+        // filter. `compare-time-bounds-as-text` restores the text comparison.
+        if (this.has("compare-time-bounds-as-text")) {
+          if (constraint.from && value < constraint.from) {
+            return false;
+          }
+          return !(constraint.to && value >= constraint.to);
+        }
+        const instant = parseDateTime(value);
+        if (instant === null) {
+          const day = parseFullDate(value);
+          if (day === null) {
+            return false;
+          }
+          return !((constraint.from && day < constraint.from) || (constraint.to && day >= constraint.to));
+        }
+        const [from, to] = [
+          constraint.from && parseDateTime(constraint.from),
+          constraint.to && parseDateTime(constraint.to),
+        ];
+        if (from && compareDateTimes(instant, from) < 0) {
           return false;
         }
-        return !(constraint.to && value >= constraint.to);
+        return !(to && compareDateTimes(instant, to) >= 0);
       };
 
       // --- Incremental sync session (Section 8, clauses 8.9-13/14/15) ---
@@ -2040,7 +2089,11 @@ export class ReferenceServer {
         return found;
       };
       const visibleIn = (entry: HistoryEntry | undefined): boolean =>
-        entry?.snapshot != null && inGrantInstances(entry.snapshot as Record_) && withinWindow(entry.snapshot as Record_);
+        entry?.snapshot !== undefined &&
+        entry.snapshot !== null &&
+        inGrantInstances(entry.snapshot as Record_) &&
+        withinWindow(entry.snapshot as Record_);
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the window and sync-visibility rules are one ordered pass; each branch carries its own defect switch.
       const syncDelta = (h0: number, h1: number) => {
         const records: Record_[] = [];
         const tombstones: Record<string, unknown>[] = [];
@@ -2051,14 +2104,20 @@ export class ReferenceServer {
           const [v0, v1] = [visibleIn(at0), visibleIn(at1)];
           const inRange = entries.filter((entry) => entry.version > h0 && entry.version <= h1);
           const changesProjection = inRange.some(
-            (entry) => this.has("ignore-projection-for-sync-eligibility") || [...entry.changed].some((f) => projection.includes(f))
+            (entry) =>
+              this.has("ignore-projection-for-sync-eligibility") ||
+              [...entry.changed].some((f) => projection.includes(f))
           );
           // Clause 8.9-18: a record deleted AFTER page 1 (past the session
           // horizon) is not served on a later page, even though it was visible
           // at the horizon.
           const last = entries.at(-1);
           const deletedAfterHorizon = last?.snapshot === null && last.version > h1;
-          if (v1 && (!v0 || changesProjection) && (!deletedAfterHorizon || this.has("serve-deleted-record-from-session-snapshot"))) {
+          if (
+            v1 &&
+            (!v0 || changesProjection) &&
+            (!deletedAfterHorizon || this.has("serve-deleted-record-from-session-snapshot"))
+          ) {
             records.push(at1?.snapshot as Record_);
           }
           const leftWindow = v0 && !v1;
@@ -2069,7 +2128,14 @@ export class ReferenceServer {
           if (!this.has("omit-tombstones") && ((leftWindow && !skippedMove) || neverVisibleDeletion)) {
             const at = inRange.at(-1)?.at ?? new Date().toISOString();
             const id = key.slice(fixture.name.length + 1);
-            tombstones.push({ object: "record", id, stream: fixture.name, deleted: true, deleted_at: at, emitted_at: at });
+            tombstones.push({
+              object: "record",
+              id,
+              stream: fixture.name,
+              deleted: true,
+              deleted_at: at,
+              emitted_at: at,
+            });
           }
           // The token names the last event this context could SEE (clause
           // 4.3-9), not the global clock: a write confined to fields the grant
@@ -2080,7 +2146,10 @@ export class ReferenceServer {
               break;
             }
             const nowVisible = visibleIn(entry);
-            if (nowVisible !== previouslyVisible || (nowVisible && [...entry.changed].some((f) => projection.includes(f)))) {
+            if (
+              nowVisible !== previouslyVisible ||
+              (nowVisible && [...entry.changed].some((f) => projection.includes(f)))
+            ) {
               visibleHorizon = Math.max(visibleHorizon, entry.version);
             }
             previouslyVisible = nowVisible;

@@ -371,19 +371,14 @@ export interface SourceDeclarationSubmission {
  * values are local. A flattened name list could not express any of those.
  */
 export interface SourceDeclarationStream {
-  /** `consent_time_field`, when the stream declares one (clause 5.2-3). */
-  readonly consentTimeField?: string;
   /**
    * `consent_time_content_may_exceed` as the declaration states it (clause
    * 5.2-6). `unknown` so a case can offer a non-boolean, which the AS MUST
    * reject.
    */
   readonly consentTimeContentMayExceed?: unknown;
-  /**
-   * `semantics` as the declaration states it (clause 4.2-1). A plain string so
-   * a case can offer a value Core does not define.
-   */
-  readonly semantics?: string;
+  /** `consent_time_field`, when the stream declares one (clause 5.2-3). */
+  readonly consentTimeField?: string;
   /** `cursor_field`, when the stream declares one (clause 5.2-2). */
   readonly cursorField?: string;
   readonly fields: readonly string[];
@@ -399,6 +394,11 @@ export interface SourceDeclarationStream {
    * valid schemas could not express them.
    */
   readonly schema?: unknown;
+  /**
+   * `semantics` as the declaration states it (clause 4.2-1). A plain string so
+   * a case can offer a value Core does not define.
+   */
+  readonly semantics?: string;
 }
 
 /** What the AS did with an offered declaration. */

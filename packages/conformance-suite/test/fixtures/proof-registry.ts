@@ -546,9 +546,16 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "AS-27/time-range-bound-not-converted", defect: "normalize-time-constraint-bounds" },
   // Incremental-sync visibility and token binding (clauses 4.3-6, 4.3-9, 4.3-11,
   // 4.3-16, 8.9-11, 8.9-17, 8.9-18).
+  { caseId: "RS-11/absent-version-header-reports-the-selected-version", defect: "omit-pdpp-version-response-header" },
+  { caseId: "AS-9/introspection-carries-exp-for-an-expiring-token", defect: "omit-introspection-exp" },
+  { caseId: "AS-15/final-approval-artifact-states-bound-inclusivity", defect: "omit-bound-inclusivity-statement" },
+  { caseId: "RS-22/time-window-compared-as-instants-not-text", defect: "compare-time-bounds-as-text" },
   { caseId: "RS-8/non-terminal-page-omits-next-changes-since", defect: "next-changes-since-on-every-page" },
   { caseId: "RS-6/page-cursor-rejected-under-another-context", defect: "accept-cursor-under-other-context" },
-  { caseId: "RS-21/changes-since-token-rejected-under-another-context", defect: "accept-sync-token-under-other-context" },
+  {
+    caseId: "RS-21/changes-since-token-rejected-under-another-context",
+    defect: "accept-sync-token-under-other-context",
+  },
   { caseId: "RS-21/token-does-not-reveal-writes-the-grant-cannot-see", defect: "token-reveals-hidden-writes" },
   {
     caseId: "RS-7/record-deleted-after-page-1-not-served-on-a-later-page",

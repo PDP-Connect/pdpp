@@ -286,7 +286,8 @@ export const VIEW_CASES: readonly ConformanceCase[] = [
     caseId: "AS-2/view-and-fields-mutually-exclusive",
     requirementId: "AS-2",
     appliesWhen: supportsViews,
-    assertion: "A selection request naming both `view` and `fields` on one stream is refused with 400 invalid_authorization_details.",
+    assertion:
+      "A selection request naming both `view` and `fields` on one stream is refused with 400 invalid_authorization_details.",
     async run({ adapter, streams }) {
       const declared = await firstDeclaredView(adapter);
       if (!declared) {

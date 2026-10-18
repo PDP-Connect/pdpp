@@ -297,7 +297,10 @@ function consentTimeFieldEligible(schema: unknown, field: string): boolean {
   const property = (properties as Record<string, unknown>)[field];
   // An absent property is clause 5.2-3's finding and a `$ref` property is
   // clause 5.2-5's; neither is judged here.
-  if (property === undefined || (property !== null && typeof property === "object" && ("$ref" in property || "$dynamicRef" in property))) {
+  if (
+    property === undefined ||
+    (property !== null && typeof property === "object" && ("$ref" in property || "$dynamicRef" in property))
+  ) {
     return true;
   }
   if (property === null || typeof property !== "object") {
@@ -315,7 +318,10 @@ function compareBounds(format: "date" | "date-time", a: unknown, b: unknown): nu
     if (da === null || db === null) {
       return null;
     }
-    return da === db ? 0 : da < db ? -1 : 1;
+    if (da === db) {
+      return 0;
+    }
+    return da < db ? -1 : 1;
   }
   const [ta, tb] = [parseDateTime(a), parseDateTime(b)];
   return ta === null || tb === null ? null : compareDateTimes(ta, tb);
@@ -869,6 +875,10 @@ export class ReferenceTargetAdapter implements TargetAdapter {
         temporal_field: request.timeConstraint?.field ?? null,
         since: request.timeConstraint?.from ?? null,
         until: request.timeConstraint?.to ?? null,
+        // Clause 7.2-2: `since` is stated as inclusive and `until` as exclusive.
+        ...(request.timeConstraint && !this.defects.has("omit-bound-inclusivity-statement")
+          ? { time_bounds: { since: "inclusive", until: "exclusive" } }
+          : {}),
       })),
       // Rendered on the review surface, so bound exactly and attributed. The
       // `attributed_to` key is what makes the binding checkable: a bare copy of
@@ -1079,6 +1089,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * One defect per rule: the rules are checked in sequence, so a shared defect
    * would let an earlier refusal mask a later oracle.
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: each declaration and selection rule is its own branch with its own defect, so the checks stay in one ordered pass.
   private timeRangeShapeReason(
     format: "date" | "date-time",
     timeRange: { readonly since?: unknown; readonly until?: unknown }
@@ -1100,7 +1111,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
         return `${name} is a ${other} but the consent_time_field has format ${format}`;
       }
       const valid = format === "date" ? parseFullDate(bound) !== null : parseDateTime(bound) !== null;
-      if (!(valid || isOther) && !this.defects.has("accept-invalid-time-range-bound")) {
+      if (!(valid || isOther || this.defects.has("accept-invalid-time-range-bound"))) {
         return `${name} is not a valid RFC 3339 ${format}`;
       }
     }
@@ -1184,6 +1195,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * ones). Implementing the decision here is what lets the negative oracles be
    * proven to discriminate, which is the bar every other negative case meets.
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: each declaration and selection rule is its own branch with its own defect, so the checks stay in one ordered pass.
   async submitSelection(request: SelectionRequest): Promise<SelectionOutcome> {
     const reject = (errorCode: string, description: string): SelectionOutcome => ({
       status: 400,
@@ -1268,7 +1280,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     // fallback from catching it (see `firstUndeclaredReason`).
     const starBeside = this.defects.has("accept-star-beside-fields")
       ? undefined
-      : wanted.find((s) => s.fields !== undefined && s.fields.includes("*") && s.fields.length > 1);
+      : wanted.find((s) => s.fields?.includes("*") && s.fields.length > 1);
     if (starBeside) {
       return reject(
         "invalid_authorization_details",

@@ -2066,4 +2066,40 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       return pass([response.evidence]);
     },
   },
+  // ------------------------------------------------------------- 8.14-1 ---
+  // The absent-header half of the clause: "If the `PDPP-Version` header is
+  // absent, the RS uses the current stable version and returns the selected
+  // version in the `PDPP-Version` response header." A client that sends no
+  // header can learn which contract it is talking to only from this.
+  {
+    caseId: "RS-11/absent-version-header-reports-the-selected-version",
+    requirementId: "RS-11",
+    assertion: "A request with no PDPP-Version header is served and the response carries a PDPP-Version header.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
+        token: grant.accessToken,
+      });
+      if (response.status !== 200) {
+        return skip(
+          `The control read without a PDPP-Version header returned ${response.status}, so the response header cannot be judged.`
+        );
+      }
+      const selected = response.headers.get("pdpp-version");
+      if (selected === null || selected.trim() === "") {
+        return fail(
+          "A request that sent no PDPP-Version header was served with no PDPP-Version response header. Core Section 8: when the header is absent the RS uses the current stable version and returns the selected version in the PDPP-Version response header, which is the only way such a client learns the contract it is talking to.",
+          [response.evidence]
+        );
+      }
+      return pass([response.evidence]);
+    },
+  },
 ];

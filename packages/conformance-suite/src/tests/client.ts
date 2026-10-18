@@ -126,7 +126,8 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
   {
     caseId: "CL-5/endpoint-cursor-expiry-also-full-resyncs",
     requirementId: "CL-5",
-    assertion: "The list-records cursor_expired path also restarts from changes_since=beginning rather than retrying the cursor.",
+    assertion:
+      "The list-records cursor_expired path also restarts from changes_since=beginning rather than retrying the cursor.",
     async run(context) {
       const { client } = context;
       if (!client) {
@@ -315,19 +316,35 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
         return skip("Requires a ClientUnderTest adapter with a fixture request log.");
       }
       if (!client.grantState) {
-        return skip("The client under test does not expose grantState, so what it recorded about the grant is unobserved.");
+        return skip(
+          "The client under test does not expose grantState, so what it recorded about the grant is unobserved."
+        );
       }
       const challenge = 'Bearer error="invalid_token"';
       await client.authorize({ source: { id: "https://fixture.invalid/source" }, streams: [{ name: STREAM }] });
       // Control: told the grant was revoked, the client records it. Without
       // this a client that records nothing would satisfy the negative.
-      client.fixture.configure({ challenge, code: "grant_revoked", kind: "error", status: 401, type: "authentication_error" });
+      client.fixture.configure({
+        challenge,
+        code: "grant_revoked",
+        kind: "error",
+        status: 401,
+        type: "authentication_error",
+      });
       await client.readPage(STREAM);
       if (client.grantState() !== "revoked") {
-        return skip("The client did not record a grant_revoked error as revocation, so the inference case cannot be judged.");
+        return skip(
+          "The client did not record a grant_revoked error as revocation, so the inference case cannot be judged."
+        );
       }
       await client.authorize({ source: { id: "https://fixture.invalid/source" }, streams: [{ name: STREAM }] });
-      client.fixture.configure({ challenge, code: "authentication_error", kind: "error", status: 401, type: "authentication_error" });
+      client.fixture.configure({
+        challenge,
+        code: "authentication_error",
+        kind: "error",
+        status: 401,
+        type: "authentication_error",
+      });
       const before = client.fixture.requestLog().length;
       const result = await client.readPage(STREAM);
       const sent = requestAfter(client, before).length;
@@ -352,7 +369,10 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
       client.fixture.configureGrantSourceKind("vendor_native");
       try {
         const before = client.fixture.requestLog().length;
-        const result = await client.authorize({ source: { id: "https://fixture.invalid/source" }, streams: [{ name: STREAM }] });
+        const result = await client.authorize({
+          source: { id: "https://fixture.invalid/source" },
+          streams: [{ name: STREAM }],
+        });
         if (result.ok) {
           await client.readPage(STREAM);
         }

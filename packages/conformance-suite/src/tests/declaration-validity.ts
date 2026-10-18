@@ -72,15 +72,15 @@ function outcomeEvidence(label: string, outcome: DeclarationOutcome): Evidence {
  * Every case's control carries one, so a refusal can never be attributed to the
  * target simply not accepting embedded schemas.
  */
-function schemaFor(
-  fields: readonly string[],
-  formats: Readonly<Record<string, string>> = {}
-): Record<string, unknown> {
+function schemaFor(fields: readonly string[], formats: Readonly<Record<string, string>> = {}): Record<string, unknown> {
   return {
     $schema: SCHEMA_DIALECT,
     type: "object",
     properties: Object.fromEntries(
-      fields.map((field) => [field, formats[field] === undefined ? { type: "string" } : { type: "string", format: formats[field] }])
+      fields.map((field) => [
+        field,
+        formats[field] === undefined ? { type: "string" } : { type: "string", format: formats[field] },
+      ])
     ),
     additionalProperties: false,
   };
@@ -370,7 +370,7 @@ export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
     negative: (stream) => ({ ...stream, semantics: "event_log_v2" }),
     label: "streams[].semantics 'event_log_v2'",
     violation:
-      "A declaration whose stream states `semantics: event_log_v2` was accepted. Core Section 4: \"An authorization server MUST reject a declaration containing an unrecognized `streams[].semantics` value.\" Accepting it means a resource server later has to choose a write and sync behaviour for a stream type it cannot interpret, and guessing `append_only` or `mutable_state` applies the wrong one to the owner's data.",
+      'A declaration whose stream states `semantics: event_log_v2` was accepted. Core Section 4: "An authorization server MUST reject a declaration containing an unrecognized `streams[].semantics` value." Accepting it means a resource server later has to choose a write and sync behaviour for a stream type it cannot interpret, and guessing `append_only` or `mutable_state` applies the wrong one to the owner\'s data.',
   }),
   {
     caseId: "AS-22/unrecognized-source-kind-refused",
@@ -402,7 +402,7 @@ export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
       ];
       if (outcome.accepted) {
         return fail(
-          "A declaration stating `source.kind: vendor_native` was accepted. Core Section 6: \"An authorization server MUST reject a declaration containing an unrecognized `source.kind`.\" The provenance class is recorded in consent evidence and every issued grant, so accepting a class no client can interpret frees each consumer to read it as whichever known class suits it.",
+          'A declaration stating `source.kind: vendor_native` was accepted. Core Section 6: "An authorization server MUST reject a declaration containing an unrecognized `source.kind`." The provenance class is recorded in consent evidence and every issued grant, so accepting a class no client can interpret frees each consumer to read it as whichever known class suits it.',
           evidence
         );
       }
@@ -419,7 +419,7 @@ export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
     negative: (stream) => ({ ...stream, consentTimeContentMayExceed: "yes" }),
     label: "consent_time_content_may_exceed 'yes'",
     violation:
-      "A declaration whose stream states `consent_time_content_may_exceed: \"yes\"` was accepted. Core Section 5: \"The AS MUST reject a non-boolean value.\" The member decides whether the owner is told that matched records can hold data from outside the consented window, and a truthy string that one component reads as true and another as absent changes what the owner is shown.",
+      'A declaration whose stream states `consent_time_content_may_exceed: "yes"` was accepted. Core Section 5: "The AS MUST reject a non-boolean value." The member decides whether the owner is told that matched records can hold data from outside the consented window, and a truthy string that one component reads as true and another as absent changes what the owner is shown.',
   }),
 
   // --------------------------------------------- 5.2-3, 5.4-3, 5.4-4 ---
@@ -471,7 +471,10 @@ export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
       for (const [label, property] of eligible) {
         n += 1;
         // biome-ignore lint/performance/noAwaitInLoops: each submission is judged before the next so a refusal names its variant.
-        const outcome = await adapter.submitDeclaration?.({ ...withProperty(property), declarationVersion: `${version}-eligible-${n}` });
+        const outcome = await adapter.submitDeclaration?.({
+          ...withProperty(property),
+          declarationVersion: `${version}-eligible-${n}`,
+        });
         if (!outcome) {
           return skip(NO_HOOK);
         }
@@ -504,10 +507,13 @@ export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
                     ...(stream as SourceDeclarationStream),
                     fields: [...seeded.fields, "meta"],
                     schema: {
-                      ...(schemaFor(seeded.fields, { [first]: "date-time" }) as { properties: Record<string, unknown> }),
+                      ...(schemaFor(seeded.fields, { [first]: "date-time" }) as {
+                        properties: Record<string, unknown>;
+                      }),
                       properties: {
-                        ...(schemaFor(seeded.fields, { [first]: "date-time" }) as { properties: Record<string, unknown> })
-                          .properties,
+                        ...(
+                          schemaFor(seeded.fields, { [first]: "date-time" }) as { properties: Record<string, unknown> }
+                        ).properties,
                         meta: { type: "object", properties: { created: property } },
                       },
                     },
@@ -515,7 +521,10 @@ export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
                 ],
               };
         // biome-ignore lint/performance/noAwaitInLoops: each submission is judged before the next so a refusal names its variant.
-        const outcome = await adapter.submitDeclaration?.({ ...nested, declarationVersion: `${version}-ineligible-${n}` });
+        const outcome = await adapter.submitDeclaration?.({
+          ...nested,
+          declarationVersion: `${version}-ineligible-${n}`,
+        });
         if (!outcome) {
           return skip(NO_HOOK);
         }

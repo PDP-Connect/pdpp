@@ -33,6 +33,7 @@ type Context = Parameters<ConformanceCase["run"]>[0];
 type Seeded = Context["streams"][number];
 
 const MAX_HOPS = 50;
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 function asList(json: unknown): ListBody {
   return typeof json === "object" && json !== null ? (json as ListBody) : {};
@@ -128,7 +129,9 @@ const SESSION_CASES: readonly ConformanceCase[] = [
       }
       const terminal = walked.pages.at(-1);
       if (typeof terminal?.next_changes_since !== "string") {
-        return skip("The terminal page carried no next_changes_since; RS-8/terminal-page-carries-next-changes-since owns that.");
+        return skip(
+          "The terminal page carried no next_changes_since; RS-8/terminal-page-carries-next-changes-since owns that."
+        );
       }
       return pass(evidence);
     },
@@ -143,7 +146,9 @@ const SESSION_CASES: readonly ConformanceCase[] = [
     async run({ adapter, streams, path }) {
       const stream = streams.find((s) => s.recordCount >= 2 && s.fields.length >= 2);
       if (!stream) {
-        return skip("No seeded stream has two records and two fields, so the cursor cannot be replayed under a changed selection.");
+        return skip(
+          "No seeded stream has two records and two fields, so the cursor cannot be replayed under a changed selection."
+        );
       }
       const owner = await adapter.ownerToken();
       const [grant, other] = [
@@ -161,10 +166,15 @@ const SESSION_CASES: readonly ConformanceCase[] = [
       }
       const evidence = [first.evidence];
       const narrowed = stream.fields.find((f) => f !== "id") ?? stream.fields[0] ?? "";
-      const control = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken, query: { limit: "1", cursor } });
+      const control = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { limit: "1", cursor },
+      });
       evidence.push(control.evidence);
       if (control.status !== 200) {
-        return skip(`The cursor was refused under the context that minted it (${control.status}), so a refusal elsewhere cannot be attributed to the context.`);
+        return skip(
+          `The cursor was refused under the context that minted it (${control.status}), so a refusal elsewhere cannot be attributed to the context.`
+        );
       }
       const variants: [string, PdppResponse][] = [
         [
@@ -232,7 +242,10 @@ const SESSION_CASES: readonly ConformanceCase[] = [
       }
       const token = body.next_changes_since;
       const evidence = [opened.evidence];
-      const control = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken, query: { changes_since: token } });
+      const control = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { changes_since: token },
+      });
       evidence.push(control.evidence);
       if (control.status !== 200) {
         return skip(`The token was refused under the context that minted it (${control.status}).`);
@@ -310,10 +323,17 @@ const SESSION_CASES: readonly ConformanceCase[] = [
       evidence.push(first.evidence, second.evidence);
       const [t1, t2] = [asList(first.json).next_changes_since, asList(second.json).next_changes_since];
       if (typeof t1 !== "string" || t1 !== t2) {
-        return skip("Two identical sessions ended on different tokens, so token equality cannot be compared across a write.");
+        return skip(
+          "Two identical sessions ended on different tokens, so token equality cannot be compared across a write."
+        );
       }
 
-      const wrote = await adapter.writeRecordField(stream.name, subject.id, hidden, `pdpp-conformance-hidden-${Date.now()}`);
+      const wrote = await adapter.writeRecordField(
+        stream.name,
+        subject.id,
+        hidden,
+        `pdpp-conformance-hidden-${Date.now()}`
+      );
       if (!wrote) {
         return skip(`The target could not write field '${hidden}' of record '${subject.id}'.`);
       }
@@ -359,11 +379,16 @@ const SESSION_CASES: readonly ConformanceCase[] = [
       }
       const order = idsOf(survey.pages);
       if (order.length < 3) {
-        return skip(`The session delivers ${order.length} live record(s); three are needed to delete one from a later page.`);
+        return skip(
+          `The session delivers ${order.length} live record(s); three are needed to delete one from a later page.`
+        );
       }
       const victim = order.at(-1) as string;
 
-      const page1 = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken, query: { ...query, limit: "1" } });
+      const page1 = await request(adapter.baseUrl, recordsPath, {
+        token: grant.accessToken,
+        query: { ...query, limit: "1" },
+      });
       evidence.push(page1.evidence);
       const body1 = asList(page1.json);
       if (page1.status !== 200 || body1.has_more !== true || body1.next_cursor === undefined) {
@@ -383,7 +408,10 @@ const SESSION_CASES: readonly ConformanceCase[] = [
       let cursor: string | undefined = body1.next_cursor;
       for (let hop = 0; hop < MAX_HOPS && cursor !== undefined; hop += 1) {
         // biome-ignore lint/performance/noAwaitInLoops: pagination is inherently sequential.
-        const next = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken, query: { limit: "1", cursor } });
+        const next = await request(adapter.baseUrl, recordsPath, {
+          token: grant.accessToken,
+          query: { limit: "1", cursor },
+        });
         evidence.push(next.evidence);
         if (next.status !== 200) {
           return fail(`Following next_cursor after the deletion returned ${next.status}.`, evidence);
@@ -401,14 +429,16 @@ const SESSION_CASES: readonly ConformanceCase[] = [
       }
       const expectedBetween = order.slice(1, -1);
       if (!expectedBetween.every((id) => served.includes(id))) {
-        return skip("The records between page 1 and the deleted one were not all delivered, so the session did not page as expected.");
+        return skip(
+          "The records between page 1 and the deleted one were not all delivered, so the session did not page as expected."
+        );
       }
       return pass(evidence);
     },
   },
 ];
 
-type WindowArrangement = {
+interface WindowArrangement {
   readonly cutoff: string;
   readonly field: string;
   readonly inside: readonly string[];
@@ -416,7 +446,7 @@ type WindowArrangement = {
   readonly ownerQuery: Record<string, string>;
   readonly recordsPath: string;
   readonly stream: Seeded;
-};
+}
 
 /**
  * Split a stream's records into those inside and outside a time window by
@@ -438,7 +468,9 @@ async function arrangeWindow(context: Context): Promise<WindowArrangement | Case
   });
   rows.sort((a, b) => Date.parse(a.value) - Date.parse(b.value));
   if (rows.length < 4) {
-    return skip(`Only ${rows.length} record(s) of '${stream.name}' carry a parseable ${stream.consentTimeField}; four are needed to build a window with records in and out.`);
+    return skip(
+      `Only ${rows.length} record(s) of '${stream.name}' carry a parseable ${stream.consentTimeField}; four are needed to build a window with records in and out.`
+    );
   }
   const cut = Math.floor(rows.length / 2);
   const cutoff = (rows[cut] as { value: string }).value;
@@ -454,128 +486,138 @@ async function arrangeWindow(context: Context): Promise<WindowArrangement | Case
 }
 
 const WINDOW_CASES: readonly ConformanceCase[] = [
-    // ---------------------------------------------------------------- 4.3-11 ---
-    {
-      caseId: "RS-7/never-visible-record-produces-no-tombstone",
-      requirementId: "RS-7",
-      assertion:
-        "Deleting a record that lies outside a grant's time window produces no tombstone in that grant's next session, while deleting one inside the window does.",
-      async run(context) {
-        const arranged = await arrangeWindow(context);
-        if (!("cutoff" in arranged)) {
-          return arranged;
-        }
-        const { adapter, path } = context;
-        const owner = (await adapter.ownerToken()) as string;
-        if (arranged.outside.length < 1 || arranged.inside.length < 2) {
-          return skip("The window leaves too few records on one side to delete one from each and keep a live record.");
-        }
-        const grant = await adapter.issueGrant({
-          streams: [{ name: arranged.stream.name, fields: [...arranged.stream.fields] }],
-          timeConstraint: { field: arranged.field, from: arranged.cutoff },
+  // ---------------------------------------------------------------- 4.3-11 ---
+  {
+    caseId: "RS-7/never-visible-record-produces-no-tombstone",
+    requirementId: "RS-7",
+    assertion:
+      "Deleting a record that lies outside a grant's time window produces no tombstone in that grant's next session, while deleting one inside the window does.",
+    async run(context) {
+      const arranged = await arrangeWindow(context);
+      if (!("cutoff" in arranged)) {
+        return arranged;
+      }
+      const { adapter, path } = context;
+      const owner = (await adapter.ownerToken()) as string;
+      if (arranged.outside.length < 1 || arranged.inside.length < 2) {
+        return skip("The window leaves too few records on one side to delete one from each and keep a live record.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: arranged.stream.name, fields: [...arranged.stream.fields] }],
+        timeConstraint: { field: arranged.field, from: arranged.cutoff },
+      });
+      if (!grant) {
+        return skip("The target issued no time-bounded grant, so a window cannot be arranged.");
+      }
+      const read = (changesSince: string) =>
+        request(adapter.baseUrl, arranged.recordsPath, {
+          token: grant.accessToken,
+          query: { changes_since: changesSince },
         });
-        if (!grant) {
-          return skip("The target issued no time-bounded grant, so a window cannot be arranged.");
+      const opened = await read(changesSinceBootstrapOf(adapter));
+      const openedBody = asList(opened.json);
+      if (opened.status !== 200 || openedBody.has_more === true || typeof openedBody.next_changes_since !== "string") {
+        return skip("The opening session did not end on a terminal page carrying next_changes_since.");
+      }
+      const evidence = [opened.evidence];
+      const visible = idsOf([openedBody]);
+      if (visible.some((id) => arranged.outside.includes(id))) {
+        return skip(
+          "The grant's window did not exclude the records outside it, so 'never visible' cannot be arranged."
+        );
+      }
+      const [outsideId, insideId] = [arranged.outside[0] as string, arranged.inside.find((id) => visible.includes(id))];
+      if (insideId === undefined) {
+        return skip("The grant's first session delivered no record inside the window to delete as a control.");
+      }
+      for (const id of [outsideId, insideId]) {
+        // biome-ignore lint/performance/noAwaitInLoops: each deletion is confirmed before the next.
+        const deleted = await ownerDelete(
+          adapter,
+          path(`/streams/${encodeURIComponent(arranged.stream.name)}/records/${encodeURIComponent(id)}`),
+          owner,
+          arranged.ownerQuery
+        );
+        evidence.push(deleted.evidence);
+        if (deleted.status !== 200 && deleted.status !== 204) {
+          return skip(`Deleting record '${id}' returned ${deleted.status}.`);
         }
-        const read = (changesSince: string) =>
-          request(adapter.baseUrl, arranged.recordsPath, { token: grant.accessToken, query: { changes_since: changesSince } });
-        const opened = await read(changesSinceBootstrapOf(adapter));
-        const openedBody = asList(opened.json);
-        if (opened.status !== 200 || openedBody.has_more === true || typeof openedBody.next_changes_since !== "string") {
-          return skip("The opening session did not end on a terminal page carrying next_changes_since.");
-        }
-        const evidence = [opened.evidence];
-        const visible = idsOf([openedBody]);
-        if (visible.some((id) => arranged.outside.includes(id))) {
-          return skip("The grant's window did not exclude the records outside it, so 'never visible' cannot be arranged.");
-        }
-        const [outsideId, insideId] = [arranged.outside[0] as string, arranged.inside.find((id) => visible.includes(id))];
-        if (insideId === undefined) {
-          return skip("The grant's first session delivered no record inside the window to delete as a control.");
-        }
-        for (const id of [outsideId, insideId]) {
-          // biome-ignore lint/performance/noAwaitInLoops: each deletion is confirmed before the next.
-          const deleted = await ownerDelete(
-            adapter,
-            path(`/streams/${encodeURIComponent(arranged.stream.name)}/records/${encodeURIComponent(id)}`),
-            owner,
-            arranged.ownerQuery
-          );
-          evidence.push(deleted.evidence);
-          if (deleted.status !== 200 && deleted.status !== 204) {
-            return skip(`Deleting record '${id}' returned ${deleted.status}.`);
-          }
-        }
-        const next = await read(openedBody.next_changes_since);
-        evidence.push(next.evidence);
-        const tombstones = (asList(next.json).data ?? []).filter((r) => r.deleted === true).map((r) => r.id);
-        if (!tombstones.includes(insideId)) {
-          return skip(`Deleting record '${insideId}', which was inside the window, produced no tombstone, so the session cannot be judged on an invisible deletion.`);
-        }
-        if (tombstones.includes(outsideId)) {
-          return fail(
-            `A tombstone was emitted for record '${outsideId}', which was never inside this grant's time window. Core Section 4: the resource server MUST NOT emit a tombstone for a record that was never visible under the query context. It tells the client a record it could not see existed and was removed.`,
-            evidence
-          );
-        }
-        return pass(evidence);
-      },
+      }
+      const next = await read(openedBody.next_changes_since);
+      evidence.push(next.evidence);
+      const tombstones = (asList(next.json).data ?? []).filter((r) => r.deleted === true).map((r) => r.id);
+      if (!tombstones.includes(insideId)) {
+        return skip(
+          `Deleting record '${insideId}', which was inside the window, produced no tombstone, so the session cannot be judged on an invisible deletion.`
+        );
+      }
+      if (tombstones.includes(outsideId)) {
+        return fail(
+          `A tombstone was emitted for record '${outsideId}', which was never inside this grant's time window. Core Section 4: the resource server MUST NOT emit a tombstone for a record that was never visible under the query context. It tells the client a record it could not see existed and was removed.`,
+          evidence
+        );
+      }
+      return pass(evidence);
     },
+  },
 
-    // ----------------------------------------------------------------- 4.3-6 ---
-    {
-      caseId: "RS-7/record-leaving-time-window-surfaces-as-a-tombstone",
-      requirementId: "RS-7",
-      assertion:
-        "A record that is rewritten so its consent_time_field falls outside the grant's window produces a tombstone in that grant's next session.",
-      async run(context) {
-        const arranged = await arrangeWindow(context);
-        if (!("cutoff" in arranged)) {
-          return arranged;
-        }
-        const { adapter } = context;
-        if (!adapter.writeRecordField) {
-          return skip("The adapter has no writeRecordField hook, so a record cannot be moved out of the window.");
-        }
-        const grant = await adapter.issueGrant({
-          streams: [{ name: arranged.stream.name, fields: [...arranged.stream.fields] }],
-          timeConstraint: { field: arranged.field, from: arranged.cutoff },
+  // ----------------------------------------------------------------- 4.3-6 ---
+  {
+    caseId: "RS-7/record-leaving-time-window-surfaces-as-a-tombstone",
+    requirementId: "RS-7",
+    assertion:
+      "A record that is rewritten so its consent_time_field falls outside the grant's window produces a tombstone in that grant's next session.",
+    async run(context) {
+      const arranged = await arrangeWindow(context);
+      if (!("cutoff" in arranged)) {
+        return arranged;
+      }
+      const { adapter } = context;
+      if (!adapter.writeRecordField) {
+        return skip("The adapter has no writeRecordField hook, so a record cannot be moved out of the window.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: arranged.stream.name, fields: [...arranged.stream.fields] }],
+        timeConstraint: { field: arranged.field, from: arranged.cutoff },
+      });
+      if (!grant) {
+        return skip("The target issued no time-bounded grant, so a window cannot be arranged.");
+      }
+      const read = (changesSince: string) =>
+        request(adapter.baseUrl, arranged.recordsPath, {
+          token: grant.accessToken,
+          query: { changes_since: changesSince },
         });
-        if (!grant) {
-          return skip("The target issued no time-bounded grant, so a window cannot be arranged.");
-        }
-        const read = (changesSince: string) =>
-          request(adapter.baseUrl, arranged.recordsPath, { token: grant.accessToken, query: { changes_since: changesSince } });
-        const opened = await read(changesSinceBootstrapOf(adapter));
-        const openedBody = asList(opened.json);
-        if (opened.status !== 200 || openedBody.has_more === true || typeof openedBody.next_changes_since !== "string") {
-          return skip("The opening session did not end on a terminal page carrying next_changes_since.");
-        }
-        const evidence = [opened.evidence];
-        const mover = idsOf([openedBody]).find((id) => arranged.inside.includes(id));
-        if (mover === undefined) {
-          return skip("The grant's first session delivered no record inside the window to move.");
-        }
-        const earlier = /^\d{4}-\d{2}-\d{2}$/.test(arranged.cutoff) ? "2000-01-01" : "2000-01-01T00:00:00Z";
-        const wrote = await adapter.writeRecordField(arranged.stream.name, mover, arranged.field, earlier);
-        if (!wrote) {
-          return skip(`The target could not write field '${arranged.field}' of record '${mover}'.`);
-        }
-        const next = await read(openedBody.next_changes_since);
-        evidence.push(next.evidence);
-        if (next.status !== 200) {
-          return fail(`The next session returned ${next.status}.`, evidence);
-        }
-        const tombstoned = (asList(next.json).data ?? []).some((r) => r.deleted === true && r.id === mover);
-        if (!tombstoned) {
-          return fail(
-            `Record '${mover}' was visible to this grant at the first horizon and, after its ${arranged.field} was rewritten to ${earlier}, not visible at the second, but the session emitted no tombstone for it. Core Section 4: the resource server MUST emit a tombstone for each record visible at h0 and not visible at h1, including a record moved out of the time window. Without it the client keeps a copy the grant no longer covers.`,
-            evidence
-          );
-        }
-        return pass(evidence);
-      },
+      const opened = await read(changesSinceBootstrapOf(adapter));
+      const openedBody = asList(opened.json);
+      if (opened.status !== 200 || openedBody.has_more === true || typeof openedBody.next_changes_since !== "string") {
+        return skip("The opening session did not end on a terminal page carrying next_changes_since.");
+      }
+      const evidence = [opened.evidence];
+      const mover = idsOf([openedBody]).find((id) => arranged.inside.includes(id));
+      if (mover === undefined) {
+        return skip("The grant's first session delivered no record inside the window to move.");
+      }
+      const earlier = DATE_ONLY.test(arranged.cutoff) ? "2000-01-01" : "2000-01-01T00:00:00Z";
+      const wrote = await adapter.writeRecordField(arranged.stream.name, mover, arranged.field, earlier);
+      if (!wrote) {
+        return skip(`The target could not write field '${arranged.field}' of record '${mover}'.`);
+      }
+      const next = await read(openedBody.next_changes_since);
+      evidence.push(next.evidence);
+      if (next.status !== 200) {
+        return fail(`The next session returned ${next.status}.`, evidence);
+      }
+      const tombstoned = (asList(next.json).data ?? []).some((r) => r.deleted === true && r.id === mover);
+      if (!tombstoned) {
+        return fail(
+          `Record '${mover}' was visible to this grant at the first horizon and, after its ${arranged.field} was rewritten to ${earlier}, not visible at the second, but the session emitted no tombstone for it. Core Section 4: the resource server MUST emit a tombstone for each record visible at h0 and not visible at h1, including a record moved out of the time window. Without it the client keeps a copy the grant no longer covers.`,
+          evidence
+        );
+      }
+      return pass(evidence);
     },
+  },
 ];
 
 export const SYNC_VISIBILITY_CASES: readonly ConformanceCase[] = [...SESSION_CASES, ...WINDOW_CASES];

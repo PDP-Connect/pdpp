@@ -266,7 +266,11 @@ const SECTION_4: readonly ClauseEntry[] = [
     specAnchor: "#incremental-sync",
     applicability: "the target serves at least one `mutable_state` stream",
     observable: "black-box-http",
-    caseIds: ["RS-7/deletion-surfaces-as-a-tombstone", "RS-7/tombstone-envelope-survives-sparse-fields", "RS-7/record-leaving-time-window-surfaces-as-a-tombstone"],
+    caseIds: [
+      "RS-7/deletion-surfaces-as-a-tombstone",
+      "RS-7/tombstone-envelope-survives-sparse-fields",
+      "RS-7/record-leaving-time-window-surfaces-as-a-tombstone",
+    ],
     gapNote:
       "Deletion and a record rewritten out of the grant's time window are exercised. A record excluded from an owner session by a request filter is not.",
   },
@@ -1419,7 +1423,12 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#stream-selection-parameters",
     applicability: "the stream declares `consent_time_field`",
     observable: "black-box-http",
-    caseIds: ["AS-27/time-range-without-bound-refused", "AS-27/time-range-bound-wrong-type-refused", "AS-27/time-range-invalid-bound-refused", "AS-27/time-range-since-not-before-until-refused"],
+    caseIds: [
+      "AS-27/time-range-without-bound-refused",
+      "AS-27/time-range-bound-wrong-type-refused",
+      "AS-27/time-range-invalid-bound-refused",
+      "AS-27/time-range-since-not-before-until-refused",
+    ],
     gapNote:
       "The invalid-bound probes are an impossible calendar date and, for a date-time field, a date-time with no offset. Leap-second validity (23:59:60 only on a date with an inserted leap second) is not probed.",
   },
@@ -1548,9 +1557,12 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#streamgrant-fields",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: ["AS-15/final-approval-artifact-carries-resolved-terms"],
+    caseIds: [
+      "AS-15/final-approval-artifact-carries-resolved-terms",
+      "AS-15/final-approval-artifact-states-bound-inclusivity",
+    ],
     gapNote:
-      "The revised text adds that `since` is stated as inclusive and `until` as exclusive. AS-15/final-approval-artifact-carries-resolved-terms does not check the inclusive/exclusive statement (nothing in the suite matches `inclusive` or `exclusive`).",
+      "Core defines no wire shape for the artifact, so inclusivity is looked for as the words `inclusive` and `exclusive` anywhere in the artifact; the association with `since` and `until` is not checked.",
   },
   {
     clauseId: "7.2-3",
@@ -1829,9 +1841,9 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#time-constraint-semantics",
     applicability: "the grant carries a `time_constraint`",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["RS-22/time-window-compared-as-instants-not-text"],
     gapNote:
-      "RS-2/time-constraint-enforced does not vary the time zone or offset. A case needs `date-time` values with differing offsets around a bound, and a `date` value, read under an RS whose host time zone differs from UTC.",
+      "Tested with a bound carrying a +14:00 offset one hour before a record's instant, so text order and instant order disagree. The host time zone itself cannot be changed from outside, and a `date` field is not probed.",
   },
   {
     clauseId: "7.6-2",
@@ -2314,7 +2326,10 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#list-records",
     applicability: "the target supports `changes_since`",
     observable: "black-box-http",
-    caseIds: ["RS-6/page-cursor-rejected-under-another-context", "RS-21/changes-since-token-rejected-under-another-context"],
+    caseIds: [
+      "RS-6/page-cursor-rejected-under-another-context",
+      "RS-21/changes-since-token-rejected-under-another-context",
+    ],
     gapNote:
       "A page cursor is replayed under a different `fields`, another grant and an owner token; a `changes_since` token under another grant and an owner token. A token replayed under another subject, another owner scope, or a changed `fields`, `view` or filter is not tested: Core does not say whether `fields` is part of a `changes_since` token's query context, and RS-7/tombstone-envelope-survives-sparse-fields reads one token under several `fields` selections.",
   },
@@ -2397,9 +2412,9 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#get-a-blob",
     applicability: "the AS introspects expiring tokens",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-9/introspection-carries-exp-for-an-expiring-token"],
     gapNote:
-      "AS-9/introspection-carries-pdpp-extensions checks `active`, `pdpp_token_kind`, `subject_id`, `client_id` and `grant_id`, not `exp`. A case that introspects a token with an expiration and asserts `exp` is missing.",
+      "Whether the token is expiring is read from the token response's `expires_in`; a target whose adapter does not surface the token response, or whose tokens state no lifetime, skips. `exp` is checked for presence and numeric type, not for agreement with `expires_in`.",
   },
   {
     clauseId: "8.13-1",
@@ -2498,9 +2513,13 @@ const SECTION_8: readonly ClauseEntry[] = [
     applicability: "always",
     observable: "black-box-http",
     partial: true,
-    caseIds: ["RS-11/unsupported-version-rejected", "AS-17/unsupported-version-rejected"],
+    caseIds: [
+      "RS-11/unsupported-version-rejected",
+      "AS-17/unsupported-version-rejected",
+      "RS-11/absent-version-header-reports-the-selected-version",
+    ],
     gapNote:
-      "Carries no RFC 2119 keyword; its MUST level is Section 9 AS item 17 and RS item 11. The unsupported-version half is tested on both roles; the absent-header half — that the response echoes the selected version in a `PDPP-Version` response header — is not asserted by any case, and needs only an unwritten case, not a new hook.",
+      "Level is the conformance list's, not the quoted text's: this subsection carries no RFC 2119 keyword, yet Section 9 AS item 17 and RS item 11 state the same obligation as a MUST. Both halves are now tested on the RS; the AS has no response-header case.",
   },
 ];
 

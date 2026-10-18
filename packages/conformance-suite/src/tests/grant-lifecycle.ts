@@ -189,7 +189,7 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
       });
       if (response.status === 200) {
         return fail(
-          "An expired grant served records. Section 9 AS item 8 requires the AS to track expiry and Section 8 \"Inactive tokens\" makes it a 401.",
+          'An expired grant served records. Section 9 AS item 8 requires the AS to track expiry and Section 8 "Inactive tokens" makes it a 401.',
           [response.evidence]
         );
       }

@@ -324,6 +324,46 @@ export const CONSENT_ARTIFACT_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // ----------------------------------------------------------------- 7.2-2 ---
+  // The revised clause adds that the artifact states `since` as inclusive and
+  // `until` as exclusive. Core fixes no wire shape for the artifact, so the case
+  // looks for the two statements anywhere in it rather than under a member name.
+  {
+    caseId: "AS-15/final-approval-artifact-states-bound-inclusivity",
+    requirementId: "AS-15",
+    assertion:
+      "The final approval artifact for a time-bounded stream states that `since` is inclusive and `until` is exclusive.",
+    async run({ adapter, streams }) {
+      const seeded = streams.find((s) => s.consentTimeField !== undefined);
+      if (!seeded?.consentTimeField) {
+        return skip("No seeded stream declares a consent_time_field, so no time-bounded selection can be reviewed.");
+      }
+      const request = {
+        streams: [{ name: seeded.name, fields: [...seeded.fields] }],
+        timeConstraint: { field: seeded.consentTimeField, from: "2026-01-01T00:00:00Z", to: "2026-12-01T00:00:00Z" },
+      };
+      const staged = await stagedArtifact(adapter, request);
+      if ("reason" in staged) {
+        return skip(staged.reason);
+      }
+      const evidence = [artifactEvidence("final approval artifact", staged.artifact)];
+      const text = JSON.stringify(staged.artifact).toLowerCase();
+      if (!(text.includes("2026-01-01t00:00:00z") && text.includes("2026-12-01t00:00:00z"))) {
+        return skip(
+          "The artifact does not state the requested bounds at all; AS-15/final-approval-artifact-carries-resolved-terms owns that."
+        );
+      }
+      const missing = ["inclusive", "exclusive"].filter((word) => !text.includes(word));
+      if (missing.length > 0) {
+        return fail(
+          `The final approval artifact for a time-bounded stream never states ${missing.map((w) => `"${w}"`).join(" or ")}. Core Section 7.2: the artifact MUST include \`since\` stated as inclusive and \`until\` stated as exclusive. Without it the owner approves a window whose edges they cannot read. (Core defines no member name for the statement, so the artifact is searched as text.)`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
   // ----------------------------------------------------------------- 6.3-2 ---
   {
     caseId: "AS-15/rendered-client-claims-bound-with-attribution",

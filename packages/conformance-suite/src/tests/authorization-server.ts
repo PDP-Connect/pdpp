@@ -1012,6 +1012,50 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       return pass(evidence);
     },
   },
+  // ------------------------------------------------------------- 8.12-5 ---
+  // "The AS MUST include `exp` in every positive introspection response for an
+  // expiring PDPP token." Whether a token expires is read from the token
+  // response's own `expires_in` (RFC 6749 Section 5.1); a token the AS states no
+  // lifetime for is not an expiring token and owes no `exp`.
+  {
+    caseId: "AS-9/introspection-carries-exp-for-an-expiring-token",
+    requirementId: "AS-9",
+    assertion: "Introspection of an active token whose token response states an expires_in reports a numeric exp.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      if (grant.tokenResponseBody === undefined) {
+        return skip(
+          "The adapter does not surface the token endpoint's response body (IssuedGrant.tokenResponseBody), so whether the token expires is unobserved."
+        );
+      }
+      const expiresIn = (grant.tokenResponseBody as { expires_in?: unknown }).expires_in;
+      if (typeof expiresIn !== "number" || expiresIn <= 0) {
+        return skip("The token response states no expires_in, so the token is not an expiring token and owes no exp.");
+      }
+      const response = await introspectByAnyRoute(adapter, grant.accessToken);
+      if (!response) {
+        return skip("This deployment publishes no introspection result the suite can reach.");
+      }
+      const body = response.json as (IntrospectionBody & { exp?: unknown }) | undefined;
+      if (response.status !== 200 || body?.active !== true) {
+        return skip("Introspection did not report the token active, so a positive response cannot be judged.");
+      }
+      if (typeof body.exp !== "number" || !Number.isFinite(body.exp)) {
+        return fail(
+          `The token response states expires_in ${expiresIn}, but the positive introspection response carries exp ${JSON.stringify(body.exp)}. Core Section 8: the AS MUST include exp in every positive introspection response for an expiring PDPP token. A resource server that caches the result has no bound for how long it may.`,
+          [response.evidence]
+        );
+      }
+      return pass([response.evidence]);
+    },
+  },
 ];
 
 /** The three fields Core says a `pdpp_pre_registered_public_clients` entry contains. */
