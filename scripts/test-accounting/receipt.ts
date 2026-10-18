@@ -374,9 +374,9 @@ export function structuredNodeSummary(output: string): StructuredSummary {
 
 /** Incrementally counts reporter events without retaining the full transcript. */
 export class StructuredNodeSummaryAccumulator {
-  private discardingLine = false;
-  private pending = "";
-  private sawEvent = false;
+  private discardingLine: boolean;
+  private pending: string;
+  private sawEvent: boolean;
   private readonly skipReasons: Record<string, number> = {};
   private readonly consumedMappingIdentities: string[] = [];
   private assertions = 0;
@@ -384,21 +384,15 @@ export class StructuredNodeSummaryAccumulator {
   private failed = 0;
   private skipped = 0;
 
-  private get pendingLine(): string {
-    return this.pending;
-  }
-
-  private get hasPendingDiscard(): boolean {
-    return this.discardingLine;
-  }
-
-  private get hasSeenEvent(): boolean {
-    return this.sawEvent;
+  constructor() {
+    this.discardingLine = false;
+    this.pending = "";
+    this.sawEvent = false;
   }
 
   write(chunk: string): void {
     let incoming = chunk;
-    if (this.hasPendingDiscard) {
+    if (this.discardingLine) {
       const newline = incoming.indexOf("\n");
       if (newline === -1) {
         return;
@@ -419,7 +413,7 @@ export class StructuredNodeSummaryAccumulator {
       this.consumeLine(this.pending);
     }
     this.pending = "";
-    if (!this.hasSeenEvent) {
+    if (!this.sawEvent) {
       fail("runner emitted no structured node events");
     }
     return {
@@ -433,7 +427,7 @@ export class StructuredNodeSummaryAccumulator {
   }
 
   private boundPendingLine(): void {
-    const pending = this.pendingLine;
+    const { pending } = this;
     if (Buffer.byteLength(pending, "utf8") > MAX_EVENT_LINE_BYTES && pending.startsWith(EVENT_PREFIX)) {
       fail("reporter event exceeds the 1 MiB parser limit");
     }

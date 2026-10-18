@@ -127,7 +127,7 @@ test("a prepare command is killed and reported when it exceeds its deadline", as
     const fs = require('node:fs');
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
     fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
-    process.exit(0);
+    setInterval(() => {}, 1000);
   `;
   const driver = `
     process.env.PDPP_ACCOUNTING_PREPARE_DEADLINE_MS = ${JSON.stringify(String(deadlineMs))};
@@ -180,6 +180,75 @@ test("a prepare command is killed and reported when it exceeds its deadline", as
   }
 });
 
+test("a clean prepare exit settles promptly and kills descendants that keep inherited pipes open", async () => {
+  const deadlineMs = 60_000;
+  const tempDir = mkdtempSync(join(tmpdir(), "pdpp-prepare-clean-exit-"));
+  const pidFile = join(tempDir, "pid");
+  const prepareScript = `
+    const { spawn } = require('node:child_process');
+    const fs = require('node:fs');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+    process.exit(0);
+  `;
+  const driver = `
+    process.env.PDPP_ACCOUNTING_PREPARE_DEADLINE_MS = ${JSON.stringify(String(deadlineMs))};
+    const { runPrepareForTest } = await import(${JSON.stringify(new URL("./authority.ts", import.meta.url).href)});
+    await runPrepareForTest({ id: "fixture", cwd: ".", prepare: ["node", "-e", ${JSON.stringify(prepareScript)}], profiles: [] }, process.cwd());
+  `;
+  const started = Date.now();
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", driver], {
+    cwd: root,
+    stdio: ["ignore", "ignore", "pipe"],
+    detached: true,
+  });
+  let stderr = "";
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  const guard = setTimeout(() => {
+    if (child.pid !== undefined) {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  }, 2500);
+  let pid: number | undefined;
+  try {
+    const pendingOutcome = new Promise<{ code: number | null }>((resolve) => {
+      child.on("close", (code) => {
+        clearTimeout(guard);
+        resolve({ code });
+      });
+    });
+    await waitForFile(pidFile, 1500);
+    pid = Number(readFileSync(pidFile, "utf8"));
+    const outcome = await pendingOutcome;
+    assert.equal(outcome.code, 0, `clean prepare exit must succeed; stderr was: ${stderr}`);
+    assert.ok(Date.now() - started < 1500, `prepare should settle after the grace period; stderr was: ${stderr}`);
+    await assertProcessGone(pid);
+  } finally {
+    clearTimeout(guard);
+    if (child.pid !== undefined) {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    if (pid) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 async function assertProcessGone(pid: number): Promise<void> {
   const deadline = Date.now() + 1500;
   while (Date.now() < deadline) {
@@ -192,4 +261,16 @@ async function assertProcessGone(pid: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.fail(`descendant ${pid} survived prepare deadline`);
+}
+
+async function waitForFile(path: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) {
+      return;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: poll until the prepare child reports its pid.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`timed out waiting for ${path}`);
 }

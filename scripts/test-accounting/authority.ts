@@ -38,6 +38,31 @@ import {
 
 const AUTHORITY_TTL_MS = 2 * 60 * 60 * 1000;
 const OPTIONAL_PREDICATE_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
+const liveProcessGroups = new Set<number>();
+
+function signalProcessGroups(): void {
+  for (const pid of liveProcessGroups) {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+        reportProgress(`could not signal process group ${pid} during shutdown`);
+      }
+    }
+  }
+}
+
+// SIGKILL cannot run cleanup; local test-sandbox cgroup cleanup covers that limit.
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  const forwardTermination = () => {
+    signalProcessGroups();
+    process.removeListener(signal, forwardTermination);
+    process.kill(process.pid, signal);
+  };
+  process.on(signal, forwardTermination);
+}
+process.on("exit", signalProcessGroups);
+
 function fail(message: string): never {
   throw new Error(`test accounting authority: ${message}`);
 }
@@ -123,14 +148,13 @@ function configuredDeadline(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-// The full accounting gate measures about 52s, with the slowest suite around
-// 22s. Ten minutes gives that suite more than 27x its observed runtime while
-// still bounding a continuously chatty leaf. Silence remains governed by its
-// separate, configurable stall budget.
+// Ten minutes is over 27x the slowest measured suite (22s), even under load.
 const LEAF_DEADLINE_MS = configuredDeadline("PDPP_ACCOUNTING_LEAF_DEADLINE_MS", 600_000);
 // The site prepare command took about 1.4s in the focused authority tests; two
 // minutes leaves substantial room for a loaded checkout while bounding hangs.
 const PREPARE_DEADLINE_MS = configuredDeadline("PDPP_ACCOUNTING_PREPARE_DEADLINE_MS", 120_000);
+// The 300s silence budget is nearly 3x the 108s full gate under host load and
+// is independent of the total runtime deadline for continuously chatty leaves.
 const LEAF_STALL_BUDGET_MS = configuredDeadline("PDPP_ACCOUNTING_STALL_BUDGET_MS", 300_000);
 const CAPTURE_TAIL_BYTES = 64 * 1024;
 const KILL_SETTLE_GRACE_MS = 250;
@@ -170,6 +194,26 @@ function killProcessGroup(child: ReturnType<typeof spawn>): void {
   }
 }
 
+function trackProcessGroup(child: ReturnType<typeof spawn>): () => void {
+  let pid: number | undefined;
+  const register = () => {
+    const { pid: childPid } = child;
+    if (childPid !== undefined) {
+      pid = childPid;
+      liveProcessGroups.add(pid);
+    }
+  };
+  const untrack = () => {
+    if (pid !== undefined) {
+      liveProcessGroups.delete(pid);
+    }
+  };
+  child.once("spawn", register);
+  child.once("error", untrack);
+  register();
+  return untrack;
+}
+
 function destroyChildPipes(child: ReturnType<typeof spawn>): void {
   child.stdout?.resume();
   child.stderr?.resume();
@@ -195,6 +239,7 @@ function capture(
     const startedAt = Date.now();
     reportProgress(`${label}: started (${start.files.length} files)`);
     const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const untrackProcessGroup = trackProcessGroup(child);
     let stdoutTail = Buffer.alloc(0);
     let stderrTail = Buffer.alloc(0);
     let stdoutTruncated = false;
@@ -263,7 +308,11 @@ function capture(
     child.stderr?.on("data", (chunk) => append("stderr", chunk));
 
     let settled = false;
+    let settling = false;
     let killSettleTimer: NodeJS.Timeout | undefined;
+    let exitSettleTimer: NodeJS.Timeout | undefined;
+    let ticker: NodeJS.Timeout | undefined;
+    let deadlineTimer: NodeJS.Timeout | undefined;
     const settleFailureAfterKill = () => {
       if (killSettleTimer) {
         return;
@@ -272,6 +321,7 @@ function capture(
         destroyChildPipes(child);
         if (!settled) {
           settled = true;
+          untrackProcessGroup();
           reject(captureFailure() ?? new Error(`${label} child was killed`));
         }
       }, KILL_SETTLE_GRACE_MS);
@@ -329,14 +379,41 @@ function capture(
         ...(nodeSummaryError ? { node_summary_error: nodeSummaryError } : {}),
       });
     };
-    const deadlineTimer = setTimeout(killForDeadline, LEAF_DEADLINE_MS);
+    const settleFromExit = async (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled || settling) {
+        return;
+      }
+      settling = true;
+      clearInterval(ticker);
+      clearTimeout(deadlineTimer);
+      clearTimeout(exitSettleTimer);
+      if (killSettleTimer) {
+        clearTimeout(killSettleTimer);
+      }
+      try {
+        await writeChain;
+        const failure = captureFailure();
+        if (failure) {
+          throw failure;
+        }
+        completeCapture(code, signal);
+        settled = true;
+      } catch (error) {
+        settled = true;
+        reject(error);
+      } finally {
+        untrackProcessGroup();
+      }
+    };
+
+    deadlineTimer = setTimeout(killForDeadline, LEAF_DEADLINE_MS);
     deadlineTimer.unref?.();
 
     // Watchdog + heartbeat share one timer: every tick reports liveness, and a
     // tick that finds the silence older than the declared budget kills the leaf
     // and says so. A leaf that keeps producing output resets `lastOutputAt` and
     // is never killed, however long it runs.
-    const ticker = setInterval(() => {
+    ticker = setInterval(() => {
       const quietMs = Date.now() - lastOutputAt;
       if (quietMs >= LEAF_STALL_BUDGET_MS) {
         stalled = true;
@@ -356,32 +433,26 @@ function capture(
     child.on("error", (error) => {
       clearInterval(ticker);
       clearTimeout(deadlineTimer);
+      clearTimeout(exitSettleTimer);
+      untrackProcessGroup();
       if (!settled) {
         settled = true;
         reject(error);
       }
     });
-    child.on("close", async (code, signal) => {
+    child.on("exit", (code, signal) => {
       clearInterval(ticker);
       clearTimeout(deadlineTimer);
-      try {
-        await writeChain;
-        const failure = captureFailure();
-        if (failure) {
-          throw failure;
-        }
-        completeCapture(code, signal);
-      } catch (error) {
-        if (!settled) {
-          settled = true;
-          reject(error);
-        }
-      } finally {
-        settled = true;
-        if (killSettleTimer) {
-          clearTimeout(killSettleTimer);
-        }
-      }
+      exitSettleTimer = setTimeout(() => {
+        killProcessGroup(child);
+        destroyChildPipes(child);
+        settleFromExit(code, signal).catch((error: unknown) => {
+          reportProgress(`${label}: could not settle capture after child exit: ${String(error)}`);
+        });
+      }, KILL_SETTLE_GRACE_MS);
+    });
+    child.on("close", async (code, signal) => {
+      await settleFromExit(code, signal);
     });
   });
 }
@@ -436,10 +507,36 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
   reportProgress(`${suite.id}: preparing (${command.join(" ")})`);
   return new Promise((resolvePrepare, reject) => {
     const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const untrackProcessGroup = trackProcessGroup(child);
     let output = Buffer.alloc(0);
     let deadlineExpired = false;
     let settled = false;
     let killSettleTimer: NodeJS.Timeout | undefined;
+    let exitSettleTimer: NodeJS.Timeout | undefined;
+    let deadlineTimer: NodeJS.Timeout | undefined;
+    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(deadlineTimer);
+      clearTimeout(exitSettleTimer);
+      if (killSettleTimer) {
+        clearTimeout(killSettleTimer);
+      }
+      untrackProcessGroup();
+      if (code === 0 && !signal && !deadlineExpired) {
+        resolvePrepare();
+        return;
+      }
+      reject(
+        new Error(
+          deadlineExpired
+            ? `${suite.id} prepare exceeded deadline ${Math.round(PREPARE_DEADLINE_MS / 1000)}s (PDPP_ACCOUNTING_PREPARE_DEADLINE_MS) and was killed`
+            : `${suite.id} prepare failed (exit ${code ?? "null"}${signal ? `, signal ${signal}` : ""}): ${output.toString().trim()}`
+        )
+      );
+    };
     const appendOutput = (chunk: Buffer) => {
       const combined = Buffer.concat([output, chunk]);
       output =
@@ -451,7 +548,7 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
     child.stderr?.on("data", (chunk) => {
       appendOutput(chunk);
     });
-    const deadlineTimer = setTimeout(() => {
+    deadlineTimer = setTimeout(() => {
       deadlineExpired = true;
       reportProgress(`${suite.id}: prepare exceeded deadline ${Math.round(PREPARE_DEADLINE_MS / 1000)}s; killing`);
       try {
@@ -460,49 +557,33 @@ function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promis
         destroyChildPipes(child);
         killSettleTimer = setTimeout(() => {
           destroyChildPipes(child);
-          if (!settled) {
-            settled = true;
-            reject(
-              new Error(
-                `${suite.id} prepare exceeded deadline ${Math.round(PREPARE_DEADLINE_MS / 1000)}s (PDPP_ACCOUNTING_PREPARE_DEADLINE_MS) and was killed`
-              )
-            );
-          }
+          finish(null, null);
         }, KILL_SETTLE_GRACE_MS);
       }
     }, PREPARE_DEADLINE_MS);
     deadlineTimer.unref?.();
     child.on("error", (error) => {
       clearTimeout(deadlineTimer);
+      clearTimeout(exitSettleTimer);
       if (killSettleTimer) {
         clearTimeout(killSettleTimer);
       }
+      untrackProcessGroup();
       if (!settled) {
         settled = true;
         reject(error);
       }
     });
-    child.on("close", (code, signal) => {
+    child.on("exit", (code, signal) => {
       clearTimeout(deadlineTimer);
-      if (code === 0 && !signal && !deadlineExpired) {
-        settled = true;
-        resolvePrepare();
-        return;
-      }
-      if (killSettleTimer) {
-        clearTimeout(killSettleTimer);
-      }
-      if (settled) {
-        return;
-      }
-      settled = true;
-      reject(
-        new Error(
-          deadlineExpired
-            ? `${suite.id} prepare exceeded deadline ${Math.round(PREPARE_DEADLINE_MS / 1000)}s (PDPP_ACCOUNTING_PREPARE_DEADLINE_MS) and was killed`
-            : `${suite.id} prepare failed (exit ${code ?? "null"}${signal ? `, signal ${signal}` : ""}): ${output.toString().trim()}`
-        )
-      );
+      exitSettleTimer = setTimeout(() => {
+        killProcessGroup(child);
+        destroyChildPipes(child);
+        finish(code, signal);
+      }, KILL_SETTLE_GRACE_MS);
+    });
+    child.on("close", (code, signal) => {
+      finish(code, signal);
     });
   });
 }

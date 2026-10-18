@@ -25,7 +25,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -54,7 +54,8 @@ function runCapture(
   budgetMs: number,
   deadlineMs?: number,
   parseNodeEvents = false,
-  failWriteAt?: number
+  failWriteAt?: number,
+  hardTimeoutMs?: number
 ): Promise<Outcome> {
   const driver = `
     const { runCaptureForTest } = await import(${JSON.stringify(new URL("./authority.ts", import.meta.url).href)});
@@ -110,7 +111,7 @@ function runCapture(
           }
         }
       },
-      deadlineMs === undefined ? 30_000 : deadlineMs + 5000
+      hardTimeoutMs ?? (deadlineMs === undefined ? 30_000 : deadlineMs + 5000)
     );
     child.on("close", (code) => {
       clearTimeout(hardTimeout);
@@ -220,7 +221,7 @@ test("large non-event output completes with bounded retained capture", async () 
   assert.ok(result.retained_capture_bytes <= 128 * 1024, `retained capture was ${result.retained_capture_bytes} bytes`);
 });
 
-test("a leaf deadline kills a descendant that keeps inherited pipes open after its parent exits", async () => {
+test("a leaf deadline kills a descendant that keeps inherited pipes open", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-leaf-descendant-"));
   const pidFile = join(dir, "pid");
   const script = `
@@ -228,7 +229,7 @@ test("a leaf deadline kills a descendant that keeps inherited pipes open after i
     const fs = require('node:fs');
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
     fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
-    process.exit(0);
+    setInterval(() => {}, 1000);
   `;
   let pid: number | undefined;
   try {
@@ -242,6 +243,92 @@ test("a leaf deadline kills a descendant that keeps inherited pipes open after i
     if (pid) {
       try {
         process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a clean leaf exit settles promptly and kills descendants that keep inherited pipes open", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-leaf-clean-exit-"));
+  const pidFile = join(dir, "pid");
+  const script = `
+    const { spawn } = require('node:child_process');
+    const fs = require('node:fs');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+    process.exit(0);
+  `;
+  let pid: number | undefined;
+  try {
+    const pendingOutcome = runCapture(script, 60_000, 60_000, false, undefined, 2500);
+    await waitForFile(pidFile, 1500);
+    pid = Number(readFileSync(pidFile, "utf8"));
+    const outcome = await pendingOutcome;
+    assert.equal(outcome.code, 0, `clean parent exit must succeed; stderr was: ${outcome.stderr}`);
+    assert.ok(outcome.durationMs < 1500, `capture should settle after the grace period, took ${outcome.durationMs}ms`);
+    await assertProcessGone(pid);
+  } finally {
+    if (pid) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("SIGTERM of the authority kills every active leaf process group before exiting", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-authority-signal-"));
+  const pidFile = join(dir, "pid");
+  const leaf = `
+    const { spawn } = require('node:child_process');
+    const fs = require('node:fs');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+    fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify([process.pid, child.pid]));
+    setInterval(() => {}, 1000);
+  `;
+  const driver = `
+    const { runCaptureForTest } = await import(${JSON.stringify(new URL("./authority.ts", import.meta.url).href)});
+    await runCaptureForTest([process.execPath, "-e", ${JSON.stringify(leaf)}], process.cwd());
+  `;
+  const authority = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", driver], {
+    stdio: ["ignore", "ignore", "pipe"],
+    detached: true,
+  });
+  let authorityStderr = "";
+  authority.stderr?.on("data", (chunk: Buffer) => {
+    authorityStderr += chunk.toString();
+  });
+  let pids: number[] = [];
+  try {
+    await waitForFile(pidFile, 2000);
+    pids = JSON.parse(readFileSync(pidFile, "utf8")) as number[];
+    if (authority.pid === undefined) {
+      assert.fail("authority process did not start");
+    }
+    process.kill(authority.pid, "SIGTERM");
+    const exit = await waitForClose(authority, 2000);
+    assert.equal(exit.signal, "SIGTERM", `authority should re-raise SIGTERM; stderr was: ${authorityStderr}`);
+    for (const pid of pids) {
+      // biome-ignore lint/performance/noAwaitInLoops: each assertion waits for a just-killed group member.
+      await assertProcessGone(pid);
+    }
+  } finally {
+    if (authority.pid !== undefined) {
+      try {
+        process.kill(-authority.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    if (pids[0]) {
+      try {
+        process.kill(-pids[0], "SIGKILL");
       } catch {
         /* already gone */
       }
@@ -280,4 +367,26 @@ async function assertProcessGone(pid: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.fail(`descendant ${pid} survived the process-group kill`);
+}
+
+async function waitForFile(path: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) {
+      return;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: poll until the spawned leaf reports its pid.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`timed out waiting for ${path}`);
+}
+
+function waitForClose(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<{ signal: NodeJS.Signals | null }> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`authority did not exit within ${timeoutMs}ms`)), timeoutMs);
+    child.once("close", (_code, signal) => {
+      clearTimeout(timer);
+      resolve({ signal });
+    });
+  });
 }
