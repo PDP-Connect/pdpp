@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   access,
   chmod,
@@ -44,6 +44,7 @@ function command(args: string[]): string[] {
   return ["--", process.execPath, "--import", "tsx", child, ...args];
 }
 
+const SANDBOX_SCRIPT = new URL("../test-sandbox/test-sandbox", import.meta.url).pathname;
 const wrapperPath = new URL("./run-command.ts", import.meta.url).pathname;
 const lifecycleWrapperPath = new URL("./fixtures/lifecycle-wrapper.ts", import.meta.url).pathname;
 
@@ -71,7 +72,7 @@ test("owner routes children through the sandbox unless explicitly disabled", asy
   const probe = [
     process.execPath,
     "-e",
-    "console.log(JSON.stringify({active:process.env.TEST_SANDBOX_ACTIVE||null,tmp:process.env.TMPDIR,umask:process.umask()}))",
+    "console.log(JSON.stringify({active:process.env.TEST_SANDBOX_ACTIVE||null,tmp:process.env.TMPDIR,mode:require('node:fs').statSync(process.env.TMPDIR).mode%0o1000}))",
   ];
   try {
     for (const disabled of [false, true]) {
@@ -93,16 +94,42 @@ test("owner routes children through the sandbox unless explicitly disabled", asy
       });
       // biome-ignore lint/performance/noAwaitInLoops: exercise enabled and disabled launches sequentially.
       assert.deepEqual(await closed(wrapper), { code: 0, signal: null });
-      const result = JSON.parse(stdout.trim()) as { active: string | null; tmp: string; umask: number };
+      const result = JSON.parse(stdout.trim()) as { active: string | null; tmp: string; mode: number };
       assert.equal(result.active, disabled ? null : "1");
       if (!disabled) {
-        assert.equal(result.umask, 0o077);
+        assert.equal(result.mode, 0o700);
       }
       assert.ok(result.tmp.includes("pdpp-test-scratch"));
       await assert.rejects(access(result.tmp));
     }
   } finally {
     await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+test("sandbox creates a missing --scratch root 0700 once and never re-creates it", async () => {
+  const parent = await temporaryParent();
+  const scratch = join(parent, "root");
+  try {
+    const run = (script: string) =>
+      spawnSync(SANDBOX_SCRIPT, ["--scratch", scratch, "--", process.execPath, "-e", script], {
+        encoding: "utf8",
+        env: { ...process.env, TEST_SANDBOX_ACTIVE: "", TEST_SANDBOX_PIDNS: "0" },
+      });
+    // Loose parent umask: only the sandbox's own creation can make the root private.
+    const previous = process.umask(0o022);
+    try {
+      const created = run("console.log(require('node:fs').statSync(process.env.TMPDIR).mode%0o1000)");
+      assert.equal(created.status, 0, created.stderr);
+      assert.equal(created.stdout.trim(), String(0o700));
+      const removed = run("require('node:fs').rmSync(process.env.TMPDIR,{recursive:true})");
+      assert.equal(removed.status, 0, removed.stderr);
+    } finally {
+      process.umask(previous);
+    }
+    await assert.rejects(access(scratch));
+  } finally {
+    await rm(parent, { force: true, recursive: true });
   }
 });
 

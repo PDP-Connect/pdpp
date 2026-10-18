@@ -351,22 +351,13 @@ async function restoreSandboxSignal(result: CommandResult, signalPath?: string):
 }
 
 function spawnOwnedCommand(launch: ReturnType<typeof sandboxLaunch>, ownership: ScratchOwnership) {
-  // The collector uses mkdir -p for --scratch. A replacement root must remain
-  // private even if another process removes the one we allocated.
-  const previousUmask = launch.groupPath ? process.umask(0o077) : undefined;
-  try {
-    return spawn(launch.file, launch.args, {
-      cwd: process.cwd(),
-      detached: true,
-      env: launch.groupPath ? { ...ownership.env, TEST_SANDBOX_PIDNS: "0" } : ownership.env,
-      shell: false,
-      stdio: "inherit",
-    });
-  } finally {
-    if (previousUmask !== undefined) {
-      process.umask(previousUmask);
-    }
-  }
+  return spawn(launch.file, launch.args, {
+    cwd: process.cwd(),
+    detached: true,
+    env: launch.groupPath ? { ...ownership.env, TEST_SANDBOX_PIDNS: "0" } : ownership.env,
+    shell: false,
+    stdio: "inherit",
+  });
 }
 
 async function runLaunchedCommand(
