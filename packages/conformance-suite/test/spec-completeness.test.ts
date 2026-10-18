@@ -117,8 +117,8 @@ describe("lead-in scan handles the list layouts Markdown allows", () => {
     assert.equal(scanLeadIns(spec).length, 0);
   });
 
-  it("finds the real blank-line-separated lead-in at spec-core.md 560", () => {
-    assert.ok(scanLeadIns(SPEC).some((l) => l.line === 560 && l.items.length === 2));
+  it("finds the real blank-line-separated lead-in at spec-core.md 602", () => {
+    assert.ok(scanLeadIns(SPEC).some((l) => l.line === 602 && l.items.length === 2));
   });
 });
 

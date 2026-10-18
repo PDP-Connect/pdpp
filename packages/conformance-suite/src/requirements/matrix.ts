@@ -1635,7 +1635,7 @@ const SECTION_7: readonly ClauseEntry[] = [
     requirementIds: ["AS-23"],
     level: "must",
     role: ["authorization-server"],
-    text: "An authorization server that issues a grant with `grantors` MUST: [...] verify, before showing a prospective grantor any subject-specific information or accepting their approval, that the grantor may approve the complete proposed disclosure under an explicit deployment or profile policy.",
+    text: "An authorization server that issues a grant with `grantors` MUST: [...] verify, before showing a prospective grantor any subject-specific information or accepting their approval, that the grantor may approve the complete proposed disclosure under an explicit deployment or profile policy. Where that policy requires several grantors to approve together, the verification covers the complete set. The disclosure includes its selected data, client, purpose, access mode, and duration. The AS MUST reject approval when verification fails. How the AS establishes that authority, for example from a legal document or an authoritative register, is a deployment or profile choice;",
     specAnchor: "#representative-approval",
     applicability: "the AS issues grants with `grantors`",
     observable: "review-only",
