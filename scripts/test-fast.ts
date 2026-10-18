@@ -11,7 +11,7 @@ import { dirname, join, posix, resolve } from "node:path";
 import { parse } from "@babel/parser";
 import { applyLocalNodeTestConcurrency, suiteEnvironment } from "./test-accounting/authority.ts";
 import { compareStrings, type Manifest, matchesGlob, readManifest, type Suite } from "./test-accounting/inventory.ts";
-import { structuredNodeSummary } from "./test-accounting/receipt.ts";
+import { parseAccountingEvent, structuredNodeSummary } from "./test-accounting/receipt.ts";
 
 export interface FastSelection {
   base: string;
@@ -310,7 +310,8 @@ export function selectFastTests(
 
 // The argv the manifest's own command needs for the selected files (shell leaves take file paths too).
 // Node suites print the spec reporter and write the authority's structured events to `eventsFile`.
-export function suiteArgv(suite: Suite, files: string[], root: string, eventsFile: string): string[] {
+// `isCi` defaults to the CI variable, as it does for the authority's own runs.
+export function suiteArgv(suite: Suite, files: string[], root: string, eventsFile: string, isCi?: boolean): string[] {
   const command = [...(suite.command ?? [])];
   const reporter = command.indexOf("--test-reporter");
   if (reporter !== -1) {
@@ -323,7 +324,7 @@ export function suiteArgv(suite: Suite, files: string[], root: string, eventsFil
       `--test-reporter-destination=${eventsFile}`
     );
   }
-  return [...applyLocalNodeTestConcurrency(command), ...files.map((path) => posix.relative(suite.cwd, path))];
+  return [...applyLocalNodeTestConcurrency(command, isCi), ...files.map((path) => posix.relative(suite.cwd, path))];
 }
 
 // Tests that really ran, counted as the gate counts them: node suites from the structured reporter
@@ -334,13 +335,22 @@ export function executedTests(loader: string, events: string, files: string[]): 
   if (loader === "shell") {
     return files.length;
   }
-  const testEvents = events.split("\n").filter((line) => !files.some((file) => line.endsWith(`${file}"}}`)));
+  const fileNames = new Set(files);
+  const testEvents = events.split("\n").filter((line) => !isFileEvent(line, fileNames));
   try {
     const { passed, failed } = structuredNodeSummary(testEvents.join("\n"));
     return passed + failed;
   } catch {
     return 0;
   }
+}
+
+// Node's per-file pass event, matched on its decoded name. Raw JSON text is never matched, so a test
+// titled with a path still counts, and a JSON-escaped file name still matches.
+function isFileEvent(line: string, fileNames: Set<string>): boolean {
+  const event = parseAccountingEvent(line);
+  const name = event?.details?.name;
+  return event?.type === "test:pass" && name !== undefined && fileNames.has(name);
 }
 
 function execute(argv: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<{ status: number }> {

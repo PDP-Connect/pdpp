@@ -186,10 +186,24 @@ test("a selected shell test file is passed to the manifest's shell leaf", () => 
 
 test("node suites print the spec reporter and write structured events, with the gate's local concurrency", () => {
   const node = { ...manifest.suites[0], command: ["node", "--test", "--test-reporter", "x/node-reporter.ts"] };
-  assert.deepEqual(suiteArgv(node as Manifest["suites"][number], ["a.test.ts"], "/repo", "/x/events"), [
+  // isCi is explicit, so this holds whatever the host's CI variable is.
+  assert.deepEqual(suiteArgv(node as Manifest["suites"][number], ["a.test.ts"], "/repo", "/x/events", false), [
     "node",
     "--test",
     "--test-concurrency=2",
+    "--test-reporter=spec",
+    "--test-reporter-destination=stdout",
+    "--test-reporter=/repo/x/node-reporter.ts",
+    "--test-reporter-destination=/x/events",
+    "a.test.ts",
+  ]);
+});
+
+test("node suites under CI keep the command's own concurrency", () => {
+  const node = { ...manifest.suites[0], command: ["node", "--test", "--test-reporter", "x/node-reporter.ts"] };
+  assert.deepEqual(suiteArgv(node as Manifest["suites"][number], ["a.test.ts"], "/repo", "/x/events", true), [
+    "node",
+    "--test",
     "--test-reporter=spec",
     "--test-reporter-destination=stdout",
     "--test-reporter=/repo/x/node-reporter.ts",
@@ -220,6 +234,15 @@ test("the zero-test guard counts executed structured events and rejects spoofs",
   // Node reports a test-less file as one passing event named after the file.
   assert.equal(executedTests("node-test", `${event("test:pass", "r/a.test.ts")}\n`, ["r/a.test.ts"]), 0);
   assert.equal(executedTests("shell", "PASS: fake\n", ["a.sh", "b.sh"]), 2);
+});
+
+test("a real test titled with a selected file path counts, and Node's file event for that file does not", () => {
+  const events = [event("test:pass", "r/a.test.ts"), event("test:pass", "handles r/a.test.ts")].join("\n");
+  assert.equal(executedTests("node-test", events, ["r/a.test.ts"]), 1);
+});
+
+test("Node's file event is matched on the decoded name, so a JSON-escaped file name is still filtered", () => {
+  assert.equal(executedTests("node-test", `${event("test:pass", 'q"x.test.ts')}\n`, ['q"x.test.ts']), 0);
 });
 
 const LABEL = "packages/display/src/label.ts";

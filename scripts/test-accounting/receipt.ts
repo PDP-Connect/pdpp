@@ -24,6 +24,17 @@ export function accountingResultLine(result: unknown): string {
 export function accountingEventLine(event: unknown): string {
   return `${EVENT_PREFIX}${JSON.stringify(event)}`;
 }
+// The decoded event on a structured reporter line; undefined for lines that are not one.
+export function parseAccountingEvent(line: string): NodeTestEvent | undefined {
+  if (!line.startsWith(EVENT_PREFIX)) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(line.slice(EVENT_PREFIX.length)) as NodeTestEvent;
+  } catch {
+    return undefined;
+  }
+}
 
 // Node's boolean `skip: !X` tests carry no reason on the wire, only their name.
 // Most name their reason inline as `(skipped: ...)`, but a cohort of RI tests
