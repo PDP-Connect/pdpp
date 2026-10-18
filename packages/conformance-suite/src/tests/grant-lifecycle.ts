@@ -96,7 +96,7 @@ const BEARER_INVALID_TOKEN = /^Bearer\b.*\berror="?invalid_token"?/i;
  * otherwise is `authentication_error`; any other code, or a 403, is a failure.
  * Returns a failure message, or undefined when the refusal is conformant.
  */
-function inactiveTokenFault(
+export function inactiveTokenFault(
   response: Awaited<ReturnType<typeof request>>,
   causeCode: "grant_expired" | "grant_revoked"
 ): string | undefined {
@@ -236,6 +236,42 @@ export const GRANT_LIFECYCLE_CASES: readonly ConformanceCase[] = [
       if (replay) {
         return fail(
           `A second access token was issued against the already-consumed single_use grant ${first.grantId}. Section 9 AS item 10 requires atomic consumption with first issuance.`
+        );
+      }
+      return pass();
+    },
+  },
+  // ----------------------------------------------------------------- 7.5-3 ---
+  // "The first token MUST have a finite expiration, set by AS local policy and,
+  // when the grant has `expires_at`, no later than `expires_at`." The finite half
+  // is observable from the token response; the `expires_at` bound needs a grant
+  // request that can set an expiry, which `GrantRequest` cannot yet.
+  {
+    caseId: "AS-10/single-use-first-token-has-finite-expiry",
+    requirementId: "AS-10",
+    appliesWhen: (adapter) => adapter.capabilities.singleUseGrants,
+    assertion: "The token response for the first token of a single_use grant states a finite expires_in.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+        accessMode: "single_use",
+      });
+      if (!grant) {
+        return skip("The target declares single_use support but could not issue such a grant.");
+      }
+      if (grant.tokenResponseBody === undefined) {
+        return skip(
+          "The adapter does not surface the token endpoint's response body (IssuedGrant.tokenResponseBody), so the first token's expiration is unobserved."
+        );
+      }
+      const expiresIn = (grant.tokenResponseBody as { expires_in?: unknown }).expires_in;
+      if (typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0) {
+        return fail(
+          `The token response for the first token of a single_use grant states expires_in ${JSON.stringify(expiresIn)}. Core Section 7: the first token MUST have a finite expiration. A single-use window that a token outlives is not a window.`
         );
       }
       return pass();

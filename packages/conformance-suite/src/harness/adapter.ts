@@ -983,6 +983,19 @@ export interface TargetAdapter {
    * revocation; returning normally asserts the grant is revoked.
    */
   revokeGrant: (grantId: string) => Promise<void>;
+
+  /**
+   * Revoke a token the way a CLIENT does: present it at the target's
+   * revocation endpoint (RFC 7009), for clauses 10.7-4 and 10.7-8.
+   *
+   * Distinct from `revokeGrant`, which is the owner's act at the AS. Core
+   * Section 10 makes client-initiated revocation conditional ("an AS that
+   * supports it"), and nothing black-box says whether a deployment does, so the
+   * hook's presence is the adapter's statement that the target offers it. Absent
+   * means the revocation cases report `skip` naming this hook. Returns the HTTP
+   * status of the endpoint's answer.
+   */
+  revokeToken?: (token: string, hint?: "access_token" | "refresh_token") => Promise<{ readonly status: number } | null>;
   /** Roles this target claims to implement and wants assessed. */
   readonly roles: readonly Role[];
 

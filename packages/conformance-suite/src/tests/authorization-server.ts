@@ -23,6 +23,7 @@ import type { TargetAdapter } from "../harness/adapter.ts";
 import { grantSchemaViolations } from "../harness/grant-schema.ts";
 import { type PdppResponse, request } from "../harness/http.ts";
 import { advisory, arrange, type ConformanceCase, fail, pass, skip, unsupported } from "../harness/runner.ts";
+import { inactiveTokenFault } from "./grant-lifecycle.ts";
 
 /** Trailing slash on an issuer path, stripped before the well-known suffix. */
 const TRAILING_SLASH = /\/$/;
@@ -1054,6 +1055,86 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
         );
       }
       return pass([response.evidence]);
+    },
+  },
+  // ------------------------------------------------------------ 10.7-8 ---
+  // "An AS that supports it MUST advertise `revocation_endpoint` in its RFC 8414
+  // metadata." Whether the AS supports client revocation is the adapter's
+  // statement: it supplies `revokeToken` only for a target that offers it.
+  {
+    caseId: "AS-25/revocation-endpoint-is-advertised",
+    requirementId: "AS-25",
+    assertion:
+      "An AS that offers client-initiated revocation advertises a revocation_endpoint in its RFC 8414 metadata.",
+    async run({ adapter }) {
+      if (!adapter.revokeToken) {
+        return skip(
+          "The adapter has no revokeToken hook, so whether this AS offers client-initiated revocation is not stated and its metadata cannot be held to the revocation_endpoint obligation."
+        );
+      }
+      if (!adapter.authorizationServerUrl) {
+        return skip(
+          "The adapter publishes no authorizationServerUrl, so the RFC 8414 metadata document cannot be located."
+        );
+      }
+      const metadata = await fetchAsMetadata(adapter.authorizationServerUrl);
+      if (metadata.status !== 200) {
+        return fail(`The RFC 8414 metadata document was not served (${metadata.status}).`, [metadata.evidence]);
+      }
+      const endpoint = (metadata.json as { revocation_endpoint?: unknown } | undefined)?.revocation_endpoint;
+      if (typeof endpoint !== "string" || endpoint.length === 0) {
+        return fail(
+          "The adapter states this AS offers client-initiated revocation, but its RFC 8414 metadata carries no revocation_endpoint. Core Section 10: an AS that supports it MUST advertise revocation_endpoint, which is how a client finds where to send a token it no longer needs.",
+          [metadata.evidence]
+        );
+      }
+      return pass([metadata.evidence]);
+    },
+  },
+
+  // ------------------------------------------------------------ 10.7-4 ---
+  {
+    caseId: "AS-25/client-revocation-of-an-access-token-ends-it",
+    requirementId: "AS-25",
+    assertion: "An access token presented at the revocation endpoint is refused afterwards, while it read before.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.revokeToken) {
+        return skip("The adapter has no revokeToken hook, so a client revocation cannot be performed.");
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const before = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+      if (before.status !== 200) {
+        return skip(`The token did not read before revocation (${before.status}), so revocation cannot be isolated.`);
+      }
+      const revoked = await adapter.revokeToken(grant.accessToken, "access_token");
+      if (!revoked || revoked.status >= 300) {
+        return skip(`The revocation endpoint did not accept the token (${revoked?.status ?? "no answer"}).`);
+      }
+      let after = before;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        // biome-ignore lint/performance/noAwaitInLoops: sequential polling measures when the revocation becomes visible.
+        after = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+        if (after.status !== 200) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      if (after.status === 200) {
+        return fail(
+          "The revocation endpoint accepted the access token, yet the token still read after five seconds. Core Section 10: when a client revokes an access token, the AS MUST end that token.",
+          [before.evidence, after.evidence]
+        );
+      }
+      const fault = inactiveTokenFault(after, "grant_revoked");
+      return fault ? fail(fault, [before.evidence, after.evidence]) : pass([before.evidence, after.evidence]);
     },
   },
 ];

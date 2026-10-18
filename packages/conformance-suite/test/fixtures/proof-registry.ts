@@ -550,6 +550,8 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "AS-9/introspection-carries-exp-for-an-expiring-token", defect: "omit-introspection-exp" },
   { caseId: "AS-15/final-approval-artifact-states-bound-inclusivity", defect: "omit-bound-inclusivity-statement" },
   { caseId: "RS-22/time-window-compared-as-instants-not-text", defect: "compare-time-bounds-as-text" },
+  { caseId: "AS-25/revocation-endpoint-is-advertised", defect: "omit-revocation-endpoint-metadata" },
+  { caseId: "AS-25/client-revocation-of-an-access-token-ends-it", defect: "revocation-endpoint-ignores-access-tokens" },
   { caseId: "RS-8/non-terminal-page-omits-next-changes-since", defect: "next-changes-since-on-every-page" },
   { caseId: "RS-6/page-cursor-rejected-under-another-context", defect: "accept-cursor-under-other-context" },
   {
@@ -583,6 +585,7 @@ export const CLIENT_DISCRIMINATION_MATRIX: readonly { caseId: string; defect: Cl
   { caseId: "CL-7/unknown-error-identifiers-do-not-break-parser", defect: "parse-unknown-identifier" },
   { caseId: "CL-8/reads-source-kind-from-grant", defect: "assume-source-kind" },
   // Revised-text client clauses (Section 4 copy handling, Section 10 revocation, Section 6 source.kind).
+  { caseId: "AS-16/client-does-not-introduce-authority-or-declaration-uri", defect: "introduce-declaration-uri" },
   { caseId: "CL-9/invalid-token-challenge-stops-use-of-the-token", defect: "retry-after-invalid-token" },
   { caseId: "CL-9/inactive-token-is-not-recorded-as-revocation", defect: "treat-inactive-as-revoked" },
   { caseId: "CL-8/unrecognized-source-kind-not-treated-as-known", defect: "coerce-unrecognized-source-kind" },
@@ -649,7 +652,7 @@ export const BESPOKE_PROOFS: readonly { readonly caseId: string; readonly proof:
 export const HOOKED_DISCRIMINATION_MATRIX: readonly {
   readonly caseId: string;
   readonly defect: Defect;
-  readonly adapter: "review-reading" | "refreshable";
+  readonly adapter: "review-reading" | "refreshable" | "single-use";
 }[] = [
   {
     caseId: "AS-4/omitted-fields-expanded-before-issuance",
@@ -670,6 +673,21 @@ export const HOOKED_DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "AS-20/refresh-reuse-revokes-the-family",
     defect: "refresh-reuse-keeps-family-alive",
+    adapter: "refreshable",
+  },
+  {
+    caseId: "AS-10/single-use-first-token-has-finite-expiry",
+    defect: "single-use-token-without-expiry",
+    adapter: "single-use",
+  },
+  {
+    caseId: "AS-25/refresh-token-revocation-ends-the-family-grants",
+    defect: "revocation-endpoint-ignores-refresh-tokens",
+    adapter: "refreshable",
+  },
+  {
+    caseId: "AS-25/access-token-revocation-spares-a-grant-a-family-covers",
+    defect: "revoke-family-grant-on-access-token-revocation",
     adapter: "refreshable",
   },
 ];

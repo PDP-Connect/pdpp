@@ -390,6 +390,16 @@ export type Defect =
   | "refuse-bare-granted-read"
   /** Serves a request carrying no Authorization header as if it were the owner (RS-16). */
   | "serve-without-authentication"
+  /** Answers a client revocation of a refresh token with 200 but leaves its family's grants active (clause 10.7-3). */
+  | "revocation-endpoint-ignores-refresh-tokens"
+  /** Ends the whole grant when a client revokes one access token, although a refresh-token family covers the grant (clause 10.7-5). */
+  | "revoke-family-grant-on-access-token-revocation"
+  /** States no `expires_in` for the first token of a `single_use` grant (clause 7.5-3). */
+  | "single-use-token-without-expiry"
+  /** Answers a client revocation of an access token with 200 but leaves the token active (clause 10.7-4). */
+  | "revocation-endpoint-ignores-access-tokens"
+  /** Offers a revocation endpoint but does not advertise `revocation_endpoint` in its RFC 8414 metadata (clause 10.7-8). */
+  | "omit-revocation-endpoint-metadata"
   /** Leaves out the statement that `since` is inclusive and `until` exclusive from the final approval artifact (clause 7.2-2). */
   | "omit-bound-inclusivity-statement"
   /** Compares a time window's bounds as text instead of as RFC 3339 instants (clause 7.6-1). */
@@ -1410,7 +1420,7 @@ export class ReferenceServer {
     // surface: Section 9 AS item 8 requires revocation to be reflected in
     // introspection, and a stub that always answered `active: true` would make
     // the AS-8 oracle pass against a server that never propagates it.
-    const active = grant !== undefined && !(grant.revoked || grant.expired);
+    const active = grant !== undefined && !(grant.revoked || grant.expired) && !this.endedTokens.has(accessToken);
     const detail = this.grantedAuthorizationDetails(principal.grantId);
     const body = active
       ? {
@@ -1440,6 +1450,11 @@ export class ReferenceServer {
     };
   }
 
+  /** URL of this server's RFC 7009 revocation endpoint (the token travels as a query parameter here). */
+  get revocationEndpoint(): string {
+    return `${this.baseUrl}/oauth/revoke`;
+  }
+
   /** Base URL of this server's token endpoint, for the adapter to call. */
   get tokenEndpoint(): string {
     return `${this.baseUrl}/oauth/token`;
@@ -1458,6 +1473,9 @@ export class ReferenceServer {
    * family, and the family remembers which token is current and which have
    * been superseded. A superseded token presented again is the reuse signal.
    */
+  /** Access tokens a client ended through the revocation endpoint while their grant stayed active (clause 10.7-5). */
+  private readonly endedTokens = new Set<string>();
+
   private readonly refreshFamilyOf = new Map<
     string,
     { readonly grantId: string; current: string; readonly superseded: Set<string> }
@@ -1549,6 +1567,34 @@ export class ReferenceServer {
       return;
     }
 
+    // --- RFC 7009 revocation endpoint (clauses 10.7-4, 10.7-8) ---
+    //
+    // A client revoking an access token ends that token: the grant it is bound
+    // to is ended, because no refresh-token family covers it here (clause
+    // 10.7-5). Always answers 200, as RFC 7009 requires, whatever it did.
+    if (path === "/oauth/revoke" && method === "POST") {
+      const credential = parsed.searchParams.get("token") ?? "";
+      const family = this.refreshFamilyOf.get(credential);
+      const presented = this.tokens.get(credential);
+      if (family) {
+        // Clause 10.7-3: revoking a refresh token, current or superseded, ends
+        // every grant its family covers and every access token under them.
+        if (!this.has("revocation-endpoint-ignores-refresh-tokens")) {
+          this.revokeGrant(family.grantId);
+        }
+      } else if (presented?.kind === "client" && !this.has("revocation-endpoint-ignores-access-tokens")) {
+        // Clause 10.7-4 ends the token. Clause 10.7-5 ends its grant too, but
+        // only when no refresh-token family covers the grant.
+        const covered = [...this.refreshFamilyOf.values()].some((f) => f.grantId === presented.grantId);
+        this.endedTokens.add(credential);
+        if (!covered || this.has("revoke-family-grant-on-access-token-revocation")) {
+          this.revokeGrant(presented.grantId);
+        }
+      }
+      send(200, {});
+      return;
+    }
+
     // --- OAuth token endpoint (clause 10.2-4) ---
     //
     // Before the bearer check, because a token endpoint is where a caller goes
@@ -1585,7 +1631,9 @@ export class ReferenceServer {
         {
           access_token: issuedToken,
           token_type: "Bearer",
-          expires_in: TOKEN_LIFETIME_SECONDS,
+          ...(this.has("single-use-token-without-expiry") && this.grants.get(grantId)?.accessMode === "single_use"
+            ? {}
+            : { expires_in: TOKEN_LIFETIME_SECONDS }),
           ...(detail && !this.has("omit-token-response-authorization-details")
             ? { authorization_details: [detail] }
             : {}),
@@ -2473,6 +2521,7 @@ export class ReferenceServer {
     return {
       issuer: this.baseUrl,
       token_endpoint: `${this.baseUrl}/oauth/token`,
+      ...(this.has("omit-revocation-endpoint-metadata") ? {} : { revocation_endpoint: this.revocationEndpoint }),
       pdpp_registration_modes_supported: ["pre_registered_public"],
       pdpp_pre_registered_public_clients: [
         {
@@ -2539,7 +2588,7 @@ export class ReferenceServer {
       return undefined;
     }
     const credential = authorization.slice("Bearer ".length);
-    const known = this.tokens.get(credential);
+    const known = this.endedTokens.has(credential) ? undefined : this.tokens.get(credential);
     if (known) {
       return known;
     }

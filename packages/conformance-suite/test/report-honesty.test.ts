@@ -69,8 +69,8 @@ describe("the report cannot present a partial run as complete", () => {
     );
     assert.equal(
       clientCaptureMusts.length,
-      17,
-      "the inventory must account for all seventeen client-capture MUST clauses."
+      18,
+      "the inventory must account for all eighteen client-capture MUST clauses."
     );
     // 12.4-3 (Section 12 Extensions) has no case: no Section 9 client item names it, so a case
     // would have no requirement to roll up to. Its gap note says so.

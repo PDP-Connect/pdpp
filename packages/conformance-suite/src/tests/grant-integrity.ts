@@ -327,4 +327,91 @@ export const GRANT_INTEGRITY_CASES: readonly ConformanceCase[] = [
       return pass([introspection.evidence, afterReuse.evidence]);
     },
   },
+  // ----------------------------------------------------------------- 10.7-3 ---
+  {
+    caseId: "AS-25/refresh-token-revocation-ends-the-family-grants",
+    requirementId: "AS-25",
+    appliesWhen: (adapter) => adapter.capabilities.refreshTokens,
+    assertion:
+      "Revoking a refresh token at the revocation endpoint ends the grant its family covers, so an access token of that family is refused afterwards.",
+    async run({ adapter, streams, path }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream to build a continuous grant from.");
+      }
+      if (!(adapter.issueRefreshableGrant && adapter.revokeToken)) {
+        return skip("The adapter needs issueRefreshableGrant and revokeToken to revoke a refresh token as a client.");
+      }
+      const first = await adapter.issueRefreshableGrant({
+        streams: [{ name: seeded.name, fields: [...seeded.fields] }],
+        accessMode: "continuous",
+      });
+      if (!first) {
+        return skip("The target issued no refresh token for a continuous grant.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(seeded.name)}/records`);
+      const before = await request(adapter.baseUrl, recordsPath, { token: first.accessToken });
+      if (before.status !== 200) {
+        return skip(`The family's access token did not read before revocation (${before.status}).`);
+      }
+      const revoked = await adapter.revokeToken(first.refreshToken, "refresh_token");
+      if (!revoked || revoked.status >= 300) {
+        return skip(`The revocation endpoint did not accept the refresh token (${revoked?.status ?? "no answer"}).`);
+      }
+      const after = await request(adapter.baseUrl, recordsPath, { token: first.accessToken });
+      if (after.status === 200) {
+        return fail(
+          "After the refresh token was revoked at the revocation endpoint, an access token issued under the same grant still served records. Core Section 10: when a client revokes a refresh token, the AS MUST end every grant the token's family covers and every access token issued under those grants.",
+          [before.evidence, after.evidence]
+        );
+      }
+      return pass([before.evidence, after.evidence]);
+    },
+  },
+
+  // ----------------------------------------------------------------- 10.7-5 ---
+  {
+    caseId: "AS-25/access-token-revocation-spares-a-grant-a-family-covers",
+    requirementId: "AS-25",
+    appliesWhen: (adapter) => adapter.capabilities.refreshTokens,
+    assertion:
+      "Revoking one access token of a refresh-covered grant ends that token but leaves a sibling access token of the same family reading.",
+    async run({ adapter, streams, path }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream to build a continuous grant from.");
+      }
+      if (!(adapter.issueRefreshableGrant && adapter.revokeToken)) {
+        return skip("The adapter needs issueRefreshableGrant and revokeToken to revoke an access token as a client.");
+      }
+      const first = await adapter.issueRefreshableGrant({
+        streams: [{ name: seeded.name, fields: [...seeded.fields] }],
+        accessMode: "continuous",
+      });
+      const refreshed = await first?.refresh(first.refreshToken);
+      const second = refreshed && isGrant(refreshed) ? refreshed : undefined;
+      if (!(first && second)) {
+        return skip("The target did not yield two access tokens of one refresh-token family.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(seeded.name)}/records`);
+      const revoked = await adapter.revokeToken(first.accessToken, "access_token");
+      if (!revoked || revoked.status >= 300) {
+        return skip(`The revocation endpoint did not accept the access token (${revoked?.status ?? "no answer"}).`);
+      }
+      const ended = await request(adapter.baseUrl, recordsPath, { token: first.accessToken });
+      if (ended.status === 200) {
+        return skip(
+          "The revoked access token still read, which AS-25/client-revocation-of-an-access-token-ends-it judges."
+        );
+      }
+      const sibling = await request(adapter.baseUrl, recordsPath, { token: second.accessToken });
+      if (sibling.status !== 200) {
+        return fail(
+          `After one access token was revoked, a sibling access token of the same refresh-token family was refused (${sibling.status}). Core Section 10: the AS ends the token's grants only when no refresh-token family covers them; here a family covers the grant, so revoking one access token must not end it.`,
+          [ended.evidence, sibling.evidence]
+        );
+      }
+      return pass([ended.evidence, sibling.evidence]);
+    },
+  },
 ];

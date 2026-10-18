@@ -449,4 +449,47 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
           );
     },
   },
+  // ------------------------------------------------------------ AS-16 / 5.8-1
+  {
+    caseId: "AS-16/client-does-not-introduce-authority-or-declaration-uri",
+    requirementId: "AS-16",
+    assertion:
+      "The selection request carries no source authority or declaration URI beyond the source id the caller supplied.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      const supplied = "https://fixture.invalid/source";
+      const before = client.fixture.requestLog().length;
+      await client.authorize({ source: { id: supplied }, streams: [{ name: STREAM }] });
+      const [request] = requestAfter(client, before);
+      const selection = (request?.body as { authorization_details?: readonly Record<string, unknown>[] } | undefined)
+        ?.authorization_details?.[0];
+      if (!selection) {
+        return fail("The client sent no selection, so what it asserted about the source is unobserved.");
+      }
+      const uris: string[] = [];
+      const authorityKeys: string[] = [];
+      const walk = (value: unknown): void => {
+        if (typeof value === "string" && value.includes("://")) {
+          uris.push(value);
+        } else if (value !== null && typeof value === "object") {
+          for (const [k, v] of Object.entries(value)) {
+            if (k === "authority" || k.startsWith("declaration")) {
+              authorityKeys.push(k);
+            }
+            walk(v);
+          }
+        }
+      };
+      walk(selection);
+      const introduced = uris.filter((uri) => uri !== supplied);
+      return introduced.length === 0 && authorityKeys.length === 0
+        ? pass()
+        : fail(
+            `The selection introduced ${JSON.stringify([...introduced, ...authorityKeys])} beyond the source id the caller supplied. Core Section 5: a client MUST NOT introduce a new source authority or declaration URI during authorization; the AS decides what it accepts as a declaration.`
+          );
+    },
+  },
 ];

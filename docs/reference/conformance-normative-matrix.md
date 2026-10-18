@@ -53,9 +53,9 @@ Clauses enumerated: **214**.
 | MUST clauses | Count |
 | --- | --- |
 | Total | **181** |
-| With at least one case | **110** |
-| Untestable (review-only, no case) | **56** |
-| Not yet tested (observable, no case) | **15** |
+| With at least one case | **116** |
+| Untestable (review-only, no case) | **59** |
+| Not yet tested (observable, no case) | **6** |
 
 The last three rows partition the total. 2 of the clauses with a case are
 review-only: a case exercises part of them, and a run still reports them `untestable`.
@@ -82,9 +82,9 @@ above the clause total.
 
 | Observable | Clauses |
 | --- | --- |
-| black-box-http | 110 |
-| review-only | 76 |
-| client-capture | 20 |
+| black-box-http | 106 |
+| review-only | 79 |
+| client-capture | 21 |
 | declaration-static | 8 |
 
 ## Clauses by Section 9 item
@@ -187,11 +187,11 @@ Tracks grant lifecycle (active, expired, revoked) and reflects revocation immedi
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `2.2-3` | 106 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path. |
-| `7.5-7` | 1006 | MUST | black-box-http | — | Missing case: introspect a token after its `single_use` window ends. It needs a clock hook or a token with a short expiration. |
-| `10.2-2` | 1699 | MUST | black-box-http | — | Restates 8.1-1 as a revocation-propagation bound; needs a separated AS/RS target and a timed revocation observation, neither of which the current topologies support. |
+| `7.5-7` | 1006 | MUST | black-box-http | — | Needs a clock hook the case controls (for example `advancePastSingleUseWindow`) or a single_use token with a very short lifetime, then introspection of a token after the window ends. The adapter contract has neither, and the bundled target declares no single_use support. |
+| `10.2-2` | 1699 | MUST | review-only | — | Review-only, for the same reason as 8.1-1: the revocation-propagation bound is the introspection cache TTL of a separated RS, observable only with a separated target and a timed wait of more than 60 seconds. |
 | `10.2-7` | 1708 | MUST | black-box-http | `AS-20/refresh-reuse-revokes-the-family` | Introspection of the family-linked token is checked only where the target offers an introspection route; otherwise the case judges the resource read alone, which is not the introspection interface this clause names. The prohibition on issuing a refresh token unless a covered grant is `continuous` is not covered, and needs a target supporting both `single_use` and refresh tokens at once. The revision drops the separate sentence about grant packages. |
 | `10.2-10` | 1697 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path. |
-| `10.7-1` | 1746 | MUST | black-box-http | `AS-8/revoked-token-introspects-inactive`<br>`AS-8/revoked-grant-refused` | The mapped cases revoke a grant whose only token is the probe token. The revised text also states that a token covering another active grant stays active and a token with no active grant is `active: false`; no case revokes one of two grants that share a token. |
+| `10.7-1` | 1746 | MUST | black-box-http | `AS-8/revoked-token-introspects-inactive`<br>`AS-8/revoked-grant-refused` | The mapped cases revoke a grant whose only token is the probe token. The text also states that a token covering another active grant stays active and a token with no active grant is `active: false`; that needs the same shared-credential hook as 10.7-6 (`issueSharedCredentialGrants`), which the adapter contract does not have. |
 
 ### AS-9 (authorization-server, MUST)
 
@@ -209,13 +209,13 @@ For `single_use` grants, consumes the grant atomically with first client-token i
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `7.5-1` | 1006 | MUST | black-box-http | `AS-10/single-use-grant-consumed` | AS-10/single-use-grant-consumed tests the rejection of a later issuance. It does not test the exception: a successor token of the same refresh-token family issued before the window ends must be accepted. |
+| `7.5-1` | 1006 | MUST | black-box-http | `AS-10/single-use-grant-consumed` | AS-10/single-use-grant-consumed tests the rejection of a later issuance. The exception — a successor access token of the same refresh-token family issued before the window ends must be accepted — needs a single_use grant that issues a refresh token (issueRefreshableGrant with accessMode single_use), which Core also bars for a single_use grant's read window (AS-20), so a conforming target may offer none; no hook states one. |
 | `7.5-2` | 1006 | MAY | black-box-http | — | — |
-| `7.5-3` | 1006 | MUST | black-box-http | — | AS-10/single-use-grant-consumed does not inspect the first token's expiration. A case that issues the first token for a `single_use` grant and checks `expires_in`, or introspected `exp`, against `expires_at` is missing. |
+| `7.5-3` | 1006 | MUST | black-box-http | `AS-10/single-use-first-token-has-finite-expiry` | The finite half is tested from the token response's `expires_in`, on a target that declares single_use grants. The bound `no later than expires_at` needs a way to request a grant with an expiry: `GrantRequest` has no `expiresAt`. |
 | `7.5-4` | 1006 | SHOULD | review-only | — | Not decidable: the text sets no bound for "short". |
 | `7.5-5` | 1006 | MAY | review-only | — | — |
 | `7.5-6` | 1006 | MUST | review-only | — | The obligation binds a binding, which Core does not define; checking it needs a separated AS/RS target and a clock the case controls. |
-| `7.5-7` | 1006 | MUST | black-box-http | — | Missing case: introspect a token after its `single_use` window ends. It needs a clock hook or a token with a short expiration. |
+| `7.5-7` | 1006 | MUST | black-box-http | — | Needs a clock hook the case controls (for example `advancePastSingleUseWindow`) or a single_use token with a very short lifetime, then introspection of a token after the window ends. The adapter contract has neither, and the bundled target declares no single_use support. |
 
 ### AS-11 (authorization-server, MUST)
 
@@ -277,7 +277,7 @@ Retains one exact SourceDeclaration snapshot through validation, consent, narrow
 | --- | --- | --- | --- | --- | --- |
 | `5.2-1` | 549 | MUST | review-only | — | What the AS treated as authenticated is an internal trust decision; from outside, an accepted and a rejected declaration differ only by whether consent proceeded, which does not discriminate this clause. |
 | `5.2-5` | 567 | MUST | declaration-static | `AS-16/embedded-schema-remote-reference-refused` | Partially covered. The case exercises the local-reference obligation (`$ref`/`$dynamicRef` must be local fragments), which is the half that makes consent interpretation depend on a mutable remote schema. The `$schema` dialect equality and full metaschema meta-validation are implemented by the reference target but not separately asserted: a case for each would need its own defect to discriminate, and the remote-reference oracle already fails a target that skips embedded-schema validation altogether. |
-| `5.8-1` | 668 | MUST | black-box-http | — | The former case submitted a non-normative top-level `authority` member to an operator declaration-onboarding hook. Core defines the accepted authority as AS-side acceptance metadata and gives `SourceDeclaration` no such document member; this surface cannot observe a client introducing authority during authorization. A client-authorization fixture with an overridable source identifier is required. |
+| `5.8-1` | 668 | MUST | client-capture | `AS-16/client-does-not-introduce-authority-or-declaration-uri` | Judged on the selection the client sends: no URI beyond the source id the caller supplied, and no `authority` or `declaration*` member. The AS-side onboarding path is not exercised. |
 | `5.8-2` | 670 | MUST | black-box-http | `AS-16/provider-native-source-id-mismatch-refused` | — |
 | `5.8-3` | 672 | MUST | review-only | — | Restates 5.2-1 as an acceptance obligation; what the AS relied on internally is not observable from a request outcome. |
 | `5.8-4` | 674 | MUST | black-box-http | `AS-16/declaration-equivocation-refused-and-prior-content-retained` | — |
@@ -375,11 +375,11 @@ Ends grants on client-initiated revocation as Section 10 defines: a refresh toke
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `10.7-3` | 1742 | MUST | black-box-http | — | No existing case revokes a token through the client revocation endpoint; the AS-8 cases revoke a grant at the AS. |
-| `10.7-4` | 1742 | MUST | black-box-http | — | No existing case revokes a token through the client revocation endpoint. |
-| `10.7-5` | 1742 | MUST | black-box-http | — | No existing case revokes a token through the client revocation endpoint, with or without a covering refresh-token family. |
+| `10.7-3` | 1742 | MUST | black-box-http | `AS-25/refresh-token-revocation-ends-the-family-grants` | Tested for the current refresh token through the revokeToken and issueRefreshableGrant hooks, on a target that declares refresh tokens. A superseded refresh token is not revoked. |
+| `10.7-4` | 1742 | MUST | black-box-http | `AS-25/client-revocation-of-an-access-token-ends-it` | — |
+| `10.7-5` | 1742 | MUST | black-box-http | `AS-25/access-token-revocation-spares-a-grant-a-family-covers`<br>`AS-25/client-revocation-of-an-access-token-ends-it` | Both halves: with no covering refresh-token family the revoked token's grant ends (read through the token), and with one the sibling access token keeps reading. Needs the revokeToken hook and, for the family half, issueRefreshableGrant. |
 | `10.7-7` | 1744 | SHOULD | review-only | — | Not observable: whether an AS "offers clients a way to disconnect" outside RFC 7009 is open-ended. |
-| `10.7-8` | 1744 | MUST | black-box-http | — | Missing case: fetch the RFC 8414 metadata and, when a revocation route answers, assert `revocation_endpoint` is present. |
+| `10.7-8` | 1744 | MUST | black-box-http | `AS-25/revocation-endpoint-is-advertised` | Whether the AS offers client revocation is the adapter's statement (the revokeToken hook); a target without the hook skips rather than being held to the obligation. |
 
 ### AS-26 (authorization-server, MUST)
 
@@ -387,7 +387,7 @@ Ends one grant among several that share a credential without revoking that crede
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `10.7-6` | 1742 | MUST | black-box-http | — | No existing case ends one of several grants that share a credential. |
+| `10.7-6` | 1742 | MUST | black-box-http | — | Needs an adapter hook that returns two grants sharing one credential (for example `issueSharedCredentialGrants`) so one grant can be ended while the other is probed through the same credential. The adapter contract has none; no bundled or reference target issues a credential that covers several grants. |
 
 ### AS-27 (authorization-server, MUST)
 
@@ -428,7 +428,7 @@ Implements the Section 8 query endpoints: list streams, get stream metadata, lis
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.12-1` | 1499 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused` | The revision moves this obligation from the client ("The client MUST have discovered the blob through an authorized record") to the resource server. The mapped cases refuse a blob outside the grant and an unauthenticated fetch; neither covers a record the token may read but whose field projection excludes the `blob_ref` field, which the revised text includes. |
+| `8.12-1` | 1499 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused` | The mapped cases refuse a blob outside the grant and an unauthenticated fetch. Not covered: a record that references the blob only through a field outside the token's field projection. That needs a blobFixture variant naming the referencing field and a grant that excludes it (for example `outsideProjectionGrant`), and the bundled target seeds no blob at all. |
 | `8.12-2` | 1509 | MUST | black-box-http | `RS-1/get-blob-bytes` | Content-Length is checked against the body only when present: the case cannot tell whether the length was known, so an omitted Content-Length is not a finding. `Accept-Ranges: bytes` is not asserted: the case never issues a Range request, so it cannot tell whether the target supports ranges. |
 | `8.12-3` | 1515 | MUST | black-box-http | `RS-1/blob-redirect-response-valid` | The header half is checked. The signed URL's expiry bound (see 8.12-4) is not, because the suite deliberately does not follow the signed URL. The revised text drops the earlier "valid for at least 60 seconds" floor. |
 
@@ -439,7 +439,7 @@ Enforces grant constraints on every client request: stream membership, explicit 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `8.1-2` | 1168 | MUST | black-box-http | `RS-15/client-metadata-projection-closed`<br>`RS-2/field-projection-not-exceeded` | — |
-| `8.12-1` | 1499 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused` | The revision moves this obligation from the client ("The client MUST have discovered the blob through an authorized record") to the resource server. The mapped cases refuse a blob outside the grant and an unauthenticated fetch; neither covers a record the token may read but whose field projection excludes the `blob_ref` field, which the revised text includes. |
+| `8.12-1` | 1499 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused` | The mapped cases refuse a blob outside the grant and an unauthenticated fetch. Not covered: a record that references the blob only through a field outside the token's field projection. That needs a blobFixture variant naming the referencing field and a grant that excludes it (for example `outsideProjectionGrant`), and the bundled target seeds no blob at all. |
 
 ### RS-3 (resource-server, MUST)
 
@@ -450,12 +450,12 @@ Resolves access tokens through authenticated RFC 7662 introspection, enforces on
 | `2.2-1` | 106 | MUST | black-box-http | `AS-18/introspection-requires-authentication` | The authentication half is tested; that the RS resolves the COMPLETE enforcement context from the response has no dedicated case, and the same obligation at 8.2-2 is review-only. |
 | `2.2-2` | 106 | MUST | review-only | — | The no-second-lookup half is an internal call-count obligation; black-box observation cannot distinguish one lookup from two that produced the same answer, as at 8.2-2. |
 | `7.5-6` | 1006 | MUST | review-only | — | The obligation binds a binding, which Core does not define; checking it needs a separated AS/RS target and a clock the case controls. |
-| `8.1-1` | 1157 | MUST | black-box-http | — | Needs a separated AS/RS target plus a clock the case controls: the suite would have to revoke a grant and prove the RS stops serving within 60 seconds, which no current target topology supports. |
+| `8.1-1` | 1157 | MUST | review-only | — | Review-only: the bound is a cache duration the RS holds internally. Observing it takes a separated AS/RS target, a revocation, and a wait past 60 seconds to see the RS stop serving; no target topology the suite drives is separated, and a case that sleeps a minute is not a unit-time check. Also bounded by `token_exp`, which an RS-side observer cannot see. |
 | `8.2-1` | 1174 | MUST | black-box-http | `AS-18/introspection-requires-authentication` | — |
 | `8.2-2` | 1186 | MUST | review-only | — | The no-second-lookup half is an internal call-count obligation; black-box observation cannot distinguish one lookup from two that produced the same answer. |
 | `8.2-4` | 1190 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path. |
 | `10.2-1` | 1697 | MUST | black-box-http | `AS-18/introspection-requires-authentication` | The authentication half is tested; the no-second-lookup half is an internal call-count obligation, as at 8.2-2. |
-| `10.2-2` | 1699 | MUST | black-box-http | — | Restates 8.1-1 as a revocation-propagation bound; needs a separated AS/RS target and a timed revocation observation, neither of which the current topologies support. |
+| `10.2-2` | 1699 | MUST | review-only | — | Review-only, for the same reason as 8.1-1: the revocation-propagation bound is the introspection cache TTL of a separated RS, observable only with a separated target and a timed wait of more than 60 seconds. |
 
 ### RS-4 (resource-server, MUST)
 
@@ -600,7 +600,7 @@ Serves a blob only when a record the requesting token may currently read, includ
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.12-1` | 1499 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused` | The revision moves this obligation from the client ("The client MUST have discovered the blob through an authorized record") to the resource server. The mapped cases refuse a blob outside the grant and an unauthenticated fetch; neither covers a record the token may read but whose field projection excludes the `blob_ref` field, which the revised text includes. |
+| `8.12-1` | 1499 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused` | The mapped cases refuse a blob outside the grant and an unauthenticated fetch. Not covered: a record that references the blob only through a field outside the token's field projection. That needs a blobFixture variant naming the referencing field and a grant that excludes it (for example `outsideProjectionGrant`), and the bundled target seeds no blob at all. |
 | `8.12-4` | 1519 | MUST | review-only | — | Not observable: the suite deliberately does not follow the signed URL and so cannot observe its expiry. |
 | `8.12-5` | 1519 | MUST | black-box-http | `AS-9/introspection-carries-exp-for-an-expiring-token` | Whether the token is expiring is read from the token response's `expires_in`; a target whose adapter does not surface the token response, or whose tokens state no lifetime, skips. `exp` is checked for presence and numeric type, not for agreement with `expires_in`. |
 
@@ -772,5 +772,5 @@ reports.
 | `10.6-1` | 1730 | SHOULD | review-only | — | Not observable: how a client treats record content once it hands it to an agent is local behavior. No Section 9 item covers it. |
 | `12.3-1` | 1833 | MUST | review-only | — | Whether a stream name "encodes predicate logic" is a semantic judgement no static check settles. The paragraph is headed "(non-normative)" yet carries a MUST NOT; recorded at the keyword's level and flagged for the spec lock. |
 | `12.4-1` | 1839 | MUST | review-only | — | Needs a target that offers an extension capability and a hook that enables it; the suite has no such fixture. Missing case: a grant's reachable data is identical with the extension enabled and disabled. |
-| `12.4-2` | 1839 | MUST | black-box-http | — | No case yet checks that each capability a target exercises is advertised in its declared metadata. Missing case: cross-check stream metadata and protected resource metadata against the capabilities the target answers. |
+| `12.4-2` | 1839 | MUST | review-only | — | Review-only: no single observable. Core 12.4 does not list the optional capabilities, and each one's discovery is judged where it is defined (views at 5.6, blobs at 8.12, expansion and filters at 8.9, revocation at 10.7-8). A cross-check of every capability a target answers against its metadata would need that list. |
 | `12.4-3` | 1839 | MUST | client-capture | — | No Section 9 client item names this obligation, so a case would have no requirement to roll up to; the ClientUnderTest contract also has no action that reads stream metadata. Closing it needs a client item in Section 9 and a metadata-reading action with a fixture response that advertises an unknown capability. |

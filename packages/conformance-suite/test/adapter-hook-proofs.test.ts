@@ -53,12 +53,20 @@ class RefreshableAdapter extends ReferenceTargetAdapter {
   override readonly capabilities = { ...new ReferenceTargetAdapter().capabilities, refreshTokens: true };
 }
 
-function build(kind: "review-reading" | "refreshable", defects: readonly Defect[]): TargetAdapter {
-  const set = new Set(defects);
-  return kind === "review-reading" ? new ReviewReadingAdapter(undefined, set) : new RefreshableAdapter(undefined, set);
+/** Declares single_use support, which the bundled target does not. */
+class SingleUseAdapter extends ReferenceTargetAdapter {
+  override readonly capabilities = { ...new ReferenceTargetAdapter().capabilities, singleUseGrants: true };
 }
 
-async function run(caseId: string, kind: "review-reading" | "refreshable", defects: readonly Defect[]) {
+function build(kind: "review-reading" | "refreshable" | "single-use", defects: readonly Defect[]): TargetAdapter {
+  const set = new Set(defects);
+  if (kind === "review-reading") {
+    return new ReviewReadingAdapter(undefined, set);
+  }
+  return kind === "single-use" ? new SingleUseAdapter(undefined, set) : new RefreshableAdapter(undefined, set);
+}
+
+async function run(caseId: string, kind: "review-reading" | "refreshable" | "single-use", defects: readonly Defect[]) {
   const conformanceCase = ALL_CASES.find((c) => c.caseId === caseId);
   assert.ok(conformanceCase, `No case with id ${caseId}`);
   const adapter = build(kind, defects);

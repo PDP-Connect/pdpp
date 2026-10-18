@@ -846,10 +846,10 @@ const SECTION_5: readonly ClauseEntry[] = [
     text: "A client MUST NOT introduce a new source authority or declaration URI during authorization.",
     specAnchor: "#declaration-acceptance",
     applicability: "always",
-    observable: "black-box-http",
-    caseIds: [],
+    observable: "client-capture",
+    caseIds: ["AS-16/client-does-not-introduce-authority-or-declaration-uri"],
     gapNote:
-      "The former case submitted a non-normative top-level `authority` member to an operator declaration-onboarding hook. Core defines the accepted authority as AS-side acceptance metadata and gives `SourceDeclaration` no such document member; this surface cannot observe a client introducing authority during authorization. A client-authorization fixture with an overridable source identifier is required.",
+      "Judged on the selection the client sends: no URI beyond the source id the caller supplied, and no `authority` or `declaration*` member. The AS-side onboarding path is not exercised.",
   },
   {
     clauseId: "5.8-2",
@@ -1750,7 +1750,7 @@ const SECTION_7: readonly ClauseEntry[] = [
     observable: "black-box-http",
     caseIds: ["AS-10/single-use-grant-consumed"],
     gapNote:
-      "AS-10/single-use-grant-consumed tests the rejection of a later issuance. It does not test the exception: a successor token of the same refresh-token family issued before the window ends must be accepted.",
+      "AS-10/single-use-grant-consumed tests the rejection of a later issuance. The exception \u2014 a successor access token of the same refresh-token family issued before the window ends must be accepted \u2014 needs a single_use grant that issues a refresh token (issueRefreshableGrant with accessMode single_use), which Core also bars for a single_use grant's read window (AS-20), so a conforming target may offer none; no hook states one.",
   },
   {
     clauseId: "7.5-2",
@@ -1774,9 +1774,9 @@ const SECTION_7: readonly ClauseEntry[] = [
     specAnchor: "#access-modes",
     applicability: "the AS supports `single_use` grants",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-10/single-use-first-token-has-finite-expiry"],
     gapNote:
-      "AS-10/single-use-grant-consumed does not inspect the first token's expiration. A case that issues the first token for a `single_use` grant and checks `expires_in`, or introspected `exp`, against `expires_at` is missing.",
+      "The finite half is tested from the token response's `expires_in`, on a target that declares single_use grants. The bound `no later than expires_at` needs a way to request a grant with an expiry: `GrantRequest` has no `expiresAt`.",
   },
   {
     clauseId: "7.5-4",
@@ -1829,7 +1829,7 @@ const SECTION_7: readonly ClauseEntry[] = [
     observable: "black-box-http",
     caseIds: [],
     gapNote:
-      "Missing case: introspect a token after its `single_use` window ends. It needs a clock hook or a token with a short expiration.",
+      "Needs a clock hook the case controls (for example `advancePastSingleUseWindow`) or a single_use token with a very short lifetime, then introspection of a token after the window ends. The adapter contract has neither, and the bundled target declares no single_use support.",
   },
   {
     clauseId: "7.6-1",
@@ -1914,10 +1914,10 @@ const SECTION_8: readonly ClauseEntry[] = [
     text: "Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`.",
     specAnchor: "#grant-enforcement",
     applicability: "the deployment separates AS and RS",
-    observable: "black-box-http",
+    observable: "review-only",
     caseIds: [],
     gapNote:
-      "Needs a separated AS/RS target plus a clock the case controls: the suite would have to revoke a grant and prove the RS stops serving within 60 seconds, which no current target topology supports.",
+      "Review-only: the bound is a cache duration the RS holds internally. Observing it takes a separated AS/RS target, a revocation, and a wait past 60 seconds to see the RS stop serving; no target topology the suite drives is separated, and a case that sleeps a minute is not a unit-time check. Also bounded by `token_exp`, which an RS-side observer cannot see.",
   },
   {
     clauseId: "8.1-1a",
@@ -2357,7 +2357,7 @@ const SECTION_8: readonly ClauseEntry[] = [
     observable: "black-box-http",
     caseIds: ["RS-1/blob-outside-grant-refused", "RS-1/blob-unauthenticated-refused"],
     gapNote:
-      'The revision moves this obligation from the client ("The client MUST have discovered the blob through an authorized record") to the resource server. The mapped cases refuse a blob outside the grant and an unauthenticated fetch; neither covers a record the token may read but whose field projection excludes the `blob_ref` field, which the revised text includes.',
+      "The mapped cases refuse a blob outside the grant and an unauthenticated fetch. Not covered: a record that references the blob only through a field outside the token's field projection. That needs a blobFixture variant naming the referencing field and a grant that excludes it (for example `outsideProjectionGrant`), and the bundled target seeds no blob at all.",
   },
   {
     clauseId: "8.12-2",
@@ -2566,10 +2566,10 @@ const SECTION_10: readonly ClauseEntry[] = [
     text: "Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. This bounds the propagation window for revocation.",
     specAnchor: "#token-security",
     applicability: "the deployment separates AS and RS",
-    observable: "black-box-http",
+    observable: "review-only",
     caseIds: [],
     gapNote:
-      "Restates 8.1-1 as a revocation-propagation bound; needs a separated AS/RS target and a timed revocation observation, neither of which the current topologies support.",
+      "Review-only, for the same reason as 8.1-1: the revocation-propagation bound is the introspection cache TTL of a separated RS, observable only with a separated target and a timed wait of more than 60 seconds.",
   },
   {
     clauseId: "10.2-3",
@@ -2772,7 +2772,7 @@ const SECTION_10: readonly ClauseEntry[] = [
     observable: "black-box-http",
     caseIds: ["AS-8/revoked-token-introspects-inactive", "AS-8/revoked-grant-refused"],
     gapNote:
-      "The mapped cases revoke a grant whose only token is the probe token. The revised text also states that a token covering another active grant stays active and a token with no active grant is `active: false`; no case revokes one of two grants that share a token.",
+      "The mapped cases revoke a grant whose only token is the probe token. The text also states that a token covering another active grant stays active and a token with no active grant is `active: false`; that needs the same shared-credential hook as 10.7-6 (`issueSharedCredentialGrants`), which the adapter contract does not have.",
   },
   {
     clauseId: "10.7-2",
@@ -2796,9 +2796,9 @@ const SECTION_10: readonly ClauseEntry[] = [
     specAnchor: "#revocation",
     applicability: "the AS offers client-initiated revocation",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-25/refresh-token-revocation-ends-the-family-grants"],
     gapNote:
-      "No existing case revokes a token through the client revocation endpoint; the AS-8 cases revoke a grant at the AS.",
+      "Tested for the current refresh token through the revokeToken and issueRefreshableGrant hooks, on a target that declares refresh tokens. A superseded refresh token is not revoked.",
   },
   {
     clauseId: "10.7-4",
@@ -2810,8 +2810,7 @@ const SECTION_10: readonly ClauseEntry[] = [
     specAnchor: "#revocation",
     applicability: "the AS offers client-initiated revocation",
     observable: "black-box-http",
-    caseIds: [],
-    gapNote: "No existing case revokes a token through the client revocation endpoint.",
+    caseIds: ["AS-25/client-revocation-of-an-access-token-ends-it"],
   },
   {
     clauseId: "10.7-5",
@@ -2823,9 +2822,12 @@ const SECTION_10: readonly ClauseEntry[] = [
     specAnchor: "#revocation",
     applicability: "the AS offers client-initiated revocation",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: [
+      "AS-25/access-token-revocation-spares-a-grant-a-family-covers",
+      "AS-25/client-revocation-of-an-access-token-ends-it",
+    ],
     gapNote:
-      "No existing case revokes a token through the client revocation endpoint, with or without a covering refresh-token family.",
+      "Both halves: with no covering refresh-token family the revoked token's grant ends (read through the token), and with one the sibling access token keeps reading. Needs the revokeToken hook and, for the family half, issueRefreshableGrant.",
   },
   {
     clauseId: "10.7-6",
@@ -2838,7 +2840,8 @@ const SECTION_10: readonly ClauseEntry[] = [
     applicability: "several grants share a credential",
     observable: "black-box-http",
     caseIds: [],
-    gapNote: "No existing case ends one of several grants that share a credential.",
+    gapNote:
+      "Needs an adapter hook that returns two grants sharing one credential (for example `issueSharedCredentialGrants`) so one grant can be ended while the other is probed through the same credential. The adapter contract has none; no bundled or reference target issues a credential that covers several grants.",
   },
   {
     clauseId: "10.7-7",
@@ -2863,9 +2866,9 @@ const SECTION_10: readonly ClauseEntry[] = [
     specAnchor: "#revocation",
     applicability: "the AS supports RFC 7009 token revocation",
     observable: "black-box-http",
-    caseIds: [],
+    caseIds: ["AS-25/revocation-endpoint-is-advertised"],
     gapNote:
-      "Missing case: fetch the RFC 8414 metadata and, when a revocation route answers, assert `revocation_endpoint` is present.",
+      "Whether the AS offers client revocation is the adapter's statement (the revokeToken hook); a target without the hook skips rather than being held to the obligation.",
   },
   {
     clauseId: "10.7-9",
@@ -2936,10 +2939,10 @@ const SECTION_12_AND_APPENDIX: readonly ClauseEntry[] = [
     text: "Optional capabilities MUST be discoverable via declared metadata rather than assumed to be present.",
     specAnchor: "#extensions",
     applicability: "the deployment offers optional capabilities",
-    observable: "black-box-http",
+    observable: "review-only",
     caseIds: [],
     gapNote:
-      "No case yet checks that each capability a target exercises is advertised in its declared metadata. Missing case: cross-check stream metadata and protected resource metadata against the capabilities the target answers.",
+      "Review-only: no single observable. Core 12.4 does not list the optional capabilities, and each one's discovery is judged where it is defined (views at 5.6, blobs at 8.12, expansion and filters at 8.9, revocation at 10.7-8). A cross-check of every capability a target answers against its metadata would need that list.",
   },
   {
     clauseId: "12.4-3",

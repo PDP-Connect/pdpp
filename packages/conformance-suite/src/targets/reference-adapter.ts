@@ -939,7 +939,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   }
 
   async issueGrant(request: GrantRequest): Promise<IssuedGrant | null> {
-    if (request.accessMode === "single_use") {
+    if (request.accessMode === "single_use" && !this.capabilities.singleUseGrants) {
       // Not supported; declared absent in capabilities, so AS-10 is unsupported.
       return null;
     }
@@ -1348,6 +1348,18 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     return this.defects.has("reject-purpose-by-local-policy")
       ? "Local policy rejects this purpose; registry membership is not the reason."
       : undefined;
+  }
+
+  /** RFC 7009 client revocation. This target takes the token as a query parameter; the hook hides that. */
+  async revokeToken(
+    token: string,
+    hint?: "access_token" | "refresh_token"
+  ): Promise<{ readonly status: number } | null> {
+    const response = await fetch(
+      `${this.server.revocationEndpoint}?token=${encodeURIComponent(token)}${hint ? `&token_type_hint=${hint}` : ""}`,
+      { method: "POST" }
+    );
+    return { status: response.status };
   }
 
   async revokeGrant(grantId: string): Promise<void> {

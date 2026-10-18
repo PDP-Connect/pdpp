@@ -96,6 +96,7 @@ type ClientDefect =
   | "assume-source-kind"
   | "coerce-unrecognized-source-kind"
   | "construct-cursor"
+  | "introduce-declaration-uri"
   | "merge-copy-on-beginning"
   | "retry-after-invalid-token"
   | "throw-on-unknown-tombstone"
@@ -433,6 +434,9 @@ export async function createPdppClientUnderTest(
       const requestSelection = {
         ...selection,
         ...(defectSet.has("add-selection-display") ? { display: "client supplied" } : {}),
+        ...(defectSet.has("introduce-declaration-uri")
+          ? { declaration_uri: "https://client.invalid/declaration.json" }
+          : {}),
         ...(defectSet.has("assume-source-kind") ? { source: { kind: "provider_native" } } : {}),
       };
       grantRevoked = false;
