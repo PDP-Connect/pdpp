@@ -56,3 +56,7 @@ test("collectAllowedDevOrigins combines env, machine hostnames, and local interf
     "workstation.local",
   ]);
 });
+
+test("DO NOT MERGE seeded failure", () => {
+  assert.equal(1, 2);
+});
