@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { constants } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hermeticTestEnvironment } from "../hermetic/launcher.mjs";
+import { hermeticTestEnvironment } from "../hermetic/launcher.ts";
 import {
   allocateScratchOwnership,
   type CleanupHooks,

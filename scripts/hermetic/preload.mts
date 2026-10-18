@@ -1,7 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The only intended `--import` entry point for the hermetic network guard.
+// TypeScript source for the generated preload.mjs entry point. The generated
+// JavaScript avoids type stripping in every Node test descendant.
 // Canonical test launchers install it through NODE_OPTIONS, gated on
 // PDPP_HERMETIC_GUARD:
 //
@@ -15,7 +16,7 @@
 //     -- is guarded by exporting, in the orchestrator's environment:
 //
 //       export PDPP_HERMETIC_GUARD=1
-//       export NODE_OPTIONS="--import <repo>/scripts/hermetic/preload.ts ${NODE_OPTIONS:-}"
+//       export NODE_OPTIONS="--import <repo>/scripts/hermetic/preload.mjs ${NODE_OPTIONS:-}"
 //
 //     Every `node ...` the lane then spawns inherits the guard. A CLI that
 //     starts its own server still works (bind-derived authority); a CLI that
@@ -27,7 +28,8 @@
 // for a real operator/product run -- activation is opt-in and explicit, not
 // "on by default because loaded". It is never imported by any product/runtime
 // startup path.
-import { installHermeticNetworkGuard } from "./guard.ts";
+// biome-ignore lint/correctness/useImportExtensions: generated MJS is the native Node runtime artifact
+import { installHermeticNetworkGuard } from "./guard-runtime.mjs";
 
 if (process.env.PDPP_HERMETIC_GUARD === "1") {
   await installHermeticNetworkGuard();

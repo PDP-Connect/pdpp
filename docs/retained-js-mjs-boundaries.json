@@ -72,6 +72,20 @@
       "review": "Regenerate and review whenever the adjacent rr-explore-data.ts source or TypeScript emitter changes."
     },
     {
+      "path": "scripts/hermetic/guard-runtime.mjs",
+      "owner": "Test infrastructure maintainers",
+      "runtimeReason": "Node preloads this generated guard before each test process; compiling the TypeScript source avoids repeated runtime type stripping while preserving a single authored implementation.",
+      "probe": "pnpm generated-artifacts:check && pnpm test-accounting:check",
+      "review": "Regenerate whenever guard-runtime.mts changes; revisit when native TypeScript preload startup cost falls below the measured budget."
+    },
+    {
+      "path": "scripts/hermetic/preload.mjs",
+      "owner": "Test infrastructure maintainers",
+      "runtimeReason": "Node imports this generated ESM entry through NODE_OPTIONS before any test code; its TypeScript source is compiled to avoid runtime type stripping in every descendant.",
+      "probe": "pnpm generated-artifacts:check && pnpm test-accounting:check",
+      "review": "Regenerate whenever preload.mts changes; retain the opt-in guard flag."
+    },
+    {
       "path": "scripts/spec-prose-lint.mjs",
       "owner": "Specification editors",
       "runtimeReason": "The spec prose gate runs on a bare checkout before any dependency is installed, so it must not need the tsx loader the repository's TypeScript entrypoints load through. It also runs inside a detached git worktree of the merge-base to build its warning baseline, where node_modules is absent by construction.",

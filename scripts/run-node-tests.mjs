@@ -3,7 +3,7 @@
 
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { hermeticTestEnvironment } from "./hermetic/launcher.mjs";
+import { hermeticTestEnvironment } from "./hermetic/launcher.ts";
 
 export function localNodeTestArgs(args, isCi = Boolean(process.env.CI)) {
   if (

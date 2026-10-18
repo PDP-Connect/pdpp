@@ -15,6 +15,8 @@ const HOST_MJS_BOUNDARIES = new Set([
   "apps/site/next.config.mjs",
   "apps/site/postcss.config.mjs",
   "apps/site/scripts/sync-spec-docs.mjs",
+  "scripts/hermetic/guard-runtime.mjs",
+  "scripts/hermetic/preload.mjs",
 ]);
 // Provider-captured JavaScript lived in the connector tree, which is now
 // canonical in PDP-Connect/data-connectors. Nothing in this repo carries that

@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import { hermeticTestEnvironment } from "../hermetic/launcher.mjs";
+import { hermeticTestEnvironment } from "../hermetic/launcher.ts";
 import {
   assertCleanSourceTree,
   type Counts,

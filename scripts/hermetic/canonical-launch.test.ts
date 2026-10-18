@@ -17,13 +17,23 @@ const childTest = `
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import http from "node:http";
+import { request as namedHttpRequest } from "node:http";
+import https from "node:https";
 import { join } from "node:path";
 import { test } from "node:test";
 
 test("canonical child denies foreign origins and revokes its own bind", async () => {
   assert.equal(process.env.PDPP_HERMETIC_GUARD, "1");
-  for (const name of ["PDPP_CANARY_API_KEY", "DATABASE_URL", "PGPASSWORD"]) {
+  for (const name of ["PDPP_CANARY_API_KEY", "PGPASSWORD"]) {
     assert.equal(process.env[name], undefined, name + " reached a test child");
+  }
+  for (const [name, value] of Object.entries({
+    DATABASE_URL: "postgres://fixture@127.0.0.1:15432/fixture",
+    PGHOST: "127.0.0.1",
+    PGPORT: "15432",
+    PGUSER: "fixture",
+  })) {
+    assert.equal(process.env[name], value, name + " was removed from a test child");
   }
   if (process.env.CHECK_MISSING_UNDICI === "1") {
     const require = createRequire(join(process.cwd(), "package.json"));
@@ -32,6 +42,16 @@ test("canonical child denies foreign origins and revokes its own bind", async ()
   await assert.rejects(fetch(process.env.CANARY_URL), /blocked non-allowlisted origin/);
   await assert.rejects(new Promise((resolve, reject) => {
     const request = http.request(process.env.CANARY_URL, resolve);
+    request.on("error", reject);
+    request.end();
+  }), /blocked non-allowlisted origin/);
+  await assert.rejects(new Promise((resolve, reject) => {
+    const request = namedHttpRequest(process.env.CANARY_URL, resolve);
+    request.on("error", reject);
+    request.end();
+  }), /blocked non-allowlisted origin/);
+  await assert.rejects(new Promise((resolve, reject) => {
+    const request = https.request(process.env.CANARY_URL.replace("http:", "https:"), resolve);
     request.on("error", reject);
     request.end();
   }), /blocked non-allowlisted origin/);
@@ -90,11 +110,14 @@ test("canonical launchers deny fetch and http to a parent-owned canary", async (
   const fixtureDir = await mkdtemp(join(homedir(), ".tmp", "pdpp-hermetic-canary-"));
   const fixture = join(fixtureDir, "canary.test.mjs");
   await writeFile(fixture, childTest);
-  const inherited = {
+  const inherited: NodeJS.ProcessEnv = {
     ...process.env,
     CANARY_URL: `http://127.0.0.1:${address.port}/`,
     PDPP_CANARY_API_KEY: "fixture-only",
-    DATABASE_URL: "fixture-only",
+    DATABASE_URL: "postgres://fixture@127.0.0.1:15432/fixture",
+    PGHOST: "127.0.0.1",
+    PGPORT: "15432",
+    PGUSER: "fixture",
     PGPASSWORD: "fixture-only",
   };
   // Node marks the outer test worker to prevent recursive discovery. These
