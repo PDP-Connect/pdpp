@@ -339,10 +339,12 @@ test("http.request resolves the destination the way Node does when options overr
         { label: `URL + ${JSON.stringify(options)}`, start: () => http.request(new URL(ownedUrl), options) },
         { label: `http.get + ${JSON.stringify(options)}`, start: () => http.get(ownedUrl, options) },
       ]);
-      const messages = await Promise.all(attempts.map(({ start }) => blockedMessage(start)));
-      messages.forEach((message, index) => {
-        assert.match(message, BLOCKED_ORIGIN_MESSAGE_PATTERN, attempts[index]?.label);
-      });
+      const outcomes = await Promise.all(
+        attempts.map(async ({ label, start }) => ({ label, message: await blockedMessage(start) }))
+      );
+      for (const { label, message } of outcomes) {
+        assert.match(message, BLOCKED_ORIGIN_MESSAGE_PATTERN, label);
+      }
       assert.equal(foreign.requests(), 0, "an options override reached the foreign server");
       // An override that stays on the owned origin is still allowed.
       const body = await new Promise<string>((resolve, reject) => {
