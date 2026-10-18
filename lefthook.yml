@@ -20,8 +20,8 @@ pre-commit:
 
 # Pre-push gate. Deliberately fast, not the full test suite — a multi-minute
 # pre-push hook on a high-velocity direct-to-main workflow would just get
-# bypassed with --no-verify. The full suite still runs in CI / as the
-# required check before merge. Run `git push --no-verify` to bypass in a
+# bypassed with --no-verify. The full suite runs in CI on every pull request
+# (.github/workflows/workspace-tests.yml). Run `git push --no-verify` to bypass in a
 # genuine emergency.
 pre-push:
   parallel: false
