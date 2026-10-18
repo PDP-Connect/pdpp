@@ -578,6 +578,14 @@ export type Defect =
   | "client-filter-consults-metadata-first"
   /** Binds a page cursor to the grant and `fields` only, so it replays on another stream or under a view or filter (RS-6, clause 8.9-11). */
   | "cursor-context-omits-query-shape"
+  /** Sends ambient credentials (Authorization, Cookie) when retrieving a declaration pointer (AS-16, clause 5.8-5). */
+  | "declaration-fetch-sends-ambient-credentials"
+  /** Follows a declaration pointer's redirect to an unvalidated target (AS-16, clause 5.8-5). */
+  | "declaration-fetch-follows-redirects-unvalidated"
+  /** Retrieves a remote schema a retrieved declaration references and accepts it (AS-16, clause 5.8-5). */
+  | "declaration-fetch-retrieves-remote-schema"
+  /** Fetches a client-supplied `logo_uri` when it renders the consent surface for an unverified client (AS-7, clause 6.1-10). */
+  | "fetch-client-logo-on-consent-render"
   /** Revoking one grant of a shared credential revokes the credential and every grant it covers (AS-26, clause 10.7-6). */
   | "revoking-one-grant-revokes-shared-credential"
   /** Keeps a shared credential active in introspection after every grant it covers has ended (AS-8, clause 10.7-1). */

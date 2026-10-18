@@ -904,9 +904,14 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#declaration-acceptance",
     applicability: "the AS retrieves declarations over the network",
     observable: "black-box-http",
-    caseIds: [],
+    partial: true,
+    caseIds: [
+      "AS-16/declaration-retrieval-sends-no-ambient-credentials",
+      "AS-16/declaration-retrieval-validates-redirect-targets",
+      "AS-16/declaration-retrieval-does-not-fetch-remote-schema",
+    ],
     gapNote:
-      "Missing fixture: an inbound HTTP endpoint serving a candidate declaration that logs each request the AS makes (credentials sent, redirect targets followed, remote schema retrieval). The harness already hosts one for client identity documents (src/tests/client-identity.ts serveDocument) but has no hook to offer an AS a declaration pointer to retrieve. The HTTPS requirement needs a TLS fixture, and the connection-bound address check is internal to the AS, so those parts stay unobservable even with the fixture.",
+      "What the AS requests is read from a request-logging fixture the suite hosts, through the adapter's `offerDeclarationPointer` hook: no Authorization, Cookie or Proxy-Authorization header, no redirect to another origin followed, no remote schema retrieved, and the declaration rejected in the last two (fail closed). Not covered: the HTTPS requirement, which needs a TLS fixture (an AS that requires HTTPS must be configured to accept the loopback fixture, or the cases report `skip`), and the address validated at connection time, which is internal to the AS.",
   },
   {
     clauseId: "5.8-6",
@@ -1080,9 +1085,10 @@ const SECTION_6: readonly ClauseEntry[] = [
     specAnchor: "#client-display",
     applicability: "always",
     observable: "black-box-http",
-    caseIds: [],
+    partial: true,
+    caseIds: ["AS-7/unverified-client-logo-is-not-fetched"],
     gapNote:
-      "Missing fixture: an inbound HTTP endpoint named as an unverified client's `logo_uri` that logs requests, plus a way to open the consent surface so a fetch triggered by rendering it is seen. The harness hosts a request-logging fixture for client identity documents (src/tests/client-identity.ts serveDocument) but has no consent-render hook. A fetch made by the owner's browser, rather than the AS, would be seen only if the fixture logs it; the verified-client and proxied-asset exceptions need local policy knowledge the suite lacks.",
+      "The adapter's `openConsentSurface` hook renders the consent surface for an unverified client whose `logo_uri` is a request-logging fixture; the case fails if the fixture sees any request. That the surface was built is the adapter's statement. A fetch made by the owner's browser is not driven, and the verified-client and proxied-asset exceptions, which need local policy, are not exercised. The monogram SHOULD is not asserted.",
   },
   {
     clauseId: "6.1-11",

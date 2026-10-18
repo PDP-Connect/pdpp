@@ -93,6 +93,19 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-8/shared-credential-inactive-only-when-no-grant-is-active",
     defect: "shared-credential-active-after-all-grants-end",
   },
+  {
+    caseId: "AS-16/declaration-retrieval-sends-no-ambient-credentials",
+    defect: "declaration-fetch-sends-ambient-credentials",
+  },
+  {
+    caseId: "AS-16/declaration-retrieval-validates-redirect-targets",
+    defect: "declaration-fetch-follows-redirects-unvalidated",
+  },
+  {
+    caseId: "AS-16/declaration-retrieval-does-not-fetch-remote-schema",
+    defect: "declaration-fetch-retrieves-remote-schema",
+  },
+  { caseId: "AS-7/unverified-client-logo-is-not-fetched", defect: "fetch-client-logo-on-consent-render" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-wrong-bytes" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-response-cacheable" },
   { caseId: "RS-1/blob-ref-mime-type-valid", defect: "blob-ref-invalid-mime-type" },

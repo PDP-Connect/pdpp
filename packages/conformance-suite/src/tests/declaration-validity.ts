@@ -72,7 +72,10 @@ function outcomeEvidence(label: string, outcome: DeclarationOutcome): Evidence {
  * Every case's control carries one, so a refusal can never be attributed to the
  * target simply not accepting embedded schemas.
  */
-function schemaFor(fields: readonly string[], formats: Readonly<Record<string, string>> = {}): Record<string, unknown> {
+export function schemaFor(
+  fields: readonly string[],
+  formats: Readonly<Record<string, string>> = {}
+): Record<string, unknown> {
   return {
     $schema: SCHEMA_DIALECT,
     type: "object",
@@ -92,7 +95,11 @@ function schemaFor(fields: readonly string[], formats: Readonly<Record<string, s
  *
  * Each case mutates exactly one property of this and submits both.
  */
-function validDeclaration(streamName: string, fields: readonly string[], version: string): SourceDeclarationSubmission {
+export function validDeclaration(
+  streamName: string,
+  fields: readonly string[],
+  version: string
+): SourceDeclarationSubmission {
   const [first] = fields;
   return {
     declarationVersion: version,

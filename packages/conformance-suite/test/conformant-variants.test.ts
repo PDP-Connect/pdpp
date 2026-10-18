@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { GrantRequest, StagedApproval, TargetAdapter } from "../src/harness/adapter.ts";
+import type { DeclarationOutcome, GrantRequest, StagedApproval, TargetAdapter } from "../src/harness/adapter.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
 import { ALL_CASES } from "../src/suite.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
@@ -120,4 +120,23 @@ describe("a target that binds one credential to one grant", () => {
       await adapter.teardown();
     }
   });
+});
+
+describe("an authorization server that retrieves declarations only over HTTPS", () => {
+  class HttpsOnly extends ReferenceTargetAdapter {
+    override offerDeclarationPointer(): Promise<DeclarationOutcome> {
+      return Promise.resolve({ accepted: false, status: 400, errorCode: "https_required" });
+    }
+  }
+
+  for (const caseId of [
+    "AS-16/declaration-retrieval-sends-no-ambient-credentials",
+    "AS-16/declaration-retrieval-validates-redirect-targets",
+    "AS-16/declaration-retrieval-does-not-fetch-remote-schema",
+  ]) {
+    it(`${caseId} skips, because the loopback fixture is not HTTPS`, async () => {
+      const result = await runWith(caseId, [], () => new HttpsOnly());
+      assert.equal(result.outcome, "skip", result.detail ?? "(no detail)");
+    });
+  }
 });

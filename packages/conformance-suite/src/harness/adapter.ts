@@ -431,6 +431,31 @@ export interface DeclarationOutcome {
 }
 
 /**
+ * A pointer the AS is asked to retrieve a declaration from (Core Section 5,
+ * "Declaration trust"): the URL of a document the suite hosts.
+ *
+ * The suite serves the document and logs every request it receives, so what the
+ * AS sends and follows is observed on the fixture rather than reported by the
+ * adapter. An adapter whose AS only retrieves over HTTPS must configure it to
+ * accept this loopback URL for the run; the run then does not exercise the
+ * HTTPS requirement, which needs a TLS fixture.
+ */
+export interface DeclarationPointerOffer {
+  readonly pointerUrl: string;
+}
+
+/**
+ * A client the AS is asked to render a consent surface for, with a
+ * client-supplied logo (clause 6.1-10).
+ */
+export interface ConsentSurfaceOffer {
+  readonly clientId: string;
+  readonly clientName: string;
+  /** URL of the suite's logging fixture, named as the unverified client's `logo_uri`. */
+  readonly logoUri: string;
+}
+
+/**
  * A URL-hosted client identity document offered to an AS, for clauses 6.1-2
  * and 6.1-4.
  *
@@ -953,12 +978,20 @@ export interface TargetAdapter {
    * `unsupported` rather than `fail`.
    */
   issueRefreshableGrant?: (request: GrantRequest) => Promise<RefreshableGrant | null>;
+
   /**
    * One credential covering two active grants over two streams, for the shared
    * credential cases (clauses 10.7-1 and 10.7-6). Returns null when this
    * deployment binds one credential to one grant.
    */
   issueSharedCredentialGrants?: () => Promise<SharedCredentialFixture | null>;
+
+  /**
+   * Ask the AS to retrieve and accept a declaration from a pointer the suite
+   * hosts (clause 5.8-5). The outcome is the AS's decision; what it requested
+   * is read from the fixture's log.
+   */
+  offerDeclarationPointer?: (offer: DeclarationPointerOffer) => Promise<DeclarationOutcome | null>;
 
   /**
    * Offer a URL-hosted client identity document as the `client_id` of an
@@ -989,6 +1022,13 @@ export interface TargetAdapter {
    * violation.
    */
   offerUrlHostedClientIdentity?: (offer: UrlHostedClientOffer) => Promise<UrlHostedClientOutcome | null>;
+  /**
+   * Open the consent surface for an UNVERIFIED client whose `logo_uri` is the
+   * suite's logging fixture, so a fetch triggered by rendering it is seen
+   * (clause 6.1-10). Resolves `{ rendered: true }` only when the AS built the
+   * surface; null when this deployment has no consent surface to open.
+   */
+  openConsentSurface?: (offer: ConsentSurfaceOffer) => Promise<{ readonly rendered: boolean } | null>;
 
   /**
    * Query parameters this deployment requires on owner-token reads.

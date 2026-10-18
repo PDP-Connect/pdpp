@@ -53,9 +53,9 @@ Clauses enumerated: **214**.
 | MUST clauses | Count |
 | --- | --- |
 | Total | **181** |
-| With at least one case | **118** |
+| With at least one case | **120** |
 | Untestable (review-only, no case) | **59** |
-| Not yet tested (observable, no case) | **4** |
+| Not yet tested (observable, no case) | **2** |
 
 The last three rows partition the total. 2 of the clauses with a case are
 review-only: a case exercises part of them, and a run still reports them `untestable`.
@@ -171,7 +171,7 @@ Renders requester identity, declaration-authored descriptions, policy declaratio
 | `6.1-7` | 762 | SHOULD | review-only | — | — |
 | `6.1-8` | 763 | MUST | review-only | — | Trust-signal rendering is a consent-surface obligation; not observable over the protocol surface this suite drives. |
 | `6.1-9` | 764 | MUST | review-only | — | Consent-surface wording obligation; not observable without asserting on a deployment's rendered text. |
-| `6.1-10` | 765 | MUST | black-box-http | — | Missing fixture: an inbound HTTP endpoint named as an unverified client's `logo_uri` that logs requests, plus a way to open the consent surface so a fetch triggered by rendering it is seen. The harness hosts a request-logging fixture for client identity documents (src/tests/client-identity.ts serveDocument) but has no consent-render hook. A fetch made by the owner's browser, rather than the AS, would be seen only if the fixture logs it; the verified-client and proxied-asset exceptions need local policy knowledge the suite lacks. |
+| `6.1-10` | 765 | MUST | black-box-http | `AS-7/unverified-client-logo-is-not-fetched` | The adapter's `openConsentSurface` hook renders the consent surface for an unverified client whose `logo_uri` is a request-logging fixture; the case fails if the fixture sees any request. That the surface was built is the adapter's statement. A fetch made by the owner's browser is not driven, and the verified-client and proxied-asset exceptions, which need local policy, are not exercised. The monogram SHOULD is not asserted. |
 | `6.1-11` | 766 | SHOULD | review-only | — | — |
 | `6.1-12` | 762 | MUST | review-only | — | The grant artifact is observable, but what the AS presented is not: a case would need the consent surface's rendered output to compare against `client.client_display`. |
 | `6.2-2` | 772 | MUST | black-box-http | `AS-7/pre-registered-public-clients-carry-no-private-state` | — |
@@ -281,7 +281,7 @@ Retains one exact SourceDeclaration snapshot through validation, consent, narrow
 | `5.8-2` | 670 | MUST | black-box-http | `AS-16/provider-native-source-id-mismatch-refused` | — |
 | `5.8-3` | 672 | MUST | review-only | — | Restates 5.2-1 as an acceptance obligation; what the AS relied on internally is not observable from a request outcome. |
 | `5.8-4` | 674 | MUST | black-box-http | `AS-16/declaration-equivocation-refused-and-prior-content-retained` | — |
-| `5.8-5` | 676 | MUST | black-box-http | — | Missing fixture: an inbound HTTP endpoint serving a candidate declaration that logs each request the AS makes (credentials sent, redirect targets followed, remote schema retrieval). The harness already hosts one for client identity documents (src/tests/client-identity.ts serveDocument) but has no hook to offer an AS a declaration pointer to retrieve. The HTTPS requirement needs a TLS fixture, and the connection-bound address check is internal to the AS, so those parts stay unobservable even with the fixture. |
+| `5.8-5` | 676 | MUST | black-box-http | `AS-16/declaration-retrieval-sends-no-ambient-credentials`<br>`AS-16/declaration-retrieval-validates-redirect-targets`<br>`AS-16/declaration-retrieval-does-not-fetch-remote-schema` | What the AS requests is read from a request-logging fixture the suite hosts, through the adapter's `offerDeclarationPointer` hook: no Authorization, Cookie or Proxy-Authorization header, no redirect to another origin followed, no remote schema retrieved, and the declaration rejected in the last two (fail closed). Not covered: the HTTPS requirement, which needs a TLS fixture (an AS that requires HTTPS must be configured to accept the loopback fixture, or the cases report `skip`), and the address validated at connection time, which is internal to the AS. |
 | `5.8-6` | 678 | MUST | review-only | — | A DNS-rebinding defence stated as a connection-time ordering obligation; distinguishing it from a URL-time check needs control of the AS's resolver, not an HTTP client. |
 | `5.8-7` | 680 | MUST | review-only | — | The obligation is on rendered output in an unspecified output context; asserting on it means asserting on a deployment's HTML, which is outside what this suite judges. |
 | `5.8-8` | 680 | MUST | black-box-http | `RS-15/client-metadata-projection-closed` | — |

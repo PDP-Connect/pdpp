@@ -39,6 +39,7 @@ import { DECLARATION_VALIDITY_CASES } from "../src/tests/declaration-validity.ts
 import { GRANT_INTEGRITY_CASES } from "../src/tests/grant-integrity.ts";
 import { GRANT_LIFECYCLE_CASES, REVOCATION_TIMING } from "../src/tests/grant-lifecycle.ts";
 import { MULTI_INSTANCE_CASES } from "../src/tests/multi-instance.ts";
+import { OUTBOUND_FETCH_CASES } from "../src/tests/outbound-fetch.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
 import { SELECTION_VALIDATION_CASES } from "../src/tests/selection-validation.ts";
@@ -67,6 +68,7 @@ const CASES: readonly ConformanceCase[] = [
   ...CONSENT_ARTIFACT_CASES,
   ...DECLARATION_TRUST_CASES,
   ...DECLARATION_VALIDITY_CASES,
+  ...OUTBOUND_FETCH_CASES,
 ];
 
 function caseById(caseId: string): ConformanceCase {

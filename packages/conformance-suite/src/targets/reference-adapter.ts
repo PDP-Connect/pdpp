@@ -18,7 +18,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import type {
   BlobFixture,
+  ConsentSurfaceOffer,
   DeclarationOutcome,
+  DeclarationPointerOffer,
   GrantRequest,
   IssuedGrant,
   MultiInstanceFixture,
@@ -1627,6 +1629,108 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       };
     }
     return { accepted: true, status: 200, documentFetched: true };
+  }
+
+  /**
+   * Retrieve a declaration from a pointer and decide on it (clause 5.8-5).
+   *
+   * Plain HTTP on a trusted loopback host is accepted here and ONLY here,
+   * because the suite's fixture is necessarily on loopback; the HTTPS
+   * requirement is therefore not exercised. The fetch carries no credentials,
+   * does not follow redirects (a redirect target is not the accepted pointer, so
+   * it is refused unvalidated), and never retrieves a schema a declaration
+   * references: a remote reference is refused as 5.2-5 requires, which fails
+   * closed. Each violation has its own defect.
+   */
+  async offerDeclarationPointer(offer: DeclarationPointerOffer): Promise<DeclarationOutcome> {
+    const refuse = (errorCode: string, message: string): DeclarationOutcome => ({
+      accepted: false,
+      status: 400,
+      errorCode,
+      body: JSON.stringify({ error: errorCode, error_description: message }),
+    });
+    let pointer: URL;
+    try {
+      pointer = new URL(offer.pointerUrl);
+    } catch {
+      return refuse("invalid_pointer", "the declaration pointer is not a URL");
+    }
+    if (!URL_HOSTED_TRUSTED_HOSTS.includes(pointer.hostname)) {
+      return refuse("untrusted_pointer", `pointer host '${pointer.hostname}' is outside the network policy`);
+    }
+    const headers: Record<string, string> = this.defects.has("declaration-fetch-sends-ambient-credentials")
+      ? { authorization: "Bearer ambient-credential", cookie: "session=ambient" }
+      : {};
+    let response: Response;
+    try {
+      response = await fetch(pointer, { headers, redirect: "manual" });
+      const location = response.headers.get("location");
+      if (response.status >= 300 && response.status < 400 && location !== null) {
+        if (!this.defects.has("declaration-fetch-follows-redirects-unvalidated")) {
+          return refuse("untrusted_redirect", "the redirect target is not the accepted declaration pointer");
+        }
+        response = await fetch(new URL(location, pointer), { headers });
+      }
+    } catch (error) {
+      return refuse("fetch_failed", error instanceof Error ? error.message : String(error));
+    }
+    if (response.status !== 200) {
+      return refuse("fetch_failed", `the pointer answered ${response.status}`);
+    }
+    let declaration: SourceDeclarationSubmission;
+    try {
+      declaration = (await response.json()) as SourceDeclarationSubmission;
+    } catch {
+      return refuse("invalid_declaration", "the retrieved declaration is not JSON");
+    }
+    if (this.defects.has("declaration-fetch-retrieves-remote-schema")) {
+      declaration = await this.retrieveRemoteSchemas(declaration);
+    }
+    return await this.submitDeclaration(declaration);
+  }
+
+  /** The `declaration-fetch-retrieves-remote-schema` violation: fetch each remote `$ref`, then drop it and accept. */
+  private async retrieveRemoteSchemas(declaration: SourceDeclarationSubmission): Promise<SourceDeclarationSubmission> {
+    const dereference = async (node: unknown): Promise<unknown> => {
+      if (Array.isArray(node)) {
+        return await Promise.all(node.map(dereference));
+      }
+      if (node === null || typeof node !== "object") {
+        return node;
+      }
+      const entries = await Promise.all(
+        Object.entries(node as Record<string, unknown>).map(async ([key, value]) => {
+          if ((key === "$ref" || key === "$dynamicRef") && typeof value === "string" && !value.startsWith("#")) {
+            await fetch(value).catch(() => undefined);
+            return [key, "#"] as const;
+          }
+          return [key, await dereference(value)] as const;
+        })
+      );
+      return Object.fromEntries(entries);
+    };
+    return {
+      ...declaration,
+      streams: await Promise.all(
+        declaration.streams.map(async (stream) => ({
+          ...stream,
+          ...(stream.schema === undefined ? {} : { schema: await dereference(stream.schema) }),
+        }))
+      ),
+    };
+  }
+
+  /**
+   * Build the consent surface for an unverified client (clause 6.1-10). A
+   * client-supplied logo is untrusted content: the surface shows a monogram of
+   * the display name and never fetches the logo. `fetch-client-logo-on-consent-render`
+   * fetches it to render, which is the violation.
+   */
+  async openConsentSurface(offer: ConsentSurfaceOffer): Promise<{ rendered: boolean }> {
+    if (this.defects.has("fetch-client-logo-on-consent-render")) {
+      await fetch(offer.logoUri).catch(() => undefined);
+    }
+    return { rendered: true };
   }
 
   /** Retire a changes_since token, so presenting it is past retention (4.3-2). */
