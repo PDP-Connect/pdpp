@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,6 +19,8 @@ import type { Manifest } from "./inventory.ts";
 const ARGV_MISMATCH_PATTERN = /differs from the argv bound/;
 const SUITE_CONCURRENCY_PATTERN = /PDPP_ACCOUNTING_SUITE_CONCURRENCY must be a positive integer/;
 const SPAWN_FAILURE_PATTERN = /ENOENT/;
+const DID_NOT_PASS_PATTERN = /fixture-a\/default did not pass/;
+const DIRTY_TREE_PATTERN = /worktree has untracked or changed paths: \?\? fixture-leftover\.txt/;
 const FIXTURE_COMMIT_CONFIG = [
   "-c",
   "commit.gpgsign=false",
@@ -139,6 +141,14 @@ interface FixtureReceipt {
   suite: string;
 }
 
+interface FixtureSpec {
+  // Structured-output suites: the authority parses the child's stdout.
+  authorityRunner?: boolean;
+  command: string[];
+  id: string;
+  prepare?: string[];
+}
+
 // Each fixture leaf writes its own marker file, then (if waitMs > 0) waits for
 // its peer's marker before holding for holdMs. Two leaves with waitMs > 0 can
 // only both exit 0 if they are alive at the same time.
@@ -153,64 +163,116 @@ if (Number(waitMs) > 0 && !fs.existsSync(peer)) process.exit(1);
 pause(Number(holdMs));
 `;
 
-async function runFixtureSuites(
+// Leaves that leave a start marker, record how many leaves are alive when they
+// start, hold, leave an end marker, and exit with the given code.
+const MARKED_LEAF_SCRIPT = `
+const fs = require("node:fs");
+const [dir, id, holdMs, exitCode] = process.argv.slice(1);
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+fs.writeFileSync(dir + "/" + id + ".running", "");
+fs.appendFileSync(dir + "/peak.log", fs.readdirSync(dir).filter((name) => name.endsWith(".running")).length + "\\n");
+fs.writeFileSync(dir + "/" + id + ".start", "");
+pause(Number(holdMs));
+fs.writeFileSync(dir + "/" + id + ".end", "");
+fs.rmSync(dir + "/" + id + ".running");
+process.exit(Number(exitCode));
+`;
+
+const markedLeaf = (dir: string, id: string, holdMs: number, exitCode = 0): FixtureSpec => ({
+  id,
+  command: ["node", "-e", MARKED_LEAF_SCRIPT, dir, id, String(holdMs), String(exitCode)],
+});
+const markerPath = (dir: string, id: string, kind: "start" | "end") => join(dir, `${id}.${kind}`);
+const peakConcurrency = (dir: string) =>
+  Math.max(...readFileSync(join(dir, "peak.log"), "utf8").trim().split("\n").map(Number));
+
+async function withFixtureSuites<T>(
   concurrency: string,
-  waitMs: number,
-  holdMs: number,
-  firstCommand?: string[]
-): Promise<FixtureReceipt[]> {
+  makeSpecs: (markers: string) => FixtureSpec[],
+  inspect: (outcome: { markers: string; receipts: FixtureReceipt[]; error?: unknown }) => T
+): Promise<T> {
   const markers = mkdtempSync(join(tmpdir(), "pdpp-suite-concurrency-"));
-  let receipts: FixtureReceipt[] = [];
   try {
+    let result: T | undefined;
     await withRealWorktree(async (root) => {
       const manifestValue = readManifestFile(root);
       const fixtureDir = "scripts/test-accounting/fixtures/suite-concurrency-fixture";
       mkdirSync(join(root, fixtureDir), { recursive: true });
-      for (const [id, peer] of [
-        ["fixture-a", "fixture-b"],
-        ["fixture-b", "fixture-a"],
-      ] as const) {
+      const specs = makeSpecs(markers);
+      for (const spec of specs) {
         writeFileSync(
-          join(root, fixtureDir, `${id}.test.ts`),
+          join(root, fixtureDir, `${spec.id}.test.ts`),
           "// fixture: the manifest command never loads this file.\n"
         );
         manifestValue.suites.push({
-          id,
+          id: spec.id,
           cwd: ".",
           loader: "shell",
-          authority_argument: null,
-          execution: "direct",
+          authority_argument: spec.authorityRunner ? "--authority" : null,
+          execution: spec.authorityRunner ? "authority-runner" : "direct",
           profiles: [{ id: "default", required: true, skip_reasons: {} }],
-          command:
-            id === "fixture-a" && firstCommand
-              ? firstCommand
-              : ["node", "-e", LEAF_SCRIPT, join(markers, id), join(markers, peer), String(waitMs), String(holdMs)],
-          include: [`${fixtureDir}/${id}.test.ts`],
+          command: spec.command,
+          include: [`${fixtureDir}/${spec.id}.test.ts`],
+          ...(spec.prepare ? { prepare: spec.prepare } : {}),
         });
       }
       writeManifestFile(root, manifestValue);
-      commitAll(root, "fixture: add two leaves that can only pass if they overlap");
+      commitAll(root, "fixture: add suites whose leaves exercise the suite pool");
 
-      const { directory } = await runAuthority({
-        root,
-        suites: ["fixture-a", "fixture-b"],
-        env: { ...process.env, PDPP_ACCOUNTING_SUITE_CONCURRENCY: concurrency },
-      });
-      receipts = readdirSync(directory)
-        .filter((name) => name.endsWith(".receipt.json"))
-        .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")) as FixtureReceipt)
-        .sort((a, b) => a.suite.localeCompare(b.suite));
+      let directory: string | undefined;
+      let error: unknown;
+      try {
+        ({ directory } = await runAuthority({
+          root,
+          suites: specs.map((spec) => spec.id),
+          env: { ...process.env, PDPP_ACCOUNTING_SUITE_CONCURRENCY: concurrency },
+        }));
+      } catch (caught) {
+        error = caught;
+      }
+      const receipts = directory
+        ? readdirSync(directory)
+            .filter((name) => name.endsWith(".receipt.json"))
+            .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")) as FixtureReceipt)
+            .sort((a, b) => a.suite.localeCompare(b.suite))
+        : [];
+      result = inspect({ markers, receipts, error });
     });
+    return result as T;
   } finally {
     rmSync(markers, { recursive: true, force: true });
   }
-  return receipts;
 }
+
+const peerSpecs =
+  (waitMs: number, holdMs: number, firstCommand?: string[]) =>
+  (markers: string): FixtureSpec[] =>
+    [
+      ["fixture-a", "fixture-b"],
+      ["fixture-b", "fixture-a"],
+    ].map(([id, peer]) => ({
+      id: id as string,
+      command:
+        id === "fixture-a" && firstCommand
+          ? firstCommand
+          : [
+              "node",
+              "-e",
+              LEAF_SCRIPT,
+              join(markers, id as string),
+              join(markers, peer as string),
+              String(waitMs),
+              String(holdMs),
+            ],
+    }));
 
 test("two suites run at the same time, each with its own complete verified receipt", async () => {
   // Serial execution would deadlock here: fixture-a waits up to 20s for
   // fixture-b's marker, which fixture-b writes only after fixture-a has exited.
-  const receipts = await runFixtureSuites("2", 20_000, 200);
+  const receipts = await withFixtureSuites("2", peerSpecs(20_000, 200), (outcome) => {
+    assert.equal(outcome.error, undefined);
+    return outcome.receipts;
+  });
   assert.deepEqual(
     receipts.map((receipt) => [receipt.suite, receipt.exit_code, receipt.counts.passed, receipt.counts.failed]),
     [
@@ -223,12 +285,106 @@ test("two suites run at the same time, each with its own complete verified recei
 });
 
 test("concurrency 1 runs suites one after another in manifest order", async () => {
-  const receipts = await runFixtureSuites("1", 0, 300);
+  const receipts = await withFixtureSuites("1", peerSpecs(0, 300), (outcome) => {
+    assert.equal(outcome.error, undefined);
+    return outcome.receipts;
+  });
   const [a, b] = receipts as [FixtureReceipt, FixtureReceipt];
   assert.equal(a.suite, "fixture-a");
   assert.ok(a.ended_at <= b.started_at, "fixture-b must not start before fixture-a has finished");
 });
 
-test("a failing run lets its in-flight sibling finish and then reports the failure", async () => {
-  await assert.rejects(runFixtureSuites("2", 0, 300, ["definitely-not-a-real-binary"]), SPAWN_FAILURE_PATTERN);
+test("width N never has more than N runs alive, and uses all N lanes", async () => {
+  await withFixtureSuites(
+    "2",
+    (markers) => ["fixture-a", "fixture-b", "fixture-c", "fixture-d"].map((id) => markedLeaf(markers, id, 500)),
+    ({ markers, receipts, error }) => {
+      assert.equal(error, undefined);
+      assert.equal(receipts.length, 4);
+      assert.equal(peakConcurrency(markers), 2);
+    }
+  );
+});
+
+test("a failing spawn lets the in-flight sibling finish, starts nothing queued, then reports the failure", async () => {
+  await withFixtureSuites(
+    "2",
+    (markers) => [
+      { id: "fixture-a", command: ["definitely-not-a-real-binary"] },
+      markedLeaf(markers, "fixture-b", 600),
+      markedLeaf(markers, "fixture-c", 0),
+    ],
+    ({ markers, error }) => {
+      assert.match((error as Error | undefined)?.message ?? "", SPAWN_FAILURE_PATTERN);
+      assert.ok(existsSync(markerPath(markers, "fixture-b", "end")), "the running sibling must finish, not be killed");
+      assert.ok(!existsSync(markerPath(markers, "fixture-c", "start")), "a queued run must never start");
+    }
+  );
+});
+
+test("a leaf that exits non-zero stops new starts, lets its sibling finish, and fails the gate", async () => {
+  await withFixtureSuites(
+    "2",
+    (markers) => [
+      markedLeaf(markers, "fixture-a", 0, 1),
+      markedLeaf(markers, "fixture-b", 600),
+      markedLeaf(markers, "fixture-c", 0),
+      {
+        ...markedLeaf(markers, "fixture-d", 0),
+        prepare: [
+          "node",
+          "-e",
+          `require("node:fs").writeFileSync(${JSON.stringify(markerPath(markers, "fixture-d", "start"))}, "")`,
+        ],
+      },
+    ],
+    ({ markers, error }) => {
+      assert.match((error as Error | undefined)?.message ?? "", DID_NOT_PASS_PATTERN);
+      assert.ok(existsSync(markerPath(markers, "fixture-b", "end")), "the running sibling must finish, not be killed");
+      assert.ok(!existsSync(markerPath(markers, "fixture-c", "start")), "a queued run must never start");
+      assert.ok(!existsSync(markerPath(markers, "fixture-d", "start")), "the prepare phase must never start");
+    }
+  );
+});
+
+test("a leaf with malformed structured output is a failure that stops new starts", async () => {
+  await withFixtureSuites(
+    "2",
+    (markers) => [
+      { id: "fixture-a", authorityRunner: true, command: ["node", "-e", "process.stdout.write('not json')"] },
+      markedLeaf(markers, "fixture-b", 600),
+      markedLeaf(markers, "fixture-c", 0),
+    ],
+    ({ markers, error }) => {
+      assert.match((error as Error | undefined)?.message ?? "", DID_NOT_PASS_PATTERN);
+      assert.ok(existsSync(markerPath(markers, "fixture-b", "end")), "the running sibling must finish, not be killed");
+      assert.ok(!existsSync(markerPath(markers, "fixture-c", "start")), "a queued run must never start");
+    }
+  );
+});
+
+test("a leftover file from a finished suite is not hidden by a later suite that removes it", async () => {
+  // Serial order would reject fixture-a before fixture-c's setup ran. With
+  // width 2, fixture-a ends while fixture-b still runs; fixture-c must not get
+  // fixture-a's lane and delete the file before the checkout is judged at rest.
+  await withFixtureSuites(
+    "2",
+    (markers) => [
+      { id: "fixture-a", command: ["node", "-e", "require('node:fs').writeFileSync('fixture-leftover.txt', '')"] },
+      markedLeaf(markers, "fixture-b", 1500),
+      {
+        id: "fixture-c",
+        command: [
+          "node",
+          "-e",
+          `require("node:fs").rmSync("fixture-leftover.txt", { force: true }); require("node:fs").writeFileSync(${JSON.stringify(markerPath(markers, "fixture-c", "start"))}, "")`,
+        ],
+      },
+    ],
+    ({ markers, error }) => {
+      assert.match((error as Error | undefined)?.message ?? "", DIRTY_TREE_PATTERN);
+      assert.ok(existsSync(markerPath(markers, "fixture-b", "end")), "the running sibling must finish, not be killed");
+      assert.ok(!existsSync(markerPath(markers, "fixture-c", "start")), "the masking run must never start");
+    }
+  );
 });
