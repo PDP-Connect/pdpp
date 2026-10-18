@@ -2392,10 +2392,10 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#get-a-blob",
     applicability: "the target serves blobs",
     observable: "black-box-http",
-    caseIds: ["RS-1/get-blob-bytes"],
+    caseIds: ["RS-1/get-blob-bytes", "RS-1/blob-range-support-is-advertised"],
     partial: true,
     gapNote:
-      "Content-Length is checked against the body only when present: the case cannot tell whether the length was known, so an omitted Content-Length is not a finding. `Accept-Ranges: bytes` is not asserted: the case never issues a Range request, so it cannot tell whether the target supports ranges.",
+      "`Content-Type` and `Cache-Control: private, no-store` are asserted. `Accept-Ranges: bytes` is asserted when the target proves it supports ranges by answering a Range request with 206; one that ignores Range owes nothing and the case reports `unsupported`. Content-Length is checked against the body only when present: nothing a client can send reveals whether the length was known, so an omitted Content-Length is not a finding.",
   },
   {
     clauseId: "8.12-3",

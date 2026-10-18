@@ -140,3 +140,10 @@ describe("an authorization server that retrieves declarations only over HTTPS", 
     });
   }
 });
+
+describe("a blob endpoint that does not support ranges", () => {
+  it("owes no Accept-Ranges and reports the range case unsupported, not failed", async () => {
+    const result = await runWith("RS-1/blob-range-support-is-advertised", ["ignore-blob-range-requests"]);
+    assert.equal(result.outcome, "unsupported", result.detail ?? "(no detail)");
+  });
+});

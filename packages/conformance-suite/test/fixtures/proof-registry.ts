@@ -110,6 +110,7 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-2/time-range-refused-where-only-a-cursor-field-is-declared",
     defect: "derive-consent-boundary-from-cursor-field",
   },
+  { caseId: "RS-1/blob-range-support-is-advertised", defect: "blob-ranges-unadvertised" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-wrong-bytes" },
   { caseId: "RS-1/get-blob-bytes", defect: "blob-response-cacheable" },
   { caseId: "RS-1/blob-ref-mime-type-valid", defect: "blob-ref-invalid-mime-type" },

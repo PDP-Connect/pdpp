@@ -606,6 +606,10 @@ export type Defect =
   | "issued-grant-omits-version"
   /** Lets an authorization code be redeemed again after its first successful redemption (AS-19, clause 10.2-5). */
   | "redeem-authorization-code-repeatedly"
+  /** CONFORMANT, not a violation: ignores `Range` on a blob and advertises no `Accept-Ranges`, so it owes nothing under clause 8.12-2. */
+  | "ignore-blob-range-requests"
+  /** Honours `Range` on a blob but does not advertise `Accept-Ranges: bytes` (RS-1, clause 8.12-2). */
+  | "blob-ranges-unadvertised"
   /** Serves different bytes than the blob stores (RS-1, clause 8.12-2). */
   | "blob-wrong-bytes"
   /** Serves a blob without `Cache-Control: private, no-store` (RS-1, clause 8.12-2). */
@@ -852,6 +856,8 @@ const OWNER_EXACT_FILTER = /^filter\[([^\]]+)\]$/;
 /** `filter[{field}]` or `filter[{field}][{op}]`. */
 const CLIENT_FILTER_SHAPE = /^filter\[([^\]]+)\](?:\[([^\]]+)\])?$/;
 const RANGE_OPERATORS: readonly string[] = ["gt", "gte", "lt", "lte"];
+/** A single `bytes=start-end` range (end optional). */
+const BLOB_RANGE = /^bytes=(\d+)-(\d*)$/;
 const BLOB_PATH = /^\/v1\/blobs\/([^/]+)$/;
 
 /** The seeded subject. A second subject exists so cross-subject scoping is testable. */
@@ -1347,6 +1353,7 @@ export class ReferenceServer {
     blobId: string,
     readable: boolean,
     method: string,
+    range: string | undefined,
     res: import("node:http").ServerResponse,
     notFound: () => void
   ): void {
@@ -1357,13 +1364,30 @@ export class ReferenceServer {
     }
     this.counter += 1;
     const body = this.has("blob-wrong-bytes") ? Buffer.from("not the stored blob") : blob.bytes;
-    res.writeHead(200, {
+    const common = {
       "content-type": blob.mimeType,
-      "content-length": String(body.length),
       ...(this.has("blob-response-cacheable") ? {} : { "cache-control": "private, no-store" }),
+      // This server honours single byte ranges, so it says so (clause 8.12-2).
+      ...(this.has("blob-ranges-unadvertised") || this.has("ignore-blob-range-requests")
+        ? {}
+        : { "accept-ranges": "bytes" }),
       "pdpp-version": SUPPORTED_VERSION,
       "request-id": `req_${this.counter}`,
-    });
+    };
+    const span = range === undefined || this.has("ignore-blob-range-requests") ? null : BLOB_RANGE.exec(range);
+    if (span) {
+      const start = Number(span[1]);
+      const end = Math.min(span[2] === "" ? body.length - 1 : Number(span[2]), body.length - 1);
+      const part = body.subarray(start, end + 1);
+      res.writeHead(206, {
+        ...common,
+        "content-length": String(part.length),
+        "content-range": `bytes ${start}-${end}/${body.length}`,
+      });
+      res.end(method === "HEAD" ? undefined : part);
+      return;
+    }
+    res.writeHead(200, { ...common, "content-length": String(body.length) });
     res.end(method === "HEAD" ? undefined : body);
   }
 
@@ -2214,6 +2238,7 @@ export class ReferenceServer {
         blobId,
         this.blobReferencedByReadableRecord(blobId, principal.kind, grant, subjectScoped),
         method,
+        typeof headers.range === "string" ? headers.range : undefined,
         res,
         () => error(404, "blob_not_found", "not_found_error", "Blob not found.")
       );

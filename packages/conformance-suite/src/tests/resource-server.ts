@@ -627,6 +627,67 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // Clause 8.12-2: a direct response MUST include `Accept-Ranges: bytes` "if
+  // range requests are supported". Whether a target supports them is itself
+  // observable: it answers a `Range` request with 206. A target that ignores
+  // `Range` (200) owes nothing here; one that honours it must say so.
+  {
+    caseId: "RS-1/blob-range-support-is-advertised",
+    requirementId: "RS-1",
+    assertion:
+      "A blob endpoint that answers a Range request with 206 advertises Accept-Ranges: bytes on its direct response.",
+    async run({ adapter, path }) {
+      if (!adapter.blobFixture) {
+        return skip(
+          "The adapter implements no blobFixture hook, so RS-1's blob-fetch endpoint has no known blob to check."
+        );
+      }
+      const fixture = await adapter.blobFixture();
+      if (!fixture) {
+        return skip("The target reported no seeded blob to check RS-1's blob-fetch endpoint against.");
+      }
+      const grant = await adapter.issueGrant(fixture.grantRequest);
+      if (!grant) {
+        return skip("The target could not issue the grant needed to read the blob's referencing record.");
+      }
+      const blobPath = path(`/blobs/${encodeURIComponent(fixture.blobId)}`);
+      const full = await arrange("direct blob fetch", () =>
+        requestBytes(adapter.baseUrl, blobPath, { token: grant.accessToken })
+      );
+      if (full.status !== 200) {
+        return skip(
+          `The blob endpoint answered ${full.status} rather than a direct 200, so there is no direct response to check for Accept-Ranges.`
+        );
+      }
+      const ranged = await requestBytes(adapter.baseUrl, blobPath, {
+        token: grant.accessToken,
+        headers: { Range: "bytes=0-3" },
+      });
+      if (ranged.status !== 206) {
+        return unsupported(
+          `The target answered a Range request with ${ranged.status} rather than 206, so it does not support range requests and the Accept-Ranges obligation does not arise.`
+        );
+      }
+      const evidence = [full.evidence, ranged.evidence];
+      if (ranged.body.length !== 4) {
+        return fail(`A Range request for bytes=0-3 returned a 206 with ${ranged.body.length} bytes, not 4.`, evidence);
+      }
+      if (
+        !(full.headers.get("accept-ranges") ?? "")
+          .toLowerCase()
+          .split(",")
+          .map((v) => v.trim())
+          .includes("bytes")
+      ) {
+        return fail(
+          `The blob endpoint honoured a Range request (206) but its direct response carries Accept-Ranges "${full.headers.get("accept-ranges") ?? ""}". Section 8: a direct response MUST include Accept-Ranges: bytes if range requests are supported.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
   // Clause 4.8-1: "`mime_type` MUST be a valid IANA media type", stated where
   // Core defines the record's `data.blob_ref`. It binds what a record carries,
   // so the observation is a served record, not a declaration. A target with no
