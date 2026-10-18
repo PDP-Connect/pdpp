@@ -532,6 +532,12 @@ export type Defect =
    * consent without anyone editing the declaration.
    */
   | "accept-invalid-embedded-schema"
+  /** Accepts an embedded stream schema declaring a `$schema` dialect other than 2020-12 (clause 5.2-5). */
+  | "accept-wrong-schema-dialect"
+  /** Accepts an embedded stream schema that fails the 2020-12 metaschema (clause 5.2-5). */
+  | "accept-meta-invalid-schema"
+  /** Accepts an embedded `$ref` or `$dynamicRef` that is not a local fragment (clause 5.2-5). */
+  | "accept-remote-schema-reference"
   /**
    * Omits `authorization_details` from a token response for a request that
    * carried them (RFC 9396 Section 7, adopted by Core's Section 2 normative

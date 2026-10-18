@@ -270,6 +270,16 @@ function sameStreams(a: readonly SourceDeclarationStream[], b: readonly SourceDe
  */
 const REQUIRED_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
 
+/** Keywords the 2020-12 metaschema constrains to non-negative integers. */
+const NON_NEGATIVE_INTEGER_KEYWORDS: ReadonlySet<string> = new Set([
+  "maxItems",
+  "maxLength",
+  "maxProperties",
+  "minItems",
+  "minLength",
+  "minProperties",
+]);
+
 /** The `type` values a meta-valid JSON Schema may declare. */
 const JSON_SCHEMA_TYPES: ReadonlySet<string> = new Set([
   "array",
@@ -346,24 +356,57 @@ function declaredFieldNames(stream: SourceDeclarationStream): ReadonlySet<string
  * condition: the dialect, the reference locality, and the metaschema's
  * constraint on `type`.
  */
-function schemaKeyViolation(key: string, child: unknown, childPath: string): string | undefined {
-  if (key === "$schema" && child !== REQUIRED_SCHEMA_DIALECT) {
+function schemaKeyViolation(
+  key: string,
+  child: unknown,
+  childPath: string,
+  defects: ReadonlySet<Defect>
+): string | undefined {
+  if (key === "$schema" && child !== REQUIRED_SCHEMA_DIALECT && !defects.has("accept-wrong-schema-dialect")) {
     return `${childPath} declares dialect '${String(child)}', but Core fixes ${REQUIRED_SCHEMA_DIALECT}`;
   }
   // "Embedded `$ref` and `$dynamicRef` values MUST be local fragment
   // references." A remote reference makes consent interpretation depend on a
   // document the AS does not retain and cannot freeze.
-  if ((key === "$ref" || key === "$dynamicRef") && (typeof child !== "string" || !child.startsWith("#"))) {
+  if (
+    (key === "$ref" || key === "$dynamicRef") &&
+    (typeof child !== "string" || !child.startsWith("#")) &&
+    !defects.has("accept-remote-schema-reference")
+  ) {
     return `${childPath} is not a local fragment reference`;
   }
-  // A `type` that names no JSON Schema type fails meta-validation: the
-  // metaschema constrains it to the seven core types.
+  if (!defects.has("accept-meta-invalid-schema")) {
+    const invalid = metaschemaKeyViolation(key, child, childPath);
+    if (invalid) {
+      return invalid;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The constraints the 2020-12 metaschema places on a few keywords: `type` names
+ * one of the seven core types, `properties` is an object, `required` is an array
+ * of strings, and the length/size keywords are non-negative integers. A sample
+ * of the metaschema, not all of it.
+ */
+function metaschemaKeyViolation(key: string, child: unknown, childPath: string): string | undefined {
+  // A `type` that names no JSON Schema type fails meta-validation.
   if (key === "type") {
     const names = Array.isArray(child) ? child : [child];
     const unknown = names.find((name) => typeof name === "string" && !JSON_SCHEMA_TYPES.has(name));
     if (unknown !== undefined) {
       return `${childPath} declares '${String(unknown)}', which is not a JSON Schema type`;
     }
+  }
+  if (key === "properties" && (child === null || typeof child !== "object" || Array.isArray(child))) {
+    return `${childPath} is not an object, but the metaschema requires \`properties\` to be one`;
+  }
+  if (key === "required" && !(Array.isArray(child) && child.every((name) => typeof name === "string"))) {
+    return `${childPath} is not an array of strings, as the metaschema requires of \`required\``;
+  }
+  if (NON_NEGATIVE_INTEGER_KEYWORDS.has(key) && !(Number.isInteger(child) && (child as number) >= 0)) {
+    return `${childPath} is not a non-negative integer, as the metaschema requires of \`${key}\``;
   }
   return undefined;
 }
@@ -378,7 +421,7 @@ function schemaKeyViolation(key: string, child: unknown, childPath: string): str
  * point here is that the oracle can tell a target that checks from one that
  * does not, and each defect is a document a metaschema genuinely rejects.
  */
-function schemaViolation(schema: unknown, path: string): string | undefined {
+function schemaViolation(schema: unknown, path: string, defects: ReadonlySet<Defect>): string | undefined {
   if (schema === null || typeof schema !== "object") {
     return `${path} is not a JSON Schema object`;
   }
@@ -389,7 +432,7 @@ function schemaViolation(schema: unknown, path: string): string | undefined {
       if (child === null || typeof child !== "object") {
         continue;
       }
-      const nested = schemaViolation(child, `${path}/${index}`);
+      const nested = schemaViolation(child, `${path}/${index}`, defects);
       if (nested) {
         return nested;
       }
@@ -399,8 +442,8 @@ function schemaViolation(schema: unknown, path: string): string | undefined {
   for (const [key, child] of Object.entries(schema as Record<string, unknown>)) {
     const childPath = `${path}/${key}`;
     const violation =
-      schemaKeyViolation(key, child, childPath) ??
-      (child !== null && typeof child === "object" ? schemaViolation(child, childPath) : undefined);
+      schemaKeyViolation(key, child, childPath, defects) ??
+      (child !== null && typeof child === "object" ? schemaViolation(child, childPath, defects) : undefined);
     if (violation) {
       return violation;
     }
@@ -704,7 +747,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     // Clause 5.2-5. First, because a schema that does not meta-validate cannot
     // settle what "a field declared here" even means for 5.2-2 and 5.2-3.
     if (stream.schema !== undefined && !this.defects.has("accept-invalid-embedded-schema")) {
-      const violation = schemaViolation(stream.schema, `/streams/${stream.name}/schema`);
+      const violation = schemaViolation(stream.schema, `/streams/${stream.name}/schema`, this.defects);
       if (violation) {
         return { errorCode: "invalid_declaration_schema", message: violation };
       }

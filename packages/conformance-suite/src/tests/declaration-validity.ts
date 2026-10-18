@@ -183,6 +183,73 @@ function memberValueCase(spec: {
   };
 }
 
+/** `schema` with the definition of property `name` replaced. */
+function replaceProperty(schema: Record<string, unknown>, name: string, definition: unknown): Record<string, unknown> {
+  return { ...schema, properties: { ...(schema.properties as Record<string, unknown>), [name]: definition } };
+}
+
+/**
+ * A case for one obligation of clause 5.2-5 that bad embedded stream schemas
+ * violate: the control submits the same declaration with a valid local schema,
+ * and each negative must be refused.
+ */
+function embeddedSchemaCase(spec: {
+  readonly caseId: string;
+  readonly assertion: string;
+  readonly negatives: (
+    base: Record<string, unknown>,
+    other: string
+  ) => readonly { readonly label: string; readonly schema: unknown }[];
+  readonly violation: string;
+}): ConformanceCase {
+  return {
+    caseId: spec.caseId,
+    requirementId: "AS-16",
+    assertion: spec.assertion,
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream to build a declaration from.");
+      }
+      const version = `embedded-schema-${Date.now()}`;
+      const base = validDeclaration(seeded.name, seeded.fields, version);
+      const [stream] = base.streams;
+      if (!stream) {
+        return skip("The baseline declaration carries no stream.");
+      }
+      const control = await acceptedControl(adapter, base);
+      if ("reason" in control) {
+        return skip(control.reason);
+      }
+      // The negatives alter ONE property of the control's own schema, never the
+      // consent field: that one is held to its own eligibility rules (5.4-3), so
+      // changing it would be refused for a different clause.
+      const other = seeded.fields.find((field) => field !== stream.consentTimeField);
+      const baseSchema = stream.schema as Record<string, unknown> | undefined;
+      if (!(other && baseSchema)) {
+        return skip("The baseline declaration has no second field and embedded schema to alter.");
+      }
+      const evidence = [outcomeEvidence("declaration: valid embedded schema (control)", control.outcome)];
+      for (const [index, negative] of spec.negatives(baseSchema, other).entries()) {
+        // biome-ignore lint/performance/noAwaitInLoops: each submission is a separate, ordered declaration to one AS.
+        const outcome = await adapter.submitDeclaration?.({
+          ...base,
+          declarationVersion: `${version}-negative-${index}`,
+          streams: [{ ...stream, schema: negative.schema }],
+        });
+        if (!outcome) {
+          return skip(NO_HOOK);
+        }
+        evidence.push(outcomeEvidence(`declaration: ${negative.label}`, outcome));
+        if (outcome.accepted) {
+          return fail(`A declaration with ${negative.label} ${spec.violation}`, evidence);
+        }
+      }
+      return pass(evidence);
+    },
+  };
+}
+
 export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
   // ----------------------------------------------------------------- 5.2-2 ---
   {
@@ -355,6 +422,52 @@ export const DECLARATION_VALIDITY_CASES: readonly ConformanceCase[] = [
       return pass(evidence);
     },
   },
+  embeddedSchemaCase({
+    caseId: "AS-16/embedded-schema-remote-dynamic-reference-refused",
+    assertion:
+      "A declaration whose embedded stream schema carries a remote `$dynamicRef` or a `$ref` to a relative document is refused, while a schema with only local fragment references is accepted.",
+    negatives: (base, other) => [
+      {
+        label: "a `$dynamicRef` to a remote document",
+        schema: replaceProperty(base, other, { $dynamicRef: "https://schemas.example/mutable/meta#field" }),
+      },
+      { label: "a `$ref` to a relative document", schema: replaceProperty(base, other, { $ref: "field.json" }) },
+    ],
+    violation:
+      'was accepted. Core Section 5: "Embedded `$ref` and `$dynamicRef` values MUST be local fragment references." A reference to another document makes consent interpretation depend on a schema the AS neither retained nor froze.',
+  }),
+  embeddedSchemaCase({
+    caseId: "AS-16/embedded-schema-wrong-dialect-refused",
+    assertion:
+      "A declaration whose embedded stream schema states a `$schema` dialect other than 2020-12 is refused, while the same schema stating 2020-12 is accepted.",
+    negatives: (base) => [
+      {
+        label: "`$schema: http://json-schema.org/draft-07/schema#`",
+        schema: { ...base, $schema: "http://json-schema.org/draft-07/schema#" },
+      },
+    ],
+    violation:
+      'was accepted. Core Section 5: "If `$schema` is present, it MUST equal `https://json-schema.org/draft/2020-12/schema`." Accepting another dialect lets the same schema text mean different things to different validators, so what the owner consented to depends on which one reads it.',
+  }),
+  embeddedSchemaCase({
+    caseId: "AS-16/embedded-schema-failing-metaschema-refused",
+    assertion:
+      "A declaration whose embedded stream schema does not meta-validate (an unknown `type`, a non-object `properties`, a non-array `required`, a negative `minLength`) is refused, while the same schema with valid keywords is accepted.",
+    negatives: (base, other) => [
+      {
+        label: "a property whose `type` is not a JSON Schema type",
+        schema: replaceProperty(base, other, { type: "pdpp_conformance_not_a_type" }),
+      },
+      { label: "a `properties` that is not an object", schema: { ...base, properties: [other] } },
+      { label: "a `required` that is not an array", schema: { ...base, required: other } },
+      {
+        label: "a property with a negative `minLength`",
+        schema: replaceProperty(base, other, { type: "string", minLength: -1 }),
+      },
+    ],
+    violation:
+      'was accepted. Core Section 5: "The AS MUST meta-validate each embedded stream schema before accepting the declaration." A schema that fails the metaschema has no defined meaning, so no consent can be interpreted against it.',
+  }),
   // ------------------------------------------------- 4.2-1, 6.6-2, 5.2-6 ---
   // Three "unrecognized or malformed member value" refusals that share a shape:
   // the control sets the member to a value Core defines, the negative to one it

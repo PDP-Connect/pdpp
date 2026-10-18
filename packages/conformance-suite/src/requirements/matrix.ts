@@ -535,9 +535,14 @@ const SECTION_5: readonly ClauseEntry[] = [
     applicability: "always",
     observable: "declaration-static",
     partial: true,
-    caseIds: ["AS-16/embedded-schema-remote-reference-refused"],
+    caseIds: [
+      "AS-16/embedded-schema-remote-reference-refused",
+      "AS-16/embedded-schema-remote-dynamic-reference-refused",
+      "AS-16/embedded-schema-wrong-dialect-refused",
+      "AS-16/embedded-schema-failing-metaschema-refused",
+    ],
     gapNote:
-      "Partially covered. The case exercises the local-reference obligation (`$ref`/`$dynamicRef` must be local fragments), which is the half that makes consent interpretation depend on a mutable remote schema. The `$schema` dialect equality and full metaschema meta-validation are implemented by the reference target but not separately asserted: a case for each would need its own defect to discriminate, and the remote-reference oracle already fails a target that skips embedded-schema validation altogether.",
+      "The `$schema` dialect equality and the local-reference rule (`$ref`, a remote `$dynamicRef` and a relative `$ref`) are asserted case by case, each against its own defect. Meta-validation is sampled, not exhausted: four classes of metaschema violation are submitted (an unknown `type`, a non-object `properties`, a non-array `required`, a negative `minLength`). A target that runs only part of the 2020-12 metaschema can pass them and still accept some other invalid schema; a full check needs the JSON Schema test suite, not a handful of documents.",
   },
   {
     clauseId: "5.2-6",
