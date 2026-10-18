@@ -23,6 +23,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { registerEphemeralOrigin, unregisterEphemeralOrigin } from "./hermetic/guard.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const RECEIVER = `${HERE}event-subscription-test-receiver.ts`;
@@ -71,15 +72,20 @@ async function startReceiver(
     proc.once("error", reject);
     proc.once("exit", (code) => reject(new Error(`receiver exited early code=${code}`)));
   });
+  // This receiver binds in a child process, so the parent's bind hook cannot
+  // observe it. Grant only the exact origin handed back by that child.
+  registerEphemeralOrigin(`http://127.0.0.1:${port}`);
   return { port, proc };
 }
 
-async function stopReceiver(proc: ChildProcess | undefined): Promise<void> {
-  if (!proc || proc.exitCode !== null) {
-    return;
+async function stopReceiver(proc: ChildProcess | undefined, port?: number): Promise<void> {
+  if (proc && proc.exitCode === null) {
+    proc.kill("SIGTERM");
+    await once(proc, "exit");
   }
-  proc.kill("SIGTERM");
-  await once(proc, "exit");
+  if (port !== undefined) {
+    unregisterEphemeralOrigin(`http://127.0.0.1:${port}`);
+  }
 }
 
 // Runs the receiver with flags it must refuse. If it starts listening instead, it is stopped and
@@ -122,7 +128,7 @@ test("event-subscription-test-receiver: /health reports listening", async () => 
     assert.equal(body.listening, port);
     assert.equal(body.has_secret, true);
   } finally {
-    await stopReceiver(proc);
+    await stopReceiver(proc, port);
   }
 });
 
@@ -158,7 +164,7 @@ test("event-subscription-test-receiver: --host controls bind address", async () 
     assert.equal(body.host, "0.0.0.0");
     assert.equal(body.listening, port);
   } finally {
-    await stopReceiver(proc);
+    await stopReceiver(proc, port);
   }
 });
 
@@ -187,7 +193,7 @@ test("event-subscription-test-receiver: signed verify event echoes challenge", a
     const echoed = await res.json();
     assert.equal(echoed.challenge, "challenge-value-xyz");
   } finally {
-    await stopReceiver(proc);
+    await stopReceiver(proc, port);
   }
 });
 
@@ -215,7 +221,7 @@ test("event-subscription-test-receiver: wrong-secret delivery is rejected", asyn
     });
     assert.equal(res.status, 401);
   } finally {
-    await stopReceiver(proc);
+    await stopReceiver(proc, port);
   }
 });
 
@@ -255,7 +261,7 @@ test("event-subscription-test-receiver: --secret-file is read at delivery time",
     assert.equal(res.status, 200);
     assert.equal((await res.json()).challenge, "challenge-from-secret-file");
   } finally {
-    await stopReceiver(proc);
+    await stopReceiver(proc, port);
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -283,6 +289,6 @@ test("event-subscription-test-receiver: signed non-verify event returns 204", as
     });
     assert.equal(res.status, 204);
   } finally {
-    await stopReceiver(proc);
+    await stopReceiver(proc, port);
   }
 });

@@ -3,17 +3,9 @@
 
 // Unit coverage for the hermetic network guard's bind-derived origin
 // authority and its allowlist/patch logic. These tests run from repo root
-// (scripts/ is a top-level test dir per the root test-accounting suite), so
-// undici is not resolvable here -- exactly the "degrades to legacy-http-only"
-// branch documented in guard.ts. That is exercised deliberately: it proves
-// legacy http/https guarding is correct standalone, independent of whether
-// undici happens to be on the path.
-//
-// The discriminator proof for fetch()/undici interception specifically
-// (which requires reference-implementation's dependency tree) is reported
-// separately as reproducible commands in the delivery report, not encoded
-// as an automated test here, to avoid this suite silently depending on
-// reference-implementation's node_modules layout.
+// (scripts/ is a top-level test dir per the root test-accounting suite), where
+// npm's undici package is not resolvable. The separate canonical-launch test
+// proves default fetch and launcher wiring in that missing-undici condition.
 
 import assert from "node:assert/strict";
 import http from "node:http";

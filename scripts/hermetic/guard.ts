@@ -13,7 +13,7 @@
 // LOUD and IMMEDIATE instead of silent.
 //
 // Design: default-deny. Once installed, every outbound HTTP(S) attempt
-// (fetch()/undici and legacy http.request()/https.request()) is checked
+// (fetch(), undici's global dispatcher, and legacy http.request()/https.request()) is checked
 // against an explicit allowlist of origins. Anything not on the allowlist is
 // refused before a socket is ever opened -- surfaced as a connection-refused
 // error (ECONNREFUSED) on the request, matching Node's real connection-failure
@@ -23,8 +23,7 @@
 // deferred to that machinery rather than guarded, since that is the caller's
 // declared connection intent (e.g. the product's loopback-pinned SSRF agent).
 //
-// AUTHORITY IS BIND-DERIVED. The allowlist is not populated by per-test
-// registration calls. Instead, the guard patches the ONE bind-lifecycle
+// AUTHORITY IS NORMALLY BIND-DERIVED. The guard patches the ONE bind-lifecycle
 // seam that every in-process server passes through -- net.Server.prototype
 // .listen (which http.Server and https.Server both inherit unchanged, and
 // which Fastify's app.listen() bottoms out at). When a server in THIS
@@ -34,11 +33,12 @@
 // again on 'close'. A test therefore reaches a server it itself started by
 // any loopback spelling, and nothing else -- not a different port, not a
 // different host, and not a port a foreign/production process happens to
-// hold (7662).
+// hold (7662). A test that starts a server in a child process must explicitly
+// grant the exact returned origin in its parent, then revoke that grant.
 //
 // This module is inert until installHermeticNetworkGuard() is called. It is
 // never imported by product/runtime code paths -- see preload.ts, which is
-// the only intended call site, wired into the test runner and gated on
+// the only intended call site, wired into canonical test launchers and gated on
 // PDPP_HERMETIC_GUARD.
 
 export interface HermeticGuardHandle {
@@ -306,11 +306,8 @@ function resolveRequestOrigin(firstArg: unknown, secondArg: unknown, defaultProt
  * with no custom agent, which is exactly the shape of the incident (a default
  * fallback to http://localhost:7662). It steps aside when the caller brings
  * its own agent, because that agent is the caller's declared connection
- * intent. In the RI suite this is the product's own SSRF-defense agent
- * (createPinnedHttpsAgent), which validates and pins the connection to
- * loopback before dialing -- the hermetic guard's ambient-reach concern is
- * already handled there. This is NOT a host allowlist and NOT a localhost
- * allow: a plain default request to ANY unbound origin is still blocked.
+ * intent. This is NOT a host allowlist and NOT a localhost allow: a plain
+ * default request to ANY unbound origin is still blocked.
  */
 function hasExplicitCustomAgent(firstArg: unknown, secondArg: unknown): boolean {
   const { agent } = extractRequestOptionsObject(firstArg, secondArg);
@@ -379,20 +376,56 @@ function guardLegacyHttpModule<M extends NodeHttpModule | NodeHttpsModule>(
   });
 }
 
+/** Guard Node's built-in fetch even when npm's undici package is absent. */
+function guardFetch(restoreList: Array<() => void>): void {
+  const originalFetch = globalThis.fetch;
+  if (typeof originalFetch !== "function") {
+    return;
+  }
+  globalThis.fetch = function guardedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    // A per-request dispatcher is the caller's explicit connection machinery,
+    // just like an explicit http(s).Agent in guardLegacyHttpModule.
+    const dispatcher = (init as (RequestInit & { dispatcher?: unknown }) | undefined)?.dispatcher;
+    if (typeof dispatcher === "object" && dispatcher !== null) {
+      return originalFetch(input, init);
+    }
+    let url: string;
+    if (typeof input === "string") {
+      url = input;
+    } else if (input instanceof URL) {
+      url = input.href;
+    } else {
+      ({ url } = input);
+    }
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      // Preserve fetch's own rejected-promise contract for malformed inputs.
+      return originalFetch(input, init);
+    }
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      // data: and other non-HTTP URLs cannot open an ambient HTTP socket.
+      return originalFetch(input, init);
+    }
+    const { origin } = target;
+    if (!isOriginAllowed(origin)) {
+      return Promise.reject(blockedOriginError(origin));
+    }
+    return originalFetch(input, init);
+  };
+  restoreList.push(() => {
+    globalThis.fetch = originalFetch;
+  });
+}
+
 /**
- * Best-effort: also guard undici's global dispatcher, which is what
- * Node's built-in fetch() uses. undici is only resolvable from within
- * reference-implementation's own dependency tree (it is a direct RI
- * dependency), not from the repo root, so this resolves relative to the
- * caller's cwd rather than this module's own location. If it can't be
- * resolved (e.g. invoked from a context without undici on the path) this
- * degrades to legacy-http-only enforcement rather than throwing -- the
- * intended call site (reference-implementation's test runner) always has
- * cwd inside reference-implementation, so resolution succeeds there.
+ * Also guard direct undici calls through its global dispatcher when npm's
+ * undici package is resolvable. Built-in fetch is guarded independently above,
+ * because Node does not expose its bundled undici as a package in this repo.
  */
 // undici's own type declarations are not resolvable from this package's
-// tsconfig (undici is only a direct dependency inside reference-implementation,
-// not at the repo root -- see the module-resolution note above). Rather than
+// tsconfig because it is not a root dependency. Rather than
 // add a root dependency purely for ambient types, this narrow local shape
 // covers exactly the surface this function touches, matching undici's public
 // API (https://undici.nodejs.org/#/docs/api/Dispatcher and
@@ -425,9 +458,7 @@ async function guardUndiciDispatcher(restoreList: Array<() => void>): Promise<vo
     const resolved = req.resolve("undici");
     undici = (await import(pathToFileURL(resolved).href)) as UndiciModuleShape;
   } catch {
-    // No undici resolvable from this cwd -- fetch() calls will fall through
-    // to Node's own internal dispatcher unguarded. Legacy http/https client
-    // calls are still guarded above.
+    // Built-in fetch remains guarded by guardFetch.
     return;
   }
 
@@ -496,6 +527,7 @@ export async function installHermeticNetworkGuard(): Promise<HermeticGuardHandle
   const https = (await import("node:https")).default;
   guardLegacyHttpModule(http, "http:", restoreList);
   guardLegacyHttpModule(https, "https:", restoreList);
+  guardFetch(restoreList);
   await guardUndiciDispatcher(restoreList);
 
   const handle: HermeticGuardHandle = {

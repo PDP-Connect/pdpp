@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
+import { hermeticTestEnvironment } from "../hermetic/launcher.mjs";
 import {
   assertCleanSourceTree,
   type Counts,
@@ -761,7 +762,7 @@ export function suiteEnvironment(
   for (const name of suite.environment_unset ?? []) {
     delete environment[name];
   }
-  return environment;
+  return hermeticTestEnvironment(environment);
 }
 function leafCommand(run: Run, authorityPath: string, issuedArgv: string[]): string[] | null {
   if (run.suite.zero_tests) {

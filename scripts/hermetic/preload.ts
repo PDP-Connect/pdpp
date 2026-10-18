@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The only intended `--import` entry point for the hermetic network guard.
-// Two wiring paths use it, both gated on PDPP_HERMETIC_GUARD:
+// Canonical test launchers install it through NODE_OPTIONS, gated on
+// PDPP_HERMETIC_GUARD:
 //
-//  1. The RI test runner (reference-implementation/scripts/run-tests.ts) sets
-//     PDPP_HERMETIC_GUARD=1 and prepends `--import <this file>` to every test
-//     child, so every test process runs fail-closed and each test-owned
-//     server auto-grants its own bound origin (see guard.ts).
+//  1. The accounting authority, package test runner, and scratch owner set
+//     PDPP_HERMETIC_GUARD=1 and prepend `--import <this file>` to their children.
+//     Node descendants inherit the same environment.
 //
 //  2. The lane/maker/gate process boundary. A direct Node CLI smoke -- the
 //     exact shape that caused the incident (a migrated CLI whose default
