@@ -163,7 +163,9 @@ const KILL_SETTLE_GRACE_MS = 250;
 // How often the watchdog re-checks for silence, and the cadence of the heartbeat
 // line printed while a leaf is quiet. Short enough that an operator sees the run
 // is alive within seconds of starting it, long enough to add no measurable cost.
-const PROGRESS_TICK_MS = 5000;
+// Overridable so lifecycle tests can observe a watchdog tick in milliseconds
+// instead of waiting out the production cadence.
+const PROGRESS_TICK_MS = configuredDeadline("PDPP_ACCOUNTING_PROGRESS_TICK_MS", 5000);
 
 /**
  * Emit an operator-facing progress line.
