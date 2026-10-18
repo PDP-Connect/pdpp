@@ -1,12 +1,21 @@
-// Throwaway measurement script. Not part of the app; run with `node scripts/hero-load-measure.mjs`.
-// Manual only: no test, suite or workflow runs it. It needs a Playwright install at the absolute
-// path in the import below (a local path; edit it for your machine) and a site already serving on
-// the URL argument (default http://127.0.0.1:4000/).
+// Throwaway measurement script. Not part of the app; run with
+// `PLAYWRIGHT_MODULE=/abs/path/to/playwright/index.mjs node scripts/hero-load-measure.mjs`.
+// Manual only: no test, suite or workflow runs it. A site must already be serving on the URL
+// argument (default http://127.0.0.1:4000/). Screenshots go to the second argument (default: the
+// OS temp directory).
+import os from "node:os";
 import path from "node:path";
-import { chromium } from "/home/tnunamak/.tmp/builder-0805/node_modules/.pnpm/playwright@1.62.0/node_modules/playwright/index.mjs";
+import { pathToFileURL } from "node:url";
+
+const playwrightModule = process.env.PLAYWRIGHT_MODULE;
+if (!playwrightModule) {
+  console.error("PLAYWRIGHT_MODULE is unset: set it to the absolute path of a Playwright index.mjs.");
+  process.exit(1);
+}
+const { chromium } = await import(pathToFileURL(playwrightModule).href);
 
 const URL = process.argv[2] || "http://127.0.0.1:4000/";
-const OUT_DIR = process.argv[3] || "/home/tnunamak/.tmp/hero-load-shots";
+const OUT_DIR = process.argv[3] || os.tmpdir();
 const TAG = process.argv[4] || "run";
 
 // Slow 3G per Chrome DevTools presets: ~400kbps down, ~400kbps up, 400ms RTT.
