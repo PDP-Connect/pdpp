@@ -69,14 +69,15 @@ describe("the report cannot present a partial run as complete", () => {
     );
     assert.equal(
       clientCaptureMusts.length,
-      12,
-      "the inventory must account for all twelve client-capture MUST clauses."
+      17,
+      "the inventory must account for all seventeen client-capture MUST clauses."
     );
-    // 12.4-3 (Section 12 Extensions) is transcribed with no case yet; its gap note names the fixture it needs.
+    // 12.4-3 (Section 12 Extensions) and five clauses transcribed from the 0.1.0-revisions candidate
+    // (4.3-14, 4.3-15, 6.6-4, 10.7-9, 10.7-10) have no case yet; each gap note names the fixture it needs.
     const uncovered = clientCaptureMusts.filter((clause) => clause.caseIds.length === 0);
     assert.deepEqual(
       uncovered.map((clause) => clause.clauseId),
-      ["12.4-3"]
+      ["4.3-14", "4.3-15", "6.6-4", "10.7-9", "10.7-10", "12.4-3"]
     );
     for (const clause of uncovered) {
       assert.ok(clause.gapNote?.trim(), `Uncovered client-capture MUST ${clause.clauseId} has no gap note.`);
