@@ -68,8 +68,9 @@ function runCapture(
   // Body of the injected transcript write (an async function body with `writes`
   // in scope); runs before the failWriteAt check.
   transcriptWriteBody = "",
-  // Keep the driver alive this long after capture settles, so a late transcript
-  // write can resolve and reveal any signal sent after the settlement.
+  // When set, the driver waits after capture settles until every started
+  // transcript write has resolved, then this long more, so a late write can
+  // reveal any signal sent after the settlement.
   lingerMs = 0
 ): Promise<Outcome> {
   const driver = `
@@ -110,7 +111,10 @@ function runCapture(
       process.exitCode = 1;
     }
     const killsAtSettle = groupKills.length;
-    await new Promise((resolve) => setTimeout(resolve, ${JSON.stringify(lingerMs)}));
+    if (${JSON.stringify(lingerMs)} > 0) {
+      while (releasedWithKills.length < writes) await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, ${JSON.stringify(lingerMs)}));
+    }
     process.stdout.write(JSON.stringify({
       ...outcome,
       writes,
@@ -519,17 +523,20 @@ describe("leaf capture lifecycle", { concurrency: 4 }, () => {
       undefined,
       10_000,
       "if (writes === 1) await new Promise((resolve) => setTimeout(resolve, 900));",
-      600
+      100
     );
     const result = JSON.parse(outcome.stdout) as {
       capture_error?: string;
       kills_at_settle: number;
       kills_total: number;
+      released_with_kills: number[];
+      writes: number;
     };
 
     assert.equal(outcome.code, 1, `the deadline must fail the run; stderr was: ${outcome.stderr}`);
     assert.match(result.capture_error ?? "", DEADLINE_PATTERN);
     assert.ok(result.kills_at_settle >= 1, "the deadline must have killed the group");
+    assert.equal(result.released_with_kills.length, result.writes, "the late transcript write must have resolved");
     assert.equal(
       result.kills_total,
       result.kills_at_settle,
