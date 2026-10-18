@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -104,10 +104,10 @@ test("canonical launchers deny fetch and http to a parent-owned canary", async (
     canaryRequests += 1;
     response.end("unexpected");
   });
+  const fixtureDir = await mkdtemp(join(tmpdir(), "pdpp-hermetic-canary-"));
   await new Promise<void>((resolve) => canary.listen(0, "127.0.0.1", resolve));
   const address = canary.address();
   assert.ok(address && typeof address !== "string");
-  const fixtureDir = await mkdtemp(join(homedir(), ".tmp", "pdpp-hermetic-canary-"));
   const fixture = join(fixtureDir, "canary.test.mjs");
   await writeFile(fixture, childTest);
   const inherited: NodeJS.ProcessEnv = {

@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -368,7 +368,7 @@ test("http.request resolves the destination the way Node does when options overr
 });
 
 test("a socketPath request is refused unless a server in this process bound that socket", async () => {
-  const dir = await mkdtemp(join(homedir(), ".tmp", "pdpp-hermetic-socket-"));
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-hermetic-socket-"));
   const foreignPath = join(dir, "foreign.sock");
   const ownedPath = join(dir, "owned.sock");
   let foreignRequests = 0;
