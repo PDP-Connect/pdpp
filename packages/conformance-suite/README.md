@@ -212,10 +212,11 @@ a complete pass and must not be scriptable as one:
 
 ## Coverage
 
-The bundled target run tests 23 of 34 applicable requirements
-(RS 13/16, AS 10/18). All 23 tested requirements pass. The target reports one
-resource-server skip, five authorization-server skips, and three unsupported
-authorization-server requirements. Gaps remain explicit rather
+The bundled target run tests 27 of 47 applicable requirements
+(RS 15/22, AS 12/25), measured against the revised catalogue. All 27 tested
+requirements pass. The target reports one resource-server skip, six
+authorization-server skips, and three unsupported authorization-server
+requirements. Gaps remain explicit rather
 than hidden:
 
 - **Client role (CL-1…CL-8):** Client cases use a separate `ClientUnderTest`
@@ -278,6 +279,12 @@ targets/reference-implementation.expected.json` compares a run with it; `--updat
 rewrites it. The `conformance` workflow runs the suite against the pinned commit on
 every pull request that changes this package or `spec-core.md`, and fails on any
 difference, so a fix or a regression appears as a reviewed change to that file.
+
+`spec-core.md` on the `testeng/conformance-lock-v2` branch is the
+`review/v0.1.0-revisions` candidate, not the adopted text. The table and
+`reference-implementation.expected.json` describe the pinned commit against the
+adopted spec and are not regenerated here. Regenerate them when the candidate is
+adopted.
 
 Expect coverage to differ per target: one implementing views, incremental sync, or
 single-use grants moves requirements out of `unsupported` and into the tested

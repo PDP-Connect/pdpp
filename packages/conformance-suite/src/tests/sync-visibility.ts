@@ -486,6 +486,63 @@ async function arrangeWindow(context: Context): Promise<WindowArrangement | Case
 }
 
 const WINDOW_CASES: readonly ConformanceCase[] = [
+  // ----------------------------------------------------------------- 4.3-6 ---
+  {
+    caseId: "RS-7/record-leaving-time-window-surfaces-as-a-tombstone",
+    requirementId: "RS-7",
+    assertion:
+      "A record that is rewritten so its consent_time_field falls outside the grant's window produces a tombstone in that grant's next session.",
+    async run(context) {
+      const arranged = await arrangeWindow(context);
+      if (!("cutoff" in arranged)) {
+        return arranged;
+      }
+      const { adapter } = context;
+      if (!adapter.writeRecordField) {
+        return skip("The adapter has no writeRecordField hook, so a record cannot be moved out of the window.");
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: arranged.stream.name, fields: [...arranged.stream.fields] }],
+        timeConstraint: { field: arranged.field, from: arranged.cutoff },
+      });
+      if (!grant) {
+        return skip("The target issued no time-bounded grant, so a window cannot be arranged.");
+      }
+      const read = (changesSince: string) =>
+        request(adapter.baseUrl, arranged.recordsPath, {
+          token: grant.accessToken,
+          query: { changes_since: changesSince },
+        });
+      const opened = await read(changesSinceBootstrapOf(adapter));
+      const openedBody = asList(opened.json);
+      if (opened.status !== 200 || openedBody.has_more === true || typeof openedBody.next_changes_since !== "string") {
+        return skip("The opening session did not end on a terminal page carrying next_changes_since.");
+      }
+      const evidence = [opened.evidence];
+      const mover = idsOf([openedBody]).find((id) => arranged.inside.includes(id));
+      if (mover === undefined) {
+        return skip("The grant's first session delivered no record inside the window to move.");
+      }
+      const earlier = DATE_ONLY.test(arranged.cutoff) ? "2000-01-01" : "2000-01-01T00:00:00Z";
+      const wrote = await adapter.writeRecordField(arranged.stream.name, mover, arranged.field, earlier);
+      if (!wrote) {
+        return skip(`The target could not write field '${arranged.field}' of record '${mover}'.`);
+      }
+      const next = await read(openedBody.next_changes_since);
+      evidence.push(next.evidence);
+      if (next.status !== 200) {
+        return fail(`The next session returned ${next.status}.`, evidence);
+      }
+      const tombstoned = (asList(next.json).data ?? []).some((r) => r.deleted === true && r.id === mover);
+      if (!tombstoned) {
+        return fail(
+          `Record '${mover}' was visible to this grant at the first horizon and, after its ${arranged.field} was rewritten to ${earlier}, not visible at the second, but the session emitted no tombstone for it. Core Section 4: the resource server MUST emit a tombstone for each record visible at h0 and not visible at h1, including a record moved out of the time window. Without it the client keeps a copy the grant no longer covers.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
   // ---------------------------------------------------------------- 4.3-11 ---
   {
     caseId: "RS-7/never-visible-record-produces-no-tombstone",
@@ -554,64 +611,6 @@ const WINDOW_CASES: readonly ConformanceCase[] = [
       if (tombstones.includes(outsideId)) {
         return fail(
           `A tombstone was emitted for record '${outsideId}', which was never inside this grant's time window. Core Section 4: the resource server MUST NOT emit a tombstone for a record that was never visible under the query context. It tells the client a record it could not see existed and was removed.`,
-          evidence
-        );
-      }
-      return pass(evidence);
-    },
-  },
-
-  // ----------------------------------------------------------------- 4.3-6 ---
-  {
-    caseId: "RS-7/record-leaving-time-window-surfaces-as-a-tombstone",
-    requirementId: "RS-7",
-    assertion:
-      "A record that is rewritten so its consent_time_field falls outside the grant's window produces a tombstone in that grant's next session.",
-    async run(context) {
-      const arranged = await arrangeWindow(context);
-      if (!("cutoff" in arranged)) {
-        return arranged;
-      }
-      const { adapter } = context;
-      if (!adapter.writeRecordField) {
-        return skip("The adapter has no writeRecordField hook, so a record cannot be moved out of the window.");
-      }
-      const grant = await adapter.issueGrant({
-        streams: [{ name: arranged.stream.name, fields: [...arranged.stream.fields] }],
-        timeConstraint: { field: arranged.field, from: arranged.cutoff },
-      });
-      if (!grant) {
-        return skip("The target issued no time-bounded grant, so a window cannot be arranged.");
-      }
-      const read = (changesSince: string) =>
-        request(adapter.baseUrl, arranged.recordsPath, {
-          token: grant.accessToken,
-          query: { changes_since: changesSince },
-        });
-      const opened = await read(changesSinceBootstrapOf(adapter));
-      const openedBody = asList(opened.json);
-      if (opened.status !== 200 || openedBody.has_more === true || typeof openedBody.next_changes_since !== "string") {
-        return skip("The opening session did not end on a terminal page carrying next_changes_since.");
-      }
-      const evidence = [opened.evidence];
-      const mover = idsOf([openedBody]).find((id) => arranged.inside.includes(id));
-      if (mover === undefined) {
-        return skip("The grant's first session delivered no record inside the window to move.");
-      }
-      const earlier = DATE_ONLY.test(arranged.cutoff) ? "2000-01-01" : "2000-01-01T00:00:00Z";
-      const wrote = await adapter.writeRecordField(arranged.stream.name, mover, arranged.field, earlier);
-      if (!wrote) {
-        return skip(`The target could not write field '${arranged.field}' of record '${mover}'.`);
-      }
-      const next = await read(openedBody.next_changes_since);
-      evidence.push(next.evidence);
-      if (next.status !== 200) {
-        return fail(`The next session returned ${next.status}.`, evidence);
-      }
-      const tombstoned = (asList(next.json).data ?? []).some((r) => r.deleted === true && r.id === mover);
-      if (!tombstoned) {
-        return fail(
-          `Record '${mover}' was visible to this grant at the first horizon and, after its ${arranged.field} was rewritten to ${earlier}, not visible at the second, but the session emitted no tombstone for it. Core Section 4: the resource server MUST emit a tombstone for each record visible at h0 and not visible at h1, including a record moved out of the time window. Without it the client keeps a copy the grant no longer covers.`,
           evidence
         );
       }
