@@ -16,9 +16,11 @@
  * navigator.clipboard is undefined on insecure origins and rejects when the
  * permission is denied — `status` becomes "failed" rather than silently
  * doing nothing, so a caller can say so instead of showing a false "Copied".
+ * Only the latest copy request can set the final status; a late completion is
+ * ignored.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type CopyStatus = "idle" | "copied" | "failed";
 
@@ -26,6 +28,14 @@ const RESET_DELAY_MS = 2000;
 
 export function useCopyToClipboard() {
   const [status, setStatus] = useState<CopyStatus>("idle");
+  const latestRequest = useRef(0);
+
+  useEffect(
+    () => () => {
+      latestRequest.current += 1;
+    },
+    []
+  );
 
   useEffect(() => {
     if (status === "idle") {
@@ -36,11 +46,19 @@ export function useCopyToClipboard() {
   }, [status]);
 
   const copy = useCallback(async (text: string) => {
+    const request = latestRequest.current + 1;
+    latestRequest.current = request;
     setStatus("idle");
     try {
       await navigator.clipboard.writeText(text);
+      if (request !== latestRequest.current) {
+        return;
+      }
       setStatus("copied");
     } catch {
+      if (request !== latestRequest.current) {
+        return;
+      }
       setStatus("failed");
     }
   }, []);

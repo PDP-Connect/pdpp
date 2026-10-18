@@ -183,6 +183,60 @@ test("unmount clears the reset timer before it can update the removed consumer",
   assert.equal(clearedTimers.size, 1);
 });
 
+test("a later failure stays visible when an older clipboard write resolves afterward", async () => {
+  let resolveFirst!: () => void;
+  let rejectSecond!: (reason: Error) => void;
+  const writeText = mock.fn((text: string) => {
+    if (text === "first request") {
+      return new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      });
+    }
+    return new Promise<void>((_resolve, reject) => {
+      rejectSecond = reject;
+    });
+  });
+  const { button, liveRegion, root } = renderCopyButton("first request");
+  setClipboard(writeText);
+
+  act(() => button.click());
+  act(() => root.render(createElement(CopyButton, { payload: "second request" })));
+  act(() => button.click());
+  await act(async () => rejectSecond(new Error("permission denied")));
+  assert.equal(button.textContent, "Copy failed");
+  await act(async () => resolveFirst());
+
+  assert.equal(button.textContent, "Copy failed");
+  assert.equal(liveRegion.textContent, "Copy failed.");
+});
+
+test("a later success stays visible when an older clipboard write rejects first", async () => {
+  let rejectFirst!: (reason: Error) => void;
+  let resolveSecond!: () => void;
+  const writeText = mock.fn((text: string) => {
+    if (text === "first request") {
+      return new Promise<void>((_resolve, reject) => {
+        rejectFirst = reject;
+      });
+    }
+    return new Promise<void>((resolve) => {
+      resolveSecond = resolve;
+    });
+  });
+  const { button, liveRegion, root } = renderCopyButton("first request");
+  setClipboard(writeText);
+
+  act(() => button.click());
+  act(() => root.render(createElement(CopyButton, { payload: "second request" })));
+  act(() => button.click());
+  await act(async () => rejectFirst(new Error("permission denied")));
+  assert.equal(button.textContent, "Copy");
+  await act(async () => resolveSecond());
+
+  assert.equal(button.textContent, "Copied");
+  assert.equal(liveRegion.textContent, "Command copied to clipboard.");
+});
+
 test("idle status has no label text and no announcement", () => {
   assert.deepEqual(copyStatusText("idle"), { announcement: "", label: "Copy" });
 });
