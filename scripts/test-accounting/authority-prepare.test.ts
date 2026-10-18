@@ -29,6 +29,7 @@ const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "
 const GENERATED = join(root, "apps/site/src/generated/spec-front-matter.ts");
 const MODULE_NOT_FOUND_PATTERN = /ERR_MODULE_NOT_FOUND/;
 const PREPARE_FAILED_PATTERN = /site prepare failed \(exit 3/;
+const PREPARE_DEADLINE_PATTERN = /prepare.*deadline/i;
 
 async function siteSuite(): Promise<Suite> {
   const manifest = await readManifest(join(root, "test-accounting.manifest.json"), { root });
@@ -113,4 +114,33 @@ test("prepare writes only gitignored artifacts, so the clean-tree gate still hol
   await runPrepareForTest(suite, root);
   assert.ok(existsSync(GENERATED), "prepare must have written its artifact for this to prove anything");
   assert.equal(status(), before, "prepare must not add any tracked-tree change of its own");
+});
+
+test("a prepare command is killed and reported when it exceeds its deadline", async () => {
+  const deadlineMs = 1500;
+  const driver = `
+    process.env.PDPP_ACCOUNTING_PREPARE_DEADLINE_MS = ${JSON.stringify(String(deadlineMs))};
+    const { runPrepareForTest } = await import(${JSON.stringify(new URL("./authority.ts", import.meta.url).href)});
+    await runPrepareForTest({ id: "fixture", cwd: ".", prepare: ["node", "-e", "setInterval(() => {}, 1000)"], profiles: [] }, process.cwd());
+  `;
+  const started = Date.now();
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", driver], {
+    cwd: root,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr?.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  const outcome = await new Promise<{ code: number | null }>((resolve) => {
+    const guard = setTimeout(() => child.kill("SIGKILL"), 8000);
+    child.on("close", (code) => {
+      clearTimeout(guard);
+      resolve({ code });
+    });
+  });
+
+  assert.equal(outcome.code, 1, "a hanging prepare must fail the suite instead of hanging forever");
+  assert.match(stderr, PREPARE_DEADLINE_PATTERN, "the failure must identify the prepare deadline");
+  assert.ok(Date.now() - started < 8000, "the deadline must stop prepare promptly");
 });

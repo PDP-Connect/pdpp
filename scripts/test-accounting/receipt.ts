@@ -366,30 +366,87 @@ function resolveEmittedSkipReason(
 }
 
 export function structuredNodeSummary(output: string): StructuredSummary {
-  const events: NodeTestEvent[] = output
-    .split("\n")
-    .filter((line) => line.startsWith(EVENT_PREFIX))
-    .map((line) => {
-      try {
-        return JSON.parse(line.slice(EVENT_PREFIX.length));
-      } catch {
-        return fail("reporter emitted malformed structured event");
+  const accumulator = new StructuredNodeSummaryAccumulator();
+  accumulator.write(output);
+  return accumulator.finish();
+}
+
+/** Incrementally counts reporter events without retaining the full transcript. */
+export class StructuredNodeSummaryAccumulator {
+  private readonly state = { discardingLine: false, pending: "", sawEvent: false };
+  private readonly skipReasons: Record<string, number> = {};
+  private readonly consumedMappingIdentities: string[] = [];
+  private assertions = 0;
+  private passed = 0;
+  private failed = 0;
+  private skipped = 0;
+
+  write(chunk: string): void {
+    let incoming = chunk;
+    // Biome cannot follow the parser state mutations across streamed chunks.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: parser state carries across calls to write.
+    if (this.state.discardingLine) {
+      const newline = incoming.indexOf("\n");
+      if (newline === -1) {
+        return;
       }
-    });
-  if (events.length === 0) {
-    fail("runner emitted no structured node events");
-  }
-  const skipReasons: Record<string, number> = {};
-  const consumedMappingIdentities: string[] = [];
-  let assertions = 0;
-  let passed = 0;
-  let failed = 0;
-  let skipped = 0;
-  for (const event of events) {
-    if (!["test:pass", "test:fail"].includes(event.type) || event.details?.type !== "test") {
-      continue;
+      incoming = incoming.slice(newline + 1);
+      this.state.discardingLine = false;
     }
-    assertions += 1;
+    const lines = (this.state.pending + incoming).split("\n");
+    this.state.pending = lines.pop() ?? "";
+    for (const line of lines) {
+      this.consumeLine(line);
+    }
+    this.boundPendingLine();
+  }
+
+  finish(): StructuredSummary {
+    if (this.state.pending.startsWith(EVENT_PREFIX)) {
+      this.consumeLine(this.state.pending);
+    }
+    this.state.pending = "";
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: sawEvent is set by prior write calls.
+    if (!this.state.sawEvent) {
+      fail("runner emitted no structured node events");
+    }
+    return {
+      assertions: this.assertions,
+      passed: this.passed,
+      failed: this.failed,
+      skipped: this.skipped,
+      skip_reasons: this.skipReasons,
+      consumed_mapping_identities: this.consumedMappingIdentities,
+    };
+  }
+
+  private boundPendingLine(): void {
+    const { pending } = this.state;
+    if (pending.length > 1024 * 1024 && pending.startsWith(EVENT_PREFIX)) {
+      fail("reporter event exceeds the 1 MiB parser limit");
+    }
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: pending may be empty or a partial event prefix across chunks.
+    if (pending && !pending.startsWith(EVENT_PREFIX) && !EVENT_PREFIX.startsWith(pending)) {
+      this.state.pending = "";
+      this.state.discardingLine = true;
+    }
+  }
+
+  private consumeLine(line: string): void {
+    if (!line.startsWith(EVENT_PREFIX)) {
+      return;
+    }
+    this.state.sawEvent = true;
+    let event: NodeTestEvent;
+    try {
+      event = JSON.parse(line.slice(EVENT_PREFIX.length));
+    } catch {
+      fail("reporter emitted malformed structured event");
+    }
+    if (!["test:pass", "test:fail"].includes(event.type) || event.details?.type !== "test") {
+      return;
+    }
+    this.assertions += 1;
     const { skip } = event.details;
     if (skip !== false && skip !== undefined && skip !== null) {
       const { reason, consumedIdentity } = resolveEmittedSkipReason(skip, event.details.name);
@@ -397,24 +454,16 @@ export function structuredNodeSummary(output: string): StructuredSummary {
         fail(`unexplained skip: ${event.details.name ?? "unnamed test"}`);
       }
       if (consumedIdentity !== undefined) {
-        consumedMappingIdentities.push(consumedIdentity);
+        this.consumedMappingIdentities.push(consumedIdentity);
       }
-      skipped += 1;
-      skipReasons[reason] = (skipReasons[reason] ?? 0) + 1;
+      this.skipped += 1;
+      this.skipReasons[reason] = (this.skipReasons[reason] ?? 0) + 1;
     } else if (event.type === "test:pass") {
-      passed += 1;
+      this.passed += 1;
     } else {
-      failed += 1;
+      this.failed += 1;
     }
   }
-  return {
-    assertions,
-    passed,
-    failed,
-    skipped,
-    skip_reasons: skipReasons,
-    consumed_mapping_identities: consumedMappingIdentities,
-  };
 }
 
 export function structuredPythonSummary(output: string, status: number): StructuredSummary {

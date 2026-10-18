@@ -32,40 +32,61 @@ const NO_OUTPUT_PATTERN = /produced no output/;
 const PROGRESS_PREFIX_PATTERN = /\[test-accounting\]/;
 const STARTED_PATTERN = /started/;
 const EXIT_ZERO_PATTERN = /exit 0/;
+const DEADLINE_PATTERN = /deadline/i;
 
 /** Wall-clock ms and outcome of running one child under a given stall budget. */
 interface Outcome {
   code: number | null;
   durationMs: number;
   stderr: string;
+  stdout: string;
 }
 
 // Drive the REAL authority capture path in a subprocess. authority.ts reads its
 // budget from the environment at module load, so each case needs its own
 // process; spawning one keeps the production module completely unmodified.
-function runCapture(childScript: string, budgetMs: number): Promise<Outcome> {
+function runCapture(
+  childScript: string,
+  budgetMs: number,
+  deadlineMs?: number,
+  parseNodeEvents = false
+): Promise<Outcome> {
   const driver = `
     const { runCaptureForTest } = await import(${JSON.stringify(new URL("./authority.ts", import.meta.url).href)});
     const result = await runCaptureForTest(
       [process.execPath, "-e", ${JSON.stringify(childScript)}],
-      process.cwd()
+      process.cwd(),
+      ${JSON.stringify(parseNodeEvents)}
     );
-    process.stdout.write(JSON.stringify(result) + "\\n");
+    process.stdout.write(JSON.stringify({
+      stdout: result.stdout.slice(-1024),
+      retained_capture_bytes: result.retained_capture_bytes ?? Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr),
+      node_summary: result.node_summary,
+    }) + "\\n");
   `;
   const started = Date.now();
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", driver], {
-      env: { ...process.env, PDPP_ACCOUNTING_STALL_BUDGET_MS: String(budgetMs) },
+      env: {
+        ...process.env,
+        PDPP_ACCOUNTING_STALL_BUDGET_MS: String(budgetMs),
+        ...(deadlineMs === undefined ? {} : { PDPP_ACCOUNTING_LEAF_DEADLINE_MS: String(deadlineMs) }),
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stderr = "";
-    child.stdout.on("data", () => {
-      // stdout carries the capture result; only liveness/stderr matter here.
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
     });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
     });
-    child.on("close", (code) => resolve({ code, durationMs: Date.now() - started, stderr }));
+    const hardTimeout = setTimeout(() => child.kill("SIGKILL"), deadlineMs === undefined ? 30_000 : deadlineMs + 5000);
+    child.on("close", (code) => {
+      clearTimeout(hardTimeout);
+      resolve({ code, durationMs: Date.now() - started, stderr, stdout });
+    });
   });
 }
 
@@ -125,4 +146,45 @@ test("progress is reported on stderr while a leaf is quiet, so a live run is nev
   assert.match(outcome.stderr, PROGRESS_PREFIX_PATTERN, "progress must be visible on stderr");
   assert.match(outcome.stderr, STARTED_PATTERN, "the operator must see the leaf start");
   assert.match(outcome.stderr, EXIT_ZERO_PATTERN, "the operator must see the leaf finish");
+});
+
+test("a continuously chatty leaf is killed at its total deadline", async () => {
+  const deadlineMs = 1500;
+  const outcome = await runCapture(
+    "setInterval(() => process.stdout.write('.'.repeat(64 * 1024)), 1);",
+    60_000,
+    deadlineMs
+  );
+
+  assert.equal(outcome.code, 1, "a chatty leaf must fail at its total deadline");
+  assert.match(outcome.stderr, DEADLINE_PATTERN, "the operator must be told the leaf exceeded its total deadline");
+  assert.ok(outcome.durationMs < 8000, `deadline kill must be prompt; ran ${outcome.durationMs}ms`);
+});
+
+test("large non-event output completes with bounded retained capture", async () => {
+  const child = `
+    const chunk = 'x'.repeat(64 * 1024);
+    let remaining = 50 * 1024 * 1024;
+    function write() {
+      while (remaining > 0) {
+        const value = chunk.slice(0, Math.min(chunk.length, remaining));
+        remaining -= value.length;
+        if (!process.stdout.write(value)) { process.stdout.once('drain', write); return; }
+      }
+      process.stdout.write('\\nPDPP_TEST_ACCOUNTING_EVENT {"type":"test:pass","details":{"type":"test"}}\\n');
+    }
+    write();
+  `;
+  const outcome = await runCapture(child, 60_000, undefined, true);
+  const result = JSON.parse(outcome.stdout) as {
+    retained_capture_bytes: number;
+    stdout: string;
+    node_summary?: { assertions: number; passed: number; failed: number };
+  };
+
+  assert.equal(outcome.code, 0);
+  assert.equal(result.node_summary?.assertions, 1, "structured counts must include the event after bulk output");
+  assert.equal(result.node_summary?.passed, 1);
+  assert.equal(result.node_summary?.failed, 0);
+  assert.ok(result.retained_capture_bytes <= 128 * 1024, `retained capture was ${result.retained_capture_bytes} bytes`);
 });
