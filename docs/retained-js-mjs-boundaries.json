@@ -2,11 +2,11 @@
   "description": "Tracked JavaScript/MJS boundaries retained by an owning host, generator, or provider-data contract. Canonical authored implementation files are TypeScript.",
   "entries": [
     {
-      "path": "apps/site/.source/source.config.mjs",
+      "path": ".github/scripts/manage-supporters-pr.mjs",
       "owner": "Site application maintainers",
-      "runtimeReason": "Fumadocs emits this generated ESM source index for the Next build from apps/site/source.config.ts.",
-      "probe": "pnpm --dir apps/site exec fumadocs-mdx && git diff --exit-code -- apps/site/.source/source.config.mjs",
-      "review": "Regenerate and review on every Fumadocs upgrade or source.config.ts change."
+      "runtimeReason": "publish-supporters.yml runs this file with plain node, and that workflow has no dependency install step, so it cannot rely on tsx or node_modules. It opens or updates the supporters pull request through the gh CLI and closes an obsolete one.",
+      "probe": "pnpm test:scratch -- node --test scripts/manage-supporters-pr.test.mjs",
+      "review": "Re-evaluate if publish-supporters.yml gains a dependency install step. Then convert it together with scripts/manage-supporters-pr.test.mjs."
     },
     {
       "path": "apps/site/next.config.mjs",
@@ -21,6 +21,20 @@
       "runtimeReason": "PostCSS discovers this ESM configuration through its host loader.",
       "probe": "pnpm --dir apps/site run build",
       "review": "Re-evaluate when the repository-supported PostCSS loader accepts TypeScript configuration directly."
+    },
+    {
+      "path": "apps/site/scripts/publish-supporters.mjs",
+      "owner": "Site application maintainers",
+      "runtimeReason": "publish-supporters.yml runs this file with plain node before any dependency install, so it must load without tsx. Its explicit field pick in toPublicEntry is the boundary between the private signatory records and the public register.",
+      "probe": "! node apps/site/scripts/publish-supporters.mjs",
+      "review": "Could become TypeScript if publish-supporters.yml installs dependencies before it runs. The probe only proves the file loads and rejects missing arguments. No test covers the field pick, so add one before changing this file."
+    },
+    {
+      "path": "apps/site/scripts/style-differ.mjs",
+      "owner": "Site application maintainers",
+      "runtimeReason": "Manual computed-style differ that runs with plain node against two live servers. It imports playwright from apps/site's own dependencies. No runtime requirement forces JavaScript.",
+      "probe": "! node apps/site/scripts/style-differ.mjs",
+      "review": "Could be TypeScript. The probe only proves the file loads and rejects missing arguments, because a real run needs two live servers. Convert it in a follow-up and retire this entry."
     },
     {
       "path": "apps/site/scripts/sync-spec-docs.mjs",
@@ -72,6 +86,13 @@
       "review": "Regenerate and review whenever the adjacent rr-explore-data.ts source or TypeScript emitter changes."
     },
     {
+      "path": "scripts/connector-reachability.mjs",
+      "owner": "PDPP repository maintainers",
+      "runtimeReason": "Manual reachability probe that runs with plain node against live provider hosts. No runtime requirement forces JavaScript.",
+      "probe": "node --check scripts/connector-reachability.mjs",
+      "review": "Could be TypeScript. The probe is a syntax check only: every real run contacts live provider hosts, so nothing here runs offline. Run it by hand with --json when checking connector paths."
+    },
+    {
       "path": "scripts/hermetic/guard-runtime.mjs",
       "owner": "Test infrastructure maintainers",
       "runtimeReason": "Node preloads this generated guard before each test process; compiling guard-source.mts avoids runtime type stripping. The source uses a different basename so tsx does not remap imports of guard-runtime.mjs back to a second TypeScript module instance.",
@@ -86,6 +107,69 @@
       "review": "Regenerate whenever preload.mts changes; retain the opt-in guard flag."
     },
     {
+      "path": "scripts/hero-load-measure.mjs",
+      "owner": "PDPP repository maintainers",
+      "runtimeReason": "Throwaway manual measurement script run with plain node. No runtime requirement forces JavaScript.",
+      "probe": "! env -u PLAYWRIGHT_MODULE node scripts/hero-load-measure.mjs",
+      "review": "Throwaway. Delete it, or convert it to TypeScript if it is kept. The probe checks only the missing PLAYWRIGHT_MODULE error path."
+    },
+    {
+      "path": "scripts/manage-supporters-pr.test.mjs",
+      "owner": "Site application maintainers",
+      "runtimeReason": "Tests .github/scripts/manage-supporters-pr.mjs, which must stay plain JavaScript for publish-supporters.yml. It imports that module directly, so it shares the same constraint.",
+      "probe": "pnpm test:scratch -- node --test scripts/manage-supporters-pr.test.mjs",
+      "review": "Re-evaluate together with .github/scripts/manage-supporters-pr.mjs."
+    },
+    {
+      "path": "scripts/publish-supporters-workflow.test.mjs",
+      "owner": "Site application maintainers",
+      "runtimeReason": "Static test that reads publish-supporters.yml as text. No runtime requirement forces JavaScript.",
+      "probe": "pnpm test:scratch -- node --test scripts/publish-supporters-workflow.test.mjs",
+      "review": "Could be TypeScript. Convert it in a follow-up and retire this entry."
+    },
+    {
+      "path": "scripts/run-node-tests.mjs",
+      "owner": "PDPP repository maintainers",
+      "runtimeReason": "Launcher that runs node --test with bounded local concurrency. It imports only Node built-ins, and apps/site's test script and the root test-accounting script both invoke it with node. No runtime requirement forces JavaScript.",
+      "probe": "pnpm test:scratch -- node --test scripts/run-node-tests.test.mjs",
+      "review": "Could be TypeScript if those two invocations move to node --import tsx. Convert it together with scripts/run-node-tests.test.mjs."
+    },
+    {
+      "path": "scripts/run-node-tests.test.mjs",
+      "owner": "PDPP repository maintainers",
+      "runtimeReason": "Tests scripts/run-node-tests.mjs and imports it directly, so it shares that file's entry point.",
+      "probe": "pnpm test:scratch -- node --test scripts/run-node-tests.test.mjs",
+      "review": "Re-evaluate together with scripts/run-node-tests.mjs."
+    },
+    {
+      "path": "scripts/signing-journey-oracle.mjs",
+      "owner": "Site application maintainers",
+      "runtimeReason": "Manual end-to-end oracle for the supporter signing journey, run with plain node against a real deployment. No runtime requirement forces JavaScript.",
+      "probe": "pnpm test:scratch -- node --test scripts/signing-journey-oracle.test.mjs",
+      "review": "Could be TypeScript. At 964 untyped lines it is a good candidate. Convert it with its test in a follow-up. The probe covers only the offline helpers; the end-to-end run needs a live deployment."
+    },
+    {
+      "path": "scripts/signing-journey-oracle.test.mjs",
+      "owner": "Site application maintainers",
+      "runtimeReason": "Offline unit tests for scripts/signing-journey-oracle.mjs. They import its helpers directly, so they share its entry point.",
+      "probe": "pnpm test:scratch -- node --test scripts/signing-journey-oracle.test.mjs",
+      "review": "Re-evaluate together with scripts/signing-journey-oracle.mjs."
+    },
+    {
+      "path": "scripts/slvp-overlap.mjs",
+      "owner": "PDPP repository maintainers",
+      "runtimeReason": "Opt-in browser gate that drives a live site through a Playwright MCP server. No runtime requirement forces JavaScript.",
+      "probe": "node --check scripts/slvp-overlap.mjs",
+      "review": "Could be TypeScript. The probe is a syntax check only: the gate needs a live site and a Playwright MCP server."
+    },
+    {
+      "path": "scripts/slvp-verify.mjs",
+      "owner": "PDPP repository maintainers",
+      "runtimeReason": "Opt-in rendered-DOM verifier that runs patchright against a live instance. No runtime requirement forces JavaScript.",
+      "probe": "node --check scripts/slvp-verify.mjs",
+      "review": "Could be TypeScript. The probe is a syntax check only: the verifier needs a browser binary and a live instance."
+    },
+    {
       "path": "scripts/spec-prose-lint.mjs",
       "owner": "Specification editors",
       "runtimeReason": "The spec prose gate runs on a bare checkout before any dependency is installed, so it must not need the tsx loader the repository's TypeScript entrypoints load through. It also runs inside a detached git worktree of the merge-base to build its warning baseline, where node_modules is absent by construction.",
@@ -98,6 +182,13 @@
       "runtimeReason": "Unit tests for scripts/spec-prose-lint.mjs. They import the module under test directly, so they share its no-loader constraint.",
       "probe": "pnpm spec:prose:test",
       "review": "Re-evaluate together with scripts/spec-prose-lint.mjs."
+    },
+    {
+      "path": "scripts/test-accounting/with-local-full-suite-lock.mjs",
+      "owner": "PDPP repository maintainers",
+      "runtimeReason": "Lock wrapper that test-accounting:check runs with plain node around the full accounting run. It imports only Node built-ins. No runtime requirement forces JavaScript.",
+      "probe": "pnpm test:scratch -- node --import tsx --test scripts/test-accounting/local-full-suite-lock.test.ts",
+      "review": "Could be TypeScript. Converting it also moves its biome exception (the docs/biome-exception-ledger.jsonl entry for this path), so update that entry in the same change."
     }
   ]
 }
