@@ -591,25 +591,41 @@ function matchSandboxRecord(record: DemoRecord, trimmed: string, lower: string):
   };
 }
 
-function generateSandboxSnapshotId(): string {
+function generateSandboxSnapshotId(createId: () => string): string {
   // `crypto.randomUUID` is available in modern runtimes (Node 19+, Edge,
   // browser); the sandbox runs on Next which guarantees it.
-  return `snap_sb_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  return `snap_sb_${createId().replace(/-/g, "").slice(0, 16)}`;
+}
+
+interface SandboxSearchSnapshotEntry {
+  createdAt: number;
+  snapshot: SearchLexicalSnapshot;
+}
+
+export interface SandboxSearchLexicalOptions {
+  createId?: () => string;
+  maxSnapshots?: number;
+  now?: () => number;
+  snapshotTtlMs?: number;
 }
 
 /**
  * Build dependencies for `rs.search.lexical` against the sandbox demo
  * dataset.
  *
- * Snapshot persistence uses an in-memory `Map`. The sandbox is request-
- * scoped (a fresh module instance per Next request handler in the dev
- * server) but Next route modules are also long-lived in production: that
- * means cursor-based pagination across requests works inside the lifetime
- * of one server process, with no TTL eviction. For the demo dataset this
- * is bounded (sandbox records are < 100), so cache growth is negligible.
+ * Snapshot persistence is process-scoped for cursor pagination across route
+ * requests. Retain at most 256 snapshots for 15 minutes: the count cap
+ * bounds memory under sustained fresh queries, while the TTL limits stale
+ * cursors and normal-case retention.
  */
-export function createSandboxSearchLexicalDependencies(): SearchLexicalDependencies {
-  const snapshotCache = new Map<string, SearchLexicalSnapshot>();
+export function createSandboxSearchLexicalDependencies(
+  options: SandboxSearchLexicalOptions = {}
+): SearchLexicalDependencies & { snapshotCount: () => number } {
+  const maxSnapshots = options.maxSnapshots ?? 256;
+  const snapshotTtlMs = options.snapshotTtlMs ?? 15 * 60 * 1000;
+  const now = options.now ?? (() => performance.now());
+  const createId = options.createId ?? (() => crypto.randomUUID());
+  const snapshotCache = new Map<string, SandboxSearchSnapshotEntry>();
   return {
     buildOwnerReadGrantForManifest: (manifest: SearchLexicalManifest): SearchLexicalGrant => ({
       streams: (manifest.streams ?? []).map((s) => ({ name: s.name })),
@@ -709,16 +725,33 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
           },
         },
         results: hits,
-        snapshot_id: generateSandboxSnapshotId(),
+        snapshot_id: generateSandboxSnapshotId(createId),
       };
     },
     formatRecordUrl: ({ stream, recordKey }) =>
       `/sandbox/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordKey)}`,
     getAdvertisement: () => SANDBOX_LEXICAL_ADVERTISEMENT,
     listOwnerVisibleConnectorIds: () => DEMO_CONNECTORS.map((c) => c.connector_id),
-    loadSnapshot: (snapshotId) => snapshotCache.get(snapshotId) ?? null,
+    loadSnapshot: (snapshotId) => {
+      const entry = snapshotCache.get(snapshotId);
+      if (!entry) {
+        return null;
+      }
+      if (now() - entry.createdAt >= snapshotTtlMs) {
+        snapshotCache.delete(snapshotId);
+        return null;
+      }
+      return entry.snapshot;
+    },
     persistSnapshot: (snapshot) => {
-      snapshotCache.set(snapshot.snapshot_id, snapshot);
+      snapshotCache.set(snapshot.snapshot_id, { createdAt: now(), snapshot });
+      while (snapshotCache.size > maxSnapshots) {
+        const oldestId = snapshotCache.keys().next().value;
+        if (oldestId === undefined) {
+          break;
+        }
+        snapshotCache.delete(oldestId);
+      }
     },
     // Sandbox routes do not currently mount client-actor flows; the
     // operation's owner branch is the only consumer. This stub is here so
@@ -734,6 +767,7 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
       }
       return { connector_id: connectorId, streams };
     },
+    snapshotCount: () => snapshotCache.size,
   };
 }
 
