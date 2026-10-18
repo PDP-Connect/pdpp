@@ -497,3 +497,38 @@ test("a server rebound with different options is granted by its current options 
     await foreign.close();
   }
 });
+
+test("a rejected re-listen does not change what the live bind grants", async (t) => {
+  // Node rejects a second listen() on a live server with ERR_SERVER_ALREADY_LISTEN.
+  // That rejected call must not change the grant: the live IPv6-only bind grants
+  // only IPv6 loopback, so a foreign IPv4 server on the same port stays blocked.
+  let port: number;
+  let foreign: CountingServer;
+  try {
+    const probe = await startCountingServer("::1");
+    ({ port } = probe);
+    await probe.close();
+    foreign = await startCountingServer("127.0.0.1", port);
+  } catch {
+    t.skip("host cannot bind IPv6 loopback, or the port is not free on IPv4 loopback");
+    return;
+  }
+  const handle = await installHermeticNetworkGuard();
+  const owned = http.createServer((_req, res) => res.end("owned-ipv6-only"));
+  try {
+    const listening = new Promise<void>((resolve, reject) => {
+      owned.once("error", reject);
+      owned.listen({ port, ipv6Only: true }, () => resolve());
+    });
+    assert.throws(() => owned.listen({ port }), { code: "ERR_SERVER_ALREADY_LISTEN" });
+    await listening;
+    assert.equal(isOriginAllowed(`http://[::1]:${port}`), true, "the live IPv6-only bind is not granted");
+    assert.equal(isOriginAllowed(`http://127.0.0.1:${port}`), false, "a rejected re-listen granted IPv4");
+    await assert.rejects(fetch(`http://127.0.0.1:${port}/`), BLOCKED_ORIGIN_MESSAGE_PATTERN);
+    assert.equal(foreign.requests(), 0, "a rejected re-listen exposed the foreign IPv4 server");
+  } finally {
+    await closeServer(owned);
+    handle.uninstall();
+    await foreign.close();
+  }
+});
