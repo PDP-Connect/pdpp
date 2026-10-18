@@ -44,17 +44,22 @@
   },
   "overrides": [
     {
-      // These six classic-script files are emitted from the adjacent TypeScript
-      // sources. They remain selected so inventory coverage cannot shrink, but
-      // their formatter/linter output is judged by generated-artifacts:check.
+      // These eight generated JavaScript files are emitted from the adjacent
+      // TypeScript sources: six classic scripts and two hermetic-test ESM
+      // entries. They remain selected so inventory coverage cannot shrink, but
+      // their formatter, linter and import-organizing output is judged by
+      // generated-artifacts:check.
       "includes": [
         "docs/design-system/ink-carbon/project/explorer/data.js",
         "docs/design-system/ink-carbon/project/explorer/dispatch.js",
         "docs/design-system/ink-carbon/project/explorer/query.js",
         "docs/design-system/ink-carbon/project/recordroom/image-slot.js",
         "docs/design-system/ink-carbon/project/recordroom/rr-data.js",
-        "docs/design-system/ink-carbon/project/recordroom/rr-explore-data.js"
+        "docs/design-system/ink-carbon/project/recordroom/rr-explore-data.js",
+        "scripts/hermetic/guard-runtime.mjs",
+        "scripts/hermetic/preload.mjs"
       ],
+      "assist": { "enabled": false },
       "formatter": { "enabled": false },
       "linter": { "enabled": false }
     },
