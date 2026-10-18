@@ -578,6 +578,8 @@ export type Defect =
   | "client-filter-consults-metadata-first"
   /** Binds a page cursor to the grant and `fields` only, so it replays on another stream or under a view or filter (RS-6, clause 8.9-11). */
   | "cursor-context-omits-query-shape"
+  /** Derives a stream's consent boundary from its `cursor_field` when it declares no `consent_time_field`, accepting `time_range` (AS-2, clause 5.4-1). */
+  | "derive-consent-boundary-from-cursor-field"
   /** Sends ambient credentials (Authorization, Cookie) when retrieving a declaration pointer (AS-16, clause 5.8-5). */
   | "declaration-fetch-sends-ambient-credentials"
   /** Follows a declaration pointer's redirect to an unvalidated target (AS-16, clause 5.8-5). */

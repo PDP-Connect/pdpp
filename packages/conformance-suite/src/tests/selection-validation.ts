@@ -664,6 +664,67 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       return pass(evidence);
     },
   },
+  // ----------------------------------------------------------------- 5.4-1 ---
+  // The consent boundary and the list order are separate declarations. A stream
+  // may declare a `cursor_field` and no `consent_time_field`; the AS then has no
+  // consent boundary, and reading the cursor field as one is how a server comes
+  // to enforce a window the declaration never nominated. This is the same
+  // refusal as the case above, on the stream where a consent boundary is most
+  // tempting to derive: one that orders its list reads by a timestamp.
+  {
+    caseId: "AS-2/time-range-refused-where-only-a-cursor-field-is-declared",
+    requirementId: "AS-2",
+    assertion:
+      "A selection request asking for time_range on a stream that declares a cursor_field but no consent_time_field is refused as invalid_authorization_details.",
+    async run({ adapter, streams }) {
+      const cursorOnly = streams.find((s) => s.cursorField !== undefined && s.consentTimeField === undefined);
+      const capable = streams.find((s) => s.consentTimeField !== undefined);
+      if (!(cursorOnly && capable)) {
+        return skip(
+          "No seeded stream declares a cursor_field without a consent_time_field (or none declares a consent_time_field to act as the control), so the two declarations cannot be told apart."
+        );
+      }
+      const control = await adapter.submitSelection?.({
+        streams: [{ name: capable.name, fields: [...capable.fields] }],
+        timeRange: { since: "2026-01-01T00:00:00Z" },
+      });
+      if (!control) {
+        return skip(NO_HOOK);
+      }
+      if (control.status >= 400) {
+        return skip(
+          `The positive control was refused (${control.status}), so a refusal on '${cursorOnly.name}' cannot be attributed to the missing consent_time_field.`
+        );
+      }
+      const outcome = await adapter.submitSelection?.({
+        streams: [{ name: cursorOnly.name, fields: [...cursorOnly.fields] }],
+        timeRange: { since: "2026-01-01T00:00:00Z" },
+      });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [
+        outcomeEvidence(`selection: time_range on ${capable.name} (control)`, control),
+        outcomeEvidence(
+          `selection: time_range on ${cursorOnly.name} (cursor_field ${cursorOnly.cursorField}, no consent_time_field)`,
+          outcome
+        ),
+      ];
+      if (outcome.status < 400) {
+        return fail(
+          `A selection requesting time_range on '${cursorOnly.name}', which declares cursor_field '${cursorOnly.cursorField}' and no consent_time_field, was accepted (${outcome.status}). Core Section 5: the two fields serve different purposes and are declared separately, so the AS has no consent boundary here; accepting means it derived one from the field that orders list reads.`,
+          evidence
+        );
+      }
+      if (outcome.errorCode !== SELECTION_ERROR) {
+        return fail(
+          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than ${SELECTION_ERROR}.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
   // ----------------------------------------------------------------- 6.8-7 ---
   // `["*"]` is the explicit marker for "every permitted field". Beside a named
   // field it is ambiguous in the same way a wildcard stream beside a named

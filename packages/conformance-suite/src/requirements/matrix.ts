@@ -131,7 +131,7 @@ const SECTION_2: readonly ClauseEntry[] = [
     partial: true,
     caseIds: ["AS-8/revoked-grant-refused"],
     gapNote:
-      "A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path.",
+      'A case shows a revoked grant is refused within the 60-second propagation ceiling, which is the observable consequence the clause protects: a self-contained JWT valid for longer than that fails it. What stays unobservable is the mechanism. A JWT-only design whose tokens expire within the bound passes, and that the resource server "can still check active status through introspection or local equivalent" is an internal capability a request cannot show.',
   },
 ];
 
@@ -616,9 +616,9 @@ const SECTION_5: readonly ClauseEntry[] = [
     specAnchor: "#consent-time-field",
     applicability: "always",
     observable: "declaration-static",
-    caseIds: [],
+    caseIds: ["AS-2/time-range-refused-where-only-a-cursor-field-is-declared"],
     gapNote:
-      "No Section 9 item covers it, so `requirementIds` stays empty. Core explicitly permits streams that cannot define a stable `consent_time_field` to omit it, so the former negative fixture (`time_range_capable` with no consent field) did not violate this clause. A valid black-box fixture would need to observe the AS deriving a consent boundary from `cursor_field`; the declaration submission surface exposes neither that derived state nor a normative capability member.",
+      "No Section 9 item covers it, so `requirementIds` stays empty (the case is filed under AS-2, where the time_range refusal rolls up). The obligation is observed through its consequence: a stream that declares a `cursor_field` and no `consent_time_field` (which Core permits) has no consent boundary, so a `time_range` request on it must be refused rather than evaluated against the cursor field. The descriptive halves of the sentence (what orders list reads, what `changes_since` uses) are exercised by the RS-1 and RS-7 cases but are not obligations of this clause.",
   },
   {
     clauseId: "5.4-2",
@@ -2023,7 +2023,7 @@ const SECTION_8: readonly ClauseEntry[] = [
     partial: true,
     caseIds: ["AS-8/revoked-grant-refused"],
     gapNote:
-      "A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path.",
+      'A case shows a revoked grant is refused within the 60-second propagation ceiling, which is the observable consequence the clause protects: a self-contained JWT valid for longer than that fails it. What stays unobservable is the mechanism. A JWT-only design whose tokens expire within the bound passes, and that the resource server "can still check active status through introspection or local equivalent" is an internal capability a request cannot show.',
   },
   {
     clauseId: "8.3-1",
@@ -2542,7 +2542,7 @@ const SECTION_8: readonly ClauseEntry[] = [
       "RS-11/absent-version-header-reports-the-selected-version",
     ],
     gapNote:
-      "Level is the conformance list's, not the quoted text's: this subsection carries no RFC 2119 keyword, yet Section 9 AS item 17 and RS item 11 state the same obligation as a MUST. Both halves are now tested on the RS; the AS has no response-header case.",
+      "Level is the conformance list's, not the quoted text's: this subsection carries no RFC 2119 keyword, yet Section 9 AS item 17 and RS item 11 state the same obligation as a MUST. Both halves are tested on the RS. The AS half is not: Core defines no HTTP selection or approval surface for the AS (the bundled adapter's `submitSelection` is an in-process decision, not a response), so there is no AS response whose `PDPP-Version` header a black-box client could read. A target whose adapter surfaced one would need a case that reads it.",
   },
 ];
 
@@ -2701,7 +2701,7 @@ const SECTION_10: readonly ClauseEntry[] = [
     partial: true,
     caseIds: ["AS-8/revoked-grant-refused"],
     gapNote:
-      "A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path.",
+      'A case shows a revoked grant is refused within the 60-second propagation ceiling, which is the observable consequence the clause protects: a self-contained JWT valid for longer than that fails it. What stays unobservable is the mechanism. A JWT-only design whose tokens expire within the bound passes, and that the resource server "can still check active status through introspection or local equivalent" is an internal capability a request cannot show.',
   },
   {
     clauseId: "10.2-11",

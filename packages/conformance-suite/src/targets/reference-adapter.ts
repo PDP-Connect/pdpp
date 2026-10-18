@@ -1165,7 +1165,11 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     }
     for (const wanted of wantedStreams) {
       const declared = this.fixtures.find((f) => f.name === wanted.name);
-      if (declared && declared.consentTimeField === undefined) {
+      if (
+        declared &&
+        declared.consentTimeField === undefined &&
+        !(declared.cursorField !== undefined && this.defects.has("derive-consent-boundary-from-cursor-field"))
+      ) {
         return `stream '${wanted.name}' declares no consent_time_field, so time_range is not applicable to it`;
       }
     }

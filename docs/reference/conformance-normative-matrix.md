@@ -53,9 +53,9 @@ Clauses enumerated: **214**.
 | MUST clauses | Count |
 | --- | --- |
 | Total | **181** |
-| With at least one case | **120** |
+| With at least one case | **121** |
 | Untestable (review-only, no case) | **59** |
-| Not yet tested (observable, no case) | **2** |
+| Not yet tested (observable, no case) | **1** |
 
 The last three rows partition the total. 2 of the clauses with a case are
 review-only: a case exercises part of them, and a run still reports them `untestable`.
@@ -186,11 +186,11 @@ Tracks grant lifecycle (active, expired, revoked) and reflects revocation immedi
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `2.2-3` | 106 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path. |
+| `2.2-3` | 106 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling, which is the observable consequence the clause protects: a self-contained JWT valid for longer than that fails it. What stays unobservable is the mechanism. A JWT-only design whose tokens expire within the bound passes, and that the resource server "can still check active status through introspection or local equivalent" is an internal capability a request cannot show. |
 | `7.5-7` | 1006 | MUST | black-box-http | `AS-10/single-use-window-end-deactivates-the-grant` | The window end is reached through the adapter's `advancePastSingleUseWindow` hook, since a suite cannot wait out a token's lifetime; a target whose adapter has none reports the case `skip`. "No token carries the grant" is observed on one token, the first one; later tokens of a refresh-token family are not issued here. |
 | `10.2-2` | 1699 | MUST | review-only | — | Review-only, for the same reason as 8.1-1: the revocation-propagation bound is the introspection cache TTL of a separated RS, observable only with a separated target and a timed wait of more than 60 seconds. |
 | `10.2-7` | 1708 | MUST | black-box-http | `AS-20/refresh-reuse-revokes-the-family` | Introspection of the family-linked token is checked only where the target offers an introspection route; otherwise the case judges the resource read alone, which is not the introspection interface this clause names. The prohibition on issuing a refresh token unless a covered grant is `continuous` is not covered, and needs a target supporting both `single_use` and refresh tokens at once. The revision drops the separate sentence about grant packages. |
-| `10.2-10` | 1697 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path. |
+| `10.2-10` | 1697 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling, which is the observable consequence the clause protects: a self-contained JWT valid for longer than that fails it. What stays unobservable is the mechanism. A JWT-only design whose tokens expire within the bound passes, and that the resource server "can still check active status through introspection or local equivalent" is an internal capability a request cannot show. |
 | `10.7-1` | 1746 | MUST | black-box-http | `AS-8/revoked-token-introspects-inactive`<br>`AS-8/revoked-grant-refused`<br>`AS-8/shared-credential-inactive-only-when-no-grant-is-active` | The first two cases revoke a grant whose only token is the probe token. That a token covering another active grant stays active, and a token with no active grant is `active: false`, is observed through the adapter's `issueSharedCredentialGrants` hook (a binding Core leaves open); a target whose adapter has none reports that case `skip`. |
 
 ### AS-9 (authorization-server, MUST)
@@ -293,7 +293,7 @@ Returns 400 `unsupported_version` when the `PDPP-Version` header specifies an un
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.14-1` | 1586 | MUST | black-box-http | `RS-11/unsupported-version-rejected`<br>`AS-17/unsupported-version-rejected`<br>`RS-11/absent-version-header-reports-the-selected-version` | Level is the conformance list's, not the quoted text's: this subsection carries no RFC 2119 keyword, yet Section 9 AS item 17 and RS item 11 state the same obligation as a MUST. Both halves are now tested on the RS; the AS has no response-header case. |
+| `8.14-1` | 1586 | MUST | black-box-http | `RS-11/unsupported-version-rejected`<br>`AS-17/unsupported-version-rejected`<br>`RS-11/absent-version-header-reports-the-selected-version` | Level is the conformance list's, not the quoted text's: this subsection carries no RFC 2119 keyword, yet Section 9 AS item 17 and RS item 11 state the same obligation as a MUST. Both halves are tested on the RS. The AS half is not: Core defines no HTTP selection or approval surface for the AS (the bundled adapter's `submitSelection` is an in-process decision, not a response), so there is no AS response whose `PDPP-Version` header a black-box client could read. A target whose adapter surfaced one would need a case that reads it. |
 
 ### AS-18 (authorization-server, MUST)
 
@@ -453,7 +453,7 @@ Resolves access tokens through authenticated RFC 7662 introspection, enforces on
 | `8.1-1` | 1157 | MUST | review-only | — | Review-only: the bound is a cache duration the RS holds internally. Observing it takes a separated AS/RS target, a revocation, and a wait past 60 seconds to see the RS stop serving; no target topology the suite drives is separated, and a case that sleeps a minute is not a unit-time check. Also bounded by `token_exp`, which an RS-side observer cannot see. |
 | `8.2-1` | 1174 | MUST | black-box-http | `AS-18/introspection-requires-authentication` | — |
 | `8.2-2` | 1186 | MUST | review-only | — | The no-second-lookup half is an internal call-count obligation; black-box observation cannot distinguish one lookup from two that produced the same answer. |
-| `8.2-4` | 1190 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path. |
+| `8.2-4` | 1190 | MUST | black-box-http | `AS-8/revoked-grant-refused` | A case shows a revoked grant is refused within the 60-second propagation ceiling, which is the observable consequence the clause protects: a self-contained JWT valid for longer than that fails it. What stays unobservable is the mechanism. A JWT-only design whose tokens expire within the bound passes, and that the resource server "can still check active status through introspection or local equivalent" is an internal capability a request cannot show. |
 | `10.2-1` | 1697 | MUST | black-box-http | `AS-18/introspection-requires-authentication` | The authentication half is tested; the no-second-lookup half is an internal call-count obligation, as at 8.2-2. |
 | `10.2-2` | 1699 | MUST | review-only | — | Review-only, for the same reason as 8.1-1: the revocation-propagation bound is the introspection cache TTL of a separated RS, observable only with a separated target and a timed wait of more than 60 seconds. |
 
@@ -538,7 +538,7 @@ Implements `PDPP-Version` header negotiation.
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `7.4-2` | 996 | MUST | black-box-http | `RS-11/unsupported-grant-schema-version-rejected` | — |
-| `8.14-1` | 1586 | MUST | black-box-http | `RS-11/unsupported-version-rejected`<br>`AS-17/unsupported-version-rejected`<br>`RS-11/absent-version-header-reports-the-selected-version` | Level is the conformance list's, not the quoted text's: this subsection carries no RFC 2119 keyword, yet Section 9 AS item 17 and RS item 11 state the same obligation as a MUST. Both halves are now tested on the RS; the AS has no response-header case. |
+| `8.14-1` | 1586 | MUST | black-box-http | `RS-11/unsupported-version-rejected`<br>`AS-17/unsupported-version-rejected`<br>`RS-11/absent-version-header-reports-the-selected-version` | Level is the conformance list's, not the quoted text's: this subsection carries no RFC 2119 keyword, yet Section 9 AS item 17 and RS item 11 state the same obligation as a MUST. Both halves are tested on the RS. The AS half is not: Core defines no HTTP selection or approval surface for the AS (the bundled adapter's `submitSelection` is an in-process decision, not a response), so there is no AS response whose `PDPP-Version` header a black-box client could read. A target whose adapter surfaced one would need a case that reads it. |
 
 ### RS-12 (resource-server, MUST)
 
@@ -757,7 +757,7 @@ reports.
 | `4.8-1` | 413 | MUST | black-box-http | `RS-1/blob-ref-mime-type-valid` | The value lives in a record's `data.blob_ref`, so the case reads served records for the blob fixture's grant. It judges media-type STRUCTURE only: a registered top-level type or a well-formed `x-` token, a `/`, and a subtype made of RFC 6838 restricted-name characters (parameters are not validated). It does not consult the live IANA registry, so a well-formed but unregistered subtype passes, and it observes only the records that fixture exposes. A `mime_type` that is present but not a string fails; a `blob_ref` with no `mime_type` skips. No Section 9 item covers it, so `requirementIds` stays empty; the case is filed under RS-1 because the blob fixture is its surface. |
 | `5.2-2` | 556 | MUST | declaration-static | `AS-16/key-field-not-declared-in-schema-refused` | No Section 9 item covers declaration internal consistency, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes. |
 | `5.3-1` | 576 | MAY | declaration-static | — | — |
-| `5.4-1` | 602 | MUST | declaration-static | — | No Section 9 item covers it, so `requirementIds` stays empty. Core explicitly permits streams that cannot define a stable `consent_time_field` to omit it, so the former negative fixture (`time_range_capable` with no consent field) did not violate this clause. A valid black-box fixture would need to observe the AS deriving a consent boundary from `cursor_field`; the declaration submission surface exposes neither that derived state nor a normative capability member. |
+| `5.4-1` | 602 | MUST | declaration-static | `AS-2/time-range-refused-where-only-a-cursor-field-is-declared` | No Section 9 item covers it, so `requirementIds` stays empty (the case is filed under AS-2, where the time_range refusal rolls up). The obligation is observed through its consequence: a stream that declares a `cursor_field` and no `consent_time_field` (which Core permits) has no consent boundary, so a `time_range` request on it must be refused rather than evaluated against the cursor field. The descriptive halves of the sentence (what orders list reads, what `changes_since` uses) are exercised by the RS-1 and RS-7 cases but are not obligations of this clause. |
 | `5.4-8` | 611 | SHOULD | review-only | — | Not observable: whether a record is a summary record is a property of the source's data. |
 | `5.6-1` | 650 | MAY | declaration-static | — | — |
 | `5.6-3` | 654 | MUST | black-box-http | `AS-13/unrecognized-view-uri-treated-as-opaque` | — |
