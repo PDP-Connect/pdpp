@@ -13,6 +13,8 @@ import type { Defect } from "../../src/targets/reference-server.ts";
 export const TARGET_DISCRIMINATION_MATRIX: readonly {
   readonly caseId: string;
   readonly defect: Defect;
+  /** A conformant target can make this particular observation unavailable. */
+  readonly cleanExpected?: "skip";
   /** No semantic hook: this row proves review-only honesty, not a failure oracle. */
   readonly reviewOnly?: true;
 }[] = [
@@ -627,7 +629,13 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
     caseId: "RS-21/changes-since-token-rejected-under-another-context",
     defect: "accept-sync-token-under-other-context",
   },
-  { caseId: "RS-21/token-does-not-reveal-writes-the-grant-cannot-see", defect: "token-reveals-hidden-writes" },
+  {
+    // Core 4.3 permits freshly randomized tokens. Equality is unavailable on
+    // the clean target; the explicit deterministic violating fixture must fail.
+    caseId: "RS-21/token-does-not-reveal-writes-the-grant-cannot-see",
+    defect: "token-reveals-hidden-writes",
+    cleanExpected: "skip",
+  },
   {
     caseId: "RS-7/record-deleted-after-page-1-not-served-on-a-later-page",
     defect: "serve-deleted-record-from-session-snapshot",

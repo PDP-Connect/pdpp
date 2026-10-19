@@ -14,6 +14,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { GrantRequest, RefreshableGrant, RefreshRefusal, TargetAdapter } from "../src/harness/adapter.ts";
+import { CLIENT_REVOCATION_CLOCK } from "../src/harness/client-revocation-poll.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
 import { ALL_CASES } from "../src/suite.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
@@ -43,7 +44,17 @@ async function run(caseId: string, kind: "refreshable", defects: readonly Defect
 
 describe("hook-gated oracles discriminate conforming from violating targets", () => {
   for (const { caseId, defect, adapter } of HOOKED_DISCRIMINATION_MATRIX) {
-    it(`${caseId} passes a clean target and fails one with defect "${defect}"`, async () => {
+    it(`${caseId} passes a clean target and fails one with defect "${defect}"`, async (t) => {
+      if (caseId === "AS-25/refresh-token-revocation-ends-the-family-grants") {
+        let now = 0;
+        t.mock.method(CLIENT_REVOCATION_CLOCK, "now", () => now);
+        t.mock.method(CLIENT_REVOCATION_CLOCK, "sleep", (ms: number) => {
+          now += ms;
+          return Promise.resolve();
+        });
+        // Keep the live HTTP clock independent of the simulated propagation window.
+        t.mock.method(AbortSignal, "timeout", () => new AbortController().signal);
+      }
       const clean = await run(caseId, adapter, []);
       assert.equal(clean.outcome, "pass", `${caseId} clean run: ${clean.detail ?? "(no detail)"}`);
 

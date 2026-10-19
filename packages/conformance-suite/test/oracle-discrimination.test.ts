@@ -27,6 +27,7 @@ import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { describe, it } from "node:test";
 import type { BlobFixture, GrantRequest, IssuedGrant, StagedApproval, TargetAdapter } from "../src/harness/adapter.ts";
+import { CLIENT_REVOCATION_CLOCK } from "../src/harness/client-revocation-poll.ts";
 import type { ConformanceCase } from "../src/harness/runner.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
 import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
@@ -98,12 +99,24 @@ async function runAgainst(caseId: string, defects: readonly Defect[]): Promise<{
 }
 
 describe("negative oracles discriminate conforming from violating targets", () => {
-  for (const { caseId, defect, reviewOnly } of TARGET_DISCRIMINATION_MATRIX) {
-    it(`${caseId} ${reviewOnly ? "stays review-only" : "discriminates"} with defect "${defect}"`, async () => {
+  for (const { caseId, defect, reviewOnly, cleanExpected } of TARGET_DISCRIMINATION_MATRIX) {
+    it(`${caseId} ${reviewOnly ? "stays review-only" : "discriminates"} with defect "${defect}"`, async (t) => {
+      // Exercise the full propagation window without spending a real minute.
+      // Probe timeout behavior is independently covered by mocked hung fetches.
+      if (caseId === "AS-25/client-revocation-of-an-access-token-ends-it") {
+        let now = 0;
+        t.mock.method(CLIENT_REVOCATION_CLOCK, "now", () => now);
+        t.mock.method(CLIENT_REVOCATION_CLOCK, "sleep", (ms: number) => {
+          now += ms;
+          return Promise.resolve();
+        });
+        t.mock.method(AbortSignal, "timeout", () => new AbortController().signal);
+      }
+      const started = performance.now();
       const clean = await runAgainst(caseId, []);
       assert.equal(
         clean.outcome,
-        reviewOnly ? "skip" : "pass",
+        cleanExpected ?? (reviewOnly ? "skip" : "pass"),
         `${caseId} did not report the expected clean-target outcome: ${clean.detail ?? "(no detail)"}`
       );
 
@@ -113,6 +126,9 @@ describe("negative oracles discriminate conforming from violating targets", () =
         reviewOnly ? "skip" : "fail",
         `${caseId} did not report the expected defect-target outcome "${defect}". The oracle cannot distinguish a conforming target from a violating one, so its passes carry no evidence.`
       );
+      if (caseId === "AS-25/client-revocation-of-an-access-token-ends-it") {
+        assert.ok(performance.now() - started < 5000, "AS-25 proof must use a mocked propagation clock");
+      }
       assert.ok(
         violating.detail && violating.detail.length > 0,
         `${caseId} failed without a detail; a failure with no explanation is not reviewable evidence.`

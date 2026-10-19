@@ -20,9 +20,10 @@
 // path it would against a remote vendor: no in-process short circuit, no
 // privileged access to internal state.
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 import { compareDateTimes, parseDateTime, parseFullDate } from "./rfc3339.ts";
 
 /** Behaviours that violate a specific normative requirement, for oracle proof. */
@@ -796,56 +797,34 @@ function recordKey(stream: string, recordId: string): string {
   return `${stream}\n${recordId}`;
 }
 
-/**
- * The `changes_since` token space, deliberately shaped so it can never be
- * confused with a page cursor.
- *
- * Section 8: "`cursor`/`next_cursor` are pagination tokens within a single
- * query execution; `changes_since`/`next_changes_since` are incremental sync
- * tokens across sessions ... they are different token spaces and will produce a
- * protocol error if confused." Page cursors here are `ok:<order>:<offset>`, so
- * the two prefixes are disjoint and each can reject the other's tokens.
- */
-const SYNC_PREFIX = "sync:";
-
-/**
- * Encode a sync horizon as an opaque token, bound to the query context that
- * produced it (Section 8: a token is bound to the grant or owner scope and to
- * the query context). `beginning` is the one token with no binding.
- */
-function syncToken(version: number, context: string): string {
-  return `${SYNC_PREFIX}${version}:${context}`;
-}
-
-/** The Section 4 "Starting a sync" value: an empty horizon at which no record is visible. */
+/** The unbound, empty horizon defined by Core Section 4. */
 const SYNC_BEGINNING = "beginning";
 
-/** A short stable digest of a query context, for binding tokens to it. */
-function contextDigest(parts: readonly string[]): string {
-  return createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 12);
+interface SyncPosition {
+  readonly context?: string;
+  readonly version: number;
 }
 
-/**
- * Decode a sync token to its horizon and bound context, or null when it is not
- * one of ours.
- *
- * `beginning` opens a fresh session from horizon 0, which is how a client with
- * no prior cursor establishes its baseline. It never expires and carries no
- * binding. An empty value is not a bootstrap and is refused as malformed.
- */
-function parseSyncToken(raw: string): { readonly context?: string; readonly version: number } | null {
-  if (raw === SYNC_BEGINNING) {
-    return { version: 0 };
+interface PagePosition {
+  readonly context: string;
+  readonly from: number | null;
+  readonly horizon: number | null;
+  readonly inputSync: string | null;
+  readonly offset: number;
+  readonly order: string;
+}
+
+/** Context serialization is unambiguous even for opaque view identifiers. */
+function contextDigest(parts: readonly string[]): string {
+  return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+}
+
+/** Code-unit order, independent of the host locale. */
+function compareText(a: string, b: string): number {
+  if (a === b) {
+    return 0;
   }
-  if (!raw.startsWith(SYNC_PREFIX)) {
-    return null;
-  }
-  const [versionText, context] = raw.slice(SYNC_PREFIX.length).split(":");
-  const version = Number(versionText);
-  if (!(Number.isInteger(version) && version >= 0) || context === undefined || context.length === 0) {
-    return null;
-  }
-  return { context, version };
+  return a < b ? -1 : 1;
 }
 
 const RECORDS_PATH = /^\/v1\/streams\/([^/]+)\/records$/;
@@ -893,6 +872,28 @@ export class ReferenceServer {
   private readonly grants = new Map<string, GrantState>();
   private readonly tokens = new Map<string, Principal>();
   private counter = 0;
+  /** Random handles; positions and contexts never travel on the wire. */
+  private readonly syncPositions = new Map<string, SyncPosition>();
+  private readonly pagePositions = new Map<string, PagePosition>();
+
+  private parseSyncToken(token: string): SyncPosition | null {
+    return token === SYNC_BEGINNING ? { version: 0 } : (this.syncPositions.get(token) ?? null);
+  }
+
+  private syncToken(version: number, context: string): string {
+    // Deliberately violating fixture: equality tracks the global clock.
+    const token = this.has("token-reveals-hidden-writes")
+      ? `sync:${version}:${context}`
+      : `cs_${randomBytes(24).toString("base64url")}`;
+    this.syncPositions.set(token, { version, context });
+    return token;
+  }
+
+  private pageToken(position: PagePosition): string {
+    const token = `pc_${randomBytes(24).toString("base64url")}`;
+    this.pagePositions.set(token, position);
+    return token;
+  }
   private readonly streams: readonly StreamFixture[];
   private readonly defects: ReadonlySet<Defect>;
   /** Streams provisioned on demand (multi-instance, blobs): served, but not part of the seeded inventory or the owner stream list. */
@@ -1087,7 +1088,7 @@ export class ReferenceServer {
    * the fake.
    */
   expireSyncCursor(token: string): boolean {
-    const horizon = parseSyncToken(token);
+    const horizon = this.parseSyncToken(token);
     if (horizon === null) {
       return false;
     }
@@ -2372,12 +2373,8 @@ export class ReferenceServer {
       // A malformed cursor must be a 400, not a crash: the defect models a server
       // that lets a decode error escape as a 500.
       const rawCursor = parsed.searchParams.get("cursor");
-      if (
-        !this.has("ignore-unknown-params") &&
-        rawCursor !== null &&
-        rawCursor !== "" &&
-        !rawCursor.startsWith("ok:")
-      ) {
+      const pagePosition = rawCursor === null ? undefined : this.pagePositions.get(rawCursor);
+      if (!this.has("ignore-unknown-params") && rawCursor !== null && pagePosition === undefined) {
         if (this.has("crash-on-bad-cursor")) {
           error(500, "api_error", "api_error", "Internal server error.");
           return;
@@ -2390,7 +2387,7 @@ export class ReferenceServer {
       // page cursor offered in the changes_since slot is refused rather than
       // treated as an absent parameter and answered with a full page.
       const rawSyncCursor = parsed.searchParams.get("changes_since");
-      const pageCursorAsSync = rawSyncCursor?.startsWith("ok:") === true;
+      const pageCursorAsSync = rawSyncCursor !== null && this.pagePositions.has(rawSyncCursor);
       // Under `accept-page-cursor-as-changes-since` the page cursor is treated
       // as an absent parameter, so a full page is served in its place.
       const syncCursor = pageCursorAsSync && this.has("accept-page-cursor-as-changes-since") ? null : rawSyncCursor;
@@ -2406,7 +2403,7 @@ export class ReferenceServer {
       // A changes_since token this server did not mint is malformed, not a
       // reason to fall back to a full read — falling back would silently return
       // the whole stream to a client that asked for a delta.
-      const parsedSyncToken = syncCursor === null ? null : parseSyncToken(syncCursor);
+      const parsedSyncToken = syncCursor === null ? null : this.parseSyncToken(syncCursor);
       let syncHorizon = parsedSyncToken === null ? null : parsedSyncToken.version;
       if (syncCursor !== null && parsedSyncToken === null) {
         error(400, "invalid_cursor", "invalid_request_error", "changes_since token is malformed or unrecognized.");
@@ -2433,7 +2430,8 @@ export class ReferenceServer {
       const syncShape = [...parsed.searchParams.entries()]
         .filter(([key]) => key === "fields" || key === "view" || key.startsWith("filter[") || key.startsWith("expand"))
         .map(
-          ([key, value]) => `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort().join(",") : value}`
+          ([key, value]) =>
+            `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort(compareText).join(",") : value}`
         )
         // Code-unit order, as the default sort; localeCompare would reorder keys and values.
         .sort((a, b) => {
@@ -2445,7 +2443,7 @@ export class ReferenceServer {
       const view = parsed.searchParams.get("view");
       const resolvedView =
         principal.kind === "owner" && view
-          ? [...(this.views.get(viewKey(fixture.name, view)) ?? [])].sort().join(",")
+          ? [...(this.views.get(viewKey(fixture.name, view)) ?? [])].sort(compareText).join(",")
           : "";
       const syncContext = contextDigest([
         "sync",
@@ -2469,12 +2467,8 @@ export class ReferenceServer {
         return;
       }
 
-      // Section 8 "Stable sort": page cursors are direction-bound. This server
-      // mints `ok:<order>:<offset>`, so the direction a cursor was produced
-      // under travels with it and a mismatch is detectable — which is what
-      // makes the requirement observable at all. Under
-      // `accept-order-mismatched-cursor` the comparison is skipped and the page
-      // is served against the wrong direction.
+      // Page handles resolve to server-held context and direction. The defect
+      // deliberately skips only the direction check.
       const requestedOrder = parsed.searchParams.get("order") ?? "desc";
       let cursorOffset = 0;
       /** Session horizon carried by a sync-session page cursor (clause 8.9-14). */
@@ -2491,62 +2485,32 @@ export class ReferenceServer {
               (key === "view" || key.startsWith("filter[") || key.startsWith("expand")))
         )
         .map(
-          ([key, value]) => `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort().join(",") : value}`
+          ([key, value]) =>
+            `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort(compareText).join(",") : value}`
         )
         .sort((a, b) => a.localeCompare(b));
       const pageContext = contextDigest([
         "page",
         scopeKey,
-        ...(this.has("cursor-context-omits-query-shape") ? [] : [fixture.name]),
+        ...(this.has("cursor-context-omits-query-shape") ? [] : [fixture.name, resolvedView]),
         ...contextParams,
       ]);
-      if (rawCursor?.startsWith("ok:")) {
-        const [, cursorOrder, offsetText, horizonText, fromText, cursorContext] = rawCursor.split(":");
-        if (cursorContext !== pageContext && !this.has("accept-cursor-under-other-context")) {
-          error(
-            400,
-            "invalid_cursor",
-            "invalid_request_error",
-            "Cursor was issued under another grant, scope or query context."
-          );
-          return;
-        }
+      if (pagePosition) {
         if (
-          cursorOrder !== undefined &&
-          cursorOrder !== requestedOrder &&
-          !this.has("accept-order-mismatched-cursor")
+          (pagePosition.context !== pageContext ||
+            (rawSyncCursor !== null && rawSyncCursor !== pagePosition.inputSync)) &&
+          !this.has("accept-cursor-under-other-context")
         ) {
-          error(
-            400,
-            "invalid_cursor",
-            "invalid_request_error",
-            `Cursor was issued for order=${cursorOrder} and cannot be followed with order=${requestedOrder}.`
-          );
+          error(400, "invalid_cursor", "invalid_request_error", "Cursor query context differs.");
           return;
         }
-        const parsedOffset = Number(offsetText);
-        cursorOffset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0;
-        // The fourth component, present only within a sync session, is the
-        // horizon that session was anchored to on its first page (clause
-        // 8.9-14). Carrying it in the cursor is what makes the anchoring
-        // survive across pages without the server holding session state.
-        //
-        // Under `re-anchor-sync-session-per-page` it is discarded, so each page
-        // re-reads the clock and writes that arrived mid-session leak into
-        // later pages of the session that should not contain them.
-        const parsedHorizon = Number(horizonText);
-        if (horizonText !== undefined && Number.isInteger(parsedHorizon)) {
-          cursorHorizon = this.has("re-anchor-sync-session-per-page") ? null : parsedHorizon;
+        if (pagePosition.order !== requestedOrder && !this.has("accept-order-mismatched-cursor")) {
+          error(400, "invalid_cursor", "invalid_request_error", "Cursor order differs.");
+          return;
         }
-        // The fifth component is the session's lower bound (the `changes_since`
-        // token that opened it). Core says to pass `changes_since` on the first
-        // request and follow `next_cursor` on later pages, so a cursor alone
-        // must be enough to continue the session; an explicit `changes_since`
-        // on a later page still wins.
-        const parsedFrom = Number(fromText);
-        if (syncHorizon === null && fromText !== undefined && Number.isInteger(parsedFrom)) {
-          syncHorizon = parsedFrom;
-        }
+        cursorOffset = pagePosition.offset;
+        cursorHorizon = this.has("re-anchor-sync-session-per-page") ? null : pagePosition.horizon;
+        syncHorizon = pagePosition.from;
       }
 
       const projection =
@@ -2597,8 +2561,8 @@ export class ReferenceServer {
 
       // --- Incremental sync session (Section 8, clauses 8.9-13/14/15) ---
       //
-      // The session HORIZON is chosen on the first page and then travels in the
-      // page cursor, because clause 8.9-14 requires every page of one session to
+      // The session HORIZON is chosen on the first page and retained in the
+      // page handle state, because clause 8.9-14 requires every page of one session to
       // be anchored to it: "New writes arriving after page 1 MUST NOT appear in
       // later pages of that same session; they surface in the next session via
       // the terminal-page `next_changes_since`." A server that re-read the
@@ -2607,11 +2571,18 @@ export class ReferenceServer {
       // records at all, and nothing reports the gap.
       const isSync = syncHorizon !== null;
       const sessionHorizon = cursorHorizon ?? this.versionClock;
+      if (
+        isSync &&
+        [...parsed.searchParams.keys()].some((key) => key === "expand[]" || key.startsWith("expand_limit["))
+      ) {
+        error(400, "invalid_request", "invalid_request_error", "Expansion is not supported in a sync session.");
+        return;
+      }
 
       // Sparse fieldset (Section 8 `fields`): the request narrows what the
       // caller may already see, never widens it. Schema-required fields are
       // always included for an owner read; a client read stays inside the
-      // grant's own projection. Eligibility above keeps using `projection`.
+      // grant's own projection. Owner eligibility uses the resolved fieldset.
       const requestedFields = parseFieldsParam(parsed.searchParams.get("fields"));
       const required = fixture.requiredFields ?? [];
       const ownerViewFields =
@@ -2680,36 +2651,48 @@ export class ReferenceServer {
         }
         return found;
       };
+      const ownerFilters =
+        principal.kind === "owner"
+          ? [...parsed.searchParams.entries()].flatMap(([key, value]) => {
+              const field = OWNER_EXACT_FILTER.exec(key)?.[1];
+              return field !== undefined && fixture.fields.includes(field) ? [{ field, value }] : [];
+            })
+          : [];
+      const matchesOwnerFilters = (record: Record_): boolean =>
+        ownerFilters.every(({ field, value }) => {
+          const held = record[field];
+          return (
+            (typeof held === "string" || typeof held === "number" || typeof held === "boolean") &&
+            String(held) === value
+          );
+        });
+      const passesOwnerFilters = (record: Record_): boolean =>
+        matchesOwnerFilters(record) ||
+        (this.has("owner-filter-fails-open") && !fixture.records.some(matchesOwnerFilters));
+      const eligibilityFields = principal.kind === "owner" ? dataFields : projection;
+      const projected = (entry: HistoryEntry | undefined): unknown =>
+        Object.fromEntries(
+          Object.entries(entry?.snapshot ?? {}).filter(([field]) => eligibilityFields.includes(field))
+        );
       const visibleIn = (entry: HistoryEntry | undefined): boolean =>
         entry?.snapshot !== undefined &&
         entry.snapshot !== null &&
         inGrantInstances(entry.snapshot as Record_) &&
-        withinWindow(entry.snapshot as Record_);
+        withinWindow(entry.snapshot as Record_) &&
+        passesOwnerFilters(entry.snapshot as Record_);
       // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the window and sync-visibility rules are one ordered pass; each branch carries its own defect switch.
       const syncDelta = (h0: number, h1: number) => {
         const records: Record_[] = [];
         const tombstones: Record<string, unknown>[] = [];
-        let visibleHorizon = 0;
         for (const key of streamKeys) {
           const entries = this.history.get(key) ?? [];
           const [at0, at1] = [entryAt(key, h0), entryAt(key, h1)];
           const [v0, v1] = [visibleIn(at0), visibleIn(at1)];
           const inRange = entries.filter((entry) => entry.version > h0 && entry.version <= h1);
-          const changesProjection = inRange.some(
-            (entry) =>
-              this.has("ignore-projection-for-sync-eligibility") ||
-              [...entry.changed].some((f) => projection.includes(f))
-          );
-          // Clause 8.9-18: a record deleted AFTER page 1 (past the session
-          // horizon) is not served on a later page, even though it was visible
-          // at the horizon.
-          const last = entries.at(-1);
-          const deletedAfterHorizon = last?.snapshot === null && last.version > h1;
-          if (
-            v1 &&
-            (!v0 || changesProjection) &&
-            (!deletedAfterHorizon || this.has("serve-deleted-record-from-session-snapshot"))
-          ) {
+          const changesProjection =
+            (this.has("ignore-projection-for-sync-eligibility") && inRange.length > 0) ||
+            !isDeepStrictEqual(projected(at0), projected(at1));
+          if (v1 && (!v0 || changesProjection)) {
             records.push(at1?.snapshot as Record_);
           }
           const leftWindow = v0 && !v1;
@@ -2725,52 +2708,22 @@ export class ReferenceServer {
               id,
               stream: fixture.name,
               deleted: true,
-              deleted_at: at,
-              emitted_at: at,
+              ...(principal.kind === "owner"
+                ? {
+                    removal: stillExists ? "left_query" : "deleted",
+                    ...(stillExists ? {} : { deleted_at: at, emitted_at: at }),
+                  }
+                : {}),
             });
           }
-          // The token names the last event this context could SEE (clause
-          // 4.3-9), not the global clock: a write confined to fields the grant
-          // does not carry must not move it.
-          let previouslyVisible = false;
-          for (const entry of entries) {
-            if (entry.version > h1) {
-              break;
-            }
-            const nowVisible = visibleIn(entry);
-            if (
-              nowVisible !== previouslyVisible ||
-              (nowVisible && [...entry.changed].some((f) => projection.includes(f)))
-            ) {
-              visibleHorizon = Math.max(visibleHorizon, entry.version);
-            }
-            previouslyVisible = nowVisible;
-          }
         }
-        return { records, tombstones, visibleHorizon };
+        return { records, tombstones };
       };
       const sync = syncHorizon === null ? undefined : syncDelta(syncHorizon, sessionHorizon);
-      const scoped = sync ? sync.records : fixture.records.filter(inGrantInstances).filter(withinWindow);
-      // Owner exact filters only intersect with what the owner may read
-      // (clause 8.1-1a): the result is the scoped records that match.
-      const ownerFilters =
-        principal.kind === "owner"
-          ? [...parsed.searchParams.entries()].flatMap(([key, value]) => {
-              const field = OWNER_EXACT_FILTER.exec(key)?.[1];
-              return field !== undefined && fixture.fields.includes(field) ? [{ field, value }] : [];
-            })
-          : [];
-      const matching = scoped.filter((record) =>
-        ownerFilters.every(({ field, value }) => {
-          const held = record[field];
-          return (
-            (typeof held === "string" || typeof held === "number" || typeof held === "boolean") &&
-            String(held) === value
-          );
-        })
-      );
-      const eligible =
-        matching.length === 0 && ownerFilters.length > 0 && this.has("owner-filter-fails-open") ? scoped : matching;
+      const scoped = sync
+        ? sync.records
+        : fixture.records.filter(inGrantInstances).filter(withinWindow).filter(passesOwnerFilters);
+      const eligible = scoped;
       // Clause 4.3-6: a changes_since feed on a grant that lists several
       // instances is still a changes_since feed (Section 9 RS item 7).
       if (isSync && (instanceIds?.length ?? 0) > 1 && this.has("reject-multi-instance-changes-since")) {
@@ -2811,6 +2764,10 @@ export class ReferenceServer {
           : envelope
       );
       const data = [...live, ...deletions];
+      if (isSync) {
+        const direction = requestedOrder === "asc" ? 1 : -1;
+        data.sort((a, b) => direction * compareText(String(a.id), String(b.id)));
+      }
 
       // An oversized limit is clamped with a non-fatal warning (Section 8). The
       // defect clamps silently, which a client reads as the end of the stream.
@@ -2836,6 +2793,13 @@ export class ReferenceServer {
         nextOffset = cursorOffset + window_.length;
         hasMore = nextOffset < data.length;
       }
+      if (isSync && !this.has("serve-deleted-record-from-session-snapshot")) {
+        window_ = window_.filter((value) => {
+          const row = value as { id: string; deleted?: boolean };
+          const latest = this.history.get(recordKey(fixture.name, row.id))?.at(-1);
+          return row.deleted || latest?.snapshot !== null || latest.version <= sessionHorizon;
+        });
+      }
       const omitNextCursor = this.has("has-more-without-next-cursor") && partitions !== undefined;
       if (
         this.has("malformed-narrowed-read") &&
@@ -2849,12 +2813,17 @@ export class ReferenceServer {
         object: "list",
         url: path,
         has_more: hasMore,
-        // The cursor carries the order it was minted under, so the
-        // direction-binding check above has something to compare against, and
-        // — within a sync session — the horizon that session is anchored to.
+        // The handle reveals no offset, order, horizon, or input token.
         ...(hasMore && !omitNextCursor
           ? {
-              next_cursor: `ok:${requestedOrder}:${nextOffset}:${isSync ? `${sessionHorizon}:${syncHorizon}` : "-:-"}:${pageContext}`,
+              next_cursor: this.pageToken({
+                order: requestedOrder,
+                offset: nextOffset,
+                horizon: isSync ? sessionHorizon : null,
+                from: syncHorizon,
+                context: pageContext,
+                inputSync: pagePosition?.inputSync ?? rawSyncCursor,
+              }),
             }
           : {}),
         // Clause 8.9-15: the terminal page of a changes_since response carries
@@ -2863,10 +2832,7 @@ export class ReferenceServer {
         // being lost between the two.
         ...(isSync && (!hasMore || this.has("next-changes-since-on-every-page")) && !this.has("omit-next-changes-since")
           ? {
-              next_changes_since: syncToken(
-                this.has("token-reveals-hidden-writes") ? sessionHorizon : (sync?.visibleHorizon ?? 0),
-                syncContext
-              ),
+              next_changes_since: this.syncToken(sessionHorizon, syncContext),
             }
           : {}),
         ...(clamped && !this.has("silent-limit-clamp")
@@ -3035,6 +3001,20 @@ export class ReferenceServer {
     return undefined;
   }
 
+  /** Expansion is off the sync surface: a changes_since request, or a page of one, cannot expand. */
+  private syncExpansionRejection(
+    searchParams: URLSearchParams,
+    params: readonly string[]
+  ): { code: string; message: string } | undefined {
+    const cursor = searchParams.get("cursor");
+    const page = cursor === null ? undefined : this.pagePositions.get(cursor);
+    const inSync = searchParams.has("changes_since") || (page !== undefined && page.from !== null);
+    if (inSync && params.some((key) => key === "expand[]" || key.startsWith("expand_limit["))) {
+      return { code: "invalid_request", message: "Expansion is not supported in a sync session." };
+    }
+    return undefined;
+  }
+
   /**
    * The Section 8 query-parameter gate, returning a rejection message or
    * undefined. Two distinct rules share this seam: client-token predicate and
@@ -3047,6 +3027,10 @@ export class ReferenceServer {
     fixture: StreamFixture
   ): { code: string; message: string } | undefined {
     const params = [...searchParams.keys()];
+    const syncExpansion = this.syncExpansionRejection(searchParams, params);
+    if (syncExpansion) {
+      return syncExpansion;
+    }
     // Under `serve-client-token-view` the server pretends `view` is a
     // parameter it implements for every caller: it is neither rejected as
     // outside the client surface below nor caught by the generic

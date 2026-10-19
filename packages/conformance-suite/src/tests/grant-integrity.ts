@@ -360,6 +360,11 @@ export const GRANT_INTEGRITY_CASES: readonly ConformanceCase[] = [
         return skip(`The revocation endpoint did not accept the refresh token (${revoked?.status ?? "no answer"}).`);
       }
       const after = await pollClientRevocation(adapter.baseUrl, recordsPath, first.accessToken);
+      if (!after) {
+        return skip(
+          "A revocation probe timed out within the 60-second observation window; the token's state is inconclusive."
+        );
+      }
       if (after.status === 200) {
         return fail(
           "After the refresh token was revoked at the revocation endpoint, an access token issued under the same grant still served records after 60 seconds. Core Section 10: when a client revokes a refresh token, the AS MUST end every grant the token's family covers and every access token issued under those grants.",

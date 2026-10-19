@@ -730,6 +730,25 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
         );
       }
 
+      // Advance the stream before retiring a position-only token, so later
+      // cases obtain a fresh head position even when grants share cursors.
+      if (adapter.writeRecordField) {
+        const record = openedBody?.data?.find((entry) => typeof entry.id === "string" && !entry.deleted);
+        const field = got.stream.fields.find((name) => !got.stream.primaryKey.includes(name));
+        if (!(record?.id && field)) {
+          return skip("No live record with a non-key field is available to isolate cursor expiry.");
+        }
+        const wrote = await adapter.writeRecordField(
+          got.stream.name,
+          record.id,
+          field,
+          `pdpp-conformance-cursor-isolation-${Date.now()}`
+        );
+        if (!wrote) {
+          return skip("The target could not advance the stream to isolate cursor expiry from later cases.");
+        }
+      }
+
       const expired = await adapter.expireSyncCursor(got.stream.name, resumeToken);
       if (!expired) {
         return skip(

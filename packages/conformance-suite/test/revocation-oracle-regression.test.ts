@@ -79,7 +79,8 @@ for (const caseId of CASES) {
     it(`${caseId} accepts a conformant ${delay}ms positive cache`, async (t) => {
       const { result, elapsed } = await scripted(t, caseId, delay);
       assert.equal(result.outcome, "pass", result.detail ?? "(no detail)");
-      assert.equal(elapsed, delay);
+      assert.ok(elapsed >= delay, "must wait for the conformant cache to expire");
+      assert.ok(elapsed <= Math.min(delay + 4000, 60_000), "backoff must not exceed its cap or deadline");
     });
   }
   it(`${caseId} fails continued success after the 60s ceiling`, async (t) => {

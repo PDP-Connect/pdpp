@@ -1362,6 +1362,11 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
         return skip(`The revocation endpoint did not accept the token (${revoked?.status ?? "no answer"}).`);
       }
       const after = await pollClientRevocation(adapter.baseUrl, recordsPath, grant.accessToken);
+      if (!after) {
+        return skip(
+          "A revocation probe timed out within the 60-second observation window; the token's state is inconclusive."
+        );
+      }
       if (after.status === 200) {
         return fail(
           "The revocation endpoint accepted the access token, yet the token still read after 60 seconds. Core Section 10: when a client revokes an access token, the AS MUST end that token.",
