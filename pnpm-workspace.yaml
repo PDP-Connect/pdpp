@@ -28,3 +28,8 @@ minimumReleaseAgeExclude:
   - lucide-react@1.43.0
   - patchright-core@1.63.0
   - patchright@1.63.0
+  - fumadocs-core@16.17.7
+  - fumadocs-mdx@15.4.8
+  - fumadocs-ui@16.17.7
+  - postcss@8.5.31
+  - shadcn@4.22.1
