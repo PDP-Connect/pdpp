@@ -34,6 +34,7 @@ type Seeded = Context["streams"][number];
 
 const MAX_HOPS = 50;
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const YEAR_PREFIX = /^\d{4}-/;
 
 function asList(json: unknown): ListBody {
   return typeof json === "object" && json !== null ? (json as ListBody) : {};
@@ -638,11 +639,30 @@ const WINDOW_CASES: readonly ConformanceCase[] = [
       if (mover === undefined) {
         return skip("The grant's first session delivered no record inside the window to move.");
       }
-      const earlier = DATE_ONLY.test(arranged.cutoff) ? "2000-01-01" : "2000-01-01T00:00:00Z";
+      const earlierInstant = new Date(Date.parse(arranged.cutoff) - 86_400_000).toISOString();
+      const earlier = DATE_ONLY.test(arranged.cutoff) ? earlierInstant.slice(0, 10) : earlierInstant;
+      if (!(YEAR_PREFIX.test(earlier) && Date.parse(earlier) < Date.parse(arranged.cutoff))) {
+        return skip("Cannot construct a valid bound strictly before the arranged cutoff.");
+      }
       const wrote = await adapter.writeRecordField(arranged.stream.name, mover, arranged.field, earlier);
       if (!wrote) {
         return skip(`The target could not write field '${arranged.field}' of record '${mover}'.`);
       }
+      const observed = await request(adapter.baseUrl, arranged.recordsPath, {
+        token: (await adapter.ownerToken()) as string,
+        query: { ...arranged.ownerQuery, limit: "100" },
+      });
+      const observedBody = asList(observed.json);
+      const movedValue = observedBody.data?.find((row) => row.id === mover)?.data?.[arranged.field];
+      if (
+        observed.status !== 200 ||
+        observedBody.has_more === true ||
+        typeof movedValue !== "string" ||
+        !(Date.parse(movedValue) < Date.parse(arranged.cutoff))
+      ) {
+        return skip("The owner read did not verify that the record moved strictly outside the window.");
+      }
+      evidence.push(observed.evidence);
       const next = await read(openedBody.next_changes_since);
       evidence.push(next.evidence);
       if (next.status !== 200) {

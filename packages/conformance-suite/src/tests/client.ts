@@ -436,13 +436,17 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
       }
       client.fixture.configure({ kind: "page", nextChangesSince: CHANGES_SINCE, records: [{ id: "a" }, { id: "b" }] });
       await client.syncOnce(STREAM);
-      const held = client.storedCopy(STREAM).join(",");
+      const held = [...client.storedCopy(STREAM)].sort();
       client.fixture.configure({ kind: "page", nextChangesSince: CHANGES_SINCE, records: [{ id: "b" }, { id: "c" }] });
       const before = client.fixture.requestLog().length;
       await client.syncOnce(STREAM);
       const requests = requestAfter(client, before);
-      const copy = client.storedCopy(STREAM).join(",");
-      return held === "a,b" && requests[0]?.query.changes_since === BEGINNING && copy === "b,c"
+      const copy = [...client.storedCopy(STREAM)].sort();
+      const unique = new Set(held).size === held.length && new Set(copy).size === copy.length;
+      return unique &&
+        held.join(",") === "a,b" &&
+        requests[0]?.query.changes_since === BEGINNING &&
+        copy.join(",") === "b,c"
         ? pass()
         : fail(
             `Expected the second beginning session to leave exactly b,c (first copy ${held}); observed ${copy}. Core Section 4: after a completed changes_since=beginning session the client MUST replace its copy of the stream with that session's result.`
@@ -469,26 +473,26 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
       if (!selection) {
         return fail("The client sent no selection, so what it asserted about the source is unobserved.");
       }
-      const uris: string[] = [];
-      const authorityKeys: string[] = [];
-      const walk = (value: unknown): void => {
-        if (typeof value === "string" && value.includes("://")) {
-          uris.push(value);
-        } else if (value !== null && typeof value === "object") {
-          for (const [k, v] of Object.entries(value)) {
-            if (k === "authority" || k.startsWith("declaration")) {
-              authorityKeys.push(k);
-            }
-            walk(v);
+      const introduced: string[] = [];
+      const source = selection.source as Record<string, unknown> | undefined;
+      if (source?.id !== supplied) {
+        introduced.push("source.id");
+      }
+      // Type, purpose, view and client-claim URIs do not assert source authority.
+      for (const object of [selection, source]) {
+        if (!object) {
+          continue;
+        }
+        for (const key of Object.keys(object)) {
+          if (key === "authority" || key.startsWith("declaration") || key === "source_authority") {
+            introduced.push(key);
           }
         }
-      };
-      walk(selection);
-      const introduced = uris.filter((uri) => uri !== supplied);
-      return introduced.length === 0 && authorityKeys.length === 0
+      }
+      return introduced.length === 0
         ? pass()
         : fail(
-            `The selection introduced ${JSON.stringify([...introduced, ...authorityKeys])} beyond the source id the caller supplied. Core Section 5: a client MUST NOT introduce a new source authority or declaration URI during authorization; the AS decides what it accepts as a declaration.`
+            `The selection introduced ${JSON.stringify(introduced)} beyond the source id the caller supplied. Core Section 5: a client MUST NOT introduce a new source authority or declaration URI during authorization; the AS decides what it accepts as a declaration.`
           );
     },
   },

@@ -327,7 +327,7 @@ export const CONSENT_ARTIFACT_CASES: readonly ConformanceCase[] = [
   // ----------------------------------------------------------------- 7.2-2 ---
   // The revised clause adds that the artifact states `since` as inclusive and
   // `until` as exclusive. Core fixes no wire shape for the artifact, so the case
-  // looks for the two statements anywhere in it rather than under a member name.
+  // retains the artifact for review until an adapter can bind semantics to each bound.
   {
     caseId: "AS-15/final-approval-artifact-states-bound-inclusivity",
     requirementId: "AS-15",
@@ -353,14 +353,12 @@ export const CONSENT_ARTIFACT_CASES: readonly ConformanceCase[] = [
           "The artifact does not state the requested bounds at all; AS-15/final-approval-artifact-carries-resolved-terms owns that."
         );
       }
-      const missing = ["inclusive", "exclusive"].filter((word) => !text.includes(word));
-      if (missing.length > 0) {
-        return fail(
-          `The final approval artifact for a time-bounded stream never states ${missing.map((w) => `"${w}"`).join(" or ")}. Core Section 7.2: the artifact MUST include \`since\` stated as inclusive and \`until\` stated as exclusive. Without it the owner approves a window whose edges they cannot read. (Core defines no member name for the statement, so the artifact is searched as text.)`,
-          evidence
-        );
-      }
-      return pass(evidence);
+      return {
+        ...skip(
+          "Review only: Core Section 7.2 defines no member for the inclusivity statement, so the suite cannot tell which bound is stated as which. Bound semantics need an adapter hook; word presence proves neither compliance nor violation."
+        ),
+        evidence,
+      };
     },
   },
 

@@ -53,7 +53,7 @@ function conformingGrant(): Record<string, unknown> {
         name: "top_artists",
         instance_ids: ["spotify-account-a"],
         fields: ["id", "name", "genres", "popularity", "source_updated_at"],
-        time_constraint: { field: "source_updated_at", since: "2025-09-28T00:00:00Z" },
+        time_constraint: { field: "source_updated_at", type: "date-time", since: "2025-09-28T00:00:00Z" },
       },
     ],
     retention: { max_duration: "P1Y", on_expiry: "delete" },
@@ -379,7 +379,7 @@ describe("Section 7 grant schema oracle", () => {
         g.retention = { max_duration: "P0.5Y", on_expiry: "delete" };
       }),
       mutate((g) => {
-        firstStream(g).time_constraint = { field: "source_updated_at", since: "not-a-date" };
+        firstStream(g).time_constraint = { field: "source_updated_at", type: "date-time", since: "not-a-date" };
       }),
     ]) {
       assert.deepEqual(

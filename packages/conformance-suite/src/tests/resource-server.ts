@@ -659,9 +659,14 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
           `The blob endpoint answered ${full.status} rather than a direct 200, so there is no direct response to check for Accept-Ranges.`
         );
       }
+      if (full.body.length === 0) {
+        return skip("The empty blob fixture cannot arrange a satisfiable byte range.");
+      }
+      const rangeLength = Math.min(4, full.body.length);
+      const range = `bytes=0-${rangeLength - 1}`;
       const ranged = await requestBytes(adapter.baseUrl, blobPath, {
         token: grant.accessToken,
-        headers: { Range: "bytes=0-3" },
+        headers: { Range: range },
       });
       if (ranged.status !== 206) {
         return unsupported(
@@ -669,8 +674,11 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
         );
       }
       const evidence = [full.evidence, ranged.evidence];
-      if (ranged.body.length !== 4) {
-        return fail(`A Range request for bytes=0-3 returned a 206 with ${ranged.body.length} bytes, not 4.`, evidence);
+      if (ranged.body.length !== rangeLength) {
+        return fail(
+          `A Range request for ${range} returned a 206 with ${ranged.body.length} bytes, not ${rangeLength}.`,
+          evidence
+        );
       }
       if (
         !(full.headers.get("accept-ranges") ?? "")

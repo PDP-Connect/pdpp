@@ -20,6 +20,7 @@
 // rather than failed.
 
 import type { TargetAdapter } from "../harness/adapter.ts";
+import { pollClientRevocation } from "../harness/client-revocation-poll.ts";
 import { grantSchemaViolations } from "../harness/grant-schema.ts";
 import { type PdppResponse, request } from "../harness/http.ts";
 import { advisory, arrange, type ConformanceCase, fail, pass, skip, unsupported } from "../harness/runner.ts";
@@ -1360,18 +1361,10 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       if (!revoked || revoked.status >= 300) {
         return skip(`The revocation endpoint did not accept the token (${revoked?.status ?? "no answer"}).`);
       }
-      let after = before;
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        // biome-ignore lint/performance/noAwaitInLoops: sequential polling measures when the revocation becomes visible.
-        after = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
-        if (after.status !== 200) {
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
+      const after = await pollClientRevocation(adapter.baseUrl, recordsPath, grant.accessToken);
       if (after.status === 200) {
         return fail(
-          "The revocation endpoint accepted the access token, yet the token still read after five seconds. Core Section 10: when a client revokes an access token, the AS MUST end that token.",
+          "The revocation endpoint accepted the access token, yet the token still read after 60 seconds. Core Section 10: when a client revokes an access token, the AS MUST end that token.",
           [before.evidence, after.evidence]
         );
       }

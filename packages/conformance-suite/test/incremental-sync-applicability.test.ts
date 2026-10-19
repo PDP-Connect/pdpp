@@ -25,6 +25,7 @@ import { makeContext, runCase } from "../src/harness/runner.ts";
 import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import type { StreamFixture } from "../src/targets/reference-server.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
+import { APPEND_ONLY_ONLY } from "./fixtures/append-only-only-target.ts";
 
 function caseById(caseId: string) {
   const found = QUERY_SURFACE_CASES.find((c) => c.caseId === caseId);
@@ -48,7 +49,7 @@ async function runAgainst(caseId: string, fixtures: readonly StreamFixture[]) {
 // must not let through as `unsupported`.
 const MUTABLE_PLUS_APPEND_ONLY = DEFAULT_FIXTURES;
 
-const APPEND_ONLY_ONLY: readonly StreamFixture[] = DEFAULT_FIXTURES.filter((f) => f.semantics === "append_only");
+// Includes enough records to exercise a real page cursor.
 
 describe("RS-7/RS-8 applicability derives from seeded stream semantics, not the incrementalSync flag", () => {
   it("stays applicable when a mutable_state stream is seeded, even though incrementalSync is false", async () => {
@@ -113,20 +114,16 @@ describe("RS-7/RS-8 applicability derives from seeded stream semantics, not the 
     );
   });
 
-  it("stays unsupported when the seeded inventory is genuinely append-only only", async () => {
+  it("keeps only mutable-write probes unsupported on append-only inventory", async () => {
+    const deletion = await runAgainst("RS-7/deletion-surfaces-as-a-tombstone", APPEND_ONLY_ONLY);
+    assert.equal(deletion.outcome, "unsupported");
     for (const caseId of [
-      "RS-7/deletion-surfaces-as-a-tombstone",
       "RS-8/terminal-page-carries-next-changes-since",
       "RS-6/cursor-not-accepted-as-changes-since",
     ]) {
       // biome-ignore lint/performance/noAwaitInLoops: each case runs against its own isolated adapter instance.
       const result = await runAgainst(caseId, APPEND_ONLY_ONLY);
-      assert.equal(
-        result.outcome,
-        "unsupported",
-        `${caseId} must be "unsupported" against an inventory with no mutable_state stream: incremental ` +
-          "sync's tombstone and terminal-page obligations do not bind an append-only-only target."
-      );
+      assert.equal(result.outcome, "pass", result.detail ?? "(no detail)");
     }
   });
 

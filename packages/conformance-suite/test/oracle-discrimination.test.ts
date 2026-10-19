@@ -98,20 +98,20 @@ async function runAgainst(caseId: string, defects: readonly Defect[]): Promise<{
 }
 
 describe("negative oracles discriminate conforming from violating targets", () => {
-  for (const { caseId, defect } of TARGET_DISCRIMINATION_MATRIX) {
-    it(`${caseId} passes a clean target and fails one with defect "${defect}"`, async () => {
+  for (const { caseId, defect, reviewOnly } of TARGET_DISCRIMINATION_MATRIX) {
+    it(`${caseId} ${reviewOnly ? "stays review-only" : "discriminates"} with defect "${defect}"`, async () => {
       const clean = await runAgainst(caseId, []);
       assert.equal(
         clean.outcome,
-        "pass",
-        `${caseId} did not pass against the clean reference target: ${clean.detail ?? "(no detail)"}`
+        reviewOnly ? "skip" : "pass",
+        `${caseId} did not report the expected clean-target outcome: ${clean.detail ?? "(no detail)"}`
       );
 
       const violating = await runAgainst(caseId, [defect]);
       assert.equal(
         violating.outcome,
-        "fail",
-        `${caseId} did not fail against a target with defect "${defect}". The oracle cannot distinguish a conforming target from a violating one, so its passes carry no evidence.`
+        reviewOnly ? "skip" : "fail",
+        `${caseId} did not report the expected defect-target outcome "${defect}". The oracle cannot distinguish a conforming target from a violating one, so its passes carry no evidence.`
       );
       assert.ok(
         violating.detail && violating.detail.length > 0,

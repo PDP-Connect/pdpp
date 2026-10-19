@@ -12,11 +12,12 @@
 // approved the narrower thing.
 
 import type { RefreshableGrant, RefreshRefusal } from "../harness/adapter.ts";
+import { pollClientRevocation } from "../harness/client-revocation-poll.ts";
 import { type PdppResponse, request } from "../harness/http.ts";
 import { arrange, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 import { introspectByAnyRoute } from "./authorization-server.ts";
-import { pollResourceServerRefusal, REVOCATION_TIMING } from "./grant-lifecycle.ts";
+import { inactiveTokenFault, pollResourceServerRefusal, REVOCATION_TIMING } from "./grant-lifecycle.ts";
 
 const isGrant = (value: RefreshableGrant | RefreshRefusal): value is RefreshableGrant => "refreshToken" in value;
 
@@ -358,14 +359,15 @@ export const GRANT_INTEGRITY_CASES: readonly ConformanceCase[] = [
       if (!revoked || revoked.status >= 300) {
         return skip(`The revocation endpoint did not accept the refresh token (${revoked?.status ?? "no answer"}).`);
       }
-      const after = await request(adapter.baseUrl, recordsPath, { token: first.accessToken });
+      const after = await pollClientRevocation(adapter.baseUrl, recordsPath, first.accessToken);
       if (after.status === 200) {
         return fail(
-          "After the refresh token was revoked at the revocation endpoint, an access token issued under the same grant still served records. Core Section 10: when a client revokes a refresh token, the AS MUST end every grant the token's family covers and every access token issued under those grants.",
+          "After the refresh token was revoked at the revocation endpoint, an access token issued under the same grant still served records after 60 seconds. Core Section 10: when a client revokes a refresh token, the AS MUST end every grant the token's family covers and every access token issued under those grants.",
           [before.evidence, after.evidence]
         );
       }
-      return pass([before.evidence, after.evidence]);
+      const fault = inactiveTokenFault(after, "grant_revoked");
+      return fault ? fail(fault, [before.evidence, after.evidence]) : pass([before.evidence, after.evidence]);
     },
   },
 

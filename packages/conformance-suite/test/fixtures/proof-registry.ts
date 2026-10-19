@@ -13,6 +13,8 @@ import type { Defect } from "../../src/targets/reference-server.ts";
 export const TARGET_DISCRIMINATION_MATRIX: readonly {
   readonly caseId: string;
   readonly defect: Defect;
+  /** No semantic hook: this row proves review-only honesty, not a failure oracle. */
+  readonly reviewOnly?: true;
 }[] = [
   { caseId: "RS-2/ungranted-stream-refused", defect: "ignore-grant-streams" },
   {
@@ -436,6 +438,7 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   // made RS-8 fail before this batch, so the case is proven to catch the very
   // defect the target was just fixed for.
   {
+    // Append-only positive and negative controls: query-schema-regression.test.ts.
     caseId: "RS-8/terminal-page-carries-next-changes-since",
     defect: "omit-next-changes-since",
   },
@@ -471,6 +474,7 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   // as a client error and invites a retry that cannot succeed, where 410 tells
   // the client to discard its baseline.
   {
+    // Append-only positive and negative controls: query-schema-regression.test.ts.
     caseId: "RS-7/expired-sync-cursor-reported-as-gone",
     defect: "misclassify-expired-sync-cursor",
   },
@@ -535,6 +539,7 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   //
   // A tombstone run through the sparse `fields=` projection.
   {
+    // Conformant context-bound control: query-schema-regression.test.ts.
     caseId: "RS-7/tombstone-envelope-survives-sparse-fields",
     defect: "project-tombstones-through-fields",
   },
@@ -587,6 +592,7 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "AS-15/approval-requires-the-issued-revision", defect: "accept-forged-review-revision" },
   { caseId: "AS-8/expired-grant-refused", defect: "serve-expired-grant" },
   { caseId: "AS-2/declared-field-accepted", defect: "refuse-field-selection" },
+  // Append-only positive and negative controls: query-schema-regression.test.ts.
   { caseId: "RS-6/cursor-not-accepted-as-changes-since", defect: "accept-page-cursor-as-changes-since" },
   { caseId: "RS-1/single-record-read", defect: "serve-unknown-record-id" },
   { caseId: "RS-2/time-constraint-enforced", defect: "ignore-time-constraint" },
@@ -607,7 +613,11 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   // 4.3-16, 8.9-11, 8.9-17, 8.9-18).
   { caseId: "RS-11/absent-version-header-reports-the-selected-version", defect: "omit-pdpp-version-response-header" },
   { caseId: "AS-9/introspection-carries-exp-for-an-expiring-token", defect: "omit-introspection-exp" },
-  { caseId: "AS-15/final-approval-artifact-states-bound-inclusivity", defect: "omit-bound-inclusivity-statement" },
+  {
+    caseId: "AS-15/final-approval-artifact-states-bound-inclusivity",
+    defect: "omit-bound-inclusivity-statement",
+    reviewOnly: true,
+  },
   { caseId: "RS-22/time-window-compared-as-instants-not-text", defect: "compare-time-bounds-as-text" },
   { caseId: "AS-25/revocation-endpoint-is-advertised", defect: "omit-revocation-endpoint-metadata" },
   { caseId: "AS-25/client-revocation-of-an-access-token-ends-it", defect: "revocation-endpoint-ignores-access-tokens" },
@@ -669,7 +679,8 @@ export const BESPOKE_PROOFS: readonly { readonly caseId: string; readonly proof:
   },
   {
     caseId: "AS-3/issued-grant-artifact-matches-section-7-schema",
-    proof: "grant-schema-oracle.test.ts: missing-version artifact",
+    proof:
+      "grant-schema-oracle.test.ts: missing-version artifact; query-schema-regression.test.ts: missing and unknown time_constraint.type",
   },
   {
     caseId: "AS-18/introspection-requires-authentication",

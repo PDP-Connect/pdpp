@@ -11,9 +11,8 @@
 // enforce every grant perfectly and still hand a client a shape it cannot page
 // through or resume from.
 //
-// Every case here is gated on capability the target actually advertises, either
-// through `TargetCapabilities` or through what its stream metadata declares. A
-// requirement is never reported against a target that does not claim the feature.
+// Incremental sync is mandatory on every stream. Only probes that need mutable
+// writes or deletion are gated on mutable_state inventory.
 
 import { changesSinceBootstrapOf } from "../harness/adapter.ts";
 import { errorBody, request } from "../harness/http.ts";
@@ -110,39 +109,11 @@ async function grantForFirstStream(
 /**
  * Whether the seeded inventory contains a `mutable_state` stream.
  *
- * RS-7's own MUST binds whenever such a stream is served (Core Section 4 and
- * Section 9 RS item 7), independent of whether the target also declares the
- * `incrementalSync` capability flag. A target that seeds mutable-state data
- * but leaves that flag false still owes the behavior; gating on the flag
- * would let a false declaration hide it as `unsupported` instead of
- * reporting the missing evidence or failure the run actually found.
+ * This gate is only for cases arranging mutable writes or deletions. Universal
+ * sync, terminal-token and cursor-space obligations use any seeded stream.
  */
 function hasMutableStateStream(streams: Parameters<ConformanceCase["run"]>[0]["streams"]): boolean {
   return streams.some((s) => s.semantics === "mutable_state");
-}
-
-/**
- * Obtain a grant over a `mutable_state` stream specifically, or a reason the
- * case must skip. Incremental-sync cases must not fall back to an arbitrary
- * first stream when the inventory is mixed: an append-only stream can never
- * exhibit RS-7's tombstone or RS-8's terminal-page behavior, so picking one
- * would silently make the case vacuous instead of exercising the requirement.
- */
-async function grantForMutableStream(
-  adapter: Parameters<ConformanceCase["run"]>[0]["adapter"],
-  streams: Parameters<ConformanceCase["run"]>[0]["streams"]
-) {
-  const stream = streams.find((s) => s.semantics === "mutable_state");
-  if (!stream) {
-    return { skip: "The adapter seeded no mutable_state stream." as const };
-  }
-  const grant = await adapter.issueGrant({
-    streams: [{ name: stream.name, fields: [...stream.fields] }],
-  });
-  if (!grant) {
-    return { skip: "The target could not issue a grant for the mutable_state stream." as const };
-  }
-  return { grant, stream };
 }
 
 /** What `armTombstone` hands the case once a record has been deleted. */
@@ -150,6 +121,7 @@ interface ArmedTombstone {
   deleted: Evidence;
   owner: string;
   ownerQuery: Record<string, string>;
+  projectionTokens: ReadonlyMap<string, string>;
   recordsPath: string;
   resumeToken: string;
   stream: Parameters<ConformanceCase["run"]>[0]["streams"][number];
@@ -166,11 +138,10 @@ interface ArmedTombstone {
  * A returned verdict means the arrangement itself decided the case (a skip, or
  * a failure to open the session at all).
  */
-async function armTombstone({
-  adapter,
-  streams,
-  path,
-}: Parameters<ConformanceCase["run"]>[0]): Promise<CaseVerdict | ArmedTombstone> {
+async function armTombstone(
+  { adapter, streams, path }: Parameters<ConformanceCase["run"]>[0],
+  projections: readonly string[] = []
+): Promise<CaseVerdict | ArmedTombstone> {
   // Owner token: deletion is an owner operation, and the sync leg must run
   // as the same principal so the two cursors share a scope.
   const owner = await adapter.ownerToken();
@@ -217,6 +188,24 @@ async function armTombstone({
     return skip("The sync session returned no live record to delete.");
   }
 
+  // Bind each projection to its own session before deleting the shared victim.
+  const projectionTokens = new Map<string, string>();
+  for (const fields of projections) {
+    // biome-ignore lint/performance/noAwaitInLoops: each baseline is an independent probe; sequential keeps the skip naming the first failing projection.
+    const projected = await request(adapter.baseUrl, recordsPath, {
+      token: owner,
+      query: { ...ownerQuery, changes_since: changesSinceBootstrapOf(adapter), fields },
+    });
+    const body = asList(projected.json);
+    if (projected.status !== 200 || body?.has_more !== false || !body.next_changes_since) {
+      return skip(`Could not establish a terminal sync session for fields=${fields}.`);
+    }
+    if (!body.data?.some((record) => record.id === victim.id && !record.deleted)) {
+      return skip(`The victim was not visible in the baseline for fields=${fields}.`);
+    }
+    projectionTokens.set(fields, body.next_changes_since);
+  }
+
   // 2. Delete it.
   const deleted = await request(
     adapter.baseUrl,
@@ -228,7 +217,16 @@ async function armTombstone({
       `Deleting a record returned ${deleted.status}, so this deployment does not expose the deletion this requirement is about.`
     );
   }
-  return { deleted: deleted.evidence, owner, ownerQuery, recordsPath, resumeToken, stream, victimId: victim.id };
+  return {
+    deleted: deleted.evidence,
+    owner,
+    ownerQuery,
+    recordsPath,
+    resumeToken,
+    projectionTokens,
+    stream,
+    victimId: victim.id,
+  };
 }
 
 export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
@@ -686,11 +684,10 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-7/expired-sync-cursor-reported-as-gone",
     requirementId: "RS-7",
-    appliesWhen: (_adapter, streams) => streams.length === 0 || hasMutableStateStream(streams),
     assertion:
       "An expired changes_since cursor is answered with 410 cursor_expired, while a live cursor from the same session still resumes.",
     async run({ adapter, streams, path }) {
-      const got = await grantForMutableStream(adapter, streams);
+      const got = await grantForFirstStream(adapter, streams);
       if ("skip" in got) {
         return skip(got.skip);
       }
@@ -701,43 +698,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
       }
       const recordsPath = path(`/streams/${encodeURIComponent(got.stream.name)}/records`);
 
-      // Advance the stream before opening the session this case will expire.
-      //
-      // Cases share one target by design (see runCases), so this one must not
-      // retire a cursor another case is still holding. A sync token names a
-      // position in the stream's history, and two sessions opened with nothing
-      // in between name the SAME position — so expiring "this case's token"
-      // would expire the identical token any later case obtains. Found exactly
-      // that way: the tombstone case began failing with "Resuming a sync from a
-      // valid next_changes_since returned 410".
-      //
-      // Writing first moves the position, so the token opened below is this
-      // case's alone. A target that cannot write reports skip rather than
-      // damaging the rest of the run.
-      const writable = got.stream.fields.find((f) => !got.stream.primaryKey.includes(f));
-      if (!(adapter.writeRecordField && writable)) {
-        return skip(
-          "This case needs writeRecordField and a non-primary-key field, so it can open a sync session at a position no other case shares. Without that, expiring its cursor would retire the identical token a later case obtains, and this case would corrupt the run rather than test it."
-        );
-      }
-      const opening = await request(adapter.baseUrl, recordsPath, {
-        token: got.grant.accessToken,
-        query: { changes_since: changesSinceBootstrapOf(adapter) },
-      });
-      const seed = asList(opening.json)?.data?.find((r) => typeof r.id === "string" && !r.deleted)?.id;
-      if (seed === undefined) {
-        return skip("The opening sync session returned no record to advance the stream with.");
-      }
-      const advanced = await adapter.writeRecordField(
-        got.stream.name,
-        seed,
-        writable,
-        `pdpp-conformance-expiry-${Date.now()}`
-      );
-      if (!advanced) {
-        return skip(`The target could not write field '${writable}', so this case cannot isolate its own cursor.`);
-      }
-
+      // This case has its own grant; context-bound tokens cannot retire another grant\'s session.
       const opened = await request(adapter.baseUrl, recordsPath, {
         token: got.grant.accessToken,
         query: { changes_since: changesSinceBootstrapOf(adapter) },
@@ -801,15 +762,6 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
         );
       }
 
-      // Leave the stream past the position that was just retired.
-      //
-      // A sync token names a position in the stream's history, so a later case
-      // opening a session while the stream sits where it does now would be
-      // handed the very token this case expired — and would see a 410 it has no
-      // way to explain. Advancing once restores a usable position for everyone
-      // after us. Cases share one target by design (runCases), and a case that
-      // retires a cursor owes the run this cleanup.
-      await adapter.writeRecordField(got.stream.name, seed, writable, `pdpp-conformance-expiry-done-${Date.now()}`);
       return pass(evidence);
     },
   },
@@ -822,11 +774,10 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-8/terminal-page-carries-next-changes-since",
     requirementId: "RS-8",
-    appliesWhen: (_adapter, streams) => streams.length === 0 || hasMutableStateStream(streams),
     assertion:
       "The terminal page of a changes_since response carries next_changes_since so the next session can resume.",
     async run({ adapter, streams, path }) {
-      const got = await grantForMutableStream(adapter, streams);
+      const got = await grantForFirstStream(adapter, streams);
       if ("skip" in got) {
         return skip(got.skip);
       }
@@ -838,7 +789,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
       );
       if (response.status !== 200) {
         return fail(
-          `The seeded inventory serves a mutable_state stream, which obliges changes_since support (RS-7), but a changes_since request returned ${response.status}.`,
+          `The seeded inventory serves a stream, which obliges changes_since support (RS-7), but a changes_since request returned ${response.status}.`,
           [response.evidence]
         );
       }
@@ -956,11 +907,10 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   {
     caseId: "RS-6/cursor-not-accepted-as-changes-since",
     requirementId: "RS-6",
-    appliesWhen: (_adapter, streams) => streams.length === 0 || hasMutableStateStream(streams),
     assertion:
       "A page cursor presented as changes_since is rejected rather than silently accepted (distinct token spaces).",
     async run({ adapter, streams, path }) {
-      const got = await grantForMutableStream(adapter, streams);
+      const got = await grantForFirstStream(adapter, streams);
       if ("skip" in got) {
         return skip(got.skip);
       }
@@ -1168,7 +1118,7 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
   // anything else.
   //
   // Same round trip as RS-7/deletion-surfaces-as-a-tombstone (armTombstone):
-  // one deletion, then the same resume token read three ways.
+  // one deletion, with an independently bound baseline for each projection.
   {
     caseId: "RS-7/tombstone-envelope-survives-sparse-fields",
     requirementId: "RS-7",
@@ -1177,19 +1127,27 @@ export const QUERY_SURFACE_CASES: readonly ConformanceCase[] = [
       "A tombstone in a changes_since feed keeps its full envelope and carries no data when the request narrows the page with fields=.",
     async run(context) {
       const { adapter } = context;
-      const armed = await armTombstone(context);
+      const stream = [...context.streams].reverse().find((s) => s.semantics === "mutable_state");
+      if (!stream) {
+        return skip("No seeded mutable_state stream.");
+      }
+      const nonKey = stream.fields.find((field) => field !== "id" && !stream.primaryKey.includes(field));
+      const narrowings = ["id", ...(nonKey ? [nonKey] : [])];
+      const armed = await armTombstone(context, narrowings);
       if ("outcome" in armed) {
         return armed;
       }
-      const { deleted, owner, ownerQuery, recordsPath, resumeToken, stream, victimId } = armed;
-      const nonKey = stream.fields.find((field) => field !== "id" && !stream.primaryKey.includes(field));
-      const narrowings = ["id", ...(nonKey ? [nonKey] : [])];
+      const { deleted, owner, ownerQuery, recordsPath, projectionTokens, victimId } = armed;
       const evidence: Evidence[] = [deleted];
       for (const fields of narrowings) {
+        const resumeFrom = projectionTokens.get(fields);
+        if (resumeFrom === undefined) {
+          return skip(`No sync session was bound for fields=${fields}.`);
+        }
         // biome-ignore lint/performance/noAwaitInLoops: each read is an independent probe of one shared arrangement; sequential keeps evidence ordered.
         const resumed = await request(adapter.baseUrl, recordsPath, {
           token: owner,
-          query: { ...ownerQuery, changes_since: resumeToken, fields },
+          query: { ...ownerQuery, changes_since: resumeFrom, fields },
         });
         evidence.push(resumed.evidence);
         if (resumed.status !== 200) {

@@ -711,8 +711,8 @@ interface GrantState {
     fields: readonly string[];
     /** Instance handles the grant lists for this stream (Core Section 7); absent means the single seeded instance. */
     instanceIds?: readonly string[];
-    /** Frozen consent window, when the grant carries one (Core Section 7). */
-    timeConstraint?: { field: string; from?: string; to?: string };
+    /** Frozen consent window and declaration-resolved type (Core Section 7). */
+    timeConstraint?: { field: string; type: "date" | "date-time"; from?: string; to?: string };
     /**
      * The view name this stream's `fields` were resolved FROM, when the request
      * named one.
@@ -1625,7 +1625,9 @@ export class ReferenceServer {
         name: s.name,
         fields: this.resolveFields(s.name, s.fields),
         ...(s.instanceIds ? { instanceIds: [...s.instanceIds] } : {}),
-        ...(s.timeConstraint ? { timeConstraint: s.timeConstraint } : {}),
+        ...(s.timeConstraint
+          ? { timeConstraint: { ...s.timeConstraint, type: this.findStream(s.name)?.consentTimeFormat ?? "date-time" } }
+          : {}),
         ...(s.resolvedFromView === undefined ? {} : { resolvedFromView: s.resolvedFromView }),
       })),
       issuedAt: new Date().toISOString(),
@@ -1699,6 +1701,7 @@ export class ReferenceServer {
           ? {
               time_constraint: {
                 field: stream.timeConstraint.field,
+                type: stream.timeConstraint.type,
                 ...(stream.timeConstraint.from === undefined
                   ? {}
                   : { since: this.issuedBound(stream.timeConstraint.from) }),
@@ -2425,14 +2428,33 @@ export class ReferenceServer {
         return;
       }
 
-      // Section 8: a token is bound to the grant (owner: subject and scope) and
-      // to the stream it was issued for, and the RS MUST reject it under
-      // another as `invalid_cursor`. `fields` is deliberately not part of the
-      // binding for a sync token: Core's rule for a token names the query
-      // context without listing it, and the tombstone cases read one token
-      // under several `fields` selections.
+      // Section 8 binds sync tokens to the principal, stream and query context.
       const scopeKey = principal.kind === "client" ? `grant:${grant?.grantId}` : `owner:${subjectId}`;
-      const syncContext = contextDigest(["sync", scopeKey, fixture.name]);
+      const syncShape = [...parsed.searchParams.entries()]
+        .filter(([key]) => key === "fields" || key === "view" || key.startsWith("filter[") || key.startsWith("expand"))
+        .map(
+          ([key, value]) => `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort().join(",") : value}`
+        )
+        // Code-unit order, as the default sort; localeCompare would reorder keys and values.
+        .sort((a, b) => {
+          if (a === b) {
+            return 0;
+          }
+          return a < b ? -1 : 1;
+        });
+      const view = parsed.searchParams.get("view");
+      const resolvedView =
+        principal.kind === "owner" && view
+          ? [...(this.views.get(viewKey(fixture.name, view)) ?? [])].sort().join(",")
+          : "";
+      const syncContext = contextDigest([
+        "sync",
+        scopeKey,
+        fixture.name,
+        parsed.searchParams.get("order") ?? "desc",
+        resolvedView,
+        ...syncShape,
+      ]);
       if (
         parsedSyncToken?.context !== undefined &&
         parsedSyncToken.context !== syncContext &&

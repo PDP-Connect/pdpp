@@ -21,6 +21,7 @@ import type { SeededStream, SelectionOutcome, TargetAdapter } from "../harness/a
 import { request } from "../harness/http.ts";
 import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
+import { compareDateTimes, parseDateTime } from "../targets/rfc3339.ts";
 
 const NO_HOOK =
   "The adapter has no submitSelection hook, so selection-time validation cannot be observed. Closing this needs an adapter that can submit a selection request without approving it.";
@@ -295,24 +296,33 @@ export const TIME_RANGE_CASES: readonly ConformanceCase[] = [
         token: owner,
         query: { ...(adapter.ownerReadParams ?? {}), limit: "100" },
       });
+      if (listed.status !== 200 || (listed.json as { has_more?: boolean }).has_more === true) {
+        return skip("The owner listing is not a complete successful page, so the expected window is unobserved.");
+      }
       const rows = ((listed.json as { data?: { id?: string; data?: Record<string, unknown> }[] }).data ?? []).flatMap(
         (r) => {
           const value = r.data?.[field];
-          return r.id && typeof value === "string" && !Number.isNaN(Date.parse(value))
-            ? [{ id: r.id, value, ms: Date.parse(value) }]
-            : [];
+          const instant = parseDateTime(value);
+          return r.id && typeof value === "string" && instant ? [{ id: r.id, value, instant }] : [];
         }
       );
-      rows.sort((a, b) => a.ms - b.ms);
+      rows.sort((a, b) => compareDateTimes(a.instant, b.instant));
       const pivot = rows[Math.floor(rows.length / 2)];
       if (rows.length < 3 || !pivot) {
         return skip("Fewer than three records carry a parseable consent_time_field.");
       }
       const hour = 3_600_000;
-      const boundMs = pivot.ms - hour;
-      const bound = `${new Date(boundMs + 14 * hour).toISOString().slice(0, 19)}+14:00`;
+      if (pivot.instant.leapSecond) {
+        return skip("A leap-second pivot cannot be shifted by the fixture's civil-time offset construction.");
+      }
+      const fraction = pivot.instant.fraction ? `.${pivot.instant.fraction}` : "";
+      const bound = `${new Date(pivot.instant.ms - hour + 14 * hour).toISOString().slice(0, 19)}${fraction}+14:00`;
+      const serializedInstant = parseDateTime(bound);
+      if (!serializedInstant) {
+        return skip("The derived offset bound is not a valid RFC 3339 instant.");
+      }
       const expected = rows
-        .filter((r) => r.ms >= boundMs)
+        .filter((r) => compareDateTimes(r.instant, serializedInstant) >= 0)
         .map((r) => r.id)
         .sort();
       // The case discriminates only when text order disagrees with instant order.
@@ -339,6 +349,9 @@ export const TIME_RANGE_CASES: readonly ConformanceCase[] = [
       const evidence: Evidence[] = [listed.evidence, read.evidence];
       if (read.status !== 200) {
         return fail(`The time-bounded read returned ${read.status}.`, evidence);
+      }
+      if ((read.json as { has_more?: boolean }).has_more === true) {
+        return skip("The granted listing is incomplete, so its full membership cannot be compared.");
       }
       if (served.join() !== expected.join()) {
         return fail(

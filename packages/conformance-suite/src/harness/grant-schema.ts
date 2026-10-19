@@ -121,7 +121,7 @@ function exactObjectViolation(
 }
 
 const TIME_CONSTRAINT_RULE =
-  "StreamGrant `time_constraint`, when present, is frozen `{ field, since?, until? }`: `field` is required and at least one bound is present.";
+  "StreamGrant `time_constraint`, when present, is frozen `{ field, type, since?, until? }`: `field` and `type` are required, type is date or date-time, and at least one bound is present.";
 
 function timeConstraintViolations(tc: unknown, at: string): GrantSchemaViolation[] {
   if (!isRecord(tc)) {
@@ -130,6 +130,9 @@ function timeConstraintViolations(tc: unknown, at: string): GrantSchemaViolation
   const violations: GrantSchemaViolation[] = [];
   if (!isNonEmptyString(tc.field)) {
     violations.push({ path: `${at}.field`, message: `${TIME_CONSTRAINT_RULE} \`field\` is absent.` });
+  }
+  if (tc.type !== "date" && tc.type !== "date-time") {
+    violations.push({ path: `${at}.type`, message: `${TIME_CONSTRAINT_RULE} Got type ${JSON.stringify(tc.type)}.` });
   }
   if (tc.since === undefined && tc.until === undefined) {
     violations.push({ path: at, message: `${TIME_CONSTRAINT_RULE} Neither \`since\` nor \`until\` is present.` });

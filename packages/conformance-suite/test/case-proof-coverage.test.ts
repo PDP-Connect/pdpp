@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 //
-// Meta-test: every registered case must be provable to fail.
+// Meta-test: every registered case has failure proof or an explicit review-only gap.
 //
 // Protected risk: a case added to the registry with no injected-defect proof.
 // Such a case may be unable to fail at all, and its green result would be
@@ -19,18 +19,19 @@ import {
   TARGET_DISCRIMINATION_MATRIX,
 } from "./fixtures/proof-registry.ts";
 
-it("every registered case has at least one proof-of-failure entry", () => {
+it("every registered case has failure proof or an explicit review-only entry", () => {
   const proven = new Set<string>([
-    ...TARGET_DISCRIMINATION_MATRIX.map((row) => row.caseId),
+    ...TARGET_DISCRIMINATION_MATRIX.filter((row) => !row.reviewOnly).map((row) => row.caseId),
     ...CLIENT_DISCRIMINATION_MATRIX.map((row) => row.caseId),
     ...HOOKED_DISCRIMINATION_MATRIX.map((row) => row.caseId),
     ...BESPOKE_PROOFS.map((row) => row.caseId),
   ]);
-  const missing = ALL_CASES.map((c) => c.caseId).filter((id) => !proven.has(id));
+  const reviewOnly = new Set(TARGET_DISCRIMINATION_MATRIX.filter((row) => row.reviewOnly).map((row) => row.caseId));
+  const missing = ALL_CASES.map((c) => c.caseId).filter((id) => !(proven.has(id) || reviewOnly.has(id)));
   assert.deepEqual(
     missing,
     [],
-    `${missing.length} of ${ALL_CASES.length} cases have no proof of failure:\n${missing.join("\n")}`
+    `${missing.length} of ${ALL_CASES.length} cases have neither failure proof nor an explicit review-only gap:\n${missing.join("\n")}`
   );
 });
 

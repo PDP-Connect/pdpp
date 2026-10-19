@@ -417,8 +417,7 @@ const RESOURCE_SERVER: readonly Requirement[] = [
     role: "resource-server",
     specItem: 7,
     level: "must",
-    applicability: "conditional",
-    appliesWhen: "the target serves at least one `mutable_state` stream",
+    applicability: "always",
     statement:
       "Supports incremental sync via `changes_since` on every stream, starting from `beginning`, with tombstones and HTTP 410 `cursor_expired` on expiry; returns every record not visible at h0 and visible at h1, and omits a record visible at both horizons whose projection did not change.",
     specAnchor: "#list-records",
@@ -428,8 +427,7 @@ const RESOURCE_SERVER: readonly Requirement[] = [
     role: "resource-server",
     specItem: 8,
     level: "must",
-    applicability: "conditional",
-    appliesWhen: "the target supports `changes_since`",
+    applicability: "always",
     statement:
       "Returns `next_changes_since` on the terminal page of every `changes_since` response and on no other page.",
     specAnchor: "#list-records",
