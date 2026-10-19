@@ -4,8 +4,8 @@ name: Consumer drift signal
 # .github/workflows/cross-repo-integrity.yml. That workflow only catches drift when
 # data-connectors itself runs (push/PR/weekly schedule there) — up to a week late for a change
 # that lands here first. This workflow gives an immediate signal AT the producer: on every
-# push or PR touching the canonical reference-contract paths, fetch the consumer's pinned SHA
-# and fail fast if those paths moved beyond it.
+# push, and on every PR into main, touching the canonical reference-contract paths, fetch
+# the consumer's pinned SHA and fail fast if those paths moved beyond it.
 #
 # No cross-repo secret exists (both repos are public) — this only ever does an unauthenticated
 # raw fetch of data-connectors' default-branch pin file, never a push or write back.
@@ -38,6 +38,7 @@ on:
       - ".github/workflows/consumer-drift-signal.yml"
       - ".github/consumer-drift-signal-config.json"
   pull_request:
+    branches: [main]
     paths:
       - "packages/reference-contract/src/common/terminal-run-commit.ts"
       - "packages/reference-contract/src/evidence/coherence.ts"

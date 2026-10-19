@@ -3,6 +3,7 @@
 
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { hermeticTestEnvironment } from "./hermetic/launcher.ts";
 
 export function localNodeTestArgs(args, isCi = Boolean(process.env.CI)) {
   if (
@@ -18,7 +19,10 @@ export function localNodeTestArgs(args, isCi = Boolean(process.env.CI)) {
 }
 
 function main() {
-  const result = spawnSync(process.execPath, localNodeTestArgs(process.argv.slice(2)), { stdio: "inherit" });
+  const result = spawnSync(process.execPath, localNodeTestArgs(process.argv.slice(2)), {
+    env: hermeticTestEnvironment(process.env),
+    stdio: "inherit",
+  });
   if (result.error) {
     throw result.error;
   }

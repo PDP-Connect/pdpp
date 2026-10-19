@@ -8,7 +8,7 @@
 // generated OpenAPI. Sharing those across many route manifests through a
 // single ajv instance causes `$id` collisions ("resolves to more than one
 // schema"). We therefore compile each schema in its own isolated ajv
-// instance — cheap at package-init time, safe at runtime.
+// instance — cheap to compile on first use, safe at runtime.
 
 // AJV and ajv-formats both ship as CJS with `module.exports = thing`
 // plus a redundant `exports.default = thing`. Their published .d.ts
@@ -85,9 +85,20 @@ function stripIds(node: unknown): unknown {
   return node;
 }
 
+// Operations share schema constants (common error envelopes, list wrappers),
+// so one schema object often appears in many manifests. Compile each object
+// once per coercion mode rather than once per operation that uses it.
+const coercingValidators = new WeakMap<JsonSchema, ValidateFunction>();
+const strictValidators = new WeakMap<JsonSchema, ValidateFunction>();
+
 function compilePart(schema: JsonSchema | undefined, options: AjvOptions): ValidateFunction | null {
   if (!schema) {
     return null;
+  }
+  const cache = options.coerceTypes ? coercingValidators : strictValidators;
+  const cached = cache.get(schema);
+  if (cached) {
+    return cached;
   }
   // stripIds is recursive over arbitrary JSON; the result is the same
   // structural shape as the input, with `$id` removed. AJV's `compile`
@@ -95,7 +106,9 @@ function compilePart(schema: JsonSchema | undefined, options: AjvOptions): Valid
   // are always object schemas, so the assertion is honest.
   const cleaned = stripIds(schema) as AnySchema;
   try {
-    return makeAjv(options).compile(cleaned);
+    const validator = makeAjv(options).compile(cleaned);
+    cache.set(schema, validator);
+    return validator;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const tag = schema.$id ? ` ${schema.$id}` : "";
@@ -107,12 +120,19 @@ function compilePart(schema: JsonSchema | undefined, options: AjvOptions): Valid
   }
 }
 
-interface ValidatorEntry {
+interface RequestValidators {
   body: ValidateFunction | null;
   headers: ValidateFunction | null;
-  manifest: RouteManifest;
   params: ValidateFunction | null;
   query: ValidateFunction | null;
+}
+
+interface ValidatorEntry {
+  manifest: RouteManifest;
+  // Request validators compile lazily per operation, on its first
+  // validateRequest() call, so importing this module does not pay for
+  // operations a process never validates.
+  requestValidators: RequestValidators | undefined;
   // Response validators compile lazily per HTTP status code: most call sites
   // only ever look at one response status, and lazy compile lets us share
   // the per-route ajv discipline (`coerceTypes: false`, `$id` stripped)
@@ -146,15 +166,37 @@ function shouldCompileBodyValidator(manifest: RouteManifest): boolean {
   return true;
 }
 
+function requestValidatorsFor(entry: ValidatorEntry): RequestValidators {
+  if (!entry.requestValidators) {
+    const { manifest } = entry;
+    entry.requestValidators = {
+      body: shouldCompileBodyValidator(manifest)
+        ? compilePart(manifest.request?.body?.schema, { coerceTypes: false })
+        : null,
+      headers: compilePart(manifest.request?.headers, { coerceTypes: false }),
+      params: compilePart(manifest.request?.params, { coerceTypes: false }),
+      query: compilePart(manifest.request?.query, { coerceTypes: true }),
+    };
+  }
+  return entry.requestValidators;
+}
+
+function responseValidatorFor(entry: ValidatorEntry, statusKey: string): ValidateFunction | null {
+  let validator = entry.responsesByStatus.get(statusKey);
+  if (validator === undefined) {
+    const responses = entry.manifest.responses ?? {};
+    const responseSpec = responses[statusKey];
+    const schema = responseSpec?.schema;
+    validator = schema ? compilePart(schema, { coerceTypes: false }) : null;
+    entry.responsesByStatus.set(statusKey, validator);
+  }
+  return validator;
+}
+
 for (const manifest of allManifests) {
   validators.set(manifest.id, {
-    body: shouldCompileBodyValidator(manifest)
-      ? compilePart(manifest.request?.body?.schema, { coerceTypes: false })
-      : null,
-    headers: compilePart(manifest.request?.headers, { coerceTypes: false }),
     manifest,
-    params: compilePart(manifest.request?.params, { coerceTypes: false }),
-    query: compilePart(manifest.request?.query, { coerceTypes: true }),
+    requestValidators: undefined,
     responsesByStatus: new Map<string, ValidateFunction | null>(),
   });
 }
@@ -186,6 +228,7 @@ export function validateRequest(operationId: string, input: ValidateRequestInput
     return { errors: [{ message: `Unknown operation id: ${operationId}` }], ok: false };
   }
   const { params, query, body, headers } = input;
+  const requestValidators = requestValidatorsFor(entry);
   const errors: ValidationFailure[] = [];
   const check = (fn: ValidateFunction | null, value: unknown, label: ValidationFailure["where"]): void => {
     if (!fn || value === null || value === undefined) {
@@ -197,10 +240,10 @@ export function validateRequest(operationId: string, input: ValidateRequestInput
       }
     }
   };
-  check(entry.params, params, "params");
-  check(entry.query, query, "query");
-  check(entry.body, body, "body");
-  check(entry.headers, headers, "headers");
+  check(requestValidators.params, params, "params");
+  check(requestValidators.query, query, "query");
+  check(requestValidators.body, body, "body");
+  check(requestValidators.headers, headers, "headers");
   return errors.length ? { errors, ok: false } : { ok: true };
 }
 
@@ -262,15 +305,7 @@ export function validateResponse(operationId: string, input: ValidateResponseInp
   if (!entry) {
     return { ok: true, reason: "unknown_operation_id", skipped: true };
   }
-  const statusKey = String(input.status);
-  let validator = entry.responsesByStatus.get(statusKey);
-  if (validator === undefined) {
-    const responses = entry.manifest.responses ?? {};
-    const responseSpec = responses[statusKey];
-    const schema = responseSpec?.schema;
-    validator = schema ? compilePart(schema, { coerceTypes: false }) : null;
-    entry.responsesByStatus.set(statusKey, validator);
-  }
+  const validator = responseValidatorFor(entry, String(input.status));
   if (!validator) {
     return { ok: true, reason: "no_schema_for_status", skipped: true };
   }
@@ -310,4 +345,19 @@ export function hasResponseSchema(operationId: string, status: number): boolean 
 export function getManifest(operationId: string): RouteManifest | null {
   const entry = validators.get(operationId);
   return entry ? entry.manifest : null;
+}
+
+/**
+ * Compile every request and response validator now instead of on first use.
+ * Production compiles lazily, so a broken schema would otherwise surface only
+ * when its operation is first validated. The contract suite calls this so any
+ * broken schema fails the suite.
+ */
+export function compileAllValidators(): void {
+  for (const entry of validators.values()) {
+    requestValidatorsFor(entry);
+    for (const statusKey of Object.keys(entry.manifest.responses ?? {})) {
+      responseValidatorFor(entry, statusKey);
+    }
+  }
 }

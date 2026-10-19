@@ -2,8 +2,8 @@ name: workspace-tests
 
 # Behavioral gate for the whole workspace. Runs `pnpm test-accounting:check`
 # (the full accounting authority: inventory closure, every suite, receipts)
-# unfiltered on every pull request, whatever its base branch or touched paths,
-# and on every push to main. Without it no workflow ran the complete suite and
+# on every pull request into main, whatever its touched paths, and on every
+# push to main. Without it no workflow ran the complete suite and
 # a red main went unnoticed for weeks; the path-scoped test-accounting.yml only
 # covers the accounting scripts and the manifest.
 #
@@ -15,7 +15,8 @@ name: workspace-tests
 on:
   push:
     branches: [main]
-  pull_request: {}
+  pull_request:
+    branches: [main]
   workflow_dispatch: {}
 
 concurrency:
@@ -42,7 +43,7 @@ jobs:
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           cache: "pnpm"

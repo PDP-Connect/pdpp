@@ -52,6 +52,7 @@
     "stream:parity:calibrate": "node --import tsx scripts/stream-playground-parity-calibration.ts",
     "stream-debug:summary": "node --import tsx scripts/stream-debug-summary.ts",
     "stream-health:audit": "node --import tsx scripts/check-stream-health-audit.ts",
+    "test:fast": "pnpm test:scratch -- node --import tsx scripts/test-fast.ts",
     "test:scratch": "node --import tsx scripts/test-scratch/run-command.ts",
     "test-accounting:check": "pnpm test:scratch -- node scripts/test-accounting/with-local-full-suite-lock.mjs node --import tsx scripts/test-accounting/authority.ts --run --suite all",
     "test-accounting:inventory": "node --import tsx scripts/test-accounting/inventory.ts --check --fail-on-unaccounted --fail-on-empty",

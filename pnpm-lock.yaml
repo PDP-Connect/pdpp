@@ -328,6 +328,15 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  packages/conformance-suite:
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 2.5.15
+        version: 2.5.15
+      ultracite:
+        specifier: 7.12.2
+        version: 7.12.2(@biomejs/biome@2.5.15)(prettier@3.9.6)
+
   packages/display:
     devDependencies:
       '@types/node':

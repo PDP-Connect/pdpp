@@ -18,6 +18,16 @@ const syncScript: ArtifactPair = {
   generated: join(temporaryRoot, "sync-script", "sync-spec-docs.mjs"),
   tracked: "apps/site/scripts/sync-spec-docs.mjs",
 };
+const hermeticScripts: ArtifactPair[] = [
+  {
+    generated: join(temporaryRoot, "hermetic", "guard-source.mjs"),
+    tracked: "scripts/hermetic/guard-runtime.mjs",
+  },
+  {
+    generated: join(temporaryRoot, "hermetic", "preload.mjs"),
+    tracked: "scripts/hermetic/preload.mjs",
+  },
+];
 const designScripts = ["data", "dispatch", "query"].map((name) => ({
   generated: join(temporaryRoot, "design", "explorer", `${name}.js`),
   tracked: `docs/design-system/ink-carbon/project/explorer/${name}.js`,
@@ -54,6 +64,22 @@ try {
     "NodeNext",
     "--moduleResolution",
     "NodeNext",
+    "--types",
+    "node",
+    "--rootDir",
+    "scripts/hermetic",
+    "--outDir",
+    join(temporaryRoot, "hermetic"),
+    "scripts/hermetic/guard-source.mts",
+    "scripts/hermetic/preload.mts",
+  ]);
+  emit([
+    "--target",
+    "ES2022",
+    "--module",
+    "NodeNext",
+    "--moduleResolution",
+    "NodeNext",
     "--lib",
     "ES2022",
     "--types",
@@ -79,7 +105,7 @@ try {
     "docs/design-system/ink-carbon/project/recordroom/rr-explore-data.ts",
   ]);
 
-  const pairs = [syncScript, ...designScripts, ...recordroomScripts];
+  const pairs = [syncScript, ...hermeticScripts, ...designScripts, ...recordroomScripts];
   for (const pair of pairs) {
     compare(pair);
   }

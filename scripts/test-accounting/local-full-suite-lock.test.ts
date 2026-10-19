@@ -11,8 +11,16 @@ import test from "node:test";
 const wrapper = resolve("scripts/test-accounting/with-local-full-suite-lock.mjs");
 const fixtureIdentity = ["-c", "user.name=fixture", "-c", "user.email=fixture@example.test"];
 const WAIT_MESSAGE_PATTERN = /waiting for it to finish/;
+// Upper bounds on waiting for a spawned wrapper, never an asserted duration: the
+// happy path takes milliseconds, so a generous bound only matters on a starved
+// host, where a tight one turned scheduler delay into a spurious timeout.
+const CHILD_TIMEOUT_MS = 30_000;
+const CLEANUP_TIMEOUT_MS = 5000;
 
-function waitForExit(child: ChildProcess, timeoutMs = 5000): Promise<{ code: number | null; stderr: string }> {
+function waitForExit(
+  child: ChildProcess,
+  timeoutMs = CHILD_TIMEOUT_MS
+): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolveExit, reject) => {
     let stderr = "";
     const timeout = setTimeout(() => {
@@ -45,7 +53,7 @@ function isRunning(child: ChildProcess | undefined): child is ChildProcess {
 }
 
 async function waitForPath(path: string): Promise<void> {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + CHILD_TIMEOUT_MS;
   while (!existsSync(path)) {
     if (Date.now() >= deadline) {
       throw new Error(`timed out waiting for ${path}`);
@@ -138,10 +146,10 @@ test("local full-suite lock spans linked worktrees, releases on exit, and CI byp
     await Promise.all(
       children.map(async (child) => {
         try {
-          await waitForExit(child, 1000);
+          await waitForExit(child, CLEANUP_TIMEOUT_MS);
         } catch {
           child.kill("SIGKILL");
-          await waitForExit(child, 1000).catch(() => undefined);
+          await waitForExit(child, CLEANUP_TIMEOUT_MS).catch(() => undefined);
         }
       })
     );
@@ -186,7 +194,7 @@ test("local full-suite lock reclaims an abandoned owner", async () => {
   } finally {
     if (isRunning(child)) {
       child.kill("SIGKILL");
-      await waitForExit(child, 1000).catch(() => undefined);
+      await waitForExit(child, CLEANUP_TIMEOUT_MS).catch(() => undefined);
     }
     rmSync(fixtureRoot, { force: true, recursive: true });
   }

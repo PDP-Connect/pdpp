@@ -87,3 +87,5 @@ packages/local-collector/dist-collector/
 .codex-reports/
 devspecs/
 /ai/
+
+packages/conformance-suite/conformance-ri-out/

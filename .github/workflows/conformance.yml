@@ -1,0 +1,123 @@
+name: conformance
+
+# Runs the Core conformance suite against the PDP-Connect reference
+# implementation at the data-connect commit pinned in
+# packages/conformance-suite/scripts/reference-target.sh (PDPP_DC_PIN), and
+# compares every case outcome and MUST clause result with
+# packages/conformance-suite/targets/reference-implementation.expected.json.
+#
+# A change to the suite or to spec-core.md that moves any clause result fails
+# this job until the expectations are regenerated in the same PR, so the
+# behaviour change is visible in review. The suite's own self-tests run first,
+# including the completeness check that every MUST sentence in spec-core.md maps
+# to a transcribed clause.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/conformance.yml"
+      - "packages/conformance-suite/**"
+      - "spec-core.md"
+      # Inputs outside the package that still change what this job runs or
+      # judges: the dependency graph and toolchain config, the test runner the
+      # package's own `test` script calls, the generated matrix document its
+      # self-tests compare, and the test-accounting manifest.
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig.json"
+      - "biome.jsonc"
+      - "scripts/run-node-tests.mjs"
+      - "scripts/test-scratch/**"
+      - "docs/reference/conformance-normative-matrix*.md"
+      - "test-accounting.manifest.json"
+  workflow_dispatch: {}
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  reference-implementation:
+    name: suite vs reference implementation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read the data-connect pin
+        id: pin
+        run: |
+          pin="$(sed -n 's/^PDPP_DC_PIN="${PDPP_DC_PIN:-\([0-9a-f]\{40\}\)}"$/\1/p' packages/conformance-suite/scripts/reference-target.sh)"
+          test -n "$pin" || { echo "PDPP_DC_PIN not found"; exit 1; }
+          echo "sha=$pin" >> "$GITHUB_OUTPUT"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Suite self-tests
+        run: pnpm --filter @pdpp/conformance-suite verify
+
+      # Checked out after the self-tests and moved out of the workspace: inside
+      # it, pnpm and biome would treat data-connect as part of this repository.
+      - name: Checkout data-connect at the pin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: PDP-Connect/data-connect
+          ref: ${{ steps.pin.outputs.sha }}
+          path: data-connect
+
+      - name: Move data-connect out of the workspace
+        run: mv data-connect "$RUNNER_TEMP/data-connect"
+
+      - name: Install and build the reference implementation
+        env:
+          PDPP_DC_REF: ${{ runner.temp }}/data-connect
+          PDPP_REF_STATE_DIR: ${{ runner.temp }}/ref-target
+        run: packages/conformance-suite/scripts/reference-target.sh install
+
+      - name: Run the suite against the reference implementation
+        env:
+          PDPP_DC_REF: ${{ runner.temp }}/data-connect
+          PDPP_REF_STATE_DIR: ${{ runner.temp }}/ref-target
+        # Exit 2 (no failures, incomplete coverage) and exit 1 (known failures)
+        # are both judged by the expectations step below, not here.
+        run: |
+          set +e
+          packages/conformance-suite/scripts/reference-target.sh run --out "$RUNNER_TEMP/conformance"
+          echo "suite exit code $?"
+
+      - name: Compare clause results with expectations
+        working-directory: packages/conformance-suite
+        run: >-
+          node --import tsx scripts/check-expectations.ts
+          "$RUNNER_TEMP/conformance"
+          targets/reference-implementation.expected.json
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: conformance-reference-implementation
+          path: |
+            ${{ runner.temp }}/conformance
+          if-no-files-found: warn
+          retention-days: 14

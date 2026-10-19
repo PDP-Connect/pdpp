@@ -3,6 +3,7 @@
 
 const RESULT_PREFIX = "PDPP_TEST_ACCOUNTING_RESULT ";
 const EVENT_PREFIX = "PDPP_TEST_ACCOUNTING_EVENT ";
+const MAX_EVENT_LINE_BYTES = 1024 * 1024;
 
 function fail(message: string): never {
   throw new Error(`test accounting result: ${message}`);
@@ -22,6 +23,17 @@ export function accountingResultLine(result: unknown): string {
 }
 export function accountingEventLine(event: unknown): string {
   return `${EVENT_PREFIX}${JSON.stringify(event)}`;
+}
+// The decoded event on a structured reporter line; undefined for lines that are not one.
+export function parseAccountingEvent(line: string): NodeTestEvent | undefined {
+  if (!line.startsWith(EVENT_PREFIX)) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(line.slice(EVENT_PREFIX.length)) as NodeTestEvent;
+  } catch {
+    return undefined;
+  }
 }
 
 // Node's boolean `skip: !X` tests carry no reason on the wire, only their name.
@@ -366,30 +378,94 @@ function resolveEmittedSkipReason(
 }
 
 export function structuredNodeSummary(output: string): StructuredSummary {
-  const events: NodeTestEvent[] = output
-    .split("\n")
-    .filter((line) => line.startsWith(EVENT_PREFIX))
-    .map((line) => {
-      try {
-        return JSON.parse(line.slice(EVENT_PREFIX.length));
-      } catch {
-        return fail("reporter emitted malformed structured event");
-      }
-    });
-  if (events.length === 0) {
-    fail("runner emitted no structured node events");
+  const accumulator = new StructuredNodeSummaryAccumulator();
+  accumulator.write(output);
+  return accumulator.finish();
+}
+
+/** Incrementally counts reporter events without retaining the full transcript. */
+export class StructuredNodeSummaryAccumulator {
+  private discardingLine: boolean;
+  private pending: string;
+  private sawEvent: boolean;
+  private readonly skipReasons: Record<string, number> = {};
+  private readonly consumedMappingIdentities: string[] = [];
+  private assertions = 0;
+  private passed = 0;
+  private failed = 0;
+  private skipped = 0;
+
+  constructor() {
+    this.discardingLine = false;
+    this.pending = "";
+    this.sawEvent = false;
   }
-  const skipReasons: Record<string, number> = {};
-  const consumedMappingIdentities: string[] = [];
-  let assertions = 0;
-  let passed = 0;
-  let failed = 0;
-  let skipped = 0;
-  for (const event of events) {
-    if (!["test:pass", "test:fail"].includes(event.type) || event.details?.type !== "test") {
-      continue;
+
+  write(chunk: string): void {
+    let incoming = chunk;
+    if (this.discardingLine) {
+      const newline = incoming.indexOf("\n");
+      if (newline === -1) {
+        return;
+      }
+      incoming = incoming.slice(newline + 1);
+      this.discardingLine = false;
     }
-    assertions += 1;
+    const lines = (this.pending + incoming).split("\n");
+    this.pending = lines.pop() ?? "";
+    for (const line of lines) {
+      this.consumeLine(line);
+    }
+    this.boundPendingLine();
+  }
+
+  finish(): StructuredSummary {
+    if (this.pending.startsWith(EVENT_PREFIX)) {
+      this.consumeLine(this.pending);
+    }
+    this.pending = "";
+    if (!this.sawEvent) {
+      fail("runner emitted no structured node events");
+    }
+    return {
+      assertions: this.assertions,
+      passed: this.passed,
+      failed: this.failed,
+      skipped: this.skipped,
+      skip_reasons: this.skipReasons,
+      consumed_mapping_identities: this.consumedMappingIdentities,
+    };
+  }
+
+  private boundPendingLine(): void {
+    const { pending } = this;
+    if (Buffer.byteLength(pending, "utf8") > MAX_EVENT_LINE_BYTES && pending.startsWith(EVENT_PREFIX)) {
+      fail("reporter event exceeds the 1 MiB parser limit");
+    }
+    if (pending && !pending.startsWith(EVENT_PREFIX) && !EVENT_PREFIX.startsWith(pending)) {
+      this.pending = "";
+      this.discardingLine = true;
+    }
+  }
+
+  private consumeLine(line: string): void {
+    if (!line.startsWith(EVENT_PREFIX)) {
+      return;
+    }
+    if (Buffer.byteLength(line, "utf8") > MAX_EVENT_LINE_BYTES) {
+      fail("reporter event exceeds the 1 MiB parser limit");
+    }
+    this.sawEvent = true;
+    let event: NodeTestEvent;
+    try {
+      event = JSON.parse(line.slice(EVENT_PREFIX.length));
+    } catch {
+      fail("reporter emitted malformed structured event");
+    }
+    if (!["test:pass", "test:fail"].includes(event.type) || event.details?.type !== "test") {
+      return;
+    }
+    this.assertions += 1;
     const { skip } = event.details;
     if (skip !== false && skip !== undefined && skip !== null) {
       const { reason, consumedIdentity } = resolveEmittedSkipReason(skip, event.details.name);
@@ -397,24 +473,16 @@ export function structuredNodeSummary(output: string): StructuredSummary {
         fail(`unexplained skip: ${event.details.name ?? "unnamed test"}`);
       }
       if (consumedIdentity !== undefined) {
-        consumedMappingIdentities.push(consumedIdentity);
+        this.consumedMappingIdentities.push(consumedIdentity);
       }
-      skipped += 1;
-      skipReasons[reason] = (skipReasons[reason] ?? 0) + 1;
+      this.skipped += 1;
+      this.skipReasons[reason] = (this.skipReasons[reason] ?? 0) + 1;
     } else if (event.type === "test:pass") {
-      passed += 1;
+      this.passed += 1;
     } else {
-      failed += 1;
+      this.failed += 1;
     }
   }
-  return {
-    assertions,
-    passed,
-    failed,
-    skipped,
-    skip_reasons: skipReasons,
-    consumed_mapping_identities: consumedMappingIdentities,
-  };
 }
 
 export function structuredPythonSummary(output: string, status: number): StructuredSummary {
