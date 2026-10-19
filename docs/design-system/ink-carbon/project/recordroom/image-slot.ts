@@ -92,7 +92,7 @@ const DATA_IMAGE_URL = /^data:image\//i;
           // A framing-only write that raced ahead of hydration must not
           // drop a user image that's only on disk — inherit u from the
           // sidecar for any in-memory entry that lacks one.
-          for (const k in slots) {
+          for (const k of Object.keys(slots)) {
             if (merged[k] && !merged[k].u && j[k]) {
               merged[k].u = typeof j[k] === "string" ? j[k] : j[k].u;
             }
