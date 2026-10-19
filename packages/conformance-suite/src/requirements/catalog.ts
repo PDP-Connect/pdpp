@@ -132,7 +132,7 @@ const AUTHORIZATION_SERVER: readonly Requirement[] = [
     level: "must",
     applicability: "always",
     statement:
-      "Renders requester identity, declaration-authored descriptions, policy declarations, and client claims as distinct categories; MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms.",
+      "Renders requester identity, declaration-authored descriptions, policy declarations, and client claims as distinct categories; MUST attribute `client_claims` to the client and MUST NOT present them as protocol-enforced terms; binds rendered claims into the final approval artifact; records in the grant's `client.client_display` the exact `policy_uri` and `tos_uri` it presented and omits any it did not.",
     specAnchor: "#client-claims",
   },
   {
@@ -142,7 +142,7 @@ const AUTHORIZATION_SERVER: readonly Requirement[] = [
     level: "must",
     applicability: "always",
     statement:
-      "Tracks grant lifecycle (active, expired, revoked) and reflects revocation immediately in introspection responses (`active: false`).",
+      "Tracks grant lifecycle (active, expired, revoked) and reflects revocation immediately in introspection: the revoked grant is inactive at once, and a token is `active: false` when no grant it covers is active.",
     specAnchor: "#revocation",
   },
   {
@@ -162,7 +162,7 @@ const AUTHORIZATION_SERVER: readonly Requirement[] = [
     applicability: "conditional",
     appliesWhen: "the AS supports `single_use` grants",
     statement:
-      "For `single_use` grants, consumes the grant atomically with first client-token issuance and rejects later attempts to issue new client access tokens against it.",
+      "For `single_use` grants, consumes the grant atomically with first client-token issuance, gives that access token a finite expiration that ends the grant's one read window, lets a later token of the same refresh-token family carry the grant only inside the window, and otherwise rejects issuance against the consumed grant.",
     specAnchor: "#access-modes",
   },
   {
@@ -202,7 +202,7 @@ const AUTHORIZATION_SERVER: readonly Requirement[] = [
     applicability: "conditional",
     appliesWhen: "the AS issues grants carrying the ai_training purpose code",
     statement:
-      "Obtains explicit affirmative user consent before issuing grants with `purpose_code: https://pdpp.dev/purpose/ai_training`.",
+      "Obtains explicit affirmative user consent before issuing grants with `purpose_code: https://pdpp.dev/purpose/ai_training`; never presents an `ai_training` detail as selected by default; in a request with several details, lets the owner approve any other detail while declining it.",
     specAnchor: "#ai-training-consent",
   },
   {
@@ -263,7 +263,7 @@ const AUTHORIZATION_SERVER: readonly Requirement[] = [
     applicability: "conditional",
     appliesWhen: "the AS issues refresh tokens",
     statement:
-      "Issues refresh tokens only for `continuous` grants, rotates by family, and on reuse of a superseded token revokes the family and every family-linked access token, returning `invalid_grant`.",
+      "Issues a refresh token only when at least one grant the token response covers is `continuous`, never extends a `single_use` grant's read window through refresh, rotates by family, and on reuse of a superseded token revokes the family and every family-linked access token, returning `invalid_grant` and requiring fresh authorization.",
     specAnchor: "#access-modes",
   },
   {
@@ -275,6 +275,79 @@ const AUTHORIZATION_SERVER: readonly Requirement[] = [
     statement:
       "Rejects unsupported persisted authorization state before introspection or request handling, without reconstructing missing facts from current configuration.",
     specAnchor: "#errors",
+  },
+  {
+    id: "AS-22",
+    role: "authorization-server",
+    specItem: 22,
+    level: "must",
+    applicability: "always",
+    statement: "Rejects a source declaration containing an unrecognized `source.kind` or `streams[].semantics` value.",
+    specAnchor: "#conformance",
+  },
+  {
+    id: "AS-23",
+    role: "authorization-server",
+    specItem: 23,
+    level: "must",
+    applicability: "conditional",
+    appliesWhen: "the AS issues grants with `grantors`",
+    statement:
+      "Issues a grant with `grantors` only after each listed representative approves the same immutable final review revision; authenticates and verifies each representative, binds each identity and capacity to that revision and retained consent evidence, and keeps the data subject in `subject`.",
+    specAnchor: "#grant",
+  },
+  {
+    id: "AS-24",
+    role: "authorization-server",
+    specItem: 24,
+    level: "must",
+    applicability: "always",
+    statement:
+      "Lets the owner approve or decline each detail of a request on its own; issues one grant for each approved, resolved detail with its own lifecycle, identified by `grant_id`, not by subject, source and purpose.",
+    specAnchor: "#grant",
+  },
+  {
+    id: "AS-25",
+    role: "authorization-server",
+    specItem: 25,
+    level: "must",
+    applicability: "conditional",
+    appliesWhen: "the AS offers client-initiated revocation",
+    statement:
+      "Ends grants on client-initiated revocation as Section 10 defines: a refresh token, current or superseded, ends every grant its family covers; an access token ends its grants only when no refresh-token family covers them; in the OAuth binding implements RFC 7009 and advertises `revocation_endpoint` in RFC 8414 metadata.",
+    specAnchor: "#revocation",
+  },
+  {
+    id: "AS-26",
+    role: "authorization-server",
+    specItem: 26,
+    level: "must",
+    applicability: "conditional",
+    appliesWhen: "several grants share a credential",
+    statement:
+      "Ends one grant among several that share a credential without revoking that credential or ending the other grants.",
+    specAnchor: "#revocation",
+  },
+  {
+    id: "AS-27",
+    role: "authorization-server",
+    specItem: 27,
+    level: "must",
+    applicability: "always",
+    statement:
+      "Rejects a declaration that names an ineligible `consent_time_field` or a non-boolean `consent_time_content_may_exceed`; rejects a `time_range` with no bound, a mistyped or invalid bound, or a `since` not before `until`; never converts or rounds a bound; sets `time_constraint.type` from the field's format in the retained declaration.",
+    specAnchor: "#time-constraint-semantics",
+  },
+  {
+    id: "AS-28",
+    role: "authorization-server",
+    specItem: 28,
+    level: "must",
+    applicability: "conditional",
+    appliesWhen: "the AS issues time-bounded grants",
+    statement:
+      "Renders the exact bounds of each time-bounded stream with their inclusive and exclusive meaning and the declared meaning of the field; shows a relative label only when verified; discloses that matched records can contain data from outside the bounds when the stream declares `consent_time_content_may_exceed: true`; for a `continuous` grant, discloses that the client can see records leave the window.",
+    specAnchor: "#consent-time-field",
   },
 ];
 
@@ -344,10 +417,9 @@ const RESOURCE_SERVER: readonly Requirement[] = [
     role: "resource-server",
     specItem: 7,
     level: "must",
-    applicability: "conditional",
-    appliesWhen: "the target serves at least one `mutable_state` stream",
+    applicability: "always",
     statement:
-      "Supports incremental sync via `changes_since` for `mutable_state` streams, including tombstones, omission of records whose grant-authorized projection did not change, and HTTP 410 `cursor_expired` on expiry.",
+      "Supports incremental sync via `changes_since` on every stream, starting from `beginning`, with tombstones and HTTP 410 `cursor_expired` on expiry; returns every record not visible at h0 and visible at h1, and omits a record visible at both horizons whose projection did not change.",
     specAnchor: "#list-records",
   },
   {
@@ -355,9 +427,9 @@ const RESOURCE_SERVER: readonly Requirement[] = [
     role: "resource-server",
     specItem: 8,
     level: "must",
-    applicability: "conditional",
-    appliesWhen: "the target supports `changes_since`",
-    statement: "Returns `next_changes_since` on the terminal page of every `changes_since` response.",
+    applicability: "always",
+    statement:
+      "Returns `next_changes_since` on the terminal page of every `changes_since` response and on no other page.",
     specAnchor: "#list-records",
   },
   {
@@ -442,6 +514,67 @@ const RESOURCE_SERVER: readonly Requirement[] = [
       "Publishes RFC 9728 protected resource metadata at the RFC 9728 Section 3 location carrying `resource` and the four `pdpp_` members, and returns a `WWW-Authenticate: Bearer` challenge with `resource_metadata` on 401.",
     specAnchor: "#protected-resource-metadata",
   },
+  {
+    id: "RS-17",
+    role: "resource-server",
+    specItem: 17,
+    level: "must",
+    applicability: "always",
+    statement:
+      "Does not interpret an unrecognized stream semantic as `append_only` or `mutable_state`, or an unrecognized grant `source.kind` as a known provenance class.",
+    specAnchor: "#stream-semantics",
+  },
+  {
+    id: "RS-18",
+    role: "resource-server",
+    specItem: 18,
+    level: "must",
+    applicability: "always",
+    statement:
+      "Serves a blob only when a record the requesting token may currently read, including its field projection, references it, otherwise returns 404 `blob_not_found`; bounds a redirect's signed URL expiry by the positive-status cache expiry or 60 seconds after token validation, and by the token or grant expiration when present.",
+    specAnchor: "#get-a-blob",
+  },
+  {
+    id: "RS-19",
+    role: "resource-server",
+    specItem: 19,
+    level: "must",
+    applicability: "always",
+    statement:
+      'Returns 401 with `WWW-Authenticate: Bearer error="invalid_token"` for every inactive access token; uses `grant_expired` or `grant_revoked` only when authenticated context establishes that cause, otherwise `authentication_error`.',
+    specAnchor: "#errors",
+  },
+  {
+    id: "RS-20",
+    role: "resource-server",
+    specItem: 20,
+    level: "must",
+    applicability: "conditional",
+    appliesWhen: "the target supports `changes_since`",
+    statement:
+      "Emits a tombstone for each record visible at the previous horizon and not visible at the new one, and for no other record; retains the state needed to determine visibility at every unexpired horizon or fails the session with 410 `cursor_expired`; uses the exact client tombstone shape for client tokens and adds `removal` (and `deleted_at`, `emitted_at` for a deletion) for owner tokens.",
+    specAnchor: "#incremental-sync",
+  },
+  {
+    id: "RS-21",
+    role: "resource-server",
+    specItem: 21,
+    level: "must",
+    applicability: "always",
+    statement:
+      "Binds each page cursor and `changes_since` token to its grant, or owner subject and scope, and its query context, and rejects a mismatch as `invalid_cursor`; orders a `changes_since` session by canonical key string, does not serve a record deleted after the first page, rejects `expand[]` and `expand_limit[...]` on `changes_since`; issues tokens and cursors that reveal no readable position, time, or field value.",
+    specAnchor: "#list-records",
+  },
+  {
+    id: "RS-22",
+    role: "resource-server",
+    specItem: 22,
+    level: "must",
+    applicability: "always",
+    statement:
+      "Compares time values and bounds by the grant's frozen `time_constraint.type` as calendar dates or exact instants without a host, viewer, or owner time zone; validates values itself under RFC 3339; excludes a record whose value is absent, null, or invalid from every read surface; applies the same rules to owner-token range filters on `date` and `date-time` fields.",
+    specAnchor: "#time-constraint-semantics",
+  },
 ];
 
 const CLIENT: readonly Requirement[] = [
@@ -492,7 +625,7 @@ const CLIENT: readonly Requirement[] = [
     applicability: "conditional",
     appliesWhen: "the client performs incremental sync",
     statement:
-      "Respects HTTP 410 `cursor_expired` by performing a full re-sync rather than retrying with the expired cursor.",
+      "Respects HTTP 410 `cursor_expired` by starting again from `beginning` rather than retrying with the expired token, and replaces its copy of the stream after every completed `beginning` session.",
     specAnchor: "#list-records",
   },
   {
@@ -522,8 +655,29 @@ const CLIENT: readonly Requirement[] = [
     applicability: "conditional",
     appliesWhen: "the client has provenance-dependent local policy",
     statement:
-      "Reads `source.kind` from the issued grant and applies provenance policy before first use of the records; MUST NOT assume a provenance class it did not read from the grant.",
+      "Reads `source.kind` from the issued grant and applies provenance policy before first use of the records; MUST NOT assume a provenance class it did not read from the grant or treat an unrecognized `source.kind` as a known value.",
     specAnchor: "#source-kinds",
+  },
+  {
+    id: "CL-9",
+    role: "client",
+    specItem: 9,
+    level: "must",
+    applicability: "always",
+    statement:
+      "Stops using an access token on a 401 with Bearer error `invalid_token`, and stops requests against a grant on `grant_revoked`; does not treat an inactive token as proof of revocation.",
+    specAnchor: "#revocation",
+  },
+  {
+    id: "CL-10",
+    role: "client",
+    specItem: 10,
+    level: "must",
+    applicability: "conditional",
+    appliesWhen: "the client performs incremental sync",
+    statement:
+      "Treats a tombstone for an ID it does not hold as a no-op, and reconciles records it obtained outside sync sessions itself.",
+    specAnchor: "#incremental-sync",
   },
 ];
 

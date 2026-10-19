@@ -126,6 +126,7 @@ export const unsupported = (detail: string): CaseVerdict => ({
  * stays a failed case.
  */
 const ARRANGEMENT_HOOKS: ReadonlySet<string | symbol> = new Set([
+  "advancePastSingleUseWindow",
   "blobFixture",
   "declaredViews",
   "expireSyncCursor",
@@ -134,9 +135,11 @@ const ARRANGEMENT_HOOKS: ReadonlySet<string | symbol> = new Set([
   "foreignSubjectRecordIds",
   "issueGrant",
   "issueMultiInstanceGrant",
+  "issueSharedCredentialGrants",
   "issueRefreshableGrant",
   "ownerToken",
   "revokeGrant",
+  "revokeToken",
   "stageApproval",
   "tokenWithIntrospectedKind",
   "widenView",

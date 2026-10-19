@@ -20,8 +20,11 @@
 // path it would against a remote vendor: no in-process short circuit, no
 // privileged access to internal state.
 
+import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { isDeepStrictEqual } from "node:util";
+import { compareDateTimes, parseDateTime, parseFullDate } from "./rfc3339.ts";
 
 /** Behaviours that violate a specific normative requirement, for oracle proof. */
 export type Defect =
@@ -53,6 +56,13 @@ export type Defect =
    * fail a target inside the ceiling.
    */
   | "lag-revocation-within-ceiling"
+  /**
+   * Refuses an inactive (revoked or expired) grant with the former 403
+   * `permission_error` and no Bearer challenge, instead of the revised 401
+   * `authentication_error` behind `WWW-Authenticate: Bearer error="invalid_token"`
+   * (AS-8, clause 8.13-6).
+   */
+  | "inactive-grant-as-403"
   /** Omits resource_metadata from the 401 challenge (RS-16). */
   | "weak-401-challenge"
   /** Discloses current views/relationships to a client token (RS-15). */
@@ -150,7 +160,7 @@ export type Defect =
   | "accept-malformed-stream-list"
   /**
    * Accepts a selection request carrying BOTH `view` and `fields` on one
-   * stream, instead of 400 `invalid_request` (clause 6.8-1).
+   * stream, instead of refusing it (clause 6.8-1).
    *
    * Distinct from every field-validation defect: both halves of the request are
    * individually valid here — a real view name and real declared fields — so a
@@ -159,6 +169,49 @@ export type Defect =
    * no existing defect produces it.
    */
   | "accept-view-and-fields-together"
+  /** Reports the global version clock as `next_changes_since`, so token equality reveals writes the grant cannot see (clause 4.3-9). */
+  | "token-reveals-hidden-writes"
+  /** Accepts a page cursor presented under another grant, scope or `fields` selection (clauses 8.9-11, 8.9-17). */
+  | "accept-cursor-under-other-context"
+  /** Accepts a `changes_since` token presented under another grant, scope or stream (clause 8.9-17). */
+  | "accept-sync-token-under-other-context"
+  /** Emits `next_changes_since` on every page of a paginated session, not only the terminal one (clause 4.3-16). */
+  | "next-changes-since-on-every-page"
+  /** Serves a record on a later page after it was deleted post page 1, by reading the session snapshot (clause 8.9-18). */
+  | "serve-deleted-record-from-session-snapshot"
+  /** Emits a tombstone for a deleted record the grant could never see (clause 4.3-11). */
+  | "tombstone-for-never-visible-record"
+  /** Does not emit a tombstone when a record moves out of the grant's time window (clause 4.3-6). */
+  | "omit-tombstone-on-leaving-window"
+  /** Accepts `fields: ["*", "<name>"]`, instead of requiring `*` to be the only element (clause 6.8-7). */
+  | "accept-star-beside-fields"
+  /** Accepts a stream request carrying neither `fields` nor `view` (clause 6.8-12). */
+  | "accept-stream-without-fields-or-view"
+  /** Accepts a `time_range` with no `since` and no `until` (clauses 6.8-9, 6.8-10). */
+  | "accept-empty-time-range"
+  /** Accepts a `time_range` bound whose type does not match the field's format (clauses 6.8-8, 6.8-10). */
+  | "accept-wrong-type-time-range-bound"
+  /** Accepts a `time_range` bound that is not a valid RFC 3339 value (clause 6.8-10). */
+  | "accept-invalid-time-range-bound"
+  /** Accepts a `time_range` whose `since` is not before its `until` (clause 6.8-10). */
+  | "accept-since-not-before-until"
+  /** Rewrites an issued `time_constraint` bound to a UTC instant instead of keeping it as requested (clause 6.8-11). */
+  | "normalize-time-constraint-bounds"
+  /** Accepts a declaration with an unrecognized `streams[].semantics` value (clause 4.2-1). */
+  | "accept-unrecognized-semantics"
+  /** Accepts a declaration with an unrecognized `source.kind` (clause 6.6-2). */
+  | "accept-unrecognized-source-kind"
+  /** Accepts a non-boolean `consent_time_content_may_exceed` (clause 5.2-6). */
+  | "accept-non-boolean-may-exceed"
+  /** Accepts a `consent_time_field` that is nested, not a string, or not format `date`/`date-time` (clauses 5.2-3, 5.4-3, 5.4-4). */
+  | "accept-ineligible-consent-time-field"
+  /**
+   * Refuses a selection carrying BOTH `view` and `fields`, but as
+   * `invalid_request` rather than the RFC 9396 `invalid_authorization_details`
+   * the revised OAuth/RAR binding names (clause 6.8-1). Enforcement is intact;
+   * only the classification is wrong, which is what the changed oracle checks.
+   */
+  | "misclassify-view-and-fields-refusal"
   /**
    * Defines a view naming a field absent from the stream's declared schema,
    * and lets it be used (clause 5.6-2).
@@ -338,6 +391,24 @@ export type Defect =
   | "refuse-bare-granted-read"
   /** Serves a request carrying no Authorization header as if it were the owner (RS-16). */
   | "serve-without-authentication"
+  /** Answers a client revocation of a refresh token with 200 but leaves its family's grants active (clause 10.7-3). */
+  | "revocation-endpoint-ignores-refresh-tokens"
+  /** Ends the whole grant when a client revokes one access token, although a refresh-token family covers the grant (clause 10.7-5). */
+  | "revoke-family-grant-on-access-token-revocation"
+  /** States no `expires_in` for the first token of a `single_use` grant (clause 7.5-3). */
+  | "single-use-token-without-expiry"
+  /** Answers a client revocation of an access token with 200 but leaves the token active (clause 10.7-4). */
+  | "revocation-endpoint-ignores-access-tokens"
+  /** Offers a revocation endpoint but does not advertise `revocation_endpoint` in its RFC 8414 metadata (clause 10.7-8). */
+  | "omit-revocation-endpoint-metadata"
+  /** Leaves out the statement that `since` is inclusive and `until` exclusive from the final approval artifact (clause 7.2-2). */
+  | "omit-bound-inclusivity-statement"
+  /** Compares a time window's bounds as text instead of as RFC 3339 instants (clause 7.6-1). */
+  | "compare-time-bounds-as-text"
+  /** Leaves `exp` out of a positive introspection response for a token that expires (clause 8.12-5). */
+  | "omit-introspection-exp"
+  /** Omits the `PDPP-Version` response header, so a client that sent none cannot learn the selected version (clause 8.14-1). */
+  | "omit-pdpp-version-response-header"
   /** Ignores the PDPP-Version header instead of refusing an unsupported value (RS-11). */
   | "ignore-pdpp-version-header"
   /** Publishes protected resource metadata without the `pdpp_` members (RS-16). */
@@ -462,6 +533,12 @@ export type Defect =
    * consent without anyone editing the declaration.
    */
   | "accept-invalid-embedded-schema"
+  /** Accepts an embedded stream schema declaring a `$schema` dialect other than 2020-12 (clause 5.2-5). */
+  | "accept-wrong-schema-dialect"
+  /** Accepts an embedded stream schema that fails the 2020-12 metaschema (clause 5.2-5). */
+  | "accept-meta-invalid-schema"
+  /** Accepts an embedded `$ref` or `$dynamicRef` that is not a local fragment (clause 5.2-5). */
+  | "accept-remote-schema-reference"
   /**
    * Omits `authorization_details` from a token response for a request that
    * carried them (RFC 9396 Section 7, adopted by Core's Section 2 normative
@@ -489,7 +566,63 @@ export type Defect =
   /** Coerces a malformed `limit` (`abc`, `-1`, `1.5`, `1junk`) instead of rejecting it with 400 (clause 8.9-7). */
   | "coerce-invalid-limit"
   /** Leaves `error="invalid_token"` out of the 401 challenge for a presented-and-rejected token (RS-16). */
-  | "omit-invalid-token-error";
+  | "omit-invalid-token-error"
+  /**
+   * CONFORMANT, not a violation: declines owner-token `filter[...]` outright with
+   * 400 `invalid_request`. Owner filters are optional ("MAY accept exact
+   * filters"), so the narrowing case must report `unsupported`, not `fail`.
+   */
+  | "decline-owner-filters"
+  /** CONFORMANT, not a violation: declines an owner-token `view` with 400, which Section 8 leaves optional. */
+  | "decline-owner-view"
+  /** Answers a client-token filter on an undeclared field or operator with the error an owner read would give, having consulted serving metadata first (RS-9, clause 8.9-9). */
+  | "client-filter-consults-metadata-first"
+  /** Binds a page cursor to the grant and `fields` only, so it replays on another stream or under a view or filter (RS-6, clause 8.9-11). */
+  | "cursor-context-omits-query-shape"
+  /** Derives a stream's consent boundary from its `cursor_field` when it declares no `consent_time_field`, accepting `time_range` (AS-2, clause 5.4-1). */
+  | "derive-consent-boundary-from-cursor-field"
+  /** Sends ambient credentials (Authorization, Cookie) when retrieving a declaration pointer (AS-16, clause 5.8-5). */
+  | "declaration-fetch-sends-ambient-credentials"
+  /** Follows a declaration pointer's redirect to an unvalidated target (AS-16, clause 5.8-5). */
+  | "declaration-fetch-follows-redirects-unvalidated"
+  /** Retrieves a remote schema a retrieved declaration references and accepts it (AS-16, clause 5.8-5). */
+  | "declaration-fetch-retrieves-remote-schema"
+  /** Fetches a client-supplied `logo_uri` when it renders the consent surface for an unverified client (AS-7, clause 6.1-10). */
+  | "fetch-client-logo-on-consent-render"
+  /** Revoking one grant of a shared credential revokes the credential and every grant it covers (AS-26, clause 10.7-6). */
+  | "revoking-one-grant-revokes-shared-credential"
+  /** Keeps a shared credential active in introspection after every grant it covers has ended (AS-8, clause 10.7-1). */
+  | "shared-credential-active-after-all-grants-end"
+  /** Lets a `single_use` grant be issued a token again after its first issuance (AS-10, clause 7.5-1). */
+  | "single-use-grant-reissuable"
+  /** Keeps a `single_use` grant active in introspection and on reads after its window has ended (AS-10, clause 7.5-7). */
+  | "single-use-window-never-ends"
+  /** Approves a staged review after the eligibility it was bound to went stale, instead of requiring a new review (AS-15, clause 7.2-5). */
+  | "approve-stale-review"
+  /** Accepts an owner-token read naming both `view` and `fields`, honouring `fields` (RS-9, clause 8.9-3). */
+  | "accept-owner-view-and-fields-together"
+  /** Answers an owner exact filter that matches no record with the unfiltered read, so the filter widens the result (RS-5, clause 8.1-1a). */
+  | "owner-filter-fails-open"
+  /** Publishes an issued grant artifact without its Section 7 `version` row (AS-3, clause 7.1-1). */
+  | "issued-grant-omits-version"
+  /** Lets an authorization code be redeemed again after its first successful redemption (AS-19, clause 10.2-5). */
+  | "redeem-authorization-code-repeatedly"
+  /** CONFORMANT, not a violation: ignores `Range` on a blob and advertises no `Accept-Ranges`, so it owes nothing under clause 8.12-2. */
+  | "ignore-blob-range-requests"
+  /** Honours `Range` on a blob but does not advertise `Accept-Ranges: bytes` (RS-1, clause 8.12-2). */
+  | "blob-ranges-unadvertised"
+  /** Serves different bytes than the blob stores (RS-1, clause 8.12-2). */
+  | "blob-wrong-bytes"
+  /** Serves a blob without `Cache-Control: private, no-store` (RS-1, clause 8.12-2). */
+  | "blob-response-cacheable"
+  /** Publishes a `blob_ref.mime_type` that is not an IANA media type (RS-1, clause 4.8-1). */
+  | "blob-ref-invalid-mime-type"
+  /** Serves any stored blob to any valid token, whether or not a readable record references it (RS-1, clause 8.12-1). */
+  | "serve-blob-without-reference-check"
+  /** Counts a record as referencing a blob through a field the grant's projection excludes (RS-1, clause 8.12-1). */
+  | "serve-blob-ignoring-projection"
+  /** Counts a record outside the grant's time window as referencing a blob (RS-1, clause 8.12-1). */
+  | "serve-blob-ignoring-window";
 
 /** The sole purpose code Core Section 9 AS item 14 requires explicit consent for. */
 export const AI_TRAINING_PURPOSE = "https://pdpp.dev/purpose/ai_training";
@@ -503,6 +636,8 @@ export interface StreamFixture {
    * what clauses 5.2-4 and 6.8-2 need a stream to demonstrate.
    */
   readonly consentTimeField?: string;
+  /** RFC 3339 format of `consentTimeField` (Core Section 5); defaults to `date-time`. */
+  readonly consentTimeFormat?: "date" | "date-time";
   readonly cursorField?: string;
   /** Declared item type for array-typed fields (JSON Schema `items.type`), a nested constraint RS-14 checks. */
   readonly fieldItemTypes?: Readonly<Record<string, string>>;
@@ -536,6 +671,14 @@ export interface StreamFixture {
   readonly views?: readonly { readonly id: string; readonly fields: readonly string[] }[];
 }
 
+/** One state of a record at a version (Core Section 4 "Visibility"); `snapshot` is null once deleted. */
+interface HistoryEntry {
+  readonly at: string;
+  readonly changed: ReadonlySet<string>;
+  readonly snapshot: Record<string, unknown> | null;
+  readonly version: number;
+}
+
 interface GrantState {
   /**
    * Core Section 7 required grant facts, retained so the introspection
@@ -547,8 +690,12 @@ interface GrantState {
    * resource server, which is the whole job of the introspection projection.
    */
   readonly accessMode: string;
+  /** Whether a `single_use` grant's one window has been opened by a first token issuance. */
+  consumed: boolean;
   expired: boolean;
   readonly grantId: string;
+  /** RFC 3339 instant the grant was issued, for the published grant artifact's `issued_at`. */
+  readonly issuedAt: string;
   readonly purposeCode: string;
   revoked: boolean;
   revokedAt?: number;
@@ -565,8 +712,8 @@ interface GrantState {
     fields: readonly string[];
     /** Instance handles the grant lists for this stream (Core Section 7); absent means the single seeded instance. */
     instanceIds?: readonly string[];
-    /** Frozen consent window, when the grant carries one (Core Section 7). */
-    timeConstraint?: { field: string; from?: string; to?: string };
+    /** Frozen consent window and declaration-resolved type (Core Section 7). */
+    timeConstraint?: { field: string; type: "date" | "date-time"; from?: string; to?: string };
     /**
      * The view name this stream's `fields` were resolved FROM, when the request
      * named one.
@@ -581,6 +728,8 @@ interface GrantState {
     resolvedFromView?: string;
   }[];
   readonly subjectId: string;
+  /** When that window ends (epoch ms on this server's clock): the first token's expiry. */
+  windowEndsAtMs?: number;
 }
 
 /**
@@ -594,9 +743,12 @@ interface GrantState {
  * governs.
  */
 type Principal =
-  | { kind: "client"; grantId: string }
+  | { kind: "client"; grantId: string; covers?: readonly string[] }
   | { kind: "owner"; subjectId: string }
   | { kind: "unrecognized"; reportedKind: string };
+
+/** Lifetime a token response states and introspection reports as `exp` (clause 8.12-5). */
+const TOKEN_LIFETIME_SECONDS = 3600;
 
 export const PDPP_VERSION = "2026-04-06";
 const SUPPORTED_VERSION = PDPP_VERSION;
@@ -609,8 +761,8 @@ const SUPPORTED_VERSION = PDPP_VERSION;
  * giving them the same value here would let a conflating implementation pass by
  * coincidence.
  */
-export const GRANT_SCHEMA_VERSION = "1.0";
-const SUPPORTED_GRANT_MAJOR = "1";
+export const GRANT_SCHEMA_VERSION = "0.1.0";
+const SUPPORTED_GRANT_MAJOR = "0";
 
 /** The major component of a grant schema version, per Core's major-version rule. */
 function grantMajor(version: string): string {
@@ -645,43 +797,47 @@ function recordKey(stream: string, recordId: string): string {
   return `${stream}\n${recordId}`;
 }
 
-/**
- * The `changes_since` token space, deliberately shaped so it can never be
- * confused with a page cursor.
- *
- * Section 8: "`cursor`/`next_cursor` are pagination tokens within a single
- * query execution; `changes_since`/`next_changes_since` are incremental sync
- * tokens across sessions ... they are different token spaces and will produce a
- * protocol error if confused." Page cursors here are `ok:<order>:<offset>`, so
- * the two prefixes are disjoint and each can reject the other's tokens.
- */
-const SYNC_PREFIX = "sync:";
+/** The unbound, empty horizon defined by Core Section 4. */
+const SYNC_BEGINNING = "beginning";
 
-/** Encode a sync horizon as an opaque token. */
-function syncToken(version: number): string {
-  return `${SYNC_PREFIX}${version}`;
+interface SyncPosition {
+  readonly context?: string;
+  readonly version: number;
 }
 
-/**
- * Decode a sync token to its horizon, or null when it is not one of ours.
- *
- * An empty token opens a fresh session from the beginning (horizon 0), which is
- * how a client with no prior cursor establishes its baseline.
- */
-function parseSyncToken(raw: string): number | null {
-  if (raw === "") {
+interface PagePosition {
+  readonly context: string;
+  readonly from: number | null;
+  readonly horizon: number | null;
+  readonly inputSync: string | null;
+  readonly offset: number;
+  readonly order: string;
+}
+
+/** Context serialization is unambiguous even for opaque view identifiers. */
+function contextDigest(parts: readonly string[]): string {
+  return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+}
+
+/** Code-unit order, independent of the host locale. */
+function compareText(a: string, b: string): number {
+  if (a === b) {
     return 0;
   }
-  if (!raw.startsWith(SYNC_PREFIX)) {
-    return null;
-  }
-  const version = Number(raw.slice(SYNC_PREFIX.length));
-  return Number.isInteger(version) && version >= 0 ? version : null;
+  return a < b ? -1 : 1;
 }
 
 const RECORDS_PATH = /^\/v1\/streams\/([^/]+)\/records$/;
 const SINGLE_RECORD_PATH = /^\/v1\/streams\/([^/]+)\/records\/([^/]+)$/;
 const METADATA_PATH = /^\/v1\/streams\/([^/]+)$/;
+/** `filter[{field}]` with no operator: the exact form. */
+const OWNER_EXACT_FILTER = /^filter\[([^\]]+)\]$/;
+/** `filter[{field}]` or `filter[{field}][{op}]`. */
+const CLIENT_FILTER_SHAPE = /^filter\[([^\]]+)\](?:\[([^\]]+)\])?$/;
+const RANGE_OPERATORS: readonly string[] = ["gt", "gte", "lt", "lte"];
+/** A single `bytes=start-end` range (end optional). */
+const BLOB_RANGE = /^bytes=(\d+)-(\d*)$/;
+const BLOB_PATH = /^\/v1\/blobs\/([^/]+)$/;
 
 /** The seeded subject. A second subject exists so cross-subject scoping is testable. */
 /** The client this target issues grants to, as introspection reports it. */
@@ -698,10 +854,13 @@ export const SEEDED_SUBJECT = "subject_seeded";
  * to be STATED, because a resource server enforces from the introspected grant
  * and cannot infer an instance the AS never named.
  */
-const SEEDED_INSTANCE = "instance_seeded";
+export const SEEDED_INSTANCE = "instance_seeded";
+
+/** Expiry every grant this server issues carries (`expires_at`), stated by the grant artifact and the approval artifact alike. */
+export const GRANT_EXPIRES_AT = "2027-01-01T00:00:00Z";
 
 /** Source the seeded streams belong to (Core Section 7 `source`). */
-const SEEDED_SOURCE = { kind: "connector", id: "https://registry.pdpp.dev/connectors/reference" } as const;
+export const SEEDED_SOURCE = { kind: "connector", id: "https://registry.pdpp.dev/connectors/reference" } as const;
 
 /** Purpose bound to a grant whose request named none (Core Section 7 `purpose_code`). */
 const DEFAULT_PURPOSE = "https://pdpp.dev/purpose/personalization";
@@ -713,10 +872,44 @@ export class ReferenceServer {
   private readonly grants = new Map<string, GrantState>();
   private readonly tokens = new Map<string, Principal>();
   private counter = 0;
+  /** Random handles; positions and contexts never travel on the wire. */
+  private readonly syncPositions = new Map<string, SyncPosition>();
+  private readonly pagePositions = new Map<string, PagePosition>();
+
+  private parseSyncToken(token: string): SyncPosition | null {
+    return token === SYNC_BEGINNING ? { version: 0 } : (this.syncPositions.get(token) ?? null);
+  }
+
+  private syncToken(version: number, context: string): string {
+    // Deliberately violating fixture: equality tracks the global clock.
+    const token = this.has("token-reveals-hidden-writes")
+      ? `sync:${version}:${context}`
+      : `cs_${randomBytes(24).toString("base64url")}`;
+    this.syncPositions.set(token, { version, context });
+    return token;
+  }
+
+  private pageToken(position: PagePosition): string {
+    const token = `pc_${randomBytes(24).toString("base64url")}`;
+    this.pagePositions.set(token, position);
+    return token;
+  }
   private readonly streams: readonly StreamFixture[];
   private readonly defects: ReadonlySet<Defect>;
-  /** Streams provisioned on demand (multi-instance): served, but not part of the seeded inventory or the owner stream list. */
+  /** Streams provisioned on demand (multi-instance, blobs): served, but not part of the seeded inventory or the owner stream list. */
   private readonly provisionedStreams: StreamFixture[] = [];
+
+  /**
+   * Authorization codes minted for approved grants, with the PKCE challenge each
+   * is bound to and whether its first redemption has happened (clause 10.2-5).
+   */
+  private readonly authorizationCodes = new Map<
+    string,
+    { readonly challenge: string; consumed: boolean; readonly grantId: string }
+  >();
+
+  /** Stored blobs by id, provisioned on demand by `provisionBlobStreams`. */
+  private readonly blobs = new Map<string, { readonly bytes: Buffer; readonly mimeType: string }>();
 
   /**
    * The AS's current view definitions, keyed by the `viewKey` helper below.
@@ -754,6 +947,27 @@ export class ReferenceServer {
    */
   private readonly recordVersions = new Map<string, number>();
   private versionClock = 0;
+
+  /** Milliseconds added to the wall clock by `advancePastWindow`, so a case can reach the end of a `single_use` window. */
+  private clockOffsetMs = 0;
+
+  private now(): number {
+    return Date.now() + this.clockOffsetMs;
+  }
+
+  /** Seconds since the epoch when this server started; every token it issues lives `TOKEN_LIFETIME_SECONDS` from it. */
+  private readonly tokenIssuedAtSeconds = Math.floor(Date.now() / 1000);
+
+  /**
+   * Every state a record has had, oldest first, keyed `stream\nrecordId`.
+   *
+   * Core Section 4 "Visibility": whether a record is visible is judged at a
+   * HORIZON, from the record's version at that horizon, so a session needs the
+   * state each record was in then -- not just the latest. A deletion is a final
+   * entry with a null snapshot. The history is what lets a session tell "left
+   * the grant's window" from "never in it", which a latest-version stamp cannot.
+   */
+  private readonly history = new Map<string, HistoryEntry[]>();
 
   /**
    * Fields whose change is NOT visible to a given grant, recorded per record so
@@ -823,6 +1037,7 @@ export class ReferenceServer {
         this.versionClock += 1;
         this.recordVersions.set(recordKey(stream.name, record.id), this.versionClock);
         this.changedFields.set(recordKey(stream.name, record.id), new Set(stream.fields));
+        this.recordHistory(stream.name, record.id, { ...record }, new Set(stream.fields));
       }
     }
   }
@@ -846,7 +1061,21 @@ export class ReferenceServer {
     const key = recordKey(stream, recordId);
     this.recordVersions.set(key, this.versionClock);
     this.changedFields.set(key, new Set([field]));
+    this.recordHistory(stream, recordId, { ...record }, new Set([field]));
     return true;
+  }
+
+  /** Append a state to a record's history at the current version. */
+  private recordHistory(
+    stream: string,
+    recordId: string,
+    snapshot: Record<string, unknown> | null,
+    changed: ReadonlySet<string>
+  ): void {
+    const key = recordKey(stream, recordId);
+    const entries = this.history.get(key) ?? [];
+    entries.push({ at: new Date().toISOString(), changed, snapshot, version: this.versionClock });
+    this.history.set(key, entries);
   }
 
   /**
@@ -859,7 +1088,7 @@ export class ReferenceServer {
    * the fake.
    */
   expireSyncCursor(token: string): boolean {
-    const horizon = parseSyncToken(token);
+    const horizon = this.parseSyncToken(token);
     if (horizon === null) {
       return false;
     }
@@ -904,6 +1133,7 @@ export class ReferenceServer {
       deletedAt: new Date().toISOString(),
     });
     this.recordVersions.set(recordKey(stream, recordId), this.versionClock);
+    this.recordHistory(stream, recordId, null, new Set(fixture.fields));
     return true;
   }
 
@@ -967,9 +1197,199 @@ export class ReferenceServer {
         this.versionClock += 1;
         this.recordVersions.set(recordKey(name, record.id), this.versionClock);
         this.changedFields.set(recordKey(name, record.id), new Set(["id", "label", cursorField]));
+        this.recordHistory(name, record.id, { ...record }, new Set(["id", "label", cursorField]));
       }
     }
     return { stream: name, cursorField, instanceIds, records: seeded };
+  }
+
+  /**
+   * Provision (once) the streams and blobs the blob cases need.
+   *
+   * `blob_attachments` holds two records that reference blobs through two
+   * fields, so each way a reference can fail to authorize has a blob that
+   * exercises it: `blob_ref` (the primary blob, readable under the fixture
+   * grant), `thumbnail_ref` (a blob referenced ONLY through a field the fixture
+   * grant's projection excludes), and a second record dated outside the window
+   * the windowed grant consents to. `blob_private_attachments` is a stream no
+   * fixture grant lists, so its blob exists but no record in the grant
+   * references it.
+   */
+  provisionBlobStreams(): {
+    readonly bytes: Buffer;
+    readonly mimeType: string;
+    readonly ids: {
+      readonly blob: string;
+      readonly outOfGrant: string;
+      readonly outsideProjection: string;
+      readonly outsideWindow: string;
+    };
+    readonly stream: string;
+    readonly window: { readonly field: string; readonly from: string; readonly to: string };
+  } {
+    const stream = "blob_attachments";
+    const mimeType = "text/plain";
+    const store = (id: string, content: string) => {
+      const bytes = Buffer.from(content);
+      this.blobs.set(id, { bytes, mimeType });
+      return {
+        blob_id: id,
+        mime_type: this.has("blob-ref-invalid-mime-type") ? "not a media type" : mimeType,
+        size_bytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    };
+    const ids = {
+      blob: "blob_att_1",
+      outsideProjection: "blob_att_1_thumbnail",
+      outsideWindow: "blob_att_2",
+      outOfGrant: "blob_private_1",
+    } as const;
+    const text = (id: string) => `pdpp-conformance-blob:${id}`;
+    if (!this.provisionedStreams.some((s) => s.name === stream)) {
+      const fields = ["id", "title", "taken_at", "blob_ref", "thumbnail_ref"];
+      const fixtureFor = (name: string, fieldList: string[], records: Record_[]): StreamFixture => ({
+        name,
+        fields: fieldList,
+        fieldTypes: Object.fromEntries(fieldList.map((f) => [f, f.endsWith("_ref") ? "object" : "string"])),
+        requiredFields: ["id"],
+        primaryKey: ["id"],
+        consentTimeField: "taken_at",
+        semantics: "append_only",
+        records,
+      });
+      const attachments = fixtureFor(stream, fields, [
+        {
+          id: "att_1",
+          title: "In window",
+          taken_at: "2026-03-01T00:00:00Z",
+          blob_ref: store(ids.blob, text(ids.blob)),
+          thumbnail_ref: store(ids.outsideProjection, text(ids.outsideProjection)),
+        },
+        {
+          id: "att_2",
+          title: "Outside window",
+          taken_at: "2026-09-01T00:00:00Z",
+          blob_ref: store(ids.outsideWindow, text(ids.outsideWindow)),
+          thumbnail_ref: store("blob_att_2_thumbnail", text("blob_att_2_thumbnail")),
+        },
+      ]);
+      const priv = fixtureFor(
+        "blob_private_attachments",
+        ["id", "taken_at", "blob_ref"],
+        [{ id: "priv_1", taken_at: "2026-03-01T00:00:00Z", blob_ref: store(ids.outOfGrant, text(ids.outOfGrant)) }]
+      );
+      for (const fixture of [attachments, priv]) {
+        this.provisionedStreams.push(fixture);
+        for (const record of fixture.records) {
+          this.versionClock += 1;
+          this.recordVersions.set(recordKey(fixture.name, record.id), this.versionClock);
+          this.changedFields.set(recordKey(fixture.name, record.id), new Set(fixture.fields));
+          this.recordHistory(fixture.name, record.id, { ...record }, new Set(fixture.fields));
+        }
+      }
+    }
+    const stored = this.blobs.get(ids.blob);
+    return {
+      stream,
+      mimeType,
+      bytes: stored?.bytes ?? Buffer.alloc(0),
+      ids,
+      window: { field: "taken_at", from: "2026-01-01T00:00:00Z", to: "2026-06-01T00:00:00Z" },
+    };
+  }
+
+  /**
+   * Whether a record this token may currently read references `blobId`
+   * (Core Section 8 "Get a blob").
+   *
+   * Evaluated per request against the grant as it stands. For a client token a
+   * reference counts only when the grant lists the stream, the record is inside
+   * the grant's time window, and the field holding the `blob_ref` is in the
+   * grant's field projection; for an owner token, when the stream belongs to
+   * the owner's subject.
+   */
+  private blobReferencedByReadableRecord(
+    blobId: string,
+    principalKind: Principal["kind"],
+    grant: GrantState | undefined,
+    subjectScoped: boolean
+  ): boolean {
+    for (const fixture of [...this.streams, ...this.provisionedStreams]) {
+      const granted = grant?.streams.find((g) => g.name === fixture.name);
+      if (principalKind === "client" ? granted === undefined : !subjectScoped) {
+        continue;
+      }
+      const projection =
+        principalKind === "client" && !this.has("serve-blob-ignoring-projection")
+          ? this.grantedFields(granted)
+          : fixture.fields;
+      const constraint = this.has("serve-blob-ignoring-window") ? undefined : granted?.timeConstraint;
+      for (const record of fixture.records) {
+        if (constraint && !this.inWindow(record, constraint)) {
+          continue;
+        }
+        if (projection.some((field) => (record[field] as { blob_id?: unknown } | undefined)?.blob_id === blobId)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Whether a record's date-time value for the constraint's field lies in `[from, to)` (Core Section 8 "Comparison"). */
+  private inWindow(record: Record_, constraint: { field: string; from?: string; to?: string }): boolean {
+    const value = record[constraint.field];
+    const instant = typeof value === "string" ? parseDateTime(value) : null;
+    if (instant === null) {
+      return false;
+    }
+    const from = constraint.from === undefined ? null : parseDateTime(constraint.from);
+    const to = constraint.to === undefined ? null : parseDateTime(constraint.to);
+    return !((from && compareDateTimes(instant, from) < 0) || (to && compareDateTimes(instant, to) >= 0));
+  }
+
+  /** Answers GET/HEAD /v1/blobs/{blob_id}: a direct response, or 404 `blob_not_found` for every non-readable id. */
+  private serveBlob(
+    blobId: string,
+    readable: boolean,
+    method: string,
+    range: string | undefined,
+    res: import("node:http").ServerResponse,
+    notFound: () => void
+  ): void {
+    const blob = this.blobs.get(blobId);
+    if (!(blob && (readable || this.has("serve-blob-without-reference-check")))) {
+      notFound();
+      return;
+    }
+    this.counter += 1;
+    const body = this.has("blob-wrong-bytes") ? Buffer.from("not the stored blob") : blob.bytes;
+    const common = {
+      "content-type": blob.mimeType,
+      ...(this.has("blob-response-cacheable") ? {} : { "cache-control": "private, no-store" }),
+      // This server honours single byte ranges, so it says so (clause 8.12-2).
+      ...(this.has("blob-ranges-unadvertised") || this.has("ignore-blob-range-requests")
+        ? {}
+        : { "accept-ranges": "bytes" }),
+      "pdpp-version": SUPPORTED_VERSION,
+      "request-id": `req_${this.counter}`,
+    };
+    const span = range === undefined || this.has("ignore-blob-range-requests") ? null : BLOB_RANGE.exec(range);
+    if (span) {
+      const start = Number(span[1]);
+      const end = Math.min(span[2] === "" ? body.length - 1 : Number(span[2]), body.length - 1);
+      const part = body.subarray(start, end + 1);
+      res.writeHead(206, {
+        ...common,
+        "content-length": String(part.length),
+        "content-range": `bytes ${start}-${end}/${body.length}`,
+      });
+      res.end(method === "HEAD" ? undefined : part);
+      return;
+    }
+    res.writeHead(200, { ...common, "content-length": String(body.length) });
+    res.end(method === "HEAD" ? undefined : body);
   }
 
   /** Current field list for a view, or undefined when the AS defines no such view. */
@@ -1042,13 +1462,59 @@ export class ReferenceServer {
   }
 
   /**
+   * The grant a client credential acts under for this request. A credential that
+   * covers several grants (Core Section 10 "Revocation") acts under the active
+   * one that lists the requested stream, else the first active one, else the
+   * first it covers, whose lifecycle denial then explains the refusal.
+   */
+  private coveredGrantFor(principal: { grantId: string; covers?: readonly string[] }, streamHint?: string): string {
+    const all = principal.covers ?? [principal.grantId];
+    const live = all
+      .map((id) => this.grants.get(id))
+      .filter((g): g is GrantState => g !== undefined && !g.revoked && !g.expired && !this.windowEnded(g));
+    const listing = live.find((g) => streamHint !== undefined && g.streams.some((st) => st.name === streamHint));
+    return (listing ?? live[0])?.grantId ?? principal.grantId;
+  }
+
+  /**
+   * Issue ONE credential that covers two grants over two streams, so one grant
+   * can be ended while the other is probed through the same credential.
+   */
+  issueSharedCredential(): { credential: string; grants: { grantId: string; stream: string }[] } | null {
+    const [first, second] = this.streams;
+    if (!(first && second)) {
+      return null;
+    }
+    const issued = [first, second].map((fixture) =>
+      this.issueGrant([{ name: fixture.name, fields: [...fixture.fields] }])
+    );
+    const [a, b] = issued;
+    if (!(a && b) || "deniedReason" in a || "deniedReason" in b) {
+      return null;
+    }
+    this.counter += 1;
+    const credential = `token_shared_${this.counter}`;
+    this.tokens.set(credential, { kind: "client", grantId: a.grantId, covers: [a.grantId, b.grantId] });
+    return {
+      credential,
+      grants: [
+        { grantId: a.grantId, stream: first.name },
+        { grantId: b.grantId, stream: second.name },
+      ],
+    };
+  }
+
+  /**
    * Resolve a token's principal to the enforcement context, or the denial that
    * Section 8 requires. A client token carries a grant whose lifecycle is
    * checked here; an owner token carries none (Section 8 "Grant enforcement").
    */
   private resolvePrincipal(
-    principal: Principal
-  ): { grant: GrantState | undefined; subjectId: string } | { denial: { code: string; message: string } } {
+    principal: Principal,
+    streamHint?: string
+  ):
+    | { grant: GrantState | undefined; subjectId: string }
+    | { denial: { code: string; inactive?: true; message: string } } {
     if (principal.kind === "owner") {
       return { grant: undefined, subjectId: principal.subjectId };
     }
@@ -1063,17 +1529,20 @@ export class ReferenceServer {
         ? { grant, subjectId: grant.subjectId }
         : { denial: { code: "grant_invalid", message: "Unknown grant." } };
     }
-    const grant = this.grants.get(principal.grantId);
+    const grant = this.grants.get(this.coveredGrantFor(principal, streamHint));
     if (!grant) {
       return { denial: { code: "grant_invalid", message: "Unknown grant." } };
     }
     const lagging =
       this.has("lag-revocation-within-ceiling") && grant.revokedAt !== undefined && Date.now() - grant.revokedAt < 3000;
     if (grant.revoked && !lagging && !this.has("ignore-revocation")) {
-      return { denial: { code: "grant_revoked", message: "Grant was revoked." } };
+      return { denial: { code: "grant_revoked", message: "Grant was revoked.", inactive: true } };
+    }
+    if (this.windowEnded(grant)) {
+      return { denial: { code: "grant_expired", message: "The single_use window has ended.", inactive: true } };
     }
     if (grant.expired && !this.has("serve-expired-grant")) {
-      return { denial: { code: "grant_expired", message: "Grant has expired." } };
+      return { denial: { code: "grant_expired", message: "Grant has expired.", inactive: true } };
     }
     return { grant, subjectId: grant.subjectId };
   }
@@ -1157,9 +1626,13 @@ export class ReferenceServer {
         name: s.name,
         fields: this.resolveFields(s.name, s.fields),
         ...(s.instanceIds ? { instanceIds: [...s.instanceIds] } : {}),
-        ...(s.timeConstraint ? { timeConstraint: s.timeConstraint } : {}),
+        ...(s.timeConstraint
+          ? { timeConstraint: { ...s.timeConstraint, type: this.findStream(s.name)?.consentTimeFormat ?? "date-time" } }
+          : {}),
         ...(s.resolvedFromView === undefined ? {} : { resolvedFromView: s.resolvedFromView }),
       })),
+      issuedAt: new Date().toISOString(),
+      consumed: false,
       revoked: false,
       expired: options.expired ?? false,
       schemaVersion: options.schemaVersion ?? GRANT_SCHEMA_VERSION,
@@ -1229,13 +1702,134 @@ export class ReferenceServer {
           ? {
               time_constraint: {
                 field: stream.timeConstraint.field,
-                ...(stream.timeConstraint.from === undefined ? {} : { since: stream.timeConstraint.from }),
-                ...(stream.timeConstraint.to === undefined ? {} : { until: stream.timeConstraint.to }),
+                type: stream.timeConstraint.type,
+                ...(stream.timeConstraint.from === undefined
+                  ? {}
+                  : { since: this.issuedBound(stream.timeConstraint.from) }),
+                ...(stream.timeConstraint.to === undefined
+                  ? {}
+                  : { until: this.issuedBound(stream.timeConstraint.to) }),
               },
             }
           : {}),
       })),
     };
+  }
+
+  /**
+   * The issued grant as Core Section 7's field tables state it, built from the
+   * grant this server actually holds (clause 7.1-1). `streams` is the same
+   * resolved projection the token response and introspection report, so the
+   * artifact cannot drift from what the RS enforces.
+   */
+  issuedGrantArtifact(grantId: string): Record<string, unknown> | null {
+    const grant = this.grants.get(grantId);
+    const detail = this.grantedAuthorizationDetails(grantId);
+    if (!(grant && detail)) {
+      return null;
+    }
+    return {
+      ...(this.has("issued-grant-omits-version") ? {} : { version: grant.schemaVersion }),
+      grant_id: grant.grantId,
+      issued_at: grant.issuedAt,
+      subject: { id: grant.subjectId },
+      client: { client_id: CLIENT_ID },
+      source: { ...grant.source },
+      source_declaration: { version: "2026-01-01" },
+      purpose_code: grant.purposeCode,
+      access_mode: grant.accessMode,
+      streams: detail.streams,
+      expires_at: GRANT_EXPIRES_AT,
+    };
+  }
+
+  /**
+   * A frozen `time_constraint` bound as the grant reports it (clause 6.8-11):
+   * verbatim. `normalize-time-constraint-bounds` converts a `date-time` to a UTC
+   * instant at millisecond precision, which is the conversion and rounding the
+   * clause forbids.
+   */
+  private issuedBound(bound: string): string {
+    const instant = this.has("normalize-time-constraint-bounds") ? Date.parse(bound) : Number.NaN;
+    return Number.isNaN(instant) ? bound : new Date(instant).toISOString();
+  }
+
+  /**
+   * Open a `single_use` grant's one read window on first token issuance (Core
+   * Section 7 "Access modes"): mark the grant consumed and set the window to end
+   * with the first token. Returns false when the grant is already consumed.
+   * Any other access mode is unaffected.
+   */
+  private openWindow(grant: GrantState): boolean {
+    if (grant.accessMode !== "single_use") {
+      return true;
+    }
+    if (grant.consumed && !this.has("single-use-grant-reissuable")) {
+      return false;
+    }
+    if (!grant.consumed) {
+      grant.consumed = true;
+      grant.windowEndsAtMs = this.now() + TOKEN_LIFETIME_SECONDS * 1000;
+    }
+    return true;
+  }
+
+  /** Whether a `single_use` grant's window has ended (clause 7.5-7). */
+  private windowEnded(grant: GrantState): boolean {
+    return (
+      grant.windowEndsAtMs !== undefined &&
+      this.now() >= grant.windowEndsAtMs &&
+      !this.has("single-use-window-never-ends")
+    );
+  }
+
+  /** Move this server's clock past the end of a grant's window; false when the grant has no open window. */
+  advancePastWindow(grantId: string): boolean {
+    const end = this.grants.get(grantId)?.windowEndsAtMs;
+    if (end === undefined) {
+      return false;
+    }
+    this.clockOffsetMs = Math.max(this.clockOffsetMs, end - Date.now() + 1000);
+    return true;
+  }
+
+  /** Mint an authorization code for an approved grant, bound to an S256 PKCE challenge. */
+  mintAuthorizationCode(grantId: string, challenge: string): string | null {
+    if (!this.grants.has(grantId)) {
+      return null;
+    }
+    this.counter += 1;
+    const code = `code_${this.counter}`;
+    this.authorizationCodes.set(code, { grantId, challenge, consumed: false });
+    return code;
+  }
+
+  /**
+   * Redeem an authorization code at the token endpoint (RFC 6749 Section 4.1.3
+   * with PKCE, RFC 7636). The first successful redemption consumes the code; a
+   * later one is `invalid_grant` and issues nothing (clause 10.2-5). The check
+   * and the consumption are one step, so two redemptions cannot both succeed.
+   */
+  redeemAuthorizationCode(code: string, verifier: string): { accessToken: string } | null {
+    const entry = this.authorizationCodes.get(code);
+    if (!entry) {
+      return null;
+    }
+    if (createHash("sha256").update(verifier).digest("base64url") !== entry.challenge) {
+      return null;
+    }
+    if (entry.consumed && !this.has("redeem-authorization-code-repeatedly")) {
+      return null;
+    }
+    const grant = this.grants.get(entry.grantId);
+    if (grant && !this.openWindow(grant)) {
+      return null;
+    }
+    entry.consumed = true;
+    this.counter += 1;
+    const accessToken = `token_${this.counter}`;
+    this.tokens.set(accessToken, { kind: "client", grantId: entry.grantId });
+    return { accessToken };
   }
 
   /** The access token bound to a grant, for the token endpoint to re-serve. */
@@ -1266,22 +1860,35 @@ export class ReferenceServer {
     if (principal?.kind !== "client") {
       return null;
     }
-    const grant = this.grants.get(principal.grantId);
+    // A credential covering several grants is active while any of them is
+    // (Core Section 10 "Revocation"), and reports the one it is active under.
+    const reportedGrantId = this.has("shared-credential-active-after-all-grants-end")
+      ? principal.grantId
+      : this.coveredGrantFor(principal);
+    const grant = this.grants.get(reportedGrantId);
     // Revocation and expiry are reported here, not just enforced at the query
     // surface: Section 9 AS item 8 requires revocation to be reflected in
     // introspection, and a stub that always answered `active: true` would make
     // the AS-8 oracle pass against a server that never propagates it.
-    const active = grant !== undefined && !(grant.revoked || grant.expired);
-    const detail = this.grantedAuthorizationDetails(principal.grantId);
+    const active =
+      grant !== undefined &&
+      (!(grant.revoked || grant.expired || this.windowEnded(grant)) ||
+        (this.has("shared-credential-active-after-all-grants-end") && principal.covers !== undefined)) &&
+      !this.endedTokens.has(accessToken);
+    const detail = this.grantedAuthorizationDetails(reportedGrantId);
     const body = active
       ? {
           active: true,
           pdpp_token_kind: "client",
-          grant_id: principal.grantId,
+          grant_id: reportedGrantId,
           // Core Section 8 requires the client-token context to name both the
           // subject whose data is reachable and the client it was issued to.
           subject_id: grant?.subjectId ?? SEEDED_SUBJECT,
           client_id: CLIENT_ID,
+          // Clause 8.12-5: every positive introspection response for an
+          // expiring token carries `exp`. Tokens here are issued with an
+          // `expires_in`, so they are expiring tokens.
+          ...(this.has("omit-introspection-exp") ? {} : { exp: this.tokenIssuedAtSeconds + TOKEN_LIFETIME_SECONDS }),
           ...(detail ? { authorization_details: [detail] } : {}),
         }
       : { active: false };
@@ -1297,6 +1904,11 @@ export class ReferenceServer {
     };
   }
 
+  /** URL of this server's RFC 7009 revocation endpoint (the token travels as a query parameter here). */
+  get revocationEndpoint(): string {
+    return `${this.baseUrl}/oauth/revoke`;
+  }
+
   /** Base URL of this server's token endpoint, for the adapter to call. */
   get tokenEndpoint(): string {
     return `${this.baseUrl}/oauth/token`;
@@ -1308,6 +1920,19 @@ export class ReferenceServer {
       grant.revoked = true;
       grant.revokedAt = Date.now();
     }
+    if (this.has("revoking-one-grant-revokes-shared-credential")) {
+      for (const principal of this.tokens.values()) {
+        if (principal.kind === "client" && principal.covers?.includes(grantId)) {
+          for (const covered of principal.covers) {
+            const other = this.grants.get(covered);
+            if (other && !other.revoked) {
+              other.revoked = true;
+              other.revokedAt = Date.now();
+            }
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -1315,6 +1940,9 @@ export class ReferenceServer {
    * family, and the family remembers which token is current and which have
    * been superseded. A superseded token presented again is the reuse signal.
    */
+  /** Access tokens a client ended through the revocation endpoint while their grant stayed active (clause 10.7-5). */
+  private readonly endedTokens = new Set<string>();
+
   private readonly refreshFamilyOf = new Map<
     string,
     { readonly grantId: string; current: string; readonly superseded: Set<string> }
@@ -1377,7 +2005,7 @@ export class ReferenceServer {
       this.counter += 1;
       res.writeHead(status, {
         "content-type": "application/json",
-        "pdpp-version": SUPPORTED_VERSION,
+        ...(this.has("omit-pdpp-version-response-header") ? {} : { "pdpp-version": SUPPORTED_VERSION }),
         "request-id": `req_${this.counter}`,
         ...extraHeaders,
       });
@@ -1406,6 +2034,34 @@ export class ReferenceServer {
       return;
     }
 
+    // --- RFC 7009 revocation endpoint (clauses 10.7-4, 10.7-8) ---
+    //
+    // A client revoking an access token ends that token: the grant it is bound
+    // to is ended, because no refresh-token family covers it here (clause
+    // 10.7-5). Always answers 200, as RFC 7009 requires, whatever it did.
+    if (path === "/oauth/revoke" && method === "POST") {
+      const credential = parsed.searchParams.get("token") ?? "";
+      const family = this.refreshFamilyOf.get(credential);
+      const presented = this.tokens.get(credential);
+      if (family) {
+        // Clause 10.7-3: revoking a refresh token, current or superseded, ends
+        // every grant its family covers and every access token under them.
+        if (!this.has("revocation-endpoint-ignores-refresh-tokens")) {
+          this.revokeGrant(family.grantId);
+        }
+      } else if (presented?.kind === "client" && !this.has("revocation-endpoint-ignores-access-tokens")) {
+        // Clause 10.7-4 ends the token. Clause 10.7-5 ends its grant too, but
+        // only when no refresh-token family covers the grant.
+        const covered = [...this.refreshFamilyOf.values()].some((f) => f.grantId === presented.grantId);
+        this.endedTokens.add(credential);
+        if (!covered || this.has("revoke-family-grant-on-access-token-revocation")) {
+          this.revokeGrant(presented.grantId);
+        }
+      }
+      send(200, {});
+      return;
+    }
+
     // --- OAuth token endpoint (clause 10.2-4) ---
     //
     // Before the bearer check, because a token endpoint is where a caller goes
@@ -1413,11 +2069,38 @@ export class ReferenceServer {
     // already issued by the time this is called; this route exists so the
     // headers of a real, successful, token-bearing HTTP response are observable
     // over the wire rather than asserted about an in-process return value.
+    // The authorization_code grant (RFC 6749 Section 4.1.3, clause 10.2-5). The
+    // parameters travel in the query here, as the revocation endpoint's token
+    // does; what the route decides is the code's single use, not its transport.
+    if (path === "/oauth/token" && method === "POST") {
+      const redeemed = this.redeemAuthorizationCode(
+        parsed.searchParams.get("code") ?? "",
+        parsed.searchParams.get("code_verifier") ?? ""
+      );
+      const noStore = { "cache-control": "no-store", pragma: "no-cache" };
+      if (!redeemed) {
+        send(400, { error: "invalid_grant", error_description: "The authorization code is invalid or used." }, noStore);
+        return;
+      }
+      send(
+        200,
+        { access_token: redeemed.accessToken, token_type: "Bearer", expires_in: TOKEN_LIFETIME_SECONDS },
+        noStore
+      );
+      return;
+    }
     if (path === "/oauth/token") {
       const grantId = parsed.searchParams.get("grant_id") ?? "";
       const issuedToken = this.tokenForGrant(grantId);
+      const issuedFor = this.grants.get(grantId);
       if (!issuedToken) {
         error(400, "invalid_grant", "invalid_request_error", "Unknown grant.");
+        return;
+      }
+      // A `single_use` grant opens its one window with this first issuance;
+      // a later one is refused (clause 7.5-1).
+      if (issuedFor && !this.openWindow(issuedFor)) {
+        error(400, "invalid_grant", "invalid_request_error", "The single_use grant is already consumed.");
         return;
       }
       // RFC 6749 Section 5.1 and clause 10.2-4. Omitted under the defect, and
@@ -1442,6 +2125,9 @@ export class ReferenceServer {
         {
           access_token: issuedToken,
           token_type: "Bearer",
+          ...(this.has("single-use-token-without-expiry") && this.grants.get(grantId)?.accessMode === "single_use"
+            ? {}
+            : { expires_in: TOKEN_LIFETIME_SECONDS }),
           ...(detail && !this.has("omit-token-response-authorization-details")
             ? { authorization_details: [detail] }
             : {}),
@@ -1498,8 +2184,21 @@ export class ReferenceServer {
 
     // Resolve the client authorization context, mirroring what a separated RS
     // would read from an RFC 7662 introspection response.
-    const resolved = this.resolvePrincipal(principal);
+    const streamHint = decodeURIComponent(
+      (RECORDS_PATH.exec(path) ?? SINGLE_RECORD_PATH.exec(path) ?? METADATA_PATH.exec(path))?.[1] ?? ""
+    );
+    const resolved = this.resolvePrincipal(principal, streamHint);
     if ("denial" in resolved) {
+      // Section 8 "Inactive tokens": a token whose grant is revoked or expired
+      // is inactive, and every inactive access token is 401 behind a Bearer
+      // `invalid_token` challenge. `grant_invalid` is a different condition (a
+      // grant the server cannot serve) and stays 403.
+      if (resolved.denial.inactive && !this.has("inactive-grant-as-403")) {
+        error(401, resolved.denial.code, "authentication_error", resolved.denial.message, {
+          "www-authenticate": this.bearerChallenge(),
+        });
+        return;
+      }
       error(403, resolved.denial.code, "permission_error", resolved.denial.message);
       return;
     }
@@ -1534,6 +2233,21 @@ export class ReferenceServer {
     // An owner token reaches only its own subject's store (RS-12). The seeded
     // fixtures belong to SEEDED_SUBJECT, so a foreign owner sees an empty store.
     const subjectScoped = subjectId === SEEDED_SUBJECT;
+
+    // --- GET /v1/blobs/{blob_id} (RS-1, clauses 8.12-1 .. 8.12-3) ---
+    const blobMatch = BLOB_PATH.exec(path);
+    if (blobMatch && (method === "GET" || method === "HEAD")) {
+      const blobId = decodeURIComponent(blobMatch[1] ?? "");
+      this.serveBlob(
+        blobId,
+        this.blobReferencedByReadableRecord(blobId, principal.kind, grant, subjectScoped),
+        method,
+        typeof headers.range === "string" ? headers.range : undefined,
+        res,
+        () => error(404, "blob_not_found", "not_found_error", "Blob not found.")
+      );
+      return;
+    }
 
     // --- GET /v1/streams (RS-1) ---
     if (path === "/v1/streams") {
@@ -1659,12 +2373,8 @@ export class ReferenceServer {
       // A malformed cursor must be a 400, not a crash: the defect models a server
       // that lets a decode error escape as a 500.
       const rawCursor = parsed.searchParams.get("cursor");
-      if (
-        !this.has("ignore-unknown-params") &&
-        rawCursor !== null &&
-        rawCursor !== "" &&
-        !rawCursor.startsWith("ok:")
-      ) {
+      const pagePosition = rawCursor === null ? undefined : this.pagePositions.get(rawCursor);
+      if (!this.has("ignore-unknown-params") && rawCursor !== null && pagePosition === undefined) {
         if (this.has("crash-on-bad-cursor")) {
           error(500, "api_error", "api_error", "Internal server error.");
           return;
@@ -1677,7 +2387,7 @@ export class ReferenceServer {
       // page cursor offered in the changes_since slot is refused rather than
       // treated as an absent parameter and answered with a full page.
       const rawSyncCursor = parsed.searchParams.get("changes_since");
-      const pageCursorAsSync = rawSyncCursor?.startsWith("ok:") === true;
+      const pageCursorAsSync = rawSyncCursor !== null && this.pagePositions.has(rawSyncCursor);
       // Under `accept-page-cursor-as-changes-since` the page cursor is treated
       // as an absent parameter, so a full page is served in its place.
       const syncCursor = pageCursorAsSync && this.has("accept-page-cursor-as-changes-since") ? null : rawSyncCursor;
@@ -1693,8 +2403,9 @@ export class ReferenceServer {
       // A changes_since token this server did not mint is malformed, not a
       // reason to fall back to a full read — falling back would silently return
       // the whole stream to a client that asked for a delta.
-      let syncHorizon = syncCursor === null ? null : parseSyncToken(syncCursor);
-      if (syncCursor !== null && syncHorizon === null) {
+      const parsedSyncToken = syncCursor === null ? null : this.parseSyncToken(syncCursor);
+      let syncHorizon = parsedSyncToken === null ? null : parsedSyncToken.version;
+      if (syncCursor !== null && parsedSyncToken === null) {
         error(400, "invalid_cursor", "invalid_request_error", "changes_since token is malformed or unrecognized.");
         return;
       }
@@ -1705,7 +2416,7 @@ export class ReferenceServer {
       // with a different remedy. A well-formed token that is merely too old is
       // NOT a client error, and reporting it as one invites a retry that can
       // never succeed.
-      if (syncCursor !== null && syncCursor !== "" && this.expiredSyncTokens.has(syncCursor)) {
+      if (syncCursor !== null && this.expiredSyncTokens.has(syncCursor)) {
         if (this.has("misclassify-expired-sync-cursor")) {
           error(400, "invalid_cursor", "invalid_request_error", "changes_since token is malformed or unrecognized.");
           return;
@@ -1714,54 +2425,92 @@ export class ReferenceServer {
         return;
       }
 
-      // Section 8 "Stable sort": page cursors are direction-bound. This server
-      // mints `ok:<order>:<offset>`, so the direction a cursor was produced
-      // under travels with it and a mismatch is detectable — which is what
-      // makes the requirement observable at all. Under
-      // `accept-order-mismatched-cursor` the comparison is skipped and the page
-      // is served against the wrong direction.
+      // Section 8 binds sync tokens to the principal, stream and query context.
+      const scopeKey = principal.kind === "client" ? `grant:${grant?.grantId}` : `owner:${subjectId}`;
+      const syncShape = [...parsed.searchParams.entries()]
+        .filter(([key]) => key === "fields" || key === "view" || key.startsWith("filter[") || key.startsWith("expand"))
+        .map(
+          ([key, value]) =>
+            `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort(compareText).join(",") : value}`
+        )
+        // Code-unit order, as the default sort; localeCompare would reorder keys and values.
+        .sort((a, b) => {
+          if (a === b) {
+            return 0;
+          }
+          return a < b ? -1 : 1;
+        });
+      const view = parsed.searchParams.get("view");
+      const resolvedView =
+        principal.kind === "owner" && view
+          ? [...(this.views.get(viewKey(fixture.name, view)) ?? [])].sort(compareText).join(",")
+          : "";
+      const syncContext = contextDigest([
+        "sync",
+        scopeKey,
+        fixture.name,
+        parsed.searchParams.get("order") ?? "desc",
+        resolvedView,
+        ...syncShape,
+      ]);
+      if (
+        parsedSyncToken?.context !== undefined &&
+        parsedSyncToken.context !== syncContext &&
+        !this.has("accept-sync-token-under-other-context")
+      ) {
+        error(
+          400,
+          "invalid_cursor",
+          "invalid_request_error",
+          "changes_since token was issued under another grant, scope or stream."
+        );
+        return;
+      }
+
+      // Page handles resolve to server-held context and direction. The defect
+      // deliberately skips only the direction check.
       const requestedOrder = parsed.searchParams.get("order") ?? "desc";
       let cursorOffset = 0;
       /** Session horizon carried by a sync-session page cursor (clause 8.9-14). */
       let cursorHorizon: number | null = null;
-      if (rawCursor?.startsWith("ok:")) {
-        const [, cursorOrder, offsetText, horizonText, fromText] = rawCursor.split(":");
+      // Clause 8.9-11: a page cursor is bound to the whole query context that
+      // produced it -- grant or owner scope, stream, `fields`, `order`, and any
+      // `filter[...]` / `expand` parameter -- and is rejected under another as
+      // `invalid_cursor`. `order` keeps its own, more specific refusal below.
+      const contextParams = [...parsed.searchParams.entries()]
+        .filter(
+          ([key]) =>
+            key === "fields" ||
+            (!this.has("cursor-context-omits-query-shape") &&
+              (key === "view" || key.startsWith("filter[") || key.startsWith("expand")))
+        )
+        .map(
+          ([key, value]) =>
+            `${key}=${key === "fields" ? [...(parseFieldsParam(value) ?? [])].sort(compareText).join(",") : value}`
+        )
+        .sort((a, b) => a.localeCompare(b));
+      const pageContext = contextDigest([
+        "page",
+        scopeKey,
+        ...(this.has("cursor-context-omits-query-shape") ? [] : [fixture.name, resolvedView]),
+        ...contextParams,
+      ]);
+      if (pagePosition) {
         if (
-          cursorOrder !== undefined &&
-          cursorOrder !== requestedOrder &&
-          !this.has("accept-order-mismatched-cursor")
+          (pagePosition.context !== pageContext ||
+            (rawSyncCursor !== null && rawSyncCursor !== pagePosition.inputSync)) &&
+          !this.has("accept-cursor-under-other-context")
         ) {
-          error(
-            400,
-            "invalid_cursor",
-            "invalid_request_error",
-            `Cursor was issued for order=${cursorOrder} and cannot be followed with order=${requestedOrder}.`
-          );
+          error(400, "invalid_cursor", "invalid_request_error", "Cursor query context differs.");
           return;
         }
-        const parsedOffset = Number(offsetText);
-        cursorOffset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0;
-        // The fourth component, present only within a sync session, is the
-        // horizon that session was anchored to on its first page (clause
-        // 8.9-14). Carrying it in the cursor is what makes the anchoring
-        // survive across pages without the server holding session state.
-        //
-        // Under `re-anchor-sync-session-per-page` it is discarded, so each page
-        // re-reads the clock and writes that arrived mid-session leak into
-        // later pages of the session that should not contain them.
-        const parsedHorizon = Number(horizonText);
-        if (horizonText !== undefined && Number.isInteger(parsedHorizon)) {
-          cursorHorizon = this.has("re-anchor-sync-session-per-page") ? null : parsedHorizon;
+        if (pagePosition.order !== requestedOrder && !this.has("accept-order-mismatched-cursor")) {
+          error(400, "invalid_cursor", "invalid_request_error", "Cursor order differs.");
+          return;
         }
-        // The fifth component is the session's lower bound (the `changes_since`
-        // token that opened it). Core says to pass `changes_since` on the first
-        // request and follow `next_cursor` on later pages, so a cursor alone
-        // must be enough to continue the session; an explicit `changes_since`
-        // on a later page still wins.
-        const parsedFrom = Number(fromText);
-        if (syncHorizon === null && fromText !== undefined && Number.isInteger(parsedFrom)) {
-          syncHorizon = parsedFrom;
-        }
+        cursorOffset = pagePosition.offset;
+        cursorHorizon = this.has("re-anchor-sync-session-per-page") ? null : pagePosition.horizon;
+        syncHorizon = pagePosition.from;
       }
 
       const projection =
@@ -1773,6 +2522,7 @@ export class ReferenceServer {
       // enforcement"): records outside the consented window are not the client's
       // to see, whatever the request asked for.
       const constraint = this.has("ignore-time-constraint") ? undefined : grantedStream?.timeConstraint;
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the window and sync-visibility rules are one ordered pass; each branch carries its own defect switch.
       const withinWindow = (record: Record_): boolean => {
         if (!constraint) {
           return true;
@@ -1781,16 +2531,38 @@ export class ReferenceServer {
         if (typeof value !== "string") {
           return false;
         }
-        if (constraint.from && value < constraint.from) {
+        // Section 8 "Comparison": date-time values are compared as instants at
+        // their full stated precision, never as text -- text order is wrong when
+        // offsets differ. A value that is not a valid RFC 3339 value fails the
+        // filter. `compare-time-bounds-as-text` restores the text comparison.
+        if (this.has("compare-time-bounds-as-text")) {
+          if (constraint.from && value < constraint.from) {
+            return false;
+          }
+          return !(constraint.to && value >= constraint.to);
+        }
+        const instant = parseDateTime(value);
+        if (instant === null) {
+          const day = parseFullDate(value);
+          if (day === null) {
+            return false;
+          }
+          return !((constraint.from && day < constraint.from) || (constraint.to && day >= constraint.to));
+        }
+        const [from, to] = [
+          constraint.from && parseDateTime(constraint.from),
+          constraint.to && parseDateTime(constraint.to),
+        ];
+        if (from && compareDateTimes(instant, from) < 0) {
           return false;
         }
-        return !(constraint.to && value >= constraint.to);
+        return !(to && compareDateTimes(instant, to) >= 0);
       };
 
       // --- Incremental sync session (Section 8, clauses 8.9-13/14/15) ---
       //
-      // The session HORIZON is chosen on the first page and then travels in the
-      // page cursor, because clause 8.9-14 requires every page of one session to
+      // The session HORIZON is chosen on the first page and retained in the
+      // page handle state, because clause 8.9-14 requires every page of one session to
       // be anchored to it: "New writes arriving after page 1 MUST NOT appear in
       // later pages of that same session; they surface in the next session via
       // the terminal-page `next_changes_since`." A server that re-read the
@@ -1799,37 +2571,27 @@ export class ReferenceServer {
       // records at all, and nothing reports the gap.
       const isSync = syncHorizon !== null;
       const sessionHorizon = cursorHorizon ?? this.versionClock;
-
-      const eligibleForSync = (record: Record_): boolean => {
-        if (syncHorizon === null) {
-          return true;
-        }
-        const key = recordKey(fixture.name, record.id);
-        const version = this.recordVersions.get(key) ?? 0;
-        if (!(version > syncHorizon && version <= sessionHorizon)) {
-          return false;
-        }
-        // Clause 8.9-13: eligibility is computed on the GRANT-AUTHORIZED
-        // PROJECTION, not the unprojected record. A change confined to fields
-        // this caller cannot see must not surface the record, because doing so
-        // tells the client that something it is not authorized to read has
-        // changed.
-        if (this.has("ignore-projection-for-sync-eligibility")) {
-          return true;
-        }
-        const touched = this.changedFields.get(key);
-        return touched === undefined || [...touched].some((field) => projection.includes(field));
-      };
+      if (
+        isSync &&
+        [...parsed.searchParams.keys()].some((key) => key === "expand[]" || key.startsWith("expand_limit["))
+      ) {
+        error(400, "invalid_request", "invalid_request_error", "Expansion is not supported in a sync session.");
+        return;
+      }
 
       // Sparse fieldset (Section 8 `fields`): the request narrows what the
       // caller may already see, never widens it. Schema-required fields are
       // always included for an owner read; a client read stays inside the
-      // grant's own projection. Eligibility above keeps using `projection`.
+      // grant's own projection. Owner eligibility uses the resolved fieldset.
       const requestedFields = parseFieldsParam(parsed.searchParams.get("fields"));
       const required = fixture.requiredFields ?? [];
+      const ownerViewFields =
+        principal.kind === "owner"
+          ? this.views.get(viewKey(fixture.name, parsed.searchParams.get("view") ?? ""))
+          : undefined;
       const dataFields =
         requestedFields === undefined
-          ? projection
+          ? (ownerViewFields ?? projection)
           : projection.filter(
               (field) =>
                 requestedFields.has(field) ||
@@ -1871,7 +2633,97 @@ export class ReferenceServer {
         data: Object.fromEntries(Object.entries(record).filter(([key]) => dataFields.includes(key))),
       });
 
-      const eligible = fixture.records.filter(inGrantInstances).filter(withinWindow).filter(eligibleForSync);
+      // Core Section 4 "Visibility": a session compares the two horizons only.
+      // A record is visible at a horizon if its version AT that horizon exists
+      // and passes the grant's instances and time window. Not visible -> visible
+      // returns the record; visible -> visible returns it only if its
+      // grant-authorized projection changed (clause 8.9-13); visible -> not
+      // visible (deleted, or moved out of the window) is one tombstone; and a
+      // record never visible produces nothing (clause 4.3-11).
+      const streamKeys = [...this.history.keys()].filter((key) => key.startsWith(`${fixture.name}\n`));
+      const entryAt = (key: string, horizon: number): HistoryEntry | undefined => {
+        let found: HistoryEntry | undefined;
+        for (const entry of this.history.get(key) ?? []) {
+          if (entry.version > horizon) {
+            break;
+          }
+          found = entry;
+        }
+        return found;
+      };
+      const ownerFilters =
+        principal.kind === "owner"
+          ? [...parsed.searchParams.entries()].flatMap(([key, value]) => {
+              const field = OWNER_EXACT_FILTER.exec(key)?.[1];
+              return field !== undefined && fixture.fields.includes(field) ? [{ field, value }] : [];
+            })
+          : [];
+      const matchesOwnerFilters = (record: Record_): boolean =>
+        ownerFilters.every(({ field, value }) => {
+          const held = record[field];
+          return (
+            (typeof held === "string" || typeof held === "number" || typeof held === "boolean") &&
+            String(held) === value
+          );
+        });
+      const passesOwnerFilters = (record: Record_): boolean =>
+        matchesOwnerFilters(record) ||
+        (this.has("owner-filter-fails-open") && !fixture.records.some(matchesOwnerFilters));
+      const eligibilityFields = principal.kind === "owner" ? dataFields : projection;
+      const projected = (entry: HistoryEntry | undefined): unknown =>
+        Object.fromEntries(
+          Object.entries(entry?.snapshot ?? {}).filter(([field]) => eligibilityFields.includes(field))
+        );
+      const visibleIn = (entry: HistoryEntry | undefined): boolean =>
+        entry?.snapshot !== undefined &&
+        entry.snapshot !== null &&
+        inGrantInstances(entry.snapshot as Record_) &&
+        withinWindow(entry.snapshot as Record_) &&
+        passesOwnerFilters(entry.snapshot as Record_);
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the window and sync-visibility rules are one ordered pass; each branch carries its own defect switch.
+      const syncDelta = (h0: number, h1: number) => {
+        const records: Record_[] = [];
+        const tombstones: Record<string, unknown>[] = [];
+        for (const key of streamKeys) {
+          const entries = this.history.get(key) ?? [];
+          const [at0, at1] = [entryAt(key, h0), entryAt(key, h1)];
+          const [v0, v1] = [visibleIn(at0), visibleIn(at1)];
+          const inRange = entries.filter((entry) => entry.version > h0 && entry.version <= h1);
+          const changesProjection =
+            (this.has("ignore-projection-for-sync-eligibility") && inRange.length > 0) ||
+            !isDeepStrictEqual(projected(at0), projected(at1));
+          if (v1 && (!v0 || changesProjection)) {
+            records.push(at1?.snapshot as Record_);
+          }
+          const leftWindow = v0 && !v1;
+          const stillExists = at1?.snapshot !== null;
+          const skippedMove = this.has("omit-tombstone-on-leaving-window") && stillExists;
+          const neverVisibleDeletion =
+            this.has("tombstone-for-never-visible-record") && at1?.snapshot === null && inRange.length > 0;
+          if (!this.has("omit-tombstones") && ((leftWindow && !skippedMove) || neverVisibleDeletion)) {
+            const at = inRange.at(-1)?.at ?? new Date().toISOString();
+            const id = key.slice(fixture.name.length + 1);
+            tombstones.push({
+              object: "record",
+              id,
+              stream: fixture.name,
+              deleted: true,
+              ...(principal.kind === "owner"
+                ? {
+                    removal: stillExists ? "left_query" : "deleted",
+                    ...(stillExists ? {} : { deleted_at: at, emitted_at: at }),
+                  }
+                : {}),
+            });
+          }
+        }
+        return { records, tombstones };
+      };
+      const sync = syncHorizon === null ? undefined : syncDelta(syncHorizon, sessionHorizon);
+      const scoped = sync
+        ? sync.records
+        : fixture.records.filter(inGrantInstances).filter(withinWindow).filter(passesOwnerFilters);
+      const eligible = scoped;
       // Clause 4.3-6: a changes_since feed on a grant that lists several
       // instances is still a changes_since feed (Section 9 RS item 7).
       if (isSync && (instanceIds?.length ?? 0) > 1 && this.has("reject-multi-instance-changes-since")) {
@@ -1906,30 +2758,16 @@ export class ReferenceServer {
       // `project-tombstones-through-fields` it does, which empties the
       // envelope for `fields=name` and strips everything but `id` for
       // `fields=id`.
-      const deletions =
-        syncHorizon === null || this.has("omit-tombstones")
-          ? []
-          : [...this.tombstones.values()]
-              .filter(
-                (tombstone) =>
-                  tombstone.stream === fixture.name &&
-                  tombstone.version > syncHorizon &&
-                  tombstone.version <= sessionHorizon
-              )
-              .map((tombstone) => {
-                const envelope = {
-                  object: "record",
-                  id: tombstone.recordId,
-                  stream: tombstone.stream,
-                  deleted: true,
-                  deleted_at: tombstone.deletedAt,
-                  emitted_at: tombstone.deletedAt,
-                };
-                return requestedFields !== undefined && this.has("project-tombstones-through-fields")
-                  ? Object.fromEntries(Object.entries(envelope).filter(([key]) => requestedFields.has(key)))
-                  : envelope;
-              });
+      const deletions = (sync?.tombstones ?? []).map((envelope) =>
+        requestedFields !== undefined && this.has("project-tombstones-through-fields")
+          ? Object.fromEntries(Object.entries(envelope).filter(([key]) => requestedFields.has(key)))
+          : envelope
+      );
       const data = [...live, ...deletions];
+      if (isSync) {
+        const direction = requestedOrder === "asc" ? 1 : -1;
+        data.sort((a, b) => direction * compareText(String(a.id), String(b.id)));
+      }
 
       // An oversized limit is clamped with a non-fatal warning (Section 8). The
       // defect clamps silently, which a client reads as the end of the stream.
@@ -1955,6 +2793,13 @@ export class ReferenceServer {
         nextOffset = cursorOffset + window_.length;
         hasMore = nextOffset < data.length;
       }
+      if (isSync && !this.has("serve-deleted-record-from-session-snapshot")) {
+        window_ = window_.filter((value) => {
+          const row = value as { id: string; deleted?: boolean };
+          const latest = this.history.get(recordKey(fixture.name, row.id))?.at(-1);
+          return row.deleted || latest?.snapshot !== null || latest.version <= sessionHorizon;
+        });
+      }
       const omitNextCursor = this.has("has-more-without-next-cursor") && partitions !== undefined;
       if (
         this.has("malformed-narrowed-read") &&
@@ -1968,18 +2813,27 @@ export class ReferenceServer {
         object: "list",
         url: path,
         has_more: hasMore,
-        // The cursor carries the order it was minted under, so the
-        // direction-binding check above has something to compare against, and
-        // — within a sync session — the horizon that session is anchored to.
+        // The handle reveals no offset, order, horizon, or input token.
         ...(hasMore && !omitNextCursor
-          ? { next_cursor: `ok:${requestedOrder}:${nextOffset}${isSync ? `:${sessionHorizon}:${syncHorizon}` : ""}` }
+          ? {
+              next_cursor: this.pageToken({
+                order: requestedOrder,
+                offset: nextOffset,
+                horizon: isSync ? sessionHorizon : null,
+                from: syncHorizon,
+                context: pageContext,
+                inputSync: pagePosition?.inputSync ?? rawSyncCursor,
+              }),
+            }
           : {}),
         // Clause 8.9-15: the terminal page of a changes_since response carries
         // the token for the NEXT session. It names this session's horizon, so
         // writes that arrived mid-session are picked up next time rather than
         // being lost between the two.
-        ...(isSync && !hasMore && !this.has("omit-next-changes-since")
-          ? { next_changes_since: syncToken(sessionHorizon) }
+        ...(isSync && (!hasMore || this.has("next-changes-since-on-every-page")) && !this.has("omit-next-changes-since")
+          ? {
+              next_changes_since: this.syncToken(sessionHorizon, syncContext),
+            }
           : {}),
         ...(clamped && !this.has("silent-limit-clamp")
           ? { meta: { warnings: [{ code: "limit_clamped", message: "limit clamped to 100" }] } }
@@ -2088,6 +2942,80 @@ export class ReferenceServer {
   }
 
   /**
+   * The rejection a server gives when it consults serving metadata BEFORE
+   * rejecting a client-token filter, which clause 8.9-9 forbids: an undeclared
+   * field or operator gets the error an owner read would, not `invalid_request`.
+   */
+  private metadataFirstFilterRejection(
+    params: readonly string[],
+    fixture: StreamFixture
+  ): { code: string; message: string } | undefined {
+    for (const param of params.filter((p) => p.startsWith("filter["))) {
+      const [, field, operator] = CLIENT_FILTER_SHAPE.exec(param) ?? [];
+      if (field !== undefined && !fixture.fields.includes(field)) {
+        return { code: "unknown_field", message: `Field '${field}' is not declared.` };
+      }
+      if (operator !== undefined && !RANGE_OPERATORS.includes(operator)) {
+        return { code: "unsupported_operator", message: `Operator '${operator}' is not declared.` };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Owner-token `view` and `filter[...]` rules (Section 8): both optional, so a
+   * target may decline them; `view` is mutually exclusive with `fields`; exact
+   * filters take a declared top-level scalar field, and the range form is an
+   * unsupported shape on this fixture, which declares no range filters.
+   */
+  private ownerViewOrFilterRejection(
+    searchParams: URLSearchParams,
+    fixture: StreamFixture
+  ): { code: string; message: string } | undefined {
+    const params = [...searchParams.keys()];
+    const filters = params.filter((p) => p.startsWith("filter["));
+    if (this.has("decline-owner-filters") && filters.length > 0) {
+      return { code: "invalid_request", message: "Owner filters are not supported." };
+    }
+    if (this.has("decline-owner-view") && params.includes("view")) {
+      return { code: "invalid_request", message: "Owner views are not supported." };
+    }
+    if (params.includes("view")) {
+      if (params.includes("fields") && !this.has("accept-owner-view-and-fields-together")) {
+        return { code: "invalid_request", message: "`view` and `fields` are mutually exclusive." };
+      }
+      if (!this.views.has(viewKey(fixture.name, searchParams.get("view") ?? ""))) {
+        return { code: "invalid_request", message: "The view is not defined for this stream." };
+      }
+    }
+    if (this.has("ignore-owner-filter-unknown-field")) {
+      return undefined;
+    }
+    for (const param of filters) {
+      const field = OWNER_EXACT_FILTER.exec(param)?.[1];
+      const type = fixture.fieldTypes?.[field ?? ""];
+      if (field === undefined || !fixture.fields.includes(field) || type === "array" || type === "object") {
+        return { code: "invalid_request", message: `Parameter '${param}' is unsupported.` };
+      }
+    }
+    return undefined;
+  }
+
+  /** Expansion is off the sync surface: a changes_since request, or a page of one, cannot expand. */
+  private syncExpansionRejection(
+    searchParams: URLSearchParams,
+    params: readonly string[]
+  ): { code: string; message: string } | undefined {
+    const cursor = searchParams.get("cursor");
+    const page = cursor === null ? undefined : this.pagePositions.get(cursor);
+    const inSync = searchParams.has("changes_since") || (page !== undefined && page.from !== null);
+    if (inSync && params.some((key) => key === "expand[]" || key.startsWith("expand_limit["))) {
+      return { code: "invalid_request", message: "Expansion is not supported in a sync session." };
+    }
+    return undefined;
+  }
+
+  /**
    * The Section 8 query-parameter gate, returning a rejection message or
    * undefined. Two distinct rules share this seam: client-token predicate and
    * expansion parameters are off the v0.1 client surface (RS-9), and unknown
@@ -2099,6 +3027,10 @@ export class ReferenceServer {
     fixture: StreamFixture
   ): { code: string; message: string } | undefined {
     const params = [...searchParams.keys()];
+    const syncExpansion = this.syncExpansionRejection(searchParams, params);
+    if (syncExpansion) {
+      return syncExpansion;
+    }
     // Under `serve-client-token-view` the server pretends `view` is a
     // parameter it implements for every caller: it is neither rejected as
     // outside the client surface below nor caught by the generic
@@ -2106,6 +3038,12 @@ export class ReferenceServer {
     // violation clause 8.9-3 names, and the only one a case asserting on the
     // status alone can be shown to catch.
     const servesClientView = this.has("serve-client-token-view");
+    if (kind === "client" && this.has("client-filter-consults-metadata-first")) {
+      const early = this.metadataFirstFilterRejection(params, fixture);
+      if (early) {
+        return early;
+      }
+    }
     if (kind === "client" && !this.has("accept-client-filters")) {
       const offending = params.find(
         (p) =>
@@ -2122,11 +3060,10 @@ export class ReferenceServer {
         };
       }
     }
-    // This fixture does not implement owner predicate filters.
-    if (kind === "owner" && !this.has("ignore-owner-filter-unknown-field")) {
-      const offending = params.find((p) => p.startsWith("filter["));
-      if (offending) {
-        return { code: "invalid_request", message: `Parameter '${offending}' is unsupported.` };
+    if (kind === "owner") {
+      const rejected = this.ownerViewOrFilterRejection(searchParams, fixture);
+      if (rejected) {
+        return rejected;
       }
     }
     // Section 8 "Relationships": an owner-token expand[] naming a relation
@@ -2148,7 +3085,7 @@ export class ReferenceServer {
             KNOWN_PARAMS.has(p) ||
             p.startsWith("filter[") ||
             p.startsWith("expand") ||
-            (p === "view" && servesClientView)
+            (p === "view" && (servesClientView || kind === "owner"))
           )
       );
       if (unknown) {
@@ -2197,6 +3134,7 @@ export class ReferenceServer {
     return {
       issuer: this.baseUrl,
       token_endpoint: `${this.baseUrl}/oauth/token`,
+      ...(this.has("omit-revocation-endpoint-metadata") ? {} : { revocation_endpoint: this.revocationEndpoint }),
       pdpp_registration_modes_supported: ["pre_registered_public"],
       pdpp_pre_registered_public_clients: [
         {
@@ -2263,7 +3201,7 @@ export class ReferenceServer {
       return undefined;
     }
     const credential = authorization.slice("Bearer ".length);
-    const known = this.tokens.get(credential);
+    const known = this.endedTokens.has(credential) ? undefined : this.tokens.get(credential);
     if (known) {
       return known;
     }

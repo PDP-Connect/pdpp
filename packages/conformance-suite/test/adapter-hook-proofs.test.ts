@@ -5,60 +5,32 @@
 // reference adapter deliberately does not expose to the CLI run.
 //
 // Protected risk: the same as `oracle-discrimination.test.ts` — an oracle that
-// can never fail. AS-4 reads the reviewed grant through `reviewedStreams`, and
-// AS-20 drives a refresh-token family through `issueRefreshableGrant` under a
-// `refreshTokens` capability. Exposing either on the bundled target would turn
-// a `skip`/`unsupported` into a `pass` in the published run, so the proof wraps
-// the adapter instead. The server and its defects are the bundled ones; only
+// can never fail. AS-20 drives a refresh-token family through
+// `issueRefreshableGrant` under a `refreshTokens` capability. Declaring it on the
+// bundled target would turn an `unsupported` into a `pass` in the published run,
+// so the proof wraps the adapter instead. The server and its defects are the bundled ones; only
 // the hook that lets the case observe them is added here.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type {
-  GrantRequest,
-  RefreshableGrant,
-  RefreshRefusal,
-  StagedApproval,
-  TargetAdapter,
-} from "../src/harness/adapter.ts";
+import type { GrantRequest, RefreshableGrant, RefreshRefusal, TargetAdapter } from "../src/harness/adapter.ts";
+import { CLIENT_REVOCATION_CLOCK } from "../src/harness/client-revocation-poll.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
 import { ALL_CASES } from "../src/suite.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import type { Defect } from "../src/targets/reference-server.ts";
 import { HOOKED_DISCRIMINATION_MATRIX } from "./fixtures/proof-registry.ts";
 
-/** Exposes the reviewed grant of a staged request, read from its approval artifact. */
-class ReviewReadingAdapter extends ReferenceTargetAdapter {
-  private readonly reviewed = new Map<string, readonly { name: string; fields: readonly string[] }[]>();
-
-  override async stageApproval(request: GrantRequest): Promise<StagedApproval | null> {
-    const staged = await super.stageApproval(request);
-    const artifact = (await staged?.approvalArtifact?.()) as
-      | { streams: readonly { name: string; fields: readonly string[] }[] }
-      | undefined;
-    if (staged && artifact) {
-      this.reviewed.set(
-        staged.handle,
-        artifact.streams.map((s) => ({ name: s.name, fields: [...s.fields] }))
-      );
-    }
-    return staged;
-  }
-
-  reviewedStreams = async (handle: string) => this.reviewed.get(handle) ?? null;
-}
-
 /** Declares refresh-token support, which the bundled target does not. */
 class RefreshableAdapter extends ReferenceTargetAdapter {
   override readonly capabilities = { ...new ReferenceTargetAdapter().capabilities, refreshTokens: true };
 }
 
-function build(kind: "review-reading" | "refreshable", defects: readonly Defect[]): TargetAdapter {
-  const set = new Set(defects);
-  return kind === "review-reading" ? new ReviewReadingAdapter(undefined, set) : new RefreshableAdapter(undefined, set);
+function build(_kind: "refreshable", defects: readonly Defect[]): TargetAdapter {
+  return new RefreshableAdapter(undefined, new Set(defects));
 }
 
-async function run(caseId: string, kind: "review-reading" | "refreshable", defects: readonly Defect[]) {
+async function run(caseId: string, kind: "refreshable", defects: readonly Defect[]) {
   const conformanceCase = ALL_CASES.find((c) => c.caseId === caseId);
   assert.ok(conformanceCase, `No case with id ${caseId}`);
   const adapter = build(kind, defects);
@@ -72,7 +44,17 @@ async function run(caseId: string, kind: "review-reading" | "refreshable", defec
 
 describe("hook-gated oracles discriminate conforming from violating targets", () => {
   for (const { caseId, defect, adapter } of HOOKED_DISCRIMINATION_MATRIX) {
-    it(`${caseId} passes a clean target and fails one with defect "${defect}"`, async () => {
+    it(`${caseId} passes a clean target and fails one with defect "${defect}"`, async (t) => {
+      if (caseId === "AS-25/refresh-token-revocation-ends-the-family-grants") {
+        let now = 0;
+        t.mock.method(CLIENT_REVOCATION_CLOCK, "now", () => now);
+        t.mock.method(CLIENT_REVOCATION_CLOCK, "sleep", (ms: number) => {
+          now += ms;
+          return Promise.resolve();
+        });
+        // Keep the live HTTP clock independent of the simulated propagation window.
+        t.mock.method(AbortSignal, "timeout", () => new AbortController().signal);
+      }
       const clean = await run(caseId, adapter, []);
       assert.equal(clean.outcome, "pass", `${caseId} clean run: ${clean.detail ?? "(no detail)"}`);
 

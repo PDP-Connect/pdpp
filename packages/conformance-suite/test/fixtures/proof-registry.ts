@@ -13,6 +13,10 @@ import type { Defect } from "../../src/targets/reference-server.ts";
 export const TARGET_DISCRIMINATION_MATRIX: readonly {
   readonly caseId: string;
   readonly defect: Defect;
+  /** A conformant target can make this particular observation unavailable. */
+  readonly cleanExpected?: "skip";
+  /** No semantic hook: this row proves review-only honesty, not a failure oracle. */
+  readonly reviewOnly?: true;
 }[] = [
   { caseId: "RS-2/ungranted-stream-refused", defect: "ignore-grant-streams" },
   {
@@ -59,6 +63,65 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
     defect: "accept-order-mismatched-cursor",
   },
   { caseId: "RS-10/unknown-parameter-rejected", defect: "ignore-unknown-params" },
+  // The bundled target serves blobs directly, so the redirect case reports
+  // `unsupported` against it; its proof stays bespoke (below).
+  // The bundled adapter reads the staged review back through `reviewedStreams`.
+  { caseId: "AS-4/omitted-fields-expanded-before-issuance", defect: "carry-unexpanded-selection-into-review" },
+  { caseId: "AS-4/wildcard-stream-name-expanded-before-issuance", defect: "carry-unexpanded-selection-into-review" },
+  { caseId: "AS-3/issued-grant-artifact-matches-section-7-schema", defect: "issued-grant-omits-version" },
+  { caseId: "AS-19/authorization-code-redemption-is-not-replayable", defect: "redeem-authorization-code-repeatedly" },
+  { caseId: "RS-5/owner-filter-narrows-and-never-widens", defect: "owner-filter-fails-open" },
+  { caseId: "RS-9/owner-view-and-fields-are-mutually-exclusive", defect: "accept-owner-view-and-fields-together" },
+  {
+    caseId: "RS-9/client-token-filter-rejected-whether-or-not-declared",
+    defect: "client-filter-consults-metadata-first",
+  },
+  { caseId: "RS-6/page-cursor-rejected-under-another-query-shape", defect: "cursor-context-omits-query-shape" },
+  { caseId: "AS-16/embedded-schema-remote-reference-refused", defect: "accept-remote-schema-reference" },
+  { caseId: "AS-16/embedded-schema-remote-dynamic-reference-refused", defect: "accept-remote-schema-reference" },
+  { caseId: "AS-16/embedded-schema-wrong-dialect-refused", defect: "accept-wrong-schema-dialect" },
+  { caseId: "AS-16/embedded-schema-failing-metaschema-refused", defect: "accept-meta-invalid-schema" },
+  { caseId: "AS-15/stale-review-approval-refused", defect: "approve-stale-review" },
+  { caseId: "AS-10/single-use-window-end-deactivates-the-grant", defect: "single-use-window-never-ends" },
+  { caseId: "AS-10/single-use-grant-consumed", defect: "single-use-grant-reissuable" },
+  { caseId: "AS-10/single-use-first-token-has-finite-expiry", defect: "single-use-token-without-expiry" },
+  {
+    caseId: "AS-26/ending-one-grant-spares-the-shared-credential",
+    defect: "revoking-one-grant-revokes-shared-credential",
+  },
+  {
+    caseId: "AS-8/shared-credential-inactive-only-when-no-grant-is-active",
+    defect: "revoking-one-grant-revokes-shared-credential",
+  },
+  {
+    caseId: "AS-8/shared-credential-inactive-only-when-no-grant-is-active",
+    defect: "shared-credential-active-after-all-grants-end",
+  },
+  {
+    caseId: "AS-16/declaration-retrieval-sends-no-ambient-credentials",
+    defect: "declaration-fetch-sends-ambient-credentials",
+  },
+  {
+    caseId: "AS-16/declaration-retrieval-validates-redirect-targets",
+    defect: "declaration-fetch-follows-redirects-unvalidated",
+  },
+  {
+    caseId: "AS-16/declaration-retrieval-does-not-fetch-remote-schema",
+    defect: "declaration-fetch-retrieves-remote-schema",
+  },
+  { caseId: "AS-7/unverified-client-logo-is-not-fetched", defect: "fetch-client-logo-on-consent-render" },
+  {
+    caseId: "AS-2/time-range-refused-where-only-a-cursor-field-is-declared",
+    defect: "derive-consent-boundary-from-cursor-field",
+  },
+  { caseId: "RS-1/blob-range-support-is-advertised", defect: "blob-ranges-unadvertised" },
+  { caseId: "RS-1/get-blob-bytes", defect: "blob-wrong-bytes" },
+  { caseId: "RS-1/get-blob-bytes", defect: "blob-response-cacheable" },
+  { caseId: "RS-1/blob-ref-mime-type-valid", defect: "blob-ref-invalid-mime-type" },
+  { caseId: "RS-1/blob-outside-grant-refused", defect: "serve-blob-without-reference-check" },
+  { caseId: "RS-1/blob-unauthenticated-refused", defect: "serve-without-authentication" },
+  { caseId: "RS-1/blob-referenced-outside-projection-refused", defect: "serve-blob-ignoring-projection" },
+  { caseId: "RS-1/blob-referencing-record-outside-window-refused", defect: "serve-blob-ignoring-window" },
   {
     caseId: "RS-10/owner-filter-unknown-field-rejected",
     defect: "ignore-owner-filter-unknown-field",
@@ -128,6 +191,13 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
     defect: "weak-401-challenge",
   },
   { caseId: "AS-8/revoked-grant-refused", defect: "ignore-revocation" },
+  // Revised 8.13-6: an inactive token is 401 behind a Bearer `invalid_token`
+  // challenge. One row per half: the former 403 with no challenge, and a 401
+  // whose challenge omits `error="invalid_token"`.
+  { caseId: "AS-8/revoked-grant-refused", defect: "inactive-grant-as-403" },
+  { caseId: "AS-8/revoked-grant-refused", defect: "omit-invalid-token-error" },
+  { caseId: "AS-8/expired-grant-refused", defect: "inactive-grant-as-403" },
+  { caseId: "AS-8/expired-grant-refused", defect: "omit-invalid-token-error" },
   // Added after independent review: these three are negative-shaped oracles
   // (they exist to catch a cross-subject leak, a fake self-export declaration,
   // and syntax-derived token kind) and previously had only a passes-clean
@@ -217,6 +287,13 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
     caseId: "AS-2/view-and-fields-mutually-exclusive",
     defect: "accept-view-and-fields-together",
   },
+  // Revised 6.8-1: the refusal is classified `invalid_authorization_details`,
+  // so a server that refuses with the former `invalid_request` must now fail.
+  {
+    caseId: "AS-2/view-and-fields-mutually-exclusive",
+    defect: "misclassify-view-and-fields-refusal",
+  },
+
   // Clauses 5.2-4 and 6.8-2. The defect accepts `time_range` on a stream that
   // declares no `consent_time_field`, which is the violation both clauses name.
   // No existing defect produces it: every field- and name-validation defect
@@ -363,6 +440,7 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   // made RS-8 fail before this batch, so the case is proven to catch the very
   // defect the target was just fixed for.
   {
+    // Append-only positive and negative controls: query-schema-regression.test.ts.
     caseId: "RS-8/terminal-page-carries-next-changes-since",
     defect: "omit-next-changes-since",
   },
@@ -398,6 +476,7 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   // as a client error and invites a retry that cannot succeed, where 410 tells
   // the client to discard its baseline.
   {
+    // Append-only positive and negative controls: query-schema-regression.test.ts.
     caseId: "RS-7/expired-sync-cursor-reported-as-gone",
     defect: "misclassify-expired-sync-cursor",
   },
@@ -462,6 +541,7 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   //
   // A tombstone run through the sparse `fields=` projection.
   {
+    // Conformant context-bound control: query-schema-regression.test.ts.
     caseId: "RS-7/tombstone-envelope-survives-sparse-fields",
     defect: "project-tombstones-through-fields",
   },
@@ -514,15 +594,65 @@ export const TARGET_DISCRIMINATION_MATRIX: readonly {
   { caseId: "AS-15/approval-requires-the-issued-revision", defect: "accept-forged-review-revision" },
   { caseId: "AS-8/expired-grant-refused", defect: "serve-expired-grant" },
   { caseId: "AS-2/declared-field-accepted", defect: "refuse-field-selection" },
+  // Append-only positive and negative controls: query-schema-regression.test.ts.
   { caseId: "RS-6/cursor-not-accepted-as-changes-since", defect: "accept-page-cursor-as-changes-since" },
   { caseId: "RS-1/single-record-read", defect: "serve-unknown-record-id" },
   { caseId: "RS-2/time-constraint-enforced", defect: "ignore-time-constraint" },
+  // Revised-text clauses (declaration members, selection shape, time_range
+  // bounds). One defect per case, each switching off only that case's check.
+  { caseId: "AS-22/unrecognized-stream-semantics-refused", defect: "accept-unrecognized-semantics" },
+  { caseId: "AS-22/unrecognized-source-kind-refused", defect: "accept-unrecognized-source-kind" },
+  { caseId: "AS-27/non-boolean-consent-time-content-may-exceed-refused", defect: "accept-non-boolean-may-exceed" },
+  { caseId: "AS-27/ineligible-consent-time-field-refused", defect: "accept-ineligible-consent-time-field" },
+  { caseId: "AS-2/star-beside-named-field-refused", defect: "accept-star-beside-fields" },
+  { caseId: "AS-2/stream-request-without-fields-or-view-refused", defect: "accept-stream-without-fields-or-view" },
+  { caseId: "AS-27/time-range-without-bound-refused", defect: "accept-empty-time-range" },
+  { caseId: "AS-27/time-range-bound-wrong-type-refused", defect: "accept-wrong-type-time-range-bound" },
+  { caseId: "AS-27/time-range-invalid-bound-refused", defect: "accept-invalid-time-range-bound" },
+  { caseId: "AS-27/time-range-since-not-before-until-refused", defect: "accept-since-not-before-until" },
+  { caseId: "AS-27/time-range-bound-not-converted", defect: "normalize-time-constraint-bounds" },
+  // Incremental-sync visibility and token binding (clauses 4.3-6, 4.3-9, 4.3-11,
+  // 4.3-16, 8.9-11, 8.9-17, 8.9-18).
+  { caseId: "RS-11/absent-version-header-reports-the-selected-version", defect: "omit-pdpp-version-response-header" },
+  { caseId: "AS-9/introspection-carries-exp-for-an-expiring-token", defect: "omit-introspection-exp" },
+  {
+    caseId: "AS-15/final-approval-artifact-states-bound-inclusivity",
+    defect: "omit-bound-inclusivity-statement",
+    reviewOnly: true,
+  },
+  { caseId: "RS-22/time-window-compared-as-instants-not-text", defect: "compare-time-bounds-as-text" },
+  { caseId: "AS-25/revocation-endpoint-is-advertised", defect: "omit-revocation-endpoint-metadata" },
+  { caseId: "AS-25/client-revocation-of-an-access-token-ends-it", defect: "revocation-endpoint-ignores-access-tokens" },
+  { caseId: "RS-8/non-terminal-page-omits-next-changes-since", defect: "next-changes-since-on-every-page" },
+  { caseId: "RS-6/page-cursor-rejected-under-another-context", defect: "accept-cursor-under-other-context" },
+  {
+    caseId: "RS-21/changes-since-token-rejected-under-another-context",
+    defect: "accept-sync-token-under-other-context",
+  },
+  {
+    // Core 4.3 permits freshly randomized tokens. Equality is unavailable on
+    // the clean target; the explicit deterministic violating fixture must fail.
+    caseId: "RS-21/token-does-not-reveal-writes-the-grant-cannot-see",
+    defect: "token-reveals-hidden-writes",
+    cleanExpected: "skip",
+  },
+  {
+    caseId: "RS-7/record-deleted-after-page-1-not-served-on-a-later-page",
+    defect: "serve-deleted-record-from-session-snapshot",
+  },
+  { caseId: "RS-7/never-visible-record-produces-no-tombstone", defect: "tombstone-for-never-visible-record" },
+  { caseId: "RS-7/record-leaving-time-window-surfaces-as-a-tombstone", defect: "omit-tombstone-on-leaving-window" },
 ];
 
 export const CLIENT_DISCRIMINATION_MATRIX: readonly { caseId: string; defect: ClientDefect }[] = [
   { caseId: "CL-2/grant-revocation-stops-further-requests", defect: "retry-revoked-grant" },
   { caseId: "CL-3/changes-since-does-not-reuse-next-cursor", defect: "reuse-next-cursor-as-changes-since" },
   { caseId: "CL-4/stores-terminal-next-changes-since", defect: "reuse-next-cursor-as-changes-since" },
+  // Revised 4.3-3: a session starts, and restarts after `cursor_expired`, at
+  // `changes_since=beginning`; omitting the parameter is no longer accepted.
+  { caseId: "CL-4/stores-terminal-next-changes-since", defect: "omit-beginning-on-first-sync" },
+  { caseId: "CL-5/full-resync-after-cursor-expired", defect: "omit-beginning-on-resync" },
+  { caseId: "CL-5/endpoint-cursor-expiry-also-full-resyncs", defect: "omit-beginning-on-resync" },
   { caseId: "CL-5/full-resync-after-cursor-expired", defect: "retry-expired-cursor" },
   { caseId: "CL-5/endpoint-cursor-expiry-also-full-resyncs", defect: "retry-expired-cursor" },
   { caseId: "AS-7/client-does-not-override-display-descriptions", defect: "add-selection-display" },
@@ -531,6 +661,13 @@ export const CLIENT_DISCRIMINATION_MATRIX: readonly { caseId: string; defect: Cl
   { caseId: "CL-7/status-incompatible-code-does-not-override-status", defect: "override-status-with-error-code" },
   { caseId: "CL-7/unknown-error-identifiers-do-not-break-parser", defect: "parse-unknown-identifier" },
   { caseId: "CL-8/reads-source-kind-from-grant", defect: "assume-source-kind" },
+  // Revised-text client clauses (Section 4 copy handling, Section 10 revocation, Section 6 source.kind).
+  { caseId: "AS-16/client-does-not-introduce-authority-or-declaration-uri", defect: "introduce-declaration-uri" },
+  { caseId: "CL-9/invalid-token-challenge-stops-use-of-the-token", defect: "retry-after-invalid-token" },
+  { caseId: "CL-9/inactive-token-is-not-recorded-as-revocation", defect: "treat-inactive-as-revoked" },
+  { caseId: "CL-8/unrecognized-source-kind-not-treated-as-known", defect: "coerce-unrecognized-source-kind" },
+  { caseId: "CL-10/tombstone-for-unheld-id-is-a-no-op", defect: "throw-on-unknown-tombstone" },
+  { caseId: "CL-5/beginning-session-replaces-the-stored-copy", defect: "merge-copy-on-beginning" },
 ];
 
 /**
@@ -550,7 +687,8 @@ export const BESPOKE_PROOFS: readonly { readonly caseId: string; readonly proof:
   },
   {
     caseId: "AS-3/issued-grant-artifact-matches-section-7-schema",
-    proof: "grant-schema-oracle.test.ts: missing-version artifact",
+    proof:
+      "grant-schema-oracle.test.ts: missing-version artifact; query-schema-regression.test.ts: missing and unknown time_constraint.type",
   },
   {
     caseId: "AS-18/introspection-requires-authentication",
@@ -592,18 +730,8 @@ export const BESPOKE_PROOFS: readonly { readonly caseId: string; readonly proof:
 export const HOOKED_DISCRIMINATION_MATRIX: readonly {
   readonly caseId: string;
   readonly defect: Defect;
-  readonly adapter: "review-reading" | "refreshable";
+  readonly adapter: "refreshable";
 }[] = [
-  {
-    caseId: "AS-4/omitted-fields-expanded-before-issuance",
-    defect: "carry-unexpanded-selection-into-review",
-    adapter: "review-reading",
-  },
-  {
-    caseId: "AS-4/wildcard-stream-name-expanded-before-issuance",
-    defect: "carry-unexpanded-selection-into-review",
-    adapter: "review-reading",
-  },
   { caseId: "AS-20/refresh-reuse-revokes-the-family", defect: "refresh-without-rotation", adapter: "refreshable" },
   {
     caseId: "AS-20/refresh-reuse-revokes-the-family",
@@ -613,6 +741,16 @@ export const HOOKED_DISCRIMINATION_MATRIX: readonly {
   {
     caseId: "AS-20/refresh-reuse-revokes-the-family",
     defect: "refresh-reuse-keeps-family-alive",
+    adapter: "refreshable",
+  },
+  {
+    caseId: "AS-25/refresh-token-revocation-ends-the-family-grants",
+    defect: "revocation-endpoint-ignores-refresh-tokens",
+    adapter: "refreshable",
+  },
+  {
+    caseId: "AS-25/access-token-revocation-spares-a-grant-a-family-covers",
+    defect: "revoke-family-grant-on-access-token-revocation",
     adapter: "refreshable",
   },
 ];

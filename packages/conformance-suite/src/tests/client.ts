@@ -11,6 +11,7 @@ import { type ConformanceCase, fail, pass, skip, unsupported } from "../harness/
 
 const STREAM = "fixture_stream";
 const CHANGES_SINCE = "changes-since-fixture-token";
+const BEGINNING = "beginning";
 const NEXT_CURSOR = "opaque-page-cursor-fixture-token";
 
 function requestAfter(client: ClientUnderTest, index: number) {
@@ -25,25 +26,31 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
   {
     caseId: "CL-2/grant-revocation-stops-further-requests",
     requirementId: "CL-2",
-    assertion: "After 403 grant_revoked, the client makes no further request against that grant.",
+    assertion: "After 401 grant_revoked, the client makes no further request against that grant.",
     async run(context) {
       const { client } = context;
       if (!client) {
         return skip("Requires a ClientUnderTest adapter with a fixture request log.");
       }
-      client.fixture.configure({ code: "grant_revoked", kind: "error", status: 403, type: "permission_error" });
+      client.fixture.configure({
+        challenge: 'Bearer error="invalid_token"',
+        code: "grant_revoked",
+        kind: "error",
+        status: 401,
+        type: "authentication_error",
+      });
       const before = client.fixture.requestLog().length;
       const result = await client.readPage(STREAM);
       const requests = requestAfter(client, before);
       const usedAccessToken = requests[0]?.headers.authorization === "Bearer client-fixture-access-token";
       return !result.ok &&
-        result.status === 403 &&
+        result.status === 401 &&
         result.errorCode === "grant_revoked" &&
         requests.length === 1 &&
         usedAccessToken
         ? pass()
         : fail(
-            `Expected one access-token request ending in 403 grant_revoked; observed ${requests.length} request(s), status ${result.status}, code ${String(result.errorCode)}.`
+            `Expected one access-token request ending in 401 grant_revoked; observed ${requests.length} request(s), status ${result.status}, code ${String(result.errorCode)}.`
           );
     },
   },
@@ -84,10 +91,10 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
       await client.syncOnce(STREAM);
       await client.syncAgain(STREAM);
       const requests = requestAfter(client, before);
-      return requests[0]?.query.changes_since === undefined && requests[1]?.query.changes_since === CHANGES_SINCE
+      return requests[0]?.query.changes_since === BEGINNING && requests[1]?.query.changes_since === CHANGES_SINCE
         ? pass()
         : fail(
-            `Expected an initial read followed by changes_since=${CHANGES_SINCE}; observed ${JSON.stringify(requests)}.`
+            `Expected a first session at changes_since=beginning followed by changes_since=${CHANGES_SINCE}; observed ${JSON.stringify(requests)}.`
           );
     },
   },
@@ -96,7 +103,7 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
   {
     caseId: "CL-5/full-resync-after-cursor-expired",
     requirementId: "CL-5",
-    assertion: "After 410 cursor_expired, the client performs a full re-sync without the expired cursor.",
+    assertion: "After 410 cursor_expired, the client restarts from changes_since=beginning without the expired cursor.",
     async run(context) {
       const { client } = context;
       if (!client) {
@@ -107,9 +114,11 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
       await client.syncOnce(STREAM);
       await client.syncAgain(STREAM);
       const [, , recovery] = requestAfter(client, before);
-      return recovery && recovery.query.changes_since === undefined && recovery.query.cursor === undefined
+      return recovery && recovery.query.changes_since === BEGINNING && recovery.query.cursor === undefined
         ? pass()
-        : fail(`Expected 410 followed by a full resync; observed ${JSON.stringify(requestAfter(client, before))}.`);
+        : fail(
+            `Expected 410 followed by a restart at changes_since=beginning; observed ${JSON.stringify(requestAfter(client, before))}.`
+          );
     },
   },
 
@@ -117,7 +126,8 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
   {
     caseId: "CL-5/endpoint-cursor-expiry-also-full-resyncs",
     requirementId: "CL-5",
-    assertion: "The list-records cursor_expired path also restarts a full sync rather than retrying the cursor.",
+    assertion:
+      "The list-records cursor_expired path also restarts from changes_since=beginning rather than retrying the cursor.",
     async run(context) {
       const { client } = context;
       if (!client) {
@@ -128,10 +138,10 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
       await client.syncOnce(STREAM);
       await client.syncAgain(STREAM);
       const [, , recovery] = requestAfter(client, before);
-      return recovery && recovery.query.changes_since === undefined && recovery.query.cursor === undefined
+      return recovery && recovery.query.changes_since === BEGINNING && recovery.query.cursor === undefined
         ? pass()
         : fail(
-            `Expected the recovery request to omit both cursor spaces; observed ${JSON.stringify(recovery?.query ?? {})}.`
+            `Expected the recovery request to restart at changes_since=beginning with no page cursor; observed ${JSON.stringify(recovery?.query ?? {})}.`
           );
     },
   },
@@ -262,6 +272,227 @@ export const CLIENT_CASES: readonly ConformanceCase[] = [
         ? pass()
         : fail(
             `Expected grant-derived provenance with no source.kind assertion in selection; observed ${JSON.stringify(selection ?? null)}.`
+          );
+    },
+  },
+  // ------------------------------------------------------------- CL-9 / 10.7-9
+  {
+    caseId: "CL-9/invalid-token-challenge-stops-use-of-the-token",
+    requirementId: "CL-9",
+    assertion:
+      "After a 401 carrying a Bearer invalid_token challenge, the client sends one request with that token and does not retry it.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      client.fixture.configure({
+        challenge: 'Bearer error="invalid_token"',
+        code: "authentication_error",
+        kind: "error",
+        status: 401,
+        type: "authentication_error",
+      });
+      const before = client.fixture.requestLog().length;
+      const result = await client.readPage(STREAM);
+      const requests = requestAfter(client, before);
+      return !result.ok && result.status === 401 && requests.length === 1
+        ? pass()
+        : fail(
+            `Expected one request ending in 401 invalid_token and no retry with the same token; observed ${requests.length} request(s), status ${result.status}.`
+          );
+    },
+  },
+
+  // ------------------------------------------------------------ CL-9 / 10.7-10
+  {
+    caseId: "CL-9/inactive-token-is-not-recorded-as-revocation",
+    requirementId: "CL-9",
+    assertion:
+      "A 401 for an inactive token whose cause is unknown does not make the client record the grant as revoked, while a grant_revoked error does.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      if (!client.grantState) {
+        return skip(
+          "The client under test does not expose grantState, so what it recorded about the grant is unobserved."
+        );
+      }
+      const challenge = 'Bearer error="invalid_token"';
+      await client.authorize({ source: { id: "https://fixture.invalid/source" }, streams: [{ name: STREAM }] });
+      // Control: told the grant was revoked, the client records it. Without
+      // this a client that records nothing would satisfy the negative.
+      client.fixture.configure({
+        challenge,
+        code: "grant_revoked",
+        kind: "error",
+        status: 401,
+        type: "authentication_error",
+      });
+      await client.readPage(STREAM);
+      if (client.grantState() !== "revoked") {
+        return skip(
+          "The client did not record a grant_revoked error as revocation, so the inference case cannot be judged."
+        );
+      }
+      await client.authorize({ source: { id: "https://fixture.invalid/source" }, streams: [{ name: STREAM }] });
+      client.fixture.configure({
+        challenge,
+        code: "authentication_error",
+        kind: "error",
+        status: 401,
+        type: "authentication_error",
+      });
+      const before = client.fixture.requestLog().length;
+      const result = await client.readPage(STREAM);
+      const sent = requestAfter(client, before).length;
+      return sent === 1 && result.status === 401 && client.grantState() !== "revoked"
+        ? pass()
+        : fail(
+            `After a 401 invalid_token whose cause is unknown (${sent} request(s), status ${result.status}), the client recorded the grant as ${String(client.grantState())}. Core Section 10: a client MUST NOT treat an inactive token as proof of revocation; the token may have expired or lost its refresh-token family.`
+          );
+    },
+  },
+
+  // ------------------------------------------------------------ CL-8 / 6.6-4
+  {
+    caseId: "CL-8/unrecognized-source-kind-not-treated-as-known",
+    requirementId: "CL-8",
+    assertion: "A grant reporting an unrecognized source.kind is not read as connector or provider_native.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      client.fixture.configureGrantSourceKind("vendor_native");
+      try {
+        const before = client.fixture.requestLog().length;
+        const result = await client.authorize({
+          source: { id: "https://fixture.invalid/source" },
+          streams: [{ name: STREAM }],
+        });
+        if (result.ok) {
+          await client.readPage(STREAM);
+        }
+        const sent = requestAfter(client, before).length;
+        const read = result.sourceKindRead;
+        return sent >= 1 && read !== "connector" && read !== "provider_native"
+          ? pass()
+          : fail(
+              `A grant reporting source.kind 'vendor_native' was read as ${JSON.stringify(read)} after ${sent} request(s). Core Section 6: a client that reads an unrecognized source.kind MUST NOT treat it as either known value; it MAY reject the grant as unsupported.`
+            );
+      } finally {
+        client.fixture.configureGrantSourceKind("connector");
+      }
+    },
+  },
+
+  // ----------------------------------------------------------- CL-10 / 4.3-14
+  {
+    caseId: "CL-10/tombstone-for-unheld-id-is-a-no-op",
+    requirementId: "CL-10",
+    assertion: "A tombstone for an ID the client does not hold leaves its stored copy unchanged and raises no error.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      if (!client.storedCopy) {
+        return skip("The client under test does not expose its stored copy, so tombstone handling is unobserved.");
+      }
+      client.fixture.configure({ kind: "page", nextChangesSince: CHANGES_SINCE, records: [{ id: "held" }] });
+      const first = await client.syncOnce(STREAM);
+      client.fixture.configure({
+        kind: "page",
+        nextChangesSince: CHANGES_SINCE,
+        records: [{ deleted: true, id: "never-held" }],
+      });
+      const before = client.fixture.requestLog().length;
+      const second = await client.syncAgain(STREAM);
+      const copy = client.storedCopy(STREAM);
+      return first.ok && second.ok && requestAfter(client, before).length >= 1 && copy.join(",") === "held"
+        ? pass()
+        : fail(
+            `Expected a tombstone for an unheld id to be a no-op; observed ok=${second.ok} and stored copy ${JSON.stringify(copy)}.`
+          );
+    },
+  },
+
+  // ------------------------------------------------------------ CL-5 / 4.3-15
+  {
+    caseId: "CL-5/beginning-session-replaces-the-stored-copy",
+    requirementId: "CL-5",
+    assertion:
+      "After a completed changes_since=beginning session, the client's stored copy equals that session's result, not a merge with the earlier copy.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      if (!client.storedCopy) {
+        return skip("The client under test does not expose its stored copy, so replacement is unobserved.");
+      }
+      client.fixture.configure({ kind: "page", nextChangesSince: CHANGES_SINCE, records: [{ id: "a" }, { id: "b" }] });
+      await client.syncOnce(STREAM);
+      const held = [...client.storedCopy(STREAM)].sort();
+      client.fixture.configure({ kind: "page", nextChangesSince: CHANGES_SINCE, records: [{ id: "b" }, { id: "c" }] });
+      const before = client.fixture.requestLog().length;
+      await client.syncOnce(STREAM);
+      const requests = requestAfter(client, before);
+      const copy = [...client.storedCopy(STREAM)].sort();
+      const unique = new Set(held).size === held.length && new Set(copy).size === copy.length;
+      return unique &&
+        held.join(",") === "a,b" &&
+        requests[0]?.query.changes_since === BEGINNING &&
+        copy.join(",") === "b,c"
+        ? pass()
+        : fail(
+            `Expected the second beginning session to leave exactly b,c (first copy ${held}); observed ${copy}. Core Section 4: after a completed changes_since=beginning session the client MUST replace its copy of the stream with that session's result.`
+          );
+    },
+  },
+  // ------------------------------------------------------------ AS-16 / 5.8-1
+  {
+    caseId: "AS-16/client-does-not-introduce-authority-or-declaration-uri",
+    requirementId: "AS-16",
+    assertion:
+      "The selection request carries no source authority or declaration URI beyond the source id the caller supplied.",
+    async run(context) {
+      const { client } = context;
+      if (!client) {
+        return skip("Requires a ClientUnderTest adapter with a fixture request log.");
+      }
+      const supplied = "https://fixture.invalid/source";
+      const before = client.fixture.requestLog().length;
+      await client.authorize({ source: { id: supplied }, streams: [{ name: STREAM }] });
+      const [request] = requestAfter(client, before);
+      const selection = (request?.body as { authorization_details?: readonly Record<string, unknown>[] } | undefined)
+        ?.authorization_details?.[0];
+      if (!selection) {
+        return fail("The client sent no selection, so what it asserted about the source is unobserved.");
+      }
+      const introduced: string[] = [];
+      const source = selection.source as Record<string, unknown> | undefined;
+      if (source?.id !== supplied) {
+        introduced.push("source.id");
+      }
+      // Type, purpose, view and client-claim URIs do not assert source authority.
+      for (const object of [selection, source]) {
+        if (!object) {
+          continue;
+        }
+        for (const key of Object.keys(object)) {
+          if (key === "authority" || key.startsWith("declaration") || key === "source_authority") {
+            introduced.push(key);
+          }
+        }
+      }
+      return introduced.length === 0
+        ? pass()
+        : fail(
+            `The selection introduced ${JSON.stringify(introduced)} beyond the source id the caller supplied. Core Section 5: a client MUST NOT introduce a new source authority or declaration URI during authorization; the AS decides what it accepts as a declaration.`
           );
     },
   },

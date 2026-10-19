@@ -20,9 +20,11 @@
 // rather than failed.
 
 import type { TargetAdapter } from "../harness/adapter.ts";
+import { pollClientRevocation } from "../harness/client-revocation-poll.ts";
 import { grantSchemaViolations } from "../harness/grant-schema.ts";
 import { type PdppResponse, request } from "../harness/http.ts";
 import { advisory, arrange, type ConformanceCase, fail, pass, skip, unsupported } from "../harness/runner.ts";
+import { inactiveTokenFault } from "./grant-lifecycle.ts";
 
 /** Trailing slash on an issuer path, stripped before the well-known suffix. */
 const TRAILING_SLASH = /\/$/;
@@ -227,6 +229,30 @@ function grantedStreamFields(details: readonly unknown[]): string {
       })
       .sort((a, b) => a.name.localeCompare(b.name))
   );
+}
+
+/** The adapter's shared-credential fixture with at least two grants, or the reason there is none. */
+async function sharedCredential(
+  adapter: TargetAdapter
+): Promise<
+  { readonly credential: string; readonly grants: readonly [SharedGrant, SharedGrant] } | { readonly skip: string }
+> {
+  if (!adapter.issueSharedCredentialGrants) {
+    return {
+      skip: "The adapter has no issueSharedCredentialGrants hook, so there is no credential covering several grants to end one grant of.",
+    };
+  }
+  const fixture = await adapter.issueSharedCredentialGrants();
+  const [first, second] = fixture?.grants ?? [];
+  if (!(fixture && first && second)) {
+    return { skip: "The target binds one credential to one grant, so there is no shared credential to test." };
+  }
+  return { credential: fixture.credential, grants: [first, second] };
+}
+
+interface SharedGrant {
+  readonly grantId: string;
+  readonly stream: string;
 }
 
 export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
@@ -476,6 +502,175 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // ------------------------------------------------------ 10.7-6, 10.7-1 ---
+  // Core Section 10 "Revocation": "Ending one grant among several that share a
+  // credential is a grant-level action at the AS. It MUST NOT revoke the shared
+  // credential or end the other grants." and "A token that covers another active
+  // grant stays active; a token with no active grant is `active: false`."
+  //
+  // A shared credential is a binding choice Core leaves open, so the fixture is
+  // the adapter's (`issueSharedCredentialGrants`). Both streams are read through
+  // the credential first: ending one grant must not be confused with a
+  // credential that never reached the other.
+  {
+    caseId: "AS-26/ending-one-grant-spares-the-shared-credential",
+    requirementId: "AS-26",
+    assertion:
+      "After one of two grants that share a credential is ended, the credential still reads the other grant's stream and introspects active.",
+    async run({ adapter, path }) {
+      const shared = await sharedCredential(adapter);
+      if ("skip" in shared) {
+        return skip(shared.skip);
+      }
+      const [ended, kept] = shared.grants;
+      const readKept = () =>
+        request(adapter.baseUrl, path(`/streams/${encodeURIComponent(kept.stream)}/records`), {
+          token: shared.credential,
+        });
+      const before = await readKept();
+      if (before.status !== 200) {
+        return skip(
+          `The shared credential did not read the second grant's stream before anything was ended (${before.status}), so a later refusal cannot be attributed to ending the first grant.`
+        );
+      }
+      await adapter.revokeGrant(ended.grantId);
+      const after = await readKept();
+      const introspected = await introspectByAnyRoute(adapter, shared.credential);
+      const evidence = [before.evidence, after.evidence, ...(introspected ? [introspected.evidence] : [])];
+      if (after.status !== 200) {
+        return fail(
+          `Ending grant ${ended.grantId} made the credential it shares with grant ${kept.grantId} stop reading ${kept.stream} (${after.status}). Core Section 10: ending one grant among several that share a credential MUST NOT revoke the shared credential or end the other grants.`,
+          evidence
+        );
+      }
+      if (introspected && (introspected.json as IntrospectionBody | undefined)?.active !== true) {
+        return fail(
+          "Introspection reports the shared credential inactive after only one of its two grants was ended. Core Section 10: a token that covers another active grant stays active.",
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+  {
+    caseId: "AS-8/shared-credential-inactive-only-when-no-grant-is-active",
+    requirementId: "AS-8",
+    assertion:
+      "A credential covering two grants introspects active while either is active and inactive once both are ended.",
+    async run({ adapter }) {
+      const shared = await sharedCredential(adapter);
+      if ("skip" in shared) {
+        return skip(shared.skip);
+      }
+      const [first, second] = shared.grants;
+      const both = await arrange("introspection (prerequisite)", () =>
+        introspectByAnyRoute(adapter, shared.credential)
+      );
+      if (!both) {
+        return skip(
+          "The target publishes no introspection route the suite can use and the adapter names no co-located equivalent, so the credential's state is unobserved."
+        );
+      }
+      if ((both.json as IntrospectionBody | undefined)?.active !== true) {
+        return skip(
+          "Introspection did not report the fresh shared credential active, so revocation cannot be isolated."
+        );
+      }
+      await adapter.revokeGrant(first.grantId);
+      const one = await introspectByAnyRoute(adapter, shared.credential);
+      await adapter.revokeGrant(second.grantId);
+      const none = await introspectByAnyRoute(adapter, shared.credential);
+      if (!(one && none)) {
+        return skip("Introspection could not be observed after the grants were ended.");
+      }
+      const evidence = [both.evidence, one.evidence, none.evidence];
+      if ((one.json as IntrospectionBody | undefined)?.active !== true) {
+        return fail(
+          "Introspection reported the shared credential inactive while one of the grants it covers was still active. Core Section 10: a token that covers another active grant stays active.",
+          evidence
+        );
+      }
+      if ((none.json as IntrospectionBody | undefined)?.active !== false) {
+        return fail(
+          "Introspection still reports the shared credential active after every grant it covers was ended. Core Section 10: a token with no active grant is active: false, and revocation is reflected immediately.",
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
+  // --------------------------------------------------------------- 7.5-7 ---
+  // Core Section 7 "Access modes": a `single_use` grant permits one fixed read
+  // window that ends at the first token's expiry. "After the window ends, no
+  // token carries the grant, and introspection MUST NOT report the grant
+  // active." The window cannot be waited out, so the case moves the target past
+  // its end through `advancePastSingleUseWindow`. Inside the window the token
+  // must read and introspect active (the control), or a target that never
+  // activates the grant would pass.
+  {
+    caseId: "AS-10/single-use-window-end-deactivates-the-grant",
+    requirementId: "AS-10",
+    appliesWhen: (adapter) => adapter.capabilities.singleUseGrants,
+    assertion:
+      "After a single_use grant's window ends, introspection reports the token inactive and a read with it is refused, while both were served inside the window.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.advancePastSingleUseWindow) {
+        return skip(
+          "The adapter has no advancePastSingleUseWindow hook, so the end of a single_use window cannot be reached and the state after it is unobserved."
+        );
+      }
+      const grant = await adapter.issueGrant({
+        streams: [{ name: stream.name, fields: [...stream.fields] }],
+        accessMode: "single_use",
+      });
+      if (!grant) {
+        return skip("The target declares single_use support but could not issue such a grant.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const insideRead = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+      const inside = await arrange("introspection (prerequisite)", () =>
+        introspectByAnyRoute(adapter, grant.accessToken)
+      );
+      if (!inside) {
+        return skip(
+          "The target publishes no introspection route the suite can use and the adapter names no co-located equivalent, so the grant's state after the window cannot be observed."
+        );
+      }
+      if (insideRead.status !== 200 || (inside.json as IntrospectionBody | undefined)?.active !== true) {
+        return skip(
+          "Inside its window the single_use token was not both served and reported active, so the end of the window cannot be isolated."
+        );
+      }
+      if (!(await adapter.advancePastSingleUseWindow(grant.grantId))) {
+        return skip("The target offers no way to reach the end of this single_use grant's window.");
+      }
+      const after = await introspectByAnyRoute(adapter, grant.accessToken);
+      const afterRead = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+      if (!after) {
+        return skip("Introspection could not be observed after the window ended.");
+      }
+      const evidence = [inside.evidence, after.evidence, afterRead.evidence];
+      if ((after.json as IntrospectionBody | undefined)?.active !== false) {
+        return fail(
+          'Introspection still reports the single_use grant\'s token active after its window ended. Core Section 7: "After the window ends, no token carries the grant, and introspection MUST NOT report the grant active."',
+          evidence
+        );
+      }
+      if (afterRead.status === 200) {
+        return fail(
+          "A read with the single_use grant's token was served after its window ended. Core Section 7: after the window ends, no token carries the grant.",
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
   // --------------------------------------------------------------- AS-15 ---
   // Section 9 AS item 15: the AS "binds exact resolved instances and all final
   // decision fields to an immutable review revision" and "rejects stale approval
@@ -527,6 +722,55 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
       if (!genuine) {
         return skip(
           "The forged revision was refused, but so was the genuine one, so this run cannot show the server distinguishes them."
+        );
+      }
+      return pass();
+    },
+  },
+
+  // The other half of AS item 15 / clause 7.2-5: a review whose bound eligibility
+  // has since changed is stale, and approving it MUST be refused so a new review
+  // is shown. The staleness is arranged by `makeStale`; the control is a fresh
+  // review of the same request, which must still be approvable (a refusal of
+  // everything would satisfy the negative alone).
+  {
+    caseId: "AS-15/stale-review-approval-refused",
+    requirementId: "AS-15",
+    assertion:
+      "Approving a staged review after the eligibility it was bound to has changed is refused, while a fresh review of the same request is approved.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const selection = { streams: [{ name: stream.name, fields: [...stream.fields] }] };
+      const staged = await adapter.stageApproval?.(selection);
+      if (!staged?.reviewRevision) {
+        return skip(
+          "The target stages no authorization request with a review revision, so there is no review to stale."
+        );
+      }
+      if (!staged.makeStale) {
+        return skip(
+          "The adapter has no makeStale hook, so it cannot change what the review was bound to and a stale approval cannot be attempted."
+        );
+      }
+      if (!(await arrange("staged.makeStale", () => staged.makeStale?.() ?? Promise.resolve(false)))) {
+        return skip("The target offers no way to change the eligibility a review was bound to.");
+      }
+      const stale = await staged.approve(staged.reviewRevision);
+      if (stale) {
+        return fail(
+          `Approving review revision "${staged.reviewRevision}" after the eligibility it was bound to changed produced grant ${stale.grantId}. Core Section 7.2: "If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review." The owner approved what they reviewed, not what is now true.`
+        );
+      }
+      const fresh = await adapter.stageApproval?.(selection);
+      const approved = await arrange("fresh review approval (positive control)", async () =>
+        fresh ? await fresh.approve(fresh.reviewRevision) : null
+      );
+      if (!approved) {
+        return skip(
+          "The stale approval was refused, but so was a fresh review of the same request, so the refusal cannot be attributed to staleness."
         );
       }
       return pass();
@@ -1010,6 +1254,127 @@ export const AUTHORIZATION_SERVER_CASES: readonly ConformanceCase[] = [
         );
       }
       return pass(evidence);
+    },
+  },
+  // ------------------------------------------------------------- 8.12-5 ---
+  // "The AS MUST include `exp` in every positive introspection response for an
+  // expiring PDPP token." Whether a token expires is read from the token
+  // response's own `expires_in` (RFC 6749 Section 5.1); a token the AS states no
+  // lifetime for is not an expiring token and owes no `exp`.
+  {
+    caseId: "AS-9/introspection-carries-exp-for-an-expiring-token",
+    requirementId: "AS-9",
+    assertion: "Introspection of an active token whose token response states an expires_in reports a numeric exp.",
+    async run({ adapter, streams }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      if (grant.tokenResponseBody === undefined) {
+        return skip(
+          "The adapter does not surface the token endpoint's response body (IssuedGrant.tokenResponseBody), so whether the token expires is unobserved."
+        );
+      }
+      const expiresIn = (grant.tokenResponseBody as { expires_in?: unknown }).expires_in;
+      if (typeof expiresIn !== "number" || expiresIn <= 0) {
+        return skip("The token response states no expires_in, so the token is not an expiring token and owes no exp.");
+      }
+      const response = await introspectByAnyRoute(adapter, grant.accessToken);
+      if (!response) {
+        return skip("This deployment publishes no introspection result the suite can reach.");
+      }
+      const body = response.json as (IntrospectionBody & { exp?: unknown }) | undefined;
+      if (response.status !== 200 || body?.active !== true) {
+        return skip("Introspection did not report the token active, so a positive response cannot be judged.");
+      }
+      if (typeof body.exp !== "number" || !Number.isFinite(body.exp)) {
+        return fail(
+          `The token response states expires_in ${expiresIn}, but the positive introspection response carries exp ${JSON.stringify(body.exp)}. Core Section 8: the AS MUST include exp in every positive introspection response for an expiring PDPP token. A resource server that caches the result has no bound for how long it may.`,
+          [response.evidence]
+        );
+      }
+      return pass([response.evidence]);
+    },
+  },
+  // ------------------------------------------------------------ 10.7-8 ---
+  // "An AS that supports it MUST advertise `revocation_endpoint` in its RFC 8414
+  // metadata." Whether the AS supports client revocation is the adapter's
+  // statement: it supplies `revokeToken` only for a target that offers it.
+  {
+    caseId: "AS-25/revocation-endpoint-is-advertised",
+    requirementId: "AS-25",
+    assertion:
+      "An AS that offers client-initiated revocation advertises a revocation_endpoint in its RFC 8414 metadata.",
+    async run({ adapter }) {
+      if (!adapter.revokeToken) {
+        return skip(
+          "The adapter has no revokeToken hook, so whether this AS offers client-initiated revocation is not stated and its metadata cannot be held to the revocation_endpoint obligation."
+        );
+      }
+      if (!adapter.authorizationServerUrl) {
+        return skip(
+          "The adapter publishes no authorizationServerUrl, so the RFC 8414 metadata document cannot be located."
+        );
+      }
+      const metadata = await fetchAsMetadata(adapter.authorizationServerUrl);
+      if (metadata.status !== 200) {
+        return fail(`The RFC 8414 metadata document was not served (${metadata.status}).`, [metadata.evidence]);
+      }
+      const endpoint = (metadata.json as { revocation_endpoint?: unknown } | undefined)?.revocation_endpoint;
+      if (typeof endpoint !== "string" || endpoint.length === 0) {
+        return fail(
+          "The adapter states this AS offers client-initiated revocation, but its RFC 8414 metadata carries no revocation_endpoint. Core Section 10: an AS that supports it MUST advertise revocation_endpoint, which is how a client finds where to send a token it no longer needs.",
+          [metadata.evidence]
+        );
+      }
+      return pass([metadata.evidence]);
+    },
+  },
+
+  // ------------------------------------------------------------ 10.7-4 ---
+  {
+    caseId: "AS-25/client-revocation-of-an-access-token-ends-it",
+    requirementId: "AS-25",
+    assertion: "An access token presented at the revocation endpoint is refused afterwards, while it read before.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      if (!adapter.revokeToken) {
+        return skip("The adapter has no revokeToken hook, so a client revocation cannot be performed.");
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const before = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+      if (before.status !== 200) {
+        return skip(`The token did not read before revocation (${before.status}), so revocation cannot be isolated.`);
+      }
+      const revoked = await adapter.revokeToken(grant.accessToken, "access_token");
+      if (!revoked || revoked.status >= 300) {
+        return skip(`The revocation endpoint did not accept the token (${revoked?.status ?? "no answer"}).`);
+      }
+      const after = await pollClientRevocation(adapter.baseUrl, recordsPath, grant.accessToken);
+      if (!after) {
+        return skip(
+          "A revocation probe timed out within the 60-second observation window; the token's state is inconclusive."
+        );
+      }
+      if (after.status === 200) {
+        return fail(
+          "The revocation endpoint accepted the access token, yet the token still read after 60 seconds. Core Section 10: when a client revokes an access token, the AS MUST end that token.",
+          [before.evidence, after.evidence]
+        );
+      }
+      const fault = inactiveTokenFault(after, "grant_revoked");
+      return fault ? fail(fault, [before.evidence, after.evidence]) : pass([before.evidence, after.evidence]);
     },
   },
 ];

@@ -27,6 +27,7 @@ import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { describe, it } from "node:test";
 import type { BlobFixture, GrantRequest, IssuedGrant, StagedApproval, TargetAdapter } from "../src/harness/adapter.ts";
+import { CLIENT_REVOCATION_CLOCK } from "../src/harness/client-revocation-poll.ts";
 import type { ConformanceCase } from "../src/harness/runner.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
 import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
@@ -36,11 +37,15 @@ import { CLIENT_IDENTITY_CASES } from "../src/tests/client-identity.ts";
 import { CONSENT_ARTIFACT_CASES } from "../src/tests/consent-artifact.ts";
 import { DECLARATION_TRUST_CASES } from "../src/tests/declaration-trust.ts";
 import { DECLARATION_VALIDITY_CASES } from "../src/tests/declaration-validity.ts";
+import { GRANT_INTEGRITY_CASES } from "../src/tests/grant-integrity.ts";
 import { GRANT_LIFECYCLE_CASES, REVOCATION_TIMING } from "../src/tests/grant-lifecycle.ts";
 import { MULTI_INSTANCE_CASES } from "../src/tests/multi-instance.ts";
+import { OUTBOUND_FETCH_CASES } from "../src/tests/outbound-fetch.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 import { RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
 import { SELECTION_VALIDATION_CASES } from "../src/tests/selection-validation.ts";
+import { SYNC_VISIBILITY_CASES } from "../src/tests/sync-visibility.ts";
+import { TIME_RANGE_CASES } from "../src/tests/time-range.ts";
 import { VIEW_CASES } from "../src/tests/views.ts";
 import { TARGET_DISCRIMINATION_MATRIX } from "./fixtures/proof-registry.ts";
 
@@ -53,14 +58,18 @@ const CASES: readonly ConformanceCase[] = [
   ...RESOURCE_SERVER_CASES,
   ...AUTHORIZATION_SERVER_CASES,
   ...GRANT_LIFECYCLE_CASES,
+  ...GRANT_INTEGRITY_CASES,
   ...QUERY_SURFACE_CASES,
+  ...SYNC_VISIBILITY_CASES,
   ...MULTI_INSTANCE_CASES,
   ...SELECTION_VALIDATION_CASES,
+  ...TIME_RANGE_CASES,
   ...VIEW_CASES,
   ...CLIENT_IDENTITY_CASES,
   ...CONSENT_ARTIFACT_CASES,
   ...DECLARATION_TRUST_CASES,
   ...DECLARATION_VALIDITY_CASES,
+  ...OUTBOUND_FETCH_CASES,
 ];
 
 function caseById(caseId: string): ConformanceCase {
@@ -90,21 +99,36 @@ async function runAgainst(caseId: string, defects: readonly Defect[]): Promise<{
 }
 
 describe("negative oracles discriminate conforming from violating targets", () => {
-  for (const { caseId, defect } of TARGET_DISCRIMINATION_MATRIX) {
-    it(`${caseId} passes a clean target and fails one with defect "${defect}"`, async () => {
+  for (const { caseId, defect, reviewOnly, cleanExpected } of TARGET_DISCRIMINATION_MATRIX) {
+    it(`${caseId} ${reviewOnly ? "stays review-only" : "discriminates"} with defect "${defect}"`, async (t) => {
+      // Exercise the full propagation window without spending a real minute.
+      // Probe timeout behavior is independently covered by mocked hung fetches.
+      if (caseId === "AS-25/client-revocation-of-an-access-token-ends-it") {
+        let now = 0;
+        t.mock.method(CLIENT_REVOCATION_CLOCK, "now", () => now);
+        t.mock.method(CLIENT_REVOCATION_CLOCK, "sleep", (ms: number) => {
+          now += ms;
+          return Promise.resolve();
+        });
+        t.mock.method(AbortSignal, "timeout", () => new AbortController().signal);
+      }
+      const started = performance.now();
       const clean = await runAgainst(caseId, []);
       assert.equal(
         clean.outcome,
-        "pass",
-        `${caseId} did not pass against the clean reference target: ${clean.detail ?? "(no detail)"}`
+        cleanExpected ?? (reviewOnly ? "skip" : "pass"),
+        `${caseId} did not report the expected clean-target outcome: ${clean.detail ?? "(no detail)"}`
       );
 
       const violating = await runAgainst(caseId, [defect]);
       assert.equal(
         violating.outcome,
-        "fail",
-        `${caseId} did not fail against a target with defect "${defect}". The oracle cannot distinguish a conforming target from a violating one, so its passes carry no evidence.`
+        reviewOnly ? "skip" : "fail",
+        `${caseId} did not report the expected defect-target outcome "${defect}". The oracle cannot distinguish a conforming target from a violating one, so its passes carry no evidence.`
       );
+      if (caseId === "AS-25/client-revocation-of-an-access-token-ends-it") {
+        assert.ok(performance.now() - started < 5000, "AS-25 proof must use a mocked propagation clock");
+      }
       assert.ok(
         violating.detail && violating.detail.length > 0,
         `${caseId} failed without a detail; a failure with no explanation is not reviewable evidence.`

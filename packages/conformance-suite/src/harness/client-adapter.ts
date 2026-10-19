@@ -33,8 +33,11 @@ export type ClientFixtureResponse =
       readonly kind: "page";
       readonly nextChangesSince?: string;
       readonly nextCursor?: string;
+      /** Records (or tombstones, when `deleted`) the page carries. */
+      readonly records?: readonly { readonly deleted?: boolean; readonly id: string }[];
     }
   | {
+      readonly challenge?: string;
       readonly code: unknown;
       readonly kind: "error";
       readonly status: number;
@@ -49,6 +52,8 @@ export type ClientFixtureResponse =
 export interface ClientFixture {
   close: () => Promise<void>;
   readonly configure: (response: ClientFixtureResponse) => void;
+  /** The `source.kind` the fixture's authorize endpoint reports in the issued grant (default `connector`). */
+  readonly configureGrantSourceKind: (kind: string) => void;
   readonly requestLog: () => readonly ClientRequest[];
   readonly url: string;
 }
@@ -70,7 +75,18 @@ export interface ClientUnderTest {
    */
   readonly declaresProvenancePolicy?: boolean;
   readonly fixture: ClientFixture;
+  /**
+   * What the client currently believes about the grant it holds. Optional: a
+   * client that does not expose it makes the revocation-inference case `skip`.
+   */
+  grantState?: () => "active" | "revoked" | "unknown";
   readPage: (stream: string, cursor?: string) => Promise<ClientActionResult>;
+  /**
+   * The ids the client holds for a stream after its sync sessions. Optional: a
+   * client that does not expose its stored copy makes the copy-handling cases
+   * `skip`.
+   */
+  storedCopy?: (stream: string) => readonly string[];
   syncAgain: (stream: string) => Promise<ClientActionResult>;
   syncOnce: (stream: string) => Promise<ClientActionResult>;
 }
@@ -78,7 +94,15 @@ export interface ClientUnderTest {
 type ClientDefect =
   | "add-selection-display"
   | "assume-source-kind"
+  | "coerce-unrecognized-source-kind"
   | "construct-cursor"
+  | "introduce-declaration-uri"
+  | "merge-copy-on-beginning"
+  | "retry-after-invalid-token"
+  | "throw-on-unknown-tombstone"
+  | "treat-inactive-as-revoked"
+  | "omit-beginning-on-first-sync"
+  | "omit-beginning-on-resync"
   | "override-status-with-error-code"
   | "parse-unknown-identifier"
   | "reuse-next-cursor-as-changes-since"
@@ -93,6 +117,7 @@ interface RsSuccessResponse<Body = unknown> {
 }
 
 interface RsErrorResponse {
+  readonly challenge?: string;
   readonly error: Readonly<Record<string, unknown>>;
   readonly ok: false;
   readonly status: number;
@@ -149,7 +174,9 @@ class SyntheticRsClient {
       return { body: parsed as Body, ok: true, status: response.status };
     }
     const envelope = parsed && typeof parsed === "object" && "error" in parsed ? parsed.error : parsed;
+    const challenge = response.headers.get("www-authenticate");
     return {
+      ...(challenge === null ? {} : { challenge }),
       error: (envelope && typeof envelope === "object" ? envelope : {}) as Readonly<Record<string, unknown>>,
       ok: false,
       status: response.status,
@@ -237,6 +264,7 @@ export async function startClientFixture(): Promise<ClientFixture> {
 
 async function startFixture(): Promise<ClientFixture> {
   const requests: ClientRequest[] = [];
+  let grantSourceKindReported = "connector";
   let configuredResponse: ClientFixtureResponse = {
     kind: "page",
     nextChangesSince: "changes-since-fixture-token",
@@ -258,7 +286,7 @@ async function startFixture(): Promise<ClientFixture> {
     if (request.method === "POST" && url.pathname === "/authorize") {
       writeJson(response, 200, {
         access_token: "client-fixture-access-token",
-        grant: { source: { id: "https://fixture.invalid/source", kind: "connector" } },
+        grant: { source: { id: "https://fixture.invalid/source", kind: grantSourceKindReported } },
       });
       return;
     }
@@ -269,6 +297,9 @@ async function startFixture(): Promise<ClientFixture> {
     }
 
     if (configuredResponse.kind === "error") {
+      if (configuredResponse.challenge !== undefined) {
+        response.setHeader("WWW-Authenticate", configuredResponse.challenge);
+      }
       writeJson(response, configuredResponse.status, {
         error: {
           code: configuredResponse.code,
@@ -289,14 +320,16 @@ async function startFixture(): Promise<ClientFixture> {
     let nextChangesSince: string | undefined;
     if (configuredResponse.kind === "page") {
       ({ nextChangesSince } = configuredResponse);
-    } else if (url.searchParams.has("changes_since")) {
+    } else if (url.searchParams.has("changes_since") && url.searchParams.get("changes_since") !== "beginning") {
       nextChangesSince = "changes-since-after-full-resync";
     } else {
       nextChangesSince = configuredResponse.expiredCursor;
     }
 
     writeJson(response, 200, {
-      data: [],
+      data: (configuredResponse.kind === "page" ? (configuredResponse.records ?? []) : []).map((record) =>
+        record.deleted ? { deleted: true, id: record.id, object: "record" } : { id: record.id, object: "record" }
+      ),
       has_more: false,
       next_changes_since: nextChangesSince,
       next_cursor: configuredResponse.kind === "page" ? configuredResponse.nextCursor : configuredResponse.cursor,
@@ -318,6 +351,9 @@ async function startFixture(): Promise<ClientFixture> {
     configure: (response) => {
       configuredResponse = response;
     },
+    configureGrantSourceKind: (kind) => {
+      grantSourceKindReported = kind;
+    },
     requestLog: () => requests.slice(),
     url: `http://127.0.0.1:${address.port}`,
   };
@@ -333,16 +369,60 @@ export async function createPdppClientUnderTest(
   let nextChangesSince: string | undefined;
   let nextCursor: string | undefined;
   let grantSourceKind: string | undefined;
+  let grantRevoked = false;
+  const copies = new Map<string, Set<string>>();
 
-  function getPage(stream: string, query: Readonly<Record<string, string>>): Promise<RsResponse> {
-    return client.getJson(`/v1/streams/${encodeURIComponent(stream)}/records`, query);
+  /** Note what a refusal says about the grant (Core Section 10 "Revocation"). */
+  function noteRefusal(response: RsResponse): void {
+    if (response.ok || response.status !== 401) {
+      return;
+    }
+    const invalidToken = (response.challenge ?? "").includes("invalid_token");
+    if (response.error.code === "grant_revoked" || (invalidToken && defectSet.has("treat-inactive-as-revoked"))) {
+      grantRevoked = true;
+    }
   }
 
-  async function syncOnce(stream: string): Promise<ClientActionResult> {
-    const response = await getPage(stream, {});
+  /** Apply a completed sync page to the stored copy (Core Section 4 "Starting a sync"). */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one handler per client defect switch keeps each receipt naming a single behaviour change.
+  function applyPage(stream: string, body: unknown, beginning: boolean): void {
+    const data = body && typeof body === "object" ? (body as { data?: unknown }).data : undefined;
+    const rows = Array.isArray(data) ? (data as { deleted?: boolean; id?: string }[]) : [];
+    const held =
+      beginning && !defectSet.has("merge-copy-on-beginning")
+        ? new Set<string>()
+        : (copies.get(stream) ?? new Set<string>());
+    for (const row of rows) {
+      if (typeof row.id !== "string") {
+        continue;
+      }
+      if (row.deleted !== true) {
+        held.add(row.id);
+      } else if (held.has(row.id)) {
+        held.delete(row.id);
+      } else if (defectSet.has("throw-on-unknown-tombstone")) {
+        throw new Error(`tombstone for unknown id ${row.id}`);
+      }
+    }
+    copies.set(stream, held);
+  }
+
+  function getPage(stream: string, query: Readonly<Record<string, string>>): Promise<RsResponse> {
+    return client.getJson(`/v1/streams/${encodeURIComponent(stream)}/records`, query).then((response) => {
+      noteRefusal(response);
+      return response;
+    });
+  }
+
+  // Core Section 4 "Starting a sync": a client starts incremental sync, and
+  // restarts after `cursor_expired`, with `changes_since=beginning`.
+  async function syncOnce(stream: string, restart = false): Promise<ClientActionResult> {
+    const omitBeginning = defectSet.has(restart ? "omit-beginning-on-resync" : "omit-beginning-on-first-sync");
+    const response = await getPage(stream, omitBeginning ? {} : { changes_since: "beginning" });
     if (response.ok) {
       nextChangesSince = responseBodyField(response.body, "next_changes_since");
       nextCursor = responseBodyField(response.body, "next_cursor");
+      applyPage(stream, response.body, !omitBeginning);
     }
     return actionResult(response);
   }
@@ -354,8 +434,12 @@ export async function createPdppClientUnderTest(
       const requestSelection = {
         ...selection,
         ...(defectSet.has("add-selection-display") ? { display: "client supplied" } : {}),
+        ...(defectSet.has("introduce-declaration-uri")
+          ? { declaration_uri: "https://client.invalid/declaration.json" }
+          : {}),
         ...(defectSet.has("assume-source-kind") ? { source: { kind: "provider_native" } } : {}),
       };
+      grantRevoked = false;
       const response = await client.postJson("/authorize", { authorization_details: [requestSelection] });
       if (response.ok) {
         const grant =
@@ -367,6 +451,9 @@ export async function createPdppClientUnderTest(
           source && typeof source === "object" && typeof (source as Record<string, unknown>).kind === "string"
             ? ((source as Record<string, unknown>).kind as string)
             : undefined;
+        if (defectSet.has("coerce-unrecognized-source-kind") && grantSourceKind !== "provider_native") {
+          grantSourceKind = "connector";
+        }
       }
       if (!response.ok && defectSet.has("throw-on-unknown-error")) {
         throw new Error("authorization request failed");
@@ -374,6 +461,9 @@ export async function createPdppClientUnderTest(
       return actionResult(response, grantSourceKind);
     },
     fixture,
+    grantState: () => (grantRevoked ? "revoked" : "active"),
+    storedCopy: (stream) => [...(copies.get(stream) ?? [])].sort(),
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one handler per client defect switch keeps each receipt naming a single behaviour change.
     readPage: async (stream, cursor) => {
       const sentCursor =
         cursor === undefined || !defectSet.has("construct-cursor") ? cursor : `${cursor}-constructed-by-client`;
@@ -381,8 +471,16 @@ export async function createPdppClientUnderTest(
       if (
         !response.ok &&
         defectSet.has("retry-revoked-grant") &&
-        response.status === 403 &&
+        response.status === 401 &&
         response.error.code === "grant_revoked"
+      ) {
+        return actionResult(await getPage(stream, sentCursor === undefined ? {} : { cursor: sentCursor }));
+      }
+      if (
+        !response.ok &&
+        defectSet.has("retry-after-invalid-token") &&
+        response.status === 401 &&
+        (response.challenge ?? "").includes("invalid_token")
       ) {
         return actionResult(await getPage(stream, sentCursor === undefined ? {} : { cursor: sentCursor }));
       }
@@ -408,14 +506,18 @@ export async function createPdppClientUnderTest(
         if (defectSet.has("retry-expired-cursor")) {
           return actionResult(await getPage(stream, changesSince === undefined ? {} : { changes_since: changesSince }));
         }
-        return syncOnce(stream);
+        return syncOnce(stream, true);
       }
       if (!response.ok && defectSet.has("throw-on-unknown-error") && shouldRetryUnknownError(response)) {
         throw new Error("unknown error code parser failed");
       }
+      if (response.ok) {
+        nextChangesSince = responseBodyField(response.body, "next_changes_since") ?? nextChangesSince;
+        applyPage(stream, response.body, false);
+      }
       return actionResult(response);
     },
-    syncOnce,
+    syncOnce: (stream) => syncOnce(stream),
   };
 }
 

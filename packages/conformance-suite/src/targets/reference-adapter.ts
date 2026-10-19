@@ -15,8 +15,12 @@
 
 // biome-ignore-all lint/suspicious/useAwait: the TargetAdapter contract is async; this in-process target answers from memory.
 
+import { createHash, randomBytes } from "node:crypto";
 import type {
+  BlobFixture,
+  ConsentSurfaceOffer,
   DeclarationOutcome,
+  DeclarationPointerOffer,
   GrantRequest,
   IssuedGrant,
   MultiInstanceFixture,
@@ -24,6 +28,7 @@ import type {
   SeededStream,
   SelectionOutcome,
   SelectionRequest,
+  SharedCredentialFixture,
   SourceDeclarationStream,
   SourceDeclarationSubmission,
   StagedApproval,
@@ -36,11 +41,14 @@ import type { PdppResponse } from "../harness/http.ts";
 import type { Role } from "../requirements/catalog.ts";
 import {
   type Defect,
+  GRANT_EXPIRES_AT,
   GRANT_SCHEMA_VERSION,
   PDPP_VERSION,
   ReferenceServer,
+  SEEDED_INSTANCE,
   type StreamFixture,
 } from "./reference-server.ts";
+import { compareDateTimes, parseDateTime, parseFullDate } from "./rfc3339.ts";
 
 /**
  * Two streams with overlapping shape: the negative oracles need a second stream
@@ -86,13 +94,20 @@ export const DEFAULT_FIXTURES: readonly StreamFixture[] = [
         title: "Book club",
         source_created_at: "2026-03-26T09:10:00Z",
       },
-      // A third record, so the two RS-7 cases that each delete one record
+      // Records beyond the first, so the RS-7 cases that each delete one record
       // (tombstone, and tombstone-under-`fields`) leave a live record behind.
       {
         id: "conv_3",
         title: "Recipes",
         source_created_at: "2026-03-27T11:00:00Z",
       },
+      // Four more, spread on both sides of the middle of the date range, so the
+      // sync-visibility cases can build a time window with records in and out
+      // of it and still delete a few without emptying the stream.
+      { id: "conv_4", title: "Garden notes", source_created_at: "2026-03-20T08:00:00Z" },
+      { id: "conv_5", title: "Reading list", source_created_at: "2026-03-22T16:30:00Z" },
+      { id: "conv_6", title: "Budget", source_created_at: "2026-03-28T07:45:00Z" },
+      { id: "conv_7", title: "Packing", source_created_at: "2026-03-29T21:15:00Z" },
     ],
   },
   {
@@ -184,9 +199,9 @@ const CAPABILITIES: TargetCapabilities = {
   // clauses reachable at all; every target declaring `views: false` reports
   // them `skip` naming the missing capability, which is where they sat before.
   views: true,
-  singleUseGrants: false,
+  singleUseGrants: true,
   refreshTokens: false,
-  blobs: false,
+  blobs: true,
 };
 
 const ROLES: readonly Role[] = ["resource-server", "authorization-server"];
@@ -208,8 +223,6 @@ const UNDECLARED_VIEW_FIELD = "pdpp_conformance_field_absent_from_schema";
 const CLIENT_IDENTITY = "pdpp-conformance-client";
 const DEFAULT_PURPOSE = "https://pdpp.dev/purpose/personalization";
 const DEFAULT_RETENTION = "P30D";
-const GRANT_EXPIRY = "2027-01-01T00:00:00Z";
-const INSTANCE_ID = "instance_reference_1";
 
 /**
  * The source this target was onboarded with, and the only one it accepts
@@ -260,6 +273,16 @@ function sameStreams(a: readonly SourceDeclarationStream[], b: readonly SourceDe
  */
 const REQUIRED_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
 
+/** Keywords the 2020-12 metaschema constrains to non-negative integers. */
+const NON_NEGATIVE_INTEGER_KEYWORDS: ReadonlySet<string> = new Set([
+  "maxItems",
+  "maxLength",
+  "maxProperties",
+  "minItems",
+  "minLength",
+  "minProperties",
+]);
+
 /** The `type` values a meta-valid JSON Schema may declare. */
 const JSON_SCHEMA_TYPES: ReadonlySet<string> = new Set([
   "array",
@@ -279,6 +302,46 @@ const JSON_SCHEMA_TYPES: ReadonlySet<string> = new Set([
  * schema falls back to its `fields` list, which is the shape the trust cases
  * submit and the only description of the record those documents carry.
  */
+/** Whether `field` is a top-level string field (null allowed) with format `date` or `date-time` (clause 5.4-3). */
+function consentTimeFieldEligible(schema: unknown, field: string): boolean {
+  const properties =
+    schema !== null && typeof schema === "object" ? (schema as { properties?: unknown }).properties : undefined;
+  if (properties === null || typeof properties !== "object" || Array.isArray(properties)) {
+    return true;
+  }
+  const property = (properties as Record<string, unknown>)[field];
+  // An absent property is clause 5.2-3's finding and a `$ref` property is
+  // clause 5.2-5's; neither is judged here.
+  if (
+    property === undefined ||
+    (property !== null && typeof property === "object" && ("$ref" in property || "$dynamicRef" in property))
+  ) {
+    return true;
+  }
+  if (property === null || typeof property !== "object") {
+    return false;
+  }
+  const { type, format } = property as { type?: unknown; format?: unknown };
+  const types = (Array.isArray(type) ? type : [type]).filter((t) => t !== "null");
+  return types.length === 1 && types[0] === "string" && (format === "date" || format === "date-time");
+}
+
+/** Order two time_range bounds of one RFC 3339 format, or null when either is not a valid value of it. */
+function compareBounds(format: "date" | "date-time", a: unknown, b: unknown): number | null {
+  if (format === "date") {
+    const [da, db] = [parseFullDate(a), parseFullDate(b)];
+    if (da === null || db === null) {
+      return null;
+    }
+    if (da === db) {
+      return 0;
+    }
+    return da < db ? -1 : 1;
+  }
+  const [ta, tb] = [parseDateTime(a), parseDateTime(b)];
+  return ta === null || tb === null ? null : compareDateTimes(ta, tb);
+}
+
 function declaredFieldNames(stream: SourceDeclarationStream): ReadonlySet<string> {
   const { schema } = stream;
   const properties =
@@ -296,20 +359,57 @@ function declaredFieldNames(stream: SourceDeclarationStream): ReadonlySet<string
  * condition: the dialect, the reference locality, and the metaschema's
  * constraint on `type`.
  */
-function schemaKeyViolation(key: string, child: unknown, childPath: string): string | undefined {
-  if (key === "$schema" && child !== REQUIRED_SCHEMA_DIALECT) {
+function schemaKeyViolation(
+  key: string,
+  child: unknown,
+  childPath: string,
+  defects: ReadonlySet<Defect>
+): string | undefined {
+  if (key === "$schema" && child !== REQUIRED_SCHEMA_DIALECT && !defects.has("accept-wrong-schema-dialect")) {
     return `${childPath} declares dialect '${String(child)}', but Core fixes ${REQUIRED_SCHEMA_DIALECT}`;
   }
   // "Embedded `$ref` and `$dynamicRef` values MUST be local fragment
   // references." A remote reference makes consent interpretation depend on a
   // document the AS does not retain and cannot freeze.
-  if ((key === "$ref" || key === "$dynamicRef") && (typeof child !== "string" || !child.startsWith("#"))) {
+  if (
+    (key === "$ref" || key === "$dynamicRef") &&
+    (typeof child !== "string" || !child.startsWith("#")) &&
+    !defects.has("accept-remote-schema-reference")
+  ) {
     return `${childPath} is not a local fragment reference`;
   }
-  // A `type` that names no JSON Schema type fails meta-validation: the
-  // metaschema constrains it to the seven core types.
-  if (key === "type" && typeof child === "string" && !JSON_SCHEMA_TYPES.has(child)) {
-    return `${childPath} declares '${child}', which is not a JSON Schema type`;
+  if (!defects.has("accept-meta-invalid-schema")) {
+    const invalid = metaschemaKeyViolation(key, child, childPath);
+    if (invalid) {
+      return invalid;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The constraints the 2020-12 metaschema places on a few keywords: `type` names
+ * one of the seven core types, `properties` is an object, `required` is an array
+ * of strings, and the length/size keywords are non-negative integers. A sample
+ * of the metaschema, not all of it.
+ */
+function metaschemaKeyViolation(key: string, child: unknown, childPath: string): string | undefined {
+  // A `type` that names no JSON Schema type fails meta-validation.
+  if (key === "type") {
+    const names = Array.isArray(child) ? child : [child];
+    const unknown = names.find((name) => typeof name === "string" && !JSON_SCHEMA_TYPES.has(name));
+    if (unknown !== undefined) {
+      return `${childPath} declares '${String(unknown)}', which is not a JSON Schema type`;
+    }
+  }
+  if (key === "properties" && (child === null || typeof child !== "object" || Array.isArray(child))) {
+    return `${childPath} is not an object, but the metaschema requires \`properties\` to be one`;
+  }
+  if (key === "required" && !(Array.isArray(child) && child.every((name) => typeof name === "string"))) {
+    return `${childPath} is not an array of strings, as the metaschema requires of \`required\``;
+  }
+  if (NON_NEGATIVE_INTEGER_KEYWORDS.has(key) && !(Number.isInteger(child) && (child as number) >= 0)) {
+    return `${childPath} is not a non-negative integer, as the metaschema requires of \`${key}\``;
   }
   return undefined;
 }
@@ -324,13 +424,18 @@ function schemaKeyViolation(key: string, child: unknown, childPath: string): str
  * point here is that the oracle can tell a target that checks from one that
  * does not, and each defect is a document a metaschema genuinely rejects.
  */
-function schemaViolation(schema: unknown, path: string): string | undefined {
+function schemaViolation(schema: unknown, path: string, defects: ReadonlySet<Defect>): string | undefined {
   if (schema === null || typeof schema !== "object") {
     return `${path} is not a JSON Schema object`;
   }
   if (Array.isArray(schema)) {
     for (const [index, child] of schema.entries()) {
-      const nested = schemaViolation(child, `${path}/${index}`);
+      // Array members are schemas (`allOf`) or plain values (`type`, `enum`,
+      // `required`); only an object member is itself a schema to walk.
+      if (child === null || typeof child !== "object") {
+        continue;
+      }
+      const nested = schemaViolation(child, `${path}/${index}`, defects);
       if (nested) {
         return nested;
       }
@@ -340,8 +445,8 @@ function schemaViolation(schema: unknown, path: string): string | undefined {
   for (const [key, child] of Object.entries(schema as Record<string, unknown>)) {
     const childPath = `${path}/${key}`;
     const violation =
-      schemaKeyViolation(key, child, childPath) ??
-      (child !== null && typeof child === "object" ? schemaViolation(child, childPath) : undefined);
+      schemaKeyViolation(key, child, childPath, defects) ??
+      (child !== null && typeof child === "object" ? schemaViolation(child, childPath, defects) : undefined);
     if (violation) {
       return violation;
     }
@@ -370,6 +475,8 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   private readonly defects: ReadonlySet<Defect>;
   /** Monotonic handle/revision source for staged approvals. */
   private stagedCounter = 0;
+  /** The streams and fields each staged approval's artifact states, keyed by handle (`reviewedStreams`). */
+  private readonly reviewed = new Map<string, readonly { name: string; fields: readonly string[] }[]>();
   /**
    * Declarations accepted so far, keyed by the accepted authority binding,
    * `source.id` and `declaration_version` — exactly the key Core Section 5
@@ -521,6 +628,15 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       ...retained(),
     });
 
+    // Clause 6.6-2: an unrecognized `source.kind` is refused, not defaulted.
+    if (
+      declaration.source.kind !== "connector" &&
+      declaration.source.kind !== "provider_native" &&
+      !this.defects.has("accept-unrecognized-source-kind")
+    ) {
+      return refuse("invalid_declaration", `source.kind '${declaration.source.kind}' is not recognized`);
+    }
+
     if (
       declaration.source.kind === "provider_native" &&
       declaration.source.id !== ACCEPTED_RESOURCE_ID &&
@@ -606,10 +722,35 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   ): { readonly errorCode: string; readonly message: string } | undefined {
     const declared = declaredFieldNames(stream);
 
+    // Clause 4.2-1: an unrecognized `streams[].semantics` is refused.
+    if (
+      stream.semantics !== undefined &&
+      stream.semantics !== "append_only" &&
+      stream.semantics !== "mutable_state" &&
+      !this.defects.has("accept-unrecognized-semantics")
+    ) {
+      return {
+        errorCode: "invalid_declaration",
+        message: `stream '${stream.name}' declares unrecognized semantics '${stream.semantics}'`,
+      };
+    }
+
+    // Clause 5.2-6: `consent_time_content_may_exceed` is a boolean.
+    if (
+      stream.consentTimeContentMayExceed !== undefined &&
+      typeof stream.consentTimeContentMayExceed !== "boolean" &&
+      !this.defects.has("accept-non-boolean-may-exceed")
+    ) {
+      return {
+        errorCode: "invalid_declaration",
+        message: `stream '${stream.name}' declares a non-boolean consent_time_content_may_exceed`,
+      };
+    }
+
     // Clause 5.2-5. First, because a schema that does not meta-validate cannot
     // settle what "a field declared here" even means for 5.2-2 and 5.2-3.
     if (stream.schema !== undefined && !this.defects.has("accept-invalid-embedded-schema")) {
-      const violation = schemaViolation(stream.schema, `/streams/${stream.name}/schema`);
+      const violation = schemaViolation(stream.schema, `/streams/${stream.name}/schema`, this.defects);
       if (violation) {
         return { errorCode: "invalid_declaration_schema", message: violation };
       }
@@ -644,6 +785,22 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       return {
         errorCode: "invalid_declaration",
         message: `stream '${stream.name}' names consent_time_field '${stream.consentTimeField}', which its schema does not declare`,
+      };
+    }
+
+    // Clauses 5.2-3, 5.4-3, 5.4-4: the field must be a top-level string field
+    // whose schema declares format `date` or `date-time` (null allowed).
+    // Judged on the embedded schema, so a declaration without one is left to
+    // the reference check above.
+    if (
+      stream.consentTimeField !== undefined &&
+      stream.schema !== undefined &&
+      !this.defects.has("accept-ineligible-consent-time-field") &&
+      !consentTimeFieldEligible(stream.schema, stream.consentTimeField)
+    ) {
+      return {
+        errorCode: "invalid_declaration",
+        message: `stream '${stream.name}' names consent_time_field '${stream.consentTimeField}', which is not a top-level field with format date or date-time`,
       };
     }
     return undefined;
@@ -730,6 +887,11 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * (clause 7.2-4): Core places them outside authorization equality, the
    * resolved grant, introspection rights and RS enforcement.
    */
+  /** The streams and fields the staged request's artifact states, read back from what this target published for the review. */
+  async reviewedStreams(handle: string) {
+    return this.reviewed.get(handle) ?? null;
+  }
+
   async stageApproval(request: GrantRequest): Promise<StagedApproval | null> {
     const resolved = this.resolveStreams(request, !this.defects.has("carry-unexpanded-selection-into-review"));
     if (!resolved) {
@@ -758,16 +920,20 @@ export class ReferenceTargetAdapter implements TargetAdapter {
             retention: request.retention
               ? { max_duration: request.retention.maxDuration, on_expiry: request.retention.onExpiry }
               : DEFAULT_RETENTION,
-            grant_expiry: GRANT_EXPIRY,
+            grant_expiry: GRANT_EXPIRES_AT,
           }),
       streams: resolved.map((stream) => ({
         name: stream.name,
         fields: [...stream.fields],
-        ...(thin ? {} : { instance_ids: [INSTANCE_ID] }),
+        ...(thin ? {} : { instance_ids: [SEEDED_INSTANCE] }),
         resources: [],
         temporal_field: request.timeConstraint?.field ?? null,
         since: request.timeConstraint?.from ?? null,
         until: request.timeConstraint?.to ?? null,
+        // Clause 7.2-2: `since` is stated as inclusive and `until` as exclusive.
+        ...(request.timeConstraint && !this.defects.has("omit-bound-inclusivity-statement")
+          ? { time_bounds: { since: "inclusive", until: "exclusive" } }
+          : {}),
       })),
       // Rendered on the review surface, so bound exactly and attributed. The
       // `attributed_to` key is what makes the binding checkable: a bare copy of
@@ -775,11 +941,26 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       ...(claims?.commitments?.length ? { client_claims: this.bindClaims(claims.commitments) } : {}),
     };
 
+    this.reviewed.set(
+      handle,
+      artifact.streams.map((s) => ({ name: s.name, fields: [...s.fields] }))
+    );
+    let redemption: { code: string; verifier: string } | null = null;
+    // Whether the eligibility this review was bound to has since changed. Held
+    // per staged request: a new `stageApproval` is a new review.
+    let stale = false;
     return {
       handle,
       reviewRevision: revision,
       approvalArtifact: async () => artifact,
+      makeStale: async () => {
+        stale = true;
+        return true;
+      },
       approve: async (approveRevision?: string) => {
+        if (stale && !this.defects.has("approve-stale-review")) {
+          return null;
+        }
         if (
           approveRevision !== undefined &&
           approveRevision !== revision &&
@@ -787,9 +968,53 @@ export class ReferenceTargetAdapter implements TargetAdapter {
         ) {
           return null;
         }
-        return await this.issueGrant(request);
+        const grant = await this.issueGrant(request);
+        if (grant) {
+          redemption = await this.redeemFirstCode(grant.grantId);
+        }
+        return grant;
       },
+      // Replays the SAME code and verifier at the token endpoint. The code stays
+      // inside this adapter; the case sees only what the endpoint answered.
+      replayLastCode: async () => (redemption ? await this.postCode(redemption.code, redemption.verifier) : null),
     };
+  }
+
+  /**
+   * Mint the authorization code an approval hands the client, bound to a fresh
+   * PKCE challenge, and make its first redemption at the token endpoint.
+   * Returns the code and verifier a replay needs, or null when either step
+   * could not be taken (then no replay is possible and the case reads `skip`).
+   */
+  private async redeemFirstCode(grantId: string): Promise<{ code: string; verifier: string } | null> {
+    const verifier = randomBytes(32).toString("base64url");
+    const code = this.server.mintAuthorizationCode(grantId, createHash("sha256").update(verifier).digest("base64url"));
+    if (!code) {
+      return null;
+    }
+    const first = await this.postCode(code, verifier);
+    return first?.accessToken ? { code, verifier } : null;
+  }
+
+  /** POST an authorization_code redemption; null on a transport failure or an unreadable body. */
+  private async postCode(
+    code: string,
+    verifier: string
+  ): Promise<{ status: number; errorCode?: string; accessToken?: string } | null> {
+    try {
+      const response = await fetch(
+        `${this.server.tokenEndpoint}?grant_type=authorization_code&code=${encodeURIComponent(code)}&code_verifier=${encodeURIComponent(verifier)}`,
+        { method: "POST" }
+      );
+      const body = (await response.json()) as { access_token?: unknown; error?: unknown };
+      return {
+        status: response.status,
+        ...(typeof body.error === "string" ? { errorCode: body.error } : {}),
+        ...(typeof body.access_token === "string" ? { accessToken: body.access_token } : {}),
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -828,7 +1053,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
   }
 
   async issueGrant(request: GrantRequest): Promise<IssuedGrant | null> {
-    if (request.accessMode === "single_use") {
+    if (request.accessMode === "single_use" && !this.capabilities.singleUseGrants) {
       // Not supported; declared absent in capabilities, so AS-10 is unsupported.
       return null;
     }
@@ -854,33 +1079,18 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     if (!issued || "deniedReason" in issued) {
       return null;
     }
-    // The resolved grant artifact, published ONLY for a request that carried
-    // client claims.
-    //
+    // The issued grant artifact, built by the server from the grant it holds.
     // Clause 7.2-4 places `client_claims` outside the resolved grant, and the
-    // case checking that needs to see the grant to confirm their absence. But
-    // this target deliberately publishes no Section 7 grant otherwise: AS-3
-    // reports `skip` against it, and the suite's own tests assert that skip as
-    // the honest report of missing evidence. Publishing a hand-built artifact
-    // unconditionally would silently convert that `skip` into a claim about a
-    // grant body this target does not really produce. So the artifact appears
-    // exactly where the 7.2-4 oracle needs it and nowhere else.
-    //
+    // case checking that reads this artifact to confirm their absence;
     // `leak-client-claims-into-grant` copies the claims in, which is the
     // violation: an unenforceable client promise becomes something a downstream
     // component may read as an authorization term.
     const claims = request.clientClaims?.commitments ?? [];
+    const artifact = this.server.issuedGrantArtifact(issued.grantId);
     const rawGrant =
-      claims.length === 0
-        ? undefined
-        : {
-            grant_id: issued.grantId,
-            purpose: request.purposeCode ?? DEFAULT_PURPOSE,
-            streams: resolved.map((s) => ({ name: s.name, fields: [...s.fields] })),
-            ...(this.defects.has("leak-client-claims-into-grant")
-              ? { client_claims: { commitments: [...claims] } }
-              : {}),
-          };
+      artifact && this.defects.has("leak-client-claims-into-grant") && claims.length > 0
+        ? { ...artifact, client_claims: { commitments: [...claims] } }
+        : artifact;
 
     // Redeem the issued grant at the real token endpoint so the headers the
     // 10.2-4 case asserts on are the ones an HTTP client actually received.
@@ -891,7 +1101,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     return {
       grantId: issued.grantId,
       accessToken: issued.accessToken,
-      ...(rawGrant === undefined ? {} : { rawGrant }),
+      ...(rawGrant === null ? {} : { rawGrant }),
       ...(tokenResponse === null
         ? {}
         : { tokenResponseHeaders: tokenResponse.headers, tokenResponseBody: tokenResponse.body }),
@@ -925,7 +1135,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       if (!declared) {
         return `stream '${wanted.name}' is not declared by the retained snapshot`;
       }
-      const undeclared = (wanted.fields ?? []).filter((f) => !declared.fields.includes(f));
+      const undeclared = (wanted.fields ?? []).filter((f) => f !== "*" && !declared.fields.includes(f));
       if (undeclared.length > 0) {
         return `stream '${wanted.name}' requests fields absent from the retained schema: ${undeclared.join(", ")}`;
       }
@@ -948,15 +1158,70 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    */
   private firstBadTimeRangeReason(
     wantedStreams: readonly { readonly name: string }[],
-    hasTimeRange: boolean
+    timeRange: { readonly since?: unknown; readonly until?: unknown } | undefined
   ): string | null {
-    if (!hasTimeRange || this.defects.has("accept-time-range-without-consent-time-field")) {
+    if (timeRange === undefined || this.defects.has("accept-time-range-without-consent-time-field")) {
       return null;
     }
     for (const wanted of wantedStreams) {
       const declared = this.fixtures.find((f) => f.name === wanted.name);
-      if (declared && declared.consentTimeField === undefined) {
+      if (
+        declared &&
+        declared.consentTimeField === undefined &&
+        !(declared.cursorField !== undefined && this.defects.has("derive-consent-boundary-from-cursor-field"))
+      ) {
         return `stream '${wanted.name}' declares no consent_time_field, so time_range is not applicable to it`;
+      }
+    }
+    for (const wanted of wantedStreams) {
+      const declared = this.fixtures.find((f) => f.name === wanted.name);
+      const reason = declared ? this.timeRangeShapeReason(declared.consentTimeFormat ?? "date-time", timeRange) : null;
+      if (reason) {
+        return `stream '${wanted.name}': ${reason}`;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Why a `time_range` is unusable against a field of the given RFC 3339
+   * format, or null (Core Section 6 "Time range bounds"): it must carry at
+   * least one bound, each bound must have the field's type and be a valid
+   * RFC 3339 value of it, and `since` must be before `until`.
+   *
+   * One defect per rule: the rules are checked in sequence, so a shared defect
+   * would let an earlier refusal mask a later oracle.
+   */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: each declaration and selection rule is its own branch with its own defect, so the checks stay in one ordered pass.
+  private timeRangeShapeReason(
+    format: "date" | "date-time",
+    timeRange: { readonly since?: unknown; readonly until?: unknown }
+  ): string | null {
+    const { since, until } = timeRange;
+    if (since === undefined && until === undefined) {
+      return this.defects.has("accept-empty-time-range") ? null : "time_range carries neither since nor until";
+    }
+    const other = format === "date" ? "date-time" : "date";
+    for (const [name, bound] of [
+      ["since", since],
+      ["until", until],
+    ] as const) {
+      if (bound === undefined) {
+        continue;
+      }
+      const isOther = format === "date" ? parseDateTime(bound) !== null : parseFullDate(bound) !== null;
+      if (isOther && !this.defects.has("accept-wrong-type-time-range-bound")) {
+        return `${name} is a ${other} but the consent_time_field has format ${format}`;
+      }
+      const valid = format === "date" ? parseFullDate(bound) !== null : parseDateTime(bound) !== null;
+      if (!(valid || isOther || this.defects.has("accept-invalid-time-range-bound"))) {
+        return `${name} is not a valid RFC 3339 ${format}`;
+      }
+    }
+    if (since !== undefined && until !== undefined && !this.defects.has("accept-since-not-before-until")) {
+      const order = compareBounds(format, since, until);
+      if (order !== null && order >= 0) {
+        return "since is not before until";
       }
     }
     return null;
@@ -1033,6 +1298,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
    * ones). Implementing the decision here is what lets the negative oracles be
    * proven to discriminate, which is the bar every other negative case meets.
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: each declaration and selection rule is its own branch with its own defect, so the checks stay in one ordered pass.
   async submitSelection(request: SelectionRequest): Promise<SelectionOutcome> {
     const reject = (errorCode: string, description: string): SelectionOutcome => ({
       status: 400,
@@ -1094,13 +1360,8 @@ export class ReferenceTargetAdapter implements TargetAdapter {
 
     // Core Section 6 request parameters (clause 6.8-1): `view` is "mutually
     // exclusive with `fields` in a request; both MUST NOT be present
-    // simultaneously. AS returns 400 `invalid_request` if both are present."
-    //
-    // Note the error code: `invalid_request`, NOT the `invalid_authorization_details`
-    // that the other refusals in this function use. That is the spec's own
-    // wording for this clause and the cases assert it exactly, because a client
-    // correcting a malformed request needs to tell "your request shape is
-    // wrong" apart from "your selection failed validation".
+    // simultaneously. The OAuth/RAR binding maps a request with both to RFC 9396
+    // `invalid_authorization_details`."
     //
     // Checked before the fields are validated against the snapshot: both parts
     // are individually valid in the case that matters, so a server validating
@@ -1110,8 +1371,35 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       : wanted.find((s) => s.view !== undefined && s.fields !== undefined);
     if (bothPresent) {
       return reject(
-        "invalid_request",
+        this.defects.has("misclassify-view-and-fields-refusal") ? "invalid_request" : "invalid_authorization_details",
         `stream '${bothPresent.name}' names both view and fields, which are mutually exclusive`
+      );
+    }
+
+    // Clause 6.8-7: `["*"]` requests all permitted fields; `*` MUST then be the
+    // only element. Its own check and defect: a server that validates names
+    // against the snapshot would otherwise refuse `*` beside a name as an
+    // undeclared field for the wrong reason, so the defect must also stop that
+    // fallback from catching it (see `firstUndeclaredReason`).
+    const starBeside = this.defects.has("accept-star-beside-fields")
+      ? undefined
+      : wanted.find((s) => s.fields?.includes("*") && s.fields.length > 1);
+    if (starBeside) {
+      return reject(
+        "invalid_authorization_details",
+        `stream '${starBeside.name}' lists '*' beside other fields; '*' must be the only element`
+      );
+    }
+
+    // Clause 6.8-12: each stream request MUST carry either `fields` or `view`.
+    // There is no implicit "all fields" default.
+    const bare = this.defects.has("accept-stream-without-fields-or-view")
+      ? undefined
+      : wanted.find((s) => s.fields === undefined && s.view === undefined);
+    if (bare) {
+      return reject(
+        "invalid_authorization_details",
+        `stream '${bare.name}' carries neither fields nor view; there is no implicit all-fields default`
       );
     }
 
@@ -1127,7 +1415,7 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       return reject("invalid_authorization_details", badViewReason);
     }
 
-    const badTimeRangeReason = this.firstBadTimeRangeReason(wanted, request.timeRange !== undefined);
+    const badTimeRangeReason = this.firstBadTimeRangeReason(wanted, request.timeRange);
     if (badTimeRangeReason) {
       return reject("invalid_authorization_details", badTimeRangeReason);
     }
@@ -1163,6 +1451,18 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     return this.defects.has("reject-purpose-by-local-policy")
       ? "Local policy rejects this purpose; registry membership is not the reason."
       : undefined;
+  }
+
+  /** RFC 7009 client revocation. This target takes the token as a query parameter; the hook hides that. */
+  async revokeToken(
+    token: string,
+    hint?: "access_token" | "refresh_token"
+  ): Promise<{ readonly status: number } | null> {
+    const response = await fetch(
+      `${this.server.revocationEndpoint}?token=${encodeURIComponent(token)}${hint ? `&token_type_hint=${hint}` : ""}`,
+      { method: "POST" }
+    );
+    return { status: response.status };
   }
 
   async revokeGrant(grantId: string): Promise<void> {
@@ -1335,6 +1635,108 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     return { accepted: true, status: 200, documentFetched: true };
   }
 
+  /**
+   * Retrieve a declaration from a pointer and decide on it (clause 5.8-5).
+   *
+   * Plain HTTP on a trusted loopback host is accepted here and ONLY here,
+   * because the suite's fixture is necessarily on loopback; the HTTPS
+   * requirement is therefore not exercised. The fetch carries no credentials,
+   * does not follow redirects (a redirect target is not the accepted pointer, so
+   * it is refused unvalidated), and never retrieves a schema a declaration
+   * references: a remote reference is refused as 5.2-5 requires, which fails
+   * closed. Each violation has its own defect.
+   */
+  async offerDeclarationPointer(offer: DeclarationPointerOffer): Promise<DeclarationOutcome> {
+    const refuse = (errorCode: string, message: string): DeclarationOutcome => ({
+      accepted: false,
+      status: 400,
+      errorCode,
+      body: JSON.stringify({ error: errorCode, error_description: message }),
+    });
+    let pointer: URL;
+    try {
+      pointer = new URL(offer.pointerUrl);
+    } catch {
+      return refuse("invalid_pointer", "the declaration pointer is not a URL");
+    }
+    if (!URL_HOSTED_TRUSTED_HOSTS.includes(pointer.hostname)) {
+      return refuse("untrusted_pointer", `pointer host '${pointer.hostname}' is outside the network policy`);
+    }
+    const headers: Record<string, string> = this.defects.has("declaration-fetch-sends-ambient-credentials")
+      ? { authorization: "Bearer ambient-credential", cookie: "session=ambient" }
+      : {};
+    let response: Response;
+    try {
+      response = await fetch(pointer, { headers, redirect: "manual" });
+      const location = response.headers.get("location");
+      if (response.status >= 300 && response.status < 400 && location !== null) {
+        if (!this.defects.has("declaration-fetch-follows-redirects-unvalidated")) {
+          return refuse("untrusted_redirect", "the redirect target is not the accepted declaration pointer");
+        }
+        response = await fetch(new URL(location, pointer), { headers });
+      }
+    } catch (error) {
+      return refuse("fetch_failed", error instanceof Error ? error.message : String(error));
+    }
+    if (response.status !== 200) {
+      return refuse("fetch_failed", `the pointer answered ${response.status}`);
+    }
+    let declaration: SourceDeclarationSubmission;
+    try {
+      declaration = (await response.json()) as SourceDeclarationSubmission;
+    } catch {
+      return refuse("invalid_declaration", "the retrieved declaration is not JSON");
+    }
+    if (this.defects.has("declaration-fetch-retrieves-remote-schema")) {
+      declaration = await this.retrieveRemoteSchemas(declaration);
+    }
+    return await this.submitDeclaration(declaration);
+  }
+
+  /** The `declaration-fetch-retrieves-remote-schema` violation: fetch each remote `$ref`, then drop it and accept. */
+  private async retrieveRemoteSchemas(declaration: SourceDeclarationSubmission): Promise<SourceDeclarationSubmission> {
+    const dereference = async (node: unknown): Promise<unknown> => {
+      if (Array.isArray(node)) {
+        return await Promise.all(node.map(dereference));
+      }
+      if (node === null || typeof node !== "object") {
+        return node;
+      }
+      const entries = await Promise.all(
+        Object.entries(node as Record<string, unknown>).map(async ([key, value]) => {
+          if ((key === "$ref" || key === "$dynamicRef") && typeof value === "string" && !value.startsWith("#")) {
+            await fetch(value).catch(() => undefined);
+            return [key, "#"] as const;
+          }
+          return [key, await dereference(value)] as const;
+        })
+      );
+      return Object.fromEntries(entries);
+    };
+    return {
+      ...declaration,
+      streams: await Promise.all(
+        declaration.streams.map(async (stream) => ({
+          ...stream,
+          ...(stream.schema === undefined ? {} : { schema: await dereference(stream.schema) }),
+        }))
+      ),
+    };
+  }
+
+  /**
+   * Build the consent surface for an unverified client (clause 6.1-10). A
+   * client-supplied logo is untrusted content: the surface shows a monogram of
+   * the display name and never fetches the logo. `fetch-client-logo-on-consent-render`
+   * fetches it to render, which is the violation.
+   */
+  async openConsentSurface(offer: ConsentSurfaceOffer): Promise<{ rendered: boolean }> {
+    if (this.defects.has("fetch-client-logo-on-consent-render")) {
+      await fetch(offer.logoUri).catch(() => undefined);
+    }
+    return { rendered: true };
+  }
+
   /** Retire a changes_since token, so presenting it is past retention (4.3-2). */
   async expireSyncCursor(_stream: string, token: string): Promise<boolean> {
     return this.server.expireSyncCursor(token);
@@ -1390,6 +1792,60 @@ export class ReferenceTargetAdapter implements TargetAdapter {
       },
     });
     return wrap(issued.accessToken, refreshToken);
+  }
+
+  /**
+   * A seeded blob, the grant that reads it, and the blobs the negative cases
+   * need: one in a stream the grant does not list, one referenced only through
+   * a field the grant's projection excludes, and one whose record lies outside
+   * the consent window of the windowed grant.
+   *
+   * `rawBytes` is the adapter's own record of what it stored, never read back
+   * from the endpoint under test.
+   */
+  async blobFixture(): Promise<BlobFixture | null> {
+    const blobs = this.server.provisionBlobStreams();
+    const readable = ["id", "title", "taken_at", "blob_ref"];
+    const grantRequest: GrantRequest = { streams: [{ name: blobs.stream, fields: readable }] };
+    return {
+      blobId: blobs.ids.blob,
+      mimeType: blobs.mimeType,
+      rawBytes: new Uint8Array(blobs.bytes),
+      grantRequest,
+      outOfGrantBlobId: blobs.ids.outOfGrant,
+      projectionExcluded: { blobId: blobs.ids.outsideProjection, grantRequest },
+      windowExcluded: {
+        blobId: blobs.ids.outsideWindow,
+        grantRequest: { ...grantRequest, timeConstraint: blobs.window },
+      },
+    };
+  }
+
+  async issueSharedCredentialGrants(): Promise<SharedCredentialFixture | null> {
+    return this.server.issueSharedCredential();
+  }
+
+  /**
+   * Another token issuance against a grant that has already opened its window.
+   * Conforming behaviour is a refusal, which this hook reports as null; the
+   * `single-use-grant-reissuable` defect hands out the token again.
+   */
+  async reissueAgainstConsumedGrant(grantId: string): Promise<IssuedGrant | null> {
+    const again = await this.fetchTokenResponse(grantId);
+    const accessToken = (again?.body as { access_token?: unknown } | undefined)?.access_token;
+    return typeof accessToken === "string"
+      ? {
+          grantId,
+          accessToken,
+          streams: [],
+          tokenResponseHeaders: again?.headers ?? {},
+          tokenResponseBody: again?.body,
+        }
+      : null;
+  }
+
+  async advancePastSingleUseWindow(grantId: string): Promise<boolean> {
+    return this.server.advancePastWindow(grantId);
   }
 
   async expiredGrantToken(): Promise<string | null> {

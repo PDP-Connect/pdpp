@@ -53,9 +53,11 @@ function outcomeEvidence(label: string, outcome: SelectionOutcome): Evidence {
  */
 async function positiveControl(
   adapter: TargetAdapter,
-  streamName: string
+  seeded: { readonly name: string; readonly fields: readonly string[] }
 ): Promise<{ readonly ok: true } | { readonly reason: string }> {
-  const accepted = await adapter.submitSelection?.({ streams: [{ name: streamName }] });
+  const accepted = await adapter.submitSelection?.({
+    streams: [{ name: seeded.name, fields: [...seeded.fields] }],
+  });
   if (!accepted) {
     return { reason: NO_HOOK };
   }
@@ -87,13 +89,13 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (!seeded) {
         return skip("No seeded stream, so there is no declaration to validate against.");
       }
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
 
       const outcome = await adapter.submitSelection?.({
-        streams: [{ name: "pdpp_conformance_undeclared_stream" }],
+        streams: [{ name: "pdpp_conformance_undeclared_stream", fields: [...seeded.fields] }],
       });
       if (!outcome) {
         return skip(NO_HOOK);
@@ -125,7 +127,7 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (!seeded) {
         return skip("No seeded stream, so there is no declared schema to exceed.");
       }
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
@@ -163,7 +165,7 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (!seeded) {
         return skip("No seeded stream, so the positive control cannot be established.");
       }
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
@@ -209,13 +211,13 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (!seeded) {
         return skip("No seeded stream to build the both-present request from.");
       }
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
 
       const outcome = await adapter.submitSelection?.({
-        streams: [{ name: seeded.name }],
+        streams: [{ name: seeded.name, fields: [...seeded.fields] }],
         selectionPreset: "pdpp_conformance_any_preset",
       });
       if (!outcome) {
@@ -248,7 +250,7 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (!seeded) {
         return skip("No seeded stream, so the positive control cannot be established.");
       }
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
@@ -293,13 +295,13 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       }
       // The control isolates the variable: if a plain request is refused, a
       // refusal here says nothing about purpose handling.
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
 
       const outcome = await adapter.submitSelection?.({
-        streams: [{ name: seeded.name }],
+        streams: [{ name: seeded.name, fields: [...seeded.fields] }],
         purposeCode: "https://pdpp-conformance.invalid/purpose/not-in-any-registry",
       });
       if (!outcome) {
@@ -370,7 +372,7 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (!seeded) {
         return skip("No seeded stream, so there is no declared schema to exceed.");
       }
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
@@ -411,7 +413,7 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (!field) {
         return skip("Seeded stream declares no fields to build a nested selector from.");
       }
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
@@ -465,13 +467,16 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (!seeded) {
         return skip("No seeded stream to pair with a wildcard entry.");
       }
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
 
       const outcome = await adapter.submitSelection?.({
-        streams: [{ name: "*" }, { name: seeded.name }],
+        streams: [
+          { name: "*", fields: ["*"] },
+          { name: seeded.name, fields: [...seeded.fields] },
+        ],
       });
       if (!outcome) {
         return skip(NO_HOOK);
@@ -508,7 +513,7 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (!seeded) {
         return skip("No seeded stream to name twice.");
       }
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
@@ -521,8 +526,8 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       const [first, second] = seeded.fields;
       const outcome = await adapter.submitSelection?.({
         streams: [
-          { name: seeded.name, ...(first ? { fields: [first] } : {}) },
-          { name: seeded.name, ...(second ? { fields: [second] } : {}) },
+          { name: seeded.name, fields: first ? [first] : [...seeded.fields] },
+          { name: seeded.name, fields: second ? [second] : [...seeded.fields] },
         ],
       });
       if (!outcome) {
@@ -560,13 +565,13 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (!seeded) {
         return skip("No seeded stream to build a selection request from.");
       }
-      const control = await positiveControl(adapter, seeded.name);
+      const control = await positiveControl(adapter, seeded);
       if ("reason" in control) {
         return skip(control.reason);
       }
 
       const outcome = await adapter.submitSelection?.({
-        streams: [{ name: seeded.name }],
+        streams: [{ name: seeded.name, fields: [...seeded.fields] }],
         pdppVersion: "1999-01-01",
       });
       if (!outcome) {
@@ -621,7 +626,7 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
         );
       }
       const control = await adapter.submitSelection?.({
-        streams: [{ name: capable.name }],
+        streams: [{ name: capable.name, fields: [...capable.fields] }],
         timeRange: { since: "2026-01-01T00:00:00Z" },
       });
       if (!control) {
@@ -634,7 +639,7 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       }
 
       const outcome = await adapter.submitSelection?.({
-        streams: [{ name: incapable.name }],
+        streams: [{ name: incapable.name, fields: [...incapable.fields] }],
         timeRange: { since: "2026-01-01T00:00:00Z" },
       });
       if (!outcome) {
@@ -647,6 +652,150 @@ export const SELECTION_VALIDATION_CASES: readonly ConformanceCase[] = [
       if (outcome.status < 400) {
         return fail(
           `A selection requesting time_range on stream '${incapable.name}', which declares no consent_time_field, was accepted (${outcome.status}). Core Section 5: the AS MUST reject grants that request time_range on a stream without a consent_time_field, and the absence of that field is the normative signal that the stream does not support time-range filtering. Accepting means the consent window is evaluated against a field the declaration never nominated — the owner sees a temporal limit that nothing enforces.`,
+          evidence
+        );
+      }
+      if (outcome.errorCode !== SELECTION_ERROR) {
+        return fail(
+          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than ${SELECTION_ERROR}.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+  // ----------------------------------------------------------------- 5.4-1 ---
+  // The consent boundary and the list order are separate declarations. A stream
+  // may declare a `cursor_field` and no `consent_time_field`; the AS then has no
+  // consent boundary, and reading the cursor field as one is how a server comes
+  // to enforce a window the declaration never nominated. This is the same
+  // refusal as the case above, on the stream where a consent boundary is most
+  // tempting to derive: one that orders its list reads by a timestamp.
+  {
+    caseId: "AS-2/time-range-refused-where-only-a-cursor-field-is-declared",
+    requirementId: "AS-2",
+    assertion:
+      "A selection request asking for time_range on a stream that declares a cursor_field but no consent_time_field is refused as invalid_authorization_details.",
+    async run({ adapter, streams }) {
+      const cursorOnly = streams.find((s) => s.cursorField !== undefined && s.consentTimeField === undefined);
+      const capable = streams.find((s) => s.consentTimeField !== undefined);
+      if (!(cursorOnly && capable)) {
+        return skip(
+          "No seeded stream declares a cursor_field without a consent_time_field (or none declares a consent_time_field to act as the control), so the two declarations cannot be told apart."
+        );
+      }
+      const control = await adapter.submitSelection?.({
+        streams: [{ name: capable.name, fields: [...capable.fields] }],
+        timeRange: { since: "2026-01-01T00:00:00Z" },
+      });
+      if (!control) {
+        return skip(NO_HOOK);
+      }
+      if (control.status >= 400) {
+        return skip(
+          `The positive control was refused (${control.status}), so a refusal on '${cursorOnly.name}' cannot be attributed to the missing consent_time_field.`
+        );
+      }
+      const outcome = await adapter.submitSelection?.({
+        streams: [{ name: cursorOnly.name, fields: [...cursorOnly.fields] }],
+        timeRange: { since: "2026-01-01T00:00:00Z" },
+      });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [
+        outcomeEvidence(`selection: time_range on ${capable.name} (control)`, control),
+        outcomeEvidence(
+          `selection: time_range on ${cursorOnly.name} (cursor_field ${cursorOnly.cursorField}, no consent_time_field)`,
+          outcome
+        ),
+      ];
+      if (outcome.status < 400) {
+        return fail(
+          `A selection requesting time_range on '${cursorOnly.name}', which declares cursor_field '${cursorOnly.cursorField}' and no consent_time_field, was accepted (${outcome.status}). Core Section 5: the two fields serve different purposes and are declared separately, so the AS has no consent boundary here; accepting means it derived one from the field that orders list reads.`,
+          evidence
+        );
+      }
+      if (outcome.errorCode !== SELECTION_ERROR) {
+        return fail(
+          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than ${SELECTION_ERROR}.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+  // ----------------------------------------------------------------- 6.8-7 ---
+  // `["*"]` is the explicit marker for "every permitted field". Beside a named
+  // field it is ambiguous in the same way a wildcard stream beside a named
+  // stream is: the AS can read it as the marker, or as a literal name.
+  {
+    caseId: "AS-2/star-beside-named-field-refused",
+    requirementId: "AS-2",
+    assertion:
+      'A stream request listing `*` beside a named field is refused as invalid_authorization_details, while `fields: ["*"]` alone is accepted.',
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      const [first] = seeded?.fields ?? [];
+      if (!seeded || first === undefined) {
+        return skip("No seeded stream with a field to list beside `*`.");
+      }
+      const control = await adapter.submitSelection?.({ streams: [{ name: seeded.name, fields: ["*"] }] });
+      if (!control) {
+        return skip(NO_HOOK);
+      }
+      if (control.status >= 400) {
+        return skip(
+          `The positive control \`fields: ["*"]\` was refused (${control.status}), so a refusal of \`*\` beside a name cannot be attributed to the sole-element rule.`
+        );
+      }
+      const outcome = await adapter.submitSelection?.({ streams: [{ name: seeded.name, fields: ["*", first] }] });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [
+        outcomeEvidence('selection: fields ["*"] (control)', control),
+        outcomeEvidence(`selection: fields ["*", "${first}"]`, outcome),
+      ];
+      if (outcome.status < 400) {
+        return fail(
+          `A stream request listing \`*\` beside the named field '${first}' was accepted (${outcome.status}). Core Section 6: \`["*"]\` requests all permitted fields and \`*\` MUST then be the only element. The mixed form can be read as the marker or as a field name, so the owner may review one scope while the AS issues the other.`,
+          evidence
+        );
+      }
+      if (outcome.errorCode !== SELECTION_ERROR) {
+        return fail(
+          `The request was refused (${outcome.status}) but classified as "${outcome.errorCode ?? "no error code"}" rather than ${SELECTION_ERROR}.`,
+          evidence
+        );
+      }
+      return pass(evidence);
+    },
+  },
+
+  // ---------------------------------------------------------------- 6.8-12 ---
+  {
+    caseId: "AS-2/stream-request-without-fields-or-view-refused",
+    requirementId: "AS-2",
+    assertion:
+      "A stream request carrying neither `fields` nor `view` is refused as invalid_authorization_details, while the same stream with explicit fields is accepted.",
+    async run({ adapter, streams }) {
+      const [seeded] = streams;
+      if (!seeded) {
+        return skip("No seeded stream to request.");
+      }
+      const control = await positiveControl(adapter, seeded);
+      if ("reason" in control) {
+        return skip(control.reason);
+      }
+      const outcome = await adapter.submitSelection?.({ streams: [{ name: seeded.name }] });
+      if (!outcome) {
+        return skip(NO_HOOK);
+      }
+      const evidence = [outcomeEvidence("selection: stream with neither fields nor view", outcome)];
+      if (outcome.status < 400) {
+        return fail(
+          `A stream request for '${seeded.name}' carrying neither \`fields\` nor \`view\` was accepted (${outcome.status}). Core Section 6: each stream request MUST carry either \`fields\` or \`view\`; there is no implicit "all fields" default, and a client that wants every permitted field sends \`fields: ["*"]\`. Accepting the bare form lets the AS pick a scope the client never stated.`,
           evidence
         );
       }

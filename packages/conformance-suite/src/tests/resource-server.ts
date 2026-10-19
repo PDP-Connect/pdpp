@@ -20,7 +20,16 @@ import { isDeepStrictEqual } from "node:util";
 import type { BlobFixture, TargetAdapter } from "../harness/adapter.ts";
 import { errorBody, type PdppResponse, request, requestBytes } from "../harness/http.ts";
 import { isValidMediaType } from "../harness/media-type.ts";
-import { type CaseVerdict, type ConformanceCase, fail, pass, skip, unsupported } from "../harness/runner.ts";
+import {
+  arrange,
+  type CaseContext,
+  type CaseVerdict,
+  type ConformanceCase,
+  fail,
+  pass,
+  skip,
+  unsupported,
+} from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 import { resolvedFieldAllowlist } from "./resolved-grant.ts";
 
@@ -442,6 +451,87 @@ async function judgeForeignRecords(
     : pass(evidence);
 }
 
+/**
+ * Shared body of the two excluded-reference blob cases: the fixture names a
+ * blob and a grant that must be refused it although the same grant can fetch
+ * `fixture.blobId`.
+ */
+async function excludedReferenceCase(
+  { adapter, path }: CaseContext,
+  key: "projectionExcluded" | "windowExcluded"
+): Promise<CaseVerdict> {
+  if (!adapter.blobFixture) {
+    return skip(
+      "The adapter implements no blobFixture hook, so RS-1's blob-authorization boundary has no known blob to check."
+    );
+  }
+  const fixture = await adapter.blobFixture();
+  if (!fixture) {
+    return skip("The target reported no seeded blob to check RS-1's blob-authorization boundary against.");
+  }
+  const excluded = fixture[key];
+  if (!excluded) {
+    return skip(
+      `The adapter's blobFixture supplied no ${key}, so there is no blob whose reference the grant excludes.`
+    );
+  }
+  const grant = await adapter.issueGrant(excluded.grantRequest);
+  if (!grant) {
+    return skip("The target could not issue the grant the excluded-reference blob case needs.");
+  }
+  const positive = await arrange("positive-control blob fetch", () =>
+    verifyAuthorizedBlobFetch(adapter, path, fixture, grant.accessToken)
+  );
+  if (positive.outcome !== "pass") {
+    return positive;
+  }
+  const response = await requestBytes(adapter.baseUrl, path(`/blobs/${encodeURIComponent(excluded.blobId)}`), {
+    token: grant.accessToken,
+  });
+  const evidence = [...(positive.evidence ?? []), response.evidence];
+  if (response.status === 200 || response.status === 302) {
+    return fail(
+      `Overbroad access: a grant that can fetch blob "${fixture.blobId}" was served blob "${excluded.blobId}", which no record the grant may read references through its ${key === "projectionExcluded" ? "field projection" : "time window"}. Got ${response.status}.`,
+      evidence
+    );
+  }
+  if (response.status !== 403 && response.status !== 404) {
+    return fail(
+      `Expected 403 or 404 for a blob the grant's ${key === "projectionExcluded" ? "projection" : "window"} excludes, got ${response.status}.`,
+      evidence
+    );
+  }
+  return pass(evidence);
+}
+
+/**
+ * A string field and one of its values held by some but not all of `records`,
+ * so an exact filter on it must return a proper, non-empty subset.
+ */
+function pickDiscriminatingFilter(
+  records: NonNullable<ListBody["data"]>
+): { readonly field: string; readonly value: string } | undefined {
+  const first = records[0]?.data;
+  if (!first || records.length < 2) {
+    return undefined;
+  }
+  for (const [field, value] of Object.entries(first)) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const matches = records.filter((r) => r.data?.[field] === value).length;
+    if (matches > 0 && matches < records.length) {
+      return { field, value };
+    }
+  }
+  return undefined;
+}
+
+/** Whether two id lists hold the same members, ignoring order. */
+function sameMembers(a: readonly (string | undefined)[], b: readonly (string | undefined)[]): boolean {
+  return a.length === b.length && [...a].sort().join("\u0000") === [...b].sort().join("\u0000");
+}
+
 export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
   // ---------------------------------------------------------------- RS-1 ---
   {
@@ -534,6 +624,75 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
 
       return verifyBlobBytes(response.evidence, response.body, fixture);
+    },
+  },
+
+  // Clause 8.12-2: a direct response MUST include `Accept-Ranges: bytes` "if
+  // range requests are supported". Whether a target supports them is itself
+  // observable: it answers a `Range` request with 206. A target that ignores
+  // `Range` (200) owes nothing here; one that honours it must say so.
+  {
+    caseId: "RS-1/blob-range-support-is-advertised",
+    requirementId: "RS-1",
+    assertion:
+      "A blob endpoint that answers a Range request with 206 advertises Accept-Ranges: bytes on its direct response.",
+    async run({ adapter, path }) {
+      if (!adapter.blobFixture) {
+        return skip(
+          "The adapter implements no blobFixture hook, so RS-1's blob-fetch endpoint has no known blob to check."
+        );
+      }
+      const fixture = await adapter.blobFixture();
+      if (!fixture) {
+        return skip("The target reported no seeded blob to check RS-1's blob-fetch endpoint against.");
+      }
+      const grant = await adapter.issueGrant(fixture.grantRequest);
+      if (!grant) {
+        return skip("The target could not issue the grant needed to read the blob's referencing record.");
+      }
+      const blobPath = path(`/blobs/${encodeURIComponent(fixture.blobId)}`);
+      const full = await arrange("direct blob fetch", () =>
+        requestBytes(adapter.baseUrl, blobPath, { token: grant.accessToken })
+      );
+      if (full.status !== 200) {
+        return skip(
+          `The blob endpoint answered ${full.status} rather than a direct 200, so there is no direct response to check for Accept-Ranges.`
+        );
+      }
+      if (full.body.length === 0) {
+        return skip("The empty blob fixture cannot arrange a satisfiable byte range.");
+      }
+      const rangeLength = Math.min(4, full.body.length);
+      const range = `bytes=0-${rangeLength - 1}`;
+      const ranged = await requestBytes(adapter.baseUrl, blobPath, {
+        token: grant.accessToken,
+        headers: { Range: range },
+      });
+      if (ranged.status !== 206) {
+        return unsupported(
+          `The target answered a Range request with ${ranged.status} rather than 206, so it does not support range requests and the Accept-Ranges obligation does not arise.`
+        );
+      }
+      const evidence = [full.evidence, ranged.evidence];
+      if (ranged.body.length !== rangeLength) {
+        return fail(
+          `A Range request for ${range} returned a 206 with ${ranged.body.length} bytes, not ${rangeLength}.`,
+          evidence
+        );
+      }
+      if (
+        !(full.headers.get("accept-ranges") ?? "")
+          .toLowerCase()
+          .split(",")
+          .map((v) => v.trim())
+          .includes("bytes")
+      ) {
+        return fail(
+          `The blob endpoint honoured a Range request (206) but its direct response carries Accept-Ranges "${full.headers.get("accept-ranges") ?? ""}". Section 8: a direct response MUST include Accept-Ranges: bytes if range requests are supported.`,
+          evidence
+        );
+      }
+      return pass(evidence);
     },
   },
 
@@ -695,6 +854,28 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
       return pass([...positiveEvidence, response.evidence]);
     },
+  },
+
+  // Section 8 "Get a blob", conditions 2 and 3 for a client token: the
+  // referencing record must pass the grant's filters, and the field holding the
+  // `blob_ref` must be in the grant's field projection. The out-of-grant case
+  // above covers condition 1 (a stream the grant lists); a target that checks
+  // only that can still serve a blob through a record the grant cannot see or a
+  // field it cannot read. Each case first proves the SAME token fetches
+  // `fixture.blobId`, so a deny-everything server cannot pass.
+  {
+    caseId: "RS-1/blob-referenced-outside-projection-refused",
+    requirementId: "RS-1",
+    assertion:
+      "A grant whose projection excludes the field holding a blob's only reference is refused that blob, while the same token still fetches the fixture blob (Section 8 'Get a blob': the blob_ref field is in the grant's authorized field projection).",
+    run: (context) => excludedReferenceCase(context, "projectionExcluded"),
+  },
+  {
+    caseId: "RS-1/blob-referencing-record-outside-window-refused",
+    requirementId: "RS-1",
+    assertion:
+      "A grant whose time window excludes a blob's only referencing record is refused that blob, while the same token still fetches the fixture blob (Section 8 'Get a blob': the referencing record passes all grant filters).",
+    run: (context) => excludedReferenceCase(context, "windowExcluded"),
   },
 
   // Section 8: client operations use `Authorization: Bearer <access_token>` —
@@ -1244,6 +1425,122 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // The second half of clause 8.9-3: `view` is "Mutually exclusive with
+  // `fields`". Owner-token `view` is optional ("MAY support ... `view`"), so a
+  // target that answers a bare `view` with 400 is `unsupported`; one that serves
+  // it must refuse the request that also names `fields`, because "unsupported
+  // query shapes MUST be rejected with HTTP 400 and MUST NOT be silently
+  // ignored" -- serving one of the two quietly drops the other. Each parameter
+  // alone is the positive control.
+  {
+    caseId: "RS-9/owner-view-and-fields-are-mutually-exclusive",
+    requirementId: "RS-9",
+    appliesWhen: (adapter) => adapter.capabilities.ownerTokens && adapter.capabilities.views,
+    assertion:
+      "An owner-token read naming both view and fields is rejected with 400, while each parameter alone is served.",
+    async run({ adapter, streams, path }) {
+      const owner = await adapter.ownerToken();
+      const view = (await adapter.declaredViews?.())?.find((v) => streams.some((s) => s.name === v.stream));
+      if (!(owner && view)) {
+        return skip("The adapter exposes no owner token or no declared view to request.");
+      }
+      const [field] = view.fields;
+      if (field === undefined) {
+        return skip(`The declared view '${view.view}' lists no field to name beside it.`);
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(view.stream)}/records`);
+      const ownerQuery = adapter.ownerReadParams ? { ...adapter.ownerReadParams } : {};
+      const viewOnly = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, view: view.view },
+      });
+      if (viewOnly.status === 400) {
+        return unsupported(
+          `The target rejects an owner-token view (${view.view}) with 400. Owner views are optional in v0.1, so their exclusivity with fields does not apply.`
+        );
+      }
+      const fieldsOnly = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, fields: field },
+      });
+      if (viewOnly.status !== 200 || fieldsOnly.status !== 200) {
+        return skip(
+          `Each parameter alone should be served (view ${viewOnly.status}, fields ${fieldsOnly.status}), so a refusal of the pair cannot be attributed to their combination.`
+        );
+      }
+      const both = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, view: view.view, fields: field },
+      });
+      const evidence = [viewOnly.evidence, fieldsOnly.evidence, both.evidence];
+      if (both.status === 200) {
+        return fail(
+          "An owner-token read naming both `view` and `fields` was served. Section 8: `view` is mutually exclusive with `fields`, and an unsupported query shape MUST be rejected with 400 rather than silently ignoring one of the two.",
+          evidence
+        );
+      }
+      if (both.status !== 400) {
+        return fail(`Expected 400 for an owner-token read naming both view and fields, got ${both.status}.`, evidence);
+      }
+      return pass(evidence);
+    },
+  },
+
+  // Clause 8.9-9, the half the exact-filter case above leaves open: the
+  // rejection "applies regardless of whether the field or operator would
+  // otherwise be declared". A server that consults serving metadata first
+  // answers an undeclared field or operator with a different error (the code an
+  // owner read would get), so each shape must still be 400 invalid_request.
+  {
+    caseId: "RS-9/client-token-filter-rejected-whether-or-not-declared",
+    requirementId: "RS-9",
+    assertion:
+      "A client-token filter naming an undeclared field, an undeclared operator, or a range operator is rejected with 400 invalid_request, as a declared exact filter is.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      const field = stream?.fields[0];
+      if (!(stream && field)) {
+        return skip("A seeded stream with at least one field is required.");
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const control = await request(adapter.baseUrl, recordsPath, { token: grant.accessToken });
+      if (control.status !== 200) {
+        return skip(
+          `The control read without a filter was refused (${control.status}), so a rejection cannot be told from a target that refuses every client-token read.`
+        );
+      }
+      const absent = stream.fields.includes("pdpp_conformance_absent_field")
+        ? "pdpp_conformance_absent_field_"
+        : "pdpp_conformance_absent_field";
+      const shapes: [string, string][] = [
+        ["a field the stream does not declare", `filter[${absent}]`],
+        ["an operator no declaration defines", `filter[${field}][pdpp_conformance_operator]`],
+        ["a range operator", `filter[${field}][gte]`],
+      ];
+      const evidence = [control.evidence];
+      for (const [label, key] of shapes) {
+        // biome-ignore lint/performance/noAwaitInLoops: three short probes against one target, reported in order.
+        const response = await request(adapter.baseUrl, recordsPath, {
+          token: grant.accessToken,
+          query: { [key]: "any-value" },
+        });
+        evidence.push(response.evidence);
+        const code = errorBody(response)?.code;
+        if (response.status !== 400 || code !== "invalid_request") {
+          return fail(
+            `A client-token request with ${label} (${key}) returned ${response.status}${code ? ` ${code}` : ""}, not 400 invalid_request. Section 8 requires the rejection regardless of whether the field or operator would otherwise be declared, before serving metadata is consulted.`,
+            evidence
+          );
+        }
+      }
+      return pass(evidence);
+    },
+  },
+
   // Section 8 clause 8.9-5, the `expand_limit[{relation}]` row: "Client-token
   // requests MUST reject this parameter in v0.1."
   //
@@ -1410,6 +1707,83 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       }
 
       return pass([control.evidence, exactFiltered.evidence, rangeFiltered.evidence]);
+    },
+  },
+
+  // Section 8 "Grant enforcement" / clause 8.1-1a: for an owner-token read "the
+  // effective filter is the permitted owner request filter alone ... Request
+  // filters can only narrow the current owner read and cannot widen it." Owner
+  // exact filters are optional (a target may answer them 400 invalid_request),
+  // so a target that rejects a filter on a declared field is `unsupported`.
+  //
+  // The expected result is computed from the same owner's UNFILTERED read: the
+  // filtered records must be exactly the matching members of it, and a filter
+  // that matches nothing must return nothing -- a server that falls back to the
+  // unfiltered read when the filter is empty has widened the result to the
+  // whole owner scope.
+  {
+    caseId: "RS-5/owner-filter-narrows-and-never-widens",
+    requirementId: "RS-5",
+    appliesWhen: (adapter) => adapter.capabilities.ownerTokens,
+    assertion:
+      "An owner-token exact filter on a declared field returns exactly the matching records of the unfiltered owner read, and a filter that matches nothing returns nothing.",
+    async run({ adapter, streams, path }) {
+      const owner = await adapter.ownerToken();
+      if (!owner) {
+        return skip("The target declares owner tokens but the adapter produced none.");
+      }
+      const stream = streams.find((s) => s.recordCount >= 2);
+      if (!stream) {
+        return skip("No seeded stream has two records, so a filter cannot be shown to narrow.");
+      }
+      const ownerQuery = { ...(adapter.ownerReadParams ?? {}), limit: "100" };
+      const recordsPath = path(`/streams/${encodeURIComponent(stream.name)}/records`);
+      const control = await request(adapter.baseUrl, recordsPath, { token: owner, query: ownerQuery });
+      const records = asList(control.json)?.data;
+      if (control.status !== 200 || !records || asList(control.json)?.has_more) {
+        return skip(
+          "The unfiltered owner read was not a single served page, so the expected filter result is unknown."
+        );
+      }
+      const choice = pickDiscriminatingFilter(records);
+      if (!choice) {
+        return skip("No string field separates the stream's records, so a filter cannot be shown to narrow.");
+      }
+      const expected = records.filter((r) => r.data?.[choice.field] === choice.value).map((r) => r.id);
+      const filterKey = `filter[${choice.field}]`;
+      const filtered = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, [filterKey]: choice.value },
+      });
+      if (filtered.status === 400) {
+        return unsupported(
+          `The target rejects an owner exact filter on declared field "${choice.field}" (400). Owner filters are optional in v0.1 ("MAY accept exact filters"), so the narrowing property does not apply.`
+        );
+      }
+      const got = (asList(filtered.json)?.data ?? []).map((r) => r.id);
+      if (filtered.status !== 200 || !sameMembers(got, expected)) {
+        return fail(
+          `${filterKey}=${choice.value} returned ${filtered.status} with records [${got.join(", ")}], not exactly the matching members [${expected.join(", ")}] of the same owner's unfiltered read. Section 8: request filters can only narrow the current owner read.`,
+          [control.evidence, filtered.evidence]
+        );
+      }
+      // A value no record holds: the result must be empty, not the unfiltered scope.
+      let absent = "pdpp_conformance_absent_value";
+      while (records.some((r) => r.data?.[choice.field] === absent)) {
+        absent = `${absent}_`;
+      }
+      const empty = await request(adapter.baseUrl, recordsPath, {
+        token: owner,
+        query: { ...ownerQuery, [filterKey]: absent },
+      });
+      const emptyIds = (asList(empty.json)?.data ?? []).map((r) => r.id);
+      if (empty.status !== 200 || emptyIds.length > 0) {
+        return fail(
+          `${filterKey}=${absent} matches no record, yet the read returned ${empty.status} with [${emptyIds.join(", ")}]. A filter that matches nothing must narrow the owner read to nothing, not widen it to the unfiltered scope.`,
+          [control.evidence, empty.evidence]
+        );
+      }
+      return pass([control.evidence, filtered.evidence, empty.evidence]);
     },
   },
 
@@ -2060,6 +2434,42 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
       if (!INVALID_TOKEN_ERROR.test(challenge)) {
         return fail(
           `A token was presented and rejected, so the challenge must set error="invalid_token": "${challenge}". This is a PDPP requirement, not an inherited one: RFC 6750 Section 3 makes the error attribute optional ("MAY"/"SHOULD" depending on the parameter), while Core Section 8 "Protected resource metadata" states the resource server "MUST set error="invalid_token" when a token was presented and rejected".`,
+          [response.evidence]
+        );
+      }
+      return pass([response.evidence]);
+    },
+  },
+  // ------------------------------------------------------------- 8.14-1 ---
+  // The absent-header half of the clause: "If the `PDPP-Version` header is
+  // absent, the RS uses the current stable version and returns the selected
+  // version in the `PDPP-Version` response header." A client that sends no
+  // header can learn which contract it is talking to only from this.
+  {
+    caseId: "RS-11/absent-version-header-reports-the-selected-version",
+    requirementId: "RS-11",
+    assertion: "A request with no PDPP-Version header is served and the response carries a PDPP-Version header.",
+    async run({ adapter, streams, path }) {
+      const [stream] = streams;
+      if (!stream) {
+        return skip("The adapter seeded no streams.");
+      }
+      const grant = await adapter.issueGrant({ streams: [{ name: stream.name, fields: [...stream.fields] }] });
+      if (!grant) {
+        return skip("The target could not issue a grant for a seeded stream.");
+      }
+      const response = await request(adapter.baseUrl, path(`/streams/${encodeURIComponent(stream.name)}/records`), {
+        token: grant.accessToken,
+      });
+      if (response.status !== 200) {
+        return skip(
+          `The control read without a PDPP-Version header returned ${response.status}, so the response header cannot be judged.`
+        );
+      }
+      const selected = response.headers.get("pdpp-version");
+      if (selected === null || selected.trim() === "") {
+        return fail(
+          "A request that sent no PDPP-Version header was served with no PDPP-Version response header. Core Section 8: when the header is absent the RS uses the current stable version and returns the selected version in the PDPP-Version response header, which is the only way such a client learns the contract it is talking to.",
           [response.evidence]
         );
       }

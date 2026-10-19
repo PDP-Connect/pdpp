@@ -69,10 +69,11 @@ describe("the report cannot present a partial run as complete", () => {
     );
     assert.equal(
       clientCaptureMusts.length,
-      12,
-      "the inventory must account for all twelve client-capture MUST clauses."
+      18,
+      "the inventory must account for all eighteen client-capture MUST clauses."
     );
-    // 12.4-3 (Section 12 Extensions) is transcribed with no case yet; its gap note names the fixture it needs.
+    // 12.4-3 (Section 12 Extensions) has no case: no Section 9 client item names it, so a case
+    // would have no requirement to roll up to. Its gap note says so.
     const uncovered = clientCaptureMusts.filter((clause) => clause.caseIds.length === 0);
     assert.deepEqual(
       uncovered.map((clause) => clause.clauseId),

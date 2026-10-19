@@ -15,7 +15,7 @@
 // adapter hook supplies the fixture; a target without it reports `skip` naming
 // the hook.
 
-import type { MultiInstanceFixture, TargetAdapter } from "../harness/adapter.ts";
+import { changesSinceBootstrapOf, type MultiInstanceFixture, type TargetAdapter } from "../harness/adapter.ts";
 import { request } from "../harness/http.ts";
 import { type CaseVerdict, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
@@ -269,7 +269,7 @@ export const MULTI_INSTANCE_CASES: readonly ConformanceCase[] = [
         run,
         fixture,
         { limit: "100" },
-        { changes_since: run.adapter.changesSinceBootstrap ?? "" }
+        { changes_since: changesSinceBootstrapOf(run.adapter) }
       );
       if (result.stoppedAt?.reason === "status") {
         return fail(

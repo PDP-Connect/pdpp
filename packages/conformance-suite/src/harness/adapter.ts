@@ -253,6 +253,19 @@ export interface StagedApproval {
    */
   readonly lastApproveError?: () => { readonly status: number; readonly errorCode?: string } | null;
   /**
+   * Change a fact this staged review was bound to -- withdraw an eligible
+   * instance, or move the reviewed revision -- through the AS's own owner-side
+   * surface, so that the revision this request was issued is now stale. Resolves
+   * `false` when the target offers no such change.
+   *
+   * Section 7.2: "If instance eligibility or the reviewed revision becomes stale
+   * before approval, the AS MUST reject approval and require a new review." A
+   * suite cannot make eligibility change on a target it only reads, so this is a
+   * hook the adapter must implement honestly; it never fakes a rejection. It
+   * affects only this staged request, so a fresh `stageApproval` is a new review.
+   */
+  readonly makeStale?: () => Promise<boolean>;
+  /**
    * Replay the token-endpoint redemption of the authorization code from the
    * most recent successful `approve`, with the same PKCE verifier, so AS-19
    * can observe what the token endpoint does on a genuine second redemption
@@ -331,7 +344,11 @@ export interface SourceDeclarationSubmission {
    * the shape every existing declaration-trust case submits.
    */
   readonly selectionPresets?: readonly { readonly name: string; readonly streams: readonly string[] }[];
-  readonly source: { readonly kind: "connector" | "provider_native"; readonly id: string };
+  /**
+   * `kind` is a plain string, not the two known values: the unrecognized-kind
+   * negative (clause 6.6-2) has to offer a value Core does not define.
+   */
+  readonly source: { readonly kind: "connector" | "provider_native" | (string & {}); readonly id: string };
   /**
    * The declaration's parsed content, as whatever shape the target onboards.
    *
@@ -367,6 +384,12 @@ export interface SourceDeclarationSubmission {
  * values are local. A flattened name list could not express any of those.
  */
 export interface SourceDeclarationStream {
+  /**
+   * `consent_time_content_may_exceed` as the declaration states it (clause
+   * 5.2-6). `unknown` so a case can offer a non-boolean, which the AS MUST
+   * reject.
+   */
+  readonly consentTimeContentMayExceed?: unknown;
   /** `consent_time_field`, when the stream declares one (clause 5.2-3). */
   readonly consentTimeField?: string;
   /** `cursor_field`, when the stream declares one (clause 5.2-2). */
@@ -384,6 +407,11 @@ export interface SourceDeclarationStream {
    * valid schemas could not express them.
    */
   readonly schema?: unknown;
+  /**
+   * `semantics` as the declaration states it (clause 4.2-1). A plain string so
+   * a case can offer a value Core does not define.
+   */
+  readonly semantics?: string;
 }
 
 /** What the AS did with an offered declaration. */
@@ -400,6 +428,31 @@ export interface DeclarationOutcome {
    */
   readonly retainedContent?: readonly SourceDeclarationStream[];
   readonly status?: number;
+}
+
+/**
+ * A pointer the AS is asked to retrieve a declaration from (Core Section 5,
+ * "Declaration trust"): the URL of a document the suite hosts.
+ *
+ * The suite serves the document and logs every request it receives, so what the
+ * AS sends and follows is observed on the fixture rather than reported by the
+ * adapter. An adapter whose AS only retrieves over HTTPS must configure it to
+ * accept this loopback URL for the run; the run then does not exercise the
+ * HTTPS requirement, which needs a TLS fixture.
+ */
+export interface DeclarationPointerOffer {
+  readonly pointerUrl: string;
+}
+
+/**
+ * A client the AS is asked to render a consent surface for, with a
+ * client-supplied logo (clause 6.1-10).
+ */
+export interface ConsentSurfaceOffer {
+  readonly clientId: string;
+  readonly clientName: string;
+  /** URL of the suite's logging fixture, named as the unverified client's `logo_uri`. */
+  readonly logoUri: string;
 }
 
 /**
@@ -551,12 +604,34 @@ export interface BlobFixture {
    */
   readonly outOfGrantBlobId?: string;
   /**
+   * A real blob that a record references ONLY through a field the named grant's
+   * projection excludes, plus a grant that reads `blobId` (the positive
+   * control) but not that field.
+   *
+   * Section 8 "Get a blob", condition 3: "The `blob_ref` field is included in
+   * the grant's authorized field projection." A grant that can read the
+   * referencing record, but not the field holding the reference, must be
+   * refused the blob. Optional: a target that cannot seed such a blob reports
+   * `RS-1/blob-referenced-outside-projection-refused` `skip` naming this field.
+   */
+  readonly projectionExcluded?: { readonly blobId: string; readonly grantRequest: GrantRequest };
+  /**
    * The exact bytes stored at upload time, when the adapter can hold them in
    * memory. Mutually exclusive in practice with `digest` — supply whichever is
    * cheaper for the target to retain; the case only needs one independent way
    * to prove the returned bytes are the ones that were stored, not both.
    */
   readonly rawBytes?: Uint8Array;
+  /**
+   * A real blob whose only referencing record lies outside the consent window
+   * of the named grant, plus a grant that reads `blobId` (the positive
+   * control) with that window.
+   *
+   * Section 8 "Get a blob", condition 2: "The referencing record passes all
+   * grant filters." Optional, as `projectionExcluded` is; its absence reports
+   * `RS-1/blob-referencing-record-outside-window-refused` `skip`.
+   */
+  readonly windowExcluded?: { readonly blobId: string; readonly grantRequest: GrantRequest };
 }
 
 /** The grant shape a test needs. The adapter arranges consent out of band. */
@@ -622,6 +697,23 @@ export interface GrantRequest {
 }
 
 /**
+ * One credential that covers two active grants over two different streams.
+ *
+ * Core Section 10 "Revocation": "Ending one grant among several that share a
+ * credential is a grant-level action at the AS. It MUST NOT revoke the shared
+ * credential or end the other grants." The suite cannot create such a credential
+ * itself, so a target that binds one credential to several grants (a binding
+ * Core leaves open) supplies it. Optional: without it the cases that need one
+ * report `skip` naming `issueSharedCredentialGrants`.
+ */
+export interface SharedCredentialFixture {
+  /** The one access token that carries every grant below. */
+  readonly credential: string;
+  /** At least two grants, each readable through `credential` on its own `stream`. */
+  readonly grants: readonly { readonly grantId: string; readonly stream: string }[];
+}
+
+/**
  * A grant listing two (or more) instance handles for ONE stream, plus the
  * adapter's own record of what it seeded under those handles.
  *
@@ -665,7 +757,27 @@ export interface MultiInstanceFixture {
  * in-repo reference target under `src/targets/` is one implementation and
  * carries no privileges the contract does not give every other.
  */
+/** The `changes_since` value Core Section 4 says opens an incremental-sync session. */
+export const DEFAULT_CHANGES_SINCE_BOOTSTRAP = "beginning";
+
+/** The value a case sends to open a sync session: the adapter's override, else `beginning`. */
+export function changesSinceBootstrapOf(adapter: { readonly changesSinceBootstrap?: string | undefined }): string {
+  return adapter.changesSinceBootstrap ?? DEFAULT_CHANGES_SINCE_BOOTSTRAP;
+}
+
 export interface TargetAdapter {
+  /**
+   * Move the target past the end of a `single_use` grant's read window -- the
+   * first token's expiry -- so the state AFTER the window can be observed.
+   * Resolves `false` when the target offers no way to do so.
+   *
+   * Section 7 (Access modes): "After the window ends, no token carries the
+   * grant, and introspection MUST NOT report the grant active." The window ends
+   * at a token's expiry, which a black-box suite cannot wait out, so this hook
+   * is the clock the case controls. An adapter must advance the target's own
+   * notion of time (or expire the token), never answer on its behalf.
+   */
+  advancePastSingleUseWindow?: (grantId: string) => Promise<boolean>;
   /**
    * Base URL of the authorization server, when it is a separate service.
    *
@@ -693,13 +805,11 @@ export interface TargetAdapter {
   /**
    * The `changes_since` value that opens a fresh sync session from the start.
    *
-   * Core Section 8 says to "pass `changes_since` on the first request" but does
-   * not say what value does that; the suite's own default is the empty string.
-   * A deployment that defines a different bootstrap sentinel (the reference
-   * implementation publishes `beginning` in its discovery hints) and treats an
-   * empty value as an absent parameter would otherwise return a plain list with
-   * no `next_changes_since`, which reads as an RS-8 violation when the session
-   * was never opened.
+   * Core Section 4 "Starting a sync" says a client starts incremental sync with
+   * `changes_since=beginning`, so that is the suite's default
+   * (`DEFAULT_CHANGES_SINCE_BOOTSTRAP`). A deployment that defines a different
+   * opening sentinel sets this to override it; an empty value is not a
+   * bootstrap and a server may treat it as an absent parameter.
    */
   readonly changesSinceBootstrap?: string | undefined;
 
@@ -870,6 +980,20 @@ export interface TargetAdapter {
   issueRefreshableGrant?: (request: GrantRequest) => Promise<RefreshableGrant | null>;
 
   /**
+   * One credential covering two active grants over two streams, for the shared
+   * credential cases (clauses 10.7-1 and 10.7-6). Returns null when this
+   * deployment binds one credential to one grant.
+   */
+  issueSharedCredentialGrants?: () => Promise<SharedCredentialFixture | null>;
+
+  /**
+   * Ask the AS to retrieve and accept a declaration from a pointer the suite
+   * hosts (clause 5.8-5). The outcome is the AS's decision; what it requested
+   * is read from the fixture's log.
+   */
+  offerDeclarationPointer?: (offer: DeclarationPointerOffer) => Promise<DeclarationOutcome | null>;
+
+  /**
    * Offer a URL-hosted client identity document as the `client_id` of an
    * authorization attempt, and report what the AS did — clauses 6.1-2, 6.1-4.
    *
@@ -898,6 +1022,13 @@ export interface TargetAdapter {
    * violation.
    */
   offerUrlHostedClientIdentity?: (offer: UrlHostedClientOffer) => Promise<UrlHostedClientOutcome | null>;
+  /**
+   * Open the consent surface for an UNVERIFIED client whose `logo_uri` is the
+   * suite's logging fixture, so a fetch triggered by rendering it is seen
+   * (clause 6.1-10). Resolves `{ rendered: true }` only when the AS built the
+   * surface; null when this deployment has no consent surface to open.
+   */
+  openConsentSurface?: (offer: ConsentSurfaceOffer) => Promise<{ readonly rendered: boolean } | null>;
 
   /**
    * Query parameters this deployment requires on owner-token reads.
@@ -962,6 +1093,19 @@ export interface TargetAdapter {
    * revocation; returning normally asserts the grant is revoked.
    */
   revokeGrant: (grantId: string) => Promise<void>;
+
+  /**
+   * Revoke a token the way a CLIENT does: present it at the target's
+   * revocation endpoint (RFC 7009), for clauses 10.7-4 and 10.7-8.
+   *
+   * Distinct from `revokeGrant`, which is the owner's act at the AS. Core
+   * Section 10 makes client-initiated revocation conditional ("an AS that
+   * supports it"), and nothing black-box says whether a deployment does, so the
+   * hook's presence is the adapter's statement that the target offers it. Absent
+   * means the revocation cases report `skip` naming this hook. Returns the HTTP
+   * status of the endpoint's answer.
+   */
+  revokeToken?: (token: string, hint?: "access_token" | "refresh_token") => Promise<{ readonly status: number } | null>;
   /** Roles this target claims to implement and wants assessed. */
   readonly roles: readonly Role[];
 

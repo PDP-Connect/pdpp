@@ -94,6 +94,25 @@ keyword-bearing clause in `matrix.ts`, because the sentences they exercise carry
 no RFC 2119 keyword and no Section 9 item restates them; the cases roll up under
 Section 9 RS item 1 (list records).
 
+## Optional adapter hooks
+
+A case that needs something a black-box client cannot do for itself asks the
+adapter through an optional hook, and reports `skip` naming the hook when the
+adapter has none. The bundled target implements all of these, so its run
+exercises the clauses; a third-party adapter implements the ones its
+deployment can honestly support.
+
+| Hook | What it arranges | Clauses |
+| --- | --- | --- |
+| `blobFixture` | a seeded blob, plus blobs a grant must be refused (outside the grant, outside its projection, outside its window) | 4.8-1, 8.12-1..3 |
+| `stageApproval().replayLastCode` | a genuine second redemption of one authorization code | 10.2-5 |
+| `stageApproval().makeStale` | a change to what a staged review was bound to | 7.2-5 |
+| `reviewedStreams` | the streams and fields a staged review resolved to | 7.2-1 |
+| `advancePastSingleUseWindow` | the end of a `single_use` grant's read window | 7.5-7 |
+| `issueSharedCredentialGrants` | one credential covering two grants | 10.7-1, 10.7-6 |
+| `offerDeclarationPointer` | an AS retrieving a declaration from a suite-hosted URL, logged by the fixture | 5.8-5 |
+| `openConsentSurface` | the consent surface of an unverified client with a fixture `logo_uri` | 6.1-10 |
+
 ## Outcomes
 
 Six, not two. `pass` and `fail` are MUST-level judgments, `advisory` records a
@@ -212,10 +231,14 @@ a complete pass and must not be scriptable as one:
 
 ## Coverage
 
-The bundled target run tests 23 of 34 applicable requirements
-(RS 13/16, AS 10/18). All 23 tested requirements pass. The target reports one
-resource-server skip, five authorization-server skips, and three unsupported
-authorization-server requirements. Gaps remain explicit rather
+The bundled target run tests 34 of 48 applicable requirements
+(RS 17/22, AS 17/26), measured against the revised catalogue. All 34 tested
+requirements pass. The target reports three authorization-server skips (the
+client-role cases filed under AS-7, AS-14 and AS-16, which need a
+`ClientUnderTest`) and two unsupported authorization-server requirements. At
+clause level the bundled run rolls up 79 MUST clauses to `pass`, 15 to
+`partial`, 2 to `skip` (5.3-4 and 5.8-1, both client-capture) and 1 to
+`not-tested` (12.4-3). Gaps remain explicit rather
 than hidden:
 
 - **Client role (CL-1…CL-8):** Client cases use a separate `ClientUnderTest`
@@ -224,18 +247,17 @@ than hidden:
   plus a null-oracle check that no client case passes without a request. CL-1
   (the envelope-only case) and CL-6 (retention lifecycle) remain untested. The
   bundled CLI target declares only the AS and RS roles, so client cases do not
-  contribute to its 23-of-34 run. External clients can provide their own adapter.
-- **Authorization-code replay (AS-19).** The case remains registered, and its
-  injected-response oracle test remains in the package. No bundled `TargetAdapter`
-  can redeem the same authorization code twice at a live token endpoint, so a
-  target without its own `replayLastCode` hook reports `skip`.
+  contribute to its 34-of-48 run. External clients can provide their own adapter.
+- **Authorization-code replay (AS-19).** The bundled target redeems the code once
+  over a real POST to its token endpoint with PKCE and `replayLastCode` repeats
+  it; a target without its own `replayLastCode` hook reports `skip`.
 - **Consent-surface AS requirements.** What the owner is actually *shown* — requester
   identity and client-claim attribution (AS-7), AI-training consent (AS-14), and
   declaration-snapshot retention across the whole journey (AS-16) — is not observable
   from outside. A case can see what the server bound, not what it rendered, and
   asserting on a rendered surface would be testing a deployment's HTML rather than
   the protocol. These stay `not-tested` rather than being approximated.
-- **Views (AS-12, AS-13) and access-mode requirements (AS-10, AS-20 on targets
+- **Views (AS-12, AS-13) and refresh-token requirements (AS-20, on targets
   without refresh tokens)** report `unsupported` where a target declares the
   capability absent, not as passes.
 - **Persisted-state and introspection-timing requirements (AS-21, RS-3)** describe
@@ -278,6 +300,12 @@ targets/reference-implementation.expected.json` compares a run with it; `--updat
 rewrites it. The `conformance` workflow runs the suite against the pinned commit on
 every pull request that changes this package or `spec-core.md`, and fails on any
 difference, so a fix or a regression appears as a reviewed change to that file.
+
+`spec-core.md` on the `testeng/conformance-lock-v2` branch is the
+`review/v0.1.0-revisions` candidate, not the adopted text. The table and
+`reference-implementation.expected.json` describe the pinned commit against the
+adopted spec and are not regenerated here. Regenerate them when the candidate is
+adopted.
 
 Expect coverage to differ per target: one implementing views, incremental sync, or
 single-use grants moves requirements out of `unsupported` and into the tested
