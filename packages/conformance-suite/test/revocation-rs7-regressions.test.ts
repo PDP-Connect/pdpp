@@ -35,7 +35,7 @@ async function tickWindow(t: TestContext) {
     // biome-ignore lint/performance/noAwaitInLoops: flush each simulated probe before advancing its clock.
     await nextTurn();
   }
-  // The last probe is dispatched at the deadline, with zero additional budget.
+  // The final probe is dispatched once the window has passed.
   t.mock.timers.tick(0);
   await nextTurn();
 }
@@ -77,11 +77,11 @@ it("client revocation backs off while retaining the final 60s probe", async (t) 
   assert.ok(probes.length <= 25, `expected backed-off traffic, saw ${probes.length} probes`);
 });
 
-it("client revocation gives a hung final probe no budget beyond the deadline", async (t) => {
+it("a hung final probe is inconclusive after its own five-second budget", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
   const budgets = mockProbeTimeout(t);
   t.mock.method(globalThis, "fetch", () => {
-    if (Date.now() === 60_000) {
+    if (Date.now() >= 60_000) {
       return new Promise<Response>(() => undefined);
     }
     return Promise.resolve(new Response("{}", { status: 200 }));
@@ -89,17 +89,26 @@ it("client revocation gives a hung final probe no budget beyond the deadline", a
   const pending = pollClientRevocation("https://scripted.invalid", "/records", "token");
   await nextTurn();
   await tickWindow(t);
+  t.mock.timers.tick(5000);
+  await nextTurn();
   assert.equal(await pending, undefined);
-  assert.equal(Date.now(), 60_000);
-  assert.equal(budgets.at(-1), 0);
-  assert.ok(budgets.every((budget) => budget >= 0 && budget <= 5000));
+  assert.equal(budgets.at(-1), 5000);
+  assert.ok(budgets.every((budget) => budget > 0 && budget <= 5000));
 });
 
-it("a successful pre-deadline probe finishing at the boundary is inconclusive", async (t) => {
-  const times = [0, 59_999, 60_000];
-  t.mock.method(CLIENT_REVOCATION_CLOCK, "now", () => times.shift() ?? 60_000);
-  t.mock.method(globalThis, "fetch", () => Promise.resolve(new Response("{}", { status: 200 })));
-  assert.equal(await pollClientRevocation("https://scripted.invalid", "/records", "token"), undefined);
+it("timer overshoot past the deadline still runs the final probe", async (t) => {
+  // deadline read, first remaining, after the first probe, after a sleep that overshoots by 10 ms
+  const times = [0, 0, 59_000, 60_010];
+  t.mock.method(CLIENT_REVOCATION_CLOCK, "now", () => times.shift() ?? 60_010);
+  t.mock.method(CLIENT_REVOCATION_CLOCK, "sleep", () => Promise.resolve());
+  let probes = 0;
+  t.mock.method(globalThis, "fetch", () => {
+    probes += 1;
+    return Promise.resolve(new Response("{}", { status: 200 }));
+  });
+  const response = await pollClientRevocation("https://scripted.invalid", "/records", "token");
+  assert.equal(response?.status, 200, "a server that never revokes must be observed, not skipped");
+  assert.equal(probes, 2);
 });
 
 async function expiryCase(t: TestContext, hook: "working" | "absent" | "failed") {
