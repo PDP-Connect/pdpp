@@ -39,7 +39,9 @@ function installBrowserGlobals(): BrowserGlobals {
     url: "http://localhost/",
   });
   const style = dom.window.document.createElement("style");
-  style.textContent = readFileSync(new URL("./shell.css", import.meta.url), "utf8");
+  // shell.css shows the menu button only at <=860px, and jsdom does not re-evaluate @media on resize.
+  // jsdom >= 30.1.2 refuses to focus display:none elements, so apply the mobile rule explicitly.
+  style.textContent = `${readFileSync(new URL("./shell.css", import.meta.url), "utf8")}\n.rr-menu-btn { display: inline-flex; }`;
   dom.window.document.head.append(style);
   const host = dom.window.document.createElement("div");
   dom.window.document.body.append(host);
