@@ -3,6 +3,8 @@
 
 // Put the test guard ahead of the test program and pass it to Node descendants.
 // The preload itself stays inert unless this launcher sets the opt-in flag.
+import { compileCacheDirectory } from "./test-caches.ts";
+
 const preload = new URL("./preload.mjs", import.meta.url).href;
 const serviceCredentialName = /(?:_TOKEN|_SECRET|_PASSWORD|_API_KEY)$|^PGPASSWORD$/i;
 
@@ -18,13 +20,15 @@ export function withoutServiceCredentials(inherited: NodeJS.ProcessEnv): NodeJS.
   return environment;
 }
 
-// Install the guard last, so no later environment layer can switch it off.
+// Install the guard last, so no later environment layer can switch it off. The
+// Node compile cache is set here too, so every test launcher shares one setting.
 export function withTestGuard(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const options = environment.NODE_OPTIONS ?? "";
   return {
     ...environment,
     NODE_OPTIONS: options.includes(preload) ? options : `--import ${preload}${options ? ` ${options}` : ""}`,
     PDPP_HERMETIC_GUARD: "1",
+    NODE_COMPILE_CACHE: environment.NODE_COMPILE_CACHE ?? compileCacheDirectory(),
   };
 }
 
