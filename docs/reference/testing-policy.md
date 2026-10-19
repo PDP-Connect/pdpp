@@ -115,10 +115,18 @@ direct command is a bypass of this contract. If you wrap a command in your own
 | Scope | What is isolated or limited | How |
 | --- | --- | --- |
 | Shared by every run on the host | The pnpm store and the source tree. Tests run TypeScript directly with `tsx`, so no build step writes into the tree, except the generated site files described below. | Nothing to do; do not write into the tree from a test. |
+| Per checkout | The tsx transform cache and Node's compile cache, which persist between runs so unchanged files are not transformed or compiled again. Both key on file content and path, so a checkout never hits another checkout's entries. | `scripts/hermetic/test-caches.ts` keeps them in `node_modules/.cache/pdpp-test/`, so they go away with the checkout. It sets `NODE_COMPILE_CACHE` to that directory and links `$TMPDIR/tsx-<uid>` to it. tsx drops its entries after about eight days; the launcher drops compile-cache entries older than 14 days. Delete the directory to start cold. |
 | Shared admission, per user | One `agent-tests` user slice (`systemd-run --user`) with six slots by default. The slots belong to one user, so another user on the same host gets its own. A run waits when all of its user's slots are busy. | `test-sandbox` takes a slot with a file lock in `agent-tests/slots/` under `$XDG_RUNTIME_DIR` (`~/.cache` when it is unset). `TEST_SANDBOX_SLOTS` changes the count and `TEST_SANDBOX_STATE_DIR` the directory. Start at most two test commands at once from one session. |
 | Per run | CPU, memory and task caps (defaults: 400% CPU, 8 GB, 4096 tasks), a loopback-only network, a private `/tmp`, and an owned scratch root that `TMPDIR` points to. When the run ends, the scope kills every descendant and the launcher removes the scratch root. | A transient systemd scope plus bubblewrap. `TEST_SANDBOX_CPU`, `_MEM` and `_TASKS` change the caps. One JSON receipt (wall time, CPU-seconds, peak memory, peak process count, the enforcement that applied) goes to stderr. |
 | Per test file | Process isolation. | `node --test` runs each file in its own process. |
 | Locked | One full gate at a time per Git common directory, so worktrees of one repository queue. | `scripts/test-accounting/with-local-full-suite-lock.mjs`. CI skips it. |
+
+**Direct runs and the host tsx cache.** A bare `tsx` or `node --import tsx`
+command keeps its transform cache in the host `$TMPDIR/tsx-<uid>`, shared by every
+checkout of that user. tsx expires entries by age, not by count. On the shared agent
+host the directory reached 120,000 entries (2.9 GB), and every process that missed
+the cache then scanned it, which added about 0.25 CPU-seconds per process. If a
+direct run feels slow, run `rm -rf "${TMPDIR:-/tmp}/tsx-$(id -u)"`.
 
 **Generated files.** The `site` suite's `prepare` step
 (`apps/site/scripts/sync-spec-docs.mjs`) writes `apps/site/src/generated/` and
