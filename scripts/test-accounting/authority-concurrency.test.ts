@@ -27,6 +27,13 @@ const FIXTURE_COMMIT_CONFIG = [
   "commit.gpgsign=false",
   "-c",
   "core.hooksPath=/dev/null",
+  // The worktree shares this repository's object store. A commit there must not
+  // start `git gc --auto` or maintenance on it: with many loose objects every
+  // fixture commit repacked the real repository, 3 s of CPU each time.
+  "-c",
+  "gc.auto=0",
+  "-c",
+  "maintenance.auto=false",
   "-c",
   "user.email=fixture@example.test",
   "-c",

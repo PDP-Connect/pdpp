@@ -6,6 +6,8 @@ import { readFile } from "node:fs/promises";
 import { constants } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticTestEnvironment } from "../hermetic/launcher.ts";
+import { linkTransformCache, pruneCompileCache } from "../hermetic/test-caches.ts";
 import {
   allocateScratchOwnership,
   type CleanupHooks,
@@ -173,7 +175,7 @@ function runParticipant(command: string[]): Promise<CommandResult> {
     throw new ScratchOwnershipError("usage");
   }
   const observed = observeChild(
-    spawn(file, args, { cwd: process.cwd(), env: process.env, shell: false, stdio: "inherit" })
+    spawn(file, args, { cwd: process.cwd(), env: hermeticTestEnvironment(process.env), shell: false, stdio: "inherit" })
   );
   return observed.close.then((result) => {
     if (observed.launchError()) {
@@ -376,10 +378,12 @@ async function restoreSandboxSignal(result: CommandResult, signalPath?: string):
 }
 
 function spawnOwnedCommand(launch: ReturnType<typeof sandboxLaunch>, ownership: ScratchOwnership) {
+  linkTransformCache(ownership.allocation.root);
+  pruneCompileCache();
   return spawn(launch.file, launch.args, {
     cwd: process.cwd(),
     detached: true,
-    env: launch.groupPath ? { ...ownership.env, TEST_SANDBOX_PIDNS: "0" } : ownership.env,
+    env: hermeticTestEnvironment(launch.groupPath ? { ...ownership.env, TEST_SANDBOX_PIDNS: "0" } : ownership.env),
     shell: false,
     stdio: "inherit",
   });

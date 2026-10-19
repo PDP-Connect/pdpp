@@ -11,10 +11,27 @@ const LEDGER_PATH = "docs/retained-js-mjs-boundaries.json";
 const REQUIRED_FIELDS = ["owner", "runtimeReason", "probe", "review"] as const;
 const JS_MJS_CJS_PATH_PATTERN = /\.(?:cjs|js|mjs)$/;
 const HOST_MJS_BOUNDARIES = new Set([
-  "apps/site/.source/source.config.mjs",
+  ".github/scripts/manage-supporters-pr.mjs",
   "apps/site/next.config.mjs",
   "apps/site/postcss.config.mjs",
+  "apps/site/scripts/publish-supporters.mjs",
+  "apps/site/scripts/style-differ.mjs",
   "apps/site/scripts/sync-spec-docs.mjs",
+  "scripts/connector-reachability.mjs",
+  "scripts/hermetic/guard-runtime.mjs",
+  "scripts/hermetic/preload.mjs",
+  "scripts/hero-load-measure.mjs",
+  "scripts/manage-supporters-pr.test.mjs",
+  "scripts/publish-supporters-workflow.test.mjs",
+  "scripts/run-node-tests.mjs",
+  "scripts/run-node-tests.test.mjs",
+  "scripts/signing-journey-oracle.mjs",
+  "scripts/signing-journey-oracle.test.mjs",
+  "scripts/slvp-overlap.mjs",
+  "scripts/slvp-verify.mjs",
+  "scripts/spec-prose-lint.mjs",
+  "scripts/spec-prose-lint.test.mjs",
+  "scripts/test-accounting/with-local-full-suite-lock.mjs",
 ]);
 // Provider-captured JavaScript lived in the connector tree, which is now
 // canonical in PDP-Connect/data-connectors. Nothing in this repo carries that
