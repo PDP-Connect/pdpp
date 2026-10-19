@@ -97,7 +97,7 @@ it("a hung final probe is inconclusive after its own five-second budget", async 
 });
 
 it("timer overshoot past the deadline still runs the final probe", async (t) => {
-  // deadline read, first remaining, after the first probe, after a sleep that overshoots by 10 ms
+  // Deadline read, first remaining, after the first probe, then a 250 ms sleep overshooting by 760 ms.
   const times = [0, 0, 59_000, 60_010];
   t.mock.method(CLIENT_REVOCATION_CLOCK, "now", () => times.shift() ?? 60_010);
   t.mock.method(CLIENT_REVOCATION_CLOCK, "sleep", () => Promise.resolve());
@@ -190,10 +190,160 @@ it("RS-7 expiry skips when advertised isolation cannot be arranged", async (t) =
   assert.deepEqual(events, ["write"]);
 });
 
+interface CallerProbeScript {
+  finalStatus: number | undefined;
+  statusAt59900: number;
+}
+
+async function clientRevocationCase(t: TestContext, caseId: string, script: CallerProbeScript) {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const budgets = mockProbeTimeout(t);
+  const probes: number[] = [];
+  const revocations: [string, string][] = [];
+  let now = 0;
+  let revoked = false;
+  let beforeReads = 0;
+  t.mock.method(CLIENT_REVOCATION_CLOCK, "now", () => now);
+  t.mock.method(CLIENT_REVOCATION_CLOCK, "sleep", (ms: number) => {
+    // Fast-forward the idle polling window, then honor the final 100 ms sleep.
+    now = now === 0 ? 59_900 : now + ms;
+    return Promise.resolve();
+  });
+  t.mock.method(globalThis, "fetch", () => {
+    if (!revoked) {
+      beforeReads += 1;
+      return Promise.resolve(new Response('{"data":[]}', { status: 200 }));
+    }
+    probes.push(now);
+    let status = 200;
+    if (now === 59_900) {
+      status = script.statusAt59900;
+    } else if (now >= 60_000) {
+      if (script.finalStatus === undefined) {
+        return new Promise<Response>(() => undefined);
+      }
+      status = script.finalStatus;
+    }
+    if (status === 200) {
+      return Promise.resolve(new Response('{"data":[]}', { status }));
+    }
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          error: { type: "authentication_error", code: "grant_revoked", message: "revoked" },
+        }),
+        {
+          status,
+          headers: {
+            "Content-Type": "application/json",
+            "WWW-Authenticate": 'Bearer error="invalid_token"',
+          },
+        }
+      )
+    );
+  });
+  const grant = {
+    accessToken: "token",
+    refreshToken: "refresh",
+    grantId: "grant",
+    streams: [{ name: "events", fields: ["id", "value"] }],
+  };
+  const adapter = {
+    baseUrl: "https://scripted.invalid",
+    queryBase: "/v1",
+    capabilities: { refreshTokens: true },
+    issueGrant: () => Promise.resolve(grant),
+    issueRefreshableGrant: () => Promise.resolve(grant),
+    revokeToken: (token: string, hint: string) => {
+      revocations.push([token, hint]);
+      revoked = true;
+      return Promise.resolve({ status: 200 });
+    },
+  } as unknown as TargetAdapter;
+  const c = ALL_CASES.find((entry) => entry.caseId === caseId);
+  assert.ok(c);
+  let settled = false;
+  const pending = runCase(c, makeContext(adapter, streams));
+  pending.then(() => {
+    settled = true;
+  });
+  await nextTurn();
+  if (script.statusAt59900 === 200 && script.finalStatus === undefined) {
+    assert.deepEqual(probes, [0, 59_900, 60_000], "the timeout must belong to the final probe");
+    t.mock.timers.tick(4999);
+    await nextTurn();
+    assert.equal(settled, false, "the final probe retains its own five-second budget");
+    t.mock.timers.tick(1);
+    await nextTurn();
+    assert.equal(settled, true, "the caller must settle when the final probe times out");
+  }
+  const result = await pending;
+  assert.equal(beforeReads, 1, "the token must read successfully before revocation");
+  const expectedRevocation = caseId.includes("refresh-token")
+    ? ["refresh", "refresh_token"]
+    : ["token", "access_token"];
+  assert.deepEqual(revocations, [expectedRevocation]);
+  return { result, probes, budgets };
+}
+
 for (const caseId of [
   "AS-25/client-revocation-of-an-access-token-ends-it",
   "AS-25/refresh-token-revocation-ends-the-family-grants",
 ]) {
+  for (const scenario of [
+    {
+      name: "passes a valid refusal at 59.9 seconds",
+      statusAt59900: 401,
+      finalStatus: 200,
+      outcome: "pass",
+    },
+    {
+      name: "passes cached 200 followed by a valid final refusal",
+      statusAt59900: 200,
+      finalStatus: 401,
+      outcome: "pass",
+    },
+    {
+      name: "fails continued 200 through the final probe",
+      statusAt59900: 200,
+      finalStatus: 200,
+      outcome: "fail",
+    },
+    {
+      name: "fails a 500 instead of accepting it as revocation",
+      statusAt59900: 500,
+      finalStatus: 401,
+      outcome: "fail",
+    },
+    {
+      name: "fails a 403 instead of accepting it as revocation",
+      statusAt59900: 403,
+      finalStatus: 401,
+      outcome: "fail",
+    },
+    {
+      name: "skips a timed-out final probe",
+      statusAt59900: 200,
+      finalStatus: undefined,
+      outcome: "skip",
+    },
+  ]) {
+    it(`${caseId} ${scenario.name}`, async (t) => {
+      const { result, probes, budgets } = await clientRevocationCase(t, caseId, scenario);
+      assert.equal(result.outcome, scenario.outcome, result.detail ?? "(no detail)");
+      if (scenario.statusAt59900 === 200) {
+        assert.deepEqual(probes, [0, 59_900, 60_000]);
+        assert.deepEqual(budgets, [5000, 100, 5000]);
+      } else {
+        assert.deepEqual(probes, [0, 59_900], "a refusal before the deadline ends polling");
+        assert.deepEqual(budgets, [5000, 100]);
+      }
+      if (scenario.outcome === "skip") {
+        assert.ok(result.detail?.includes("inconclusive"));
+      }
+    });
+  }
+
   it(`${caseId} reports a timed-out probe as inconclusive`, async (t) => {
     t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
     mockProbeTimeout(t);
