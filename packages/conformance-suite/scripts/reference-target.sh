@@ -51,6 +51,8 @@
 #                        (default below; refused at another HEAD unless
 #                        PDPP_DC_ALLOW_UNPINNED=1, and then the report's target
 #                        version says UNPINNED and names the actual commit)
+#   PDPP_DC_NPM_ALLOW_GIT npm git-dependency policy for install (default root;
+#                        current e94f4fd9 needs all for a pinned transitive git dependency)
 #   PDPP_CONF_OUT        output dir for `run` (default: a fresh ./conformance-ri-out/run.XXXXXX
 #                        per run; a named dir is locked for the run and only the files
 #                        a run writes are cleared from it)
@@ -142,7 +144,7 @@ check_pin() {
 actual_target_version() {
   local head label
   head=$(checkout_head)
-  label="data-connect@${head:0:10} reference-implementation"
+  label="data-connect@${head} reference-implementation"
   case "$head" in
     "$PDPP_DC_PIN"*) ;;
     *) label="$label (UNPINNED override; pin is ${PDPP_DC_PIN:0:10})" ;;
@@ -278,15 +280,16 @@ install_locked() {
   # `--allow-git=root` is required because one dependency is a pinned git+ssh
   # reference. npm's default `allow-git=none` is a local POLICY setting, not a
   # network restriction — the registry is reachable either way. The flag is
-  # scoped to root (direct dependencies of this project) rather than blanket,
-  # so a transitive git dependency introduced later still has to be reviewed.
+  # scoped to root by default. A reviewed target with a pinned transitive git
+  # dependency can opt into all through PDPP_DC_NPM_ALLOW_GIT for this invocation.
+  # npm ci requires the committed lockfile and never rewrites the target tree.
   # Two phases on purpose. Vendored @pdpp/* packages declare `prepare` scripts
   # that build one another, and npm runs those during install before the
   # workspace links they depend on exist — so a single `npm install` fails on an
   # ordering problem, not a real dependency problem. Resolve the tree first with
   # scripts off, then build the vendored packages once everything is linked.
   log "installing dependencies (npm workspaces, lockfile-pinned)"
-  (cd "$PDPP_DC_REF" && npm install --allow-git=root --no-audit --no-fund --ignore-scripts) ||
+  (cd "$PDPP_DC_REF" && npm ci --allow-git="${PDPP_DC_NPM_ALLOW_GIT:-root}" --no-audit --no-fund --ignore-scripts) ||
     die "dependency install failed; see the npm output above."
 
   build_vendored_and_stamp
@@ -462,6 +465,16 @@ for name in ("conformance_attachments", "conformance_private_attachments"):
     stream.pop("consent_time_field", None)
     stream.pop("views", None)
     manifest["streams"].append(stream)
+events = copy.deepcopy(template)
+events.update({"name": "conformance_events", "description": "Append-only conformance events",
+               "semantics": "append_only", "primary_key": ["id"], "cursor_field": "occurred_at",
+               "schema": {"type": "object", "properties": {
+                   "id": {"type": "string"}, "public_value": {"type": "string"},
+                   "hidden_value": {"type": "string"}, "occurred_at": {"type": "string", "format": "date-time"}},
+                   "required": ["id", "public_value", "occurred_at"]}})
+events.pop("views", None)
+events.pop("consent_time_field", None)
+manifest["streams"].append(events)
 json.dump(manifest, open(sys.argv[2], "w"))
 PY
   curl -sS -o "$RUN_DIR/manifest-registration.out" -w '%{http_code}' -X POST "http://127.0.0.1:$AS_PORT/connectors" \
@@ -517,8 +530,8 @@ PY
 
   log "ingesting records"
   local stream ndjson
-  for stream in repositories starred; do
-    ndjson=$(python3 - "$stream" <<'PY'
+  for stream in repositories starred conformance_events; do
+    ndjson=$(python3 - "$stream" "$OUT_DIR/fixture-truth.json" <<'PY'
 import json, sys
 stream = sys.argv[1]
 if stream == "repositories":
@@ -532,13 +545,22 @@ if stream == "repositories":
          "is_private": True, "is_fork": False, "topics": ["b"],
          "source_created_at": "2026-01-05T00:00:00Z", "source_updated_at": "2026-02-05T00:00:00Z"},
     ]
-else:
+elif stream == "starred":
     rows = [
         {"id": "star_1", "full_name": "other/one", "description": "starred one",
          "language": "Rust", "stargazers_count": 100, "starred_at": "2026-01-10T00:00:00Z"},
         {"id": "star_2", "full_name": "other/two", "description": "starred two",
          "language": "Python", "stargazers_count": 200, "starred_at": "2026-01-20T00:00:00Z"},
     ]
+else:
+    rows = [{"id": "event_1", "public_value": "visible event", "hidden_value": "private event",
+             "occurred_at": "2026-02-10T00:00:00Z"}]
+# Expected truth comes from the authored inputs, never an RS readback.
+from pathlib import Path
+truth_path = Path(sys.argv[2])
+truth = json.loads(truth_path.read_text()) if truth_path.exists() else {"streams": {}}
+truth["streams"][stream] = rows
+truth_path.write_text(json.dumps(truth, indent=2) + "\n")
 print("\n".join(json.dumps({"type": "RECORD", "stream": stream, "key": r["id"],
                             "data": r, "emitted_at": "2026-03-01T00:00:00Z"}) for r in rows))
 PY
@@ -550,6 +572,102 @@ PY
       --data-binary "$ndjson" || die "ingest of $stream failed"
     printf '\n' >&2
   done
+  # Provision equal keys under separate connection handles independently of
+  # the fan-in pagination fixture (whose oracle needs globally unique ids).
+  python3 - "$AS_PORT" "$RS_PORT" "$OUT_DIR/fixture-truth.json" "$DCR_TOKEN" <<'PY'
+import json, sys, urllib.request, urllib.parse
+as_url, rs_url = (f"http://127.0.0.1:{port}" for port in sys.argv[1:3])
+def post(url, data, token=None, form=False, ndjson=False):
+    content_type = "application/x-ndjson" if ndjson else "application/x-www-form-urlencoded" if form else "application/json"
+    body = data if ndjson else urllib.parse.urlencode(data) if form else json.dumps(data)
+    headers = {"Content-Type": content_type, "Accept": "application/json"}
+    if token: headers["Authorization"] = "Bearer " + token
+    with urllib.request.urlopen(urllib.request.Request(url, body.encode(), headers)) as response:
+        body = response.read()
+        return None if url.endswith("/device/approve") else json.loads(body)
+client = post(as_url + "/oauth/register", {"client_name": "conformance-isolated-instances", "redirect_uris": ["http://127.0.0.1/conformance-seeder"]}, sys.argv[4])["client_id"]
+device = post(as_url + "/oauth/device_authorization", {"client_id": client}, form=True)
+post(as_url + "/device/approve", {"subject_id": "owner_local", "user_code": device["user_code"]}, form=True)
+token = post(as_url + "/oauth/token", {"client_id": client, "device_code": device["device_code"], "grant_type": "urn:ietf:params:oauth:grant-type:device_code"}, form=True)["access_token"]
+connections = []
+for label in ("first", "second"):
+    instance = post(as_url + "/_ref/connectors/conformance-fanin/draft-connection", {}, token)["connector_instance_id"]
+    data = {"id": "equal_key", "name": label + " connection value", "seen_at": "2026-03-01T00:00:00Z"}
+    line = json.dumps({"type": "RECORD", "stream": "conformance_items", "key": "equal_key", "data": data, "emitted_at": "2026-03-01T00:00:00Z"})
+    query = urllib.parse.urlencode({"connector_id": "conformance-fanin", "connector_instance_id": instance})
+    result = post(rs_url + "/v1/ingest/conformance_items?" + query, line, token, ndjson=True)
+    if result.get("records_accepted") != 1: raise RuntimeError("equal-key fixture ingest refused")
+    connections.append({"instance_id": instance, "stream": "conformance_items", "key": "equal_key", "data": data})
+with open(sys.argv[3]) as source: truth = json.load(source)
+truth["isolated_connections"] = {"subject_id": "owner_local", "source_id": "https://registry.pdpp.dev/connectors/conformance-fanin", "records": connections}
+# The adapter later provisions these exact independent byte inputs lazily.
+import hashlib
+shared = b"PDPP conformance shared persisted blob\n" * 64
+private = b"PDPP conformance private-only persisted blob\n" * 32
+truth["blobs"] = [{"sha256": hashlib.sha256(data).hexdigest(), "length": len(data), "references": refs} for data, refs in (
+    (shared, ["conformance_private_attachments/att_shared_private", "conformance_attachments/att_1"]),
+    (private, ["conformance_private_attachments/att_private_1"]))]
+with open(sys.argv[3], "w") as output: json.dump(truth, output, indent=2); output.write("\n")
+# Supplemental explicit-choice evidence uses the real PAR/review/approval
+# journey. These probes are separate from the normative suite case counts.
+import urllib.error
+results = []
+def issue_choice(instance_ids):
+    selection = {"name": "conformance_items", "fields": ["id", "name", "seen_at"]}
+    if instance_ids is not None: selection["instance_ids"] = instance_ids
+    detail = {"type": "https://pdpp.dev/data-access", "source": {"kind": "connector", "id": truth["isolated_connections"]["source_id"]},
+              "purpose_code": "https://pdpp.dev/purpose/personal_analytics", "access_mode": "continuous", "streams": [selection]}
+    stage = "PAR"
+    try:
+        staged = post(as_url + "/oauth/par", {"client_id": client, "client_display": {"name": "conformance-isolated-instances"}, "authorization_details": [detail]})
+        stage = "review"
+        reviewed = post(as_url + "/consent/review", {"request_uri": staged["request_uri"], "subject_id": "owner_local"})
+        stage = "approval"
+        return post(as_url + "/consent/approve", {"request_uri": staged["request_uri"], "approval_review_revision": reviewed["approval_review_revision"]})
+    except urllib.error.HTTPError as error:
+        error.conformance_stage = stage
+        raise
+for record in connections:
+    try:
+        issued = issue_choice([record["instance_id"]])
+        selected = next(s for s in issued["grant"]["streams"] if s["name"] == "conformance_items")["instance_ids"]
+        request = urllib.request.Request(rs_url + "/v1/streams/conformance_items/records", headers={"Authorization": "Bearer " + issued["token"]})
+        with urllib.request.urlopen(request) as response: rows = json.load(response)["data"]
+        actual = [row.get("data", row) for row in rows]
+        ok = selected == [record["instance_id"]] and actual == [record["data"]]
+        results.append({"case": "explicit-single-instance-choice", "instance_id": record["instance_id"], "outcome": "pass" if ok else "fail", "expected": [record["data"]], "actual": actual, "granted_instance_ids": selected})
+    except urllib.error.HTTPError as error:
+        results.append({"case": "explicit-single-instance-choice", "instance_id": record["instance_id"], "outcome": "fail", "http_status": error.code, "body": error.read().decode()[:500]})
+    except (KeyError, StopIteration, TypeError, ValueError) as error:
+        results.append({"case": "explicit-single-instance-choice", "instance_id": record["instance_id"], "outcome": "skip", "reason": "provisioning/readback shape unavailable: " + str(error)})
+positive_controls_passed = len(results) == 2 and all(result["outcome"] == "pass" for result in results)
+if not positive_controls_passed:
+    results.append({"case": "no-implicit-fan-in", "outcome": "skip", "reason": "Both explicit instance-choice positive controls must pass first"})
+else:
+    try:
+        issued = issue_choice(None)
+        selected = next(s for s in issued["grant"]["streams"] if s["name"] == "conformance_items").get("instance_ids", [])
+        results.append({"case": "no-implicit-fan-in", "outcome": "pass" if len(selected) == 1 else "fail", "granted_instance_ids": selected})
+    except urllib.error.HTTPError as error:
+        body = error.read().decode()
+        stage = getattr(error, "conformance_stage", "unknown")
+        try:
+            refusal = json.loads(body).get("error", {})
+        except ValueError:
+            refusal = {}
+        specific_omission_refusal = (stage == "PAR" and error.code == 400
+            and refusal.get("code") == "source.authorization_details_invalid"
+            and "Omitted instance_ids requires exactly one eligible instance" in refusal.get("message", "")
+            and "found 2" in refusal.get("message", ""))
+        results.append({"case": "no-implicit-fan-in", "outcome": "pass" if specific_omission_refusal else "skip", "stage": stage, "http_status": error.code, "body": body[:500],
+                        "reason": "PAR rejected omitted instance selection" if specific_omission_refusal else "Unrelated refusal does not prove instance-selection enforcement"})
+    except (KeyError, StopIteration, TypeError, ValueError) as error:
+        results.append({"case": "no-implicit-fan-in", "outcome": "skip", "reason": "issuance readback unavailable: " + str(error)})
+from pathlib import Path
+output_dir = Path(sys.argv[3]).parent
+(output_dir / "instance-choice-probes.json").write_text(json.dumps({"scope": "supplemental reference topology probes; separate from normative suite counts", "results": results}, indent=2) + "\n")
+(output_dir / "instance-choice-probes.md").write_text("# Reference instance choice probes\n\nSupplemental reference topology probes; separate from normative suite counts.\n\n" + "\n".join(f"- {result['case']}: **{result['outcome']}**" for result in results) + "\n")
+PY
   log "seeded"
 }
 
@@ -600,6 +718,10 @@ config = json.load(open(template))
 config["asUrl"] = f"http://127.0.0.1:{as_port}"
 config["rsUrl"] = f"http://127.0.0.1:{rs_port}"
 config["targetVersion"] = version
+config["streams"].append({"name": "conformance_events", "fields": ["id", "public_value", "hidden_value", "occurred_at"],
+    "primaryKey": ["id"], "cursorField": "occurred_at", "semantics": "append_only",
+    "recordCount": 1, "expectedOwnerMetadata": {"schemaRequired": ["id", "public_value", "occurred_at"]}})
+config["foreignSubjectRecordIds"]["conformance_events"] = []
 json.dump(config, open(out, "w"), indent=2)
 PY
 }
@@ -651,7 +773,7 @@ cmd_run_inner() {
 # The files one run writes into its output directory. A run clears exactly these
 # (never the rest of the directory) so a previous run's report cannot be mistaken
 # for this run's, even when this run fails before writing its own.
-OUT_FILES=(target.json report.json report.md requirements.json suite.stdout suite.stderr server.log sandbox-receipt.json)
+OUT_FILES=(baseline.json baseline.md fixture-truth.json instance-choice-probes.json instance-choice-probes.md target.json report.json report.md requirements.json suite.stdout suite.stderr server.log sandbox-receipt.json)
 
 # Claim an output directory for this run: hold an exclusive lock for the life of
 # the process (a second run on the same directory is refused, not interleaved),
@@ -676,8 +798,6 @@ cmd_run() {
       *) die "unknown run option: $1" ;;
     esac
   done
-  require_checkout
-  check_pin
   if [ "$explicit" = 0 ]; then
     mkdir -p ./conformance-ri-out
     out="$(mktemp -d ./conformance-ri-out/run.XXXXXX)"
@@ -686,6 +806,8 @@ cmd_run() {
   out="$(cd "$out" && pwd)"
   claim_out_dir "$out"
   log "output directory: $out"
+  require_checkout
+  check_pin
 
   # Installing needs the network, so it happens before the sandbox is entered.
   # `cmd_install` is a no-op when the checkout is already built from its HEAD.

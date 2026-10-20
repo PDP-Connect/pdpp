@@ -681,9 +681,12 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
   const MIME_TYPE = "application/octet-stream";
 
   const OUT_OF_GRANT_BLOB_ID = "blob_test_fixture_out_of_grant";
+  const SHARED_BLOB_ID = "blob_test_fixture_shared";
 
   type Mode =
     | "correct"
+    | "first-reference-only"
+    | "shared-fixture-absent"
     | "wrong-bytes"
     | "empty-200"
     | "missing-cache-control"
@@ -755,6 +758,20 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
 
       if (mode === "deny-everything" || mode === "rejects-issued-token") {
         res.writeHead(mode === "rejects-issued-token" ? 401 : 403).end();
+        return;
+      }
+
+      if (req.url === `/v1/blobs/${SHARED_BLOB_ID}`) {
+        // Two live records reference these same bytes, in ingestion order.
+        // The first record is forbidden; the second is within the grant.
+        const authorizedReferences = [false, true];
+        const authorized =
+          mode === "first-reference-only" ? authorizedReferences[0] : authorizedReferences.some(Boolean);
+        if (!authorized) {
+          res.writeHead(403).end();
+          return;
+        }
+        servePositiveBytes();
         return;
       }
 
@@ -864,6 +881,11 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
       mimeType: MIME_TYPE,
       grantRequest: { streams: [{ name: streams[0]?.name ?? "", fields: [...(streams[0]?.fields ?? [])] }] },
       outOfGrantBlobId: OUT_OF_GRANT_BLOB_ID,
+      ...(mode === "shared-fixture-absent"
+        ? {}
+        : {
+            sharedBlob: { blobId: SHARED_BLOB_ID, mimeType: MIME_TYPE, rawBytes: UPLOAD_BYTES },
+          }),
       ...(useDigest
         ? { digest: { sha256: createHash("sha256").update(UPLOAD_BYTES).digest("hex"), length: UPLOAD_BYTES.length } }
         : { rawBytes: UPLOAD_BYTES }),
@@ -973,6 +995,26 @@ describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
     it("is unsupported, not passed, for a direct 200", async () => {
       const result = await runBlobCase("correct", false, CASE_ID);
       assert.equal(result.outcome, "unsupported", result.detail ?? "(no detail)");
+    });
+  });
+
+  describe("RS-1/shared-blob-readable-through-any-authorized-reference", () => {
+    const CASE_ID = "RS-1/shared-blob-readable-through-any-authorized-reference";
+
+    it("passes with an authorized live reference after the first forbidden reference", async () => {
+      const result = await runBlobCase("correct", false, CASE_ID);
+      assert.equal(result.outcome, "pass", result.detail ?? "(no detail)");
+    });
+
+    it("fails when authorization consults only the first forbidden reference", async () => {
+      const result = await runBlobCase("first-reference-only", false, CASE_ID);
+      assert.equal(result.outcome, "fail", result.detail ?? "(no detail)");
+    });
+
+    it("skips, rather than declaring unsupported, without the ordered shared fixture", async () => {
+      const result = await runBlobCase("shared-fixture-absent", false, CASE_ID);
+      assert.equal(result.outcome, "skip", result.detail ?? "(no detail)");
+      assert.ok(result.detail?.includes("sharedBlob"));
     });
   });
 

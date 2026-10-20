@@ -1578,7 +1578,11 @@ const SECTION_8: readonly ClauseEntry[] = [
     specAnchor: "#get-a-blob",
     applicability: "the target serves blobs",
     observable: "black-box-http",
-    caseIds: ["RS-1/blob-outside-grant-refused", "RS-1/blob-unauthenticated-refused"],
+    caseIds: [
+      "RS-1/blob-outside-grant-refused",
+      "RS-1/blob-unauthenticated-refused",
+      "RS-1/shared-blob-readable-through-any-authorized-reference",
+    ],
   },
   {
     clauseId: "8.12-2",

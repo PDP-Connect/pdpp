@@ -580,6 +580,10 @@ export const BESPOKE_PROOFS: readonly { readonly caseId: string; readonly proof:
     caseId: "RS-1/blob-ref-mime-type-valid",
     proof: "oracle-discrimination.test.ts: records-invalid-mime",
   },
+  {
+    caseId: "RS-1/shared-blob-readable-through-any-authorized-reference",
+    proof: "oracle-discrimination.test.ts: first-reference-only",
+  },
   { caseId: "RS-1/blob-outside-grant-refused", proof: "oracle-discrimination.test.ts: leaks-out-of-grant-blob" },
   { caseId: "RS-1/blob-unauthenticated-refused", proof: "oracle-discrimination.test.ts: leaks-unauthenticated" },
 ];

@@ -325,7 +325,7 @@ Implements the Section 8 query endpoints: list streams, get stream metadata, lis
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.12-1` | 1383 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused` | — |
+| `8.12-1` | 1383 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused`<br>`RS-1/shared-blob-readable-through-any-authorized-reference` | — |
 | `8.12-2` | 1385 | MUST | black-box-http | `RS-1/get-blob-bytes` | Content-Length is checked against the body only when present: the case cannot tell whether the length was known, so an omitted Content-Length is not a finding. `Accept-Ranges: bytes` is not asserted: the case never issues a Range request, so it cannot tell whether the target supports ranges. |
 | `8.12-3` | 1391 | MUST | black-box-http | `RS-1/blob-redirect-response-valid` | The header half is checked; the "valid for at least 60 seconds" half is not, because the suite deliberately does not follow the signed URL and so cannot observe its expiry. |
 
@@ -336,7 +336,7 @@ Enforces grant constraints on every client request: stream membership, explicit 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
 | `8.1-2` | 1077 | MUST | black-box-http | `RS-15/client-metadata-projection-closed`<br>`RS-2/field-projection-not-exceeded` | — |
-| `8.12-1` | 1383 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused` | — |
+| `8.12-1` | 1383 | MUST | black-box-http | `RS-1/blob-outside-grant-refused`<br>`RS-1/blob-unauthenticated-refused`<br>`RS-1/shared-blob-readable-through-any-authorized-reference` | — |
 
 ### RS-3 (resource-server, MUST)
 

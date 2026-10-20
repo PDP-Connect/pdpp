@@ -557,6 +557,13 @@ export interface BlobFixture {
    * to prove the returned bytes are the ones that were stored, not both.
    */
   readonly rawBytes?: Uint8Array;
+  /**
+   * A blob referenced by both an out-of-grant record ingested FIRST and an
+   * authorized record ingested later. The grantRequest above authorizes the
+   * latter. Independent byte truth detects a first-reference-only lookup that
+   * wrongly refuses a shared id despite an authorized live reference.
+   */
+  readonly sharedBlob?: Pick<BlobFixture, "blobId" | "mimeType" | "rawBytes" | "digest">;
 }
 
 /** The grant shape a test needs. The adapter arranges consent out of band. */

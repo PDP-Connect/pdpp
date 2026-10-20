@@ -637,6 +637,34 @@ export const RESOURCE_SERVER_CASES: readonly ConformanceCase[] = [
     },
   },
 
+  // An out-of-grant first reference cannot override a later authorized one.
+  // The adapter retains the ingestion order and expected bytes independently;
+  // a private-only denial case cannot detect this incorrect over-refusal.
+  {
+    caseId: "RS-1/shared-blob-readable-through-any-authorized-reference",
+    requirementId: "RS-1",
+    assertion:
+      "A shared blob remains readable through an authorized record when its first ingested reference is outside the grant.",
+    async run({ adapter, path }) {
+      const fixture = await adapter.blobFixture?.();
+      if (!fixture?.sharedBlob) {
+        return skip(
+          "The adapter's blobFixture supplied no sharedBlob with an out-of-grant reference ingested first and an authorized reference later."
+        );
+      }
+      const grant = await adapter.issueGrant(fixture.grantRequest);
+      if (!grant) {
+        return skip("The target could not issue the grant needed to read the shared blob's authorized reference.");
+      }
+      return verifyAuthorizedBlobFetch(
+        adapter,
+        path,
+        { ...fixture.sharedBlob, grantRequest: fixture.grantRequest },
+        grant.accessToken
+      );
+    },
+  },
+
   // Section 8 "Get a blob" bullet 4: "A `blob_id` alone does not grant
   // access. The client MUST have discovered the blob through an authorized
   // record." Proves the issued token actually works against `fixture.blobId`

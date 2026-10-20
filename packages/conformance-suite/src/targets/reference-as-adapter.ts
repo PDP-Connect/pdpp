@@ -815,9 +815,10 @@ export class ReferenceAsAdapter implements TargetAdapter {
   }
 
   /**
-   * Store a blob and the record that references it, over the owner routes.
-   * Two blobs are staged in two streams, so a grant over the first stream has a
-   * real blob that no record it can read references.
+   * Store deterministic bytes through the owner routes. The shared blob is
+   * first referenced by a private record, then by a permitted record: a reader
+   * must authorize through any permitted reference, not only the first one.
+   * A separate private-only blob remains the denial control.
    */
   blobFixture(): Promise<BlobFixture> {
     this.blobFixtureOnce ??= this.stageBlobFixture().catch((error: unknown) => {
@@ -841,8 +842,10 @@ export class ReferenceAsAdapter implements TargetAdapter {
           }
         )
     );
-    if (!uploaded.blob_id) {
-      throw new PreconditionFailed(`blob upload for ${stream}/${recordKey} returned no blob_id`);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const expectedBlobId = `blob_sha256_${sha256}`;
+    if (uploaded.blob_id !== expectedBlobId) {
+      throw new PreconditionFailed(`blob upload for ${stream}/${recordKey} did not return its content-addressed id`);
     }
     await this.ingestRecord(stream, recordKey, {
       id: recordKey,
@@ -850,9 +853,9 @@ export class ReferenceAsAdapter implements TargetAdapter {
       updated_at: "2026-03-01T00:00:00Z",
       blob_ref: {
         blob_id: uploaded.blob_id,
-        mime_type: uploaded.mime_type ?? mimeType,
-        size_bytes: uploaded.size_bytes ?? bytes.length,
-        sha256: uploaded.sha256 ?? "",
+        mime_type: mimeType,
+        size_bytes: bytes.length,
+        sha256,
       },
     });
     return uploaded.blob_id;
@@ -860,17 +863,19 @@ export class ReferenceAsAdapter implements TargetAdapter {
 
   private async stageBlobFixture(): Promise<BlobFixture> {
     const mimeType = "application/octet-stream";
-    const bytes = randomBytes(2048);
+    const bytes = Buffer.from("PDPP conformance shared persisted blob\n".repeat(64));
+    await this.stageBlob("conformance_private_attachments", "att_shared_private", bytes, mimeType);
     const blobId = await this.stageBlob("conformance_attachments", "att_1", bytes, mimeType);
     const outOfGrantBlobId = await this.stageBlob(
       "conformance_private_attachments",
       "att_private_1",
-      randomBytes(1024),
+      Buffer.from("PDPP conformance private-only persisted blob\n".repeat(32)),
       mimeType
     );
     return {
       blobId,
       outOfGrantBlobId,
+      sharedBlob: { blobId, mimeType, rawBytes: new Uint8Array(bytes) },
       mimeType,
       rawBytes: new Uint8Array(bytes),
       grantRequest: { streams: [{ name: "conformance_attachments", fields: ["id", "name", "blob_ref"] }] },
