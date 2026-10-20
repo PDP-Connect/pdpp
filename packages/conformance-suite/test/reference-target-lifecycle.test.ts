@@ -44,6 +44,36 @@ function sh(snippet: string, env: Record<string, string> = {}) {
   });
 }
 
+it("instance omission accepts only its specific PAR refusal and tolerates unrelated OAuth error shapes", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-c",
+      `
+import ast, json, re, sys
+source = open(sys.argv[1]).read()
+functions = [node for block in re.findall(r"<<'PY'\\n(.*?)\\nPY", source, re.S)
+    for node in ast.parse(block).body if isinstance(node, ast.FunctionDef) and node.name == "is_omission_refusal"]
+assert len(functions) == 1
+scope = {"json": json}
+exec(compile(ast.Module(body=functions, type_ignores=[]), "refusal classifier", "exec"), scope)
+classify = scope["is_omission_refusal"]
+specific = json.dumps({"error": {"code": "source.authorization_details_invalid",
+    "message": "Omitted instance_ids requires exactly one eligible instance for stream 'items', found 2"}})
+assert classify("PAR", 400, specific) is True
+for stage, status in [("review", 400), ("approval", 400), ("PAR", 401), ("PAR", 404)]:
+    assert classify(stage, status, specific) is False
+for body in ['{"error":"invalid_request"}', '{"error":null}', '[]', 'null', 'not-json',
+    '{"error":{"code":"source.authorization_details_invalid","message":[]}}', '{}']:
+    assert classify("PAR", 400, body) is False
+`,
+      SCRIPT,
+    ],
+    { encoding: "utf8" }
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
 describe("process identity: a recycled PID is never signalled", () => {
   it("does not signal a bystander that holds the PID of a server that exited early", () => {
     // The 'server' exits immediately; its recorded start time then belongs to a

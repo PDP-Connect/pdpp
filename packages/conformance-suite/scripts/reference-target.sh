@@ -612,6 +612,18 @@ with open(sys.argv[3], "w") as output: json.dump(truth, output, indent=2); outpu
 # journey. These probes are separate from the normative suite case counts.
 import urllib.error
 results = []
+def is_omission_refusal(stage, status, body):
+    if stage != "PAR" or status != 400: return False
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return False
+    if not isinstance(parsed, dict): return False
+    refusal = parsed.get("error")
+    if not isinstance(refusal, dict): return False
+    message = refusal.get("message")
+    return (refusal.get("code") == "source.authorization_details_invalid" and isinstance(message, str)
+        and "Omitted instance_ids requires exactly one eligible instance" in message and "found 2" in message)
 def issue_choice(instance_ids):
     selection = {"name": "conformance_items", "fields": ["id", "name", "seen_at"]}
     if instance_ids is not None: selection["instance_ids"] = instance_ids
@@ -651,14 +663,7 @@ else:
     except urllib.error.HTTPError as error:
         body = error.read().decode()
         stage = getattr(error, "conformance_stage", "unknown")
-        try:
-            refusal = json.loads(body).get("error", {})
-        except ValueError:
-            refusal = {}
-        specific_omission_refusal = (stage == "PAR" and error.code == 400
-            and refusal.get("code") == "source.authorization_details_invalid"
-            and "Omitted instance_ids requires exactly one eligible instance" in refusal.get("message", "")
-            and "found 2" in refusal.get("message", ""))
+        specific_omission_refusal = is_omission_refusal(stage, error.code, body)
         results.append({"case": "no-implicit-fan-in", "outcome": "pass" if specific_omission_refusal else "skip", "stage": stage, "http_status": error.code, "body": body[:500],
                         "reason": "PAR rejected omitted instance selection" if specific_omission_refusal else "Unrelated refusal does not prove instance-selection enforcement"})
     except (KeyError, StopIteration, TypeError, ValueError) as error:
