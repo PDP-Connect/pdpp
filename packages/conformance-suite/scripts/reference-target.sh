@@ -613,7 +613,7 @@ with open(sys.argv[3], "w") as output: json.dump(truth, output, indent=2); outpu
 import urllib.error
 results = []
 def is_omission_refusal(stage, status, body):
-    if stage != "PAR" or status != 400: return False
+    if stage not in ("PAR", "review") or status != 400: return False
     try:
         parsed = json.loads(body)
     except ValueError:
@@ -665,7 +665,7 @@ else:
         stage = getattr(error, "conformance_stage", "unknown")
         specific_omission_refusal = is_omission_refusal(stage, error.code, body)
         results.append({"case": "no-implicit-fan-in", "outcome": "pass" if specific_omission_refusal else "skip", "stage": stage, "http_status": error.code, "body": body[:500],
-                        "reason": "PAR rejected omitted instance selection" if specific_omission_refusal else "Unrelated refusal does not prove instance-selection enforcement"})
+                        "reason": "Omitted instance selection rejected before approval" if specific_omission_refusal else "Unrelated refusal does not prove instance-selection enforcement"})
     except (KeyError, StopIteration, TypeError, ValueError) as error:
         results.append({"case": "no-implicit-fan-in", "outcome": "skip", "reason": "issuance readback unavailable: " + str(error)})
 from pathlib import Path

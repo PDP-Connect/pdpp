@@ -44,7 +44,7 @@ function sh(snippet: string, env: Record<string, string> = {}) {
   });
 }
 
-it("instance omission accepts only its specific PAR refusal and tolerates unrelated OAuth error shapes", () => {
+it("instance omission accepts only its specific pre-approval refusal and tolerates unrelated OAuth error shapes", () => {
   const result = spawnSync(
     "python3",
     [
@@ -61,7 +61,8 @@ classify = scope["is_omission_refusal"]
 specific = json.dumps({"error": {"code": "source.authorization_details_invalid",
     "message": "Omitted instance_ids requires exactly one eligible instance for stream 'items', found 2"}})
 assert classify("PAR", 400, specific) is True
-for stage, status in [("review", 400), ("approval", 400), ("PAR", 401), ("PAR", 404)]:
+assert classify("review", 400, specific) is True
+for stage, status in [("approval", 400), ("PAR", 401), ("PAR", 404), ("review", 401)]:
     assert classify(stage, status, specific) is False
 for body in ['{"error":"invalid_request"}', '{"error":null}', '[]', 'null', 'not-json',
     '{"error":{"code":"source.authorization_details_invalid","message":[]}}', '{}']:
