@@ -1,0 +1,65 @@
+{
+  "profile": "experimental-v0.2",
+  "targetVersion": "personal-server-ts@0b5eac036a33cb714cdd6d3a71abddd98e609f2d",
+  "suiteCoreSpecVersion": "0.1.0",
+  "scope": "Target-specific probes; the pinned suite has no v0.2 requirement inventory. Not a conformance assessment.",
+  "results": [
+    {
+      "id": "experimental-v0.2/narrowed-record-read",
+      "outcome": "pass",
+      "detail": "Owner narrows schema-required title out of experimental v0.2 grant; expect three id/artist rows without title.",
+      "response": {
+        "status": 200,
+        "body": {
+          "object": "list",
+          "has_more": false,
+          "data": [
+            {
+              "object": "record",
+              "id": "trk_3",
+              "stream": "saved_tracks",
+              "data": {
+                "id": "trk_3",
+                "artist": "Artist 3"
+              },
+              "emitted_at": "2026-01-01T00:00:00Z"
+            },
+            {
+              "object": "record",
+              "id": "trk_2",
+              "stream": "saved_tracks",
+              "data": {
+                "id": "trk_2",
+                "artist": "Artist 2"
+              },
+              "emitted_at": "2026-01-01T00:00:00Z"
+            },
+            {
+              "object": "record",
+              "id": "trk_1",
+              "stream": "saved_tracks",
+              "data": {
+                "id": "trk_1",
+                "artist": "Artist 1"
+              },
+              "emitted_at": "2026-01-01T00:00:00Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "experimental-v0.2/minimum-on-v0.1-refused",
+      "outcome": "pass",
+      "detail": "A v0.2 minimum supplied on a v0.1 request must be refused.",
+      "response": {
+        "status": 400,
+        "errorCode": "invalid_authorization_details",
+        "body": {
+          "error": "invalid_authorization_details",
+          "error_description": "stream 'saved_tracks' carries minimum, which requires the https://pdpp.dev/data-access/0.2 detail type"
+        }
+      }
+    }
+  ]
+}

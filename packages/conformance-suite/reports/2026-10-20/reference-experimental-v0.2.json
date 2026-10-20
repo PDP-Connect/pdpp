@@ -1,0 +1,12 @@
+{
+  "profile": "experimental-v0.2",
+  "target": {
+    "repository": "PDP-Connect/data-connect",
+    "sha": "e94f4fd9c6683e8284143dbccf29a12bc7370b94",
+    "dirty": false
+  },
+  "suiteCommit": "b4ea865c27b9ccb8059a3a14117304c621fac381",
+  "outcome": "not-tested",
+  "executedCases": 0,
+  "reason": "The pinned Core suite has no v0.2 requirement inventory. No experimental reference v0.2 journey was run. These are evidence limits, not an unsupported-capability declaration."
+}

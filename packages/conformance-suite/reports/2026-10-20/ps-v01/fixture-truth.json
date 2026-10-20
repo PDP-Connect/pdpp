@@ -1,0 +1,1714 @@
+{
+  "sourceId": "https://registry.pdpp.dev/connectors/spotify",
+  "instances": [
+    "conn_00000001-0000-4000-8000-000000000001",
+    "conn_00000002-0000-4000-8000-000000000002"
+  ],
+  "rows": {
+    "conn_00000001-0000-4000-8000-000000000001/top_artists": [
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "art_1",
+        "data": {
+          "id": "art_1",
+          "name": "Artist 1",
+          "genres": [
+            "indie",
+            "rock"
+          ],
+          "source_updated_at": "2026-01-01T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-02T00:00:00Z",
+        "key": "art_2",
+        "data": {
+          "id": "art_2",
+          "name": "Artist 2",
+          "genres": [
+            "indie",
+            "rock"
+          ],
+          "source_updated_at": "2026-01-02T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-03T00:00:00Z",
+        "key": "art_3",
+        "data": {
+          "id": "art_3",
+          "name": "Artist 3",
+          "genres": [
+            "indie",
+            "rock"
+          ],
+          "source_updated_at": "2026-01-03T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-04T00:00:00Z",
+        "key": "art_4",
+        "data": {
+          "id": "art_4",
+          "name": "Artist 4",
+          "genres": [
+            "indie",
+            "rock"
+          ],
+          "source_updated_at": "2026-01-04T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-05T00:00:00Z",
+        "key": "art_5",
+        "data": {
+          "id": "art_5",
+          "name": "Artist 5",
+          "genres": [
+            "indie",
+            "rock"
+          ],
+          "source_updated_at": "2026-01-05T00:00:00Z"
+        }
+      }
+    ],
+    "conn_00000002-0000-4000-8000-000000000002/top_artists": [
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "art_1",
+        "data": {
+          "id": "art_1",
+          "name": "Artist 1 other connection",
+          "genres": [
+            "indie",
+            "rock"
+          ],
+          "source_updated_at": "2026-01-01T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-02T00:00:00Z",
+        "key": "art_2",
+        "data": {
+          "id": "art_2",
+          "name": "Artist 2 other connection",
+          "genres": [
+            "indie",
+            "rock"
+          ],
+          "source_updated_at": "2026-01-02T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-03T00:00:00Z",
+        "key": "art_3",
+        "data": {
+          "id": "art_3",
+          "name": "Artist 3 other connection",
+          "genres": [
+            "indie",
+            "rock"
+          ],
+          "source_updated_at": "2026-01-03T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-04T00:00:00Z",
+        "key": "art_4",
+        "data": {
+          "id": "art_4",
+          "name": "Artist 4 other connection",
+          "genres": [
+            "indie",
+            "rock"
+          ],
+          "source_updated_at": "2026-01-04T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-05T00:00:00Z",
+        "key": "art_5",
+        "data": {
+          "id": "art_5",
+          "name": "Artist 5 other connection",
+          "genres": [
+            "indie",
+            "rock"
+          ],
+          "source_updated_at": "2026-01-05T00:00:00Z"
+        }
+      }
+    ],
+    "conn_00000001-0000-4000-8000-000000000001/multi_records": [
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_000",
+        "data": {
+          "id": "multi_0_000",
+          "name": "Multi 0/0",
+          "source_updated_at": "2026-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_001",
+        "data": {
+          "id": "multi_0_001",
+          "name": "Multi 0/1",
+          "source_updated_at": "2026-01-01T00:01:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_002",
+        "data": {
+          "id": "multi_0_002",
+          "name": "Multi 0/2",
+          "source_updated_at": "2026-01-01T00:02:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_003",
+        "data": {
+          "id": "multi_0_003",
+          "name": "Multi 0/3",
+          "source_updated_at": "2026-01-01T00:03:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_004",
+        "data": {
+          "id": "multi_0_004",
+          "name": "Multi 0/4",
+          "source_updated_at": "2026-01-01T00:04:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_005",
+        "data": {
+          "id": "multi_0_005",
+          "name": "Multi 0/5",
+          "source_updated_at": "2026-01-01T00:05:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_006",
+        "data": {
+          "id": "multi_0_006",
+          "name": "Multi 0/6",
+          "source_updated_at": "2026-01-01T00:06:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_007",
+        "data": {
+          "id": "multi_0_007",
+          "name": "Multi 0/7",
+          "source_updated_at": "2026-01-01T00:07:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_008",
+        "data": {
+          "id": "multi_0_008",
+          "name": "Multi 0/8",
+          "source_updated_at": "2026-01-01T00:08:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_009",
+        "data": {
+          "id": "multi_0_009",
+          "name": "Multi 0/9",
+          "source_updated_at": "2026-01-01T00:09:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_010",
+        "data": {
+          "id": "multi_0_010",
+          "name": "Multi 0/10",
+          "source_updated_at": "2026-01-01T00:10:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_011",
+        "data": {
+          "id": "multi_0_011",
+          "name": "Multi 0/11",
+          "source_updated_at": "2026-01-01T00:11:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_012",
+        "data": {
+          "id": "multi_0_012",
+          "name": "Multi 0/12",
+          "source_updated_at": "2026-01-01T00:12:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_013",
+        "data": {
+          "id": "multi_0_013",
+          "name": "Multi 0/13",
+          "source_updated_at": "2026-01-01T00:13:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_014",
+        "data": {
+          "id": "multi_0_014",
+          "name": "Multi 0/14",
+          "source_updated_at": "2026-01-01T00:14:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_015",
+        "data": {
+          "id": "multi_0_015",
+          "name": "Multi 0/15",
+          "source_updated_at": "2026-01-01T00:15:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_016",
+        "data": {
+          "id": "multi_0_016",
+          "name": "Multi 0/16",
+          "source_updated_at": "2026-01-01T00:16:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_017",
+        "data": {
+          "id": "multi_0_017",
+          "name": "Multi 0/17",
+          "source_updated_at": "2026-01-01T00:17:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_018",
+        "data": {
+          "id": "multi_0_018",
+          "name": "Multi 0/18",
+          "source_updated_at": "2026-01-01T00:18:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_019",
+        "data": {
+          "id": "multi_0_019",
+          "name": "Multi 0/19",
+          "source_updated_at": "2026-01-01T00:19:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_020",
+        "data": {
+          "id": "multi_0_020",
+          "name": "Multi 0/20",
+          "source_updated_at": "2026-01-01T00:20:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_021",
+        "data": {
+          "id": "multi_0_021",
+          "name": "Multi 0/21",
+          "source_updated_at": "2026-01-01T00:21:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_022",
+        "data": {
+          "id": "multi_0_022",
+          "name": "Multi 0/22",
+          "source_updated_at": "2026-01-01T00:22:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_023",
+        "data": {
+          "id": "multi_0_023",
+          "name": "Multi 0/23",
+          "source_updated_at": "2026-01-01T00:23:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_024",
+        "data": {
+          "id": "multi_0_024",
+          "name": "Multi 0/24",
+          "source_updated_at": "2026-01-01T00:24:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_025",
+        "data": {
+          "id": "multi_0_025",
+          "name": "Multi 0/25",
+          "source_updated_at": "2026-01-01T00:25:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_026",
+        "data": {
+          "id": "multi_0_026",
+          "name": "Multi 0/26",
+          "source_updated_at": "2026-01-01T00:26:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_027",
+        "data": {
+          "id": "multi_0_027",
+          "name": "Multi 0/27",
+          "source_updated_at": "2026-01-01T00:27:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_028",
+        "data": {
+          "id": "multi_0_028",
+          "name": "Multi 0/28",
+          "source_updated_at": "2026-01-01T00:28:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_029",
+        "data": {
+          "id": "multi_0_029",
+          "name": "Multi 0/29",
+          "source_updated_at": "2026-01-01T00:29:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_030",
+        "data": {
+          "id": "multi_0_030",
+          "name": "Multi 0/30",
+          "source_updated_at": "2026-01-01T00:30:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_031",
+        "data": {
+          "id": "multi_0_031",
+          "name": "Multi 0/31",
+          "source_updated_at": "2026-01-01T00:31:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_032",
+        "data": {
+          "id": "multi_0_032",
+          "name": "Multi 0/32",
+          "source_updated_at": "2026-01-01T00:32:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_033",
+        "data": {
+          "id": "multi_0_033",
+          "name": "Multi 0/33",
+          "source_updated_at": "2026-01-01T00:33:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_034",
+        "data": {
+          "id": "multi_0_034",
+          "name": "Multi 0/34",
+          "source_updated_at": "2026-01-01T00:34:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_035",
+        "data": {
+          "id": "multi_0_035",
+          "name": "Multi 0/35",
+          "source_updated_at": "2026-01-01T00:35:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_036",
+        "data": {
+          "id": "multi_0_036",
+          "name": "Multi 0/36",
+          "source_updated_at": "2026-01-01T00:36:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_037",
+        "data": {
+          "id": "multi_0_037",
+          "name": "Multi 0/37",
+          "source_updated_at": "2026-01-01T00:37:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_038",
+        "data": {
+          "id": "multi_0_038",
+          "name": "Multi 0/38",
+          "source_updated_at": "2026-01-01T00:38:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_039",
+        "data": {
+          "id": "multi_0_039",
+          "name": "Multi 0/39",
+          "source_updated_at": "2026-01-01T00:39:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_040",
+        "data": {
+          "id": "multi_0_040",
+          "name": "Multi 0/40",
+          "source_updated_at": "2026-01-01T00:40:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_041",
+        "data": {
+          "id": "multi_0_041",
+          "name": "Multi 0/41",
+          "source_updated_at": "2026-01-01T00:41:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_042",
+        "data": {
+          "id": "multi_0_042",
+          "name": "Multi 0/42",
+          "source_updated_at": "2026-01-01T00:42:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_043",
+        "data": {
+          "id": "multi_0_043",
+          "name": "Multi 0/43",
+          "source_updated_at": "2026-01-01T00:43:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_044",
+        "data": {
+          "id": "multi_0_044",
+          "name": "Multi 0/44",
+          "source_updated_at": "2026-01-01T00:44:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_045",
+        "data": {
+          "id": "multi_0_045",
+          "name": "Multi 0/45",
+          "source_updated_at": "2026-01-01T00:45:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_046",
+        "data": {
+          "id": "multi_0_046",
+          "name": "Multi 0/46",
+          "source_updated_at": "2026-01-01T00:46:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_047",
+        "data": {
+          "id": "multi_0_047",
+          "name": "Multi 0/47",
+          "source_updated_at": "2026-01-01T00:47:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_048",
+        "data": {
+          "id": "multi_0_048",
+          "name": "Multi 0/48",
+          "source_updated_at": "2026-01-01T00:48:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_049",
+        "data": {
+          "id": "multi_0_049",
+          "name": "Multi 0/49",
+          "source_updated_at": "2026-01-01T00:49:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_050",
+        "data": {
+          "id": "multi_0_050",
+          "name": "Multi 0/50",
+          "source_updated_at": "2026-01-01T00:50:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_051",
+        "data": {
+          "id": "multi_0_051",
+          "name": "Multi 0/51",
+          "source_updated_at": "2026-01-01T00:51:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_052",
+        "data": {
+          "id": "multi_0_052",
+          "name": "Multi 0/52",
+          "source_updated_at": "2026-01-01T00:52:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_053",
+        "data": {
+          "id": "multi_0_053",
+          "name": "Multi 0/53",
+          "source_updated_at": "2026-01-01T00:53:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_054",
+        "data": {
+          "id": "multi_0_054",
+          "name": "Multi 0/54",
+          "source_updated_at": "2026-01-01T00:54:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_055",
+        "data": {
+          "id": "multi_0_055",
+          "name": "Multi 0/55",
+          "source_updated_at": "2026-01-01T00:55:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_056",
+        "data": {
+          "id": "multi_0_056",
+          "name": "Multi 0/56",
+          "source_updated_at": "2026-01-01T00:56:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_057",
+        "data": {
+          "id": "multi_0_057",
+          "name": "Multi 0/57",
+          "source_updated_at": "2026-01-01T00:57:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_058",
+        "data": {
+          "id": "multi_0_058",
+          "name": "Multi 0/58",
+          "source_updated_at": "2026-01-01T00:58:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_059",
+        "data": {
+          "id": "multi_0_059",
+          "name": "Multi 0/59",
+          "source_updated_at": "2026-01-01T00:59:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_060",
+        "data": {
+          "id": "multi_0_060",
+          "name": "Multi 0/60",
+          "source_updated_at": "2026-01-01T01:00:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_061",
+        "data": {
+          "id": "multi_0_061",
+          "name": "Multi 0/61",
+          "source_updated_at": "2026-01-01T01:01:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_062",
+        "data": {
+          "id": "multi_0_062",
+          "name": "Multi 0/62",
+          "source_updated_at": "2026-01-01T01:02:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_063",
+        "data": {
+          "id": "multi_0_063",
+          "name": "Multi 0/63",
+          "source_updated_at": "2026-01-01T01:03:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_064",
+        "data": {
+          "id": "multi_0_064",
+          "name": "Multi 0/64",
+          "source_updated_at": "2026-01-01T01:04:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_065",
+        "data": {
+          "id": "multi_0_065",
+          "name": "Multi 0/65",
+          "source_updated_at": "2026-01-01T01:05:00.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_066",
+        "data": {
+          "id": "multi_0_066",
+          "name": "Multi 0/66"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_067",
+        "data": {
+          "id": "multi_0_067",
+          "name": "Multi 0/67"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_068",
+        "data": {
+          "id": "multi_0_068",
+          "name": "Multi 0/68"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_0_069",
+        "data": {
+          "id": "multi_0_069",
+          "name": "Multi 0/69"
+        }
+      }
+    ],
+    "conn_00000002-0000-4000-8000-000000000002/multi_records": [
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_000",
+        "data": {
+          "id": "multi_1_000",
+          "name": "Multi 1/0",
+          "source_updated_at": "2026-01-01T00:00:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_001",
+        "data": {
+          "id": "multi_1_001",
+          "name": "Multi 1/1",
+          "source_updated_at": "2026-01-01T00:01:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_002",
+        "data": {
+          "id": "multi_1_002",
+          "name": "Multi 1/2",
+          "source_updated_at": "2026-01-01T00:02:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_003",
+        "data": {
+          "id": "multi_1_003",
+          "name": "Multi 1/3",
+          "source_updated_at": "2026-01-01T00:03:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_004",
+        "data": {
+          "id": "multi_1_004",
+          "name": "Multi 1/4",
+          "source_updated_at": "2026-01-01T00:04:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_005",
+        "data": {
+          "id": "multi_1_005",
+          "name": "Multi 1/5",
+          "source_updated_at": "2026-01-01T00:05:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_006",
+        "data": {
+          "id": "multi_1_006",
+          "name": "Multi 1/6",
+          "source_updated_at": "2026-01-01T00:06:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_007",
+        "data": {
+          "id": "multi_1_007",
+          "name": "Multi 1/7",
+          "source_updated_at": "2026-01-01T00:07:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_008",
+        "data": {
+          "id": "multi_1_008",
+          "name": "Multi 1/8",
+          "source_updated_at": "2026-01-01T00:08:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_009",
+        "data": {
+          "id": "multi_1_009",
+          "name": "Multi 1/9",
+          "source_updated_at": "2026-01-01T00:09:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_010",
+        "data": {
+          "id": "multi_1_010",
+          "name": "Multi 1/10",
+          "source_updated_at": "2026-01-01T00:10:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_011",
+        "data": {
+          "id": "multi_1_011",
+          "name": "Multi 1/11",
+          "source_updated_at": "2026-01-01T00:11:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_012",
+        "data": {
+          "id": "multi_1_012",
+          "name": "Multi 1/12",
+          "source_updated_at": "2026-01-01T00:12:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_013",
+        "data": {
+          "id": "multi_1_013",
+          "name": "Multi 1/13",
+          "source_updated_at": "2026-01-01T00:13:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_014",
+        "data": {
+          "id": "multi_1_014",
+          "name": "Multi 1/14",
+          "source_updated_at": "2026-01-01T00:14:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_015",
+        "data": {
+          "id": "multi_1_015",
+          "name": "Multi 1/15",
+          "source_updated_at": "2026-01-01T00:15:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_016",
+        "data": {
+          "id": "multi_1_016",
+          "name": "Multi 1/16",
+          "source_updated_at": "2026-01-01T00:16:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_017",
+        "data": {
+          "id": "multi_1_017",
+          "name": "Multi 1/17",
+          "source_updated_at": "2026-01-01T00:17:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_018",
+        "data": {
+          "id": "multi_1_018",
+          "name": "Multi 1/18",
+          "source_updated_at": "2026-01-01T00:18:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_019",
+        "data": {
+          "id": "multi_1_019",
+          "name": "Multi 1/19",
+          "source_updated_at": "2026-01-01T00:19:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_020",
+        "data": {
+          "id": "multi_1_020",
+          "name": "Multi 1/20",
+          "source_updated_at": "2026-01-01T00:20:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_021",
+        "data": {
+          "id": "multi_1_021",
+          "name": "Multi 1/21",
+          "source_updated_at": "2026-01-01T00:21:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_022",
+        "data": {
+          "id": "multi_1_022",
+          "name": "Multi 1/22",
+          "source_updated_at": "2026-01-01T00:22:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_023",
+        "data": {
+          "id": "multi_1_023",
+          "name": "Multi 1/23",
+          "source_updated_at": "2026-01-01T00:23:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_024",
+        "data": {
+          "id": "multi_1_024",
+          "name": "Multi 1/24",
+          "source_updated_at": "2026-01-01T00:24:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_025",
+        "data": {
+          "id": "multi_1_025",
+          "name": "Multi 1/25",
+          "source_updated_at": "2026-01-01T00:25:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_026",
+        "data": {
+          "id": "multi_1_026",
+          "name": "Multi 1/26",
+          "source_updated_at": "2026-01-01T00:26:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_027",
+        "data": {
+          "id": "multi_1_027",
+          "name": "Multi 1/27",
+          "source_updated_at": "2026-01-01T00:27:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_028",
+        "data": {
+          "id": "multi_1_028",
+          "name": "Multi 1/28",
+          "source_updated_at": "2026-01-01T00:28:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_029",
+        "data": {
+          "id": "multi_1_029",
+          "name": "Multi 1/29",
+          "source_updated_at": "2026-01-01T00:29:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_030",
+        "data": {
+          "id": "multi_1_030",
+          "name": "Multi 1/30",
+          "source_updated_at": "2026-01-01T00:30:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_031",
+        "data": {
+          "id": "multi_1_031",
+          "name": "Multi 1/31",
+          "source_updated_at": "2026-01-01T00:31:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_032",
+        "data": {
+          "id": "multi_1_032",
+          "name": "Multi 1/32",
+          "source_updated_at": "2026-01-01T00:32:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_033",
+        "data": {
+          "id": "multi_1_033",
+          "name": "Multi 1/33",
+          "source_updated_at": "2026-01-01T00:33:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_034",
+        "data": {
+          "id": "multi_1_034",
+          "name": "Multi 1/34",
+          "source_updated_at": "2026-01-01T00:34:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_035",
+        "data": {
+          "id": "multi_1_035",
+          "name": "Multi 1/35",
+          "source_updated_at": "2026-01-01T00:35:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_036",
+        "data": {
+          "id": "multi_1_036",
+          "name": "Multi 1/36",
+          "source_updated_at": "2026-01-01T00:36:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_037",
+        "data": {
+          "id": "multi_1_037",
+          "name": "Multi 1/37",
+          "source_updated_at": "2026-01-01T00:37:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_038",
+        "data": {
+          "id": "multi_1_038",
+          "name": "Multi 1/38",
+          "source_updated_at": "2026-01-01T00:38:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_039",
+        "data": {
+          "id": "multi_1_039",
+          "name": "Multi 1/39",
+          "source_updated_at": "2026-01-01T00:39:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_040",
+        "data": {
+          "id": "multi_1_040",
+          "name": "Multi 1/40",
+          "source_updated_at": "2026-01-01T00:40:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_041",
+        "data": {
+          "id": "multi_1_041",
+          "name": "Multi 1/41",
+          "source_updated_at": "2026-01-01T00:41:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_042",
+        "data": {
+          "id": "multi_1_042",
+          "name": "Multi 1/42",
+          "source_updated_at": "2026-01-01T00:42:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_043",
+        "data": {
+          "id": "multi_1_043",
+          "name": "Multi 1/43",
+          "source_updated_at": "2026-01-01T00:43:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_044",
+        "data": {
+          "id": "multi_1_044",
+          "name": "Multi 1/44",
+          "source_updated_at": "2026-01-01T00:44:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_045",
+        "data": {
+          "id": "multi_1_045",
+          "name": "Multi 1/45",
+          "source_updated_at": "2026-01-01T00:45:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_046",
+        "data": {
+          "id": "multi_1_046",
+          "name": "Multi 1/46",
+          "source_updated_at": "2026-01-01T00:46:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_047",
+        "data": {
+          "id": "multi_1_047",
+          "name": "Multi 1/47",
+          "source_updated_at": "2026-01-01T00:47:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_048",
+        "data": {
+          "id": "multi_1_048",
+          "name": "Multi 1/48",
+          "source_updated_at": "2026-01-01T00:48:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_049",
+        "data": {
+          "id": "multi_1_049",
+          "name": "Multi 1/49",
+          "source_updated_at": "2026-01-01T00:49:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_050",
+        "data": {
+          "id": "multi_1_050",
+          "name": "Multi 1/50",
+          "source_updated_at": "2026-01-01T00:50:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_051",
+        "data": {
+          "id": "multi_1_051",
+          "name": "Multi 1/51",
+          "source_updated_at": "2026-01-01T00:51:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_052",
+        "data": {
+          "id": "multi_1_052",
+          "name": "Multi 1/52",
+          "source_updated_at": "2026-01-01T00:52:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_053",
+        "data": {
+          "id": "multi_1_053",
+          "name": "Multi 1/53",
+          "source_updated_at": "2026-01-01T00:53:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_054",
+        "data": {
+          "id": "multi_1_054",
+          "name": "Multi 1/54",
+          "source_updated_at": "2026-01-01T00:54:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_055",
+        "data": {
+          "id": "multi_1_055",
+          "name": "Multi 1/55",
+          "source_updated_at": "2026-01-01T00:55:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_056",
+        "data": {
+          "id": "multi_1_056",
+          "name": "Multi 1/56",
+          "source_updated_at": "2026-01-01T00:56:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_057",
+        "data": {
+          "id": "multi_1_057",
+          "name": "Multi 1/57",
+          "source_updated_at": "2026-01-01T00:57:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_058",
+        "data": {
+          "id": "multi_1_058",
+          "name": "Multi 1/58",
+          "source_updated_at": "2026-01-01T00:58:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_059",
+        "data": {
+          "id": "multi_1_059",
+          "name": "Multi 1/59",
+          "source_updated_at": "2026-01-01T00:59:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_060",
+        "data": {
+          "id": "multi_1_060",
+          "name": "Multi 1/60",
+          "source_updated_at": "2026-01-01T01:00:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_061",
+        "data": {
+          "id": "multi_1_061",
+          "name": "Multi 1/61",
+          "source_updated_at": "2026-01-01T01:01:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_062",
+        "data": {
+          "id": "multi_1_062",
+          "name": "Multi 1/62",
+          "source_updated_at": "2026-01-01T01:02:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_063",
+        "data": {
+          "id": "multi_1_063",
+          "name": "Multi 1/63",
+          "source_updated_at": "2026-01-01T01:03:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_064",
+        "data": {
+          "id": "multi_1_064",
+          "name": "Multi 1/64",
+          "source_updated_at": "2026-01-01T01:04:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_065",
+        "data": {
+          "id": "multi_1_065",
+          "name": "Multi 1/65",
+          "source_updated_at": "2026-01-01T01:05:01.000Z"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_066",
+        "data": {
+          "id": "multi_1_066",
+          "name": "Multi 1/66"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_067",
+        "data": {
+          "id": "multi_1_067",
+          "name": "Multi 1/67"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_068",
+        "data": {
+          "id": "multi_1_068",
+          "name": "Multi 1/68"
+        }
+      },
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "multi_1_069",
+        "data": {
+          "id": "multi_1_069",
+          "name": "Multi 1/69"
+        }
+      }
+    ],
+    "conn_00000001-0000-4000-8000-000000000001/saved_tracks": [
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "trk_1",
+        "data": {
+          "id": "trk_1",
+          "title": "Track 1",
+          "artist": "Artist 1",
+          "source_updated_at": "2026-01-01T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "trk_2",
+        "data": {
+          "id": "trk_2",
+          "title": "Track 2",
+          "artist": "Artist 2",
+          "source_updated_at": "2026-01-01T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "trk_3",
+        "data": {
+          "id": "trk_3",
+          "title": "Track 3",
+          "artist": "Artist 3",
+          "source_updated_at": "2026-01-01T00:00:00Z"
+        }
+      }
+    ],
+    "conn_00000001-0000-4000-8000-000000000001/playlists": [
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": [
+          "owner_1",
+          "pl_1"
+        ],
+        "data": {
+          "owner_id": "owner_1",
+          "playlist_id": "pl_1",
+          "title": "Playlist 1"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": [
+          "owner_1",
+          "pl_2"
+        ],
+        "data": {
+          "owner_id": "owner_1",
+          "playlist_id": "pl_2",
+          "title": "Playlist 2"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": [
+          "owner_1",
+          "pl_3"
+        ],
+        "data": {
+          "owner_id": "owner_1",
+          "playlist_id": "pl_3",
+          "title": "Playlist 3"
+        }
+      }
+    ],
+    "conn_00000001-0000-4000-8000-000000000001/events": [
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "evt_1",
+        "data": {
+          "id": "evt_1",
+          "name": "Event 1",
+          "genres": [
+            "event"
+          ],
+          "source_updated_at": "2026-01-01T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "evt_2",
+        "data": {
+          "id": "evt_2",
+          "name": "Event 2",
+          "genres": [
+            "event"
+          ],
+          "source_updated_at": "2026-01-01T00:00:00Z"
+        }
+      },
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "evt_3",
+        "data": {
+          "id": "evt_3",
+          "name": "Event 3",
+          "genres": [
+            "event"
+          ],
+          "source_updated_at": "2026-01-01T00:00:00Z"
+        }
+      }
+    ],
+    "conn_00000002-0000-4000-8000-000000000002/media": [
+      {
+        "instance": "conn_00000002-0000-4000-8000-000000000002",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "med_forbidden",
+        "data": {
+          "id": "med_forbidden",
+          "caption": "Forbidden reference",
+          "blob_ref": {
+            "blob_id": "sha256:3502418d26dec4de923192c98e7e3f9636c4a98a4a8de7dcb4549ac6157f1c11",
+            "mime_type": "image/jpeg"
+          },
+          "source_updated_at": "2026-01-01T00:00:00Z"
+        }
+      }
+    ],
+    "conn_00000001-0000-4000-8000-000000000001/media": [
+      {
+        "instance": "conn_00000001-0000-4000-8000-000000000001",
+        "emitted_at": "2026-01-01T00:00:00Z",
+        "key": "med_1",
+        "data": {
+          "id": "med_1",
+          "caption": "Seeded media record",
+          "blob_ref": {
+            "blob_id": "sha256:3502418d26dec4de923192c98e7e3f9636c4a98a4a8de7dcb4549ac6157f1c11",
+            "mime_type": "image/jpeg"
+          },
+          "source_updated_at": "2026-01-01T00:00:00Z"
+        }
+      }
+    ]
+  },
+  "blob": {
+    "blobId": "sha256:3502418d26dec4de923192c98e7e3f9636c4a98a4a8de7dcb4549ac6157f1c11",
+    "mimeType": "image/jpeg",
+    "digest": {
+      "sha256": "3502418d26dec4de923192c98e7e3f9636c4a98a4a8de7dcb4549ac6157f1c11",
+      "length": 25
+    }
+  },
+  "forbiddenBlob": {
+    "blobId": "sha256:a62a1af3058dc77a3624db630fc1fdd0533703e2c6666d4462a2a958c1ed0cdd",
+    "mimeType": "image/jpeg",
+    "digest": {
+      "sha256": "a62a1af3058dc77a3624db630fc1fdd0533703e2c6666d4462a2a958c1ed0cdd",
+      "length": 29
+    }
+  }
+}

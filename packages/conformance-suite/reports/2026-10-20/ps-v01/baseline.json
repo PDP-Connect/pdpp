@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "scope": "Core v0.1 baseline; no conformance status conferred",
+  "suite": {
+    "baseSha": "541ebc38f0794d5c7c2d09198a978471dd61733e",
+    "headSha": "b4ea865c27b9ccb8059a3a14117304c621fac381",
+    "sourceHashes": {
+      "packages/conformance-suite/package.json": "87f17a5361d6335a0bc9ec6496485b274d30a60d2628325d4a80f0ca72656f86",
+      "packages/conformance-suite/scripts/bind-baseline.mjs": "afbd5ad853ab1652dd00155d4752d57cc7825fca200521a8c3cd444c9a19fd3e",
+      "packages/conformance-suite/scripts/check-expectations.ts": "57c6c68d397c989e9c9d5c58a7034dc64b28e1cc61d0843a379a05f4224122ae",
+      "packages/conformance-suite/scripts/reference-target.sh": "672b1203620bd3ba4a40b2174cd848795e6cd1604a442cd566e331ce417a049d",
+      "packages/conformance-suite/scripts/render-matrix-md.ts": "705f8d11ea4ab34f28951edd4bba386313c913783b82fc2eace617537a6dc8ae",
+      "packages/conformance-suite/scripts/replication-baseline.sh": "581c9cf668e919456feb9b78460154d93b929e85db7b68074a9aa4357dc82978",
+      "packages/conformance-suite/scripts/spec-delta.ts": "b6dba9241694a4dee95fdd583e8530353fe4d2a57ff5e7e1df67cf66105fba40",
+      "packages/conformance-suite/scripts/vana-boot.mts": "42f84e337926b2d44740d55a76b4297dddff7f02cb7541182fc4d01547934562",
+      "packages/conformance-suite/scripts/vana-run.ts": "4325eec1987860af4b387b78c502dbef87e39890ac6a009c3bb2441c1fccf60c",
+      "packages/conformance-suite/scripts/vana-target.sh": "1dbd673ca9179219b5b48926915c5e02a84ea306c8bb3e2c21cedc0ee641b565",
+      "packages/conformance-suite/src/cli.ts": "5ab971ea9d9a882c2110fc7d9798dbd0aefac2cf9288e2850f1b2731f8b71ae1",
+      "packages/conformance-suite/src/harness/adapter.ts": "e2938b8e60f80e3e91fb83b22f5dd1f70a16b184005e88dc6b324cd546680ee3",
+      "packages/conformance-suite/src/harness/client-adapter.ts": "5d7b68c53d765eda8c7d89228b14dcb8da536b94645d27a218704c1aac3b445e",
+      "packages/conformance-suite/src/harness/grant-schema.ts": "c7433be3058a53c0588dfa8e8d6ac06384bfbfef2ed0ac70c3f61242f81d57f8",
+      "packages/conformance-suite/src/harness/http.ts": "77371eac15c59cb97bdd111b5dd9dfcb90e74f1cf048e03625363e1efcec7fcf",
+      "packages/conformance-suite/src/harness/media-type.ts": "8c2064e9ed67fc2bcf35c9d1a59173c47eda0422cb502b5d275f63383ba5f850",
+      "packages/conformance-suite/src/harness/runner.ts": "6af6174426a5d7f3b9528b042a89362d9b31dc614dc0f7c120e25cf3d98a6db2",
+      "packages/conformance-suite/src/index.ts": "0b463349625d6354b7f8519881bea9bc67cd51b23e4eb491257fa9ff2cb29681",
+      "packages/conformance-suite/src/report/markdown.ts": "e21a1c19148bfee330c1fa53515ec49bc645058e35676a9e0059f7bb97cba967",
+      "packages/conformance-suite/src/report/requirements.ts": "7c7e3c7f584feb37d7da6d30af230b0a680f19758e5eb5bb3497af9e9a6f8b15",
+      "packages/conformance-suite/src/report/result.ts": "a161068ffa1e9bab81d12b01565307ae3136c934e98e52c0a12c863013894fc9",
+      "packages/conformance-suite/src/report/review-evidence.ts": "853f2cacc8bbb7b800f9eaccb3342f7ae5b259d25b208a7d1624226eaa5c024c",
+      "packages/conformance-suite/src/requirements/catalog.ts": "409197d9a4aeda36a361709fc597b45f87e52c519108fe90f23f149511f120a4",
+      "packages/conformance-suite/src/requirements/exclusions.ts": "62e9b147004635f3af57431173b69b3bfc72001f5653f61482f3b73a908f6eb9",
+      "packages/conformance-suite/src/requirements/matrix.ts": "f8ca75620935ffe81e827ca53e164336c3127a28b725de46a92685f2d28d3c7f",
+      "packages/conformance-suite/src/requirements/spec-scan.ts": "2784811293a74c8fbb28d34b55c48dd34b611968638f927acd76a6148fbd277e",
+      "packages/conformance-suite/src/suite.ts": "0303dc94a858d914d1aceded65ba5105d0975683db421b22df14c2c69dbf5bbd",
+      "packages/conformance-suite/src/targets/http-target.ts": "3d5a5c547a35aa990132ca8dfaf8cf3dbf833ad59c03b78dc2c33d8a9a159b01",
+      "packages/conformance-suite/src/targets/reference-adapter.ts": "d42ad15b35d0a3cb42cc892693f03d47d7f27f69bc68add7e20a7a0038c47888",
+      "packages/conformance-suite/src/targets/reference-as-adapter.ts": "caf8b7688dc7deff23a39c07ef107165cef8cc580e56d88bcb18a9c09175f825",
+      "packages/conformance-suite/src/targets/reference-server.ts": "d97037f50087d2331b7c692fe2e16467c521ec140b4885f12952291daf54fdfc",
+      "packages/conformance-suite/src/targets/vana-ps-adapter.ts": "17e1a9b138a7f2cb41f06b7cd386e9abf94d3db71aed209a873fb33273681f7c",
+      "packages/conformance-suite/src/tests/authorization-server.ts": "dc82c4693b8f6edfb8d21046b546f5288a6aaecfa34a1e349f39f41ffdcb12e3",
+      "packages/conformance-suite/src/tests/client-identity.ts": "6f8340cf71a60937f4567db9a3a65c3b51947adb0caf53e0124c40cc69c99e12",
+      "packages/conformance-suite/src/tests/client.ts": "49320781e5ac6a04b45a4455f56e6509bdfe71f9e64124be8bcf2c12ce1eb933",
+      "packages/conformance-suite/src/tests/consent-artifact.ts": "1737742eae3793f735728ba1836e6b6d93c2b0fab63a4748b35b4ea958fd9206",
+      "packages/conformance-suite/src/tests/declaration-trust.ts": "4c9d571b7644f3a10e273a7748ea13957ad688848b03b84971e476664df76391",
+      "packages/conformance-suite/src/tests/declaration-validity.ts": "938ee844ec81137ae79bd24a258db8e1e70cd4c2e8678b6a2d1c93ba88754f17",
+      "packages/conformance-suite/src/tests/grant-integrity.ts": "6f129e62fcf4e32802554aed7a0206943718dcc613994c657a78a9a62699f2d4",
+      "packages/conformance-suite/src/tests/grant-lifecycle.ts": "8fb297910a47655614d39c87ae0debb47d746d70c9bc6a030446ca8316062142",
+      "packages/conformance-suite/src/tests/multi-instance.ts": "316b1b837250d72f83c57cea4f27882a5f473acdf16b45bd71558ad29f0e1795",
+      "packages/conformance-suite/src/tests/query-surface.ts": "4f676e0044fe94861f1112f56c3b742d3d62b2dd384e26d611f7acaff30cb053",
+      "packages/conformance-suite/src/tests/resolved-grant.ts": "aee799ed12d200a0cc0e4dfd7cf737a41d4a042b77814985b119202770cf3da2",
+      "packages/conformance-suite/src/tests/resource-server.ts": "05bdcae6422852d823a770b507329b4dcadff3551c71a8307888cd7e4fd16e21",
+      "packages/conformance-suite/src/tests/selection-validation.ts": "25951c6650be95a3b9f6fbdb285206e951d2ebe36ea1686d2b8578cafc565fb7",
+      "packages/conformance-suite/src/tests/views.ts": "3119e10337a013aa53b8446e6ea006f8fb8d0f74b5d4eb9d393ef92a7ad75c7d",
+      "packages/conformance-suite/targets/http-target.example.json": "068d12ce8526fa9563bcbeba8da8cba1e5e5197ef447d4f834334f7847eb1ef2",
+      "packages/conformance-suite/targets/reference-implementation.json": "836debdba93e5ec0a21c02eb097b28cb0709bea998be136aa310ebc9b3fbaba0",
+      "packages/conformance-suite/targets/site-sandbox.json": "cab3c6459761fa76a87be7e548cccef82409ac340192a3fe6af2b9219cdff9ad",
+      "packages/conformance-suite/targets/vana-personal-server.json": "7bea598c4168db58af563dd627985975be328a5696df0b44029d979ca9b108de",
+      "packages/conformance-suite/test/adapter-hook-proofs.test.ts": "83b36311fd19bd941503e5999286acc843510ab723ff9ffd16ce0ec8937245d2",
+      "packages/conformance-suite/test/arrangement-transport.test.ts": "49d87ebabd03807fedf2c9d990911f528dc8ad154f197c65158bf7b5a8e39d76",
+      "packages/conformance-suite/test/as18-open-introspection.test.ts": "bbc9fa0acb9ada909647a2ef3f902341aa2b5fd5547ceb90bfd8d78e240bf02e",
+      "packages/conformance-suite/test/as20-refresh-introspection.test.ts": "b84d3edb0eab45306764b39c0c98590c191c85fb43b68900736026f00f8a17cc",
+      "packages/conformance-suite/test/as8-colocated-introspect.test.ts": "9f052fbad39483847f6f3f2bac09a53771b51c9688cef02cc610afef92099208",
+      "packages/conformance-suite/test/as9-colocated-introspect.test.ts": "fc7bff45a0df69e7d0226d5851b62c331e14393f38e75c36818189869ee082dd",
+      "packages/conformance-suite/test/baseline-binding.test.ts": "ff3aca6dd019e57600da0a630f4a464a56355a5f768fe2cb0e049ed45dd991b8",
+      "packages/conformance-suite/test/case-proof-coverage.test.ts": "594482234ac85e96790bf2f794223d5ff0869ccaf3fd49f2f4f0c30c1bd2478e",
+      "packages/conformance-suite/test/client-conformance.test.ts": "20e333ac49db1f4ac6caca38702647bf37ed90f9918028f921f0300f0f234b81",
+      "packages/conformance-suite/test/client-null-oracle.test.ts": "3f59f8b1ec8471ac9b8fe48c7070846d6659c2a034f089fb8d47a1c93ee29dd2",
+      "packages/conformance-suite/test/colocated-applicability.test.ts": "7b27f7d94fb0d99854cf7dfb783e45616a12939529fc4f3a11040449ee250cf1",
+      "packages/conformance-suite/test/fixtures/append-only-only-target.ts": "26108ddf5109fa0e4c0f6c183005ae3442eafeced209276f886ab01a489fbc9d",
+      "packages/conformance-suite/test/fixtures/proof-registry.ts": "e503caddc5156745118b431aa15e4d48ba7ac641a343178bc7904649f5e0fcfb",
+      "packages/conformance-suite/test/grant-schema-oracle.test.ts": "da2bf85d7d3f95c2005f4016373b5bdf20cf0373db66b9cf2375fe12a78e190b",
+      "packages/conformance-suite/test/incremental-sync-applicability.test.ts": "51db7ec093c49a973174d77fe4fd233407715070b4f062f2287a8be8ba093f0c",
+      "packages/conformance-suite/test/matrix-markdown.test.ts": "527cb8df36a3af7371fd2ee90cfdecb3038870f51ff2103380e3234061c4eec8",
+      "packages/conformance-suite/test/normative-matrix.test.ts": "11a268e359aa7bb2dbeb388adb874b365c01c18b7b3cba0c37315a1a108b945f",
+      "packages/conformance-suite/test/oracle-discrimination.test.ts": "cb863c7d45d506fd6dfad3051f0b049d957b1eaf456140657765a02c004fbe4a",
+      "packages/conformance-suite/test/precondition-honesty.test.ts": "53b784f3f6ee7222081f271cce7036e8a1fe336af3a097def5a263b33776372d",
+      "packages/conformance-suite/test/query-base.test.ts": "5c8940b64d2c29c471273ecf7f494cc109b638197a268c24f1a455c411a6750e",
+      "packages/conformance-suite/test/reference-target-lifecycle.test.ts": "1a72722306758f8a4d37b2ef5296b8553a0393cc400b4e99586b79a1179aae26",
+      "packages/conformance-suite/test/report-honesty.test.ts": "7288d34faec765d8ce579ddcd2dda786e56f3889c192245ed9c7606eae67f3da",
+      "packages/conformance-suite/test/requirements-report.test.ts": "8e48e5f262e25dee61eebac4e847a70b8dd6e5f19f63c427a85887616a5e0352",
+      "packages/conformance-suite/test/rs10-owner-expand-undeclared-relation.test.ts": "5a01896e421df1dd15f753d532c122e53f2a317dcc7bccfff3599e792e59899d",
+      "packages/conformance-suite/test/rs10-owner-filter-unknown-field.test.ts": "aa4781172b14eb1e76959c9b243fec3ad6546f42e8bc69373b27c3764ae949dd",
+      "packages/conformance-suite/test/rs10-unsupported-bracketed-shape.test.ts": "b569fd9560059f3161694203778b87a2c64e41e9b80cbc3a42f46646c7eca172",
+      "packages/conformance-suite/test/spec-completeness.test.ts": "076d25567e4add6de9d79f4904f4c98846bb37e34b1706dcdb1bb1fe68c8616c",
+      "packages/conformance-suite/test/vana-target-script.test.ts": "2089691a08aa843052d79cc5d1327581467261d147f4b4da246caa98a887e737",
+      "packages/conformance-suite/tsconfig.json": "39287db1d0825a827f199fb461d4423128664e4fc3eabf3e4df720859b9710d7"
+    },
+    "sourceDigest": "be43fc5533ec69fc9ebde5daad13887561910ee8087e5c207a7fab6d9f1b97f8",
+    "dirty": false
+  },
+  "spec": {
+    "repository": "PDP-Connect/pdpp",
+    "sha": "541ebc38f0794d5c7c2d09198a978471dd61733e",
+    "path": "spec-core.md",
+    "sha256": "80a38c963f777541ab10325e292291255c65df9211499b39e7f8eaf0083ad6b2",
+    "version": "0.1"
+  },
+  "target": {
+    "repository": "vana-com/personal-server-ts",
+    "sha": "0b5eac036a33cb714cdd6d3a71abddd98e609f2d",
+    "dirty": false
+  },
+  "runtime": {
+    "node": "v24.15.0",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "suiteExit": 1,
+  "caseCounts": {
+    "pass": 70,
+    "fail": 3,
+    "skip": 15,
+    "unsupported": 7,
+    "advisory": 0,
+    "not-tested": 0
+  },
+  "requirementCounts": {
+    "pass": 19,
+    "fail": 3,
+    "skip": 7,
+    "unsupported": 3,
+    "advisory": 0,
+    "not-tested": 5
+  },
+  "failures": [
+    {
+      "caseId": "RS-1/owner-sparse-fields-keep-required-fields",
+      "detail": "With fields=name the owner read dropped schema-required field(s) id from record \"art_1\". Core Section 8: \"Schema-required fields are always included.\"",
+      "owner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "RS-7/paginated-sync-session-anchored-to-one-horizon",
+      "detail": "Following next_cursor within a changes_since session returned 400.",
+      "owner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "RS-10/malformed-limit-rejected",
+      "detail": "Core Section 8 requires unsupported query shapes to be rejected with HTTP 400, but: limit=1.5 -> 200; limit=1junk -> 200.",
+      "owner": "vana-com/personal-server-ts"
+    }
+  ],
+  "hookGaps": [
+    {
+      "caseId": "AS-3/issued-grant-artifact-matches-section-7-schema",
+      "detail": "The target's approval response carried no grant artifact, so Section 7's full field tables are unobserved. The suite will not synthesize a grant body from its own request to stand in for one.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "AS-3/client-claims-stay-outside-the-resolved-grant",
+      "detail": "The target's approval surface returned no grant artifact, so whether client claims reached the resolved grant is unobserved. The suite will not treat an unreadable grant as evidence of their absence.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "AS-7/valid-url-hosted-client-identity-accepted",
+      "detail": "The adapter has no offerUrlHostedClientIdentity hook, so no client identity document can be presented to this AS and the unregistered-client interoperability obligation is unobservable.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "AS-7/malformed-url-hosted-client-identity-refused",
+      "detail": "The adapter has no offerUrlHostedClientIdentity hook, so no client identity document can be presented to this AS and the unregistered-client interoperability obligation is unobservable.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "AS-7/client-does-not-override-display-descriptions",
+      "detail": "Requires a ClientUnderTest adapter with a fixture request log.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "AS-10/single-use-grant-consumed",
+      "detail": "The adapter declares singleUseGrants but implements no reissueAgainstConsumedGrant hook, so the suite cannot attempt a second token issuance against the SAME consumed grant. A second, different grant would not prove reuse of the first is refused.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "AS-16/declaration-equivocation-refused-and-prior-content-retained",
+      "detail": "The refusal was correct, but this target does not report what it retains for the key, so the second half of the clause — that the previously accepted content survives — is unobserved. The suite will not assume retention from a refusal.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "RS-1/list-page-size-bounded-by-limit-across-instances",
+      "detail": "Precondition not arranged: issueMultiInstanceGrant: review was refused: HTTP 400 {\"error\":\"unsupported_instance_fan_in\",\"error_description\":\"Select one connection per stream\"}",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "RS-1/list-sort-order-across-instances",
+      "detail": "Precondition not arranged: issueMultiInstanceGrant: review was refused: HTTP 400 {\"error\":\"unsupported_instance_fan_in\",\"error_description\":\"Select one connection per stream\"}",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "RS-1/list-has-more-carries-next-cursor-across-instances",
+      "detail": "Precondition not arranged: issueMultiInstanceGrant: review was refused: HTTP 400 {\"error\":\"unsupported_instance_fan_in\",\"error_description\":\"Select one connection per stream\"}",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "RS-4/unrecognized-token-kind-is-unauthorized",
+      "detail": "The adapter has no tokenWithIntrospectedKind hook, so no token can be made to introspect as an unrecognized kind. The suite will not forge a token instead: Section 8 makes token format opaque to the RS, so a fabricated string is a token of NO kind — rejected at authentication for a different reason — and the case would pass against a server that never implemented this rule.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "RS-7/expired-sync-cursor-reported-as-gone",
+      "detail": "The adapter has no expireSyncCursor hook, so no cursor can be aged. Sleeping out a real retention period is not a test, and faking the clock tests the fake — so the target has to be asked to retire a token it issued.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "RS-7/changes-since-accepted-on-multi-instance-grant",
+      "detail": "Precondition not arranged: issueMultiInstanceGrant: review was refused: HTTP 400 {\"error\":\"unsupported_instance_fan_in\",\"error_description\":\"Select one connection per stream\"}",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "RS-11/unsupported-grant-schema-version-rejected",
+      "detail": "The target declined to mint a grant at schema version '9000.0'. Refusing to ISSUE such a grant is not the obligation clause 7.4-2 states, which is on the RS refusing to ENFORCE one, so this is recorded as missing evidence rather than as compliance.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    },
+    {
+      "caseId": "RS-12/foreign-subject-cannot-read",
+      "detail": "The adapter returned no foreign-subject owner token.",
+      "owner": "PDP-Connect/pdpp",
+      "targetOwner": "vana-com/personal-server-ts"
+    }
+  ],
+  "artifactHashes": {
+    "report.json": "599a9756f05257b7e2d3f2578ac86c3a948fac434acf4e9fbde6f08e50a89c9f",
+    "report.md": "6a2d9bf7746c43724c3cf14474913d72ca80ff21f099973519850025d49b8613",
+    "requirements.json": "9693863eee261d549bd85df045ceffe3078a11e2578f76edf508df5b917dc0de",
+    "target.json": "310b03d3dcc0fdc752c5f4aed677c448256398abb2bf05a3306fb9a46f8265ec",
+    "suite-source.json": "f8e291c0e3bc4b9b2d29d97eb86b19bd352bb04b51ef5a84a90a9b003ace9680",
+    "fixture-truth.json": "ba4bd7f01e35aa53d40af578e990c87021d3053d64a19973022ab2c1a6244ef4",
+    "fixture-probes.json": "774e2c6fd82331d61e857ab819984c0f166e476cc8e9f7306e3f844b19b4ae98",
+    "experimental-v0.2.json": "b521b56f3ac1f4649871cf928cd25ad821cc22ce2dd26d0264bf4644822077ea",
+    "experimental-v0.2.md": "46bcc5cb28c68a07197f315b5631b87d0a8e5881ebf6537f39653a9ecf0f14cf"
+  }
+}

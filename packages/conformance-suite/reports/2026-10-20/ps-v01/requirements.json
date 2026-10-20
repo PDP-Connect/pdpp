@@ -1,0 +1,2666 @@
+{
+  "header": {
+    "reportVersion": "1",
+    "specFile": "spec-core.md",
+    "specSha256": "80a38c963f777541ab10325e292291255c65df9211499b39e7f8eaf0083ad6b2",
+    "specVersion": "0.1",
+    "suiteVersion": "0.1.0",
+    "targetId": "vana-personal-server",
+    "runAt": "2026-10-20T13:58:51.560Z"
+  },
+  "summary": {
+    "must": {
+      "pass": 34,
+      "partial": 15,
+      "fail": 2,
+      "not-applicable": 19,
+      "untestable": 28,
+      "skip": 13,
+      "not-tested": 8
+    },
+    "should": {
+      "pass": 1,
+      "partial": 0,
+      "fail": 0,
+      "not-applicable": 0,
+      "untestable": 8,
+      "skip": 0,
+      "not-tested": 4
+    }
+  },
+  "must": [
+    {
+      "clauseId": "2.2-1",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "2",
+      "specLine": 104,
+      "text": "However, when the AS and RS are deployed separately, the AS-to-RS token-resolution contract is normative: the RS MUST authenticate to the RFC 7662 introspection endpoint and resolve the complete grant enforcement context from its response.",
+      "sectionNineItems": [
+        "RS-3",
+        "AS-18"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-18/introspection-requires-authentication",
+          "outcome": "unsupported"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "AS-18/introspection-requires-authentication: The target does not declare the capability this requirement is conditional on.",
+      "gapNote": "The authentication half is tested; that the RS resolves the COMPLETE enforcement context from the response has no dedicated case, and the same obligation at 8.2-2 is review-only."
+    },
+    {
+      "clauseId": "2.2-2",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "2",
+      "specLine": 104,
+      "text": "The RS MUST enforce the request from that response and MUST NOT make a second AS lookup.",
+      "sectionNineItems": [
+        "RS-3"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "The no-second-lookup half is an internal call-count obligation; black-box observation cannot distinguish one lookup from two that produced the same answer, as at 8.2-2.",
+      "gapNote": "The no-second-lookup half is an internal call-count obligation; black-box observation cannot distinguish one lookup from two that produced the same answer, as at 8.2-2."
+    },
+    {
+      "clauseId": "2.2-3",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server"
+      ],
+      "section": "2",
+      "specLine": 104,
+      "text": "Self-contained JWTs may be used as an optimization but MUST NOT be the sole revocation mechanism (see Section 10).",
+      "sectionNineItems": [
+        "AS-8"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-8/revoked-grant-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path.",
+      "gapNote": "A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path."
+    },
+    {
+      "clauseId": "3.0-1",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "3",
+      "specLine": 194,
+      "text": "Only live passthrough is bounded by the upstream grant: when the personal server does not hold a copy and reads from the platform to fulfill a downstream request, it MUST stay within the upstream grant.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Binds the personal server's read of an upstream platform, a hop outside the Core HTTP surface a client can reach; no Section 9 item names it and no black-box hook exposes the upstream request.",
+      "gapNote": "Binds the personal server's read of an upstream platform, a hop outside the Core HTTP surface a client can reach; no Section 9 item names it and no black-box hook exposes the upstream request."
+    },
+    {
+      "clauseId": "3.0-2",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "3",
+      "specLine": 196,
+      "text": "A recipient MUST NOT transfer its token or let an ungranted party exercise it.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Onward transfer of a token happens outside the protocol exchange; a client-capture fixture sees only the client's own requests, and no Section 9 client item names this obligation.",
+      "gapNote": "Onward transfer of a token happens outside the protocol exchange; a client-capture fixture sees only the client's own requests, and no Section 9 client item names this obligation."
+    },
+    {
+      "clauseId": "4.3-2",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "4",
+      "specLine": 247,
+      "text": "If a client's cursor has expired, the resource server MUST return HTTP 410 Gone with error code `cursor_expired`.",
+      "sectionNineItems": [
+        "RS-7"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-7/expired-sync-cursor-reported-as-gone",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "RS-7/expired-sync-cursor-reported-as-gone: The adapter has no expireSyncCursor hook, so no cursor can be aged. Sleeping out a real retention period is not a test, and faking the clock tests the fake — so the target has to be asked to retire a token it issued."
+    },
+    {
+      "clauseId": "4.3-3",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "4",
+      "specLine": 247,
+      "text": "The client MUST perform a full re-sync to re-establish its baseline.",
+      "sectionNineItems": [
+        "CL-5"
+      ],
+      "cases": [
+        {
+          "caseId": "CL-5/full-resync-after-cursor-expired",
+          "outcome": "not-run"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "The target does not claim the role this clause binds."
+    },
+    {
+      "clauseId": "4.3-4",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "4",
+      "specLine": 249,
+      "text": "A client MUST NOT use a `next_cursor` value as a `changes_since` parameter; they are different token spaces and will produce a protocol error if confused.",
+      "sectionNineItems": [
+        "CL-3"
+      ],
+      "cases": [
+        {
+          "caseId": "CL-3/changes-since-does-not-reuse-next-cursor",
+          "outcome": "not-run"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "The target does not claim the role this clause binds."
+    },
+    {
+      "clauseId": "4.3-5",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "4",
+      "specLine": 249,
+      "text": "The terminal page of a `changes_since` result MUST include a `next_changes_since` field.",
+      "sectionNineItems": [
+        "RS-8"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-8/terminal-page-carries-next-changes-since",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-7/changes-since-accepted-on-multi-instance-grant",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "RS-7/changes-since-accepted-on-multi-instance-grant: Precondition not arranged: issueMultiInstanceGrant: review was refused: HTTP 400 {\"error\":\"unsupported_instance_fan_in\",\"error_description\":\"Select one connection per stream\"}"
+    },
+    {
+      "clauseId": "4.3-6",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "4",
+      "specLine": 251,
+      "text": "When a record is deleted from a `mutable_state` stream, the resource server MUST include a tombstone entry in incremental sync responses for clients whose cursor predates the deletion.",
+      "sectionNineItems": [
+        "RS-7"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-7/deletion-surfaces-as-a-tombstone",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-7/tombstone-envelope-survives-sparse-fields",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "4.5-1",
+      "level": "must",
+      "role": [
+        "source-declaration",
+        "resource-server"
+      ],
+      "section": "4",
+      "specLine": 310,
+      "text": "Each primary-key component MUST be serialized as a string in the canonical encoding. Non-string primary-key field values (e.g., integers, dates) MUST be converted to their string representation before encoding.",
+      "sectionNineItems": [],
+      "cases": [
+        {
+          "caseId": "RS-1/compound-primary-key-canonically-encoded",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "4.5-2",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "4",
+      "specLine": 312,
+      "text": "For any record, the values of the `data` fields named by the stream's `primary_key` MUST match the values in the `key` envelope field (in order). A resource server or profile-defined write interface MUST reject a record before storage when those values disagree.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "untestable",
+      "reason": "The rejection half binds a write interface the Collection Profile defines, which Core's read-only query surface cannot reach; the read half could be checked but no Section 9 item claims it.",
+      "gapNote": "The rejection half binds a write interface the Collection Profile defines, which Core's read-only query surface cannot reach; the read half could be checked but no Section 9 item claims it."
+    },
+    {
+      "clauseId": "4.8-1",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "4",
+      "specLine": 372,
+      "text": "`mime_type` MUST be a valid IANA media type (see [IANA Media Types](https://www.iana.org/assignments/media-types/)).",
+      "sectionNineItems": [],
+      "cases": [
+        {
+          "caseId": "RS-1/blob-ref-mime-type-valid",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "The value lives in a record's `data.blob_ref`, so the case reads served records for the blob fixture's grant. It judges media-type STRUCTURE only: a registered top-level type or a well-formed `x-` token, a `/`, and a subtype made of RFC 6838 restricted-name characters (parameters are not validated). It does not consult the live IANA registry, so a well-formed but unregistered subtype passes, and it observes only the records that fixture exposes. A `mime_type` that is present but not a string fails; a `blob_ref` with no `mime_type` skips. No Section 9 item covers it, so `requirementIds` stays empty; the case is filed under RS-1 because the blob fixture is its surface.",
+      "gapNote": "The value lives in a record's `data.blob_ref`, so the case reads served records for the blob fixture's grant. It judges media-type STRUCTURE only: a registered top-level type or a well-formed `x-` token, a `/`, and a subtype made of RFC 6838 restricted-name characters (parameters are not validated). It does not consult the live IANA registry, so a well-formed but unregistered subtype passes, and it observes only the records that fixture exposes. A `mime_type` that is present but not a string fails; a `blob_ref` with no `mime_type` skips. No Section 9 item covers it, so `requirementIds` stays empty; the case is filed under RS-1 because the blob fixture is its surface."
+    },
+    {
+      "clauseId": "5.2-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 508,
+      "text": "The authorization server MUST treat `publisher.id` as authenticated only where an accepted channel or configured mapping binds that publisher to the declaration; absent that binding it MUST NOT support source acceptance, redirect policy, attribution, or any other trust decision.",
+      "sectionNineItems": [
+        "AS-16"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "What the AS treated as authenticated is an internal trust decision; from outside, an accepted and a rejected declaration differ only by whether consent proceeded, which does not discriminate this clause.",
+      "gapNote": "What the AS treated as authenticated is an internal trust decision; from outside, an accepted and a rejected declaration differ only by whether consent proceeded, which does not discriminate this clause."
+    },
+    {
+      "clauseId": "5.2-2",
+      "level": "must",
+      "role": [
+        "source-declaration"
+      ],
+      "section": "5",
+      "specLine": 515,
+      "text": "`primary_key` and `cursor_field` MUST reference fields declared here.",
+      "sectionNineItems": [],
+      "cases": [
+        {
+          "caseId": "AS-16/key-field-not-declared-in-schema-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass",
+      "gapNote": "No Section 9 item covers declaration internal consistency, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes."
+    },
+    {
+      "clauseId": "5.2-3",
+      "level": "must",
+      "role": [
+        "source-declaration"
+      ],
+      "section": "5",
+      "specLine": 518,
+      "text": "MUST reference a field declared in the schema.",
+      "sectionNineItems": [],
+      "cases": [
+        {
+          "caseId": "AS-16/consent-time-field-not-declared-in-schema-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass",
+      "gapNote": "No Section 9 item covers `consent_time_field` declaration validity, so `requirementIds` stays empty; the case is filed under AS-16 because declaration acceptance is the surface it observes."
+    },
+    {
+      "clauseId": "5.2-4",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 519,
+      "text": "The AS MUST reject grants that request `time_range` on a stream without a `consent_time_field`, or that request an unsupported selection parameter.",
+      "sectionNineItems": [
+        "AS-2"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-2/time-range-without-consent-time-field-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "5.2-5",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "source-declaration"
+      ],
+      "section": "5",
+      "specLine": 525,
+      "text": "If `$schema` is present, it MUST equal `https://json-schema.org/draft/2020-12/schema`. This dialect choice does not by itself guarantee identical validator behavior. The AS MUST meta-validate each embedded stream schema before accepting the declaration. Embedded `$ref` and `$dynamicRef` values MUST be local fragment references. A declaration MUST NOT make consent interpretation depend on a mutable remote schema.",
+      "sectionNineItems": [
+        "AS-16"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-16/embedded-schema-remote-reference-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "Partially covered. The case exercises the local-reference obligation (`$ref`/`$dynamicRef` must be local fragments), which is the half that makes consent interpretation depend on a mutable remote schema. The `$schema` dialect equality and full metaschema meta-validation are implemented by the reference target but not separately asserted: a case for each would need its own defect to discriminate, and the remote-reference oracle already fails a target that skips embedded-schema validation altogether.",
+      "gapNote": "Partially covered. The case exercises the local-reference obligation (`$ref`/`$dynamicRef` must be local fragments), which is the half that makes consent interpretation depend on a mutable remote schema. The `$schema` dialect equality and full metaschema meta-validation are implemented by the reference target but not separately asserted: a case for each would need its own defect to discriminate, and the remote-reference oracle already fails a target that skips embedded-schema validation altogether."
+    },
+    {
+      "clauseId": "5.3-4",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "5",
+      "specLine": 541,
+      "text": "The requesting client MUST NOT override or supplement these descriptions in the selection request.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-7/client-does-not-override-display-descriptions",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "AS-7/client-does-not-override-display-descriptions: Requires a ClientUnderTest adapter with a fixture request log."
+    },
+    {
+      "clauseId": "5.4-1",
+      "level": "must",
+      "role": [
+        "source-declaration"
+      ],
+      "section": "5",
+      "specLine": 560,
+      "text": "The `consent_time_field` may be the same field as `cursor_field`, but they serve different purposes and MUST be declared separately: [...] `cursor_field` governs incremental sync mechanics (which records to fetch since the last run). [...] `consent_time_field` governs consent-time filtering (which records fall within the authorized time window).",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "not-tested",
+      "reason": "No Section 9 item covers it, so `requirementIds` stays empty. Core explicitly permits streams that cannot define a stable `consent_time_field` to omit it, so the former negative fixture (`time_range_capable` with no consent field) did not violate this clause. A valid black-box fixture would need to observe the AS deriving a consent boundary from `cursor_field`; the declaration submission surface exposes neither that derived state nor a normative capability member.",
+      "gapNote": "No Section 9 item covers it, so `requirementIds` stays empty. Core explicitly permits streams that cannot define a stable `consent_time_field` to omit it, so the former negative fixture (`time_range_capable` with no consent field) did not violate this clause. A valid black-box fixture would need to observe the AS deriving a consent boundary from `cursor_field`; the declaration submission surface exposes neither that derived state nor a normative capability member."
+    },
+    {
+      "clauseId": "5.4-2",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 567,
+      "text": "The `consent_time_field` MUST be rendered in human-readable consent UX.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "A rendering obligation on the consent surface, which black-box HTTP cannot observe; the suite can see what the AS bound, not what it showed.",
+      "gapNote": "A rendering obligation on the consent surface, which black-box HTTP cannot observe; the suite can see what the AS bound, not what it showed."
+    },
+    {
+      "clauseId": "5.6-2",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 598,
+      "text": "The AS MUST NOT define a view that includes fields absent from the retained SourceDeclaration schema for the relevant stream.",
+      "sectionNineItems": [
+        "AS-12"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-12/view-within-declared-schema",
+          "outcome": "unsupported"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "AS-12/view-within-declared-schema: The target does not declare the capability this requirement is conditional on."
+    },
+    {
+      "clauseId": "5.6-2a",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 600,
+      "text": "Grants are bound to the resolved field set at issuance time: `fields` in the `StreamGrant` is authoritative, not the view name. View evolution (adding new fields to a view) never silently widens existing grants. Re-consent is required before a client can access new fields, even if those fields are subsequently added to a named view the client already has a grant for.",
+      "sectionNineItems": [
+        "AS-13"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-13/view-evolution-does-not-widen-an-issued-grant",
+          "outcome": "unsupported"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "AS-13/view-evolution-does-not-widen-an-issued-grant: The target does not declare the capability this requirement is conditional on.",
+      "gapNote": "Recorded as MUST-equivalent because Section 9 AS item 13 states it as one; the spec's own sentence here carries no RFC 2119 keyword, so the binding level is the conformance list's rather than this subsection's. The covering case exercises the field-widening half against a target whose view evolves after issuance; the re-consent half binds a consent flow the suite cannot drive."
+    },
+    {
+      "clauseId": "5.6-3",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server",
+        "client"
+      ],
+      "section": "5",
+      "specLine": 602,
+      "text": "Implementations MUST treat unrecognized view URIs as opaque identifiers.",
+      "sectionNineItems": [],
+      "cases": [
+        {
+          "caseId": "AS-13/unrecognized-view-uri-treated-as-opaque",
+          "outcome": "unsupported"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "AS-13/unrecognized-view-uri-treated-as-opaque: The target does not declare the capability this requirement is conditional on."
+    },
+    {
+      "clauseId": "5.8-1",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "5",
+      "specLine": 616,
+      "text": "A client MUST NOT introduce a new source authority or declaration URI during authorization.",
+      "sectionNineItems": [
+        "AS-16"
+      ],
+      "cases": [],
+      "result": "not-tested",
+      "reason": "The former case submitted a non-normative top-level `authority` member to an operator declaration-onboarding hook. Core defines the accepted authority as AS-side acceptance metadata and gives `SourceDeclaration` no such document member; this surface cannot observe a client introducing authority during authorization. A client-authorization fixture with an overridable source identifier is required.",
+      "gapNote": "The former case submitted a non-normative top-level `authority` member to an operator declaration-onboarding hook. Core defines the accepted authority as AS-side acceptance metadata and gives `SourceDeclaration` no such document member; this surface cannot observe a client introducing authority during authorization. A client-authorization fixture with an overridable source identifier is required."
+    },
+    {
+      "clauseId": "5.8-2",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 618,
+      "text": "For a `provider_native` source, `source.id` MUST be identical to the protected-resource identifier the authorization server has already accepted for that resource. The authorization server MUST reject any mismatch before consent or grant issuance.",
+      "sectionNineItems": [
+        "AS-16"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-16/provider-native-source-id-mismatch-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "5.8-3",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 620,
+      "text": "Without such a binding, the authorization server MUST NOT rely on `publisher.id` for source acceptance, attribution, redirect policy, or any other trust decision.",
+      "sectionNineItems": [
+        "AS-16"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Restates 5.2-1 as an acceptance obligation; what the AS relied on internally is not observable from a request outcome.",
+      "gapNote": "Restates 5.2-1 as an acceptance obligation; what the AS relied on internally is not observable from a request outcome."
+    },
+    {
+      "clauseId": "5.8-4",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 622,
+      "text": "Different parsed content under an accepted key is equivocation: the authorization server MUST reject it and retain the previously accepted content, and MUST NOT infer ordering or freshness from `declaration_version`.",
+      "sectionNineItems": [
+        "AS-16"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-16/declaration-equivocation-refused-and-prior-content-retained",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "AS-16/declaration-equivocation-refused-and-prior-content-retained: The refusal was correct, but this target does not report what it retains for the key, so the second half of the clause — that the previously accepted content survives — is unobserved. The suite will not assume retention from a refusal."
+    },
+    {
+      "clauseId": "5.8-5",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 624,
+      "text": "When retrieving a declaration, the authorization server MUST use HTTPS without ambient credentials. It MUST validate every redirect target and the final URL against its accepted declaration pointer and network policy. It MUST reject a declaration that requires automatic retrieval of a remote schema, and MUST fail closed when any check fails.",
+      "sectionNineItems": [
+        "AS-16"
+      ],
+      "cases": [],
+      "result": "not-tested",
+      "reason": "Missing fixture: an inbound HTTP endpoint serving a candidate declaration that logs each request the AS makes (credentials sent, redirect targets followed, remote schema retrieval). The harness already hosts one for client identity documents (src/tests/client-identity.ts serveDocument) but has no hook to offer an AS a declaration pointer to retrieve. The HTTPS requirement needs a TLS fixture, and the connection-bound address check is internal to the AS, so those parts stay unobservable even with the fixture.",
+      "gapNote": "Missing fixture: an inbound HTTP endpoint serving a candidate declaration that logs each request the AS makes (credentials sent, redirect targets followed, remote schema retrieval). The harness already hosts one for client identity documents (src/tests/client-identity.ts serveDocument) but has no hook to offer an AS a declaration pointer to retrieve. The HTTPS requirement needs a TLS fixture, and the connection-bound address check is internal to the AS, so those parts stay unobservable even with the fixture."
+    },
+    {
+      "clauseId": "5.8-6",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 626,
+      "text": "The authorization server MUST validate the destination address against its network policy immediately before each connection attempt, including each redirect hop. It MUST connect only to an address from that validated result.",
+      "sectionNineItems": [
+        "AS-16"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "A DNS-rebinding defence stated as a connection-time ordering obligation; distinguishing it from a URL-time check needs control of the AS's resolver, not an HTTP client.",
+      "gapNote": "A DNS-rebinding defence stated as a connection-time ordering obligation; distinguishing it from a URL-time check needs control of the AS's resolver, not an HTTP client."
+    },
+    {
+      "clauseId": "5.8-7",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 628,
+      "text": "An authorization server MUST render declaration display values safely for the output context, by context-appropriate escaping, by sanitization, or by any construction that guarantees the value cannot be interpreted as markup, script, or a control sequence in that context.",
+      "sectionNineItems": [
+        "AS-7",
+        "AS-16"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "The obligation is on rendered output in an unspecified output context; asserting on it means asserting on a deployment's HTML, which is outside what this suite judges.",
+      "gapNote": "The obligation is on rendered output in an unspecified output context; asserting on it means asserting on a deployment's HTML, which is outside what this suite judges."
+    },
+    {
+      "clauseId": "5.8-8",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server"
+      ],
+      "section": "5",
+      "specLine": 628,
+      "text": "Current declaration capabilities MUST NOT widen an issued grant.",
+      "sectionNineItems": [
+        "AS-16",
+        "RS-15"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-15/client-metadata-projection-closed",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "6.1-2",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 700,
+      "text": "a conforming authorization server MUST NOT reject a valid client ID metadata document solely because the client is not preregistered.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-7/valid-url-hosted-client-identity-accepted",
+          "outcome": "skip"
+        },
+        {
+          "caseId": "AS-7/malformed-url-hosted-client-identity-refused",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "AS-7/valid-url-hosted-client-identity-accepted: The adapter has no offerUrlHostedClientIdentity hook, so no client identity document can be presented to this AS and the unregistered-client interoperability obligation is unobservable."
+    },
+    {
+      "clauseId": "6.1-4",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 702,
+      "text": "For PDPP Core v0.1 interoperability, a conforming authorization server MUST accept a valid URL-hosted client identity unless local policy denies authorization.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-7/valid-url-hosted-client-identity-accepted",
+          "outcome": "skip"
+        },
+        {
+          "caseId": "AS-7/malformed-url-hosted-client-identity-refused",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "AS-7/valid-url-hosted-client-identity-accepted: The adapter has no offerUrlHostedClientIdentity hook, so no client identity document can be presented to this AS and the unregistered-client interoperability obligation is unobservable."
+    },
+    {
+      "clauseId": "6.1-5",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 706,
+      "text": "The AS MUST resolve requester identity metadata from the best available source. Source precedence is local registration or trust-registry metadata, then validated software-statement metadata if supported, then validated binding metadata, then inline `client_display`, then `client_id` fallback.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Which source the AS resolved from is visible only on the consent surface it renders, which is not black-box observable.",
+      "gapNote": "Which source the AS resolved from is visible only on the consent surface it renders, which is not black-box observable."
+    },
+    {
+      "clauseId": "6.1-6",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 707,
+      "text": "If the resolved metadata contains a display name, the AS MUST display it to the user during consent. If no display name is available, the AS MUST display `client_id` as the requester identity.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "A display obligation on the consent surface; a case can see what the AS bound into the grant, not what it rendered.",
+      "gapNote": "A display obligation on the consent surface; a case can see what the AS bound into the grant, not what it rendered."
+    },
+    {
+      "clauseId": "6.1-8",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 709,
+      "text": "If the server has a positive trust signal for the client (e.g., verified domain control, trust registry membership), it MUST render that status distinctly (e.g., a \"verified\" badge). If it has no positive trust signal, it MUST treat the client as unverified and SHOULD display an \"unverified app\" indicator.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Trust-signal rendering is a consent-surface obligation; not observable over the protocol surface this suite drives.",
+      "gapNote": "Trust-signal rendering is a consent-surface obligation; not observable over the protocol surface this suite drives."
+    },
+    {
+      "clauseId": "6.1-9",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 710,
+      "text": "The AS MAY treat verified domain control as a positive trust signal under obligation 4, and when it does it MUST name the verified domain rather than assert an unqualified verification (for example \"Verified domain: example.com\", not \"Verified app\"). [...] the AS MUST NOT present it as one.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Consent-surface wording obligation; not observable without asserting on a deployment's rendered text.",
+      "gapNote": "Consent-surface wording obligation; not observable without asserting on a deployment's rendered text."
+    },
+    {
+      "clauseId": "6.1-10",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 711,
+      "text": "The AS MUST treat `logo_uri` as untrusted content until it has been accepted under local policy. It MUST NOT fetch and render a client-supplied remote logo in the consent UI unless the client is verified or the asset has been proxied, cached, and approved under local policy. For unverified clients, the AS SHOULD generate a monogram from the resolved display name.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "not-tested",
+      "reason": "Missing fixture: an inbound HTTP endpoint named as an unverified client's `logo_uri` that logs requests, plus a way to open the consent surface so a fetch triggered by rendering it is seen. The harness hosts a request-logging fixture for client identity documents (src/tests/client-identity.ts serveDocument) but has no consent-render hook. A fetch made by the owner's browser, rather than the AS, would be seen only if the fixture logs it; the verified-client and proxied-asset exceptions need local policy knowledge the suite lacks.",
+      "gapNote": "Missing fixture: an inbound HTTP endpoint named as an unverified client's `logo_uri` that logs requests, plus a way to open the consent surface so a fetch triggered by rendering it is seen. The harness hosts a request-logging fixture for client identity documents (src/tests/client-identity.ts serveDocument) but has no consent-render hook. A fetch made by the owner's browser, rather than the AS, would be seen only if the fixture logs it; the verified-client and proxied-asset exceptions need local policy knowledge the suite lacks."
+    },
+    {
+      "clauseId": "6.2-2",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 718,
+      "text": "the field MUST NOT contain secrets, access tokens, owner-scoped clients, dynamically registered clients, or private registration state.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-7/pre-registered-public-clients-carry-no-private-state",
+          "outcome": "unsupported"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "AS-7/pre-registered-public-clients-carry-no-private-state: This AS does not advertise `pre_registered_public` in `pdpp_registration_modes_supported`, so the obligations on `pdpp_pre_registered_public_clients` do not bind it."
+    },
+    {
+      "clauseId": "6.3-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 728,
+      "text": "The AS MUST render `client_claims` content separately from protocol-enforced grant terms and MUST attribute it to the client (e.g., \"[client name] says:\"). The AS MUST NOT render client claims in the same visual register as protocol-enforced grant terms, structured policy declarations, or declaration-authored data descriptions.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "A visual-register obligation on the consent surface. This is the clause AS-7 chiefly summarizes, and it is the clearest example of a MUST that is not black-box observable in principle.",
+      "gapNote": "A visual-register obligation on the consent surface. This is the clause AS-7 chiefly summarizes, and it is the clearest example of a MUST that is not black-box observable in principle."
+    },
+    {
+      "clauseId": "6.3-2",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 730,
+      "text": "If rendered on the final owner review surface, `client_claims` MUST be normalized and bound exactly, with client attribution, into the immutable final approval artifact and review revision. Retained consent evidence MUST preserve that binding.",
+      "sectionNineItems": [
+        "AS-15"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-15/rendered-client-claims-bound-with-attribution",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "6.4-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 746,
+      "text": "A conformant AS MUST preserve the distinction between protocol-enforced terms, structured policy declarations, declaration-authored data descriptions, and client-authored claims. It MUST NOT flatten these categories into a single undifferentiated consent surface.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "The normative core of AS-7, and not observable over HTTP: a case can see what the server bound, not what it rendered.",
+      "gapNote": "The normative core of AS-7, and not observable over HTTP: a case can see what the server bound, not what it rendered."
+    },
+    {
+      "clauseId": "6.5-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 753,
+      "text": "The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized.",
+      "sectionNineItems": [
+        "AS-6"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-6/unregistered-purpose-not-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "6.5-2",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "client"
+      ],
+      "section": "6",
+      "specLine": 754,
+      "text": "Clients SHOULD provide this field. When present, the AS MUST display it.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "The AS half is a display obligation on the consent surface; the client half is a SHOULD needing client capture. Neither is reachable from this suite's seam.",
+      "gapNote": "The AS half is a display obligation on the consent surface; the client half is a SHOULD needing client capture. Neither is reachable from this suite's seam."
+    },
+    {
+      "clauseId": "6.6-1",
+      "level": "must",
+      "role": [
+        "client",
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 770,
+      "text": "A selection request does not carry `source.kind`. The authorization server derives the provenance class from the declaration it accepted for `source.id`, and records it in consent evidence and any issued grant, where a client reads it back through introspection. A client whose policy depends on provenance therefore reads it from the issued grant rather than asserting an expectation in the request; Section 9 states that as a client requirement.",
+      "sectionNineItems": [
+        "CL-8"
+      ],
+      "cases": [
+        {
+          "caseId": "CL-8/reads-source-kind-from-grant",
+          "outcome": "not-run"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "The target does not claim the role this clause binds."
+    },
+    {
+      "clauseId": "6.7-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 774,
+      "text": "The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.dev/purpose/ai_training`.",
+      "sectionNineItems": [
+        "AS-14"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-14/explicit-consent-required-for-ai-training",
+          "outcome": "pass"
+        }
+      ],
+      "result": "untestable"
+    },
+    {
+      "clauseId": "6.8-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 787,
+      "text": "Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. AS returns 400 `invalid_request` if both are present.",
+      "sectionNineItems": [
+        "AS-2",
+        "AS-5"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-2/view-and-fields-mutually-exclusive",
+          "outcome": "unsupported"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "AS-2/view-and-fields-mutually-exclusive: The target does not declare the capability this requirement is conditional on."
+    },
+    {
+      "clauseId": "6.8-2",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 793,
+      "text": "The authorization server MUST reject selection requests that specify `time_range` on a stream without that field.",
+      "sectionNineItems": [
+        "AS-2"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-2/time-range-without-consent-time-field-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "6.8-3",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 797,
+      "text": "A wildcard entry MUST be the only entry in `streams`. Otherwise stream names MUST be unique within the request.",
+      "sectionNineItems": [
+        "AS-2",
+        "AS-4"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-2/wildcard-beside-named-stream-refused",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "AS-2/duplicate-stream-name-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "6.9-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 818,
+      "text": "Each selection preset MUST NOT contain the same stream name more than once.",
+      "sectionNineItems": [
+        "AS-2"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-16/duplicate-stream-in-a-selection-preset-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "7.1-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "7",
+      "specLine": 866,
+      "text": "**The following field table is normative.** [Section 13](#typescript-types)'s TypeScript types are a non-normative convenience mirror; on conflict, this table wins.",
+      "sectionNineItems": [
+        "AS-3",
+        "AS-11"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-3/issued-grant-artifact-matches-section-7-schema",
+          "outcome": "skip"
+        },
+        {
+          "caseId": "AS-3/resolved-grant-matches-observable-schema-fields",
+          "outcome": "pass"
+        }
+      ],
+      "result": "skip",
+      "reason": "AS-3/issued-grant-artifact-matches-section-7-schema: The target's approval response carried no grant artifact, so Section 7's full field tables are unobserved. The suite will not synthesize a grant body from its own request to stand in for one."
+    },
+    {
+      "clauseId": "7.2-0",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "7",
+      "specLine": 891,
+      "text": "Unique non-empty resolved field allowlist, authoritative for RS enforcement. Top-level field names only.",
+      "sectionNineItems": [
+        "AS-11"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-2/dotted-nested-field-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "The `fields` row of the normative StreamGrant table; carries no RFC 2119 keyword, so its MUST level is Section 9 AS item 11's. The top-level-only constraint is tested; uniqueness and non-emptiness of the issued allowlist are not.",
+      "gapNote": "The `fields` row of the normative StreamGrant table; carries no RFC 2119 keyword, so its MUST level is Section 9 AS item 11's. The top-level-only constraint is tested; uniqueness and non-emptiness of the issued allowlist are not."
+    },
+    {
+      "clauseId": "7.2-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "7",
+      "specLine": 897,
+      "text": "Before the final approval surface is shown, the AS MUST resolve omitted `instance_ids` to exact eligible instance handles or require an explicit owner choice.",
+      "sectionNineItems": [
+        "AS-15",
+        "AS-4"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-4/omitted-fields-expanded-before-issuance",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "7.2-2",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "7",
+      "specLine": 897,
+      "text": "The final approval artifact MUST include the exact resolved `instance_ids`, stream names, fields, resources, temporal field, `since`, `until`, purpose, retention, client identity, and grant expiry.",
+      "sectionNineItems": [
+        "AS-15"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-15/final-approval-artifact-carries-resolved-terms",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "7.2-3",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "7",
+      "specLine": 897,
+      "text": "The approval mutation MUST bind to an immutable review revision or digest over the authorization decision fields.",
+      "sectionNineItems": [
+        "AS-15"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-15/approval-requires-the-issued-revision",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "7.2-4",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server"
+      ],
+      "section": "7",
+      "specLine": 897,
+      "text": "`client_claims` MUST remain outside the resolved grant and RS enforcement.",
+      "sectionNineItems": [
+        "AS-3",
+        "AS-15"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-3/client-claims-stay-outside-the-resolved-grant",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "AS-3/client-claims-stay-outside-the-resolved-grant: The target's approval surface returned no grant artifact, so whether client claims reached the resolved grant is unobserved. The suite will not treat an unreadable grant as evidence of their absence."
+    },
+    {
+      "clauseId": "7.2-5",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "7",
+      "specLine": 897,
+      "text": "If instance eligibility or the reviewed revision becomes stale before approval, the AS MUST reject approval and require a new review.",
+      "sectionNineItems": [
+        "AS-15"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-15/approval-requires-the-issued-revision",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "The case rejects approval of a revision the AS never issued. It never makes a previously valid revision stale, nor changes instance eligibility after review, so the stale-after-change obligation is not exercised. Missing case: approve a revision after eligibility changes.",
+      "gapNote": "The case rejects approval of a revision the AS never issued. It never makes a previously valid revision stale, nor changes instance eligibility after review, so the stale-after-change obligation is not exercised. Missing case: approve a revision after eligibility changes."
+    },
+    {
+      "clauseId": "7.2-6",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "7",
+      "specLine": 897,
+      "text": "If `client_claims` are rendered during final review, the final approval artifact and review revision MUST also bind the normalized exact claims with client attribution.",
+      "sectionNineItems": [
+        "AS-7",
+        "AS-15"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-15/rendered-client-claims-bound-with-attribution",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "7.4-1",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server",
+        "client"
+      ],
+      "section": "7",
+      "specLine": 913,
+      "text": "Three independent version axes exist in PDPP. They MUST NOT be conflated:",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "untestable",
+      "reason": "A design constraint on implementations rather than a checkable wire behaviour; its observable consequences are the three axis rows, recorded separately as 7.4-2, AS-17, and RS-11.",
+      "gapNote": "A design constraint on implementations rather than a checkable wire behaviour; its observable consequences are the three axis rows, recorded separately as 7.4-2, AS-17, and RS-11."
+    },
+    {
+      "clauseId": "7.4-2",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "7",
+      "specLine": 917,
+      "text": "RS MUST reject grants with unsupported major versions, returning 400 `unsupported_version`.",
+      "sectionNineItems": [
+        "RS-11"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-11/unsupported-grant-schema-version-rejected",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "RS-11/unsupported-grant-schema-version-rejected: The target declined to mint a grant at schema version '9000.0'. Refusing to ISSUE such a grant is not the obligation clause 7.4-2 states, which is on the RS refusing to ENFORCE one, so this is recorded as missing evidence rather than as compliance."
+    },
+    {
+      "clauseId": "7.4-3",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server"
+      ],
+      "section": "7",
+      "specLine": 921,
+      "text": "The current persisted-authorization-state reader MUST reject any persisted authorization state whose version or shape it cannot validate against a supported contract before its caller continues introspection or route handling. The reader MUST NOT reconstruct missing authorization or binding facts from current configuration. A deployment that cannot support or explicitly migrate such state MUST require fresh consent.",
+      "sectionNineItems": [
+        "AS-21"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "An ordering obligation over internal persisted state: the suite would need to write a legacy-shaped record into the target's store, which the adapter deliberately cannot do, and even then could not observe that the refusal happened *before* route handling.",
+      "gapNote": "An ordering obligation over internal persisted state: the suite would need to write a legacy-shaped record into the target's store, which the adapter deliberately cannot do, and even then could not observe that the refusal happened *before* route handling."
+    },
+    {
+      "clauseId": "7.5-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "7",
+      "specLine": 927,
+      "text": "The AS MUST reject subsequent attempts to issue new client access tokens against the same consumed grant.",
+      "sectionNineItems": [
+        "AS-10"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-10/single-use-grant-consumed",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "AS-10/single-use-grant-consumed: The adapter declares singleUseGrants but implements no reissueAgainstConsumedGrant hook, so the suite cannot attempt a second token issuance against the SAME consumed grant. A second, different grant would not prove reuse of the first is refused."
+    },
+    {
+      "clauseId": "7.10-1",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "7",
+      "specLine": 957,
+      "text": "Retention is a structured policy declaration and policy commitment by the data recipient (the client). PDPP does not technically enforce retention. Enforcement is through legal agreements or contractual obligations; a trust registry supports admission and accountability for a retention commitment rather than enforcing it, because Core defines no compliance-evidence query a registry could answer.",
+      "sectionNineItems": [
+        "CL-6"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "The spec states outright that PDPP does not technically enforce retention, so no protocol test can exist; Section 9 CL item 6 states it as a client MUST, and the only available evidence is contractual rather than executable.",
+      "gapNote": "The spec states outright that PDPP does not technically enforce retention, so no protocol test can exist; Section 9 CL item 6 states it as a client MUST, and the only available evidence is contractual rather than executable."
+    },
+    {
+      "clauseId": "8.1-1",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1066,
+      "text": "Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`.",
+      "sectionNineItems": [
+        "RS-3"
+      ],
+      "cases": [],
+      "result": "not-tested",
+      "reason": "Needs a separated AS/RS target plus a clock the case controls: the suite would have to revoke a grant and prove the RS stops serving within 60 seconds, which no current target topology supports.",
+      "gapNote": "Needs a separated AS/RS target plus a clock the case controls: the suite would have to revoke a grant and prove the RS stops serving within 60 seconds, which no current target topology supports."
+    },
+    {
+      "clauseId": "8.1-1a",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1073,
+      "text": "For owner-token current-capability reads, the effective filter is the permitted owner request filter alone: an owner token carries no grant, so there is no grant filter to intersect. Request filters can only narrow the current owner read and cannot widen it. [...] In v0.1, client-token reads do not have request-time predicate filters (see List records below); the resource server enforces the frozen grant constraints and rejects a client request-time predicate filter rather than evaluating it.",
+      "sectionNineItems": [
+        "RS-5"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-9/client-token-exact-filter-rejected",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-10/owner-filter-unknown-field-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "Carries no RFC 2119 keyword here; its MUST level is Section 9 RS item 5's, and the enforceable half is restated with keywords at 8.9-2 and 8.9-9. The owner-side \"cannot widen\" property is not directly tested — that needs an owner filter naming a record outside the owner's scope.",
+      "gapNote": "Carries no RFC 2119 keyword here; its MUST level is Section 9 RS item 5's, and the enforceable half is restated with keywords at 8.9-2 and 8.9-9. The owner-side \"cannot widen\" property is not directly tested — that needs an owner filter naming a record outside the owner's scope."
+    },
+    {
+      "clauseId": "8.1-2",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1077,
+      "text": "The RS MUST NOT re-validate authorization against the current SourceDeclaration. All enforcement constraints are in the resolved grant. Current serving metadata MAY route a granted instance, describe current schemas or query capabilities, or reject a request that cannot currently be served. It MUST NOT widen or reinterpret a stream, instance, field, time field, bound, or resource key.",
+      "sectionNineItems": [
+        "RS-2",
+        "RS-15"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-15/client-metadata-projection-closed",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-2/field-projection-not-exceeded",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.1-3",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1079,
+      "text": "The RS MUST determine the token's properties (including `pdpp_token_kind`) solely from the introspection response, never from token syntax.",
+      "sectionNineItems": [
+        "RS-4"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-4/token-kind-not-inferred-from-syntax",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.2-1",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1083,
+      "text": "For separated AS/RS deployments, the RS MUST authenticate to the AS introspection endpoint as required by RFC 7662.",
+      "sectionNineItems": [
+        "RS-3",
+        "AS-18"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-18/introspection-requires-authentication",
+          "outcome": "unsupported"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "AS-18/introspection-requires-authentication: The target does not declare the capability this requirement is conditional on."
+    },
+    {
+      "clauseId": "8.2-2",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1095,
+      "text": "The introspection response MUST contain the complete context needed to enforce the request. The separated RS MUST enforce only from that response and MUST NOT make a second AS lookup while handling the request.",
+      "sectionNineItems": [
+        "AS-18",
+        "RS-3"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "The no-second-lookup half is an internal call-count obligation; black-box observation cannot distinguish one lookup from two that produced the same answer.",
+      "gapNote": "The no-second-lookup half is an internal call-count obligation; black-box observation cannot distinguish one lookup from two that produced the same answer."
+    },
+    {
+      "clauseId": "8.2-3",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1097,
+      "text": "A resource server that receives a `pdpp_token_kind` value it does not recognize MUST treat the token as unauthorized for all operations defined in this specification.",
+      "sectionNineItems": [
+        "RS-4"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-4/unrecognized-token-kind-is-unauthorized",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "RS-4/unrecognized-token-kind-is-unauthorized: The adapter has no tokenWithIntrospectedKind hook, so no token can be made to introspect as an unrecognized kind. The suite will not forge a token instead: Section 8 makes token format opaque to the RS, so a fabricated string is a token of NO kind — rejected at authentication for a different reason — and the case would pass against a server that never implemented this rule."
+    },
+    {
+      "clauseId": "8.2-4",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1099,
+      "text": "Self-contained JWTs (e.g., signed JWTs) are allowed as an optimization but MUST NOT be the sole revocation mechanism; the RS MUST still be able to check active status through introspection or local equivalent.",
+      "sectionNineItems": [
+        "RS-3"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-8/revoked-grant-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path.",
+      "gapNote": "A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path."
+    },
+    {
+      "clauseId": "8.3-1",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1105,
+      "text": "The RS MUST derive the `subject_id` from the introspection response and MUST reject any request attempting to access data outside that subject's scope.",
+      "sectionNineItems": [
+        "RS-12"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-12/foreign-subject-cannot-read",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "RS-12/foreign-subject-cannot-read: The adapter returned no foreign-subject owner token."
+    },
+    {
+      "clauseId": "8.4-1",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1113,
+      "text": "A resource server MUST publish OAuth 2.0 Protected Resource Metadata as defined in RFC 9728.",
+      "sectionNineItems": [
+        "RS-16"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-16/protected-resource-metadata-published",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.4-2",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1115,
+      "text": "On a 401, the resource server MUST include a `WWW-Authenticate: Bearer` challenge, as RFC 6750 Section 3 requires. It MUST set `error=\"invalid_token\"` when a token was presented and rejected. And it MUST include the `resource_metadata` parameter RFC 9728 Section 5.1 defines, carrying the URL of this document.",
+      "sectionNineItems": [
+        "RS-16"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-16/401-carries-resource-metadata-challenge",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-16/unauthenticated-request-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.4-4",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1130,
+      "text": "A PDPP resource server MUST publish `authorization_servers` when that set is enumerable, so a client can reach the issuer without prior configuration. When the set is not enumerable, the resource server MUST omit the member rather than publish a partial list.",
+      "sectionNineItems": [
+        "RS-16"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Whether the target's authorization-server set is enumerable is not declared anywhere the suite can read, so the presence or absence of the member cannot be judged; closing this needs a target-config field stating enumerability.",
+      "gapNote": "Whether the target's authorization-server set is enumerable is not declared anywhere the suite can read, so the presence or absence of the member cannot be judged; closing this needs a target-config field stating enumerability."
+    },
+    {
+      "clauseId": "8.7-1",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1186,
+      "text": "Current query, view, relationship, filter, expansion, and aggregation capabilities MUST NOT appear unless that capability is explicitly part of a future frozen grant vocabulary. Current metadata MAY report availability/freshness or reject an unavailable operation, but MUST NOT make the grant appear broader or semantically different than what was issued. A source declaration change made after the grant was issued (e.g., a new field) MUST NOT become visible through this endpoint for that grant.",
+      "sectionNineItems": [
+        "RS-15"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-15/client-metadata-projection-closed",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.9-1",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "8",
+      "specLine": 1281,
+      "text": "Clients MUST NOT parse or construct cursor tokens.",
+      "sectionNineItems": [
+        "CL-3"
+      ],
+      "cases": [
+        {
+          "caseId": "CL-3/forwards-cursors-as-opaque-values",
+          "outcome": "not-run"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "The target does not claim the role this clause binds."
+    },
+    {
+      "clauseId": "8.9-2",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1283,
+      "text": "Owner-token current-capability filters only. Client-token requests MUST reject exact and range forms in v0.1.",
+      "sectionNineItems": [
+        "RS-9"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-9/client-token-exact-filter-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.9-3",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1284,
+      "text": "Client-token records requests MUST reject `view`; clients use explicit `fields` or the field projection already frozen into the grant. Mutually exclusive with `fields`.",
+      "sectionNineItems": [
+        "RS-9"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-9/client-token-view-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "The client-token rejection half is covered. The sentence's second half — `view` and `fields` being mutually exclusive — is an owner-token concern (a client token must reject `view` outright, so the pair can never both be honoured there) and is tracked at 6.8-1, which needs a view-declaring target.",
+      "gapNote": "The client-token rejection half is covered. The sentence's second half — `view` and `fields` being mutually exclusive — is an owner-token concern (a client token must reject `view` outright, so the pair can never both be honoured there) and is tracked at 6.8-1, which needs a view-declaring target."
+    },
+    {
+      "clauseId": "8.9-4",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1286,
+      "text": "Client-token requests MUST reject this parameter in v0.1.",
+      "sectionNineItems": [
+        "RS-9"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-9/client-token-expand-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.9-5",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1286,
+      "text": "Client-token requests MUST reject this parameter in v0.1.",
+      "sectionNineItems": [
+        "RS-9",
+        "RS-10"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-9/client-token-expand-limit-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.9-6",
+      "level": "must",
+      "role": [
+        "resource-server",
+        "source-declaration"
+      ],
+      "section": "8",
+      "specLine": 1290,
+      "text": "Advanced stream-specific query power MUST be declared in stream metadata under `query`.",
+      "sectionNineItems": [
+        "RS-14"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-14/owner-metadata-full-current-document",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.9-7",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1292,
+      "text": "Unknown query parameters and unsupported query shapes MUST be rejected with HTTP 400 and MUST NOT be silently ignored.",
+      "sectionNineItems": [
+        "RS-10"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-10/unknown-parameter-rejected",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-10/unsupported-bracketed-shape-rejected",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-10/owner-filter-unknown-field-rejected",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-10/owner-expand-undeclared-relation-rejected",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-10/malformed-limit-rejected",
+          "outcome": "fail"
+        }
+      ],
+      "result": "fail",
+      "reason": "RS-10/malformed-limit-rejected: Core Section 8 requires unsupported query shapes to be rejected with HTTP 400, but: limit=1.5 -> 200; limit=1junk -> 200."
+    },
+    {
+      "clauseId": "8.9-8",
+      "level": "must",
+      "role": [
+        "resource-server",
+        "client"
+      ],
+      "section": "8",
+      "specLine": 1294,
+      "text": "clients SHOULD branch on `code`, not on message text. [...] Warnings are not errors and MUST NOT change the HTTP status.",
+      "sectionNineItems": [
+        "RS-10"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-10/oversized-limit-clamped-with-warning",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.9-9",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1296,
+      "text": "Client-token requests that contain any exact or range `filter[...]` parameter MUST be rejected with HTTP 400 `invalid_request` before the RS consults current SourceDeclaration or serving metadata. This rejection applies regardless of whether the field or operator would otherwise be declared.",
+      "sectionNineItems": [
+        "RS-9"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-9/client-token-exact-filter-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "The status and code are tested; the ordering half (\"before the RS consults ... metadata\") is not, and black-box observation cannot establish it.",
+      "gapNote": "The status and code are tested; the ordering half (\"before the RS consults ... metadata\") is not, and black-box observation cannot establish it."
+    },
+    {
+      "clauseId": "8.9-10",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1301,
+      "text": "Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be rejected with HTTP 400 `invalid_request` before the RS consults current SourceDeclaration or serving metadata.",
+      "sectionNineItems": [
+        "RS-9"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-9/client-token-expand-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.9-11",
+      "level": "must",
+      "role": [
+        "resource-server",
+        "client"
+      ],
+      "section": "8",
+      "specLine": 1309,
+      "text": "a client MUST follow a `next_cursor` with the same `order` value that produced it. To change direction, the client MUST restart pagination without a cursor. Resource servers MUST reject order-mismatched page cursors as `invalid_cursor`.",
+      "sectionNineItems": [
+        "RS-6",
+        "CL-3"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-6/order-mismatched-cursor-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "The resource-server half is covered. The client half — that a client follows a `next_cursor` with the same `order` and restarts pagination to change direction — binds the client's outgoing requests and stays `client-capture`: the adapter has no reverse channel onto a client under test.",
+      "gapNote": "The resource-server half is covered. The client half — that a client follows a `next_cursor` with the same `order` and restarts pagination to change direction — binds the client's outgoing requests and stays `client-capture`: the adapter has no reverse channel onto a client under test."
+    },
+    {
+      "clauseId": "8.9-12",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "8",
+      "specLine": 1311,
+      "text": "If the cursor has expired (HTTP 410 Gone with error code `cursor_expired`), the client MUST perform a full re-sync.",
+      "sectionNineItems": [
+        "CL-5"
+      ],
+      "cases": [
+        {
+          "caseId": "CL-5/endpoint-cursor-expiry-also-full-resyncs",
+          "outcome": "not-run"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "The target does not claim the role this clause binds."
+    },
+    {
+      "clauseId": "8.9-13",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1313,
+      "text": "Eligibility for `changes_since` MUST be computed on the grant-authorized projection, not on the unprojected record. Returning a record whose authorized projection is unchanged is a protocol violation because it leaks that hidden fields changed.",
+      "sectionNineItems": [
+        "RS-7"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-7/sync-eligibility-computed-on-the-authorized-projection",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.9-14",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1315,
+      "text": "If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`.",
+      "sectionNineItems": [
+        "RS-7",
+        "RS-8"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-7/paginated-sync-session-anchored-to-one-horizon",
+          "outcome": "fail"
+        }
+      ],
+      "result": "fail",
+      "reason": "RS-7/paginated-sync-session-anchored-to-one-horizon: Following next_cursor within a changes_since session returned 400."
+    },
+    {
+      "clauseId": "8.9-15",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1350,
+      "text": "The terminal page of a `changes_since` request (i.e., `has_more: false`) MUST include `next_changes_since`.",
+      "sectionNineItems": [
+        "RS-8"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-8/terminal-page-carries-next-changes-since",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-7/changes-since-accepted-on-multi-instance-grant",
+          "outcome": "skip"
+        }
+      ],
+      "result": "skip",
+      "reason": "RS-7/changes-since-accepted-on-multi-instance-grant: Precondition not arranged: issueMultiInstanceGrant: review was refused: HTTP 400 {\"error\":\"unsupported_instance_fan_in\",\"error_description\":\"Select one connection per stream\"}"
+    },
+    {
+      "clauseId": "8.9-16",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "8",
+      "specLine": 249,
+      "text": "then store `next_changes_since` from the terminal page for the next session.",
+      "sectionNineItems": [
+        "CL-4"
+      ],
+      "cases": [
+        {
+          "caseId": "CL-4/stores-terminal-next-changes-since",
+          "outcome": "not-run"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "The target does not claim the role this clause binds."
+    },
+    {
+      "clauseId": "8.12-1",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "8",
+      "specLine": 1383,
+      "text": "A `blob_id` alone does not grant access. The client MUST have discovered the blob through an authorized record.",
+      "sectionNineItems": [
+        "RS-1",
+        "RS-2"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-1/blob-outside-grant-refused",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-1/blob-unauthenticated-refused",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "RS-1/shared-blob-readable-through-any-authorized-reference",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.12-2",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1385,
+      "text": "**Direct response** MUST include: [...] `Content-Type` (IANA media type) [...] `Content-Length` if known [...] `Cache-Control: private, no-store` [...] `Accept-Ranges: bytes` if range requests are supported",
+      "sectionNineItems": [
+        "RS-1"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-1/get-blob-bytes",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "Content-Length is checked against the body only when present: the case cannot tell whether the length was known, so an omitted Content-Length is not a finding. `Accept-Ranges: bytes` is not asserted: the case never issues a Range request, so it cannot tell whether the target supports ranges.",
+      "gapNote": "Content-Length is checked against the body only when present: the case cannot tell whether the length was known, so an omitted Content-Length is not a finding. `Accept-Ranges: bytes` is not asserted: the case never issues a Range request, so it cannot tell whether the target supports ranges."
+    },
+    {
+      "clauseId": "8.12-3",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1391,
+      "text": "**Redirect response** (HTTP 302) MUST include: [...] `Location` header pointing to a short-lived signed URL (valid for at least 60 seconds) [...] `Cache-Control: no-store`",
+      "sectionNineItems": [
+        "RS-1"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-1/blob-redirect-response-valid",
+          "outcome": "unsupported"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "RS-1/blob-redirect-response-valid: The target served the blob directly (200), so the redirect-only obligations of Section 8 do not apply; RS-1/get-blob-bytes covers the direct response.",
+      "gapNote": "The header half is checked; the \"valid for at least 60 seconds\" half is not, because the suite deliberately does not follow the signed URL and so cannot observe its expiry."
+    },
+    {
+      "clauseId": "8.13-1",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "8",
+      "specLine": 1415,
+      "text": "Clients MUST treat unrecognized error codes as opaque and fall back to the actual HTTP status code and applicable response headers.",
+      "sectionNineItems": [
+        "CL-7"
+      ],
+      "cases": [
+        {
+          "caseId": "CL-7/unknown-error-code-keeps-http-status-authoritative",
+          "outcome": "not-run"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "The target does not claim the role this clause binds."
+    },
+    {
+      "clauseId": "8.13-3",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "8",
+      "specLine": 1421,
+      "text": "An absent, unknown, malformed, or status-incompatible `type` or `code` is opaque and MUST NOT override the actual status code or relevant headers.",
+      "sectionNineItems": [
+        "CL-7"
+      ],
+      "cases": [
+        {
+          "caseId": "CL-7/status-incompatible-code-does-not-override-status",
+          "outcome": "not-run"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "The target does not claim the role this clause binds."
+    },
+    {
+      "clauseId": "8.13-4",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "8",
+      "specLine": 1422,
+      "text": "Unknown identifiers MUST NOT cause parse failure.",
+      "sectionNineItems": [
+        "CL-7"
+      ],
+      "cases": [
+        {
+          "caseId": "CL-7/unknown-error-identifiers-do-not-break-parser",
+          "outcome": "not-run"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "The target does not claim the role this clause binds."
+    },
+    {
+      "clauseId": "8.14-1",
+      "level": "must",
+      "role": [
+        "resource-server",
+        "authorization-server"
+      ],
+      "section": "8",
+      "specLine": 1458,
+      "text": "If the `PDPP-Version` header is absent, the RS uses the current stable version and returns the selected version in the `PDPP-Version` response header. If the requested version is not supported, the RS returns 400 `unsupported_version`.",
+      "sectionNineItems": [
+        "AS-17",
+        "RS-11"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-11/unsupported-version-rejected",
+          "outcome": "pass"
+        },
+        {
+          "caseId": "AS-17/unsupported-version-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "Carries no RFC 2119 keyword; its MUST level is Section 9 AS item 17 and RS item 11. The unsupported-version half is tested on both roles; the absent-header half — that the response echoes the selected version in a `PDPP-Version` response header — is not asserted by any case, and needs only an unwritten case, not a new hook.",
+      "gapNote": "Carries no RFC 2119 keyword; its MUST level is Section 9 AS item 17 and RS item 11. The unsupported-version half is tested on both roles; the absent-header half — that the response echoes the selected version in a `PDPP-Version` response header — is not asserted by any case, and needs only an unwritten case, not a new hook."
+    },
+    {
+      "clauseId": "10.2-1",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "10",
+      "specLine": 1554,
+      "text": "For separated AS/RS deployments, the RS MUST authenticate to the AS introspection endpoint (RFC 7662) and enforce only from its response. It MUST NOT make a second AS lookup while handling the request.",
+      "sectionNineItems": [
+        "RS-3",
+        "AS-18"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-18/introspection-requires-authentication",
+          "outcome": "unsupported"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "AS-18/introspection-requires-authentication: The target does not declare the capability this requirement is conditional on.",
+      "gapNote": "The authentication half is tested; the no-second-lookup half is an internal call-count obligation, as at 8.2-2."
+    },
+    {
+      "clauseId": "10.2-2",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "10",
+      "specLine": 1556,
+      "text": "Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`. This bounds the propagation window for revocation.",
+      "sectionNineItems": [
+        "RS-3",
+        "AS-8"
+      ],
+      "cases": [],
+      "result": "not-tested",
+      "reason": "Restates 8.1-1 as a revocation-propagation bound; needs a separated AS/RS target and a timed revocation observation, neither of which the current topologies support.",
+      "gapNote": "Restates 8.1-1 as a revocation-propagation bound; needs a separated AS/RS target and a timed revocation observation, neither of which the current topologies support."
+    },
+    {
+      "clauseId": "10.2-3",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "10",
+      "specLine": 1558,
+      "text": "An access token issued with or from a refresh-token family MUST be linked to that family and MUST have a short, token-specific expiration no later than the family or grant expiration. A token response MUST derive `expires_in` from the access token's persisted expiration. It MUST omit `expires_in` when the access token has no expiration. An RFC 7662 response MUST likewise omit `exp` when no expiration exists.",
+      "sectionNineItems": [
+        "AS-9",
+        "AS-20"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-20/refresh-reuse-revokes-the-family",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "Family linkage is tested through reuse revocation; the `expires_in`/`exp` derivation and omission rules are not, and would need a target that can issue a non-expiring access token.",
+      "gapNote": "Family linkage is tested through reuse revocation; the `expires_in`/`exp` derivation and omission rules are not, and would need a target that can issue a non-expiring access token."
+    },
+    {
+      "clauseId": "10.2-4",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "10",
+      "specLine": 1560,
+      "text": "Every successful OAuth token response that contains an access token or refresh token MUST include `Cache-Control: no-store` and `Pragma: no-cache` before the response is serialized.",
+      "sectionNineItems": [
+        "AS-9"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-9/token-response-forbids-caching",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "10.2-5",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "10",
+      "specLine": 1562,
+      "text": "An authorization code MUST be consumed atomically on its first successful redemption. A later redemption, including one with the same valid PKCE verifier, MUST return `invalid_grant` and MUST NOT issue another token.",
+      "sectionNineItems": [
+        "AS-19"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-19/authorization-code-redemption-is-not-replayable",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "10.2-6",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "10",
+      "specLine": 1564,
+      "text": "each token MUST belong to a family and MUST rotate after successful use. The AS MUST atomically supersede the presented token and issue one active successor. Reuse of any superseded token, including a retry after a lost successful response, MUST revoke the token family and every access token linked to that family, return `invalid_grant`, and require fresh authorization.",
+      "sectionNineItems": [
+        "AS-20"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-20/refresh-reuse-revokes-the-family",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "10.2-7",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "10",
+      "specLine": 1565,
+      "text": "Introspection MUST report every family-linked access token inactive after the replay is detected. An AS MUST NOT issue refresh tokens for a `single_use` grant. It MUST NOT issue one for a grant package unless every child grant is `continuous`.",
+      "sectionNineItems": [
+        "AS-20",
+        "AS-8"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-20/refresh-reuse-revokes-the-family",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "Introspection of the family-linked token is checked only where the target offers an introspection route; otherwise the case judges the resource read alone, which is not the introspection interface this clause names. The prohibition on issuing refresh tokens for a `single_use` grant is not covered, and needs a target supporting both `single_use` and refresh tokens at once.",
+      "gapNote": "Introspection of the family-linked token is checked only where the target offers an introspection route; otherwise the case judges the resource read alone, which is not the introspection interface this clause names. The prohibition on issuing refresh tokens for a `single_use` grant is not covered, and needs a target supporting both `single_use` and refresh tokens at once."
+    },
+    {
+      "clauseId": "10.2-8",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "10",
+      "specLine": 1565,
+      "text": "On upgrade, an implementation MUST NOT infer family linkage for an existing bearer. Any live refresh family without persisted bearer linkage MUST be revoked together with its grant- or package-bound bearer tokens and MUST require fresh authorization.",
+      "sectionNineItems": [
+        "AS-21"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "An upgrade-path obligation over pre-existing persisted state: the suite would have to plant legacy tokens in the target's store before boot, which the adapter deliberately cannot do.",
+      "gapNote": "An upgrade-path obligation over pre-existing persisted state: the suite would have to plant legacy tokens in the target's store before boot, which the adapter deliberately cannot do."
+    },
+    {
+      "clauseId": "10.2-10",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server"
+      ],
+      "section": "10",
+      "specLine": 1554,
+      "text": "Self-contained JWTs are allowed as an optimization but MUST NOT be the sole revocation mechanism.",
+      "sectionNineItems": [
+        "AS-8"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-8/revoked-grant-refused",
+          "outcome": "pass"
+        }
+      ],
+      "result": "partial",
+      "reason": "A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path.",
+      "gapNote": "A case shows a revoked grant is refused within the 60-second propagation ceiling; it cannot tell a JWT-only design that happens to expire quickly from a design with a real revocation path."
+    },
+    {
+      "clauseId": "10.3-1",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server"
+      ],
+      "section": "10",
+      "specLine": 1571,
+      "text": "Implementations MUST treat grants as tamper-sensitive.",
+      "sectionNineItems": [
+        "AS-3"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "\"Tamper-sensitive\" names a design posture, not a wire behaviour; the spec defers grant signing and a formal token format to a future version, so there is no observable artifact to check.",
+      "gapNote": "\"Tamper-sensitive\" names a design posture, not a wire behaviour; the spec defers grant signing and a formal token format to a future version, so there is no observable artifact to check."
+    },
+    {
+      "clauseId": "10.4-1",
+      "level": "must",
+      "role": [
+        "resource-server"
+      ],
+      "section": "10",
+      "specLine": 1577,
+      "text": "Runtimes MUST NOT log or persist credential data.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Binds the Collection Profile's INTERACTION channel, which Core's HTTP surface does not expose; logs and persisted state are outside what a black-box client can read.",
+      "gapNote": "Binds the Collection Profile's INTERACTION channel, which Core's HTTP surface does not expose; logs and persisted state are outside what a black-box client can read."
+    },
+    {
+      "clauseId": "10.7-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "10",
+      "specLine": 1593,
+      "text": "The AS MUST reflect revocation immediately in introspection responses (`active: false`).",
+      "sectionNineItems": [
+        "AS-8"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-8/revoked-token-introspects-inactive",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "10.7-2",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "10",
+      "specLine": 1595,
+      "text": "Upon receiving any 403 `grant_revoked` response, the client MUST stop further requests against that grant.",
+      "sectionNineItems": [
+        "CL-2"
+      ],
+      "cases": [
+        {
+          "caseId": "CL-2/grant-revocation-stops-further-requests",
+          "outcome": "not-run"
+        }
+      ],
+      "result": "not-applicable",
+      "reason": "The target does not claim the role this clause binds."
+    },
+    {
+      "clauseId": "12.3-1",
+      "level": "must",
+      "role": [
+        "source-declaration"
+      ],
+      "section": "12",
+      "specLine": 1671,
+      "text": "Stream names MUST NOT encode predicate logic or synthesize per-request subsets; derived streams MUST be statically declared in the SourceDeclaration.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Whether a stream name \"encodes predicate logic\" is a semantic judgement no static check settles. The paragraph is headed \"(non-normative)\" yet carries a MUST NOT; recorded at the keyword's level and flagged for the spec lock.",
+      "gapNote": "Whether a stream name \"encodes predicate logic\" is a semantic judgement no static check settles. The paragraph is headed \"(non-normative)\" yet carries a MUST NOT; recorded at the keyword's level and flagged for the spec lock."
+    },
+    {
+      "clauseId": "12.4-1",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server"
+      ],
+      "section": "12",
+      "specLine": 1677,
+      "text": "Implementations MUST NOT change the meaning of Core-granted access via extensions: a grant issued under this specification authorizes exactly what Sections 7 and 8 define, regardless of what additional capabilities a deployment offers.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Needs a target that offers an extension capability and a hook that enables it; the suite has no such fixture. Missing case: a grant's reachable data is identical with the extension enabled and disabled.",
+      "gapNote": "Needs a target that offers an extension capability and a hook that enables it; the suite has no such fixture. Missing case: a grant's reachable data is identical with the extension enabled and disabled."
+    },
+    {
+      "clauseId": "12.4-2",
+      "level": "must",
+      "role": [
+        "authorization-server",
+        "resource-server"
+      ],
+      "section": "12",
+      "specLine": 1677,
+      "text": "Optional capabilities MUST be discoverable via declared metadata rather than assumed to be present.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "not-tested",
+      "reason": "No case yet checks that each capability a target exercises is advertised in its declared metadata. Missing case: cross-check stream metadata and protected resource metadata against the capabilities the target answers.",
+      "gapNote": "No case yet checks that each capability a target exercises is advertised in its declared metadata. Missing case: cross-check stream metadata and protected resource metadata against the capabilities the target answers."
+    },
+    {
+      "clauseId": "12.4-3",
+      "level": "must",
+      "role": [
+        "client"
+      ],
+      "section": "12",
+      "specLine": 1677,
+      "text": "Unrecognized declared capabilities MUST be ignorable by clients.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "not-tested",
+      "reason": "Needs a client fixture response that advertises an unknown capability; no Section 9 client item names it. Missing case: the client under test completes its flow against metadata carrying an undeclared capability.",
+      "gapNote": "Needs a client fixture response that advertises an unknown capability; no Section 9 client item names it. Missing case: the client under test completes its flow against metadata carrying an undeclared capability."
+    },
+    {
+      "clauseId": "A.0-1",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "A",
+      "specLine": 1895,
+      "text": "Implementations MUST treat unrecognized purpose URIs as opaque identifiers and MUST NOT reject requests solely because a purpose code is unrecognized.",
+      "sectionNineItems": [
+        "AS-6"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-6/unregistered-purpose-not-rejected",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "A.0-2",
+      "level": "must",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "A",
+      "specLine": 1905,
+      "text": "The AS MUST obtain explicit affirmative user consent before issuing any grant with this purpose code.",
+      "sectionNineItems": [
+        "AS-14"
+      ],
+      "cases": [
+        {
+          "caseId": "AS-14/explicit-consent-required-for-ai-training",
+          "outcome": "pass"
+        }
+      ],
+      "result": "untestable"
+    }
+  ],
+  "should": [
+    {
+      "clauseId": "4.3-7",
+      "level": "should",
+      "role": [
+        "resource-server"
+      ],
+      "section": "4",
+      "specLine": 268,
+      "text": "If the source system deletion time is unknown, the RS SHOULD use the `emitted_at` value of the delete directive as `deleted_at`.",
+      "sectionNineItems": [
+        "RS-7"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Not observable: whether the source deletion time was known is internal state, so a `deleted_at` value cannot be judged against this clause from outside.",
+      "gapNote": "Not observable: whether the source deletion time was known is internal state, so a `deleted_at` value cannot be judged against this clause from outside."
+    },
+    {
+      "clauseId": "4.6-1",
+      "level": "should",
+      "role": [
+        "source-declaration"
+      ],
+      "section": "4",
+      "specLine": 319,
+      "text": "Connector authors SHOULD use these names when the platform provides them, rather than inventing platform-specific names.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "not-tested"
+    },
+    {
+      "clauseId": "5.3-2",
+      "level": "should",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "5",
+      "specLine": 538,
+      "text": "If absent, the AS SHOULD display `streams[].description` or fall back to the stream name.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "Consent-surface rendering is not observable over HTTP; a case could only assert on a deployment's HTML, which tests the deployment rather than the protocol.",
+      "gapNote": "Consent-surface rendering is not observable over HTTP; a case could only assert on a deployment's HTML, which tests the deployment rather than the protocol."
+    },
+    {
+      "clauseId": "6.1-11",
+      "level": "should",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "6",
+      "specLine": 712,
+      "text": "If neither resolved metadata nor inline `client_display` provides a display name, the consent UI SHOULD clearly indicate that the client has not provided display metadata.",
+      "sectionNineItems": [
+        "AS-7"
+      ],
+      "cases": [],
+      "result": "untestable"
+    },
+    {
+      "clauseId": "6.3-3",
+      "level": "should",
+      "role": [
+        "authorization-server",
+        "client"
+      ],
+      "section": "6",
+      "specLine": 734,
+      "text": "Structured grant fields (e.g., `retention.max_duration`, `access_mode`) SHOULD be rendered by the AS as server-generated display text (e.g., \"Deleted within 90 days\", \"Ongoing access until you revoke it\"). Clients SHOULD NOT duplicate machine-readable constraints as free-text commitments.",
+      "sectionNineItems": [
+        "AS-3"
+      ],
+      "cases": [],
+      "result": "untestable"
+    },
+    {
+      "clauseId": "6.8-4",
+      "level": "should",
+      "role": [
+        "client"
+      ],
+      "section": "6",
+      "specLine": 801,
+      "text": "Clients SHOULD request only the data they need (see [Section 11, Data Minimization](#data-minimization)).",
+      "sectionNineItems": [
+        "CL-1"
+      ],
+      "cases": [],
+      "result": "not-tested"
+    },
+    {
+      "clauseId": "7.8-1",
+      "level": "should",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "7",
+      "specLine": 949,
+      "text": "Authorization server UIs SHOULD model this flow as revocation followed by a new grant request.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "untestable"
+    },
+    {
+      "clauseId": "8.3-2",
+      "level": "should",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1109,
+      "text": "An owner holding a valid owner token MAY query their own data using the standard client query endpoints without a client grant. This is the v0.1 self-export mechanism and does not require a separate grant. Conformant Core RS implementations SHOULD support this capability (see Section 9 conformance item 13).",
+      "sectionNineItems": [
+        "RS-13"
+      ],
+      "cases": [
+        {
+          "caseId": "RS-13/self-export-supported",
+          "outcome": "pass"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "clauseId": "8.4-3",
+      "level": "should",
+      "role": [
+        "resource-server"
+      ],
+      "section": "8",
+      "specLine": 1128,
+      "text": "a resource server SHOULD publish it because a consent surface has no other name to display for the resource.",
+      "sectionNineItems": [
+        "RS-16"
+      ],
+      "cases": [],
+      "result": "not-tested"
+    },
+    {
+      "clauseId": "10.1-1",
+      "level": "should",
+      "role": [
+        "authorization-server"
+      ],
+      "section": "10",
+      "specLine": 1546,
+      "text": "An authorization server SHOULD enforce configured response-size, time, and redirect-depth limits when retrieving a declaration, and SHOULD resolve DNS freshly for each connection attempt.",
+      "sectionNineItems": [
+        "AS-16"
+      ],
+      "cases": [],
+      "result": "untestable",
+      "reason": "The spec itself states these limits are set by local judgment and that a peer cannot observe which values a server chose, so no interoperability test can exist for this clause.",
+      "gapNote": "The spec itself states these limits are set by local judgment and that a peer cannot observe which values a server chose, so no interoperability test can exist for this clause."
+    },
+    {
+      "clauseId": "10.2-9",
+      "level": "should",
+      "role": [
+        "resource-server",
+        "authorization-server"
+      ],
+      "section": "10",
+      "specLine": 1567,
+      "text": "Deployments handling sensitive standing access SHOULD consider sender-constrained tokens, which bind a token to a client-held key so that possession of the token alone is not sufficient to use it.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "untestable",
+      "reason": "The spec marks this subsection non-normative guidance; recorded so the scan's keyword hit is accounted for rather than appearing as an untracked clause.",
+      "gapNote": "The spec marks this subsection non-normative guidance; recorded so the scan's keyword hit is accounted for rather than appearing as an untracked clause."
+    },
+    {
+      "clauseId": "10.3-2",
+      "level": "should",
+      "role": [
+        "authorization-server",
+        "client"
+      ],
+      "section": "10",
+      "specLine": 1573,
+      "text": "Production deployments SHOULD use Pushed Authorization Requests (PAR, RFC 9126).",
+      "sectionNineItems": [
+        "AS-1"
+      ],
+      "cases": [],
+      "result": "not-tested"
+    },
+    {
+      "clauseId": "10.5-1",
+      "level": "should",
+      "role": [
+        "resource-server"
+      ],
+      "section": "10",
+      "specLine": 1581,
+      "text": "Production deployments SHOULD mitigate this by sandboxing connector processes (restricting network egress), using connectors from trusted registries only, or having the runtime authenticate on behalf of the connector and pass only session tokens.",
+      "sectionNineItems": [],
+      "cases": [],
+      "result": "untestable"
+    }
+  ]
+}

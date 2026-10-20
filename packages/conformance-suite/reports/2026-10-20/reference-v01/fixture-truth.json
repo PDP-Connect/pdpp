@@ -1,0 +1,107 @@
+{
+  "streams": {
+    "repositories": [
+      {
+        "id": "repo_1",
+        "name": "alpha",
+        "full_name": "acme/alpha",
+        "description": "first",
+        "language": "TypeScript",
+        "stargazers_count": 12,
+        "forks_count": 1,
+        "is_private": false,
+        "is_fork": false,
+        "topics": [
+          "a"
+        ],
+        "source_created_at": "2026-01-01T00:00:00Z",
+        "source_updated_at": "2026-02-01T00:00:00Z"
+      },
+      {
+        "id": "repo_2",
+        "name": "beta",
+        "full_name": "acme/beta",
+        "description": "second",
+        "language": "Go",
+        "stargazers_count": 34,
+        "forks_count": 2,
+        "is_private": true,
+        "is_fork": false,
+        "topics": [
+          "b"
+        ],
+        "source_created_at": "2026-01-05T00:00:00Z",
+        "source_updated_at": "2026-02-05T00:00:00Z"
+      }
+    ],
+    "starred": [
+      {
+        "id": "star_1",
+        "full_name": "other/one",
+        "description": "starred one",
+        "language": "Rust",
+        "stargazers_count": 100,
+        "starred_at": "2026-01-10T00:00:00Z"
+      },
+      {
+        "id": "star_2",
+        "full_name": "other/two",
+        "description": "starred two",
+        "language": "Python",
+        "stargazers_count": 200,
+        "starred_at": "2026-01-20T00:00:00Z"
+      }
+    ],
+    "conformance_events": [
+      {
+        "id": "event_1",
+        "public_value": "visible event",
+        "hidden_value": "private event",
+        "occurred_at": "2026-02-10T00:00:00Z"
+      }
+    ]
+  },
+  "isolated_connections": {
+    "subject_id": "owner_local",
+    "source_id": "https://registry.pdpp.dev/connectors/conformance-fanin",
+    "records": [
+      {
+        "instance_id": "cin_2b6a868a8ef4d33ae4f4077b",
+        "stream": "conformance_items",
+        "key": "equal_key",
+        "data": {
+          "id": "equal_key",
+          "name": "first connection value",
+          "seen_at": "2026-03-01T00:00:00Z"
+        }
+      },
+      {
+        "instance_id": "cin_9f9b00a6a5afe05117bfaf2d",
+        "stream": "conformance_items",
+        "key": "equal_key",
+        "data": {
+          "id": "equal_key",
+          "name": "second connection value",
+          "seen_at": "2026-03-01T00:00:00Z"
+        }
+      }
+    ]
+  },
+  "blobs": [
+    {
+      "sha256": "87ea6b0f6d1e11c3ccd9459a6890af2e59b1f306b9e66a399f25b4d68237b498",
+      "length": 2496,
+      "references": [
+        "conformance_private_attachments/att_shared_private",
+        "conformance_attachments/att_1"
+      ]
+    },
+    {
+      "sha256": "c0eeea4e3daee864adcc45425afc4b1fa53c45bd2d2ec651860c68111240d610",
+      "length": 1440,
+      "references": [
+        "conformance_private_attachments/att_private_1"
+      ]
+    }
+  ]
+}

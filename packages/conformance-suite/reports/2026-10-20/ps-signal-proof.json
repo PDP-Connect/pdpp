@@ -1,0 +1,12 @@
+{
+  "runnerCommit": "b4ea865c27b9ccb8059a3a14117304c621fac381",
+  "targetSha": "0b5eac036a33cb714cdd6d3a71abddd98e609f2d",
+  "signal": "SIGTERM",
+  "runnerExit": 143,
+  "ownedChildPidsObserved": [
+    38486,
+    38491
+  ],
+  "ownedChildPidsStillAlive": [],
+  "pass": true
+}

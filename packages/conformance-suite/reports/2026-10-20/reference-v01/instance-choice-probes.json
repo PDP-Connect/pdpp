@@ -1,0 +1,57 @@
+{
+  "scope": "supplemental reference topology probes; separate from normative suite counts",
+  "results": [
+    {
+      "case": "explicit-single-instance-choice",
+      "instance_id": "cin_2b6a868a8ef4d33ae4f4077b",
+      "outcome": "pass",
+      "expected": [
+        {
+          "id": "equal_key",
+          "name": "first connection value",
+          "seen_at": "2026-03-01T00:00:00Z"
+        }
+      ],
+      "actual": [
+        {
+          "id": "equal_key",
+          "name": "first connection value",
+          "seen_at": "2026-03-01T00:00:00Z"
+        }
+      ],
+      "granted_instance_ids": [
+        "cin_2b6a868a8ef4d33ae4f4077b"
+      ]
+    },
+    {
+      "case": "explicit-single-instance-choice",
+      "instance_id": "cin_9f9b00a6a5afe05117bfaf2d",
+      "outcome": "pass",
+      "expected": [
+        {
+          "id": "equal_key",
+          "name": "second connection value",
+          "seen_at": "2026-03-01T00:00:00Z"
+        }
+      ],
+      "actual": [
+        {
+          "id": "equal_key",
+          "name": "second connection value",
+          "seen_at": "2026-03-01T00:00:00Z"
+        }
+      ],
+      "granted_instance_ids": [
+        "cin_9f9b00a6a5afe05117bfaf2d"
+      ]
+    },
+    {
+      "case": "no-implicit-fan-in",
+      "outcome": "pass",
+      "stage": "review",
+      "http_status": 400,
+      "body": "{\"error\":{\"code\":\"source.authorization_details_invalid\",\"message\":\"Omitted instance_ids requires exactly one eligible instance for stream 'conformance_items', found 2\",\"type\":\"invalid_request_error\",\"request_id\":\"req_3d6dcb2357fa9683\"}}",
+      "reason": "Omitted instance selection rejected before approval"
+    }
+  ]
+}

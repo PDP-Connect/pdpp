@@ -1,0 +1,41 @@
+{
+  "suiteCommit": "b4ea865c27b9ccb8059a3a14117304c621fac381",
+  "scope": "Controlled HTTP fixtures, not mutations of either live target",
+  "command": "CI=true pnpm test:scratch -- node --test --import tsx --test-reporter=tap --test-name-pattern='ignore-grant-streams|ignore-field-projection|per-instance-limit-concatenated|first forbidden reference' packages/conformance-suite/test/oracle-discrimination.test.ts",
+  "exitCode": 0,
+  "testAssertions": {
+    "pass": 5,
+    "fail": 0,
+    "skip": 0
+  },
+  "results": [
+    {
+      "defect": "ignore-grant-streams",
+      "matchingCase": "RS-2/ungranted-stream-refused",
+      "cleanCaseOutcome": "pass",
+      "injectedCaseOutcome": "fail",
+      "proof": "test/oracle-discrimination.test.ts asserts both outcomes"
+    },
+    {
+      "defect": "ignore-field-projection",
+      "matchingCase": "RS-2/field-projection-not-exceeded",
+      "cleanCaseOutcome": "pass",
+      "injectedCaseOutcome": "fail",
+      "proof": "test/oracle-discrimination.test.ts asserts both outcomes"
+    },
+    {
+      "defect": "per-instance-limit-concatenated",
+      "matchingCase": "RS-1/list-page-size-bounded-by-limit-across-instances",
+      "cleanCaseOutcome": "pass",
+      "injectedCaseOutcome": "fail",
+      "proof": "test/oracle-discrimination.test.ts asserts both outcomes"
+    },
+    {
+      "defect": "first-reference-only",
+      "matchingCase": "RS-1/shared-blob-readable-through-any-authorized-reference",
+      "cleanCaseOutcome": "pass",
+      "injectedCaseOutcome": "fail",
+      "proof": "test/oracle-discrimination.test.ts asserts both outcomes"
+    }
+  ]
+}

@@ -1,0 +1,154 @@
+{
+  "targetVersion": "personal-server-ts@0b5eac036a33cb714cdd6d3a71abddd98e609f2d",
+  "results": [
+    {
+      "id": "connection-1/equal-key-isolation",
+      "outcome": "pass",
+      "detail": "Explicit grant selects only the chosen connection with equal record keys",
+      "response": {
+        "status": 200,
+        "body": {
+          "object": "list",
+          "has_more": false,
+          "data": [
+            {
+              "object": "record",
+              "id": "art_5",
+              "stream": "top_artists",
+              "data": {
+                "id": "art_5",
+                "name": "Artist 5"
+              },
+              "emitted_at": "2026-01-05T00:00:00Z"
+            },
+            {
+              "object": "record",
+              "id": "art_4",
+              "stream": "top_artists",
+              "data": {
+                "id": "art_4",
+                "name": "Artist 4"
+              },
+              "emitted_at": "2026-01-04T00:00:00Z"
+            },
+            {
+              "object": "record",
+              "id": "art_3",
+              "stream": "top_artists",
+              "data": {
+                "id": "art_3",
+                "name": "Artist 3"
+              },
+              "emitted_at": "2026-01-03T00:00:00Z"
+            },
+            {
+              "object": "record",
+              "id": "art_2",
+              "stream": "top_artists",
+              "data": {
+                "id": "art_2",
+                "name": "Artist 2"
+              },
+              "emitted_at": "2026-01-02T00:00:00Z"
+            },
+            {
+              "object": "record",
+              "id": "art_1",
+              "stream": "top_artists",
+              "data": {
+                "id": "art_1",
+                "name": "Artist 1"
+              },
+              "emitted_at": "2026-01-01T00:00:00Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "connection-2/equal-key-isolation",
+      "outcome": "pass",
+      "detail": "Explicit grant selects only the chosen connection with equal record keys",
+      "response": {
+        "status": 200,
+        "body": {
+          "object": "list",
+          "has_more": false,
+          "data": [
+            {
+              "object": "record",
+              "id": "art_5",
+              "stream": "top_artists",
+              "data": {
+                "id": "art_5",
+                "name": "Artist 5 other connection"
+              },
+              "emitted_at": "2026-01-05T00:00:00Z"
+            },
+            {
+              "object": "record",
+              "id": "art_4",
+              "stream": "top_artists",
+              "data": {
+                "id": "art_4",
+                "name": "Artist 4 other connection"
+              },
+              "emitted_at": "2026-01-04T00:00:00Z"
+            },
+            {
+              "object": "record",
+              "id": "art_3",
+              "stream": "top_artists",
+              "data": {
+                "id": "art_3",
+                "name": "Artist 3 other connection"
+              },
+              "emitted_at": "2026-01-03T00:00:00Z"
+            },
+            {
+              "object": "record",
+              "id": "art_2",
+              "stream": "top_artists",
+              "data": {
+                "id": "art_2",
+                "name": "Artist 2 other connection"
+              },
+              "emitted_at": "2026-01-02T00:00:00Z"
+            },
+            {
+              "object": "record",
+              "id": "art_1",
+              "stream": "top_artists",
+              "data": {
+                "id": "art_1",
+                "name": "Artist 1 other connection"
+              },
+              "emitted_at": "2026-01-01T00:00:00Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "connections/no-implicit-fan-in",
+      "outcome": "pass",
+      "detail": "An unselected two-connection request must require explicit owner choice",
+      "response": {
+        "status": 200,
+        "body": {
+          "session_id": "as_18c7883310dc265f1c7bbd1268b6b136",
+          "instance_choice_required": [
+            {
+              "stream": "top_artists",
+              "candidates": [
+                "conn_00000001-0000-4000-8000-000000000001",
+                "conn_00000002-0000-4000-8000-000000000002"
+              ]
+            }
+          ],
+          "expires_at": "2026-10-20T14:08:51.557Z"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+$ node --import tsx scripts/test-scratch/run-command.ts -- node --test --import tsx --test-reporter=tap '--test-name-pattern=ignore-grant-streams|ignore-field-projection|per-instance-limit-concatenated|first forbidden reference' packages/conformance-suite/test/oracle-discrimination.test.ts
+TAP version 13
+# Subtest: negative oracles discriminate conforming from violating targets
+    # Subtest: RS-2/ungranted-stream-refused passes a clean target and fails one with defect "ignore-grant-streams"
+    ok 1 - RS-2/ungranted-stream-refused passes a clean target and fails one with defect "ignore-grant-streams"
+      ---
+      duration_ms: 36.233273
+      type: 'test'
+      ...
+    # Subtest: RS-2/field-projection-not-exceeded passes a clean target and fails one with defect "ignore-field-projection"
+    ok 2 - RS-2/field-projection-not-exceeded passes a clean target and fails one with defect "ignore-field-projection"
+      ---
+      duration_ms: 20.903453
+      type: 'test'
+      ...
+    # Subtest: RS-1/list-page-size-bounded-by-limit-across-instances passes a clean target and fails one with defect "per-instance-limit-concatenated"
+    ok 3 - RS-1/list-page-size-bounded-by-limit-across-instances passes a clean target and fails one with defect "per-instance-limit-concatenated"
+      ---
+      duration_ms: 22.092731
+      type: 'test'
+      ...
+    1..3
+ok 1 - negative oracles discriminate conforming from violating targets
+  ---
+  duration_ms: 80.993095
+  type: 'suite'
+  ...
+# Subtest: RS-1/get-blob-bytes discriminates byte fidelity
+    # Subtest: RS-1/shared-blob-readable-through-any-authorized-reference
+        # Subtest: passes with an authorized live reference after the first forbidden reference
+        ok 1 - passes with an authorized live reference after the first forbidden reference
+          ---
+          duration_ms: 5.052266
+          type: 'test'
+          ...
+        # Subtest: fails when authorization consults only the first forbidden reference
+        ok 2 - fails when authorization consults only the first forbidden reference
+          ---
+          duration_ms: 3.419542
+          type: 'test'
+          ...
+        1..2
+    ok 1 - RS-1/shared-blob-readable-through-any-authorized-reference
+      ---
+      duration_ms: 8.69152
+      type: 'suite'
+      ...
+    1..1
+ok 2 - RS-1/get-blob-bytes discriminates byte fidelity
+  ---
+  duration_ms: 8.932774
+  type: 'suite'
+  ...
+1..2
+# tests 5
+# suites 3
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 259.96982
