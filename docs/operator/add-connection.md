@@ -102,7 +102,8 @@ apart:
 
 ## Env vars are a fallback, not normal setup
 
-`.env.docker.example` still lists connector-specific source variables
+The [data-connect split-stack example](https://github.com/PDP-Connect/data-connect/blob/main/.env.docker.example)
+lists connector-specific source variables
 (`GMAIL_APP_PASSWORD`, `GITHUB_PERSONAL_ACCESS_TOKEN`, `YNAB_PERSONAL_ACCESS_TOKEN`,
 and similar). These remain only as:
 
@@ -119,10 +120,11 @@ console or owner-agent flow above.
 The one static-secret variable that is genuinely instance-level is the
 credential key provider: either `PDPP_CREDENTIAL_ENCRYPTION_KEY` or a mounted
 secret file referenced by `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE`. Railway
-templates generate `PDPP_CREDENTIAL_ENCRYPTION_KEY` automatically. Docker users
-can let `scripts/generate-secrets.sh --write` fill it into `.env.docker`, or
-mount a secret file and set `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE`. Without one
-of these providers, the static-secret setup page blocks before accepting a
+templates generate `PDPP_CREDENTIAL_ENCRYPTION_KEY` automatically. Docker
+operators should follow the
+[data-connect self-host quickstart](https://github.com/PDP-Connect/data-connect/blob/main/deploy/docker/README.md).
+The separate split-stack configuration can use a mounted secret file with
+`PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE`. Without either provider, the static-secret setup page blocks before accepting a
 provider credential and the capture route fails closed without writing a draft
 or storing plaintext.
 
@@ -133,7 +135,7 @@ connector-specific form knowledge.
 
 ## Related
 
-- [`docs/operator/selfhost-quickstart.md`](selfhost-quickstart.md) — stand up the
+- [data-connect self-host quickstart](https://github.com/PDP-Connect/data-connect/blob/main/deploy/docker/README.md) — stand up the
   instance these connections live on.
 - [`docs/operator/local-collector-runbook.md`](local-collector-runbook.md) —
   the device-enrollment + collector run path for Claude Code / Codex.
