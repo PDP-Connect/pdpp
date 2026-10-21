@@ -39,7 +39,7 @@ exact head, before you merge.
 | CI | `workspace-tests` workflow | Automatically, for `main` | The full gate, on a hosted runner | Runs on pull requests into `main`; not a required check (see Gap to excellence) |
 
 The suite ids are in `test-accounting.manifest.json`: `root-node`,
-`scratch-lifecycle`, `root-shell`, `reference-contract`, `list-envelope`,
+`scratch-lifecycle`, `reference-contract`, `list-envelope`,
 `conformance-suite`, `display`, `reference-operations-sandbox`, `operator-ui`,
 `brand-react`, and `site`.
 

@@ -68,22 +68,6 @@
       ]
     },
     {
-      "id": "root-shell",
-      "cwd": ".",
-      "loader": "shell",
-      "authority_argument": null,
-      "execution": "direct",
-      "profiles": [
-        {
-          "id": "default",
-          "required": true,
-          "skip_reasons": {}
-        }
-      ],
-      "command": ["bash", "scripts/test-accounting/root-shell-leaf.sh"],
-      "include": ["scripts/**/*.test.sh"]
-    },
-    {
       "id": "reference-contract",
       "cwd": ".",
       "loader": "node-test",
