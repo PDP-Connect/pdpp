@@ -252,7 +252,7 @@ human-typed terminal.
 
 - `packages/mcp-server/README.md` — the MCP tool surface that creates and
   manages subscriptions from a grant-scoped client.
-- `docs/operator/selfhost-quickstart.md` — fresh-operator path. The receiver
+- [data-connect self-host quickstart](https://github.com/PDP-Connect/data-connect/blob/main/deploy/docker/README.md) — fresh-operator path. The receiver
   script is one of the first things to point at a new deployment.
 - `openspec/changes/add-mcp-event-subscription-client-tools/` — the OpenSpec
   change that landed the MCP tool parity.

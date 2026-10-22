@@ -4,7 +4,7 @@ This runbook connects a self-hosted PDPP reference deployment to MCP clients
 that support remote Streamable HTTP MCP servers.
 
 If you do not yet have a reachable self-hosted deployment, start with the
-[self-host quickstart](selfhost-quickstart.md). Come back here once
+[data-connect self-host quickstart](https://github.com/PDP-Connect/data-connect/blob/main/deploy/docker/README.md). Come back here once
 `/deployment` reports healthy.
 
 The dashboard setup page is `/connect`. Use that page for the normal
