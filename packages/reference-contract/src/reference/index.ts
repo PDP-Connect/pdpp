@@ -600,6 +600,24 @@ const OwnerConnectionDiagnosticsRunSchema = {
   type: "object",
 };
 
+// The run a local coverage verdict is a fact about, as the reference server emits it
+// (`LocalCoverageAsOf`, PDP-Connect/data-connect reference-implementation/server/ref-control.ts).
+// Coverage is never a present-tense claim, so each projection that shows it carries this as-of.
+// `committed_at` is null only when the run record has no completion time.
+const LocalCoverageAsOfSchema = {
+  additionalProperties: false,
+  properties: {
+    artifact_digest: { type: "string" },
+    collection_revision: { type: "integer" },
+    committed_at: { type: ["string", "null"] },
+    evidence: { const: "terminal_run" },
+    run_id: { minLength: 1, type: "string" },
+    run_sequence: { type: "integer" },
+  },
+  required: ["artifact_digest", "collection_revision", "committed_at", "evidence", "run_id", "run_sequence"],
+  type: "object",
+};
+
 // The typed connection-health classification inside the diagnostics read. `state`
 // is the canonical connection-health taxonomy the connector-health-surface
 // research captured; `axes` and `badges` are orthogonal diagnostic detail. The
@@ -611,6 +629,7 @@ const OwnerConnectionDiagnosticsHealthSchema = {
   properties: {
     axes: { additionalProperties: true, type: "object" },
     badges: { additionalProperties: true, type: "object" },
+    coverage_as_of: { oneOf: [LocalCoverageAsOfSchema, { type: "null" }] },
     last_success_at: { type: ["string", "null"] },
     next_attempt_at: { type: ["string", "null"] },
     reason_code: { type: ["string", "null"] },
@@ -619,7 +638,7 @@ const OwnerConnectionDiagnosticsHealthSchema = {
       type: "string",
     },
   },
-  required: ["state", "reason_code", "last_success_at", "next_attempt_at", "axes", "badges"],
+  required: ["state", "reason_code", "last_success_at", "next_attempt_at", "axes", "badges", "coverage_as_of"],
   type: "object",
 };
 
@@ -693,6 +712,7 @@ const OwnerConnectionDiagnosticsSchema = {
     connection_id: { type: "string" },
     connector_id: { type: "string" },
     connector_key: { type: "string" },
+    coverage_as_of: { oneOf: [LocalCoverageAsOfSchema, { type: "null" }] },
     display_name: { type: ["string", "null"] },
     freshness: { additionalProperties: true, type: "object" },
     health: OwnerConnectionDiagnosticsHealthSchema,
@@ -722,6 +742,7 @@ const OwnerConnectionDiagnosticsSchema = {
     "connection_id",
     "connector_id",
     "connector_key",
+    "coverage_as_of",
     "display_name",
     "health",
     "last_run",
@@ -1879,10 +1900,15 @@ const DeviceTerminalRunCommitBodySchema = {
 const DeviceTerminalRunCommitResponseSchema = {
   additionalProperties: false,
   properties: {
+    // Run-order members. Receipts stored before run order omit them, so they are optional.
+    // run_sequence is null when the run was issued no sequence.
+    collection_revision: { type: "integer" },
     commit_id: { minLength: 1, type: "string" },
     envelope_hash: { pattern: "^[a-f0-9]{64}$", type: "string" },
     object: { const: "device_terminal_run_commit" },
     run_id: { minLength: 1, type: "string" },
+    run_sequence: { type: ["integer", "null"] },
+    storage_epoch: { type: "integer" },
     terminal_event_id: { minLength: 1, type: "string" },
   },
   required: ["object", "commit_id", "run_id", "terminal_event_id", "envelope_hash"],
