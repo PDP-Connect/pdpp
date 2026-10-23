@@ -1293,15 +1293,10 @@ function deriveGrantInspectorProps(protocolGrant: ProtocolGrant): GrantInspector
 // Resolve the local mock's request-era shape at the display boundary. Core
 // grants carry concrete handles, fields, and a frozen time_constraint.
 function resolveGrantStreamForDisplay(stream: ProtocolGrantStream) {
-  const instanceIds = LONGVIEW_INSTANCE_IDS[stream.name as keyof typeof LONGVIEW_INSTANCE_IDS];
-  if (!instanceIds) {
-    throw new Error(`Missing demo instance handles for ${stream.name}`);
-  }
-
+  const instanceIds = LONGVIEW_INSTANCE_IDS[stream.name as keyof typeof LONGVIEW_INSTANCE_IDS] ?? [
+    `${stream.name}-account`,
+  ];
   const timeField = LONGVIEW_CONSENT_TIME_FIELDS[stream.name as keyof typeof LONGVIEW_CONSENT_TIME_FIELDS];
-  if (stream.time_range && !timeField) {
-    throw new Error(`Missing demo consent time field for ${stream.name}`);
-  }
 
   return {
     fields: stream.fields ?? [],
