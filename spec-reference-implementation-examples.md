@@ -305,7 +305,7 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
   "data": {
     "id": "conv_003",
     "title": "New conversation",
-    "source_updated_at": "2026-04-11T08:00:00Z"
+    "update_time": "2026-04-11T08:00:00Z"
   },
   "emitted_at": "2026-04-11T15:12:00Z"
 }
@@ -318,7 +318,7 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
     "conversation_id": "conv_003",
     "role": "user",
     "content": "What's the weather?",
-    "source_created_at": "2026-04-11T08:00:01Z"
+    "create_time": "2026-04-11T08:00:01Z"
   },
   "emitted_at": "2026-04-11T15:12:01Z"
 }
@@ -390,7 +390,7 @@ PDPP-Version: 2026-04-06
       "data": {
         "id": "conv_003",
         "title": "New conversation",
-        "source_updated_at": "2026-04-11T08:00:00Z"
+        "update_time": "2026-04-11T08:00:00Z"
       },
       "emitted_at": "2026-04-11T15:12:00Z"
     }
