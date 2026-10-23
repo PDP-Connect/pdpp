@@ -220,9 +220,21 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
   "purpose_description": "Provide context to your personal AI agent",
   "access_mode": "continuous",
   "streams": [
-    { "name": "conversations", "instance_ids": ["chatgpt-account-a"] },
-    { "name": "messages", "instance_ids": ["chatgpt-account-a"] },
-    { "name": "memories", "instance_ids": ["chatgpt-account-a"] }
+    {
+      "name": "conversations",
+      "instance_ids": ["chatgpt-account-a"],
+      "fields": ["id", "title", "create_time", "update_time", "is_archived", "is_starred", "workspace_id", "current_node", "message_count_on_current_branch", "gizmo_id"]
+    },
+    {
+      "name": "messages",
+      "instance_ids": ["chatgpt-account-a"],
+      "fields": ["id", "node_id", "conversation_id", "parent_id", "children_ids", "role", "content", "non_string_parts", "content_type", "model_slug", "create_time", "finish_reason", "citations", "tool_calls", "attachment_ids", "on_current_branch", "blob_ref"]
+    },
+    {
+      "name": "memories",
+      "instance_ids": ["chatgpt-account-a"],
+      "fields": ["id", "content", "created_at", "updated_at", "type"]
+    }
   ]
 }
 ```
@@ -416,8 +428,8 @@ A sleep analysis app receives a one-time grant with a retention declaration.
       "instance_ids": ["oura-account-a"],
       "time_constraint": {
         "field": "day",
-        "since": "2026-03-12T00:00:00Z",
-        "until": "2026-04-11T00:00:00Z"
+        "since": "2026-03-12",
+        "until": "2026-04-11"
       },
       "fields": [
         "day",
