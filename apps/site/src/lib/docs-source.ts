@@ -90,7 +90,7 @@ export function getSpecNavTree(): PageTree.Root {
         $id: "spec-rail-appendix-a",
         name: "A. Purpose registry",
         type: "page",
-        url: `${docsRoute}#purpose-registry`,
+        url: `${docsRoute}#appendix-a-purpose-code-registry`,
       },
     ],
   };
