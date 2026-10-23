@@ -97,9 +97,9 @@ const FAQS: readonly Faq[] = [
     role: "Building an accessor",
     question: "Which purpose code do I put in my request?",
     answer:
-      "Every grant names a purpose from the registry. Most requests fit an existing code, and ai_training is the one that triggers a protocol-level consent step. If nothing fits you can propose one, and proposals are considered on a published cycle.",
+      "A client may use any syntactically valid absolute-URI purpose code. For an unrecognized code, include purpose_description so the authorization server can show what it means. Proposing a registry entry is optional. The https://pdpp.dev/purpose/ai_training code still requires explicit affirmative consent.",
     cta: "Purpose registry",
-    href: "/specification#purpose-registry",
+    href: "/specification#appendix-a-purpose-code-registry",
   },
   {
     role: "Any role",

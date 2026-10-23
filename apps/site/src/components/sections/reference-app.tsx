@@ -58,6 +58,8 @@ const SECTIONS = [
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
+type ProtocolGrant = NonNullable<ReturnType<typeof useProtocol>["grant"]>;
+type ProtocolGrantStream = ProtocolGrant["streams"][number];
 
 const SECTION_DISPLAY_ORDER = Object.fromEntries(
   SECTIONS.map((section, index) => [section.id, (index + 1) * 10])
@@ -78,7 +80,25 @@ const HERO_WASH =
 const CONNECTOR_SPECIMEN = LONGVIEW_CONNECTOR_SPECIMEN;
 const INVENTORY_SPECIMEN = LONGVIEW_INVENTORY_SPECIMEN;
 const CONSENT_SPECIMEN = LONGVIEW_CONSENT_SPECIMEN;
-const GRANT_SPECIMEN = LONGVIEW_GRANT_SPECIMEN;
+// The idle-state specimen still carries request-era display fields; do not
+// present its view or time range as continuing grant authority.
+const GRANT_SPECIMEN: GrantInspectorProps = {
+  ...LONGVIEW_GRANT_SPECIMEN,
+  streams: LONGVIEW_GRANT_SPECIMEN.streams.map((stream) => ({
+    detail: stream.detail,
+    fields: stream.fields,
+    label: stream.label,
+    name: stream.name,
+  })),
+};
+
+const LONGVIEW_INSTANCE_IDS = {
+  equity_grants: ["northstar-equity-account"],
+  pay_statements: ["northstar-payroll-account"],
+} as const;
+const LONGVIEW_CONSENT_TIME_FIELDS = {
+  pay_statements: "pay_period",
+} as const;
 
 const MULTI_CONNECTORS: ConnectorCardProps[] = [
   CONNECTOR_SPECIMEN,
@@ -1248,9 +1268,7 @@ function observeSectionsWith(observer: IntersectionObserver): void {
   }
 }
 
-function deriveGrantInspectorProps(
-  protocolGrant: NonNullable<ReturnType<typeof useProtocol>["grant"]>
-): GrantInspectorProps {
+function deriveGrantInspectorProps(protocolGrant: ProtocolGrant): GrantInspectorProps {
   return {
     accessMode: protocolGrant.access_mode,
     client: { clientId: protocolGrant.client_id, name: LONGVIEW_CLIENT_NAME },
@@ -1268,9 +1286,23 @@ function deriveGrantInspectorProps(
       fields: s.fields || undefined,
       label: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.label || s.name,
       name: s.name,
-      timeRange: s.time_range || undefined,
-      view: s.view || undefined,
     })),
+  };
+}
+
+// Resolve the local mock's request-era shape at the display boundary. Core
+// grants carry concrete handles, fields, and a frozen time_constraint.
+function resolveGrantStreamForDisplay(stream: ProtocolGrantStream) {
+  const instanceIds = LONGVIEW_INSTANCE_IDS[stream.name as keyof typeof LONGVIEW_INSTANCE_IDS] ?? [
+    `${stream.name}-account`,
+  ];
+  const timeField = LONGVIEW_CONSENT_TIME_FIELDS[stream.name as keyof typeof LONGVIEW_CONSENT_TIME_FIELDS];
+
+  return {
+    fields: stream.fields ?? [],
+    instance_ids: instanceIds,
+    name: stream.name,
+    ...(stream.time_range && timeField ? { time_constraint: { field: timeField, ...stream.time_range } } : {}),
   };
 }
 
@@ -1674,11 +1706,9 @@ Content-Type: application/json
   "client_display": { "name": "${LONGVIEW_CLIENT_NAME}", ... },
   "authorization_details": [{
     "type": "https://pdpp.dev/data-access",
-    "source": {
-      "kind": "connector",
-      "id": "https://registry.pdpp.dev/profiles/compensation-v1"
-    },
+    "source": { "id": "https://registry.pdpp.dev/profiles/compensation-v1" },
     "purpose_code": "${LONGVIEW_PURPOSE_CODE}",
+    "access_mode": "continuous",
     "streams": [
       { "name": "pay_statements", "necessity": "required" },
       { "name": "equity_grants", "necessity": "required" },
@@ -1870,6 +1900,7 @@ Content-Type: application/json
   },
   "authorization_details": [{
     "type": "https://pdpp.dev/data-access",
+    "source": { "id": "https://registry.pdpp.dev/profiles/compensation-v1" },
     "purpose_code": "${LONGVIEW_PURPOSE_CODE}",
     "purpose_description": "${LONGVIEW_PURPOSE_DESCRIPTION}",
     "access_mode": "continuous",
@@ -1928,11 +1959,7 @@ Content-Type: application/json
                       purpose_code: protocol.grant.purpose_code,
                       retention: protocol.grant.retention,
                       status: protocol.grant.status,
-                      streams: protocol.grant.streams.map((s) => ({
-                        fields: s.fields,
-                        name: s.name,
-                        view: s.view,
-                      })),
+                      streams: protocol.grant.streams.map(resolveGrantStreamForDisplay),
                     },
                     null,
                     2
@@ -1945,7 +1972,7 @@ Content-Type: application/json
                   <span style={{ opacity: 0.65 }}>grant validity:</span> issued_at / expires_at
                 </span>
                 <span>
-                  <span style={{ opacity: 0.65 }}>data scope:</span> streams[].time_range
+                  <span style={{ opacity: 0.65 }}>data scope:</span> streams[].time_constraint
                 </span>
                 <span>
                   <span style={{ opacity: 0.65 }}>access pattern:</span> access_mode (single_use | continuous)
@@ -2023,7 +2050,7 @@ PDPP-Version: 0.1.0
                 see{" "}
                 <a
                   className="underline"
-                  href="/specification/reference-implementation-examples#example-4-token-introspection-verify-an-issued-token-and-read-its-grant"
+                  href="/specification/reference-implementation-examples#example-4-token-introspection"
                 >
                   Example 4
                 </a>{" "}
