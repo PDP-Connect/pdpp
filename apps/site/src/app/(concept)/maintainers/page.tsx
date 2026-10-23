@@ -91,11 +91,6 @@ const OPEN_DOCS: readonly DocEntry[] = [
     title: "Open Questions",
   },
   {
-    body: "Concerns held back from the current draft, with the reason each was deferred. Deferred is not rejected; several are expected to return.",
-    slug: "spec-deferred",
-    title: "Deferred Concerns",
-  },
-  {
     body: "Superseded. The query surface it describes was replaced; it stays reachable because earlier drafts and external links still cite it.",
     slug: "spec-data-query-api",
     title: "Data Query API",

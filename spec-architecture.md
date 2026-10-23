@@ -1,7 +1,7 @@
 # System Architecture: How the Spec Components Relate
 
 Status: Informative
-Date: 2026-08-14
+Date: 2026-09-27
 
 ## Components
 
@@ -120,7 +120,7 @@ Event-driven ingestion (a platform pushes events to the personal server) is defe
 | Selection request format | **Yes** | RFC 9396 authorization_details (Core Section 6) |
 | Resource server query interface | **Yes** | How clients query records under a grant (Core Section 8) |
 | Personal server storage | **No** | Implementation choice |
-| Webhook ingestion | **No** | Deferred; see spec-deferred |
+| Webhook ingestion | **No** | Deferred; see Core Section 12 |
 | MCP agent surface | **No** | Reference implementation feature (grant packages) |
 | Consent screen visual design | **No** | Surface-specific; semantic rendering obligations remain in scope |
 | Trust registry / connector certification | **No** | Deferred (Core Section 12) |

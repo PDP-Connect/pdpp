@@ -169,10 +169,22 @@ const nextConfig = {
         permanent: true,
         source: "/spec-data-query-api",
       },
+      // spec-deferred.md was retired into Core Section 12 "Out of scope";
+      // each open topic keeps one row there.
       {
-        destination: "/specification/spec-deferred",
+        destination: "/specification#out-of-scope",
         permanent: true,
         source: "/spec-deferred",
+      },
+      {
+        destination: "/specification#out-of-scope",
+        permanent: true,
+        source: "/specification/spec-deferred",
+      },
+      {
+        destination: "/specification#out-of-scope",
+        permanent: true,
+        source: "/llms.mdx/docs/spec-deferred",
       },
       {
         destination: "/specification/spec-dti-alignment",
