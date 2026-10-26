@@ -357,7 +357,7 @@ RECORD is the universal data envelope. It is used in the Collection Profile and 
 
 A resource server stores each record under exactly one instance. The canonical key is unique only within one instance of a stream: two instances can hold records with the same key, for example the same playlist in two accounts. Within a stream, a record is therefore identified by its `instance_id` and its canonical key. Core defines no ingest path, so it does not define how a record is assigned to an instance.
 
-**Response records:** A query response serves each record as an object with `object: "record"`, `id` (the canonical key string), `instance_id`, `stream`, `data`, and `emitted_at`. A tombstone uses the same object with `deleted: true` (see Tombstones above). `instance_id` is the opaque handle of the record's instance, and every served record and tombstone carries it. For a client token, it is the handle that the grant lists for that instance. For an owner token, it is the owner's handle for that instance, and every owner-token response uses the same value. A client MUST identify a record within a stream by its `instance_id` and `id` together.
+**Response records:** A query response serves each record as an object with `object: "record"`, `id` (the canonical key string), `instance_id`, `stream`, and `data`. A client-token response MUST NOT include `emitted_at`; an owner-token response includes it. A tombstone uses the same object with `deleted: true` (see Tombstones above). Every served record and tombstone carries `instance_id`: the grant's handle for a client token and the owner's handle for an owner token. A client MUST identify a record within a stream by its `instance_id` and `id` together.
 
 ### Record evidence {#record-evidence}
 
@@ -394,7 +394,7 @@ A binding MAY be composed. The attester binds its own identifier for the record,
 
 **References.** A resource server MUST NOT deliver an item whose local `refs` entries do not all name items delivered in the same array. A client treats a local entry that names no delivered item as a reference to an absent item. An absolute URI in `refs` is an identifier only. The no-widening rule applies to the URI and to everything that a client can obtain through it. A client MUST NOT retrieve the URI unless the profile defines retrieval, access control, and integrity binding for it.
 
-**Effective projection.** The effective projection is the set of fields that the response serves for the record. For a client token, the granted field set is the StreamGrant's `fields`, and the required field set is its `required_fields`. When a record request supplies `fields`, the RS MUST serve only the intersection of the requested and granted fields, together with the required field set. When the request omits `fields`, the RS MUST use the granted field set. The RS MUST apply this effective projection to record `data` and to record evidence. For an owner token, it is the read's effective `fields` or resolved `view` projection plus the schema-required fields, or the whole record when the read names neither. The effective projection governs evidence as it governs `data`. v0.1 defines no request member or query parameter that asks for evidence or suppresses it. A resource server delivers evidence on an owner-token read only for a type whose profile supports owner reads.
+**Effective projection.** The effective projection is the set of fields that the response serves for the record. For a client token, the granted field set G is the StreamGrant's `fields`, and the required field set R is its `required_fields`. The RS MUST include R in every client record projection. For an explicit request field set Q, the RS MUST validate request syntax, resolve the active grant, and authorize the stream before comparing Q with G. If Q is not a subset of G, the RS MUST reject the whole read with HTTP 403 `field_not_granted` before any source-schema or record-data lookup. It MUST return no records. The error's `param` MUST be `fields`, and its message MUST name exactly the field names in Q that are absent from G. For the same well-formed request and grant, the response MUST be identical whether one of those names exists in the current source schema or not. If Q is a subset of G, the effective projection is Q union R. If the request omits `fields`, the effective projection is G. The RS MUST apply this projection to record `data` and evidence. For an owner token, the effective projection is the read's `fields` or resolved `view` projection plus schema-required fields, or the whole record when the read names neither. The effective projection governs evidence as it governs `data`. v0.1 defines no request member or query parameter that asks for evidence or suppresses it. A resource server delivers evidence on an owner-token read only for a type whose profile supports owner reads.
 
 For a client-token read, the RS MUST NOT add a field outside the granted field set. A required field that has no value in the stored record version remains absent from that record's `data`, with the meaning that this section gives to an absent field. The RS MUST NOT fabricate its value.
 
@@ -441,7 +441,6 @@ Example (non-normative). The type URI is a placeholder that PDPP does not define
     "amount": "-42.10",
     "posted_at": "2026-09-01"
   },
-  "emitted_at": "2026-09-02T08:00:00Z",
   "evidence": [
     {
       "type": "https://example.org/evidence/detached-jws",
@@ -458,7 +457,7 @@ Example (non-normative). The type URI is a placeholder that PDPP does not define
 
 Two timestamp concepts appear in records:
 
-- **`emitted_at`**: when the producer emitted the record. Always present on the RECORD envelope. Producer-generated.
+- **`emitted_at`**: when the producer emitted the record. Always present on the stored RECORD envelope; client-token responses omit it. Producer-generated.
 - **Source timestamps**: when the event occurred or the resource was created or modified on the source platform. These are fields within `data`, declared in the stream schema. The spec reserves two standard field names: `source_created_at` and `source_updated_at`. Connector authors SHOULD use these names when the platform provides them, rather than inventing platform-specific names.
 
 ### Foreign keys
@@ -673,7 +672,7 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `streams[].semantics` | `append_only` or `mutable_state`. |
 | `streams[].schema` | JSON Schema for the record's `data` field. `primary_key` and `cursor_field` MUST reference fields declared here. |
 | `streams[].primary_key` | Fields that uniquely identify a record within one instance of the stream (see Record identity in Section 4). |
-| `streams[].cursor_field` | Field used for logical record ordering in ordinary list reads. `changes_since` uses a separate RS change-order position, not `cursor_field`. List reads sort by `(cursor_field, instance_id, primary_key)`, with null or absent cursor values sorting after present values. A cursor is an opaque token the server issues, encoding a logical sort position in the stream. |
+| `streams[].cursor_field` | Candidate field for ordinary list ordering. For client reads, the AS MUST freeze it as `sort_field` when its schema format is `date` or `date-time` and the grant includes it. Otherwise client reads use key order. Owner-token list reads use the current `cursor_field`. A page cursor encodes an opaque logical sort position. `changes_since` uses a separate RS change-order position. |
 | `streams[].consent_time_field` | The temporal consent boundary: the field against which `time_range` is evaluated. Absent means `time_range` is not applicable to this stream. MUST reference a top-level field declared in the schema with format `date` or `date-time` (see [consent_time_field](#consent-time-field)). |
 | `streams[].consent_time_content_may_exceed` | Optional boolean, default `false`. `true` means a record can contain data from outside its own `consent_time_field` value. The AS MUST reject a non-boolean value. See [consent_time_field](#consent-time-field). |
 | `streams[].selection` | Which selection parameters this stream supports (`fields`, `resources`). Time-range capability is derived from `consent_time_field` presence; absent means not time-range-capable. The AS MUST reject grants that request `time_range` on a stream without a `consent_time_field`, or that request an unsupported selection parameter. The `fields: ["*"]` marker is always supported. |
@@ -719,7 +718,7 @@ The `consent_time_field` is the field on each record that the resource server ev
 
 The `consent_time_field` may be the same field as `cursor_field`, but they serve different purposes and MUST be declared separately:
 
-- `cursor_field` orders ordinary list reads; `changes_since` uses a separate RS change-order position.
+- `cursor_field` selects ordinary list order; a client grant uses it only when frozen as `sort_field`. `changes_since` uses a separate RS change-order position.
 - `consent_time_field` governs consent-time filtering (which records fall within the authorized time window).
 
 For many `append_only` streams, both fields will be the same (e.g., `played_at` for play events). For some `mutable_state` streams they may differ. A playlists stream might use `source_updated_at` as the `cursor_field`, to order list reads by recent change, but `source_created_at` as the `consent_time_field`. The user's consent to "playlists from the last 6 months" most naturally means playlists they created in that period, not playlists they edited.
@@ -1025,6 +1024,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
       "name": "top_artists",
       "instance_ids": ["inst_K4wq8Rn2"],
       "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
+      "sort_field": "source_updated_at",
       "time_constraint": {
         "field": "source_updated_at",
         "type": "date-time",
@@ -1069,7 +1069,8 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 |-------|------|----------|--------|-------------|
 | `name` | string | yes | Protocol-enforced | Unique stream name within the grant. Always concrete; no wildcards in issued grants. |
 | `instance_ids` | string[] | yes | Protocol-enforced | Unique non-empty opaque instance handles. A handle is scoped to issuer, subject, and client, is unique across sources, names the same instance in every stream of its source, and is pairwise (see [Pairwise identifiers](#pairwise-identifiers)). Authorization stays per stream: the handles this row lists authorize this stream only. Multiple handles authorize fan-in only when explicitly listed. Example: two connected Gmail accounts are two instances of the same source kind, each with its own handle. |
-| `fields` | string[] | yes | Protocol-enforced | Unique non-empty resolved field allowlist, authoritative for RS enforcement. Top-level field names only. |
+| `fields` | string[] | yes | Protocol-enforced | Unique non-empty resolved field allowlist, authoritative for RS enforcement. Includes every `required_fields` entry. Top-level field names only. |
+| `sort_field` | string | no | Protocol-enforced | The declared `cursor_field` when its schema format is `date` or `date-time` and `fields` includes it; otherwise absent. If absent, client list reads sort by `instance_id` and canonical key string. |
 | `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, type, since?, until? }` resolved from the retained declaration. `field` and `type` are required and at least one bound is present. `type` is `date` or `date-time`; the AS sets it at issuance from the field's format in the retained declaration. Each bound has that type. `since` is inclusive; `until` is exclusive. |
 | `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Present only when `instance_ids` has exactly one handle. Absent means all records. |
 
@@ -1206,6 +1207,7 @@ Retention is a structured policy declaration and policy commitment by the data r
       "name": "top_artists",
       "instance_ids": ["inst_9fQ2xLp7"],
       "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
+      "sort_field": "source_updated_at",
       "time_constraint": {
         "field": "source_updated_at",
         "type": "date-time",
@@ -1413,7 +1415,7 @@ Authorization: Bearer <access_token>
 A client-token caller may fetch metadata only for a stream present in its resolved authorization context. An owner-token caller may fetch metadata for streams in the subject's data store the owner token is scoped to. Once access is authorized, the response body is actor-specific:
 
 - **Owner token:** the metadata document is returned whole — full current schema, query capabilities, views, and relationships — rather than field-projected by any grant. An owner token carries no grant, so there is nothing to project against.
-- **Client token:** the response is a closed projection derived from the resolved authorization context: only the granted stream's explicitly granted fields, and only immutable/frozen grant facts. Current query, view, relationship, filter, expansion, and aggregation capabilities MUST NOT appear unless that capability is explicitly part of a future frozen grant vocabulary. Current metadata MAY report availability/freshness or reject an unavailable operation, but MUST NOT make the grant appear broader or semantically different than what was issued. A source declaration change made after the grant was issued (e.g., a new field) MUST NOT become visible through this endpoint for that grant.
+- **Client token:** The response is a closed projection. It contains the granted stream's explicitly granted fields and immutable or frozen grant facts, including `sort_field` only when the grant freezes it. It MUST NOT expose the current `cursor_field`. Current query, view, relationship, filter, expansion, and aggregation capabilities MUST NOT appear unless a future frozen grant vocabulary includes them. Current metadata MAY report availability or freshness, or reject an unavailable operation, but MUST NOT make the grant appear broader or semantically different than issued. A source declaration change after grant issuance MUST NOT become visible through this endpoint.
 
 **Owner-token response** (full current metadata):
 
@@ -1465,7 +1467,7 @@ A client-token caller may fetch metadata only for a stream present in its resolv
     }
   },
   "primary_key": ["id"],
-  "cursor_field": "source_updated_at",
+  "sort_field": "source_updated_at",
   "consent_time_field": "source_updated_at",
   "selection": {
     "fields": true,
@@ -1512,7 +1514,7 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `order` | enum | `desc` (default) or `asc`. |
 | `filter[{field}]` and `filter[{field}][op]` | string | Owner-token current-capability filters only. Client-token requests MUST reject exact and range forms in v0.1. |
 | `view` | string | Owner-token current-capability request for records projected to a named view. Client-token records requests MUST reject `view`; clients use explicit `fields` or the field projection already frozen into the grant. Mutually exclusive with `fields`. |
-| `fields` | comma-separated | Sparse fieldset. Schema-required fields are always included. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
+| `fields` | comma-separated | Sparse fieldset. Every client-token field MUST be in the grant, or the whole read fails with 403 `field_not_granted`; see [Effective projection](#record-evidence). Schema-required fields are always included. Top-level names only. Mutually exclusive with `view`. |
 | `expand[]` | string | Owner-token current-capability request to expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. Client-token requests MUST reject this parameter in v0.1. |
 | `expand_limit[{relation}]` | integer | Owner-token current-capability limit for an expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. Client-token requests MUST reject this parameter in v0.1. |
 | `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`), or `beginning` to start a sync. Returns the changes since that token under [Incremental sync](#incremental-sync): every record not visible at h0 and visible at h1, a record visible at both only if its grant-authorized projection changed, and tombstones. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the token has expired. |
@@ -1534,7 +1536,7 @@ For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`, `lt
 
 For owner-token current-capability reads, expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations. Expansion joins only related records in the parent record's instance.
 
-**Stable sort:** Records are sorted by `(cursor_field, instance_id, primary_key)` for cursor safety. Null or absent `cursor_field` values sort after present values. A `changes_since` session instead orders records and tombstones together by `instance_id` and then canonical key string, in the direction `order` selects. It does not follow `cursor_field`, which a tombstone lacks, or the order of changes, which would reveal when a hidden field changed relative to other updates.
+**Stable sort:** Owner-token list reads use the current `cursor_field` when present, followed by `instance_id` and primary key. Client-token list reads use the grant's frozen `sort_field` when present, followed by `instance_id` and primary key. Null or absent sort-field values sort after present values. When the grant has no `sort_field`, client list reads use `instance_id` and canonical key string, in the direction `order` selects. `changes_since` always uses that key order for records and tombstones. It does not reveal when a hidden field changed relative to other updates. The RS orders `sort_field` values as the calendar date or exact instant that the value's RFC 3339 form denotes. A value that is absent, null, or not valid RFC 3339 sorts after valid values. `instance_id` and canonical key strings compare by Unicode code point.
 
 A page cursor is bound to the query context of the first page: the grant (for an owner token, the subject and effective owner scope), stream, `fields`, `view`, `expand[]`, `expand_limit[...]`, `order`, every `filter[...]`, and any `changes_since` token. A client MUST follow a `next_cursor` with the same context that produced it. To change the context, the client MUST restart pagination without a cursor. Resource servers MUST reject a page cursor used with a different context as `invalid_cursor`.
 
@@ -1576,8 +1578,7 @@ A `changes_since` request with `expand[]` or `expand_limit[...]` is rejected wit
         "id": "conv_01JQW8M2R7",
         "title": "Trip planning",
         "source_created_at": "2026-03-25T18:22:11Z"
-      },
-      "emitted_at": "2026-04-06T15:01:00Z"
+      }
     }
   ]
 }
@@ -1608,8 +1609,7 @@ The terminal page of a `changes_since` request (i.e., `has_more: false`) MUST in
         "id": "conv_01JQW8M2R7",
         "title": "Trip planning, Lisbon",
         "source_created_at": "2026-03-25T18:22:11Z"
-      },
-      "emitted_at": "2026-04-06T15:01:00Z"
+      }
     }
   ]
 }
@@ -1704,11 +1704,11 @@ This makes a future error code safe to introduce: an older client keeps handling
 | `invalid_cursor` | 400 | `invalid_request_error` | Page cursor or `changes_since` token is malformed or unrecognized, or is used with a different grant, owner scope, or query context. |
 | `invalid_request` | 400 | `invalid_request_error` | Malformed request parameter or mutually exclusive parameters. |
 | `invalid_expand` | 400 | `invalid_request_error` | Relation is not declared as expandable. |
-| `unknown_field` | 400 | `invalid_request_error` | Requested field not in stream schema. |
+| `unknown_field` | 400 | `invalid_request_error` | Owner-token current-capability read requests a field absent from the current stream schema. Never use this code to classify a client field outside its grant. |
 | `unsupported_version` | 400 | `invalid_request_error` | `PDPP-Version` header specifies unsupported version, or grant references unsupported schema version. |
 | `authentication_error` | 401 | `authentication_error` | Missing, invalid, or inactive access token. |
 | `authorization_state.unsupported_legacy_shape` | 401 | `authentication_error` | Persisted authorization state does not match a supported shape. Fresh consent is required when no migration applies. |
-| `field_not_granted` | 403 | `permission_error` | Requested client field exceeds the grant's authorized field projection. |
+| `field_not_granted` | 403 | `permission_error` | A well-formed client `fields` request includes names outside the grant. Reject the whole read before schema or data lookup; `param` is `fields`, and `message` names exactly the requested fields absent from the grant. |
 | `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
 | `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
 | `grant_time_range_exceeded` | 403 | `permission_error` | Request filters exceed the grant's frozen `time_constraint`. |
@@ -1759,7 +1759,7 @@ A conformant authorization server:
 10. For `single_use` grants, consumes the grant atomically with first client-token issuance. Gives that access token a finite expiration set by local policy and, when the grant has `expires_at`, no later than `expires_at`; that expiry ends the grant's one read window. Lets a later token in the same refresh-token family carry the grant only inside the window, reports the grant inactive after it, and otherwise rejects issuance against the consumed grant.
 11. Validates stream/field/view/resource-id shape at grant issuance. Rejects `resources` on a stream with more than one instance.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
-13. Resolves view names to field lists at issuance time; stores resolved `fields` in the `StreamGrant`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
+13. Resolves view names to field lists at issuance time; stores resolved `fields` and `required_fields` in the `StreamGrant`. Freezes `cursor_field` as `sort_field` when its format is `date` or `date-time` and the grant includes it; otherwise omits `sort_field`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
 14. Obtains explicit affirmative user consent before issuing grants with `purpose_code: "https://pdpp.dev/purpose/ai_training"`. Never presents an `ai_training` detail as selected by default. In a request with several details, lets the owner approve any other detail while declining it.
 15. Resolves omitted instance IDs before the final approval surface. Binds
     exact resolved instances and all final decision fields to an immutable
@@ -1785,7 +1785,7 @@ A conformant authorization server:
 A conformant Core RS:
 
 1. Implements the query endpoints defined in Section 8: list streams, get stream metadata, list records, get a single record, get a blob, delete a record (owner-authenticated).
-2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, and `resources` filter. Authorizes each disclosure under one grant and never combines the constraints of different grants.
+2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, `required_fields`, frozen `sort_field`, and `resources` filter. Authorizes each disclosure under one grant and never combines the constraints of different grants.
 3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results no longer than `min(token_exp, 60 seconds)`.
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`.
 5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
@@ -1810,6 +1810,9 @@ A conformant Core RS:
 23. Puts `instance_id` on every record and tombstone it serves: the grant's handle for a client token, and the owner's handle for an owner token. Serves each `resource_ref` in the resolved or redacted form according to the token-kind, source, and sync-horizon rules in Section 4. In the next session, returns each referring record that the previous session served with a reference redacted after a target deletion, as Section 4 requires. Identifies records within a stream by instance and canonical key in sync, removals, cursors, and single-record reads. Requires `instance_id` on a single-record read or record delete when the query context covers more than one instance of the stream, and on every blob fetch. Rejects a missing one with 400 `invalid_request`.
 24. In a separated deployment, resolves every handle through `pdpp_instance_bindings`. Fails a client request with 403 `grant_invalid` when a handle the request needs has no binding or names no stored instance. Treats an owner instance without a binding as outside the owner scope.
 28. Delivers an `evidence` item only when it implements the item's type, the proof is valid over the served values and authenticates the attester, the item's record binding verifies for the caller, and the item does not widen the disclosure. Decides per record whether to deliver an item only when that decision is independent of hidden data. Adds no member to an item, delivers no item with an unresolved local reference, never passes an unchecked item through, and marks no item as verified or unverified. Sends no evidence on a tombstone, and does not return a record in a `changes_since` session only because its evidence changed. Delivers evidence on owner-token reads only for types whose profile supports them.
+31. For a client request whose explicit `fields` contains both granted and ungranted names, returns 403 `field_not_granted` and no records. The error names only the ungranted names.
+32. Given the same request and grant, returns the same status, headers, and body, apart from `request_id`, `Request-Id`, and `Date`, when the same well-formed outside-grant name exists in the current schema and when it is invented. It performs no source-schema or record-data lookup before rejection.
+33. For a client list read whose grant omits the declared date `cursor_field`, uses descending `(instance_id, canonical key)` order by default, even when date order differs. When the grant includes the field, it uses the frozen `sort_field`.
 
 Collection resource servers, connector runtimes, and connectors make no separate conformance claim in v0.1. A connector conforms to PDPP as Section 1 states: by producing a source declaration valid under Section 5 and serving its data through a resource server conforming to Section 8. The informative [PDPP Collection Profile](spec-collection-profile) describes runtime behavior and defines no conformance requirement.
 
@@ -2039,7 +2042,7 @@ interface ResponseRecord {
   instance_id: string;     // Opaque instance handle; identity is (instance_id, id)
   stream: string;
   data: Record<string, unknown>;
-  emitted_at: string;
+  emitted_at?: string;         // Owner-token responses only; absent for client-token responses
   evidence?: EvidenceItem[];  // Absent or empty: no evidence
 }
 
@@ -2105,6 +2108,7 @@ interface StreamGrant {
   name: string;
   instance_ids: string[];  // Non-empty and unique; pairwise per client; a handle names one instance across the source's streams
   fields: string[];        // Non-empty and authoritative for RS enforcement
+  sort_field?: string;     // Frozen date/date-time cursor_field when granted; absent means key ordering
   time_constraint?: TimeConstraint;
   resources?: string[];    // Canonical key strings per compound key encoding
 }
@@ -2177,7 +2181,7 @@ interface SourceDeclarationStream {
   semantics: 'append_only' | 'mutable_state';
   schema: Record<string, unknown>;
   primary_key: string[];
-  cursor_field?: string;           // Orders ordinary list reads; changes_since uses a separate change-order position
+  cursor_field?: string;           // Candidate sort field; client reads use it only when date/date-time and frozen in grant.sort_field
   consent_time_field?: string;     // Top-level date or date-time field; absent means time_range not supported
   consent_time_content_may_exceed?: boolean;  // Default false; true for period or summary records
   selection: {
