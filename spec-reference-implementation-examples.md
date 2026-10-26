@@ -34,7 +34,7 @@ This is the logical content carried in the OAuth authorization request. `client_
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+      "source": { "id": "https://registry.pdpp.dev/connectors/spotify" },
       "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
@@ -195,7 +195,7 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/chatgpt" },
+      "source": { "id": "https://registry.pdpp.dev/connectors/chatgpt" },
       "purpose_code": "https://pdpp.dev/purpose/agent_context",
       "purpose_description": "Provide context to your personal AI agent",
       "access_mode": "continuous",
@@ -301,6 +301,9 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
   },
   "emitted_at": "2026-04-11T15:12:00Z"
 }
+```
+
+```json
 {
   "type": "RECORD",
   "stream": "messages",
@@ -314,6 +317,9 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
   },
   "emitted_at": "2026-04-11T15:12:01Z"
 }
+```
+
+```json
 {
   "type": "STATE",
   "stream": "conversations",
@@ -321,6 +327,9 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
     "updated_at": "2026-04-11T08:00:00Z"
   }
 }
+```
+
+```json
 {
   "type": "STATE",
   "stream": "messages",
@@ -328,6 +337,9 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
     "created_at": "2026-04-11T08:00:01Z"
   }
 }
+```
+
+```json
 {
   "type": "DONE",
   "status": "succeeded",
@@ -410,23 +422,27 @@ A sleep analysis app receives a one-time grant with a retention declaration.
   "subject": { "id": "sub_B6jL8sYe" },
   "client": { "client_id": "sleep_app" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/oura" },
-  "manifest_version": "1.0.0",
+  "source_declaration": { "version": "1.0.0" },
   "purpose_code": "https://pdpp.dev/purpose/analytics",
   "purpose_description": "Analyze your sleep patterns",
   "access_mode": "single_use",
   "streams": [
     {
       "name": "sleep_sessions",
-      "time_range": {
-        "since": "2026-03-12T00:00:00Z",
-        "until": "2026-04-11T00:00:00Z"
-      },
+      "instance_ids": ["inst_P2xf9Lb6"],
       "fields": [
         "day",
         "total_sleep_duration",
         "sleep_score",
         "deep_sleep_duration"
-      ]
+      ],
+      "required_fields": ["day"],
+      "time_constraint": {
+        "field": "day",
+        "type": "date",
+        "since": "2026-03-12",
+        "until": "2026-04-11"
+      }
     }
   ],
   "retention": {
@@ -442,20 +458,28 @@ A sleep analysis app receives a one-time grant with a retention declaration.
 
 The AS marks the grant inactive. Further client access stops after revocation propagates through introspection.
 
+The RS receives only `active: false`, so this example uses `authentication_error`. It uses `grant_revoked` only when authenticated context establishes that cause.
+
 ### Step 3: Further disclosure attempts fail
 
 ```http
 GET /v1/streams/sleep_sessions/records
 Authorization: Bearer pdpp_client_tok_sleep_001
-PDPP-Version: 2026-04-06
+PDPP-Version: 0.1
+
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer error="invalid_token", resource_metadata="https://rs.example.com/.well-known/oauth-protected-resource"
+Content-Type: application/json
+PDPP-Version: 0.1
+Request-Id: req_01JREVOCATION
 ```
 
 ```json
 {
   "error": {
-    "type": "permission_error",
-    "code": "grant_revoked",
-    "message": "Grant has been revoked.",
+    "type": "authentication_error",
+    "code": "authentication_error",
+    "message": "Access token is inactive.",
     "request_id": "req_01JREVOCATION"
   }
 }
