@@ -14,7 +14,6 @@ import {
   rollUpClauseResult,
 } from "../src/report/requirements.ts";
 import { buildReport, type CaseResult, exitCodeFor } from "../src/report/result.ts";
-import { SPEC_SOURCE } from "../src/requirements/catalog.ts";
 import { CLAUSE_MATRIX, type Observable } from "../src/requirements/matrix.ts";
 import { clauseFragments, normalizeSpecText } from "../src/requirements/spec-scan.ts";
 import { ALL_CASES, SUITE } from "../src/suite.ts";
@@ -106,7 +105,7 @@ test("headline: every case passing still exits 2 while a MUST clause is partial,
   assert.ok(report.requirements.every((r) => r.outcome === "pass" || r.outcome === "not-tested"));
   // ...yet clause-level evidence is incomplete, so the headline must not claim completion.
   const incomplete = report.summary.incompleteMustClauses.map((c) => c.clauseId);
-  assert.ok(incomplete.includes("8.12-2"), "8.12-2 is acknowledged-partial and must block completion");
+  assert.ok(incomplete.includes("8.15-5"), "8.15-5 is acknowledged-partial and must block completion");
   assert.equal(report.summary.allApplicableMustsTestedAndPassed, false);
   assert.equal(exitCodeFor(report), 2);
 });
@@ -159,7 +158,7 @@ test("the header names the spec file, its SHA-256, the suite version, the target
     reportWith(() => "pass"),
     SPEC
   );
-  assert.equal(out.header.specFile, SPEC_SOURCE.path);
+  assert.equal(out.header.specFile, "spec-core.md");
   assert.equal(out.header.specSha256, createHash("sha256").update(SPEC).digest("hex"));
   assert.equal(out.header.suiteVersion, SUITE.version);
   assert.equal(out.header.targetId, "synthetic");
@@ -171,7 +170,7 @@ test("a failing case surfaces as a failing clause with the case detail", () => {
     reportWith((id) => (id === "RS-7/expired-sync-cursor-reported-as-gone" ? "fail" : "pass")),
     SPEC
   );
-  const clause = out.must.find((e) => e.clauseId === "4.3-2");
+  const clause = out.must.find((e) => e.clauseId === "4.4-11");
   assert.equal(clause?.result, "fail");
   assert.match(clause?.reason ?? "", SYNTHETIC_FAILURE);
   assert.equal(out.summary.must.fail, out.must.filter((e) => e.result === "fail").length);
