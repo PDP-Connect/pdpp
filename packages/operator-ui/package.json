@@ -80,7 +80,7 @@
     "@pdpp/list-envelope": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.59.0",
+    "lucide-react": "^1.61.0",
     "next-themes": "^0.4.6",
     "tailwind-merge": "^3.7.0"
   },
@@ -92,7 +92,7 @@
     "react-dom": "^19.3.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "ultracite": "8.0.1"
+    "ultracite": "8.0.2"
   },
   "peerDependencies": {
     "@base-ui/react": "^1.3.0",
