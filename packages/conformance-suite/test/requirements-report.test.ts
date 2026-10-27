@@ -14,6 +14,7 @@ import {
   rollUpClauseResult,
 } from "../src/report/requirements.ts";
 import { buildReport, type CaseResult, exitCodeFor } from "../src/report/result.ts";
+import { SPEC_SOURCE } from "../src/requirements/catalog.ts";
 import { CLAUSE_MATRIX, type Observable } from "../src/requirements/matrix.ts";
 import { clauseFragments, normalizeSpecText } from "../src/requirements/spec-scan.ts";
 import { ALL_CASES, SUITE } from "../src/suite.ts";
@@ -158,7 +159,7 @@ test("the header names the spec file, its SHA-256, the suite version, the target
     reportWith(() => "pass"),
     SPEC
   );
-  assert.equal(out.header.specFile, "spec-core.md");
+  assert.equal(out.header.specFile, SPEC_SOURCE.path);
   assert.equal(out.header.specSha256, createHash("sha256").update(SPEC).digest("hex"));
   assert.equal(out.header.suiteVersion, SUITE.version);
   assert.equal(out.header.targetId, "synthetic");
