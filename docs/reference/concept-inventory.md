@@ -41,7 +41,7 @@ Legend:
 | 12 | Flat relational streams | Personal data as flat records in named streams with consistent schemas | Spine | Eng, Prod |
 | 13 | Semantic types | append_only (events) vs mutable_state (entities); determines version history requirements | Spine | Eng |
 | 14 | Primary key identity | Every stream has a declared primary key; records identified by this key | Branch | Eng |
-| 15 | Compound key encoding | Multi-field keys as percent-encoded minified JSON arrays | Branch | Eng |
+| 15 | Compound key encoding | Multi-field keys as RFC 8785 canonical JSON arrays of strings; percent-encoded only in URL paths | Branch | Eng |
 | 16 | Internal version history | RS maintains version history for mutable streams to support incremental sync | Branch | Eng |
 | 17 | Cursor vs consent_time_field | cursor_field (sync ordering) and consent_time_field (consent boundary) serve different purposes | Branch | Eng |
 
@@ -166,7 +166,7 @@ Legend:
 | # | Concept | Description | Flow | Audience |
 |---|---------|-------------|------|----------|
 | 79 | Record identity validation | RS validates primary key consistency between key envelope and data fields | Branch | Eng |
-| 80 | Compound key canonical encoding | Canonical minified JSON array encoding for compound keys | Branch | Eng |
+| 80 | Compound key canonical encoding | RFC 8785 (JCS) serialization of the string key-component array; minification alone is not unique | Branch | Eng |
 | 81 | Filter on unauthorized field | RS rejects filter targeting field outside grant projection (403) | Branch | Eng |
 | 82 | Insufficient scope on expand | Expanding stream not in grant returns 403 | Branch | Eng |
 | 83 | Invalid expand relation | Unknown relation returns 400 | Branch | Eng |
