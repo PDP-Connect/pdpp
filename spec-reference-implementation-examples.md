@@ -34,7 +34,7 @@ This is the logical content carried in the OAuth authorization request. `client_
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+      "source": { "id": "https://registry.pdpp.dev/connectors/spotify" },
       "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
@@ -194,7 +194,7 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/chatgpt" },
+      "source": { "id": "https://registry.pdpp.dev/connectors/chatgpt" },
       "purpose_code": "https://pdpp.dev/purpose/agent_context",
       "purpose_description": "Provide context to your personal AI agent",
       "access_mode": "continuous",
@@ -297,6 +297,9 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
   },
   "emitted_at": "2026-04-11T15:12:00Z"
 }
+```
+
+```json
 {
   "type": "RECORD",
   "stream": "messages",
@@ -310,6 +313,9 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
   },
   "emitted_at": "2026-04-11T15:12:01Z"
 }
+```
+
+```json
 {
   "type": "STATE",
   "stream": "conversations",
@@ -317,6 +323,9 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
     "updated_at": "2026-04-11T08:00:00Z"
   }
 }
+```
+
+```json
 {
   "type": "STATE",
   "stream": "messages",
@@ -324,6 +333,9 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
     "created_at": "2026-04-11T08:00:01Z"
   }
 }
+```
+
+```json
 {
   "type": "DONE",
   "status": "succeeded",
@@ -447,16 +459,22 @@ The AS asks the user to choose `keep` or `delete` for the data the app already h
 GET /v1/streams/sleep_sessions/records
 Authorization: Bearer pdpp_client_tok_sleep_001
 PDPP-Version: 0.1
+
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer error="invalid_token", resource_metadata="https://rs.example.com/.well-known/oauth-protected-resource"
+Content-Type: application/json
+PDPP-Version: 0.1
+Request-Id: req_01JREVOCATION
 ```
 
-The token is inactive, and authenticated RS context establishes that its grant was revoked. The response is HTTP 401 with `WWW-Authenticate: Bearer error="invalid_token"`. If the cause were not established, the structured code would be `authentication_error`.
+The token is inactive. The RS receives only `active: false`, so the response is HTTP 401 with `WWW-Authenticate: Bearer error="invalid_token"` and the structured code `authentication_error`. The code would be `grant_revoked` only if authenticated RS context established that the grant was revoked.
 
 ```json
 {
   "error": {
     "type": "authentication_error",
-    "code": "grant_revoked",
-    "message": "Grant has been revoked.",
+    "code": "authentication_error",
+    "message": "Access token is inactive.",
     "request_id": "req_01JREVOCATION"
   }
 }

@@ -45,7 +45,7 @@ const STEP_COPY: Record<Exclude<SandboxPhase, "initial">, { eyebrow: string; tit
     title: "Quill Tax asks for scoped pay statements",
   },
   revoked: {
-    body: "Revocation tears the grant down. Any further read attempt against the same grant id receives a 403 and a `grant_revoked` error code.",
+    body: "Revocation tears the grant down. Any further read attempt with the same token receives a 401 with Bearer error `invalid_token` and an `authentication_error` error code.",
     eyebrow: "Step 4 of 4",
     title: "Sam revokes; the next read is refused",
   },
@@ -389,9 +389,9 @@ function RecordsCard({ state }: { state: SandboxState }) {
         <div className="flex items-center justify-between">
           <div>
             <div className="pdpp-eyebrow text-[color:var(--destructive)]">Refused</div>
-            <div className="pdpp-title mt-1 text-foreground">Next query returned 403 grant_revoked</div>
+            <div className="pdpp-title mt-1 text-foreground">Next query returned 401 authentication_error</div>
           </div>
-          <StatusPill label="403 forbidden" tone="destructive" />
+          <StatusPill label="401 unauthorized" tone="destructive" />
         </div>
         <p className="pdpp-caption mt-2 text-muted-foreground">
           The same grant id is no longer valid. Quill Tax would need to re-request and Sam would need to re-approve to
