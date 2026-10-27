@@ -34,7 +34,7 @@ This is the logical content carried in the OAuth authorization request. `client_
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+      "source": { "id": "https://registry.pdpp.dev/connectors/spotify" },
       "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
@@ -90,11 +90,11 @@ The authorization server preserves the semantic distinctions required by the dra
 >
 > [Allow] [Deny]
 
-The manifest-authored data description and the structured grant terms are rendered authoritatively. The free-text commitment is attributed to the client and not flattened into the same register.
+The declaration-authored data description and the structured grant terms are rendered authoritatively. The free-text commitment is attributed to the client and not flattened into the same register.
 
 ### Step 3: Issued grant
 
-The AS validates the request against the connector manifest and issues an immutable grant.
+The AS validates the request against the retained source declaration and issues an immutable grant.
 
 ```json
 {
@@ -104,13 +104,14 @@ The AS validates the request against the connector manifest and issues an immuta
   "subject": { "id": "user_abc" },
   "client": { "client_id": "concerts_app" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
-  "manifest_version": "2.0.0",
+  "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "purpose_description": "Recommend concerts based on your listening history",
   "access_mode": "single_use",
   "streams": [
     {
       "name": "top_artists",
+      "instance_ids": ["spotify-account-a"],
       "fields": [
         "id",
         "name",
@@ -118,7 +119,8 @@ The AS validates the request against the connector manifest and issues an immuta
         "popularity",
         "source_updated_at"
       ],
-      "time_range": {
+      "time_constraint": {
+        "field": "source_updated_at",
         "since": "2025-10-11T00:00:00Z"
       }
     }
@@ -191,7 +193,7 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/chatgpt" },
+      "source": { "id": "https://registry.pdpp.dev/connectors/chatgpt" },
       "purpose_code": "https://pdpp.dev/purpose/agent_context",
       "purpose_description": "Provide context to your personal AI agent",
       "access_mode": "continuous",
@@ -213,19 +215,31 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
   "subject": { "id": "user_abc" },
   "client": { "client_id": "my_agent" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/chatgpt" },
-  "manifest_version": "2.0.0",
+  "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/agent_context",
   "purpose_description": "Provide context to your personal AI agent",
   "access_mode": "continuous",
   "streams": [
-    { "name": "conversations" },
-    { "name": "messages" },
-    { "name": "memories" }
+    {
+      "name": "conversations",
+      "instance_ids": ["chatgpt-account-a"],
+      "fields": ["id", "title", "create_time", "update_time", "is_archived", "is_starred", "workspace_id", "current_node", "message_count_on_current_branch", "gizmo_id"]
+    },
+    {
+      "name": "messages",
+      "instance_ids": ["chatgpt-account-a"],
+      "fields": ["id", "node_id", "conversation_id", "parent_id", "children_ids", "role", "content", "non_string_parts", "content_type", "model_slug", "create_time", "finish_reason", "citations", "tool_calls", "attachment_ids", "on_current_branch", "blob_ref"]
+    },
+    {
+      "name": "memories",
+      "instance_ids": ["chatgpt-account-a"],
+      "fields": ["id", "content", "created_at", "updated_at", "type"]
+    }
   ]
 }
 ```
 
-The wildcard is expanded at consent time and frozen in the grant. Future stream types added by later manifest versions are not silently included.
+The wildcard is expanded at consent time and frozen in the grant. Future stream types added by later source declaration revisions are not silently included.
 
 ### Step 3: Runtime loads grant-scoped state
 
@@ -291,7 +305,7 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
   "data": {
     "id": "conv_003",
     "title": "New conversation",
-    "source_updated_at": "2026-04-11T08:00:00Z"
+    "update_time": "2026-04-11T08:00:00Z"
   },
   "emitted_at": "2026-04-11T15:12:00Z"
 }
@@ -304,7 +318,7 @@ The standardized `START` envelope does not carry the raw grant. It carries a por
     "conversation_id": "conv_003",
     "role": "user",
     "content": "What's the weather?",
-    "source_created_at": "2026-04-11T08:00:01Z"
+    "create_time": "2026-04-11T08:00:01Z"
   },
   "emitted_at": "2026-04-11T15:12:01Z"
 }
@@ -376,7 +390,7 @@ PDPP-Version: 2026-04-06
       "data": {
         "id": "conv_003",
         "title": "New conversation",
-        "source_updated_at": "2026-04-11T08:00:00Z"
+        "update_time": "2026-04-11T08:00:00Z"
       },
       "emitted_at": "2026-04-11T15:12:00Z"
     }
@@ -404,16 +418,18 @@ A sleep analysis app receives a one-time grant with a retention declaration.
   "subject": { "id": "user_abc" },
   "client": { "client_id": "sleep_app" },
   "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/oura" },
-  "manifest_version": "1.0.0",
+  "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/analytics",
   "purpose_description": "Analyze your sleep patterns",
   "access_mode": "single_use",
   "streams": [
     {
       "name": "sleep_sessions",
-      "time_range": {
-        "since": "2026-03-12T00:00:00Z",
-        "until": "2026-04-11T00:00:00Z"
+      "instance_ids": ["oura-account-a"],
+      "time_constraint": {
+        "field": "day",
+        "since": "2026-03-12",
+        "until": "2026-04-11"
       },
       "fields": [
         "day",
