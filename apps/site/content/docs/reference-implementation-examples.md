@@ -167,8 +167,7 @@ Representative response:
         "gross_pay": 5400,
         "net_pay": 3912,
         "currency": "USD"
-      },
-      "emitted_at": "2026-04-16T12:00:00Z"
+      }
     }
   ],
   "has_more": false

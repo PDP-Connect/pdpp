@@ -28,6 +28,9 @@ export interface Record {
   key: string;
 }
 
+/** A record as a client-token response serves it: Core omits `emitted_at` there. */
+export type ClientRecord = Omit<Record, "emitted_at">;
+
 export interface Stream {
   name: string;
   records: Record[];
@@ -59,7 +62,7 @@ export interface QueryResult {
   error?: string;
   has_more: boolean;
   next_changes_since?: string;
-  records?: Record[];
+  records?: ClientRecord[];
   status: number;
 }
 
@@ -190,9 +193,9 @@ export class MockPDPPServer {
 
   // ── Field projection ──
 
-  private projectRecord(record: Record, allowedFields: string[] | null, _allFields: string[]): Record {
+  private projectRecord(record: Record, allowedFields: string[] | null, _allFields: string[]): ClientRecord {
     if (!allowedFields) {
-      return record; // null = all fields authorized
+      return { data: record.data, key: record.key }; // null = all fields authorized
     }
 
     const projected: { [field: string]: unknown } = {};
@@ -204,7 +207,6 @@ export class MockPDPPServer {
 
     return {
       data: projected,
-      emitted_at: record.emitted_at,
       key: record.key,
     };
   }
