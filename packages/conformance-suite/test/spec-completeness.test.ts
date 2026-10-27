@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, it, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { REQUIREMENTS } from "../src/requirements/catalog.ts";
+import { REQUIREMENTS, SPEC_SOURCE } from "../src/requirements/catalog.ts";
 import { SPEC_SENTENCE_EXCLUSIONS } from "../src/requirements/exclusions.ts";
 import { CLAUSE_MATRIX } from "../src/requirements/matrix.ts";
 import {
@@ -25,7 +25,7 @@ import {
 const PATTERN_BETA_ITEM = /beta item/;
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const SPEC = readFileSync(join(REPO_ROOT, "spec-core.md"), "utf8");
+const SPEC = readFileSync(join(REPO_ROOT, SPEC_SOURCE.path), "utf8");
 const SPEC_LINES = SPEC.split("\n");
 const CLAUSE_TEXTS = CLAUSE_MATRIX.map((clause) => clause.text);
 const CONFORMANCE_SECTION = "9";
