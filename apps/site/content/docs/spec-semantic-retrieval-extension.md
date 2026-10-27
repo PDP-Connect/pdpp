@@ -40,7 +40,7 @@ Clients and agents that use this extension:
 Same as every other public PDPP surface:
 
 - `Authorization: Bearer <access_token>` — grant-bound for client tokens; owner-bound for owner self-export.
-- `PDPP-Version: <date>` header.
+- `PDPP-Version: 0.1` header, which selects the Core `0.1` contract for this endpoint as Core Section 8 defines.
 - `Request-Id` echoed on the response.
 
 No new auth scheme. No capability-specific auth. Deployments that want to restrict semantic retrieval do so via grant scope on the normal scope vocabulary, not through a custom semantic-retrieval-only auth path.
@@ -81,7 +81,6 @@ Every other parameter is rejected with `invalid_request_error` — explicitly in
       "record_key": "msg_123",
       "connector_id": "https://registry.pdpp.dev/connectors/messaging-app",
       "record_url": "/v1/streams/messages/records/msg_123",
-      "emitted_at": "2026-04-23T12:34:56Z",
       "score": { "kind": "semantic_distance", "value": 0.182, "order": "lower_is_better" },
       "matched_fields": ["text"],
       "snippet": { "field": "text", "text": "...overdraft charges..." },
@@ -97,7 +96,7 @@ Every other parameter is rejected with `invalid_request_error` — explicitly in
 - `stream` — which stream the match came from.
 - `record_key` — which record matched, within that stream.
 - `connector_id` — which connector the record came from. Required on every result for per-connector hydration.
-- `emitted_at` — the record's emission timestamp. NOT a relevance signal.
+- `emitted_at` — owner-token results only: the record's emission timestamp. NOT a relevance signal. A client-token result MUST NOT include it, as Core response records omit it.
 - `score` — when advertised, a typed model-relative distance score. The reference emits `{ "kind": "semantic_distance", "order": "lower_is_better" }`.
 - `matched_fields` — the subset of declared `semantic_fields` (∩ the caller's grant projection) that the server attributes the hit to. MAY be empty when the server cannot honestly attribute.
 - `retrieval_mode` — the one publicly experimental field. Values in v1 are `"semantic"` (pure vector match) or `"hybrid"` (semantic blended with lexical signal). The reference currently emits `"semantic"` on every result (`lexical_blending: false`); `"hybrid"` is reserved for a future tranche.

@@ -95,7 +95,7 @@ test("transcript bodies always carry the simulated flag", () => {
   }
 });
 
-test("revoked transcript captures the 403 refusal example", () => {
+test("revoked transcript captures the 401 refusal example", () => {
   const revoked = buildTranscript(run(["request", "approve", "query", "revoke"]));
   const last = revoked.at(-1);
   const body = last?.body as { next_attempt?: { status?: number; error?: string } };
@@ -103,7 +103,7 @@ test("revoked transcript captures the 403 refusal example", () => {
   // tsc/Biome see body as non-nullish — but at runtime body is still
   // undefined whenever `last` is, so the guard stays.
   // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
-  assert.equal(body?.next_attempt?.status, 403);
+  assert.equal(body?.next_attempt?.status, 401);
   // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
-  assert.equal(body?.next_attempt?.error, "grant_revoked");
+  assert.equal(body?.next_attempt?.error, "authentication_error");
 });

@@ -658,7 +658,7 @@ function IncrementalSync() {
 // (owner vs client), the bound subject, and the live grant status. This is what
 // makes revocation and single-use enforceable — a revoked grant flips
 // `active` to false here, one step before projection, so the next line of the
-// exchange is a 403 instead of data. Rendered as a protocol fact: real
+// exchange is a 401 instead of data. Rendered as a protocol fact: real
 // request/response shape from the mock server's introspection endpoint, not a
 // diagram. The verdict pill recolors live as the grant moves active → revoked.
 
@@ -709,7 +709,7 @@ function TokenIntrospection({ introspection }: { introspection: ClientIntrospect
             active: {String(active)}
           </span>
           <span className="font-mono text-muted-foreground text-xs">
-            {active ? "query proceeds to projection" : "query refused — 403"}
+            {active ? "query proceeds to projection" : "query refused — 401"}
           </span>
         </div>
         <IntrospectionField accent label="pdpp_token_kind" value={introspection.pdpp_token_kind} />
@@ -1889,7 +1889,10 @@ Content-Type: application/json
                 monogram instead of fetching arbitrary remote logos.
               </p>
               <p>
-                ai_training purpose code requires explicit affirmative consent — the sole protocol-level requirement.
+                The revised Core draft reserves AI training as a separate processing permission. Training remains
+                unavailable until the AI Training Profile is published and registered. The reference implementation
+                still uses the earlier purpose-code consent rule; that rule confers no training authority under the
+                revised draft.
               </p>
             </DetailPanel>
           }
@@ -1952,10 +1955,9 @@ Content-Type: application/json
                 </span>
               </div>
               <p>
-                A <strong>single_use</strong> grant is consumed on the first token issuance: the issued token keeps
-                working until expiry, but no second token is ever minted (a second attempt is rejected{" "}
-                <span className="font-mono">grant_consumed</span> → 403). The runtime enforces this and persists no
-                STATE from single_use runs. See{" "}
+                For a <strong>single_use</strong> grant, the first issuance consumes the grant and fixes its read
+                window. A later token may carry it only in the same refresh family and inside that window; no issuance
+                may reopen or extend it. The runtime persists no STATE from single_use runs. See{" "}
                 <a
                   className="underline"
                   href="/specification/reference-implementation-examples#example-6-single-use-grant-consumption"
@@ -1980,8 +1982,8 @@ Content-Type: application/json
           detail={
             <DetailPanel label="See the HTTP exchange" spec="§8 Resource Server">
               <p>
-                The RS computes effective_filter = grant_filter AND request_filter. Request-time filters can only
-                narrow, never widen.
+                Client reads enforce the frozen grant constraints. Request-time predicate filters are rejected in Core
+                v0.1; owner current-capability reads may use supported filters.
               </p>
               <pre
                 className="overflow-x-auto rounded-md p-3 font-mono text-xs"
@@ -1989,7 +1991,7 @@ Content-Type: application/json
               >
                 {`GET /v1/streams/pay_statements/records HTTP/1.1
 Authorization: Bearer <client_token>
-PDPP-Version: 0.1.0
+PDPP-Version: 0.1
 
 → RS introspects token
 → Resolves grant: ${protocol.grant?.grant_id || "grt_longview01"}
@@ -2001,10 +2003,11 @@ PDPP-Version: 0.1.0
               <p>Edge cases:</p>
               <div className="flex flex-col gap-1 font-mono text-xs">
                 <span>
-                  <span className="text-destructive">403 grant_revoked</span> — grant has been revoked
+                  <span className="text-destructive">401 authentication_error</span> — inactive token; WWW-Authenticate:{" "}
+                  {'Bearer error="invalid_token"'}
                 </span>
                 <span>
-                  <span className="text-destructive">403 field_not_granted</span> — filter targets unauthorized field
+                  <span className="text-destructive">400 invalid_request</span> — client-token predicate filter
                 </span>
                 <span>
                   <span className="text-destructive">403 insufficient_scope</span> — stream not in grant
@@ -2036,9 +2039,12 @@ PDPP-Version: 0.1.0
             <div className="flex w-full flex-col items-center gap-6">
               <TokenIntrospection introspection={protocol.introspection} />
               <div className="w-full overflow-hidden rounded-xl px-5 py-8 text-center" data-surface="protocol">
-                <div className="mb-2 font-mono text-destructive text-xs">403 grant_revoked</div>
+                <div className="mb-2 font-mono text-destructive text-xs">401 authentication_error</div>
                 <div className="text-muted-foreground text-xs">
                   Introspection returned active:false, so no further queries are served.
+                </div>
+                <div className="mt-2 font-mono text-muted-foreground text-xs">
+                  WWW-Authenticate: Bearer error="invalid_token"
                 </div>
               </div>
             </div>
@@ -2215,15 +2221,20 @@ POST /revoke  →  AS marks grant.status = "revoked"
 GET /v1/streams/pay_statements/records
 Authorization: Bearer <client_token>
 → RS introspects token  →  active: false
-→ 403 grant_revoked
+← HTTP/1.1 401 Unauthorized
+← WWW-Authenticate: Bearer error="invalid_token"
+← authentication_error
 
 // Propagation window:
 Introspection cache TTL ≤ 60 seconds
 RS sees revocation within max(token_exp, 60s)`}
               </pre>
               <p>
-                Revocation stops <em>future</em> access only. Records already delivered are governed by the grant's
-                retention policy and legal obligations. PDPP does not retroactively reach into client-side data stores.
+                Revocation ends <em>future</em> reads. On owner withdrawal, the owner chooses keep or delete for held
+                data. Keep permits only the grant's surviving use: ordinary grants allow use within purpose and
+                retention; processing-permission grants allow custody only, subject to the learned-parameter exception.
+                Delete is an erasure instruction the client must act on. Clients learn of it through the grant lifecycle
+                operation.
               </p>
               <p>
                 Grant narrowing is not supported in v0.1. Scope reduction: revoke the existing grant, issue a new
@@ -2234,7 +2245,7 @@ RS sees revocation within max(token_exp, 60s)`}
         >
           {protocol.phase === "revoked" ? (
             <OutcomeCard
-              message="Access has been revoked. The enforcement section above now shows a 403 response."
+              message="Access has been revoked. The enforcement section above now shows a 401 response."
               onReset={handleReset}
               variant="revoked"
             />
