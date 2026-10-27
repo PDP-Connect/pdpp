@@ -1,7 +1,7 @@
 # PDPP Model Context Protocol (MCP) read profile
 
 Status: Draft extension profile; profile version 0.1.0
-Date: 2026-10-13
+Date: 2026-10-27
 
 ## 1. Scope
 
