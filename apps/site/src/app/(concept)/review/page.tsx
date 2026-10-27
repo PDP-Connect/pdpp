@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils.ts";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/review" },
-  description: "The specification and its governance are open for public comment until 1 October 2026.",
+  description: "The specification and its governance are open for public comment until 26 October 2026.",
   openGraph: { url: "/review" },
   title: "Review the specification - PDPP",
 };
@@ -44,8 +44,8 @@ const TIMELINE = [
     date: "3 September",
     text: "The specification and Part A are frozen, the Principles are published, and Supporter signing opens.",
   },
-  { date: "1 October", text: "The comment period closes, and answers are published after." },
-  { date: "15 October", text: "The programme opens." },
+  { date: "26 October", text: "The comment period closes, and answers are published after." },
+  { date: "27 October", text: "The programme opens." },
 ] as const;
 
 export default function Page() {
@@ -54,7 +54,7 @@ export default function Page() {
       <PdppConceptDoc>
         <div className="flex flex-col gap-4 pt-10">
           <Text as="p" color="subtle" family="mono" size="stamp">
-            Formal review · open until 1 October 2026
+            Formal review · extended until 26 October 2026
           </Text>
           <Text as="h1" size="display">
             Review the specification
@@ -62,7 +62,7 @@ export default function Page() {
           {/* Copy delta 3: the "one document of nine sections" sentence is
               deleted from this lede. */}
           <Text as="p" className="max-w-[68ch]" size="lede" wrap="pretty">
-            The Personal Data Portability Protocol v0.1.0 and its governance are open for public comment until 1
+            The Personal Data Portability Protocol v0.1.0 and its governance are open for public comment until 26
             October.
           </Text>
           <div className="flex flex-wrap gap-4 pt-2">
@@ -117,7 +117,7 @@ export default function Page() {
                 Two parts, one of them still open
               </Text>
               <Text as="p" color="muted" size="small" wrap="pretty">
-                Part A is how PDP-Connect runs from 15 October and is frozen during review. Part B is the proposed
+                Part A is how PDP-Connect runs from 27 October and is frozen during review. Part B is the proposed
                 long-term structure and is where your comment will change the most. Two open questions: five steering
                 committee seats or three, and whether one organisation one vote puts off large companies.
               </Text>

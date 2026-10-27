@@ -61,7 +61,7 @@ It is no longer part of this repository. It lives in
 for the current commands.
 
 For Docker, self-hosting, and MCP-client wiring, see the
-[self-host quickstart](docs/operator/selfhost-quickstart.md). To collect from
+[data-connect self-host quickstart](https://github.com/PDP-Connect/data-connect/blob/main/deploy/docker/README.md). To collect from
 apps that keep their data on your own machine, see the
 [local collector runbook](docs/operator/local-collector-runbook.md).
 

@@ -668,3 +668,51 @@ test("sandbox metadata strips the first value from a comma-list X-Forwarded-Host
   const body = (await jsonOf(res)) as Record<string, unknown>;
   assert.equal(body.issuer, "https://pdpp.example.com/sandbox");
 });
+
+test("sandbox search snapshots evict the oldest at capacity and expire after their TTL", async () => {
+  const { executeSearchLexical } = await import("@pdpp/reference-operations-sandbox/rs-search-lexical");
+  const { createSandboxSearchLexicalDependencies } = await import("./operations-fixtures.ts");
+  let now = 0;
+  let nextId = 0;
+  const dependencies = createSandboxSearchLexicalDependencies({
+    maxSnapshots: 2,
+    snapshotTtlMs: 900_000,
+    now: () => now,
+    createId: () => {
+      nextId += 1;
+      return `test-${nextId}`;
+    },
+  });
+  const search = (cursor?: string) =>
+    executeSearchLexical(
+      { actor: { kind: "owner", subject_id: null }, query: { q: "a", limit: 1, ...(cursor ? { cursor } : {}) } },
+      dependencies
+    );
+  const cursors: string[] = [];
+  const page1 = await search();
+  assert.ok(page1.envelope.next_cursor);
+  cursors.push(page1.envelope.next_cursor);
+  assert.ok(dependencies.snapshotCount() <= 2);
+  const page2 = await search();
+  assert.ok(page2.envelope.next_cursor);
+  cursors.push(page2.envelope.next_cursor);
+  assert.ok(dependencies.snapshotCount() <= 2);
+  const page3 = await search();
+  assert.ok(page3.envelope.next_cursor);
+  cursors.push(page3.envelope.next_cursor);
+  assert.ok(dependencies.snapshotCount() <= 2, "the store must never exceed its configured capacity");
+  assert.equal(dependencies.snapshotCount(), 2);
+  await assert.rejects(
+    search(cursors[0]),
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "invalid_cursor"
+  );
+  const retainedPage = await search(cursors[2]);
+  assert.equal(retainedPage.envelope.data.length, 1, "the newest retained cursor still pages");
+
+  now += 900_001;
+  await assert.rejects(
+    search(cursors[2]),
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "invalid_cursor"
+  );
+  assert.equal(dependencies.snapshotCount(), 1, "only the loaded expired entry is removed");
+});

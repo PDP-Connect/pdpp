@@ -130,7 +130,7 @@ const TARGETS = [
     // require admin rights. This reachability check needs the real shape
     // anyway: an ABSENT header 400s (inconclusive), but a well-formed header
     // with bogus credentials 401s cleanly, confirmed live against
-    // jellyfin.vivid.fish — see the primary-path research entry.
+    // a Jellyfin server — see the primary-path research entry.
     headers: {
       Authorization:
         'MediaBrowser Client="PDP-Connect-Reachability-Probe", Device="PDP-Connect-Reachability-Probe", DeviceId="reachability-probe", Version="0.1.0"',

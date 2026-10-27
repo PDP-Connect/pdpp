@@ -20,7 +20,7 @@ export interface PublicSiteNavLink {
 // site is reachable from inside one of those four.
 //
 // Specification carries a dropdown rather than a fifth nav item because the
-// review period is temporary: "Review, until 1 Oct" is a door into the same
+// review period is temporary: "Review, extended" is a door into the same
 // document, not a separate destination, and it disappears with reviewOpen
 // without leaving a gap in the nav.
 //
@@ -32,7 +32,7 @@ export function publicSiteNav(): readonly PublicSiteNavLink[] {
   const specificationChildren: PublicSiteNavChild[] = [{ link: "/specification", text: "The specification" }];
 
   if (siteFlags.reviewOpen) {
-    specificationChildren.push({ link: "/review", text: "Review, until 1 Oct" });
+    specificationChildren.push({ link: "/review", text: "Review, extended" });
   }
 
   return [

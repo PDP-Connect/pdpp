@@ -123,7 +123,7 @@ async function GovernanceSection() {
           Who runs this, and who decides
         </Text>
         <Text as="p" className="max-w-[68ch]" size="lede" wrap="pretty">
-          Two parts. Part A is how it runs from 15 October. Part B is how we propose it runs once there is an elected
+          Two parts. Part A is how it runs from 27 October. Part B is how we propose it runs once there is an elected
           committee.
         </Text>
       </div>

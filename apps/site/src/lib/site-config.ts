@@ -40,16 +40,18 @@ export function isPlaceholder(value: string): boolean {
   return PLACEHOLDER_PATTERN.test(value);
 }
 
-// Feature flags. All three default OFF: a flag that defaults on ships the
+// Feature flags. All four default OFF: a flag that defaults on ships the
 // feature the moment the code lands, which is the opposite of what a flag is
 // for. `reviewOpen` gates the banner and the nav dropdown entry; `signingLive`
-// gates the whole Supporter form and the /api/sign route; `operatorApplications`
-// gates the Operator apply button on /participate.
+// gates the whole Supporter form and the /api/sign route; `accessorApplications`
+// and `operatorApplications` gate the Accessor and Operator apply buttons on
+// /participate until their test suites are published.
 function flag(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === "true";
 }
 
 export const siteFlags = {
+  accessorApplications: flag(process.env.NEXT_PUBLIC_PDPP_ACCESSOR_APPLICATIONS),
   operatorApplications: flag(process.env.NEXT_PUBLIC_PDPP_OPERATOR_APPLICATIONS),
   reviewOpen: flag(process.env.NEXT_PUBLIC_PDPP_REVIEW_OPEN),
   signingLive: flag(process.env.NEXT_PUBLIC_PDPP_SIGNING_LIVE),

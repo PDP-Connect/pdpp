@@ -22,6 +22,7 @@ import {
   RUN_COMPLETION_SCHEMA,
   readManifest,
   receiptBinding,
+  type Suite,
   TEST_SCRATCH_CAPABILITY_ENVIRONMENT,
   trackedFiles,
   treeDigest,
@@ -1003,6 +1004,46 @@ test("the dedicated scratch lifecycle leaf removes every inherited capability va
   assert.deepEqual((await runAuthority({ root, suites: ["renamed-lifecycle"], env: inherited })).result.verified, [
     "renamed-lifecycle/default",
   ]);
+});
+test("suite environment resolves relative tsx config paths before passing them to leaf processes", () => {
+  const root = join(tmpdir(), "pdpp-authority-root");
+  const suite = {
+    id: "site",
+    cwd: ".",
+    environment: { TSX_TSCONFIG_PATH: "apps/site/tsconfig.json" },
+  } as Manifest["suites"][number];
+
+  const environment = suiteEnvironment({}, "default", suite, root);
+
+  assert.equal(environment.TSX_TSCONFIG_PATH, join(root, "apps/site/tsconfig.json"));
+});
+test("suite environment strips inherited service credentials but keeps the ones a suite declares", () => {
+  const suite: Partial<Suite> = { cwd: ".", environment: { FIXTURE_API_KEY: "fixture-only" } };
+
+  const environment = suiteEnvironment(
+    { OUTER_TOKEN: "outer", PGPASSWORD: "outer", DATABASE_URL: "postgres://fixture@127.0.0.1:15432/fixture" },
+    "default",
+    suite as Suite,
+    join(tmpdir(), "pdpp-authority-root")
+  );
+
+  assert.equal(environment.OUTER_TOKEN, undefined);
+  assert.equal(environment.PGPASSWORD, undefined);
+  assert.equal(environment.FIXTURE_API_KEY, "fixture-only");
+  assert.equal(environment.DATABASE_URL, "postgres://fixture@127.0.0.1:15432/fixture");
+  assert.equal(environment.PDPP_HERMETIC_GUARD, "1");
+});
+test("suite environment cannot switch the hermetic guard off", () => {
+  const suite: Partial<Suite> = {
+    cwd: ".",
+    environment: { NODE_OPTIONS: "--max-old-space-size=512", PDPP_HERMETIC_GUARD: "0" },
+  };
+
+  const environment = suiteEnvironment({}, "default", suite as Suite, join(tmpdir(), "pdpp-authority-root"));
+
+  const preload = new URL("../hermetic/preload.mjs", import.meta.url).href;
+  assert.equal(environment.PDPP_HERMETIC_GUARD, "1");
+  assert.equal(environment.NODE_OPTIONS, `--import ${preload} --max-old-space-size=512`);
 });
 test("default authority selection spawns and completes only required profiles even when an optional predicate is present", async () => {
   const root = await mkdtemp(join(tmpdir(), "pdpp-authority-"));

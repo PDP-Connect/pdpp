@@ -23,6 +23,7 @@ on:
       - "apps/site/src/lib/site-config.ts"
       - ".github/workflows/community-invite-liveness.yml"
   pull_request:
+    branches: [main]
     paths:
       - "apps/site/src/lib/site-config.ts"
       - ".github/workflows/community-invite-liveness.yml"

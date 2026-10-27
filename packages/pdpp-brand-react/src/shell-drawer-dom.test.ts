@@ -39,7 +39,9 @@ function installBrowserGlobals(): BrowserGlobals {
     url: "http://localhost/",
   });
   const style = dom.window.document.createElement("style");
-  style.textContent = readFileSync(new URL("./shell.css", import.meta.url), "utf8");
+  // shell.css shows the menu button only at <=860px, and jsdom does not re-evaluate @media on resize.
+  // jsdom >= 30.1.2 refuses to focus display:none elements, so apply the mobile rule explicitly.
+  style.textContent = `${readFileSync(new URL("./shell.css", import.meta.url), "utf8")}\n.rr-menu-btn { display: inline-flex; }`;
   dom.window.document.head.append(style);
   const host = dom.window.document.createElement("div");
   dom.window.document.body.append(host);
@@ -118,9 +120,15 @@ function app(children: ReactNode) {
   return createElement(PathnameContext.Provider, { value: "/" }, children);
 }
 
-async function pressTab(user: ReturnType<typeof userEvent.setup>, options?: { shift?: boolean }) {
+// Tab moves focus after user.tab() resolves, so poll for the element the caller asserts next.
+async function pressTab(user: ReturnType<typeof userEvent.setup>, expected: Element, options?: { shift?: boolean }) {
   await user.tab(options);
-  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  const deadline = Date.now() + 1000;
+  while (expected.ownerDocument.activeElement !== expected) {
+    assert.ok(Date.now() < deadline, "Tab did not move focus to the expected element within 1000 ms");
+    // biome-ignore lint/performance/noAwaitInLoops: each poll must yield to the event loop before the next check.
+    await settle();
+  }
 }
 
 afterEach(async () => {
@@ -176,21 +184,21 @@ test("mobile drawer opens as a named dialog, traps focus, and restores the trigg
   close.focus();
   await settle();
   assert.equal(currentBrowser.dom.window.document.activeElement, close);
-  await pressTab(user, { shift: true });
+  await pressTab(user, themeToggle, { shift: true });
   assert.equal(currentBrowser.dom.window.document.activeElement, themeToggle);
   assert.equal(currentBrowser.dom.window.document.activeElement?.closest('[role="dialog"]'), dialog);
 
   close.focus();
   await settle();
   assert.equal(currentBrowser.dom.window.document.activeElement, close);
-  await pressTab(user);
+  await pressTab(user, firstNavItem);
   assert.equal(currentBrowser.dom.window.document.activeElement, firstNavItem);
   assert.equal(currentBrowser.dom.window.document.activeElement?.closest('[role="dialog"]'), dialog);
 
   themeToggle.focus();
   await settle();
   assert.equal(currentBrowser.dom.window.document.activeElement, themeToggle);
-  await pressTab(user);
+  await pressTab(user, close);
   assert.equal(currentBrowser.dom.window.document.activeElement, close);
   assert.equal(currentBrowser.dom.window.document.activeElement?.closest('[role="dialog"]'), dialog);
   assert.notEqual(currentBrowser.dom.window.document.activeElement, outside);

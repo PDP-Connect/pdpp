@@ -250,3 +250,115 @@ test("getStreamMetadata accepts each declared reason enum value on an inert entr
     assert.deepEqual(result, { ok: true, skipped: false }, `reason ${reason} should validate`);
   }
 });
+
+// Run-order and coverage members that the reference server emits and this contract must list.
+// Defect: the contract is closed (additionalProperties: false), so a member it does not list fails
+// validation of a live server response. Oracle: the server's own emission, LocalCoverageAsOf in
+// PDP-Connect/data-connect reference-implementation/server/ref-control.ts and responseFor() in
+// reference-implementation/server/stores/terminal-run-commit-store.ts. The data-connect contract
+// test runs only after a re-vendor, so this suite is the first check that can catch a missing
+// member. Suite: reference-contract.
+
+const LOCAL_COVERAGE_AS_OF = {
+  artifact_digest: "sha256:bbbb",
+  collection_revision: 12,
+  committed_at: "2026-10-21T12:00:00.000Z",
+  evidence: "terminal_run",
+  run_id: "run_a",
+  run_sequence: 3,
+};
+
+function ownerDiagnosticsWithCoverage(asOf: Record<string, unknown> | null) {
+  return {
+    connection_id: "conn_1",
+    connector_id: "gmail",
+    connector_key: "gmail",
+    coverage_as_of: asOf,
+    display_name: null,
+    freshness: {},
+    health: {
+      axes: {},
+      badges: {},
+      coverage_as_of: asOf,
+      last_success_at: null,
+      next_attempt_at: null,
+      reason_code: null,
+      state: "healthy",
+    },
+    last_ingest_at: null,
+    last_run: null,
+    last_successful_run: null,
+    object: "owner_connection_diagnostics",
+    recovery: {
+      admission: { admitted: 0, candidates: 0, deferred: 0 },
+      read_limit: null,
+      stall: { eligibleCandidates: 0, lastAttemptAt: null, stalled: false },
+      unreadable: false,
+    },
+    rendered_verdict: {},
+    schedule: null,
+  };
+}
+
+test("owner diagnostics lists coverage_as_of at the top level and in health, as a proof or null", () => {
+  const proven = validateResponse("ownerInspectConnectionDiagnostics", {
+    body: ownerDiagnosticsWithCoverage(LOCAL_COVERAGE_AS_OF),
+    status: 200,
+  });
+  assert.deepEqual(proven, { ok: true, skipped: false });
+  const unproven = validateResponse("ownerInspectConnectionDiagnostics", {
+    body: ownerDiagnosticsWithCoverage(null),
+    status: 200,
+  });
+  assert.deepEqual(unproven, { ok: true, skipped: false });
+});
+
+test("owner diagnostics rejects an as-of member the server does not emit", () => {
+  const result = validateResponse("ownerInspectConnectionDiagnostics", {
+    body: ownerDiagnosticsWithCoverage({ ...LOCAL_COVERAGE_AS_OF, release_digest: "sha256:bbbb" }),
+    status: 200,
+  });
+  assert.equal(result.ok, false);
+});
+
+// The terminal-run receipt (200 and 201) stores the run's place in run order. Receipts stored
+// before run order omit the three members, so the members stay optional.
+test("terminal run receipt lists collection_revision, run_sequence and storage_epoch", () => {
+  const receipt = {
+    commit_id: "commit_1",
+    envelope_hash: "a".repeat(64),
+    object: "device_terminal_run_commit",
+    run_id: "run_a",
+    terminal_event_id: "evt_local_terminal_commit_1",
+  };
+  const committed = validateResponse("refCommitDeviceExporterTerminalRun", {
+    body: { ...receipt, collection_revision: 12, run_sequence: 3, storage_epoch: 1 },
+    status: 201,
+  });
+  assert.deepEqual(committed, { ok: true, skipped: false });
+  const noSequence = validateResponse("refCommitDeviceExporterTerminalRun", {
+    body: { ...receipt, collection_revision: 12, run_sequence: null, storage_epoch: 1 },
+    status: 201,
+  });
+  assert.deepEqual(noSequence, { ok: true, skipped: false });
+  const legacy = validateResponse("refCommitDeviceExporterTerminalRun", {
+    body: receipt,
+    status: 200,
+  });
+  assert.deepEqual(legacy, { ok: true, skipped: false });
+});
+
+test("terminal run receipt rejects a run_sequence that is neither an integer nor null", () => {
+  const result = validateResponse("refCommitDeviceExporterTerminalRun", {
+    body: {
+      commit_id: "commit_1",
+      envelope_hash: "a".repeat(64),
+      object: "device_terminal_run_commit",
+      run_id: "run_a",
+      run_sequence: "3",
+      terminal_event_id: "evt_local_terminal_commit_1",
+    },
+    status: 201,
+  });
+  assert.equal(result.ok, false);
+});

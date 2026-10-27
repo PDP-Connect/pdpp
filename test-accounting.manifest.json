@@ -68,22 +68,6 @@
       ]
     },
     {
-      "id": "root-shell",
-      "cwd": ".",
-      "loader": "shell",
-      "authority_argument": null,
-      "execution": "direct",
-      "profiles": [
-        {
-          "id": "default",
-          "required": true,
-          "skip_reasons": {}
-        }
-      ],
-      "command": ["bash", "scripts/test-accounting/root-shell-leaf.sh"],
-      "include": ["scripts/**/*.test.sh"]
-    },
-    {
       "id": "reference-contract",
       "cwd": ".",
       "loader": "node-test",
@@ -133,6 +117,34 @@
       "include": ["packages/list-envelope/src/**/*.test.ts"]
     },
     {
+      "id": "conformance-suite",
+      "cwd": ".",
+      "loader": "node-test",
+      "authority_argument": null,
+      "execution": "direct",
+      "environment": {
+        "TSX_TSCONFIG_PATH": "packages/conformance-suite/tsconfig.json"
+      },
+      "profiles": [
+        {
+          "id": "default",
+          "required": true,
+          "skip_reasons": {}
+        }
+      ],
+      "command": [
+        "node",
+        "--test",
+        "--import",
+        "tsx",
+        "--test-reporter",
+        "scripts/test-accounting/node-reporter.ts"
+      ],
+      "include": [
+        "packages/conformance-suite/test/*.test.ts"
+      ]
+    },
+    {
       "id": "display",
       "cwd": ".",
       "loader": "node-test",
@@ -157,6 +169,32 @@
         "scripts/test-accounting/node-reporter.ts"
       ],
       "include": ["packages/display/src/**/*.test.ts"]
+    },
+    {
+      "id": "reference-operations-sandbox",
+      "cwd": ".",
+      "loader": "node-test",
+      "authority_argument": null,
+      "execution": "direct",
+      "environment": {
+        "TSX_TSCONFIG_PATH": "packages/reference-operations-sandbox/tsconfig.json"
+      },
+      "profiles": [
+        {
+          "id": "default",
+          "required": true,
+          "skip_reasons": {}
+        }
+      ],
+      "command": [
+        "node",
+        "--test",
+        "--import",
+        "tsx",
+        "--test-reporter",
+        "scripts/test-accounting/node-reporter.ts"
+      ],
+      "include": ["packages/reference-operations-sandbox/src/**/*.test.ts"]
     },
     {
       "id": "operator-ui",
