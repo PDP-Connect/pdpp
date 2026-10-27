@@ -637,7 +637,7 @@ The full declaration below gives the omitted schema: `source_updated_at` is a st
 
 **The consent screen.** The authorization server shows the declaration's label and detail, the requested fields, and the bound stated as inclusive, for example "artists updated at or after 00:00 UTC on 28 September 2025" (see [consent_time_field](#consent-time-field)). It also states that `id` and `name` remain in every record the client receives. The owner approves or declines the request.
 
-**The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields, the required-field subset, and time bound:
+**The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields, the required-field subset, the sort field, and time bound:
 
 ```json
 {
@@ -645,6 +645,7 @@ The full declaration below gives the omitted schema: `source_updated_at` is a st
   "instance_ids": ["inst_K4wq8Rn2"],
   "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
   "required_fields": ["id", "name"],
+  "sort_field": "source_updated_at",
   "time_constraint": {
     "field": "source_updated_at",
     "type": "date-time",
