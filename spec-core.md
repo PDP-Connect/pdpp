@@ -118,7 +118,7 @@ Core does not define the registry, transport, recognition mechanism, or withdraw
 | Term | Definition |
 |------|-----------|
 | **Grant** | An immutable consent artifact specifying what data a client may access, under what constraints. |
-| **Stream** | A named collection of records with a schema, primary key, and optional cursor field. Stream names are source-local (e.g., `messages`). The fully qualified identifier is an ordered pair `(source.id, stream_name)`, used in cross-source references and storage. Example: `("https://registry.pdpp.dev/connectors/spotify", "top_artists")`. |
+| **Stream** | A named collection of records with a schema, primary key, and optional cursor field. Stream names are source-local (e.g., `messages`). The fully qualified identifier is an ordered pair `(source.id, stream_name)`, used in cross-source references and storage. Example: `("https://registry.pdpp.dev/sources/spotify", "top_artists")`. |
 | **Record** | A single data object within a stream. |
 | **Connector** | A program that collects data from a data source, used when data is collected rather than served natively. One of possibly several producers of a source's streams. Defined in the Collection Profile. |
 | **Source Declaration** | A source's versioned declaration of its identity, publisher, streams, schemas, consent surface, selection capabilities, and Resource Server query capabilities. It does not define connector acquisition or execution. |
@@ -382,7 +382,7 @@ When a record references a record in a different stream on the same resource ser
   "data": {
     "tag_id": "tag_sunset",
     "target": {
-      "source_id": "https://registry.pdpp.dev/connectors/instagram",
+      "source_id": "https://registry.pdpp.dev/sources/instagram",
       "stream": "media",
       "record_id": "media_123"
     }
@@ -405,7 +405,7 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
   "protocol_version": "0.1.0",
   "source": {
     "kind": "connector",
-    "id": "https://registry.pdpp.dev/connectors/spotify"
+    "id": "https://registry.pdpp.dev/sources/spotify"
   },
   "declaration_version": "2026-08-11",
   "publisher": {
@@ -523,6 +523,8 @@ Each source publishes a `SourceDeclaration` describing its identity, publisher, 
 | `extensions` | Optional object keyed by absolute profile URI. Core preserves or ignores an unknown extension value and does not parse it. An operation that explicitly invokes an unsupported profile is rejected. An extension cannot redefine or weaken Core semantics. |
 
 The public SourceDeclaration JSON Schema declares JSON Schema 2020-12. Each `streams[].schema` uses that dialect when `$schema` is absent. If `$schema` is present, it MUST equal `https://json-schema.org/draft/2020-12/schema`. This dialect choice does not by itself guarantee identical validator behavior. The AS MUST meta-validate each embedded stream schema before accepting the declaration. Embedded `$ref` and `$dynamicRef` values MUST be local fragment references. A declaration MUST NOT make consent interpretation depend on a mutable remote schema.
+
+**Note:** The example `/sources/` and `/connectors/` paths distinguish source and connector identities illustratively; implementations retain their accepted stable source URIs.
 
 `source.id` is the authorization identity. In a retained declaration or grant, `source.kind` records the provenance class that the AS accepted from its declaration authority. It is not authorization equality, a runtime type, or a Collection Profile claim, and it never selects serving or acquisition runtime.
 A connector declaration with no Collection extension remains valid Core input.
@@ -651,7 +653,7 @@ A client requests specific personal data by including `authorization_details` in
   "authorization_details": [
     {
       "type": "https://pdpp.dev/data-access",
-      "source": { "id": "https://registry.pdpp.dev/connectors/spotify" },
+      "source": { "id": "https://registry.pdpp.dev/sources/spotify" },
       "purpose_code": "https://pdpp.dev/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
@@ -807,7 +809,7 @@ Source declarations may define selection presets. A client can reference a prese
 ```json
 {
   "type": "https://pdpp.dev/data-access",
-  "source": { "id": "https://registry.pdpp.dev/connectors/instagram" },
+  "source": { "id": "https://registry.pdpp.dev/sources/instagram" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "access_mode": "single_use",
   "selection_preset": "social_summary"
@@ -837,7 +839,7 @@ The authorization server issues an access token bound to the grant. The client u
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "user_abc123" },
   "client": { "client_id": "music_recommendations" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/spotify" },
   "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "purpose_description": "Recommend concerts based on your listening history",
@@ -978,7 +980,7 @@ Retention is a structured policy declaration and policy commitment by the data r
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "concert_app" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/spotify" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/spotify" },
   "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/personalization",
   "access_mode": "single_use",
@@ -1004,19 +1006,19 @@ Retention is a structured policy declaration and policy commitment by the data r
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "personal_agent" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/openai" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/chatgpt" },
   "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/agent_context",
   "access_mode": "continuous",
   "streams": [
     {
       "name": "conversations",
-      "instance_ids": ["openai-account-a"],
+      "instance_ids": ["chatgpt-account-a"],
       "fields": ["id", "title", "source_created_at", "source_updated_at"]
     },
     {
       "name": "messages",
-      "instance_ids": ["openai-account-a"],
+      "instance_ids": ["chatgpt-account-a"],
       "fields": ["id", "conversation_id", "role", "content", "source_created_at"]
     }
   ]
@@ -1031,7 +1033,7 @@ Retention is a structured policy declaration and policy commitment by the data r
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "sleep_analysis" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/connectors/oura" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.dev/sources/oura" },
   "source_declaration": { "version": "2026-08-11" },
   "purpose_code": "https://pdpp.dev/purpose/analytics",
   "access_mode": "single_use",
