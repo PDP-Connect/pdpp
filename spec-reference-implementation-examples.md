@@ -165,8 +165,7 @@ PDPP-Version: 0.1
         "genres": ["alternative rock"],
         "popularity": 82,
         "source_updated_at": "2026-04-10T23:15:00Z"
-      },
-      "emitted_at": "2026-04-11T14:58:00Z"
+      }
     }
   ]
 }
@@ -390,8 +389,7 @@ PDPP-Version: 0.1
         "id": "conv_003",
         "title": "New conversation",
         "source_updated_at": "2026-04-11T08:00:00Z"
-      },
-      "emitted_at": "2026-04-11T15:12:00Z"
+      }
     }
   ]
 }
