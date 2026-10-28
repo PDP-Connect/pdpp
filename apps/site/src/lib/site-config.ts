@@ -53,7 +53,11 @@ function flag(value: string | undefined): boolean {
 export const siteFlags = {
   accessorApplications: flag(process.env.NEXT_PUBLIC_PDPP_ACCESSOR_APPLICATIONS),
   operatorApplications: flag(process.env.NEXT_PUBLIC_PDPP_OPERATOR_APPLICATIONS),
-  reviewOpen: flag(process.env.NEXT_PUBLIC_PDPP_REVIEW_OPEN),
+  // Closed 26 October 2026. Pinned rather than read from NEXT_PUBLIC_PDPP_REVIEW_OPEN, so a
+  // deployment variable cannot reopen it. Typed boolean: a literal false makes the gated
+  // branches provably dead, which Biome's noUnnecessaryConditions rejects. To reopen, replace
+  // the pin with flag(process.env.NEXT_PUBLIC_PDPP_REVIEW_OPEN).
+  reviewOpen: false as boolean,
   signingLive: flag(process.env.NEXT_PUBLIC_PDPP_SIGNING_LIVE),
 } as const;
 
