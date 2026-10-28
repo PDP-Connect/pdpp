@@ -32,10 +32,10 @@ against a local AS + RS fixture and inspect its inbound request log. No case imp
 the target implementation. The bundled reference target under `src/targets/`
 implements the target contract and holds no privilege.
 
-**Traceable to the clauses, not just the item numbers.** Section 9's 45 items are
+**Traceable to the clauses, not just the item numbers.** Section 9's 123 items are
 summaries; a pass on one says nothing about which of the normative sentences it
 summarizes was exercised. [`matrix.ts`](./src/requirements/matrix.ts) enumerates
-those sentences for Core sections 4-8 and 10 — 131 clauses at v0.1, each with its
+those sentences for the locked Core v0.1.0 text — 708 clauses, 695 of them in sections 4-8 and 10, each with its
 verbatim text, level, role, observable boundary, the items that roll it up, the
 cases that exercise it, and for every uncovered MUST the exact missing hook.
 [`docs/reference/conformance-normative-matrix.md`](../../docs/reference/conformance-normative-matrix.md)
@@ -44,7 +44,7 @@ lists each requirement's clauses and names the MUST clauses its cases did not
 reach, so a `PASS` cannot be read as covering the whole item.
 
 **Traceable to numbered requirements.** [`catalog.ts`](./src/requirements/catalog.ts)
-transcribes all 45 numbered Section 9 items — AS 1–21, RS 1–16, Client 1–8 — keeping
+transcribes all 123 numbered Section 9 items — AS 1–57, RS 1–33, Client 1–33 — keeping
 the spec's own numbering, so `RS-9` is Section 9 "Resource Server conformance" item 9.
 Each carries its normative level, applicability, and spec anchor. Every report records
 the spec document, version, and section it was judged against.

@@ -198,7 +198,7 @@ export function renderMatrixMarkdown(): string {
       "",
       ...renderRevisionNote(),
       "Section 9 conformance items that summarize it and to the suite cases that",
-      "exercise it. Section 9 is the index here, not the authority: its 45 numbered",
+      "exercise it. Section 9 is the index here, not the authority: its 123 numbered",
       "items are one-line precis of the clauses below.",
       "",
       "`Observable` records how a clause could be checked at all, independent of",

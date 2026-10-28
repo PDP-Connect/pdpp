@@ -8,12 +8,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { REQUIREMENTS, SPEC_SOURCE } from "../src/requirements/catalog.ts";
+import { REQUIREMENTS } from "../src/requirements/catalog.ts";
 import { CLAUSE_MATRIX, parseSpecVersion } from "../src/requirements/matrix.ts";
 import { ALL_CASES } from "../src/suite.ts";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const SPEC = readFileSync(join(REPO_ROOT, SPEC_SOURCE.path), "utf8");
+const SPEC = readFileSync(join(REPO_ROOT, "spec-core.md"), "utf8");
 const SPEC_LINES = SPEC.split("\n");
 const HEADING = /^#{1,6} (.+)$/;
 const EXPLICIT_ANCHOR = /\{#([^}]+)\}/;

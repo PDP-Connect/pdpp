@@ -63,21 +63,15 @@ describe("the report cannot present a partial run as complete", () => {
     assert.ok(markdown.includes("## Review evidence"));
     assert.ok(markdown.includes("do not create cases, change coverage, or count as tested"));
   });
-  it("does not leave the newly observable client-capture MUST clauses unregistered", () => {
+  it("names a gap for every client-capture MUST clause that no case exercises", () => {
     const clientCaptureMusts = CLAUSE_MATRIX.filter(
       (clause) => clause.level === "must" && clause.observable === "client-capture"
     );
-    assert.equal(
-      clientCaptureMusts.length,
-      12,
-      "the inventory must account for all twelve client-capture MUST clauses."
-    );
-    // 12.4-3 (Section 12 Extensions) is transcribed with no case yet; its gap note names the fixture it needs.
+    // The locked Core text carries 58 client-capture MUST clauses; the client fixture exercises 11.
+    // Every other one is transcribed with no case, and its gap note says so.
+    assert.equal(clientCaptureMusts.length, 58, "the inventory must account for all client-capture MUST clauses.");
     const uncovered = clientCaptureMusts.filter((clause) => clause.caseIds.length === 0);
-    assert.deepEqual(
-      uncovered.map((clause) => clause.clauseId),
-      ["12.4-3"]
-    );
+    assert.equal(uncovered.length, 47);
     for (const clause of uncovered) {
       assert.ok(clause.gapNote?.trim(), `Uncovered client-capture MUST ${clause.clauseId} has no gap note.`);
     }
