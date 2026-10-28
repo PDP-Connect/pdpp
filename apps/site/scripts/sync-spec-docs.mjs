@@ -49,6 +49,7 @@ const SPECS = [
     "spec-connector-ecosystem",
     "spec-core",
     "spec-mcp-profile",
+    "spec-client-range-filters",
     "spec-data-query-api",
     "spec-discovery-and-trust",
 ];
