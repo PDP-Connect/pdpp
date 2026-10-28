@@ -390,7 +390,7 @@ six-item smallest repair packet, landed as a separate signed-off commit
       distinct compound (array) keys that share a comma-joined
       representation (review's oracle: `["a","b,c"]` and `["a,b","c"]`
       both stringify to `"a,b,c"`). Replaced with `encodeKey` — the same
-      canonical minified-JSON-array encoding `server/records.ts` uses for
+      canonical RFC 8785 encoding `server/records.ts` uses for
       RS-side key storage — imported directly rather than duplicated.
       Added a collision test (two distinct compound keys, both counted)
       and a duplicate-control test (the same compound key sent twice,

@@ -190,8 +190,8 @@ Each stream request has `name` and optional `necessity`, `instance_ids`,
 request. `fields` and `view` are mutually exclusive. `time_range` uses the current semantics:
 `since` is inclusive and `until` is exclusive. At least one bound is required
 when it is present. `resources` uses canonical resource strings: a simple
-primary key is its string value, and a compound key is its minified JSON array
-in primary-key order. Values must match the snapshot schema and primary key.
+primary key is its string value, and a compound key is its RFC 8785 serialization
+of the string component array in primary-key order. Values must match the snapshot schema and primary key.
 Omitted fields mean the AS resolves all permitted fields from the snapshot.
 Omitted stream instance IDs never mean fan-in. For each stream, the AS resolves
 an omitted instance set only when exactly one eligible instance exists;
