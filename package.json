@@ -59,8 +59,8 @@
     "test-accounting:test": "pnpm test:scratch -- node scripts/run-node-tests.mjs --test --import tsx scripts/test-accounting/*.test.ts"
   },
   "devDependencies": {
-    "@babel/parser": "8.0.7",
-    "@biomejs/biome": "2.5.15",
+    "@babel/parser": "8.0.8",
+    "@biomejs/biome": "2.6.2",
     "@pdpp/brand": "workspace:*",
     "@pdpp/list-envelope": "workspace:*",
     "@semantic-release/exec": "^7.1.0",
@@ -72,7 +72,7 @@
     "semantic-release": "^25.0.9",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "ultracite": "8.0.1"
+    "ultracite": "8.0.2"
   },
   "packageManager": "pnpm@12.6.0",
   "engines": {

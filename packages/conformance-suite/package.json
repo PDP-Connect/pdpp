@@ -26,7 +26,7 @@
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.15",
-    "ultracite": "8.0.1"
+    "@biomejs/biome": "2.6.2",
+    "ultracite": "8.0.2"
   }
 }
