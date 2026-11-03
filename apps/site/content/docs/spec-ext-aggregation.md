@@ -126,7 +126,7 @@ Grouped example (`group_by=merchant&limit=3`):
 Aggregation MUST respect the caller's grant scope before any values are computed.
 
 - The server MUST evaluate only operations and fields declared in the stream's `query.aggregations` (§2). Undeclared operations/fields MUST be rejected (§5), never silently ignored.
-- The metric input field, any grouping field, and any filter field MUST be authorized under the caller's grant (or owner scope) **before** aggregation evaluation. Fields outside the grant MUST NOT influence the result.
+- The metric input field, any grouping field, and any filter field MUST be authorized under the caller's grant (or owner scope) **before** aggregation evaluation. For a client token, the server MUST reject a metric, grouping, or filter field outside the grant with 403 `field_not_granted`, whether or not the stream's declaration has that field, and MUST check the grant before it consults the declaration. Fields outside the grant MUST NOT influence the result.
 - A `count` for a client token authorized for the stream MUST count only records visible under that grant.
 - Filters apply before aggregation, so grouped counts, sums, extrema, and distinct counts reflect only the grant-visible, filtered record set.
 - Aggregation is single-stream: a request that spans multiple streams MUST be rejected unless a later accepted change defines cross-stream semantics.
@@ -138,11 +138,11 @@ Errors reuse Core's structured error envelope (`{ "error": { type, code, message
 | Condition | Code | HTTP | Type |
 |-----------|------|------|------|
 | Endpoint requested but stream declares no `query.aggregations` | `not_found` | 404 | `not_found_error` |
-| Aggregation over a field absent from the stream's declaration | `invalid_request` | 400 | `invalid_request_error` |
+| Owner-token aggregation over a field absent from the stream's declaration | `invalid_request` | 400 | `invalid_request_error` |
 | `metric=count_distinct` over a field absent from `query.aggregations.count_distinct` | `invalid_request` | 400 | `invalid_request_error` |
 | Cross-stream / multi-stream aggregation (no defined semantics) | `invalid_request` | 400 | `invalid_request_error` |
 | Invalid parameter combination: `group_by` combined with `group_by_time`; `limit` without grouping; `granularity` or `time_zone` without `group_by_time`; `group_by_time` without `granularity`; unknown `granularity` or `time_zone`; out-of-range or non-integer `limit` | `invalid_request` | 400 | `invalid_request_error` |
-| Filter targets a field outside the grant's authorized projection | `field_not_granted` | 403 | `permission_error` |
+| Client-token metric, grouping, or filter field outside the grant, whether or not the declaration has it | `field_not_granted` | 403 | `permission_error` |
 | Unsupported / malformed range filter | (same class as record-list filtering) | 400 | `invalid_request_error` |
 
 Undeclared or unauthorized aggregations MUST fail with a clear query error; they MUST NOT be silently honored or coerced into a declared operation.
@@ -155,7 +155,7 @@ An implementation claiming this profile MUST satisfy:
 2. `GET /v1/streams/{stream}/aggregate` aggregates exactly one stream per request; multi-stream requests are rejected.
 3. Only the operations and fields enumerated in `query.aggregations` are evaluable; the declarable operations are exactly `count`, `sum`, `min`, `max`, `group_by`, `group_by_time`, and `count_distinct`.
 4. `group_by_time` fields are declared date/date-time (`string` with `format` `date` or `date-time`, or nullable variant); `count_distinct` fields are declared top-level scalars.
-5. The metric input field, grouping field, and filter fields are authorized under the grant before evaluation; fields outside the grant do not influence the result.
+5. The metric input field, grouping field, and filter fields are authorized under the grant before evaluation; fields outside the grant do not influence the result. For a client token, such a field gets 403 `field_not_granted` whether or not it exists in the declaration.
 6. Filters reuse record-list exact/range validation and semantics and are applied before aggregation.
 7. Grouped responses are bounded by `limit` and deterministically ordered: `group_by` by count desc then key asc, `group_by_time` by ascending calendar order.
 8. Every grouped response includes `other_count` (positive when truncated, `0` when all groups fit); ungrouped responses omit `other_count`.

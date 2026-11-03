@@ -1196,7 +1196,8 @@ export function buildSandboxAuthorizationServerMetadata(issuer: string): unknown
   );
 }
 
-const SANDBOX_PROVIDER_CONNECT_VERSION = "1.0.0";
+// Core HTTP contract identifier that PDPP-Version selects by default (Core Section 8), not a software version.
+const SANDBOX_PROVIDER_CONNECT_VERSION = "0.1";
 
 export interface SandboxProtectedResourceMetadata {
   authorization_servers: readonly string[];

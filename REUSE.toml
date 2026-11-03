@@ -34,7 +34,7 @@ SPDX-License-Identifier = "CC0-1.0"
 # This is last and override-level so the protocol-specification license cannot
 # be shadowed by the documentation annotation.
 [[annotations]]
-path = ["spec-*.md", "apps/site/content/docs/spec-*.md", "LICENSE-specs"]
+path = ["spec-*.md", "apps/site/content/docs/spec-*.md", "packages/conformance-suite/spec/spec-*.md", "LICENSE-specs"]
 precedence = "override"
 SPDX-FileCopyrightText = "The PDP-Connect Contributors"
 SPDX-License-Identifier = "LicenseRef-CSL-1.0"

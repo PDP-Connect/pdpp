@@ -115,7 +115,7 @@ export class MockPDPPServer {
       return { error: "grant_invalid", has_more: false, records: [], status: 403 };
     }
     if (grant.status === "revoked") {
-      return { error: "grant_revoked", has_more: false, records: [], status: 403 };
+      return { error: "authentication_error", has_more: false, records: [], status: 401 };
     }
     if (grant.status === "expired") {
       return { error: "grant_expired", has_more: false, records: [], status: 403 };
@@ -146,7 +146,7 @@ export class MockPDPPServer {
       return { error: "grant_invalid", has_more: false, records: [], status: 403 };
     }
     if (grant.status === "revoked") {
-      return { error: "grant_revoked", has_more: false, records: [], status: 403 };
+      return { error: "authentication_error", has_more: false, records: [], status: 401 };
     }
 
     const grantStream = grant.streams.find((s) => s.name === streamName);

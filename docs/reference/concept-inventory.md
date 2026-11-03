@@ -63,8 +63,8 @@ Legend:
 
 | # | Concept | Description | Flow | Audience |
 |---|---------|-------------|------|----------|
-| 27 | Purpose code registry | Absolute-URI purpose codes; AS must accept unrecognized codes, display purpose_description | Spine | All |
-| 28 | AI training mandatory consent | ai_training purpose requires explicit affirmative consent; sole protocol-level requirement | Spine | CEO, Std |
+| 27 | PDPP Purposes | Absolute-URI purpose codes with an extensible binding; AS accepts a code outside Appendix A only with a purpose_description, and displays it | Spine | All |
+| 28 | AI training processing permission | AI training requires a covering processing permission and valid processing authority; requesting that permission requires distinct affirmative consent. The withdrawn ai_training purpose code confers no training authority | Spine | CEO, Std |
 | 29 | Retention as policy commitment | retention field is a client commitment, not server-enforced; legal/contractual concern | Spine | All |
 
 ## Access Modes and Grant Lifecycle (7 concepts)
@@ -175,7 +175,7 @@ Legend:
 
 ## Source Binding (3 concepts)
 
-The selection-request `source: { id, kind? }` object and the resolved-grant `source: { kind, id }` object name where authorized data comes from. The request's `source.id` is authoritative; an optional `source.kind` must match the retained declaration, and the AS derives an omitted kind. This replaced the top-level `connector_id` scalar (and the reference contract's sibling `provider_id`) in the `2026-04-30-unify-source-binding-vocabulary` change; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request` (spec-deferred §"Source-binding unification"). The former scalars survive only as kind-keyed meanings of `source.id`. This is distinct from the runtime *bindings* of concepts 62/64, which are capability requirements such as `browser_automation`.
+The selection request carries `source: { id }`; the resolved grant carries `source: { kind, id }`. The authorization server derives `kind` from the retained declaration; a request does not assert it. This replaced the top-level `connector_id` scalar (and the reference contract's sibling `provider_id`) in the `2026-04-30-unify-source-binding-vocabulary` change; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request`. The former scalars survive only as kind-keyed meanings of `source.id`. This is distinct from the runtime *bindings* of concepts 62/64, which are capability requirements such as `browser_automation`.
 
 | # | Concept | Description | Flow | Audience |
 |---|---------|-------------|------|----------|

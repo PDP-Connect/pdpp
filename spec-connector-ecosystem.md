@@ -1,7 +1,7 @@
 # Connector Ecosystem: Runtime Landscape and Third-Party Sources
 
 Status: Informative
-Date: 2026-08-17 (revised from 2026-03-30)
+Date: 2026-10-06 (revised from 2026-03-30)
 
 ## Browser abstraction decision
 
@@ -12,7 +12,7 @@ Two models were considered in March 2026 for how connectors interact with browse
 
 **Decision: no custom BROWSER message protocol.** Connectors need real browser power (bot challenges, SPA navigation, network interception, cookie extraction). A message protocol either reimplements the automation API or falls back to `evaluate` for everything hard. The JSONL protocol stays reserved for RECORD/STATE/INTERACTION/DONE; browser automation is a runtime capability declared in the manifest, not a protocol concern.
 
-The isolation path chosen instead was a standard browser endpoint: the [Collection Profile](spec-collection-profile.md) now specifies the `browser_automation` binding as a CDP WebSocket (`{ interface: "cdp", ws_url }`) that the runtime provides to the connector process. This gives process isolation and language independence without a bespoke proxy protocol.
+The isolation path chosen instead is a runtime-managed browser binding. The [Collection Profile](https://github.com/PDP-Connect/data-connectors/blob/main/docs/spec/collection-profile.md) defines the `browser` binding. Its declared `features` name the browser capabilities a connector needs, so desktop and mobile hosts can each satisfy it in their own way. This gives process isolation and language independence without a bespoke proxy protocol. An earlier draft specified a `browser_automation` binding carrying a CDP WebSocket descriptor; the canonical profile retired it in favor of `browser` with features.
 
 ## Connector strategies
 
@@ -21,7 +21,7 @@ How connectors get data from sources:
 | Strategy | Examples | Runtime needs | Language |
 |---|---|---|---|
 | API client | Plaid, Terra API, Spotify API, GitHub API | HTTP only | Any |
-| Browser automation | ChatGPT, LinkedIn, H-E-B | `browser_automation` binding (CDP) | Any that speaks CDP |
+| Browser automation | ChatGPT, LinkedIn, H-E-B | `browser` binding with declared features | Any |
 | Session cookie extraction | slackdump, DiscordChatExporter | Cookies from browser profile, no live browser | Any |
 | Archive/export parser | Timelinize, WhatsApp export, Facebook DYI, Google Takeout | `filesystem` binding | Any |
 | Browser extension | LinkedIn scrapers, Amazon purchase history | Runs in user's browser, sends to local connector | JS (extension) + any (receiver) |
@@ -69,12 +69,12 @@ How connectors get data from sources:
 
 ## Runtime requirements summary
 
-The connector run protocol (JSONL over stdin/stdout) is universal. What varies is which bindings a connector declares in `runtime_requirements.bindings` and whether the runtime can satisfy them. The Collection Profile defines the standard bindings: `browser_automation` (CDP WebSocket), `browser_profile`, `filesystem`, `network`, `interactive`, and `loopback_listen`; extension bindings use namespaced identifiers. Binding matching happens before the connector process is spawned: if the runtime cannot satisfy a required binding, the run fails with a clear error. See [Collection Profile Section 1](spec-collection-profile.md) for descriptors and matching rules.
+The connector run protocol (JSONL over stdin/stdout) is universal. What varies is which bindings a connector declares in `runtime_requirements.bindings` and whether the runtime can satisfy them. The Collection Profile defines the binding registry: `browser`, `desktop_session`, `filesystem`, and `network`; extension bindings use namespaced names. Binding matching happens before the connector process is spawned: if the runtime cannot satisfy a required binding, the run fails with a clear error. See [Collection Profile Section 3.3](https://github.com/PDP-Connect/data-connectors/blob/main/docs/spec/collection-profile.md#33-bindings) for the registry and matching rules.
 
 ## Implications for the spec
 
 1. **The JSONL protocol is correct.** Every connector type (Go binary, Python script, Node.js process, aggregator wrapper) can write JSONL to stdout.
-2. **Browser access is a binding, not a protocol message.** Connectors that need a browser declare `browser_automation` and receive a CDP WebSocket descriptor at START. The run protocol itself stays browser-free.
+2. **Browser access is a binding, not a protocol message.** Connectors that need a browser declare the `browser` binding with the features they need. The run protocol itself stays browser-free.
 3. **Aggregator connectors (Plaid, Terra) cover many sources at once.** One Plaid connector reaches the financial institutions Plaid aggregates; one Terra connector reaches the health/fitness platforms Terra supports.
 4. **Archive parsers are served by the `filesystem` binding**, which the Collection Profile now defines as a standard binding.
 5. **Go/Python/C# connectors work today** via the JSONL protocol. No Node.js required. The runtime just spawns a process.

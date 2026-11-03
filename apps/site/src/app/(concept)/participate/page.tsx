@@ -109,12 +109,12 @@ const STEPS = [
   {
     step: "Step 2",
     title: "Apply",
-    body: "Open a pull request from the template for your role and attach your evidence. A machine checks it. Pass, and you are Conformant.",
+    body: "Run the open source test suite for your role, open a pull request from the template and attach the results. A machine checks them. Pass, and you are Registered.",
   },
   {
     step: "Step 3",
     title: "Get reviewed",
-    body: "For Verified, the technical committee reviews in public and votes, and you prove your organisation exists through a recognised trust registry. You get reasons either way, and can resubmit.",
+    body: "For Verified, the technical committee reviews the same submission in public and votes, and you prove your organisation exists through a recognised trust registry. You get reasons either way, and can resubmit.",
   },
   {
     step: "Step 4",
@@ -124,36 +124,51 @@ const STEPS = [
 ] as const;
 
 const STATUSES = [
-  ["Conformant Source", "Source", "Automated", "Declaration parses against the schema", "By 14 Nov 2026", "Not open"],
   [
-    "Verified Source",
+    "Registered Source",
     "Source",
-    "Reviewed",
-    "Published by the platform that holds the data. Committee review, identity via a recognised trust registry",
+    "Automated",
+    "Passes the source suite: declaration validates, endpoints resolve, served records match the schema",
     "By 14 Nov 2026",
     "Not open",
   ],
   [
-    "Conformant Accessor",
+    "Verified Source",
+    "Source",
+    "Reviewed",
+    "Passes the source suite and is published by the platform that holds the data. Committee review, identity via a recognised trust registry",
+    "By 14 Nov 2026",
+    "Not open",
+  ],
+  [
+    "Registered Accessor",
     "Accessor",
     "Automated",
-    "Registered, submission complete. No assessment",
-    "By 14 Nov 2026",
+    "Passes the accessor suite: requests, holds and reads data within the grant",
+    "By 1 Jan 2027",
     "Not open",
   ],
   [
     "Verified Accessor",
     "Accessor",
     "Reviewed",
-    "Legal attestation, liability on a named entity. Committee review, identity via a recognised trust registry",
-    "By 14 Nov 2026",
+    "Passes the accessor suite, plus a legal attestation with liability on a named entity. Committee review, identity via a recognised trust registry",
+    "By 1 Jan 2027",
+    "Not open",
+  ],
+  [
+    "Registered Operator",
+    "Operator",
+    "Automated",
+    "Passes the operator suite: enforces every grant term and revokes on request",
+    "By 1 Jan 2027",
     "Not open",
   ],
   [
     "Verified Operator",
     "Operator",
     "Reviewed",
-    "Passes the test suite, then full committee review. Identity via a recognised trust registry",
+    "Passes the operator suite, then full committee review. Identity via a recognised trust registry",
     "By 1 Jan 2027",
     "Not open",
   ],
@@ -237,16 +252,25 @@ function VerificationSection() {
             Apply as a Source →
           </a>
         </Text>
-        <Text as="p" size="small">
-          <a
-            className="text-primary hover:text-foreground"
-            href={`${GITHUB_REPO_URL}/issues/new?template=apply-accessor.md`}
-            rel="noopener noreferrer"
-            target="_blank"
-          >
-            Apply as an Accessor →
-          </a>
-        </Text>
+        {/* Disabled with its date until accessorApplications is on, for the
+                same reason as the Operator button below: the accessor suite does
+                not exist until then. */}
+        {siteFlags.accessorApplications ? (
+          <Text as="p" size="small">
+            <a
+              className="text-primary hover:text-foreground"
+              href={`${GITHUB_REPO_URL}/issues/new?template=apply-accessor.md`}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              Apply as an Accessor →
+            </a>
+          </Text>
+        ) : (
+          <Text aria-disabled="true" as="span" color="subtle" size="small">
+            Apply as an Accessor, opens 1 Jan 2027
+          </Text>
+        )}
         {/* Disabled with its date until operatorApplications is on. The
                 suite an Operator is assessed against does not exist until then,
                 so a live button would invite an application nobody can act on. */}
@@ -303,7 +327,8 @@ function VerificationSection() {
         </table>
       </div>
       <Text as="p" className="mt-3" color="muted" size="small" wrap="pretty">
-        Conformant is a machine check. Verified is a human review, and makes you a Partner. No fee at any stage.
+        Registered means you ran the test suite for your role and passed, with the results published. Verified adds a
+        human review, and makes you a Partner. No fee at any stage.
       </Text>
     </PdppConceptSection>
   );

@@ -97,7 +97,7 @@ const FAQS: readonly Faq[] = [
     role: "Building an accessor",
     question: "Which purpose code do I put in my request?",
     answer:
-      "Every grant names a purpose from the registry. Most requests fit an existing code, and ai_training is the one that triggers a protocol-level consent step. If nothing fits you can propose one, and proposals are considered on a published cycle.",
+      "Every grant names a purpose from the registry. Most requests fit an existing code. If nothing fits you can propose one, and proposals are considered on a published cycle. Under the revised Core draft, a purpose never authorizes AI training: training is a separate processing permission that stays unavailable until the AI Training Profile is published and registered.",
     cta: "Purpose registry",
     href: "/specification#purpose-registry",
   },

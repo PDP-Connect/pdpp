@@ -454,7 +454,7 @@ export const DEMO_GRANTS: readonly DemoGrantDef[] = [
       },
       {
         client_id: "client_ledger_atlas_demo",
-        data: { error: "grant_revoked", http_status: 403, stream: "transactions" },
+        data: { error: "authentication_error", http_status: 401, stream: "transactions" },
         event_id: "evt_sb_ledger_004",
         event_type: "resource.read.refused",
         grant_id: "grant_sb_ledger_txns_revoked",

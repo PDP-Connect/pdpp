@@ -1,6 +1,6 @@
 ---
 name: Apply as a Source
-about: Apply for Conformant Source or Verified Source status
+about: Apply for Registered Source or Verified Source status
 title: "Apply: Source — <organisation or declaration name>"
 labels: ["register", "apply-source"]
 ---
@@ -11,8 +11,8 @@ every return cites the item it failed.
 
 ## Status sought
 
-- [ ] Conformant Source — the declaration parses against the specification version named. Automated check, no human judgement.
-- [ ] Verified Source — reviewed by the technical committee, and corporate identity established.
+- [ ] Registered Source — the declaration passes the source test suite. Automated check, no human judgement.
+- [ ] Verified Source — passes the source test suite, reviewed by the technical committee, and corporate identity established.
 
 ## Every submission (Appendix A items 1 to 4)
 
@@ -21,11 +21,13 @@ every return cites the item it failed.
 - [ ] Accountable party, with working contact details:
 - [ ] This pull request or issue carries DCO sign-off.
 
-## Source statuses (Appendix A items 7 and 8)
+## Source statuses (Appendix A items 6a, 7 and 8)
 
 - [ ] Declaration URL:
-- [ ] The declaration is well-formed and parses against the specification version named above.
+- [ ] Source test suite results attached, naming the suite version, with how to reproduce them.
+- [ ] The declaration validates against the specification version named above.
 - [ ] Every declared endpoint resolves.
+- [ ] Records served under the declaration validate against the schemas it declares.
 
 ## Verified Source only
 

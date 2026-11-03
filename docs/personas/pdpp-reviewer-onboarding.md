@@ -129,7 +129,7 @@ These are not cleanup tasks and they are not dismissed. They are simply not the 
 
 **Canonical locations (active):**
 
-- `spec-*.md` at repo root — the current spec documents. `spec-core.md` is primary. Others: `spec-architecture.md`, `spec-auth-design.md`, `spec-change-tracking.md`, `spec-collection-profile.md`, `spec-connector-ecosystem.md`, `spec-data-query-api.md`, `spec-deferred.md`, `spec-reference-implementation-examples.md`.
+- `spec-*.md` at repo root — the current spec documents. `spec-core.md` is primary. Others: `spec-architecture.md`, `spec-auth-design.md`, `spec-change-tracking.md`, `spec-collection-profile.md`, `spec-connector-ecosystem.md`, `spec-data-query-api.md`, `spec-reference-implementation-examples.md`.
 - `apps/web/` — Next.js + Fumadocs canonical site. Routes: `/docs` (spec rendering), `/design` (design system), `/` (illustrated landing). Uses shared brand package.
 - `packages/pdpp-brand/` — shared design tokens and chrome. Files: `base.css`, `app.css`, `docs.css`, `chrome.js`.
 - `reference-implementation/` — the real implementation. `reference-implementation/server/{auth,db,records,index}.js`, `reference-implementation/runtime/index.js`, `reference-implementation/fixtures/seed-manifests/{github,spotify,reddit}.json`, `reference-implementation/connectors/`. This is the reference the owner wants implementers to read.

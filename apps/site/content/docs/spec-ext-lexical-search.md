@@ -62,7 +62,7 @@ A server that does not implement this profile MUST either omit `capabilities.lex
 
 ### `GET /v1/search`
 
-Lexical-only search over the caller's grant. The endpoint returns a list envelope of `search_result` candidate references (not hydrated records). Authentication and versioning follow the Core data query API: bearer token plus the `PDPP-Version` header; both client tokens (grant-bound third parties) and owner tokens (the resource owner performing self-export) are accepted, and the request shape is identical for both.
+Lexical-only search over the caller's grant. The endpoint returns a list envelope of `search_result` candidate references (not hydrated records). Authentication and versioning follow the Core data query API: bearer token plus the `PDPP-Version` header, which selects the Core `0.1` contract for this endpoint as Core Section 8 defines; both client tokens (grant-bound third parties) and owner tokens (the resource owner performing self-export) are accepted, and the request shape is identical for both.
 
 | Parameter | Type | Requirement |
 |-----------|------|-------------|
@@ -75,7 +75,7 @@ Ranking-control (`rank`, `boost`), semantic/vector (`embedding`, `vector`, `sema
 
 ### Response envelope
 
-Each `data[]` entry is a `search_result`. A result MUST include `stream`, `record_key`, `emitted_at`, and `connector_id`, and MUST NOT include the full record payload or a portable numeric relevance score. `matched_fields` MUST be a non-empty subset of the stream's declared-and-authorized searchable fields. `snippet` and `record_url` are OPTIONAL; a server MAY omit either on any individual result without changing the rest of the response shape.
+Each `data[]` entry is a `search_result`. A result MUST include `stream`, `record_key`, and `connector_id`, and MUST NOT include the full record payload or a portable numeric relevance score. An owner-token result also includes `emitted_at`; a client-token result MUST NOT include it, as Core response records omit it. `matched_fields` MUST be a non-empty subset of the stream's declared-and-authorized searchable fields. `snippet` and `record_url` are OPTIONAL; a server MAY omit either on any individual result without changing the rest of the response shape.
 
 ```json
 {
@@ -86,7 +86,6 @@ Each `data[]` entry is a `search_result`. A result MUST include `stream`, `recor
       "stream": "messages",
       "record_key": "msg_01JQXA3N9Y",
       "connector_id": "https://registry.pdpp.dev/connectors/gmail",
-      "emitted_at": "2026-05-14T09:12:04Z",
       "matched_fields": ["text", "subject"],
       "snippet": { "field": "text", "text": "…confirmed the overdraft fee refund…" },
       "score": { "kind": "bm25", "value": -0.42, "order": "lower_is_better" },
@@ -151,7 +150,7 @@ Rejected parameters MUST NOT be silently honored or silently mapped to lexical b
 An implementation claiming this profile MUST satisfy:
 
 1. It publishes `capabilities.lexical_retrieval` with `supported`, `endpoint`, `cross_stream`, `snippets`, `default_limit`, and `max_limit`, readable without a bearer token, and does not enumerate per-stream `lexical_fields` there.
-2. `GET /v1/search` returns a list envelope whose `data[]` entries are `search_result` objects carrying `stream`, `record_key`, `emitted_at`, and `connector_id`, with no full record payload and no portable numeric relevance score.
+2. `GET /v1/search` returns a list envelope whose `data[]` entries are `search_result` objects carrying `stream`, `record_key`, and `connector_id`, plus `emitted_at` for an owner token only, with no full record payload and no portable numeric relevance score.
 3. `matched_fields` is always a non-empty subset of the stream's declared-and-authorized searchable fields.
 4. Snippets, when present, are `{ field, text }` pairs whose `field` names a `matched_fields` entry and whose `text` contains only substrings from authorized-and-declared searchable fields.
 5. Search is restricted to the (in-grant stream × authorized field × declared `lexical_fields`) intersection, enforced structurally rather than by post-filtering.

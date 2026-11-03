@@ -111,7 +111,7 @@ export function useProtocol() {
       setGrant({ ...grant, status: "revoked" });
       setPhase("revoked");
 
-      // Query again to show 403
+      // Query again to show the 401
       const result = server.query(grant.grant_id, "pay_statements");
       setQueryResult(result);
     }

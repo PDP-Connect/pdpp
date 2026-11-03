@@ -192,11 +192,17 @@ const ANCHOR_ID_PATTERN = /[ \t]+[[{]#[A-Za-z0-9_-]+[\]}]/g;
 // expected, allowlisted difference rather than reported drift.
 const BARE_LT_ESCAPE_PATTERN = /\(exclusive, `<`\), evaluated/g;
 
+// sync-spec-docs.mjs's toMdxSafe also turns a root HTML comment such as
+// `<!-- OWNER DECISION OD-4 -->` into an MDX comment `{/* OWNER DECISION OD-4 */}`,
+// because MDX rejects `<!--`. Map the site form back to the root form.
+const MDX_COMMENT_PATTERN = /\{\/\* (.*?) \*\/\}/g;
+
 function normalizeBody(text: string): string {
   return text
     .replace(CRLF_PATTERN, "\n")
     .replace(ANCHOR_ID_PATTERN, "")
     .replace(BARE_LT_ESCAPE_PATTERN, "(exclusive, <), evaluated")
+    .replace(MDX_COMMENT_PATTERN, "<!-- $1 -->")
     .split("\n")
     .map((line) => line.trimEnd())
     .join("\n")

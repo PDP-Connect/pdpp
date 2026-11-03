@@ -58,10 +58,15 @@ export interface Requirement {
  */
 export const SPEC_SOURCE = {
   document: "PDPP Core",
-  version: "v0.1.0",
+  version: "v0.1.0 public-review draft (3 September 2026)",
   section: "9",
-  /** Repository-relative path of the normative source. */
-  path: "spec-core.md",
+  /**
+   * Repository-relative path of the normative source. This is a frozen copy of
+   * spec-core.md at babd0ef3fb, the text this catalogue was transcribed from. The
+   * v0.1.0 lock changed spec-core.md after that; until the catalogue and matrix
+   * are re-transcribed, the suite judges against this copy, not the root file.
+   */
+  path: "packages/conformance-suite/spec/spec-core.md",
 } as const;
 
 const AUTHORIZATION_SERVER: readonly Requirement[] = [

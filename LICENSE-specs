@@ -17,7 +17,6 @@ Concretely, it applies to:
   - `spec-change-tracking.md`
   - `spec-connector-ecosystem.md`
   - `spec-data-query-api.md`
-  - `spec-deferred.md`
   - `spec-reference-implementation-examples.md`
 - The mirrored protocol-specification pages published under
   `apps/site/content/docs/spec-*.md`, which are downstream copies of the root
