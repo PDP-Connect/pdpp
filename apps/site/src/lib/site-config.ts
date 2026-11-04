@@ -63,13 +63,14 @@ export const siteFlags = {
 
 /**
  * The shareable supporter card (the panel after signing and the /principles/card
- * routes). Off unless the variable is exactly "1": production stays off until
+ * routes). Off unless the variable is "true", like the other site flags:
+ * production stays off until
  * the brand-mark use is cleared with LF Decentralized Trust. A function rather
  * than a `siteFlags` entry so it reads the variable when called, which lets a
  * test switch it; Next still inlines the NEXT_PUBLIC value at build.
  */
 export function shareCardEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_PDPP_SHARE_CARD === "1";
+  return flag(process.env.NEXT_PUBLIC_PDPP_SHARE_CARD);
 }
 
 export const siteConfig = {

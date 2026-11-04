@@ -33,7 +33,7 @@ test("the card routes are built for exactly the feed and story formats", () => {
 
 for (const format of ["feed", "story"] as const) {
   test(`${format} returns a PNG of ${SHARE_CARD_FORMATS[format].width}x${SHARE_CARD_FORMATS[format].height} when the flag is 1`, async () => {
-    process.env[FLAG] = "1";
+    process.env[FLAG] = "true";
     const response = await request(format);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "image/png");
@@ -45,11 +45,11 @@ for (const format of ["feed", "story"] as const) {
 }
 
 test("an unknown format is a 404 even when the flag is on", async () => {
-  process.env[FLAG] = "1";
+  process.env[FLAG] = "true";
   assert.equal((await request("banner")).status, 404);
 });
 
-for (const value of [undefined, "", "0", "true", "TRUE", " 1"]) {
+for (const value of [undefined, "", "0", "1", "false", "yes"]) {
   test(`the routes are a 404 when the flag is ${JSON.stringify(value)}`, async () => {
     if (value === undefined) {
       delete process.env[FLAG];

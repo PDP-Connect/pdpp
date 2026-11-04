@@ -21,12 +21,12 @@ function statusHtml(signed: string): string {
 }
 
 test("the panel shows on a confirmed signature when the flag is 1", () => {
-  process.env[FLAG] = "1";
+  process.env[FLAG] = "true";
   assert.match(statusHtml("confirmed"), PANEL_SLOT);
 });
 
 test("the panel is hidden when the flag is off, unset, or not exactly 1", () => {
-  for (const value of [undefined, "", "0", "true"]) {
+  for (const value of [undefined, "", "0", "1"]) {
     if (value === undefined) {
       delete process.env[FLAG];
     } else {
@@ -37,7 +37,7 @@ test("the panel is hidden when the flag is off, unset, or not exactly 1", () => 
 });
 
 test("the panel is hidden on every outcome except confirmed, even with the flag on", () => {
-  process.env[FLAG] = "1";
+  process.env[FLAG] = "true";
   for (const signed of ["pending", "incomplete", "ratelimited", "unavailable", "closed", "error", "invalid", "other"]) {
     assert.doesNotMatch(statusHtml(signed), PANEL_SLOT, signed);
   }
