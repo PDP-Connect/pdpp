@@ -3,14 +3,16 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Text } from "@/components/typography/text.tsx";
 import {
+  linkedInShareUrl,
   SHARE_CARD_ALT,
+  SHARE_CARD_CAPTION,
   SHARE_CARD_FORMATS,
-  SHARE_CARD_LINK,
   type ShareCardFormat,
   shareCardPath,
+  xIntentUrl,
 } from "@/lib/share-card/copy.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -23,42 +25,53 @@ const quietButtonClassName = cn(
   "text-foreground hover:border-primary hover:text-primary"
 );
 
-type ShareState = "idle" | "shared" | "copied" | "failed";
+const IMAGE_FILE_NAME = "pdpp-supporter-card.png";
+const COPY_IMAGE_FAILED = "Your browser cannot copy images. Download it instead.";
 
-const SHARE_MESSAGES: Record<Exclude<ShareState, "idle">, string> = {
-  copied: "Link copied.",
-  failed: "We could not share or copy the link. Download the image instead.",
-  shared: "Shared.",
-};
+function downloadName(format: ShareCardFormat): string {
+  return format === "feed" ? IMAGE_FILE_NAME : "pdpp-supporter-card-story.png";
+}
 
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-async function shareOrCopy(): Promise<ShareState | "cancelled"> {
-  try {
-    const response = await fetch(shareCardPath("feed"));
-    const file = new File([await response.blob()], "pdpp-supporter-card.png", { type: "image/png" });
-    if (typeof navigator.canShare === "function" && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], url: SHARE_CARD_LINK });
-      return "shared";
-    }
-  } catch (error) {
-    if (isAbort(error)) {
-      return "cancelled";
-    }
-    // Fall through to the link: a failed image fetch or share should not leave the supporter with nothing.
+/** Saves the card through a temporary link, so a post button can download and open a tab in one click. */
+function downloadCard(format: ShareCardFormat): void {
+  const anchor = document.createElement("a");
+  anchor.href = shareCardPath(format);
+  anchor.download = downloadName(format);
+  anchor.click();
+}
+
+function openInNewTab(url: string): void {
+  window.open(url, "_blank", "noopener");
+}
+
+async function fetchCardBlob(format: ShareCardFormat): Promise<Blob> {
+  const response = await fetch(shareCardPath(format));
+  if (!response.ok) {
+    throw new Error(`Card request failed: ${response.status}`);
   }
+  return await response.blob();
+}
+
+async function copyCaption(): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(SHARE_CARD_LINK);
-    return "copied";
+    await navigator.clipboard.writeText(SHARE_CARD_CAPTION);
+    return true;
   } catch {
-    return "failed";
+    return false;
   }
 }
 
-function downloadName(format: ShareCardFormat): string {
-  return `pdpp-supporter-card-${format}.png`;
+/** A file with the card's name and type is enough to ask the browser whether it can share images. */
+function browserCanShareImages(): boolean {
+  if (typeof navigator.canShare !== "function") {
+    return false;
+  }
+  const probe = new File([], IMAGE_FILE_NAME, { type: "image/png" });
+  return navigator.canShare({ files: [probe] });
 }
 
 /**
@@ -66,11 +79,56 @@ function downloadName(format: ShareCardFormat): string {
  * and carries no personal data, so nothing here is recorded or sent anywhere.
  */
 export function ShareCardPanel() {
-  const [state, setState] = useState<ShareState>("idle");
+  const [status, setStatus] = useState("");
+  const [canShareImages, setCanShareImages] = useState(false);
+
+  useEffect(() => {
+    setCanShareImages(browserCanShareImages());
+  }, []);
+
+  async function onCopyCaption() {
+    setStatus(
+      (await copyCaption()) ? "Caption copied." : "We could not copy the caption. Select it and copy it by hand."
+    );
+  }
+
+  async function onCopyImage() {
+    try {
+      // Hand the browser a pending blob so the copy keeps the click's permission (Safari needs this).
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": fetchCardBlob("feed") })]);
+      setStatus("Image copied.");
+    } catch {
+      setStatus(COPY_IMAGE_FAILED);
+    }
+  }
+
+  function onPostOnX() {
+    // Open the tab first: a popup blocker only allows it inside the click itself.
+    openInNewTab(xIntentUrl());
+    downloadCard("feed");
+    setStatus("Image downloaded. Attach it to your post on X.");
+  }
+
+  async function onPostOnLinkedIn() {
+    openInNewTab(linkedInShareUrl());
+    downloadCard("feed");
+    const copied = await copyCaption();
+    setStatus(
+      copied
+        ? "Image downloaded and caption copied. Paste the caption and attach the image on LinkedIn."
+        : "Image downloaded. Copy the caption above and attach the image on LinkedIn."
+    );
+  }
 
   async function onShare() {
-    const result = await shareOrCopy();
-    setState(result === "cancelled" ? "idle" : result);
+    try {
+      const file = new File([await fetchCardBlob("feed")], IMAGE_FILE_NAME, { type: "image/png" });
+      await navigator.share({ files: [file], text: SHARE_CARD_CAPTION });
+    } catch (error) {
+      if (!isAbort(error)) {
+        setStatus("We could not share the image. Download it instead.");
+      }
+    }
   }
 
   return (
@@ -85,19 +143,38 @@ export function ShareCardPanel() {
         src={shareCardPath("feed")}
         width={SHARE_CARD_FORMATS.feed.width}
       />
-      <div className="flex flex-wrap gap-3">
-        <button className={buttonClassName} onClick={onShare} type="button">
-          Share
+      <div className="flex flex-col items-start gap-2">
+        <Text as="p" color="muted" size="small">
+          {SHARE_CARD_CAPTION}
+        </Text>
+        <button className={quietButtonClassName} onClick={onCopyCaption} type="button">
+          Copy caption
         </button>
-        <a className={quietButtonClassName} download={downloadName("feed")} href={shareCardPath("feed")}>
-          Download for feed
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <a className={buttonClassName} download={downloadName("feed")} href={shareCardPath("feed")}>
+          Download image
         </a>
         <a className={quietButtonClassName} download={downloadName("story")} href={shareCardPath("story")}>
           Download for Stories
         </a>
+        <button className={quietButtonClassName} onClick={onCopyImage} type="button">
+          Copy image
+        </button>
+        <button className={quietButtonClassName} onClick={onPostOnX} type="button">
+          Post on X
+        </button>
+        <button className={quietButtonClassName} onClick={onPostOnLinkedIn} type="button">
+          Post on LinkedIn
+        </button>
+        {canShareImages ? (
+          <button className={quietButtonClassName} onClick={onShare} type="button">
+            Share…
+          </button>
+        ) : null}
       </div>
       <Text aria-live="polite" as="p" color="muted" size="small">
-        {state === "idle" ? "" : SHARE_MESSAGES[state]}
+        {status}
       </Text>
     </div>
   );

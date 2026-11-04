@@ -31,8 +31,28 @@ export function shareCardPath(format: ShareCardFormat): string {
   return `/principles/card/${format}`;
 }
 
-/** What the Share button copies when the browser cannot share the image. */
+/** The page every post links to. */
 export const SHARE_CARD_LINK = `${SITE_ORIGIN}/principles`;
 
 /** The alt text for the card image: the card's words, in reading order. */
 export const SHARE_CARD_ALT = `${SHARE_CARD_COPY.statement} ${SHARE_CARD_COPY.subtext} ${SHARE_CARD_COPY.button} ${SHARE_CARD_COPY.hashtag}`;
+
+const SHARE_CARD_CAPTION_LEAD =
+  "I just signed the pledge for global rules on where my data goes and who trains AI on it. Sign it too:";
+
+/** The post text a supporter can copy, link included. */
+export const SHARE_CARD_CAPTION = `${SHARE_CARD_CAPTION_LEAD} ${SHARE_CARD_LINK} ${SHARE_CARD_COPY.hashtag}`;
+
+/** X takes the link in its own field, so the text leaves the link out. */
+export function xIntentUrl(): string {
+  const params = new URLSearchParams({
+    text: `${SHARE_CARD_CAPTION_LEAD} ${SHARE_CARD_COPY.hashtag}`,
+    url: SHARE_CARD_LINK,
+  });
+  return `https://x.com/intent/post?${params}`;
+}
+
+/** LinkedIn's share URL takes a link and no text. */
+export function linkedInShareUrl(): string {
+  return `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(SHARE_CARD_LINK)}`;
+}
