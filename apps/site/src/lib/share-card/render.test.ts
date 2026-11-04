@@ -2,16 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import test from "node:test";
+import { WORDMARK_PATH } from "../../components/elements/icons.tsx";
 import { SHARE_CARD_ALT, SHARE_CARD_COPY, SHARE_CARD_LINK } from "./copy.ts";
-import { oklchFillsToHex } from "./render.tsx";
+import { wordmarkSvg } from "./render.tsx";
 
-const MARK_PATH = join(process.cwd(), "public", "brand", "pdpp-mark.svg");
-const PATH_DATA = /\sd="([^"]+)"/g;
-const OKLCH_FILL = /fill="oklch\(/;
-const HEX_FILLS = /fill="(#[0-9a-f]{6})"/g;
+const OKLCH = /oklch\(/;
 
 test("the card copy is the brand owner's, verbatim", () => {
   assert.equal(SHARE_CARD_COPY.statement, "My data, my rules.");
@@ -30,17 +26,10 @@ test("the card alt text carries every word on the card", () => {
   }
 });
 
-test("the mark keeps its geometry and gets the same colours in hex", async () => {
-  const svg = await readFile(MARK_PATH, "utf8");
-  const converted = oklchFillsToHex(svg);
-  assert.doesNotMatch(converted, OKLCH_FILL);
-  assert.deepEqual(
-    [...converted.matchAll(PATH_DATA)].map((m) => m[1]),
-    [...svg.matchAll(PATH_DATA)].map((m) => m[1])
-  );
-  // Copper, blue and the cream centre dot: oklch(0.52 0.11 45), oklch(0.58 0.18 253), oklch(0.985 0.005 85).
-  assert.deepEqual(
-    [...converted.matchAll(HEX_FILLS)].map((m) => m[1]),
-    ["#9c522e", "#007ae0", "#fcfaf6"]
-  );
+test("the wordmark is the header's path and viewBox, unmodified, in the primary colour", () => {
+  const svg = wordmarkSvg("#295171");
+  assert.ok(svg.includes(` d="${WORDMARK_PATH}"`));
+  assert.ok(svg.includes('viewBox="0 0 365 160"'));
+  assert.ok(svg.includes('fill="#295171"'));
+  assert.doesNotMatch(svg, OKLCH);
 });
