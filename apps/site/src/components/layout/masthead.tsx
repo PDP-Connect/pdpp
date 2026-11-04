@@ -235,7 +235,7 @@ export function PdppConceptMasthead() {
                 </Text>
               );
 
-              // Only Specification carries children. The panel opens on hover
+              // Specification and Participate can carry children. The panel opens on hover
               // AND on focus-within, so it is reachable by keyboard without a
               // click handler or any open/closed state to keep in sync — the
               // links inside are ordinary tab stops. Below the nav's collapse

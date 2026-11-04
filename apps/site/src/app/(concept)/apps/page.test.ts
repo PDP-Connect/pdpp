@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { publicSiteNav } from "@/lib/public-site-nav.ts";
 import { appDirectoryEnabled } from "@/lib/site-config.ts";
 import Page from "./page.tsx";
 
@@ -60,4 +61,15 @@ test("the page is not found when the flag is off", async () => {
       process.env[FLAG] = previous;
     }
   }
+});
+
+test("the Participate menu lists /apps only while the page is on", () => {
+  const participateChildren = (value: string | undefined) =>
+    withFlag(value, () =>
+      publicSiteNav()
+        .find((item) => item.text === "Participate")
+        ?.children?.map((child) => child.link)
+    );
+  assert.deepEqual(participateChildren(undefined), ["/participate"]);
+  assert.deepEqual(participateChildren("true"), ["/participate", "/apps"]);
 });
