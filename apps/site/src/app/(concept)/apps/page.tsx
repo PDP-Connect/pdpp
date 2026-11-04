@@ -53,6 +53,10 @@ export default async function Page() {
             Search for an app to see what you can do with its data through PDPP today, and whether the company has
             signed or registered.
           </Text>
+          <Text as="p" className="max-w-[68ch]" color="muted" size="small" wrap="pretty">
+            Each connector is open source and brings your data from that app into PDPP. A company has not signed the
+            Principles or registered with PDPP unless its entry says so.
+          </Text>
         </div>
 
         <div className="mt-10">

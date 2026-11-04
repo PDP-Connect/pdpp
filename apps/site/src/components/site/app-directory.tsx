@@ -29,49 +29,48 @@ function countLine(count: number, searching: boolean): string {
   return `${count} ${count === 1 ? "connector" : "connectors"}`;
 }
 
-function AppRow({ entry }: { entry: DirectoryEntry }) {
+// Same card as the participate page: a 1px ring, so cards in a gap-px grid share borders.
+const CARD = cn("flex flex-col gap-2 bg-background p-6", "shadow-[0_0_0_1px_var(--border)]");
+
+function AppCard({ entry }: { entry: DirectoryEntry }) {
   return (
-    <li className="flex max-w-none! flex-col gap-1.5 py-5 first:pt-0">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+    <li className={cn(CARD, "max-w-none!")}>
+      <div className="flex items-baseline justify-between gap-4">
         <Text as="h3" size="lede" weight="semi">
           {entry.name}
         </Text>
-        <div className="flex items-baseline gap-4">
-          {entry.tierLabel && (
-            <Text as="span" color="subtle" family="mono" inline size="stamp">
-              {entry.tierLabel}
-            </Text>
-          )}
-          {entry.sourceUrl && (
-            <Text
-              aria-label={`Source code for the ${entry.name} connector on GitHub`}
-              as="a"
-              className="text-primary hover:text-primary-emphasis hover:underline hover:underline-offset-[3px]"
-              family="mono"
-              href={entry.sourceUrl}
-              inline
-              rel="noopener"
-              size="stamp"
-              target="_blank"
-            >
-              Source ↗
-            </Text>
-          )}
-        </div>
+        {entry.tierLabel && (
+          <Text as="span" className="shrink-0" color="subtle" family="mono" inline size="stamp">
+            {entry.tierLabel}
+          </Text>
+        )}
       </div>
       {entry.headline && (
-        <Text as="p" size="body" wrap="pretty">
+        <Text as="p" size="small" wrap="pretty">
           {entry.headline}
         </Text>
       )}
       {entry.labels && (
-        <Text as="p" color="muted" size="body" wrap="pretty">
+        <Text as="p" color="muted" size="small" wrap="pretty">
           {entry.labels}
         </Text>
       )}
       {entry.status && (
         <Text as="p" color="subtle" size="small" wrap="pretty">
           {entry.status}
+        </Text>
+      )}
+      {entry.sourceUrl && (
+        <Text as="p" className="mt-auto pt-2" size="small">
+          <a
+            aria-label={`Source code for the ${entry.name} connector on GitHub`}
+            className="text-primary hover:text-foreground"
+            href={entry.sourceUrl}
+            rel="noopener"
+            target="_blank"
+          >
+            Source on GitHub ↗
+          </a>
         </Text>
       )}
     </li>
@@ -126,19 +125,11 @@ export function PdppAppDirectory({ entries }: { entries: readonly DirectoryEntry
           </Text>
         </div>
       ) : (
-        <div className="flex max-w-[68ch] flex-col gap-4">
-          {shown.some((entry) => entry.kind === "connector") && (
-            <Text as="p" color="muted" size="small" wrap="pretty">
-              Each app below has an open-source connector that brings your data from it into PDPP. Its company has not
-              signed the Principles or registered with PDPP unless the entry says so.
-            </Text>
-          )}
-          <ul className="flex flex-col divide-y divide-border/60">
-            {shown.map((entry) => (
-              <AppRow entry={entry} key={entry.id} />
-            ))}
-          </ul>
-        </div>
+        <ul className="grid grid-cols-1 gap-px md:grid-cols-2 xl:grid-cols-3">
+          {shown.map((entry) => (
+            <AppCard entry={entry} key={entry.id} />
+          ))}
+        </ul>
       )}
 
       {showsDevelopment && (
