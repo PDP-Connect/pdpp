@@ -15,8 +15,6 @@ const PAPER = "#f4f5f6"; // --background = --pdpp-editorial-paper, oklch(0.97 0.
 const INK = "#181b1d"; // --foreground = --pdpp-editorial-ink, oklch(0.22 0.006 245)
 const MUTED = "#4e5052"; // --muted-foreground = --pdpp-editorial-ink-soft
 const PRIMARY = "#295171"; // --primary = --pdpp-editorial-teal, oklch(0.42 0.07 245); also the header wordmark colour
-const ON_PRIMARY = "#f4f5f6"; // --primary-foreground = --pdpp-editorial-onteal-deep
-const BORDER = "#cccecf"; // --border = 18% of --foreground mixed into --background
 
 /**
  * The header wordmark as the site draws it: the same path and viewBox as
@@ -64,7 +62,7 @@ const WORDMARK_WIDTH = Math.round((WORDMARK_HEIGHT * 365) / 160);
  * `ShareCardVariant`; the route, sizes, fonts and copy do not change.
  *
  * It follows the concept surface: flat paper, ink type, a serif statement and
- * sans controls, square corners and 1px rules in the site's border colour.
+ * sans controls and square corners.
  */
 function EditorialDesign({ layout, wordmark }: DesignProps): ReactElement {
   const side = 88;
@@ -80,7 +78,7 @@ function EditorialDesign({ layout, wordmark }: DesignProps): ReactElement {
         width: "100%",
       }}
     >
-      <div style={{ borderBottom: `1px solid ${BORDER}`, display: "flex", paddingBottom: 40 }}>
+      <div style={{ display: "flex", paddingBottom: 40 }}>
         <img alt="" height={WORDMARK_HEIGHT} src={wordmark} width={WORDMARK_WIDTH} />
       </div>
 
@@ -117,7 +115,6 @@ function EditorialDesign({ layout, wordmark }: DesignProps): ReactElement {
       <div
         style={{
           alignItems: "center",
-          borderTop: `1px solid ${BORDER}`,
           display: "flex",
           justifyContent: "space-between",
           paddingTop: 40,
@@ -125,15 +122,11 @@ function EditorialDesign({ layout, wordmark }: DesignProps): ReactElement {
       >
         <div
           style={{
-            alignItems: "center",
-            background: PRIMARY,
-            border: `1px solid ${PRIMARY}`,
-            color: ON_PRIMARY,
+            color: PRIMARY,
             display: "flex",
             fontFamily: "Inter",
-            fontSize: 36,
+            fontSize: 40,
             fontWeight: 700,
-            padding: "26px 40px",
           }}
         >
           {SHARE_CARD_COPY.button}

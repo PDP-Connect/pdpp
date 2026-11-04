@@ -132,7 +132,7 @@ export function ShareCardPanel() {
   }
 
   return (
-    <div className="flex flex-col gap-4 border border-border p-4" data-slot="pdpp-share-card-panel">
+    <div className="flex flex-col gap-4" data-slot="pdpp-share-card-panel">
       <Text as="p" size="body">
         Share your support.
       </Text>
