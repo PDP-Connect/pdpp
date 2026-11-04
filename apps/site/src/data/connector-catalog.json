@@ -1,9 +1,9 @@
 {
   "source": "ghcr.io/pdp-connect/connector-catalog",
-  "manifest_digest": "sha256:5be68a20e8bcc0892727fb0d1d57821ced6cc8ba02a57b236058862c3e4ddcb4",
-  "layer_digest": "sha256:c484ef45e0fd733ecaa7cb9037d58b7b84c9a2b8ee061b85cec573a51765ba15",
-  "generated_at": "2026-11-04T02:08:53.000Z",
-  "source_commit": "28a179299109dba249c90c41324f9abe0378ddb9",
+  "manifest_digest": "sha256:600593d19d560555c5db84d38527ad9f01e802e6de2ed0ddf06ed21b90d0b41d",
+  "layer_digest": "sha256:8d5184178ba8762b7715746ee5f867274b471891cc60cb7d0e7e69e30973fc45",
+  "generated_at": "2026-11-04T22:45:18.000Z",
+  "source_commit": "23aee3aaeafad3a804d504e8614763f7845add60",
   "connectors": [
     {
       "key": "amazon",
