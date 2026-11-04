@@ -29,7 +29,7 @@ export const metadata: Metadata = {
 // document appearing somewhere else.
 
 const STORED = [
-  "The name you entered, and for an organisation the organisation name, the signatory's name and their role.",
+  "The name you entered. For an organisation, the organisation name too. For an individual, the affiliation, if you gave one.",
   "Your email address.",
   "Your country and, for an organisation, its type.",
   "The four consent choices you made on the form.",
@@ -104,8 +104,8 @@ export default function Page() {
             ))}
           </ul>
           <Text as="p" className="mt-4 max-w-[68ch]" size="body" wrap="pretty">
-            Your email address is never published. Neither is the name or role of the person who signed for an
-            organisation.
+            Your email address is never published. Neither is the name of the person who signed for an organisation, or
+            the affiliation of an individual.
           </Text>
         </PdppConceptSection>
 

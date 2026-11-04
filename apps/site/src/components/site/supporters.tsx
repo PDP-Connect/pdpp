@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils.ts";
 // below is what a reader sees until the first real signature lands.
 //
 // SHAPE: the table receives only the five public fields. The private store
-// holds email, the signatory's name and role, and the consent flags; none of
+// holds email, the signatory's name, any affiliation, and the consent flags; none of
 // them have a route to this component, because the publish script never writes
 // them into the public register. See docs/registers.md.
 
