@@ -151,6 +151,7 @@ export function manifestFolderCandidates(key) {
 async function fetchConnectorManifest(sourceCommit, key) {
   for (const folder of manifestFolderCandidates(key)) {
     const url = `${CONNECTOR_MANIFEST_BASE}/${sourceCommit}/connectors/${folder}/manifest.json`;
+    // biome-ignore lint/performance/noAwaitInLoops: the second folder is tried only when the first is missing.
     const response = await fetch(url);
     if (response.status === 404) {
       continue;

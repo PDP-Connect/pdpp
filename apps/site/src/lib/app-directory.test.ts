@@ -68,10 +68,7 @@ function find(entries: readonly DirectoryEntry[], name: string): DirectoryEntry 
 
 test("a connector alone: you can bring your data, and the company has not signed or registered", () => {
   const spotify = find(directory(), "Spotify");
-  assert.equal(
-    spotify.headline,
-    "You can bring your Spotify data into PDPP today, with an open-source connector."
-  );
+  assert.equal(spotify.headline, "You can bring your Spotify data into PDPP today, with an open-source connector.");
   assert.equal(spotify.labels, "Your playlists, Your saved tracks, Your top artists, Your top tracks + 2 more");
   assert.equal(spotify.status, "Spotify has not signed the Principles or registered with PDPP.");
   assert.equal(spotify.tierLabel, "Preview");
@@ -80,10 +77,7 @@ test("a connector alone: you can bring your data, and the company has not signed
 test("a signed organisation with a connector shows the signing date", () => {
   const spotify = find(directory([supporter("Spotify", "Company", "2026-09-09")]), "Spotify");
   assert.equal(spotify.status, "Spotify signed the PDPP Principles on 9 Sep 2026. It has not registered with PDPP.");
-  assert.equal(
-    spotify.headline,
-    "You can bring your Spotify data into PDPP today, with an open-source connector."
-  );
+  assert.equal(spotify.headline, "You can bring your Spotify data into PDPP today, with an open-source connector.");
 });
 
 test("a signed and registered organisation says both", () => {
