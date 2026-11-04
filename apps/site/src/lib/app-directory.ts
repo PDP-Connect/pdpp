@@ -36,10 +36,11 @@ export interface RegisterEntry {
   status: string;
 }
 
-export const TIER_LABELS: Record<ConnectorTier, string> = {
+// Supported is the normal case and carries no label; only the caveats do.
+export const TIER_LABELS: Record<ConnectorTier, string | null> = {
   development: "In development",
   preview: "Preview",
-  supported: "Supported",
+  supported: null,
 };
 
 const MAX_LABELS = 4;
@@ -89,7 +90,7 @@ export interface CompanyStatus {
 }
 
 export interface DirectoryEntry {
-  /** What a person can do with this app's data. Empty for a company with no connector. */
+  /** A company's own standing, for a company with no connector. Empty on connector rows. */
   headline: string;
   id: string;
   kind: "connector" | "company";
@@ -97,7 +98,7 @@ export interface DirectoryEntry {
   /** Lower-cased names a search can match: the app and the company. */
   matchNames: readonly string[];
   name: string;
-  /** Muted line: the company's own status. */
+  /** Muted line. On a connector row, the company's status only when a register names it; else empty. */
   status: string;
   tier: ConnectorTier | null;
   tierLabel: string | null;
@@ -150,18 +151,6 @@ export function labelsLine(labels: readonly string[]): string {
     return labels.join(", ");
   }
   return `${labels.slice(0, MAX_LABELS).join(", ")} + ${labels.length - MAX_LABELS} more`;
-}
-
-const UNKNOWN_COMPANY = "The company";
-const NO_STATUS: CompanyStatus = { registrations: [], signedOn: null };
-
-function connectorHeadline(name: string, tier: ConnectorTier): string {
-  // A connector in development may not run yet, so it is not promised as
-  // something a person can do today.
-  if (tier === "development") {
-    return `An open-source connector for ${name} is in development.`;
-  }
-  return `You can bring your ${name} data into PDPP today, with an open-source connector.`;
 }
 
 interface Company {
@@ -224,13 +213,15 @@ export function buildDirectory({
       linked.add(match);
     }
     entries.push({
-      headline: connectorHeadline(name, connector.tier),
+      headline: "",
       id: `connector:${connector.key}`,
       kind: "connector",
-      labels: labelsLine(connector.labels),
+      labels: connector.labels.length > 0 ? labelsLine(connector.labels) : `Your ${name} data`,
       matchNames: [connector.display_name, company?.name].filter((n): n is string => Boolean(n)).map(lower),
       name: connector.display_name,
-      status: company ? statusLine(company.name, company) : statusLine(UNKNOWN_COMPANY, NO_STATUS),
+      // The page says once, above the list, that companies have not signed
+      // unless a row says so; repeating it on every row is noise.
+      status: company ? statusLine(company.name, company) : "",
       tier: connector.tier,
       tierLabel: TIER_LABELS[connector.tier],
     });

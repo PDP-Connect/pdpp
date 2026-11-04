@@ -42,17 +42,21 @@ function AppRow({ entry }: { entry: DirectoryEntry }) {
           </Text>
         )}
       </div>
-      <Text as="p" size="body" wrap="pretty">
-        {entry.headline}
-      </Text>
+      {entry.headline && (
+        <Text as="p" size="body" wrap="pretty">
+          {entry.headline}
+        </Text>
+      )}
       {entry.labels && (
-        <Text as="p" color="muted" size="small" wrap="pretty">
+        <Text as="p" color="muted" size="body" wrap="pretty">
           {entry.labels}
         </Text>
       )}
-      <Text as="p" color="subtle" size="small" wrap="pretty">
-        {entry.status}
-      </Text>
+      {entry.status && (
+        <Text as="p" color="subtle" size="small" wrap="pretty">
+          {entry.status}
+        </Text>
+      )}
     </li>
   );
 }
@@ -95,11 +99,19 @@ export function PdppAppDirectory({ entries }: { entries: readonly DirectoryEntry
           </Text>
         </div>
       ) : (
-        <ul className="flex max-w-[68ch] flex-col divide-y divide-border/60">
-          {shown.map((entry) => (
-            <AppRow entry={entry} key={entry.id} />
-          ))}
-        </ul>
+        <div className="flex max-w-[68ch] flex-col gap-4">
+          {shown.some((entry) => entry.kind === "connector") && (
+            <Text as="p" color="muted" size="small" wrap="pretty">
+              Each app below has an open-source connector that brings your data from it into PDPP. Its company has not
+              signed the Principles or registered with PDPP unless the entry says so.
+            </Text>
+          )}
+          <ul className="flex flex-col divide-y divide-border/60">
+            {shown.map((entry) => (
+              <AppRow entry={entry} key={entry.id} />
+            ))}
+          </ul>
+        </div>
       )}
 
       {showsDevelopment && (

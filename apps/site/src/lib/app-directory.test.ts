@@ -13,14 +13,12 @@ import {
   labelsLine,
   type RegisterEntry,
   searchDirectory,
+  TIER_LABELS,
 } from "./app-directory.ts";
 import { readConnectorSnapshot, readRegisterEntries } from "./app-directory-sources.ts";
 import type { PublicSupporter } from "./public-supporters.ts";
 
-const OURA_DATA = /your Oura data/;
 const COMPANY_CLAIM = /\b(is on|is part of|supports|takes part|partner)\b/i;
-const OPEN_SOURCE_CONNECTOR = /open-source connector/;
-const COMPANY_OR_OFFICIAL = /company|official/i;
 
 const SNAPSHOT: ConnectorSnapshot = {
   connectors: [
@@ -66,18 +64,22 @@ function find(entries: readonly DirectoryEntry[], name: string): DirectoryEntry 
   return entry;
 }
 
-test("a connector alone: you can bring your data, and the company has not signed or registered", () => {
+test("a connector alone shows its data and no company line", () => {
   const spotify = find(directory(), "Spotify");
-  assert.equal(spotify.headline, "You can bring your Spotify data into PDPP today, with an open-source connector.");
+  assert.equal(spotify.headline, "");
   assert.equal(spotify.labels, "Your playlists, Your saved tracks, Your top artists, Your top tracks + 2 more");
-  assert.equal(spotify.status, "The company has not signed the Principles or registered with PDPP.");
+  assert.equal(spotify.status, "");
   assert.equal(spotify.tierLabel, "Preview");
+});
+
+test("a supported connector carries no tier label", () => {
+  assert.equal(TIER_LABELS.supported, null);
 });
 
 test("a signed organisation with a connector shows the signing date", () => {
   const spotify = find(directory([supporter("Spotify", "Company", "2026-09-09")]), "Spotify");
   assert.equal(spotify.status, "Spotify signed the PDPP Principles on 9 Sep 2026. It has not registered with PDPP.");
-  assert.equal(spotify.headline, "You can bring your Spotify data into PDPP today, with an open-source connector.");
+  assert.equal(spotify.headline, "");
 });
 
 test("a signed and registered organisation says both", () => {
@@ -100,7 +102,7 @@ test("a Registered status alone does not make a Partner", () => {
 
 test("an ended registration is ignored", () => {
   const spotify = find(directory([], [registration("Spotify", "Verified Source", "Lapsed")]), "Spotify");
-  assert.equal(spotify.status, "The company has not signed the Principles or registered with PDPP.");
+  assert.equal(spotify.status, "");
 });
 
 test("a signed organisation without a connector is its own row, with no connector claim", () => {
@@ -114,13 +116,13 @@ test("a signed organisation without a connector is its own row, with no connecto
 test("individuals never appear", () => {
   const entries = directory([supporter("Tim N.", "Individual"), supporter("Spotify", "Individual")]);
   assert.equal(entries.length, SNAPSHOT.connectors.length);
-  assert.equal(find(entries, "Spotify").status, "The company has not signed the Principles or registered with PDPP.");
+  assert.equal(find(entries, "Spotify").status, "");
   assert.deepEqual(searchDirectory(entries, "tim"), []);
 });
 
 test("a company is matched by whole name, not by substring", () => {
   const entries = directory([supporter("Spot", "Company")]);
-  assert.equal(find(entries, "Spotify").status, "The company has not signed the Principles or registered with PDPP.");
+  assert.equal(find(entries, "Spotify").status, "");
   assert.equal(find(entries, "Spot").kind, "company");
 });
 
@@ -147,13 +149,23 @@ test("separate connectors for the same app stay separate rows", () => {
     oura.map((entry) => entry.name),
     ["Oura", "Oura (Browser Sign-In)"]
   );
-  assert.match(oura[1]?.headline ?? "", OURA_DATA);
+  assert.equal(oura[1]?.labels, "Your sleep");
 });
 
-test("a connector in development is not promised as available today", () => {
-  const oura = find(directory(), "Oura");
-  assert.equal(oura.tierLabel, "In development");
-  assert.equal(oura.headline, "An open-source connector for Oura is in development.");
+test("a connector in development is labelled so", () => {
+  assert.equal(find(directory(), "Oura").tierLabel, "In development");
+});
+
+test("a connector with no data labels still says what it brings", () => {
+  const { entries } = buildDirectory({
+    register: [],
+    snapshot: {
+      ...SNAPSHOT,
+      connectors: [{ display_name: "GitHub (browser session)", key: "g", labels: [], tier: "preview" }],
+    },
+    supporters: [],
+  });
+  assert.equal(entries[0]?.labels, "Your GitHub data");
 });
 
 test("search is case-insensitive and matches a substring of the app name", () => {
@@ -201,9 +213,9 @@ test("the first line never says a company is on, supports or takes part in PDPP"
   for (const entry of entries) {
     assert.doesNotMatch(entry.headline, COMPANY_CLAIM, entry.headline);
   }
-  for (const entry of entries.filter((candidate) => candidate.kind === "connector")) {
-    assert.match(entry.headline, OPEN_SOURCE_CONNECTOR);
-    assert.doesNotMatch(entry.headline, COMPANY_OR_OFFICIAL);
+  // A row says anything about the company only when a register names it.
+  for (const entry of entries.filter((candidate) => candidate.status === "")) {
+    assert.doesNotMatch(entry.labels, COMPANY_CLAIM);
   }
 });
 
