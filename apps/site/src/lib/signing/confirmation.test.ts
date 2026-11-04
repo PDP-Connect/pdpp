@@ -19,7 +19,9 @@ const ESCAPED_TOKEN = "valid-token&amp;&quot;&lt;&gt;&#39;";
 const RAW_ATTRIBUTE_BREAKOUT = /value="valid-token&"/;
 const UNSAFE_TOKEN = "valid-token&\"<>'";
 
-async function runScenario(mode: "escaped" | "get" | "success" | "concurrent" | "failure" | "mismatch" | "invalid") {
+async function runScenario(
+  mode: "escaped" | "get" | "success" | "concurrent" | "failure" | "mismatch" | "legacy" | "invalid"
+) {
   const program = `
     const mode = ${JSON.stringify(mode)};
     const { NextRequest } = await import("next/server");
@@ -36,6 +38,13 @@ async function runScenario(mode: "escaped" | "get" | "success" | "concurrent" | 
     };
     const state = { deleteCalls: 0, pending: submission, readCalls: 0, records: [], writeCalls: 0, writeFailure: mode === "failure" };
     if (mode === "mismatch") state.records.push({ ...buildRecord(id, submission), email: "other@example.test" });
+    if (mode === "legacy") {
+      // Persisted by the previous deployment: no requestedApps field. The pending entry survived.
+      const legacySubmission = { ...submission, requested_apps: undefined };
+      const { requestedApps: _omitted, ...legacy } = buildRecord(id, legacySubmission);
+      state.pending = legacySubmission;
+      state.records.push(legacy);
+    }
     const handlers = createConfirmationHandlers({
       buildRecord,
       deletePending: async () => { state.deleteCalls += 1; state.pending = null; },
@@ -68,7 +77,7 @@ async function runScenario(mode: "escaped" | "get" | "success" | "concurrent" | 
       pendingAfterFailure = state.pending !== null;
       state.writeFailure = false;
       responses = [failed, await handlers.POST(post())];
-    } else if (mode === "mismatch") responses = [await handlers.POST(post())];
+    } else if (mode === "mismatch" || mode === "legacy") responses = [await handlers.POST(post())];
     else responses = [await handlers.POST(post("invalid-token"))];
     process.stdout.write(JSON.stringify({
       deleteCalls: state.deleteCalls,
@@ -163,6 +172,15 @@ test("a conflicting existing record is not accepted as a successful confirmation
   assert.match(result.responses[0]?.location ?? "", ERROR_LOCATION);
   assert.equal(result.pending, true);
   assert.equal(result.deleteCalls, 0);
+});
+
+test("a retry after the requestedApps deploy accepts the record the previous deploy persisted", async () => {
+  const result = await runScenario("legacy");
+
+  assert.match(result.responses[0]?.location ?? "", CONFIRMED_LOCATION);
+  assert.equal(result.records, 1);
+  assert.equal(result.pending, false);
+  assert.equal(result.deleteCalls, 1);
 });
 
 test("an invalid confirmation POST redirects to signed=invalid without effects", async () => {

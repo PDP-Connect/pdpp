@@ -334,9 +334,19 @@ export function recordPath(record: SignatoryRecord): string {
 /**
  * Conflicting writes may have different confirmation timestamps. All other
  * fields are the immutable statement the signatory confirmed.
+ *
+ * A record persisted before `requestedApps` existed has no such field, while a
+ * retry built after that deploy has `requestedApps: []`. Both mean "no apps",
+ * so a missing field is read as [] on both sides and compared in one key order.
  */
-export function hasSameImmutableFields(expected: SignatoryRecord, actual: SignatoryRecord): boolean {
-  const { confirmedAt: _expectedConfirmedAt, ...expectedFields } = expected;
-  const { confirmedAt: _actualConfirmedAt, ...actualFields } = actual;
-  return JSON.stringify(expectedFields) === JSON.stringify(actualFields);
+export function hasSameImmutableFields(
+  expected: Omit<SignatoryRecord, "requestedApps"> & { requestedApps?: string[] },
+  actual: Omit<SignatoryRecord, "requestedApps"> & { requestedApps?: string[] }
+): boolean {
+  return JSON.stringify(comparableFields(expected)) === JSON.stringify(comparableFields(actual));
+}
+
+function comparableFields(record: Omit<SignatoryRecord, "requestedApps"> & { requestedApps?: string[] }) {
+  const { confirmedAt: _confirmedAt, requestedApps: apps, ...fields } = record;
+  return { ...fields, requestedApps: apps ?? [] };
 }
