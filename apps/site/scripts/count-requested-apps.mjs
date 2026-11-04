@@ -3,10 +3,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Counts how many signatories named each app they would like to see join PDPP.
-// Reads a local checkout of the private register and prints [{app, count}],
-// highest count first. It prints counts only: no signatory name, email or id
-// ever reaches the output, so the output can be shared with a company.
+// Reads a local checkout of the private register and prints, to stdout:
+//   {"apps": [{app, count}], "unreviewedAnswers": N}
+// `apps` holds only canonical names: the suggestion list the form offers plus
+// the targets of the alias map below. Anything else a signer typed is free
+// text and can be personal data (an email, a name, a phone number), so it is
+// counted but never printed. The stdout output is safe to share with a company.
+//
+// `--review` additionally prints the unreviewed raw values and their counts to
+// STDERR, so a maintainer can extend the alias map. That output is private.
 
+import { APP_SUGGESTIONS } from "../src/lib/signing/app-suggestions.ts";
 import { readSignatories } from "./publish-supporters.mjs";
 
 const WHITESPACE = /\s+/g;
@@ -28,60 +35,90 @@ const ALIASES = new Map([
   ["tik tok", "TikTok"],
 ]);
 
+// Folded spelling -> canonical name, for every name that may be printed.
+const CANONICAL = new Map([...APP_SUGGESTIONS, ...ALIASES.values()].map((name) => [foldName(name), name]));
+
 function foldName(name) {
   return String(name).trim().replace(WHITESPACE, " ").toLowerCase();
 }
 
-/** The names one record asks for, each once, as [countingKey, canonicalOrNull, spelling]. */
+/** The distinct folded spellings one record asks for, with their trimmed raw form. */
 function namesInRecord(record) {
   const names = new Map();
   for (const raw of Array.isArray(record?.requestedApps) ? record.requestedApps : []) {
     const key = typeof raw === "string" ? foldName(raw) : "";
-    if (!key) {
-      continue;
-    }
-    const alias = ALIASES.get(key) ?? null;
-    const countingKey = (alias ?? key).toLowerCase();
-    if (!names.has(countingKey)) {
-      names.set(countingKey, { alias, spelling: raw.trim().replace(WHITESPACE, " ") });
+    if (key && !names.has(key)) {
+      names.set(key, raw.trim().replace(WHITESPACE, " "));
     }
   }
   return names;
 }
 
-/** Counts requested apps across records. Returns [{app, count}], count descending. */
+function mostCommonSpelling(spellings) {
+  // A tie goes to the first by code point, which puts a capitalised spelling
+  // ahead of a lower-case one.
+  return [...spellings.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0][0];
+}
+
+/**
+ * Counts requested apps across records. One signatory counts once per app,
+ * however they spelled it.
+ *
+ * Returns:
+ * - apps: [{app, count}] for canonical names only, count descending. Safe to share.
+ * - unreviewedAnswers: how many answers matched no canonical name. A count only. Safe to share.
+ * - unreviewed: [{value, count}] the raw unmatched values. PRIVATE: may be personal data.
+ */
 export function countRequestedApps(records) {
-  const groups = new Map();
+  const canonicalCounts = new Map();
+  const unreviewedGroups = new Map();
   for (const record of records) {
-    // One signatory counts once per app, however they spelled it.
-    for (const [countingKey, { alias, spelling }] of namesInRecord(record)) {
-      const group = groups.get(countingKey) ?? { alias, count: 0, spellings: new Map() };
+    const seenCanonical = new Set();
+    for (const [key, spelling] of namesInRecord(record)) {
+      const canonical = ALIASES.get(key) ?? CANONICAL.get(key) ?? null;
+      if (canonical) {
+        seenCanonical.add(canonical);
+        continue;
+      }
+      const group = unreviewedGroups.get(key) ?? { count: 0, spellings: new Map() };
       group.count += 1;
       group.spellings.set(spelling, (group.spellings.get(spelling) ?? 0) + 1);
-      groups.set(countingKey, group);
+      unreviewedGroups.set(key, group);
+    }
+    for (const canonical of seenCanonical) {
+      canonicalCounts.set(canonical, (canonicalCounts.get(canonical) ?? 0) + 1);
     }
   }
-  return [...groups.values()]
-    .map((group) => ({
-      app:
-        group.alias ??
-        // Most common spelling wins. A tie goes to the first by code point, which
-        // puts a capitalised spelling ahead of a lower-case one.
-        [...group.spellings.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0][0],
-      count: group.count,
-    }))
+  const apps = [...canonicalCounts.entries()]
+    .map(([app, count]) => ({ app, count }))
     .sort((a, b) => b.count - a.count || a.app.localeCompare(b.app));
+  const unreviewed = [...unreviewedGroups.values()]
+    .map((group) => ({ value: mostCommonSpelling(group.spellings), count: group.count }))
+    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+  return {
+    apps,
+    unreviewed,
+    unreviewedAnswers: unreviewed.reduce((total, entry) => total + entry.count, 0),
+  };
 }
 
 async function main() {
-  const [sourceDirectory] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const review = args.includes("--review");
+  const [sourceDirectory] = args.filter((arg) => arg !== "--review");
   if (!sourceDirectory) {
-    console.error("Usage: count-requested-apps.mjs <private-register-directory>");
+    console.error("Usage: count-requested-apps.mjs [--review] <private-register-directory>");
     process.exitCode = 1;
     return;
   }
-  const counts = countRequestedApps(await readSignatories(sourceDirectory));
-  console.log(JSON.stringify(counts, null, 2));
+  const { apps, unreviewed, unreviewedAnswers } = countRequestedApps(await readSignatories(sourceDirectory));
+  console.log(JSON.stringify({ apps, unreviewedAnswers }, null, 2));
+  if (review) {
+    console.error(
+      "PRIVATE: unreviewed values typed by signatories. They may be personal data. Do not share, paste or commit."
+    );
+    console.error(JSON.stringify(unreviewed, null, 2));
+  }
 }
 
 if (import.meta.main) {

@@ -227,9 +227,33 @@ node apps/site/scripts/count-requested-apps.mjs <private-checkout-directory>
 
 It reads `signatories/**/*.json`, folds case and spacing, applies a small alias
 map (`insta` to Instagram, `chat gpt` and `openai` to ChatGPT), and prints JSON
-sorted by count, highest first: `[{"app": "Spotify", "count": 12}]`. It prints
-counts only, never a name, email or id. Share the output, not the files. A
-withdrawn signatory is not counted, because withdrawal deletes the file.
+to stdout:
+
+```json
+{"apps": [{"app": "Spotify", "count": 12}], "unreviewedAnswers": 4}
+```
+
+`apps` lists only canonical names, highest count first. A canonical name is one
+on the form's suggestion list (`apps/site/src/lib/signing/app-suggestions.ts`)
+or a target of the alias map. Everything else a signatory typed is free text and
+can be personal data, so it is never printed. It is counted once in
+`unreviewedAnswers`.
+
+**Only this default output may be shared**, for example with a company. It holds
+no name, email, id or free text. A withdrawn signatory is not counted, because
+withdrawal deletes the file.
+
+To see which spellings fall in `unreviewedAnswers`, so you can add them to the
+alias map, add `--review`:
+
+```sh
+node apps/site/scripts/count-requested-apps.mjs --review <private-checkout-directory>
+```
+
+It prints the same default output to stdout and the unreviewed raw values with
+counts to stderr, under a line marked `PRIVATE`. **Review output stays with
+maintainers.** Do not share, paste or commit it. Redirect stdout only if you
+need to save the shareable part (`> counts.json`).
 
 ## Deleting a single signatory
 

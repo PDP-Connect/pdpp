@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { countRequestedApps } from "./count-requested-apps.mjs";
 
 const USAGE = /Usage:/;
+const PRIVATE_LABEL = /PRIVATE.*Do not share/;
 const run = promisify(execFile);
 const SCRIPT = path.join(import.meta.dirname, "count-requested-apps.mjs");
 const temporaryDirectories: string[] = [];
@@ -21,15 +22,20 @@ afterEach(async () => {
   );
 });
 
+const EMAIL_VALUE = "alice@example.test";
+const NAME_VALUE = "Alice Fakename";
+const PHONE_VALUE = "+1 555 010 0199";
+const PERSONAL_VALUES = [EMAIL_VALUE, NAME_VALUE, PHONE_VALUE];
+
 test("count folds case, spacing and aliases, and sorts by count", () => {
-  const counts = countRequestedApps([
+  const { apps } = countRequestedApps([
     { requestedApps: ["Spotify", "insta"] },
     { requestedApps: ["  spotify ", "Chat  GPT"] },
     { requestedApps: ["OpenAI", "Instagram", "Strava"] },
     { requestedApps: [] },
     { id: "legacy-record-without-the-field" },
   ]);
-  assert.deepEqual(counts, [
+  assert.deepEqual(apps, [
     { app: "ChatGPT", count: 2 },
     { app: "Instagram", count: 2 },
     { app: "Spotify", count: 2 },
@@ -38,51 +44,79 @@ test("count folds case, spacing and aliases, and sorts by count", () => {
 });
 
 test("one signatory counts once per app even when they spell it two ways", () => {
-  assert.deepEqual(countRequestedApps([{ requestedApps: ["Insta", "Instagram", "instagram"] }]), [
+  assert.deepEqual(countRequestedApps([{ requestedApps: ["Insta", "Instagram", "instagram"] }]).apps, [
     { app: "Instagram", count: 1 },
   ]);
 });
 
-test("an unaliased app is shown in its most common spelling", () => {
-  const counts = countRequestedApps([
-    { requestedApps: ["oura"] },
-    { requestedApps: ["Oura"] },
-    { requestedApps: ["Oura"] },
+test("an app outside the suggestion list and alias map is unreviewed, never in apps", () => {
+  const result = countRequestedApps([
+    { requestedApps: ["oura", "Obscure App"] },
+    { requestedApps: ["Oura", "obscure  app"] },
+    { requestedApps: ["Obscure App"] },
   ]);
-  assert.deepEqual(counts, [{ app: "Oura", count: 3 }]);
+  assert.deepEqual(result.apps, [{ app: "Oura", count: 2 }]);
+  assert.equal(result.unreviewedAnswers, 3);
+  assert.deepEqual(result.unreviewed, [{ value: "Obscure App", count: 3 }]);
 });
 
-test("the command prints counts only, never names, emails or ids", async () => {
+async function writeRegister(records: Array<{ id: string; requestedApps: string[] }>): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "pdpp-app-counts-"));
   temporaryDirectories.push(directory);
   const year = path.join(directory, "signatories", "2026");
   await mkdir(year, { recursive: true });
-  await writeFile(
-    path.join(year, "first-fake-id.json"),
-    JSON.stringify({
-      displayName: "Fake Person One",
-      email: "person-one@example.test",
-      id: "first-fake-id",
-      requestedApps: ["Spotify", "Strava"],
-    })
+  await Promise.all(
+    records.map(
+      async (record) =>
+        await writeFile(
+          path.join(year, `${record.id}.json`),
+          JSON.stringify({
+            displayName: `Fake Person ${record.id}`,
+            email: `${record.id}@example.test`,
+            ...record,
+          })
+        )
+    )
   );
-  await writeFile(
-    path.join(year, "second-fake-id.json"),
-    JSON.stringify({
-      displayName: "Fake Person Two",
-      email: "person-two@example.test",
-      id: "second-fake-id",
-      requestedApps: ["spotify"],
-    })
-  );
+  return directory;
+}
 
-  const { stdout } = await run(process.execPath, [SCRIPT, directory]);
-  assert.deepEqual(JSON.parse(stdout), [
-    { app: "Spotify", count: 2 },
-    { app: "Strava", count: 1 },
+test("default output holds canonical names and an unreviewed total, never free text", async () => {
+  const directory = await writeRegister([
+    { id: "first-fake-id", requestedApps: ["Spotify", "Strava", EMAIL_VALUE] },
+    { id: "second-fake-id", requestedApps: ["spotify", NAME_VALUE] },
+    { id: "third-fake-id", requestedApps: [PHONE_VALUE] },
   ]);
-  for (const private_ of ["Fake Person", "example.test", "fake-id"]) {
+
+  const { stdout, stderr } = await run(process.execPath, [SCRIPT, directory]);
+  assert.deepEqual(JSON.parse(stdout), {
+    apps: [
+      { app: "Spotify", count: 2 },
+      { app: "Strava", count: 1 },
+    ],
+    unreviewedAnswers: 3,
+  });
+  assert.equal(stderr, "");
+  for (const private_ of [...PERSONAL_VALUES, "Fake Person", "example.test", "fake-id", "555"]) {
     assert.equal(stdout.includes(private_), false, `${private_} must not appear in the output`);
+  }
+});
+
+test("--review shows unreviewed values on stderr only, labelled private", async () => {
+  const directory = await writeRegister([
+    { id: "first-fake-id", requestedApps: ["Spotify", ...PERSONAL_VALUES] },
+    { id: "second-fake-id", requestedApps: [EMAIL_VALUE] },
+  ]);
+
+  const { stdout, stderr } = await run(process.execPath, [SCRIPT, "--review", directory]);
+  assert.deepEqual(JSON.parse(stdout), { apps: [{ app: "Spotify", count: 1 }], unreviewedAnswers: 4 });
+  for (const private_ of PERSONAL_VALUES) {
+    assert.equal(stdout.includes(private_), false, `${private_} must not appear on stdout`);
+    assert.equal(stderr.includes(private_), true, `${private_} should be listed for review on stderr`);
+  }
+  assert.match(stderr, PRIVATE_LABEL);
+  for (const leaked of ["Fake Person", "fake-id"]) {
+    assert.equal(stderr.includes(leaked), false, `${leaked} is not a requested app and must not appear`);
   }
 });
 
