@@ -78,7 +78,7 @@ test("the X link carries the caption without the link, and the link in its own f
   assert.equal(`${url.origin}${url.pathname}`, "https://x.com/intent/post");
   assert.equal(
     url.searchParams.get("text"),
-    "I just signed the pledge for global rules on where my data goes and who trains AI on it. Sign it too: #PDPP"
+    "#PDPP I just signed the pledge for global rules on where my data goes and who trains AI on it. Sign it too:"
   );
   assert.equal(url.searchParams.get("url"), "https://pdpp.dev/principles");
 });

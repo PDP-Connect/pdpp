@@ -43,10 +43,10 @@ const SHARE_CARD_CAPTION_LEAD =
 /** The post text a supporter can copy, link included. */
 export const SHARE_CARD_CAPTION = `${SHARE_CARD_CAPTION_LEAD} ${SHARE_CARD_LINK} ${SHARE_CARD_COPY.hashtag}`;
 
-/** X takes the link in its own field, so the text leaves the link out. */
+/** X adds the link after the text, so the text ends on "Sign it too:" and the hashtag leads. */
 export function xIntentUrl(): string {
   const params = new URLSearchParams({
-    text: `${SHARE_CARD_CAPTION_LEAD} ${SHARE_CARD_COPY.hashtag}`,
+    text: `${SHARE_CARD_COPY.hashtag} ${SHARE_CARD_CAPTION_LEAD}`,
     url: SHARE_CARD_LINK,
   });
   return `https://x.com/intent/post?${params}`;
