@@ -25,9 +25,10 @@ const DATA_CONNECTORS_URL = "https://github.com/PDP-Connect/data-connectors";
 // "Is your app on PDPP?"
 //
 // A read-only view over lists PDPP already publishes: the signed connector
-// catalogue (committed snapshot), the Supporters register and the conformance
-// register. No data is collected and nothing is sent anywhere. The search runs
-// in the visitor's browser over rows built here, so the page is static.
+// catalogue (loaded live and cached for an hour, with a copy in the repo as the
+// fallback), the Supporters register and the conformance register. No data is
+// collected and nothing is sent anywhere. The search runs in the visitor's
+// browser over rows built here, so the page is static between regenerations.
 //
 // Behind NEXT_PUBLIC_PDPP_APP_DIRECTORY. Off, the route does not exist.
 export default async function Page() {

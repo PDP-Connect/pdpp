@@ -230,7 +230,7 @@ test("formatDate, appName and labelsLine", () => {
   assert.equal(labelsLine(["A", "B", "C", "D", "E"]), "A, B, C, D + 1 more");
 });
 
-test("the committed snapshot and register parse and build a directory", async () => {
+test("the fallback copy and register parse and build a directory", async () => {
   const snapshot = await readBundledConnectorSnapshot();
   const register = await readRegisterEntries();
   const supporters = JSON.parse(

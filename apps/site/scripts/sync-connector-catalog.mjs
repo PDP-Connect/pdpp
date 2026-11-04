@@ -2,7 +2,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Refreshes src/data/connector-catalog.json, the snapshot behind /apps.
+// Refreshes src/data/connector-catalog.json, the fallback copy of the catalogue for /apps.
 //
 // The page loads the catalogue live and refreshes it hourly. This file is
 // the copy it falls back to when that load fails, so refresh it now and then.
