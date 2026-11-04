@@ -59,9 +59,10 @@ export function labelsFromManifest(manifest) {
  * network, so a test can feed it a small fixture.
  *
  * `manifests` maps connector_key to the parsed connector manifest, or to null
- * or undefined when that manifest was missing.
+ * or undefined when that manifest was missing. `folders` maps connector_key to
+ * the source folder the manifest was found in; the page links to it.
  */
-export function buildSnapshot({ catalog, manifests, manifestDigest, layerDigest }) {
+export function buildSnapshot({ catalog, manifests, folders = {}, manifestDigest, layerDigest }) {
   if (!Array.isArray(catalog?.connectors)) {
     throw new Error("Catalogue has no connectors array");
   }
@@ -77,6 +78,7 @@ export function buildSnapshot({ catalog, manifests, manifestDigest, layerDigest 
       display_name: connector.display_name,
       tier: connector.tier,
       labels: labelsFromManifest(manifests[connector.connector_key]),
+      source_path: folders[connector.connector_key] ? `connectors/${folders[connector.connector_key]}` : null,
     };
   });
   connectors.sort((a, b) => a.display_name.localeCompare(b.display_name, "en") || a.key.localeCompare(b.key, "en"));
@@ -159,7 +161,7 @@ async function fetchConnectorManifest(sourceCommit, key) {
     if (!response.ok) {
       throw new Error(`${url} returned ${response.status}`);
     }
-    return await response.json();
+    return { folder, manifest: await response.json() };
   }
   return null;
 }
@@ -167,13 +169,16 @@ async function fetchConnectorManifest(sourceCommit, key) {
 // One small request per connector, all at once: the catalogue lists a few
 // dozen, and a missing manifest is a null rather than a failure.
 async function fetchManifests(catalog) {
-  const entries = await Promise.all(
+  const found = await Promise.all(
     catalog.connectors.map(async (connector) => [
       connector.connector_key,
       await fetchConnectorManifest(catalog.source_commit, connector.connector_key),
     ])
   );
-  return Object.fromEntries(entries);
+  return {
+    folders: Object.fromEntries(found.map(([key, result]) => [key, result?.folder ?? null])),
+    manifests: Object.fromEntries(found.map(([key, result]) => [key, result?.manifest ?? null])),
+  };
 }
 
 // Measured against the repo formatter: it keeps a JSON array on one line up to this width.
@@ -200,8 +205,8 @@ export function formatSnapshot(snapshot) {
 
 export async function syncConnectorCatalog(outputPath = DEFAULT_OUTPUT) {
   const { catalog, manifestDigest, layerDigest } = await fetchCatalog();
-  const manifests = await fetchManifests(catalog);
-  const snapshot = buildSnapshot({ catalog, manifests, manifestDigest, layerDigest });
+  const { folders, manifests } = await fetchManifests(catalog);
+  const snapshot = buildSnapshot({ catalog, folders, manifests, manifestDigest, layerDigest });
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, formatSnapshot(snapshot));
   return snapshot;

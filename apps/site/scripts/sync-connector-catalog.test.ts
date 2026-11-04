@@ -68,9 +68,15 @@ test("buildSnapshot keeps only what the page needs, sorted by display name", () 
 
   assert.deepEqual(snapshot, {
     connectors: [
-      { display_name: "Alpha", key: "no-manifest", labels: [], tier: "development" },
-      { display_name: "Spotify", key: "spotify", labels: ["Your playlists", "Your saved tracks"], tier: "preview" },
-      { display_name: "Strava", key: "strava", labels: [], tier: "supported" },
+      { display_name: "Alpha", key: "no-manifest", labels: [], source_path: null, tier: "development" },
+      {
+        display_name: "Spotify",
+        key: "spotify",
+        labels: ["Your playlists", "Your saved tracks"],
+        source_path: null,
+        tier: "preview",
+      },
+      { display_name: "Strava", key: "strava", labels: [], source_path: null, tier: "supported" },
     ],
     generated_at: "2026-11-04T02:08:53.000Z",
     layer_digest: "sha256:layer",
@@ -133,4 +139,17 @@ test("formatSnapshot keeps short label lists on one line and round-trips", () =>
 test("a hyphenated catalogue key also looks in the underscored source folder", () => {
   assert.deepEqual(manifestFolderCandidates("apple-health"), ["apple-health", "apple_health"]);
   assert.deepEqual(manifestFolderCandidates("spotify"), ["spotify"]);
+});
+
+test("the snapshot records the source folder a manifest was found in", () => {
+  const snapshot = buildSnapshot({
+    catalog: CATALOG,
+    folders: { [CATALOG.connectors[0].connector_key]: "strava_api" },
+    layerDigest: "x",
+    manifestDigest: "y",
+    manifests: {},
+  });
+  const first = snapshot.connectors.find((connector) => connector.key === CATALOG.connectors[0].connector_key);
+  assert.equal(first?.source_path, "connectors/strava_api");
+  assert.ok(snapshot.connectors.filter((connector) => connector !== first).every((c) => c.source_path === null));
 });

@@ -4,9 +4,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Text } from "@/components/typography/text.tsx";
-import { type DirectoryEntry, searchDirectory } from "@/lib/app-directory.ts";
+import { appName, type DirectoryEntry, searchDirectory } from "@/lib/app-directory.ts";
 import { cn } from "@/lib/utils.ts";
 
 // The app search on /apps.
@@ -36,11 +36,28 @@ function AppRow({ entry }: { entry: DirectoryEntry }) {
         <Text as="h3" size="lede" weight="semi">
           {entry.name}
         </Text>
-        {entry.tierLabel && (
-          <Text as="span" color="subtle" family="mono" inline size="stamp">
-            {entry.tierLabel}
-          </Text>
-        )}
+        <div className="flex items-baseline gap-4">
+          {entry.tierLabel && (
+            <Text as="span" color="subtle" family="mono" inline size="stamp">
+              {entry.tierLabel}
+            </Text>
+          )}
+          {entry.sourceUrl && (
+            <Text
+              aria-label={`Source code for the ${entry.name} connector on GitHub`}
+              as="a"
+              className="text-primary hover:text-primary-emphasis hover:underline hover:underline-offset-[3px]"
+              family="mono"
+              href={entry.sourceUrl}
+              inline
+              rel="noopener"
+              size="stamp"
+              target="_blank"
+            >
+              Source ↗
+            </Text>
+          )}
+        </div>
       </div>
       {entry.headline && (
         <Text as="p" size="body" wrap="pretty">
@@ -63,6 +80,16 @@ function AppRow({ entry }: { entry: DirectoryEntry }) {
 
 export function PdppAppDirectory({ entries }: { entries: readonly DirectoryEntry[] }) {
   const [query, setQuery] = useState("");
+  const [example, setExample] = useState<string | null>(null);
+
+  // A random supported app as the example. Picked after hydration, so the
+  // static HTML and the first client render agree.
+  useEffect(() => {
+    const supported = entries.filter((entry) => entry.tier === "supported").map((entry) => appName(entry.name));
+    if (supported.length > 0) {
+      setExample(supported[Math.floor(Math.random() * supported.length)] ?? null);
+    }
+  }, [entries]);
   const trimmed = query.trim();
   const shown = searchDirectory(entries, query);
   const showsDevelopment = shown.some((entry) => entry.tier === "development");
@@ -78,7 +105,7 @@ export function PdppAppDirectory({ entries }: { entries: readonly DirectoryEntry
           className={fieldClassName}
           id="app-search"
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search for an app, for example Spotify"
+          placeholder={example ? `Search for an app, for example ${example}` : "Search for an app"}
           type="search"
           value={query}
         />

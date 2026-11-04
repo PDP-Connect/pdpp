@@ -18,7 +18,14 @@ export type ConnectorTier = "supported" | "preview" | "development";
 
 /** The committed catalogue snapshot (src/data/connector-catalog.json). */
 export interface ConnectorSnapshot {
-  connectors: readonly { display_name: string; key: string; labels: readonly string[]; tier: ConnectorTier }[];
+  connectors: readonly {
+    display_name: string;
+    key: string;
+    labels: readonly string[];
+    /** Folder in PDP-Connect/data-connectors, e.g. "connectors/spotify"; null when no manifest was found. */
+    source_path?: string | null;
+    tier: ConnectorTier;
+  }[];
   generated_at: string;
   layer_digest: string;
   manifest_digest: string;
@@ -44,6 +51,7 @@ export const TIER_LABELS: Record<ConnectorTier, string | null> = {
 };
 
 const MAX_LABELS = 4;
+const CONNECTORS_REPO = "https://github.com/PDP-Connect/data-connectors";
 const ENDED_STATE = /lapsed|withdrawn|revoked|expired/i;
 const TRAILING_PARENTHETICAL = /\s*\(([^)]*)\)\s*$/;
 const NON_ALPHANUMERIC = /[^\p{L}\p{N}]+/gu;
@@ -98,6 +106,8 @@ export interface DirectoryEntry {
   /** Lower-cased names a search can match: the app and the company. */
   matchNames: readonly string[];
   name: string;
+  /** The connector's source on GitHub, pinned to the catalogue's commit. Null for a company row or an unknown folder. */
+  sourceUrl: string | null;
   /** Muted line. On a connector row, the company's status only when a register names it; else empty. */
   status: string;
   tier: ConnectorTier | null;
@@ -219,6 +229,9 @@ export function buildDirectory({
       labels: connector.labels.length > 0 ? labelsLine(connector.labels) : `Your ${name} data`,
       matchNames: [connector.display_name, company?.name].filter((n): n is string => Boolean(n)).map(lower),
       name: connector.display_name,
+      sourceUrl: connector.source_path
+        ? `${CONNECTORS_REPO}/tree/${snapshot.source_commit}/${connector.source_path}`
+        : null,
       // The page says once, above the list, that companies have not signed
       // unless a row says so; repeating it on every row is noise.
       status: company ? statusLine(company.name, company) : "",
@@ -238,6 +251,7 @@ export function buildDirectory({
         labels: "",
         matchNames: [lower(company.name)],
         name: company.name,
+        sourceUrl: null,
         status: `There is no PDPP connector for ${company.name} yet.`,
         tier: null,
         tierLabel: null,

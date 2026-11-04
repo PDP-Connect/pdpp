@@ -13,13 +13,15 @@
         "Your Amazon orders",
         "Your order line items",
         "Your Amazon account"
-      ]
+      ],
+      "source_path": "connectors/amazon"
     },
     {
       "key": "apple-contacts",
       "display_name": "Apple Contacts",
       "tier": "preview",
-      "labels": ["Your address books", "Your contacts", "Your contact groups"]
+      "labels": ["Your address books", "Your contacts", "Your contact groups"],
+      "source_path": "connectors/apple_contacts"
     },
     {
       "key": "apple-health",
@@ -41,25 +43,29 @@
         "Your other Health data",
         "Your workouts",
         "What was imported"
-      ]
+      ],
+      "source_path": "connectors/apple_health"
     },
     {
       "key": "apple-photos",
       "display_name": "Apple Photos",
       "tier": "development",
-      "labels": ["Your exported photos and videos"]
+      "labels": ["Your exported photos and videos"],
+      "source_path": "connectors/apple_photos"
     },
     {
       "key": "ical",
       "display_name": "Calendar (iCal)",
       "tier": "development",
-      "labels": ["Your calendar events"]
+      "labels": ["Your calendar events"],
+      "source_path": "connectors/ical"
     },
     {
       "key": "character-ai",
       "display_name": "Character.AI",
       "tier": "development",
-      "labels": ["Your chats", "Your messages"]
+      "labels": ["Your chats", "Your messages"],
+      "source_path": "connectors/character_ai"
     },
     {
       "key": "chase",
@@ -71,7 +77,8 @@
         "Your current Chase activity",
         "Your Chase statements",
         "Your Chase balance snapshots"
-      ]
+      ],
+      "source_path": "connectors/chase"
     },
     {
       "key": "chatgpt",
@@ -87,7 +94,8 @@
         "Your ChatGPT plan",
         "Your ChatGPT account profile",
         "Your ChatGPT usage summary"
-      ]
+      ],
+      "source_path": "connectors/chatgpt"
     },
     {
       "key": "anthropic",
@@ -100,7 +108,8 @@
         "Your Claude messages",
         "Your Claude projects",
         "Your Claude project documents"
-      ]
+      ],
+      "source_path": "connectors/anthropic"
     },
     {
       "key": "anthropic-live",
@@ -111,7 +120,8 @@
         "Your Claude messages",
         "Your Claude plan",
         "Your Claude usage limits"
-      ]
+      ],
+      "source_path": "connectors/anthropic_live"
     },
     {
       "key": "claude-code",
@@ -125,7 +135,8 @@
         "Your Claude Code memory notes",
         "Your custom slash commands",
         "Your Claude Code usage"
-      ]
+      ],
+      "source_path": "connectors/claude_code"
     },
     {
       "key": "discord-browser",
@@ -136,13 +147,15 @@
         "Your Discord servers",
         "Your linked accounts",
         "Your messages in servers"
-      ]
+      ],
+      "source_path": "connectors/discord_browser"
     },
     {
       "key": "doordash",
       "display_name": "DoorDash",
       "tier": "development",
-      "labels": ["Your DoorDash orders", "Your DoorDash order items"]
+      "labels": ["Your DoorDash orders", "Your DoorDash order items"],
+      "source_path": "connectors/doordash"
     },
     {
       "key": "facebook",
@@ -155,7 +168,8 @@
         "Your groups",
         "Your likes and reactions",
         "Your comments"
-      ]
+      ],
+      "source_path": "connectors/facebook"
     },
     {
       "key": "fitbit",
@@ -165,7 +179,8 @@
         "Your Fitbit exercise",
         "Your Fitbit daily activity",
         "Your Fitbit sleep"
-      ]
+      ],
+      "source_path": "connectors/fitbit"
     },
     {
       "key": "garmin-browser",
@@ -177,13 +192,15 @@
         "Your Garmin HRV status",
         "Your Garmin training status",
         "Your Garmin activities"
-      ]
+      ],
+      "source_path": "connectors/garmin_browser"
     },
     {
       "key": "github-browser",
       "display_name": "GitHub (browser session)",
       "tier": "preview",
-      "labels": []
+      "labels": [],
+      "source_path": "connectors/github_browser"
     },
     {
       "key": "gmail",
@@ -195,25 +212,29 @@
         "Your labels",
         "The text of your emails",
         "Your attachments"
-      ]
+      ],
+      "source_path": "connectors/gmail"
     },
     {
       "key": "google-calendar",
       "display_name": "Google Calendar",
       "tier": "development",
-      "labels": ["Your Google calendars", "Your Google Calendar events"]
+      "labels": ["Your Google calendars", "Your Google Calendar events"],
+      "source_path": "connectors/google_calendar"
     },
     {
       "key": "google-contacts",
       "display_name": "Google Contacts",
       "tier": "development",
-      "labels": ["Your Google contacts", "Your Google contact groups"]
+      "labels": ["Your Google contacts", "Your Google contact groups"],
+      "source_path": "connectors/google_contacts"
     },
     {
       "key": "google-maps-data-portability",
       "display_name": "Google Maps Data Portability",
       "tier": "development",
-      "labels": ["Your Google Maps export jobs"]
+      "labels": ["Your Google Maps export jobs"],
+      "source_path": "connectors/google_maps_data_portability"
     },
     {
       "key": "google-maps",
@@ -222,7 +243,8 @@
       "labels": [
         "Your Google Maps location points",
         "Your Google Maps visits and activities"
-      ]
+      ],
+      "source_path": "connectors/google_maps"
     },
     {
       "key": "google-takeout",
@@ -233,7 +255,8 @@
         "Your YouTube watch history",
         "Your Google search history",
         "Your Google photos and videos"
-      ]
+      ],
+      "source_path": "connectors/google_takeout"
     },
     {
       "key": "groupme",
@@ -244,7 +267,8 @@
         "Messages from your GroupMe groups",
         "Your GroupMe direct messages",
         "Your GroupMe attachments"
-      ]
+      ],
+      "source_path": "connectors/groupme"
     },
     {
       "key": "heb",
@@ -255,7 +279,8 @@
         "Your H-E-B order line items",
         "Your H-E-B profile",
         "Your H-E-B product nutrition"
-      ]
+      ],
+      "source_path": "connectors/heb"
     },
     {
       "key": "icloud-notes",
@@ -265,7 +290,8 @@
         "Your iCloud account",
         "Your iCloud notes",
         "Your iCloud notes folders"
-      ]
+      ],
+      "source_path": "connectors/icloud_notes"
     },
     {
       "key": "imessage",
@@ -275,7 +301,8 @@
         "Your iMessages",
         "Your iMessage chat participants",
         "Your iMessage attachments"
-      ]
+      ],
+      "source_path": "connectors/imessage"
     },
     {
       "key": "meta",
@@ -287,7 +314,8 @@
         "Likes on your posts",
         "Accounts you follow",
         "Your Instagram ad preferences"
-      ]
+      ],
+      "source_path": "connectors/meta"
     },
     {
       "key": "instinct",
@@ -302,13 +330,15 @@
         "What your Instinct vault holds",
         "Your chats with your agent",
         "Your conversations with your agent"
-      ]
+      ],
+      "source_path": "connectors/instinct"
     },
     {
       "key": "jellyfin",
       "display_name": "Jellyfin",
       "tier": "preview",
-      "labels": ["Your Jellyfin libraries", "Your Jellyfin items"]
+      "labels": ["Your Jellyfin libraries", "Your Jellyfin items"],
+      "source_path": "connectors/jellyfin"
     },
     {
       "key": "linkedin",
@@ -321,13 +351,15 @@
         "Your skills",
         "Your languages",
         "Your connections"
-      ]
+      ],
+      "source_path": "connectors/linkedin"
     },
     {
       "key": "loom",
       "display_name": "Loom",
       "tier": "development",
-      "labels": ["Your Loom videos", "Your Loom transcripts"]
+      "labels": ["Your Loom videos", "Your Loom transcripts"],
+      "source_path": "connectors/loom"
     },
     {
       "key": "muse",
@@ -342,19 +374,22 @@
         "Your Muse agent's memory",
         "Your Muse files",
         "Your Muse connected apps"
-      ]
+      ],
+      "source_path": "connectors/muse"
     },
     {
       "key": "netflix-export",
       "display_name": "Netflix Export",
       "tier": "development",
-      "labels": ["Your Netflix viewing history"]
+      "labels": ["Your Netflix viewing history"],
+      "source_path": "connectors/netflix_export"
     },
     {
       "key": "notion",
       "display_name": "Notion",
       "tier": "preview",
-      "labels": ["Your Notion pages", "Your Notion databases"]
+      "labels": ["Your Notion pages", "Your Notion databases"],
+      "source_path": "connectors/notion"
     },
     {
       "key": "codex",
@@ -367,31 +402,36 @@
         "Your Codex approval rules",
         "Your Codex prompts",
         "Your Codex skills"
-      ]
+      ],
+      "source_path": "connectors/codex"
     },
     {
       "key": "oura",
       "display_name": "Oura",
       "tier": "development",
-      "labels": ["Your sleep sessions", "Your readiness", "Your activity"]
+      "labels": ["Your sleep sessions", "Your readiness", "Your activity"],
+      "source_path": "connectors/oura"
     },
     {
       "key": "oura-browser",
       "display_name": "Oura (Browser Sign-In)",
       "tier": "preview",
-      "labels": ["Your sleep sessions", "Your readiness", "Your activity"]
+      "labels": ["Your sleep sessions", "Your readiness", "Your activity"],
+      "source_path": "connectors/oura_browser"
     },
     {
       "key": "perplexity",
       "display_name": "Perplexity (Browser Sign-In)",
       "tier": "development",
-      "labels": ["Your Perplexity threads", "Your Perplexity messages"]
+      "labels": ["Your Perplexity threads", "Your Perplexity messages"],
+      "source_path": "connectors/perplexity"
     },
     {
       "key": "pocket",
       "display_name": "Pocket",
       "tier": "development",
-      "labels": ["Your Pocket saves"]
+      "labels": ["Your Pocket saves"],
+      "source_path": "connectors/pocket"
     },
     {
       "key": "reddit",
@@ -409,13 +449,15 @@
         "Your downvoted Reddit item stats",
         "Your hidden Reddit items",
         "Your hidden Reddit item stats"
-      ]
+      ],
+      "source_path": "connectors/reddit"
     },
     {
       "key": "shopify",
       "display_name": "Shopify Shop",
       "tier": "preview",
-      "labels": ["Your Shop app orders"]
+      "labels": ["Your Shop app orders"],
+      "source_path": "connectors/shopify"
     },
     {
       "key": "slack-browser",
@@ -432,7 +474,8 @@
         "Slack user groups",
         "Your Slack reminders",
         "Your starred and saved items"
-      ]
+      ],
+      "source_path": "connectors/slack_browser"
     },
     {
       "key": "spotify",
@@ -446,7 +489,8 @@
         "Recently played contexts",
         "Your top artists",
         "Your top tracks"
-      ]
+      ],
+      "source_path": "connectors/spotify"
     },
     {
       "key": "steam",
@@ -458,19 +502,22 @@
         "Your recently played games",
         "Your Steam friends",
         "Your Steam level"
-      ]
+      ],
+      "source_path": "connectors/steam"
     },
     {
       "key": "strava",
       "display_name": "Strava",
       "tier": "supported",
-      "labels": ["Your Strava activities"]
+      "labels": ["Your Strava activities"],
+      "source_path": "connectors/strava"
     },
     {
       "key": "strava-browser",
       "display_name": "Strava (Browser Sign-In)",
       "tier": "preview",
-      "labels": ["Your Strava activities"]
+      "labels": ["Your Strava activities"],
+      "source_path": "connectors/strava_browser"
     },
     {
       "key": "tiktok",
@@ -485,19 +532,22 @@
         "Videos in your TikTok Favorites collections",
         "Accounts you follow on TikTok",
         "Your TikTok followers"
-      ]
+      ],
+      "source_path": "connectors/tiktok"
     },
     {
       "key": "twitter-archive",
       "display_name": "Twitter/X Archive",
       "tier": "development",
-      "labels": ["Your tweets", "Your DMs"]
+      "labels": ["Your tweets", "Your DMs"],
+      "source_path": "connectors/twitter_archive"
     },
     {
       "key": "uber",
       "display_name": "Uber",
       "tier": "supported",
-      "labels": ["Your Uber trips", "Your Uber receipts"]
+      "labels": ["Your Uber trips", "Your Uber receipts"],
+      "source_path": "connectors/uber"
     },
     {
       "key": "usaa",
@@ -511,7 +561,8 @@
         "Your USAA inbox",
         "Your credit card billing details",
         "Your credit card balances (daily)"
-      ]
+      ],
+      "source_path": "connectors/usaa"
     },
     {
       "key": "venmo",
@@ -521,7 +572,8 @@
         "Your Venmo profile",
         "Your Venmo friends",
         "Your Venmo transactions"
-      ]
+      ],
+      "source_path": "connectors/venmo"
     },
     {
       "key": "whatsapp",
@@ -531,7 +583,8 @@
         "Your WhatsApp chats",
         "Your WhatsApp messages",
         "Your WhatsApp media attachments"
-      ]
+      ],
+      "source_path": "connectors/whatsapp"
     },
     {
       "key": "whatsapp-web",
@@ -542,7 +595,8 @@
         "Your WhatsApp messages",
         "Your WhatsApp contacts",
         "Your WhatsApp groups"
-      ]
+      ],
+      "source_path": "connectors/whatsapp_web"
     },
     {
       "key": "wholefoods",
@@ -553,7 +607,8 @@
         "Your Whole Foods orders",
         "Your Whole Foods items",
         "Nutrition facts"
-      ]
+      ],
+      "source_path": "connectors/wholefoods"
     },
     {
       "key": "whoop",
@@ -566,7 +621,8 @@
         "Your WHOOP recoveries",
         "Your WHOOP sleeps",
         "Your WHOOP workouts"
-      ]
+      ],
+      "source_path": "connectors/whoop"
     },
     {
       "key": "whoop-browser",
@@ -577,7 +633,8 @@
         "Your WHOOP recoveries",
         "Your WHOOP sleeps",
         "Your WHOOP workouts"
-      ]
+      ],
+      "source_path": "connectors/whoop_browser"
     },
     {
       "key": "x-browser",
@@ -588,7 +645,8 @@
         "Your X posts",
         "Posts you liked on X",
         "Posts you bookmarked on X"
-      ]
+      ],
+      "source_path": "connectors/x_browser"
     },
     {
       "key": "ynab",
@@ -606,7 +664,8 @@
         "Your scheduled transactions",
         "Monthly budget summaries",
         "Monthly category history"
-      ]
+      ],
+      "source_path": "connectors/ynab"
     },
     {
       "key": "youtube",
@@ -620,7 +679,8 @@
         "Your liked videos",
         "Your watch later list",
         "Your watch history"
-      ]
+      ],
+      "source_path": "connectors/youtube"
     }
   ]
 }
