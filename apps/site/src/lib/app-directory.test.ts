@@ -240,4 +240,8 @@ test("the committed snapshot and register parse and build a directory", async ()
   assert.ok(snapshot.connectors.length > 0);
   assert.equal(entries.filter((entry) => entry.kind === "connector").length, snapshot.connectors.length);
   assert.ok(entries.every((entry) => !entry.matchNames.includes("tim n.")));
+  // Every connector row links to its source, pinned to the catalogue's commit.
+  for (const entry of entries.filter((candidate) => candidate.kind === "connector")) {
+    assert.ok(entry.sourceUrl?.includes(`/tree/${snapshot.source_commit}/connectors/`), entry.name);
+  }
 });

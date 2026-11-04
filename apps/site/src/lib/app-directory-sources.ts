@@ -19,6 +19,7 @@ const snapshotSchema = z.object({
       display_name: z.string(),
       key: z.string(),
       labels: z.array(z.string()),
+      source_path: z.string().nullable(),
       tier: z.enum(["supported", "preview", "development"]),
     })
   ),
