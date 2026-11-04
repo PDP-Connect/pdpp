@@ -252,7 +252,7 @@ export function PdppConceptMasthead() {
                   <span
                     className={cn(
                       "z-30 flex-col gap-2 whitespace-nowrap",
-                      "md:absolute md:top-full md:left-0 md:hidden md:pt-3",
+                      "md:absolute md:top-full md:left-0 md:hidden md:w-max md:pt-3",
                       "md:group-hover:flex md:group-focus-within:flex",
                       "max-md:mt-2 max-md:ml-3 max-md:flex"
                     )}
