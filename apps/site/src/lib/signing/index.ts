@@ -54,6 +54,35 @@ const personName = z.string().trim().min(1).max(120);
 // out shapes that cannot be an address at all.
 const email = z.string().trim().toLowerCase().min(3).max(254).email();
 
+// Apps a signer would like to see join PDPP. Optional, at most three, and only
+// ever counted: nothing here reaches the public register. Names are cleaned
+// before the limits are checked, so a blank box or a repeat does not use up a
+// slot. Too many, or one that is too long, fails the whole submission like any
+// other bad field.
+const MAX_REQUESTED_APPS = 3;
+const MAX_REQUESTED_APP_LENGTH = 60;
+const INNER_WHITESPACE = /\s+/g;
+
+function cleanRequestedApps(values: string[]): string[] {
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const value of values) {
+    const app = value.trim().replace(INNER_WHITESPACE, " ");
+    const key = app.toLowerCase();
+    if (app && !seen.has(key)) {
+      seen.add(key);
+      cleaned.push(app);
+    }
+  }
+  return cleaned;
+}
+
+const requestedApps = z
+  .array(z.string())
+  .default([])
+  .transform(cleanRequestedApps)
+  .pipe(z.array(z.string().max(MAX_REQUESTED_APP_LENGTH)).max(MAX_REQUESTED_APPS));
+
 const ORGANISATION_TYPES = ["Company", "Platform", "Research institute", "Civil society", "Public body"] as const;
 
 // A checkbox that was ticked arrives as "on"; an unticked one is absent.
@@ -74,6 +103,7 @@ const individualSubmission = z.object({
   consent_register: consented,
   consent_age: consented,
   consent_updates: optionalConsent,
+  requested_apps: requestedApps,
 });
 
 const organisationSubmission = z.object({
@@ -88,6 +118,7 @@ const organisationSubmission = z.object({
   consent_register: consented,
   consent_authority: consented,
   consent_updates: optionalConsent,
+  requested_apps: requestedApps,
 });
 
 export const submissionSchema = z.discriminatedUnion("signatory_kind", [individualSubmission, organisationSubmission]);
@@ -246,6 +277,8 @@ export function newSubmissionId(): string {
  * Everything a signatory gave, plus what was computed at the moment they
  * consented. The public register is derived from this by the publish script,
  * which copies only five of these fields; nothing else has a route out.
+ * `requestedApps` is counted by `scripts/count-requested-apps.mjs`, which prints
+ * totals per app and never a name, email or id.
  */
 export interface SignatoryRecord {
   confirmedAt: string;
@@ -262,6 +295,7 @@ export interface SignatoryRecord {
   organisation: string | null;
   principlesVersion: string;
   publicName: string;
+  requestedApps: string[];
   signatoryName: string | null;
   signatoryRole: string | null;
   type: string;
@@ -273,6 +307,8 @@ export function buildRecord(id: string, submission: Submission, confirmedAt = ne
     id,
     displayName: submission.name,
     publicName: computePublicName(submission),
+    // A pending record written before this field existed has no value.
+    requestedApps: submission.requested_apps ?? [],
     organisation: isOrganisation ? submission.organisation : (submission.affiliation ?? null),
     signatoryName: isOrganisation ? submission.name : null,
     signatoryRole: null,

@@ -16,7 +16,10 @@ It is written for whoever inherits this, which may not be anyone who set it up.
 One file per confirmed signatory at `signatories/<yyyy>/<id>.json`, holding the
 name as entered, the computed public name, the organisation, the signatory's
 name and role, the email address, the country, the type, the four consent
-flags, the Principles version, and the confirmation timestamp.
+flags, the Principles version, the confirmation timestamp, and `requestedApps`
+(up to three app names the signatory would like to see join PDPP; an empty
+list when none). `requestedApps` is never published. Only counts leave the
+private store; see [Counting requested apps](#counting-requested-apps).
 
 Also `withdrawn.log`: dates only, one line per withdrawal, with no identifier
 and no reason.
@@ -210,6 +213,21 @@ interim controller changes.
 
 If the programme ends without a successor, do step 1, then delete the private
 repository and empty `supporters.json` in the same week.
+
+## Counting requested apps
+
+To tell a company how many supporters asked for it, run the count script against
+a local checkout of the private repository's `signatures` branch:
+
+```sh
+node apps/site/scripts/count-requested-apps.mjs <private-checkout-directory>
+```
+
+It reads `signatories/**/*.json`, folds case and spacing, applies a small alias
+map (`insta` to Instagram, `chat gpt` and `openai` to ChatGPT), and prints JSON
+sorted by count, highest first: `[{"app": "Spotify", "count": 12}]`. It prints
+counts only, never a name, email or id. Share the output, not the files. A
+withdrawn signatory is not counted, because withdrawal deletes the file.
 
 ## Deleting a single signatory
 

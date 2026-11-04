@@ -32,7 +32,7 @@ async function runScenario(mode: "escaped" | "get" | "success" | "concurrent" | 
     const submission = {
       affiliation: "PDP-Connect", consent_age: true, consent_principles: true, consent_register: true,
       consent_updates: false, country: "United States", email: "private@example.test",
-      name: "Private Display Name", principles_version: "v1.0", signatory_kind: "individual",
+      name: "Private Display Name", principles_version: "v1.0", requested_apps: ["Fake App"], signatory_kind: "individual",
     };
     const state = { deleteCalls: 0, pending: submission, readCalls: 0, records: [], writeCalls: 0, writeFailure: mode === "failure" };
     if (mode === "mismatch") state.records.push({ ...buildRecord(id, submission), email: "other@example.test" });

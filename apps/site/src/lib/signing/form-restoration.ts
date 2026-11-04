@@ -12,12 +12,14 @@ export interface RestoredSigningForm {
   name?: string;
   organisation?: string;
   organisation_type?: string;
+  requested_apps: string[];
   signatory_kind: "individual" | "organisation";
 }
 
 const COOKIE_MAX_AGE_SECONDS = 10 * 60;
 const RESTORED_FORM_COOKIE = "pdpp_signing_form";
 const MAX_FIELD_LENGTH = 160;
+const MAX_RESTORED_APPS = 3;
 
 function text(form: FormData, name: string): string | undefined {
   const value = form.get(name);
@@ -25,6 +27,14 @@ function text(form: FormData, name: string): string | undefined {
     return undefined;
   }
   return value.slice(0, MAX_FIELD_LENGTH);
+}
+
+function textList(form: FormData, name: string): string[] {
+  return form
+    .getAll(name)
+    .filter((value): value is string => typeof value === "string")
+    .slice(0, MAX_RESTORED_APPS)
+    .map((value) => value.slice(0, MAX_FIELD_LENGTH));
 }
 
 /** Returns form values that may be shown back to the person who submitted them. Email is never included. */
@@ -40,6 +50,7 @@ export function formValuesForRetry(form: FormData): RestoredSigningForm {
     name: text(form, "name"),
     organisation: text(form, "organisation"),
     organisation_type: text(form, "organisation_type"),
+    requested_apps: textList(form, "requested_apps"),
     signatory_kind: form.get("signatory_kind") === "organisation" ? "organisation" : "individual",
   };
 }
@@ -76,6 +87,9 @@ export function readRestoredForm(value: string | undefined): RestoredSigningForm
       name: typeof form.name === "string" ? form.name : undefined,
       organisation: typeof form.organisation === "string" ? form.organisation : undefined,
       organisation_type: typeof form.organisation_type === "string" ? form.organisation_type : undefined,
+      requested_apps: Array.isArray(form.requested_apps)
+        ? form.requested_apps.filter((app): app is string => typeof app === "string").slice(0, MAX_RESTORED_APPS)
+        : [],
       signatory_kind: form.signatory_kind,
     };
   } catch {
