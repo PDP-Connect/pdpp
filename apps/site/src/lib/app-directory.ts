@@ -7,7 +7,7 @@
 // catalogue (committed as a snapshot), the Supporters register and the
 // conformance register. Nothing here collects data or sends it anywhere.
 //
-// WORDING RULE: a connector is something the PDPP community built. It says
+// WORDING RULE: a connector is open-source code anyone can run. It says
 // nothing about the company. A company's own status comes only from the
 // Supporters and conformance registers, and the first line of a row never says
 // the company is on PDPP, supports it, or takes part.
@@ -151,9 +151,9 @@ function connectorHeadline(name: string, tier: ConnectorTier): string {
   // A connector in development may not run yet, so it is not promised as
   // something a person can do today.
   if (tier === "development") {
-    return `A connector for ${name} built by the PDPP community is in development.`;
+    return `An open-source connector for ${name} is in development.`;
   }
-  return `You can bring your ${name} data into PDPP today, with a connector built by the PDPP community.`;
+  return `You can bring your ${name} data into PDPP today, with an open-source connector.`;
 }
 
 interface Company {

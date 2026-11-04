@@ -141,16 +141,26 @@ export function verifyBlob(bytes, layer) {
   }
 }
 
+// Catalogue keys use hyphens (`apple-health`); most source folders use
+// underscores (`connectors/apple_health`). Try the key as written, then that form.
+export function manifestFolderCandidates(key) {
+  const underscored = key.replaceAll("-", "_");
+  return underscored === key ? [key] : [key, underscored];
+}
+
 async function fetchConnectorManifest(sourceCommit, key) {
-  const url = `${CONNECTOR_MANIFEST_BASE}/${sourceCommit}/connectors/${key}/manifest.json`;
-  const response = await fetch(url);
-  if (response.status === 404) {
-    return null;
+  for (const folder of manifestFolderCandidates(key)) {
+    const url = `${CONNECTOR_MANIFEST_BASE}/${sourceCommit}/connectors/${folder}/manifest.json`;
+    const response = await fetch(url);
+    if (response.status === 404) {
+      continue;
+    }
+    if (!response.ok) {
+      throw new Error(`${url} returned ${response.status}`);
+    }
+    return await response.json();
   }
-  if (!response.ok) {
-    throw new Error(`${url} returned ${response.status}`);
-  }
-  return await response.json();
+  return null;
 }
 
 // One small request per connector, all at once: the catalogue lists a few

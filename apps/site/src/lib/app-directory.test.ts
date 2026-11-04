@@ -19,7 +19,7 @@ import type { PublicSupporter } from "./public-supporters.ts";
 
 const OURA_DATA = /your Oura data/;
 const COMPANY_CLAIM = /\b(is on|is part of|supports|takes part|partner)\b/i;
-const COMMUNITY_BUILT = /built by the PDPP community/;
+const OPEN_SOURCE_CONNECTOR = /open-source connector/;
 const COMPANY_OR_OFFICIAL = /company|official/i;
 
 const SNAPSHOT: ConnectorSnapshot = {
@@ -70,7 +70,7 @@ test("a connector alone: you can bring your data, and the company has not signed
   const spotify = find(directory(), "Spotify");
   assert.equal(
     spotify.headline,
-    "You can bring your Spotify data into PDPP today, with a connector built by the PDPP community."
+    "You can bring your Spotify data into PDPP today, with an open-source connector."
   );
   assert.equal(spotify.labels, "Your playlists, Your saved tracks, Your top artists, Your top tracks + 2 more");
   assert.equal(spotify.status, "Spotify has not signed the Principles or registered with PDPP.");
@@ -82,7 +82,7 @@ test("a signed organisation with a connector shows the signing date", () => {
   assert.equal(spotify.status, "Spotify signed the PDPP Principles on 9 Sep 2026. It has not registered with PDPP.");
   assert.equal(
     spotify.headline,
-    "You can bring your Spotify data into PDPP today, with a connector built by the PDPP community."
+    "You can bring your Spotify data into PDPP today, with an open-source connector."
   );
 });
 
@@ -156,7 +156,7 @@ test("separate connectors for the same app stay separate rows", () => {
 test("a connector in development is not promised as available today", () => {
   const oura = find(directory(), "Oura");
   assert.equal(oura.tierLabel, "In development");
-  assert.equal(oura.headline, "A connector for Oura built by the PDPP community is in development.");
+  assert.equal(oura.headline, "An open-source connector for Oura is in development.");
 });
 
 test("search is case-insensitive and matches a substring of the app name", () => {
@@ -205,7 +205,7 @@ test("the first line never says a company is on, supports or takes part in PDPP"
     assert.doesNotMatch(entry.headline, COMPANY_CLAIM, entry.headline);
   }
   for (const entry of entries.filter((candidate) => candidate.kind === "connector")) {
-    assert.match(entry.headline, COMMUNITY_BUILT);
+    assert.match(entry.headline, OPEN_SOURCE_CONNECTOR);
     assert.doesNotMatch(entry.headline, COMPANY_OR_OFFICIAL);
   }
 });

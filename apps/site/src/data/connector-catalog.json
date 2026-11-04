@@ -19,19 +19,35 @@
       "key": "apple-contacts",
       "display_name": "Apple Contacts",
       "tier": "preview",
-      "labels": []
+      "labels": ["Your address books", "Your contacts", "Your contact groups"]
     },
     {
       "key": "apple-health",
       "display_name": "Apple Health",
       "tier": "development",
-      "labels": []
+      "labels": [
+        "Your activity",
+        "Your body measurements",
+        "Your reproductive health",
+        "Your hearing and sound exposure",
+        "Your vital signs",
+        "Your lab and test results",
+        "Your sleep",
+        "Your mindful minutes",
+        "Your nutrition",
+        "Your alcohol consumption",
+        "Your mobility",
+        "Your symptoms",
+        "Your other Health data",
+        "Your workouts",
+        "What was imported"
+      ]
     },
     {
       "key": "apple-photos",
       "display_name": "Apple Photos",
       "tier": "development",
-      "labels": []
+      "labels": ["Your exported photos and videos"]
     },
     {
       "key": "ical",
@@ -43,7 +59,7 @@
       "key": "character-ai",
       "display_name": "Character.AI",
       "tier": "development",
-      "labels": []
+      "labels": ["Your chats", "Your messages"]
     },
     {
       "key": "chase",
@@ -90,19 +106,37 @@
       "key": "anthropic-live",
       "display_name": "Claude (Live Session)",
       "tier": "preview",
-      "labels": []
+      "labels": [
+        "Your Claude conversations",
+        "Your Claude messages",
+        "Your Claude plan",
+        "Your Claude usage limits"
+      ]
     },
     {
       "key": "claude-code",
       "display_name": "Claude Code",
       "tier": "supported",
-      "labels": []
+      "labels": [
+        "Your Claude Code sessions",
+        "Your Claude Code messages",
+        "Claude Code events",
+        "Your Claude Code skills",
+        "Your Claude Code memory notes",
+        "Your custom slash commands",
+        "Your Claude Code usage"
+      ]
     },
     {
       "key": "discord-browser",
       "display_name": "Discord (Browser Sign-In)",
       "tier": "development",
-      "labels": []
+      "labels": [
+        "Your Discord profile",
+        "Your Discord servers",
+        "Your linked accounts",
+        "Your messages in servers"
+      ]
     },
     {
       "key": "doordash",
@@ -137,7 +171,13 @@
       "key": "garmin-browser",
       "display_name": "Garmin (Browser Sign-In)",
       "tier": "development",
-      "labels": []
+      "labels": [
+        "Your Garmin daily summaries",
+        "Your Garmin sleep",
+        "Your Garmin HRV status",
+        "Your Garmin training status",
+        "Your Garmin activities"
+      ]
     },
     {
       "key": "github-browser",
@@ -161,31 +201,39 @@
       "key": "google-calendar",
       "display_name": "Google Calendar",
       "tier": "development",
-      "labels": []
+      "labels": ["Your Google calendars", "Your Google Calendar events"]
     },
     {
       "key": "google-contacts",
       "display_name": "Google Contacts",
       "tier": "development",
-      "labels": []
+      "labels": ["Your Google contacts", "Your Google contact groups"]
     },
     {
       "key": "google-maps-data-portability",
       "display_name": "Google Maps Data Portability",
       "tier": "development",
-      "labels": []
+      "labels": ["Your Google Maps export jobs"]
     },
     {
       "key": "google-maps",
       "display_name": "Google Maps Timeline Import",
       "tier": "supported",
-      "labels": []
+      "labels": [
+        "Your Google Maps location points",
+        "Your Google Maps visits and activities"
+      ]
     },
     {
       "key": "google-takeout",
       "display_name": "Google Takeout",
       "tier": "development",
-      "labels": []
+      "labels": [
+        "Your Google location history",
+        "Your YouTube watch history",
+        "Your Google search history",
+        "Your Google photos and videos"
+      ]
     },
     {
       "key": "groupme",
@@ -213,7 +261,11 @@
       "key": "icloud-notes",
       "display_name": "iCloud Notes",
       "tier": "preview",
-      "labels": []
+      "labels": [
+        "Your iCloud account",
+        "Your iCloud notes",
+        "Your iCloud notes folders"
+      ]
     },
     {
       "key": "imessage",
@@ -296,7 +348,7 @@
       "key": "netflix-export",
       "display_name": "Netflix Export",
       "tier": "development",
-      "labels": []
+      "labels": ["Your Netflix viewing history"]
     },
     {
       "key": "notion",
@@ -327,7 +379,7 @@
       "key": "oura-browser",
       "display_name": "Oura (Browser Sign-In)",
       "tier": "preview",
-      "labels": []
+      "labels": ["Your sleep sessions", "Your readiness", "Your activity"]
     },
     {
       "key": "perplexity",
@@ -369,7 +421,18 @@
       "key": "slack-browser",
       "display_name": "Slack (Browser Sign-In)",
       "tier": "development",
-      "labels": []
+      "labels": [
+        "Slack workspace",
+        "Your Slack channels",
+        "People and bots in your Slack workspace",
+        "Your Slack messages",
+        "Link previews and message attachments",
+        "Slack reactions",
+        "Files shared in Slack",
+        "Slack user groups",
+        "Your Slack reminders",
+        "Your starred and saved items"
+      ]
     },
     {
       "key": "spotify",
@@ -407,7 +470,7 @@
       "key": "strava-browser",
       "display_name": "Strava (Browser Sign-In)",
       "tier": "preview",
-      "labels": []
+      "labels": ["Your Strava activities"]
     },
     {
       "key": "tiktok",
@@ -428,7 +491,7 @@
       "key": "twitter-archive",
       "display_name": "Twitter/X Archive",
       "tier": "development",
-      "labels": []
+      "labels": ["Your tweets", "Your DMs"]
     },
     {
       "key": "uber",
@@ -474,7 +537,12 @@
       "key": "whatsapp-web",
       "display_name": "WhatsApp (web)",
       "tier": "development",
-      "labels": []
+      "labels": [
+        "Your WhatsApp chats",
+        "Your WhatsApp messages",
+        "Your WhatsApp contacts",
+        "Your WhatsApp groups"
+      ]
     },
     {
       "key": "wholefoods",
@@ -504,13 +572,23 @@
       "key": "whoop-browser",
       "display_name": "WHOOP (Browser Sign-In)",
       "tier": "development",
-      "labels": []
+      "labels": [
+        "Your WHOOP cycles",
+        "Your WHOOP recoveries",
+        "Your WHOOP sleeps",
+        "Your WHOOP workouts"
+      ]
     },
     {
       "key": "x-browser",
       "display_name": "X (Browser Sign-In)",
       "tier": "development",
-      "labels": []
+      "labels": [
+        "Your X profile",
+        "Your X posts",
+        "Posts you liked on X",
+        "Posts you bookmarked on X"
+      ]
     },
     {
       "key": "ynab",

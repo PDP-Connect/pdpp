@@ -4,7 +4,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { buildSnapshot, formatSnapshot, labelsFromManifest, verifyBlob } from "./sync-connector-catalog.mjs";
+import {
+  buildSnapshot,
+  formatSnapshot,
+  labelsFromManifest,
+  manifestFolderCandidates,
+  verifyBlob,
+} from "./sync-connector-catalog.mjs";
 
 const UNKNOWN_TIER = /unknown tier/;
 const NO_CONNECTORS = /no connectors array/;
@@ -122,4 +128,9 @@ test("formatSnapshot keeps short label lists on one line and round-trips", () =>
   assert.ok(text.endsWith("}\n"));
   assert.ok(text.includes('"labels": ["Your playlists", "Your saved tracks"]'));
   assert.deepEqual(JSON.parse(text), snapshot);
+});
+
+test("a hyphenated catalogue key also looks in the underscored source folder", () => {
+  assert.deepEqual(manifestFolderCandidates("apple-health"), ["apple-health", "apple_health"]);
+  assert.deepEqual(manifestFolderCandidates("spotify"), ["spotify"]);
 });
