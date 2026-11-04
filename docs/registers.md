@@ -234,10 +234,10 @@ to stdout:
 ```
 
 `apps` lists only canonical names, highest count first. A canonical name is one
-on the form's suggestion list (`apps/site/src/lib/signing/app-suggestions.ts`)
-or a target of the alias map. Everything else a signatory typed is free text and
-can be personal data, so it is never printed. It is counted once in
-`unreviewedAnswers`.
+on the script's reviewed list (`REVIEWED_APP_NAMES`) or a target of the alias
+map. The form question has no suggestions, so a signatory can type anything,
+including personal data. Any answer that is not a canonical name is never
+printed. It is counted once in `unreviewedAnswers`.
 
 **Only this default output may be shared**, for example with a company. It holds
 no name, email, id or free text. A withdrawn signatory is not counted, because

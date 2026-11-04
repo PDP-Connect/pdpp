@@ -49,7 +49,7 @@ test("one signatory counts once per app even when they spell it two ways", () =>
   ]);
 });
 
-test("an app outside the suggestion list and alias map is unreviewed, never in apps", () => {
+test("an app outside the reviewed names and alias map is unreviewed, never in apps", () => {
   const result = countRequestedApps([
     { requestedApps: ["oura", "Obscure App"] },
     { requestedApps: ["Oura", "obscure  app"] },

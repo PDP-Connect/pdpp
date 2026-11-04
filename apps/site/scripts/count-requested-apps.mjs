@@ -5,18 +5,42 @@
 // Counts how many signatories named each app they would like to see join PDPP.
 // Reads a local checkout of the private register and prints, to stdout:
 //   {"apps": [{app, count}], "unreviewedAnswers": N}
-// `apps` holds only canonical names: the suggestion list the form offers plus
-// the targets of the alias map below. Anything else a signer typed is free
+// `apps` holds only canonical names: the reviewed names below plus the targets
+// of the alias map. Anything else a signer typed is free
 // text and can be personal data (an email, a name, a phone number), so it is
 // counted but never printed. The stdout output is safe to share with a company.
 //
 // `--review` additionally prints the unreviewed raw values and their counts to
 // STDERR, so a maintainer can extend the alias map. That output is private.
 
-import { APP_SUGGESTIONS } from "../src/lib/signing/app-suggestions.ts";
 import { readSignatories } from "./publish-supporters.mjs";
 
 const WHITESPACE = /\s+/g;
+
+// App names a maintainer has reviewed and may print. The form is free text;
+// extend this list (and ALIASES) from what `--review` shows.
+const REVIEWED_APP_NAMES = [
+  "Amazon",
+  "Apple Health",
+  "ChatGPT",
+  "Clue",
+  "Fitbit",
+  "Flo",
+  "Garmin",
+  "Google",
+  "Instagram",
+  "LinkedIn",
+  "Netflix",
+  "Oura",
+  "Reddit",
+  "Spotify",
+  "Strava",
+  "TikTok",
+  "Uber",
+  "WhatsApp",
+  "X",
+  "YouTube",
+];
 
 // Lower-cased, space-collapsed spelling -> the name to count it under.
 const ALIASES = new Map([
@@ -36,7 +60,7 @@ const ALIASES = new Map([
 ]);
 
 // Folded spelling -> canonical name, for every name that may be printed.
-const CANONICAL = new Map([...APP_SUGGESTIONS, ...ALIASES.values()].map((name) => [foldName(name), name]));
+const CANONICAL = new Map([...REVIEWED_APP_NAMES, ...ALIASES.values()].map((name) => [foldName(name), name]));
 
 function foldName(name) {
   return String(name).trim().replace(WHITESPACE, " ").toLowerCase();

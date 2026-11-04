@@ -7,7 +7,6 @@ import Link from "next/link";
 import { type ComponentProps, useState } from "react";
 import { Text } from "@/components/typography/text.tsx";
 import { COUNTRIES } from "@/lib/countries.ts";
-import { APP_SUGGESTIONS } from "@/lib/signing/app-suggestions.ts";
 import type { RestoredSigningForm } from "@/lib/signing/form-restoration.ts";
 import { signingDisclosure, siteConfig, siteFlags } from "@/lib/site-config.ts";
 import { SUPPORTER_SIGNING_INTERIM_NOTICE } from "@/lib/site-facts.ts";
@@ -248,8 +247,8 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
           </Field>
         )}
 
-        {/* One question, three boxes, one shared list of suggestions. The
-            legend names the group and the hint is wired to every box. */}
+        {/* One question, three free-text boxes. The legend names the group and
+            the hint is wired to every box. */}
         <fieldset className="m-0 flex flex-col gap-1.5 border-0 p-0 md:col-span-2">
           <Text as="legend" color="subtle" size="stamp">
             Which apps would you like to see join PDPP?
@@ -268,18 +267,12 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
                 defaultValue={restoredForm?.requested_apps?.[slot]}
                 id={`sign-app-${slot + 1}`}
                 key={slot}
-                list="sign-app-suggestions"
                 maxLength={REQUESTED_APP_MAX_LENGTH}
                 name="requested_apps"
                 type="text"
               />
             ))}
           </div>
-          <datalist id="sign-app-suggestions">
-            {APP_SUGGESTIONS.map((app) => (
-              <option key={app} value={app} />
-            ))}
-          </datalist>
         </fieldset>
       </div>
 
