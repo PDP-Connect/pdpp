@@ -15,7 +15,7 @@ import {
   searchDirectory,
   TIER_LABELS,
 } from "./app-directory.ts";
-import { readConnectorSnapshot, readRegisterEntries } from "./app-directory-sources.ts";
+import { readBundledConnectorSnapshot, readRegisterEntries } from "./app-directory-sources.ts";
 import type { PublicSupporter } from "./public-supporters.ts";
 
 const COMPANY_CLAIM = /\b(is on|is part of|supports|takes part|partner)\b/i;
@@ -231,7 +231,7 @@ test("formatDate, appName and labelsLine", () => {
 });
 
 test("the committed snapshot and register parse and build a directory", async () => {
-  const snapshot = await readConnectorSnapshot();
+  const snapshot = await readBundledConnectorSnapshot();
   const register = await readRegisterEntries();
   const supporters = JSON.parse(
     await readFile(new URL("../../public/principles/supporters.json", import.meta.url), "utf8")

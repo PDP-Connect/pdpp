@@ -6,11 +6,12 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   buildSnapshot,
-  formatSnapshot,
   labelsFromManifest,
+  loadConnectorSnapshot,
   manifestFolderCandidates,
   verifyBlob,
-} from "./sync-connector-catalog.mjs";
+} from "../src/lib/connector-catalog.mjs";
+import { formatSnapshot } from "./sync-connector-catalog.mjs";
 
 const UNKNOWN_TIER = /unknown tier/;
 const NO_CONNECTORS = /no connectors array/;
@@ -157,4 +158,52 @@ test("the snapshot records the source folder a manifest was found in", () => {
   );
   assert.equal(paths.spotify, "connectors/spotify_web");
   assert.equal(paths.strava, null);
+});
+
+test("loadConnectorSnapshot pulls the catalogue, checks it and reads each manifest", async () => {
+  const blob = Buffer.from(JSON.stringify(CATALOG));
+  const layer = {
+    digest: `sha256:${createHash("sha256").update(blob).digest("hex")}`,
+    mediaType: "application/vnd.pdpp.connector-catalog.v1+json",
+    size: blob.length,
+  };
+  const manifest = Buffer.from(JSON.stringify({ layers: [layer] }));
+  const requested: string[] = [];
+  const fakeFetch = (url: string) => {
+    requested.push(url);
+    if (url.includes("/token?")) {
+      return Promise.resolve(Response.json({ token: "t" }));
+    }
+    if (url.endsWith("/manifests/latest")) {
+      return Promise.resolve(new Response(manifest));
+    }
+    if (url.includes("/blobs/")) {
+      return Promise.resolve(new Response(blob));
+    }
+    if (url.endsWith("/abc123/connectors/spotify/manifest.json")) {
+      return Promise.resolve(Response.json(MANIFESTS.spotify));
+    }
+    return Promise.resolve(new Response("", { status: 404 }));
+  };
+
+  const snapshot = await loadConnectorSnapshot(fakeFetch as typeof fetch);
+  const spotify = snapshot.connectors.find((connector: { key: string }) => connector.key === "spotify");
+  assert.deepEqual(spotify?.labels, ["Your playlists", "Your saved tracks"]);
+  assert.equal(spotify?.source_path, "connectors/spotify");
+  assert.equal(snapshot.layer_digest, layer.digest);
+  assert.ok(requested.some((url) => url.endsWith("/connectors/no_manifest/manifest.json")));
+});
+
+test("loadConnectorSnapshot rejects a catalogue whose bytes do not match the digest", async () => {
+  const layer = { digest: "sha256:00", mediaType: "application/vnd.pdpp.connector-catalog.v1+json", size: 2 };
+  const fakeFetch = (url: string) => {
+    if (url.includes("/token?")) {
+      return Promise.resolve(Response.json({ token: "t" }));
+    }
+    if (url.endsWith("/manifests/latest")) {
+      return Promise.resolve(Response.json({ layers: [layer] }));
+    }
+    return Promise.resolve(new Response("{}"));
+  };
+  await assert.rejects(loadConnectorSnapshot(fakeFetch as typeof fetch), DIGEST_MISMATCH);
 });
