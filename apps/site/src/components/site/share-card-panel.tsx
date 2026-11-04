@@ -3,6 +3,7 @@
 
 "use client";
 
+import { Check, Copy } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Text } from "@/components/typography/text.tsx";
 import {
@@ -14,6 +15,7 @@ import {
   shareCardPath,
   xIntentUrl,
 } from "@/lib/share-card/copy.ts";
+import { useCopyToClipboard } from "@/lib/use-copy-to-clipboard.ts";
 import { cn } from "@/lib/utils.ts";
 
 const buttonClassName = cn(
@@ -24,6 +26,19 @@ const quietButtonClassName = cn(
   "w-fit cursor-pointer border border-border px-5 py-2.5 font-sans text-[15px]",
   "text-foreground hover:border-primary hover:text-primary"
 );
+
+// A text control that sits at the end of the caption, so it reads as part of the line and not as a second button row.
+const inlineCopyClassName = cn(
+  "ml-2 inline-flex cursor-pointer items-center gap-1 align-baseline font-medium font-sans text-[13px]",
+  "text-primary hover:text-primary-emphasis hover:underline hover:underline-offset-[3px]"
+);
+
+const CAPTION_COPY_LABELS = { copied: "Copied", failed: "Copy failed", idle: "Copy" } as const;
+const CAPTION_COPY_NAMES = {
+  copied: "Caption copied",
+  failed: "Copy failed. Select the caption and copy it by hand.",
+  idle: "Copy caption",
+} as const;
 
 const IMAGE_FILE_NAME = "pdpp-supporter-card.png";
 const COPY_IMAGE_FAILED = "Your browser cannot copy images. Download it instead.";
@@ -81,16 +96,11 @@ function browserCanShareImages(): boolean {
 export function ShareCardPanel() {
   const [status, setStatus] = useState("");
   const [canShareImages, setCanShareImages] = useState(false);
+  const { copy: copyCaptionText, status: captionCopyStatus } = useCopyToClipboard();
 
   useEffect(() => {
     setCanShareImages(browserCanShareImages());
   }, []);
-
-  async function onCopyCaption() {
-    setStatus(
-      (await copyCaption()) ? "Caption copied." : "We could not copy the caption. Select it and copy it by hand."
-    );
-  }
 
   async function onCopyImage() {
     try {
@@ -143,14 +153,22 @@ export function ShareCardPanel() {
         src={shareCardPath("feed")}
         width={SHARE_CARD_FORMATS.feed.width}
       />
-      <div className="flex flex-col items-start gap-2">
-        <Text as="p" color="muted" size="small">
-          {SHARE_CARD_CAPTION}
-        </Text>
-        <button className={quietButtonClassName} onClick={onCopyCaption} type="button">
-          Copy caption
+      <Text as="p" className="max-w-[34rem]" color="muted" size="small">
+        {SHARE_CARD_CAPTION}
+        <button
+          aria-label={CAPTION_COPY_NAMES[captionCopyStatus]}
+          className={inlineCopyClassName}
+          onClick={() => copyCaptionText(SHARE_CARD_CAPTION)}
+          type="button"
+        >
+          {captionCopyStatus === "copied" ? (
+            <Check aria-hidden="true" className="size-3.5" />
+          ) : (
+            <Copy aria-hidden="true" className="size-3.5" />
+          )}
+          {CAPTION_COPY_LABELS[captionCopyStatus]}
         </button>
-      </div>
+      </Text>
       <div className="flex flex-wrap gap-3">
         <a className={buttonClassName} download={downloadName("feed")} href={shareCardPath("feed")}>
           Download image

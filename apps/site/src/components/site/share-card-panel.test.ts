@@ -63,7 +63,7 @@ test("the panel shows the feed image, the caption and the buttons in order", () 
     positions,
     [...positions].sort((a, b) => a - b)
   );
-  assert.ok(html.includes(">Copy caption<"));
+  assert.ok(html.includes('aria-label="Copy caption"'));
 });
 
 test("the caption is shown verbatim", () => {
