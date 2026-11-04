@@ -73,21 +73,22 @@ test("requested apps are trimmed, space-collapsed, de-duplicated and stored", as
   }
 });
 
-test("requested apps reject more than three and any over 60 characters", async () => {
-  assert.equal((await parseWith(["a", "b", "c"])).ok, true);
-  assert.equal((await parseWith(["a", "b", "c", "d"])).ok, false);
+test("requested apps reject more than ten and any over 60 characters", async () => {
+  const ten = Array.from({ length: 10 }, (_, index) => `App ${index}`);
+  assert.equal((await parseWith(ten)).ok, true);
+  assert.equal((await parseWith([...ten, "App 10"])).ok, false);
   assert.equal((await parseWith(["a".repeat(60)])).ok, true);
   assert.equal((await parseWith(["a".repeat(61)])).ok, false);
 });
 
 test("a retry cookie keeps the requested apps", () => {
   const form = new FormData();
-  form.append("requested_apps", "Spotify");
-  form.append("requested_apps", "Strava");
-  form.append("requested_apps", "Oura");
-  form.append("requested_apps", "Extra");
+  const ten = Array.from({ length: 10 }, (_, index) => `App ${index}`);
+  for (const app of [...ten, "Extra"]) {
+    form.append("requested_apps", app);
+  }
   const restored = formValuesForRetry(form);
-  assert.deepEqual(restored.requested_apps, ["Spotify", "Strava", "Oura"]);
-  assert.deepEqual(readRestoredForm(restoredFormCookie(restored).value)?.requested_apps, ["Spotify", "Strava", "Oura"]);
+  assert.deepEqual(restored.requested_apps, ten);
+  assert.deepEqual(readRestoredForm(restoredFormCookie(restored).value)?.requested_apps, ten);
   assert.deepEqual(readRestoredForm(restoredFormCookie(formValuesForRetry(new FormData())).value)?.requested_apps, []);
 });

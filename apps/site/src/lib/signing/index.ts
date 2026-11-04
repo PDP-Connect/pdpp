@@ -5,6 +5,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import "server-only";
 import { z } from "zod";
 import { COUNTRIES } from "@/lib/countries.ts";
+import { MAX_REQUESTED_APP_LENGTH, MAX_REQUESTED_APPS } from "./requested-app-limits.ts";
 
 // The interim Supporter signing system, server side.
 //
@@ -54,13 +55,11 @@ const personName = z.string().trim().min(1).max(120);
 // out shapes that cannot be an address at all.
 const email = z.string().trim().toLowerCase().min(3).max(254).email();
 
-// Apps a signer would like to see join PDPP. Optional, at most three, and only
+// Apps a signer would like to see join PDPP. Optional, at most ten, and only
 // ever counted: nothing here reaches the public register. Names are cleaned
 // before the limits are checked, so a blank box or a repeat does not use up a
 // slot. Too many, or one that is too long, fails the whole submission like any
 // other bad field.
-const MAX_REQUESTED_APPS = 3;
-const MAX_REQUESTED_APP_LENGTH = 60;
 const INNER_WHITESPACE = /\s+/g;
 
 function cleanRequestedApps(values: string[]): string[] {

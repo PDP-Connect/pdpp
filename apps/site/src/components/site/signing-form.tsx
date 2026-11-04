@@ -5,6 +5,7 @@
 
 import Link from "next/link";
 import { type ComponentProps, useState } from "react";
+import { RequestedAppsField } from "@/components/site/requested-apps-field.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { COUNTRIES } from "@/lib/countries.ts";
 import type { RestoredSigningForm } from "@/lib/signing/form-restoration.ts";
@@ -44,9 +45,6 @@ const fieldClassName = cn(
   "font-sans text-[15px] text-foreground",
   "focus-visible:border-primary focus-visible:outline-none"
 );
-
-const REQUESTED_APP_SLOTS = [0, 1, 2] as const;
-const REQUESTED_APP_MAX_LENGTH = 60;
 
 const choiceTextClassName = "font-sans text-[14px] leading-[1.6]";
 
@@ -247,33 +245,11 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
           </Field>
         )}
 
-        {/* One question, three free-text boxes. The legend names the group and
-            the hint is wired to every box. */}
-        <fieldset className="m-0 flex flex-col gap-1.5 border-0 p-0 md:col-span-2">
-          <Text as="legend" color="subtle" size="stamp">
-            Which apps would you like to see join PDPP?
-          </Text>
-          <Text as="p" color="muted" id="sign-apps-hint" size="small">
-            Optional. Up to three. We count how many supporters name each app and may tell a company its number. We
-            never give it your name or email.
-          </Text>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            {REQUESTED_APP_SLOTS.map((slot) => (
-              <input
-                aria-describedby="sign-apps-hint"
-                aria-label={`App ${slot + 1}`}
-                autoComplete="off"
-                className={fieldClassName}
-                defaultValue={restoredForm?.requested_apps?.[slot]}
-                id={`sign-app-${slot + 1}`}
-                key={slot}
-                maxLength={REQUESTED_APP_MAX_LENGTH}
-                name="requested_apps"
-                type="text"
-              />
-            ))}
-          </div>
-        </fieldset>
+        <RequestedAppsField
+          className="md:col-span-2"
+          fieldClassName={fieldClassName}
+          restored={restoredForm?.requested_apps}
+        />
       </div>
 
       <Text as="p" color="muted" size="small">

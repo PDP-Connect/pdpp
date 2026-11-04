@@ -1,6 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { MAX_REQUESTED_APPS } from "./requested-app-limits.ts";
+
 export interface RestoredSigningForm {
   affiliation?: string;
   consent_age: boolean;
@@ -19,7 +21,6 @@ export interface RestoredSigningForm {
 const COOKIE_MAX_AGE_SECONDS = 10 * 60;
 const RESTORED_FORM_COOKIE = "pdpp_signing_form";
 const MAX_FIELD_LENGTH = 160;
-const MAX_RESTORED_APPS = 3;
 
 function text(form: FormData, name: string): string | undefined {
   const value = form.get(name);
@@ -33,7 +34,7 @@ function textList(form: FormData, name: string): string[] {
   return form
     .getAll(name)
     .filter((value): value is string => typeof value === "string")
-    .slice(0, MAX_RESTORED_APPS)
+    .slice(0, MAX_REQUESTED_APPS)
     .map((value) => value.slice(0, MAX_FIELD_LENGTH));
 }
 
@@ -88,7 +89,7 @@ export function readRestoredForm(value: string | undefined): RestoredSigningForm
       organisation: typeof form.organisation === "string" ? form.organisation : undefined,
       organisation_type: typeof form.organisation_type === "string" ? form.organisation_type : undefined,
       requested_apps: Array.isArray(form.requested_apps)
-        ? form.requested_apps.filter((app): app is string => typeof app === "string").slice(0, MAX_RESTORED_APPS)
+        ? form.requested_apps.filter((app): app is string => typeof app === "string").slice(0, MAX_REQUESTED_APPS)
         : [],
       signatory_kind: form.signatory_kind,
     };
