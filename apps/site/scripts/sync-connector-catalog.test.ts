@@ -144,12 +144,17 @@ test("a hyphenated catalogue key also looks in the underscored source folder", (
 test("the snapshot records the source folder a manifest was found in", () => {
   const snapshot = buildSnapshot({
     catalog: CATALOG,
-    folders: { [CATALOG.connectors[0].connector_key]: "strava_api" },
+    folders: { spotify: "spotify_web" },
     layerDigest: "x",
     manifestDigest: "y",
     manifests: {},
   });
-  const first = snapshot.connectors.find((connector) => connector.key === CATALOG.connectors[0].connector_key);
-  assert.equal(first?.source_path, "connectors/strava_api");
-  assert.ok(snapshot.connectors.filter((connector) => connector !== first).every((c) => c.source_path === null));
+  const paths = Object.fromEntries(
+    snapshot.connectors.map((connector: { key: string; source_path: string | null }) => [
+      connector.key,
+      connector.source_path,
+    ])
+  );
+  assert.equal(paths.spotify, "connectors/spotify_web");
+  assert.equal(paths.strava, null);
 });
