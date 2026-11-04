@@ -26,7 +26,7 @@ function countLine(count: number, searching: boolean): string {
   if (searching) {
     return `${count} ${count === 1 ? "result" : "results"}`;
   }
-  return `${count} ${count === 1 ? "app" : "apps"}`;
+  return `${count} ${count === 1 ? "connector" : "connectors"}`;
 }
 
 function AppRow({ entry }: { entry: DirectoryEntry }) {
@@ -65,7 +65,7 @@ export function PdppAppDirectory({ entries }: { entries: readonly DirectoryEntry
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex max-w-[46rem] flex-col gap-2">
+      <div className="flex max-w-[68ch] flex-col gap-2">
         <label className="sr-only" htmlFor="app-search">
           Search for an app
         </label>

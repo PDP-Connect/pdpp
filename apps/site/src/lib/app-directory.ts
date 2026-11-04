@@ -117,19 +117,24 @@ function holdsVerified(status: CompanyStatus): boolean {
 }
 
 /** The muted status line. Pure wording, tested for every combination. */
-export function statusLine(name: string, status: CompanyStatus): string {
+/**
+ * The company's own standing, from the registers. `subject` is the company's
+ * name when a register names it, or "The company" when only a connector exists:
+ * an app name such as "Apple Health" is a product, not the company that signs.
+ */
+export function statusLine(subject: string, status: CompanyStatus): string {
   const registered = status.registrations.map((registration) => `a ${registration.status}`);
   const partner = holdsVerified(status) ? " It is a PDPP Partner." : "";
   if (status.signedOn && registered.length > 0) {
-    return `${name} signed the PDPP Principles on ${formatDate(status.signedOn)} and is ${joinList(registered)}.${partner}`;
+    return `${subject} signed the PDPP Principles on ${formatDate(status.signedOn)} and is ${joinList(registered)}.${partner}`;
   }
   if (status.signedOn) {
-    return `${name} signed the PDPP Principles on ${formatDate(status.signedOn)}. It has not registered with PDPP.`;
+    return `${subject} signed the PDPP Principles on ${formatDate(status.signedOn)}. It has not registered with PDPP.`;
   }
   if (registered.length > 0) {
-    return `${name} has not signed the Principles. It is ${joinList(registered)}.${partner}`;
+    return `${subject} has not signed the Principles. It is ${joinList(registered)}.${partner}`;
   }
-  return `${name} has not signed the Principles or registered with PDPP.`;
+  return `${subject} has not signed the Principles or registered with PDPP.`;
 }
 
 function joinList(items: readonly string[]): string {
@@ -146,6 +151,9 @@ export function labelsLine(labels: readonly string[]): string {
   }
   return `${labels.slice(0, MAX_LABELS).join(", ")} + ${labels.length - MAX_LABELS} more`;
 }
+
+const UNKNOWN_COMPANY = "The company";
+const NO_STATUS: CompanyStatus = { registrations: [], signedOn: null };
 
 function connectorHeadline(name: string, tier: ConnectorTier): string {
   // A connector in development may not run yet, so it is not promised as
@@ -222,7 +230,7 @@ export function buildDirectory({
       labels: labelsLine(connector.labels),
       matchNames: [connector.display_name, company?.name].filter((n): n is string => Boolean(n)).map(lower),
       name: connector.display_name,
-      status: statusLine(name, company ?? { registrations: [], signedOn: null }),
+      status: company ? statusLine(company.name, company) : statusLine(UNKNOWN_COMPANY, NO_STATUS),
       tier: connector.tier,
       tierLabel: TIER_LABELS[connector.tier],
     });
@@ -232,13 +240,14 @@ export function buildDirectory({
   for (const [key, company] of companies) {
     if (!linked.has(key)) {
       companyEntries.push({
-        headline: `There is no PDPP connector for ${company.name} yet.`,
+        // Lead with what is true and positive: the company's own standing.
+        headline: statusLine(company.name, company),
         id: `company:${key}`,
         kind: "company",
         labels: "",
         matchNames: [lower(company.name)],
         name: company.name,
-        status: statusLine(company.name, company),
+        status: `There is no PDPP connector for ${company.name} yet.`,
         tier: null,
         tierLabel: null,
       });

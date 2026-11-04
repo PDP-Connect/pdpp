@@ -70,7 +70,7 @@ test("a connector alone: you can bring your data, and the company has not signed
   const spotify = find(directory(), "Spotify");
   assert.equal(spotify.headline, "You can bring your Spotify data into PDPP today, with an open-source connector.");
   assert.equal(spotify.labels, "Your playlists, Your saved tracks, Your top artists, Your top tracks + 2 more");
-  assert.equal(spotify.status, "Spotify has not signed the Principles or registered with PDPP.");
+  assert.equal(spotify.status, "The company has not signed the Principles or registered with PDPP.");
   assert.equal(spotify.tierLabel, "Preview");
 });
 
@@ -100,27 +100,27 @@ test("a Registered status alone does not make a Partner", () => {
 
 test("an ended registration is ignored", () => {
   const spotify = find(directory([], [registration("Spotify", "Verified Source", "Lapsed")]), "Spotify");
-  assert.equal(spotify.status, "Spotify has not signed the Principles or registered with PDPP.");
+  assert.equal(spotify.status, "The company has not signed the Principles or registered with PDPP.");
 });
 
 test("a signed organisation without a connector is its own row, with no connector claim", () => {
   const kalo = find(directory([supporter("Kalo", "Company", "2026-09-05")]), "Kalo");
   assert.equal(kalo.kind, "company");
-  assert.equal(kalo.headline, "There is no PDPP connector for Kalo yet.");
-  assert.equal(kalo.status, "Kalo signed the PDPP Principles on 5 Sep 2026. It has not registered with PDPP.");
+  assert.equal(kalo.headline, "Kalo signed the PDPP Principles on 5 Sep 2026. It has not registered with PDPP.");
+  assert.equal(kalo.status, "There is no PDPP connector for Kalo yet.");
   assert.equal(kalo.tier, null);
 });
 
 test("individuals never appear", () => {
   const entries = directory([supporter("Tim N.", "Individual"), supporter("Spotify", "Individual")]);
   assert.equal(entries.length, SNAPSHOT.connectors.length);
-  assert.equal(find(entries, "Spotify").status, "Spotify has not signed the Principles or registered with PDPP.");
+  assert.equal(find(entries, "Spotify").status, "The company has not signed the Principles or registered with PDPP.");
   assert.deepEqual(searchDirectory(entries, "tim"), []);
 });
 
 test("a company is matched by whole name, not by substring", () => {
   const entries = directory([supporter("Spot", "Company")]);
-  assert.equal(find(entries, "Spotify").status, "Spotify has not signed the Principles or registered with PDPP.");
+  assert.equal(find(entries, "Spotify").status, "The company has not signed the Principles or registered with PDPP.");
   assert.equal(find(entries, "Spot").kind, "company");
 });
 
@@ -135,7 +135,10 @@ test("a bracketed company name links the connector to its company", () => {
     supporters: [supporter("Anthropic", "Company", "2026-10-01")],
   });
   assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.status, "Claude signed the PDPP Principles on 1 Oct 2026. It has not registered with PDPP.");
+  assert.equal(
+    entries[0]?.status,
+    "Anthropic signed the PDPP Principles on 1 Oct 2026. It has not registered with PDPP."
+  );
 });
 
 test("separate connectors for the same app stay separate rows", () => {
