@@ -29,7 +29,8 @@ const quietButtonClassName = cn(
 
 // A text control that sits at the end of the caption, so it reads as part of the line and not as a second button row.
 const inlineCopyClassName = cn(
-  "ml-2 inline-flex cursor-pointer items-center gap-1 align-baseline font-medium font-sans text-[13px]",
+  // Plain inline (not flex), so "Copy" shares the caption's baseline; only the icon is nudged down.
+  "ml-2 inline cursor-pointer whitespace-nowrap font-medium font-sans text-[13px]",
   "text-primary hover:text-primary-emphasis hover:underline hover:underline-offset-[3px]"
 );
 
@@ -162,9 +163,9 @@ export function ShareCardPanel() {
           type="button"
         >
           {captionCopyStatus === "copied" ? (
-            <Check aria-hidden="true" className="size-3.5" />
+            <Check aria-hidden="true" className="mr-1 inline-block size-3.5 align-[-0.15em]" />
           ) : (
-            <Copy aria-hidden="true" className="size-3.5" />
+            <Copy aria-hidden="true" className="mr-1 inline-block size-3.5 align-[-0.15em]" />
           )}
           {CAPTION_COPY_LABELS[captionCopyStatus]}
         </button>
