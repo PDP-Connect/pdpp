@@ -144,8 +144,8 @@ export function ShareCardPanel() {
 
   return (
     <div className="flex flex-col gap-4" data-slot="pdpp-share-card-panel">
-      <Text as="p" size="body">
-        Share your support.
+      <Text as="h3" size="lede" weight="semi">
+        Share your support
       </Text>
       <img
         alt={SHARE_CARD_ALT}
