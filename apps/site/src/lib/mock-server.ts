@@ -66,6 +66,11 @@ export interface QueryResult {
   status: number;
 }
 
+/** Owner-token self-export keeps `emitted_at`; Core omits it only for client tokens. */
+export interface OwnerQueryResult extends Omit<QueryResult, "records"> {
+  records: Record[];
+}
+
 // ─── Mock Server ────────────────────────────────────────────────────────────
 
 export class MockPDPPServer {
@@ -181,7 +186,7 @@ export class MockPDPPServer {
 
   // ── Self-export (owner token path) ──
 
-  selfExport(streamName: string): QueryResult {
+  selfExport(streamName: string): OwnerQueryResult {
     const stream = this.streams.get(streamName);
     if (!stream) {
       return { error: "stream_not_found", has_more: false, records: [], status: 404 };
