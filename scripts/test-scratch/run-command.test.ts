@@ -1399,6 +1399,8 @@ test("SIGKILL during spawn-before-running retains a launching root even after it
   const marker = JSON.parse(await readFile(markerPath, "utf8")) as { state: string };
   assert.equal(marker.state, "launching");
   const childPid = Number.parseInt(await eventuallyRead(join(root, "child.txt")), 10);
+  // The marker is still "launching" and records no group, so teardown cannot find this one itself.
+  fx.trackGroup(childPid);
   const close = exited(proc);
   proc.kill("SIGKILL");
   assert.deepEqual(await close, { code: null, signal: "SIGKILL" });
@@ -1828,6 +1830,40 @@ test("a command argument or variable naming a temp path outside the bound runner
   assert.throws(() => fx.spawn("true", [], { env: { ...process.env, RUNNER_TEMP: sibling } }), {
     message: RUNNER_TEMP_MISMATCH,
   });
+});
+
+test("a checkout under /tmp stays visible to a sandboxed command", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const checkout = "/tmp/pdpp-checkout-example";
+  const script = `${checkout}/scripts/test-scratch/run-command.ts`;
+  assertCommandSeesOnlyBoundPaths(fx.runnerTemp, [script], fx.env(), `${checkout}/scripts`);
+  assert.throws(() => assertCommandSeesOnlyBoundPaths(fx.runnerTemp, ["/tmp/another-dir/f"], fx.env(), checkout), {
+    message: OUTSIDE_BOUND_ROOT,
+  });
+  assert.throws(() => assertCommandSeesOnlyBoundPaths(fx.runnerTemp, [script], fx.env(), "/home/runner/work/pdpp"), {
+    message: OUTSIDE_BOUND_ROOT,
+  });
+});
+
+test("fixture teardown stops a tracked group that no marker records", async () => {
+  const hooks: Array<() => Promise<void> | void> = [];
+  const fx = await lifecycleFixture({
+    after: (hook: () => Promise<void> | void) => hooks.push(hook),
+  } as unknown as TestContext);
+  const group = spawn("sh", ["-c", "exec sleep 300"], { detached: true, stdio: "ignore" });
+  assert.ok(group.pid);
+  const pgid = group.pid;
+  try {
+    fx.trackGroup(pgid);
+    process.kill(-pgid, 0);
+    for (const hook of hooks) {
+      // biome-ignore lint/performance/noAwaitInLoops: teardown hooks run in registration order.
+      await hook();
+    }
+    await eventuallyAbsentGroup(pgid);
+  } finally {
+    killQuietly(-pgid);
+  }
 });
 
 test("fixture teardown stops a command group an owner kill orphaned and closes the wrapper pipes", async () => {

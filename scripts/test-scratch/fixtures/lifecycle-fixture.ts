@@ -45,6 +45,11 @@ export interface LifecycleFixture {
    * closed when the test ends.
    */
   spawn: (file: string, args: readonly string[], spawnOptions?: SpawnOptions) => ChildProcess;
+  /**
+   * Kill this process group when the test ends. For a group the fixture cannot
+   * discover: one whose marker has not recorded a group yet.
+   */
+  trackGroup: (pgid: number) => void;
 }
 
 // Host directories whose contents a bwrap-private /tmp hides. A value that names
@@ -65,16 +70,28 @@ function pathTokens(value: string): string[] {
   return value.split(PATH_TOKEN_SEPARATOR).filter((token) => token.startsWith("/"));
 }
 
+/** `test-sandbox` rebinds the top `/tmp/<dir>` of its working directory, so a checkout under /tmp stays visible. */
+function workingDirectoryBind(cwd: string): string | undefined {
+  const match = resolve(cwd).match(TOP_TMP_DIRECTORY);
+  return match?.[0];
+}
+
+const TOP_TMP_DIRECTORY = /^\/tmp\/[^/]+/;
+
 /**
  * Throw if any argument or non-inherited environment value names a path under a
- * host temporary directory that is outside `runnerTemp`. The sandbox would hide
- * that path from the command, so a test using it fails by timing out.
+ * host temporary directory that the sandbox does not bind back: neither inside
+ * `runnerTemp` nor inside the top `/tmp` directory of the working directory. The
+ * sandbox would hide that path from the command, so a test using it fails by
+ * timing out.
  */
 export function assertCommandSeesOnlyBoundPaths(
   runnerTemp: string,
   args: readonly string[],
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  cwd: string = process.cwd()
 ): void {
+  const cwdBind = workingDirectoryBind(cwd);
   const inherited = process.env;
   const values = [
     ...args,
@@ -86,9 +103,13 @@ export function assertCommandSeesOnlyBoundPaths(
   for (const value of values) {
     for (const token of pathTokens(value)) {
       const path = resolve(token);
-      if (roots.some((root) => isInside(root, path)) && !isInside(runnerTemp, path)) {
+      if (
+        roots.some((root) => isInside(root, path)) &&
+        !isInside(runnerTemp, path) &&
+        !(cwdBind !== undefined && isInside(cwdBind, path))
+      ) {
         throw new Error(
-          `${token} is outside the bound runner temp ${runnerTemp}; the sandbox's private /tmp hides it from the command. ` +
+          `${token} is outside the bound runner temp ${runnerTemp} and the working directory's /tmp tree; the sandbox's private /tmp hides it from the command. ` +
             "Create it with fixture.dir() or fixture.path()."
         );
       }
@@ -128,6 +149,7 @@ export async function lifecycleFixture(
   const scratchParent = join(runnerTemp, "pdpp-test-scratch");
   const children: ChildProcess[] = [];
   const restoreEnv: Array<() => void> = [];
+  const trackedGroups = new Set<number>();
 
   const path = (...segments: string[]): string => {
     const resolved = resolve(runnerTemp, ...segments);
@@ -154,7 +176,8 @@ export async function lifecycleFixture(
         killQuietly(proc.pid);
       }
     }
-    for (const pgid of await recordedGroups(scratchParent)) {
+    const recorded = await recordedGroups(scratchParent);
+    for (const pgid of [...trackedGroups, ...recorded]) {
       killQuietly(-pgid);
     }
     await rm(runnerTemp, { force: true, recursive: true });
@@ -175,10 +198,15 @@ export async function lifecycleFixture(
       if (launchEnv.RUNNER_TEMP !== runnerTemp) {
         throw new Error(`RUNNER_TEMP must be the fixture's runner temp ${runnerTemp}; got ${launchEnv.RUNNER_TEMP}`);
       }
-      assertCommandSeesOnlyBoundPaths(runnerTemp, args, launchEnv);
+      assertCommandSeesOnlyBoundPaths(runnerTemp, args, launchEnv, String(spawnOptions.cwd ?? process.cwd()));
       const proc = nodeSpawn(file, args, { ...spawnOptions, env: launchEnv });
       children.push(proc);
       return proc;
+    },
+    trackGroup(pgid) {
+      if (Number.isSafeInteger(pgid) && pgid > 1 && pgid !== process.pid && pgid !== process.ppid) {
+        trackedGroups.add(pgid);
+      }
     },
     adoptAsRunnerTemp() {
       const previous = process.env.RUNNER_TEMP;
