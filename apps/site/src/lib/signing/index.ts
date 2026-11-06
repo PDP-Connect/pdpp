@@ -86,7 +86,13 @@ const ORGANISATION_TYPES = ["Company", "Platform", "Research institute", "Civil 
 
 // A checkbox that was ticked arrives as "on"; an unticked one is absent.
 const consented = z.literal("on").transform(() => true);
-const optionalConsent = z.union([z.literal("on"), z.undefined()]).transform((value) => value === "on");
+// `.optional()` is what lets the key be missing: in zod 4 a union that merely
+// includes z.undefined() still requires the key, so an unticked box failed the
+// whole submission.
+const optionalConsent = z
+  .literal("on")
+  .optional()
+  .transform((value) => value === "on");
 
 const individualSubmission = z.object({
   signatory_kind: z.literal("individual"),
