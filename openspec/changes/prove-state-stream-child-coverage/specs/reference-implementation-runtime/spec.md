@@ -52,7 +52,7 @@ or repeated key never adds a
 second distinct accepted entry.
 
 A key that is an array (a compound `primary_key`, per `spec-core.md`'s
-`RECORD` field table) SHALL be canonicalized to its minified-JSON-array
+`RECORD` field table) SHALL be canonicalized to its RFC 8785 (JCS)
 string form before insertion into the distinct-key set, using the same
 `encodeKey` function the resource server uses to canonicalize record keys
 for storage (`server/records.ts`) — never `String(key)`, which collapses
@@ -178,7 +178,7 @@ stream, in the same run
 (array) keys that would collide under naive string concatenation (for
 example `["a","b,c"]` and `["a,b","c"]`)
 **THEN** the runtime's accepted-key set SHALL store each using the same
-canonical minified-JSON-array encoding the resource server uses
+canonical RFC 8785 encoding the resource server uses
 (`encodeKey`)
 **AND** an honest `STREAM_EVIDENCE` claiming `outcomes.emitted: 2` for both
 distinct keys SHALL be accepted, not rejected as a duplicate.
