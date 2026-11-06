@@ -4,7 +4,7 @@
 "use client";
 
 import { Check, Copy } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Text } from "@/components/typography/text.tsx";
 import {
   linkedInShareUrl,
@@ -90,18 +90,24 @@ function browserCanShareImages(): boolean {
   return navigator.canShare({ files: [probe] });
 }
 
+// What the browser can share never changes while the page is open.
+function subscribeToNothing(): () => void {
+  return () => undefined;
+}
+
+function serverCannotShare(): boolean {
+  return false;
+}
+
 /**
  * Shown after a confirmed signing. The card is one image for every supporter
  * and carries no personal data, so nothing here is recorded or sent anywhere.
  */
 export function ShareCardPanel() {
   const [status, setStatus] = useState("");
-  const [canShareImages, setCanShareImages] = useState(false);
+  // The server cannot know, so it renders no Share button; the browser adds it while hydrating.
+  const canShareImages = useSyncExternalStore(subscribeToNothing, browserCanShareImages, serverCannotShare);
   const { copy: copyCaptionText, status: captionCopyStatus } = useCopyToClipboard();
-
-  useEffect(() => {
-    setCanShareImages(browserCanShareImages());
-  }, []);
 
   async function onCopyImage() {
     try {

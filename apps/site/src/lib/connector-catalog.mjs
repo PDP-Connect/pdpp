@@ -44,14 +44,14 @@ function sha256Digest(bytes) {
  */
 export function labelsFromManifest(manifest) {
   const streams = Array.isArray(manifest?.streams) ? manifest.streams : [];
-  const labels = [];
+  const labels = new Set();
   for (const stream of streams) {
     const label = stream?.display?.label;
-    if (typeof label === "string" && label.trim() && !labels.includes(label.trim())) {
-      labels.push(label.trim());
+    if (typeof label === "string" && label.trim()) {
+      labels.add(label.trim());
     }
   }
-  return labels;
+  return [...labels];
 }
 
 /**
