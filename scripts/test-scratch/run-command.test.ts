@@ -1043,6 +1043,36 @@ function killQuietly(pid: number | undefined): void {
   }
 }
 
+// Failure-path cleanup for a test whose owner or sidecar was killed on purpose:
+// nothing else stops the process groups it left behind, and a leftover command
+// that inherited the wrapper's stdout/stderr keeps those pipes open, so the test
+// process never exits and the whole step hangs instead of ending red. This stops
+// every group still recorded under a scratch parent and drops our pipe ends.
+async function reapOwnedGroups(runnerTemp: string, wrapper?: ReturnType<typeof spawn>): Promise<void> {
+  const parent = join(runnerTemp, "pdpp-test-scratch");
+  const roots = (await readdir(parent).catch(() => [] as string[])).map((entry) => join(parent, entry));
+  const recorded = await Promise.all(
+    roots.flatMap((root) => [
+      readFile(join(root, ".pdpp-test-scratch.json"), "utf8")
+        .then((text) => String((JSON.parse(text) as { pgid?: unknown }).pgid))
+        .catch(() => ""),
+      readFile(join(root, ".sandbox-child-group"), "utf8").catch(() => ""),
+    ])
+  );
+  for (const text of recorded) {
+    const pgid = Number(text.trim());
+    if (Number.isSafeInteger(pgid) && pgid > 1) {
+      try {
+        process.kill(-pgid, "SIGKILL");
+      } catch {
+        // The group already exited.
+      }
+    }
+  }
+  wrapper?.stdout?.destroy();
+  wrapper?.stderr?.destroy();
+}
+
 test("SIGINT waits for the sidecar to publish its group before the launcher cleans up", async () => {
   const runnerTemp = await temporaryParent();
   const wrapper = spawn(
@@ -1173,6 +1203,7 @@ test("a sidecar killed right after spawning the command does not orphan the comm
     }
   } finally {
     killQuietly(commandPid);
+    await reapOwnedGroups(runnerTemp);
     await rm(runnerTemp, { force: true, recursive: true });
     await rm(work, { force: true, recursive: true });
   }
@@ -1224,6 +1255,7 @@ test("owner SIGKILL then a command that leaves a background child does not let r
       wrapper.kill("SIGKILL");
     }
     killQuietly(backgroundPid);
+    await reapOwnedGroups(runnerTemp, wrapper);
     await rm(runnerTemp, { force: true, recursive: true });
     await rm(work, { force: true, recursive: true });
   }
