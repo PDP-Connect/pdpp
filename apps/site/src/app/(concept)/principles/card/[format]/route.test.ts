@@ -2,12 +2,41 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { after, afterEach, before, mock, test } from "node:test";
 import { SHARE_CARD_FORMATS } from "@/lib/share-card/copy.ts";
 import { GET, generateStaticParams } from "./route.tsx";
 
 const FLAG = "NEXT_PUBLIC_PDPP_SHARE_CARD";
 const PNG_SIGNATURE = "89504e470d0a1a0a";
+
+// The card downloads its fonts from Google Fonts. The tests stay offline: every
+// stylesheet request gets a stub pointing at one file, and that file is the
+// TrueType font next/og ships with.
+const TEST_FONT = readFileSync(
+  createRequire(import.meta.url).resolve("next/dist/compiled/@vercel/og/Geist-Regular.ttf")
+);
+const TEST_FONT_URL = "https://fonts.gstatic.com/test/Geist-Regular.ttf";
+
+before(() => {
+  const realFetch = globalThis.fetch;
+  // Only Google Fonts is stubbed; next/og loads its own WebAssembly through fetch too.
+  mock.method(globalThis, "fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === TEST_FONT_URL) {
+      return Promise.resolve(new Response(TEST_FONT));
+    }
+    if (url.startsWith("https://fonts.googleapis.com/")) {
+      return Promise.resolve(new Response(`src: url(${TEST_FONT_URL}) format('truetype');`));
+    }
+    return realFetch(input, init);
+  });
+});
+
+after(() => {
+  mock.restoreAll();
+});
 
 afterEach(() => {
   delete process.env[FLAG];

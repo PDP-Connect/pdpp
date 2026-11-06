@@ -1,12 +1,11 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { ImageResponse } from "next/og";
 import type { ReactElement } from "react";
 import { WORDMARK_PATH } from "../../components/elements/icons.tsx";
 import { SHARE_CARD_COPY, SHARE_CARD_FORMATS, type ShareCardFormat } from "./copy.ts";
+import { type CardFont, loadCardFonts } from "./fonts.ts";
 
 // Colours of the concept surface (the live site), as hex. Satori cannot parse oklch(),
 // so each is the sRGB value of a light-scheme token in
@@ -24,15 +23,17 @@ export function wordmarkSvg(fill: string): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 365 160"><path d="${WORDMARK_PATH}" fill="${fill}"/></svg>`;
 }
 
-const ASSETS = join(process.cwd(), "assets", "share-card");
+// Downloaded once per process, on first use. A failed download is not kept,
+// so the next render tries again.
+let fonts: Promise<CardFont[]> | undefined;
 
-// Read once per process. The files ship with the repo; nothing is fetched.
-const fonts = Promise.all([
-  readFile(join(ASSETS, "Inter-Regular.ttf")),
-  readFile(join(ASSETS, "Inter-Bold.ttf")),
-  readFile(join(ASSETS, "SourceSerif4-Regular.ttf")),
-  readFile(join(ASSETS, "SourceSerif4-It.ttf")),
-]);
+function cardFonts(): Promise<CardFont[]> {
+  fonts ??= loadCardFonts().catch((error: unknown) => {
+    fonts = undefined;
+    throw error;
+  });
+  return fonts;
+}
 const wordmarkDataUri = `data:image/svg+xml;base64,${Buffer.from(wordmarkSvg(PRIMARY)).toString("base64")}`;
 
 /** Per-format measurements. The design is the same; only the room around it changes. */
@@ -148,15 +149,10 @@ export async function renderShareCard(
   format: ShareCardFormat,
   variant: ShareCardVariant = DEFAULT_SHARE_CARD_VARIANT
 ): Promise<ImageResponse> {
-  const [interRegular, interBold, serifRegular, serifItalic] = await fonts;
+  const loaded = await cardFonts();
   const Design = DESIGNS[variant];
   return new ImageResponse(<Design layout={LAYOUTS[format]} wordmark={wordmarkDataUri} />, {
     ...SHARE_CARD_FORMATS[format],
-    fonts: [
-      { data: interRegular, name: "Inter", style: "normal", weight: 400 },
-      { data: interBold, name: "Inter", style: "normal", weight: 700 },
-      { data: serifRegular, name: "Source Serif 4", style: "normal", weight: 400 },
-      { data: serifItalic, name: "Source Serif 4", style: "italic", weight: 400 },
-    ],
+    fonts: loaded,
   });
 }
