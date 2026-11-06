@@ -4,7 +4,6 @@
 import { ShareCardPanel } from "@/components/site/share-card-panel.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { signedStatusMessage } from "@/lib/signing/status-messages.ts";
-import { shareCardEnabled } from "@/lib/site-config.ts";
 
 const WITHDRAW_MESSAGES: Record<string, string> = {
   closed: "Signing is closed. Nothing was changed.",
@@ -25,8 +24,8 @@ export function PdppSigningStatus({ signed, withdraw }: { signed?: string; withd
           {message}
         </Text>
       </div>
-      {/* Only a confirmed signature earns the card, and only while the flag is on. */}
-      {signed === "confirmed" && shareCardEnabled() ? <ShareCardPanel /> : null}
+      {/* Only a confirmed signature earns the card. */}
+      {signed === "confirmed" ? <ShareCardPanel /> : null}
     </>
   );
 }

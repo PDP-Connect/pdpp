@@ -4,11 +4,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { after, afterEach, before, mock, test } from "node:test";
+import { after, before, mock, test } from "node:test";
 import { SHARE_CARD_FORMATS } from "@/lib/share-card/copy.ts";
 import { GET, generateStaticParams } from "./route.tsx";
 
-const FLAG = "NEXT_PUBLIC_PDPP_SHARE_CARD";
 const PNG_SIGNATURE = "89504e470d0a1a0a";
 
 // The card downloads its fonts from Google Fonts. The tests stay offline: every
@@ -38,10 +37,6 @@ after(() => {
   mock.restoreAll();
 });
 
-afterEach(() => {
-  delete process.env[FLAG];
-});
-
 function request(format: string): Promise<Response> {
   return GET(new Request(`https://pdpp.dev/principles/card/${format}`), { params: Promise.resolve({ format }) });
 }
@@ -61,8 +56,7 @@ test("the card routes are built for exactly the feed and story formats", () => {
 });
 
 for (const format of ["feed", "story"] as const) {
-  test(`${format} returns a PNG of ${SHARE_CARD_FORMATS[format].width}x${SHARE_CARD_FORMATS[format].height} when the flag is true`, async () => {
-    process.env[FLAG] = "true";
+  test(`${format} returns a PNG of ${SHARE_CARD_FORMATS[format].width}x${SHARE_CARD_FORMATS[format].height}`, async () => {
     const response = await request(format);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "image/png");
@@ -73,19 +67,6 @@ for (const format of ["feed", "story"] as const) {
   });
 }
 
-test("an unknown format is a 404 even when the flag is on", async () => {
-  process.env[FLAG] = "true";
+test("an unknown format is a 404", async () => {
   assert.equal((await request("banner")).status, 404);
 });
-
-for (const value of [undefined, "", "0", "1", "false", "yes"]) {
-  test(`the routes are a 404 when the flag is ${JSON.stringify(value)}`, async () => {
-    if (value === undefined) {
-      delete process.env[FLAG];
-    } else {
-      process.env[FLAG] = value;
-    }
-    const [feed, story] = await Promise.all([request("feed"), request("story")]);
-    assert.deepEqual([feed.status, story.status], [404, 404]);
-  });
-}

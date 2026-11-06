@@ -61,16 +61,6 @@ export const siteFlags = {
   signingLive: flag(process.env.NEXT_PUBLIC_PDPP_SIGNING_LIVE),
 } as const;
 
-/**
- * The shareable supporter card (the panel after signing and the /principles/card
- * routes). Off unless the variable is "true", like the other site flags.
- * A function rather than a `siteFlags` entry so it reads the variable when called, which lets a
- * test switch it; Next still inlines the NEXT_PUBLIC value at build.
- */
-export function shareCardEnabled(): boolean {
-  return flag(process.env.NEXT_PUBLIC_PDPP_SHARE_CARD);
-}
-
 export const siteConfig = {
   /** Where the Supporter form posts. Same-origin by default. */
   formEndpoint: configured(process.env.NEXT_PUBLIC_PDPP_FORM_ENDPOINT, "form endpoint not set"),
