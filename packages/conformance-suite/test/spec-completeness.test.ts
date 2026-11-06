@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, it, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { REQUIREMENTS, SPEC_SOURCE } from "../src/requirements/catalog.ts";
+import { REQUIREMENTS } from "../src/requirements/catalog.ts";
 import { SPEC_SENTENCE_EXCLUSIONS } from "../src/requirements/exclusions.ts";
 import { CLAUSE_MATRIX } from "../src/requirements/matrix.ts";
 import {
@@ -25,7 +25,7 @@ import {
 const PATTERN_BETA_ITEM = /beta item/;
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const SPEC = readFileSync(join(REPO_ROOT, SPEC_SOURCE.path), "utf8");
+const SPEC = readFileSync(join(REPO_ROOT, "spec-core.md"), "utf8");
 const SPEC_LINES = SPEC.split("\n");
 const CLAUSE_TEXTS = CLAUSE_MATRIX.map((clause) => clause.text);
 const CONFORMANCE_SECTION = "9";
@@ -65,7 +65,7 @@ test("every list item under a MUST lead-in is quoted by the clause that keeps th
 
 test("a clause that keeps the MUST lead-in but elides a list item fails the lead-in check", () => {
   const elided = CLAUSE_MATRIX.map((clause) =>
-    clause.clauseId === "8.12-2" ? clause.text.replace(" [...] `Cache-Control: private, no-store`", "") : clause.text
+    clause.clauseId === "8.15-5" ? clause.text.replace(" [...] `Cache-Control: private, no-store`", "") : clause.text
   );
   assert.notEqual(elided.join("\n"), CLAUSE_TEXTS.join("\n"), "the doctored clause must differ");
   const gaps = leadInGaps(SPEC, elided);
@@ -117,8 +117,8 @@ describe("lead-in scan handles the list layouts Markdown allows", () => {
     assert.equal(scanLeadIns(spec).length, 0);
   });
 
-  it("finds the real blank-line-separated lead-in at spec-core.md 560", () => {
-    assert.ok(scanLeadIns(SPEC).some((l) => l.line === 560 && l.items.length === 2));
+  it("finds the real blank-line-separated lead-in at spec-core.md 868", () => {
+    assert.ok(scanLeadIns(SPEC).some((l) => l.line === 868 && l.items.length === 2));
   });
 });
 
