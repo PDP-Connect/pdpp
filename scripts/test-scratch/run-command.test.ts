@@ -1175,7 +1175,10 @@ test("a sandbox that exits before publishing a command group leaves no scratch a
 
 test("a sidecar killed right after spawning the command does not orphan the command under a deleted scratch", async () => {
   const runnerTemp = await temporaryParent();
-  const work = await temporaryParent();
+  // The command runs under a private /tmp where bwrap binds back only the scratch
+  // parent's top directory; a sibling temp directory would be invisible to it.
+  const work = join(runnerTemp, "work");
+  await mkdir(work);
   const recordFile = join(work, "command.record");
   let commandPid: number | undefined;
   try {
@@ -1205,13 +1208,15 @@ test("a sidecar killed right after spawning the command does not orphan the comm
     killQuietly(commandPid);
     await reapOwnedGroups(runnerTemp);
     await rm(runnerTemp, { force: true, recursive: true });
-    await rm(work, { force: true, recursive: true });
   }
 });
 
 test("owner SIGKILL then a command that leaves a background child does not let recovery delete a live group's scratch", async () => {
   const runnerTemp = await temporaryParent();
-  const work = await temporaryParent();
+  // The command runs under a private /tmp where bwrap binds back only the scratch
+  // parent's top directory; a sibling temp directory would be invisible to it.
+  const work = join(runnerTemp, "work");
+  await mkdir(work);
   const pidFile = join(work, "background.pid");
   const releaseFile = join(work, "release");
   let backgroundPid: number | undefined;
@@ -1257,7 +1262,6 @@ test("owner SIGKILL then a command that leaves a background child does not let r
     killQuietly(backgroundPid);
     await reapOwnedGroups(runnerTemp, wrapper);
     await rm(runnerTemp, { force: true, recursive: true });
-    await rm(work, { force: true, recursive: true });
   }
 });
 
