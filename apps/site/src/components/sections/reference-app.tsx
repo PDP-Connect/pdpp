@@ -2117,11 +2117,10 @@ Authorization: Bearer <client_token>
                 className="overflow-x-auto rounded-md p-3 font-mono text-xs"
                 style={{ backgroundColor: "var(--muted)", color: "var(--muted-foreground)" }}
               >
-                {`{ "stream": "benefits_enrollments",
+                {`// client token: no data, deleted_at, or emitted_at
+{ "stream": "benefits_enrollments",
   "key": "benefits_0",
-  "deleted": true,
-  "deleted_at": "2026-04-08T10:00:00Z",
-  "emitted_at": "2026-04-08T10:00:01Z" }`}
+  "deleted": true }`}
               </pre>
 
               <p className="mt-3 font-medium text-foreground">Cursor expiry</p>

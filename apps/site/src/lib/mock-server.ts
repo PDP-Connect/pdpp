@@ -28,6 +28,9 @@ export interface Record {
   key: string;
 }
 
+/** A record as a client-token response serves it: Core omits `emitted_at` there. */
+export type ClientRecord = Omit<Record, "emitted_at">;
+
 export interface Stream {
   name: string;
   records: Record[];
@@ -59,8 +62,13 @@ export interface QueryResult {
   error?: string;
   has_more: boolean;
   next_changes_since?: string;
-  records?: Record[];
+  records?: ClientRecord[];
   status: number;
+}
+
+/** Owner-token self-export keeps `emitted_at`; Core omits it only for client tokens. */
+export interface OwnerQueryResult extends Omit<QueryResult, "records"> {
+  records: Record[];
 }
 
 // ─── Mock Server ────────────────────────────────────────────────────────────
@@ -178,7 +186,7 @@ export class MockPDPPServer {
 
   // ── Self-export (owner token path) ──
 
-  selfExport(streamName: string): QueryResult {
+  selfExport(streamName: string): OwnerQueryResult {
     const stream = this.streams.get(streamName);
     if (!stream) {
       return { error: "stream_not_found", has_more: false, records: [], status: 404 };
@@ -190,9 +198,9 @@ export class MockPDPPServer {
 
   // ── Field projection ──
 
-  private projectRecord(record: Record, allowedFields: string[] | null, _allFields: string[]): Record {
+  private projectRecord(record: Record, allowedFields: string[] | null, _allFields: string[]): ClientRecord {
     if (!allowedFields) {
-      return record; // null = all fields authorized
+      return { data: record.data, key: record.key }; // null = all fields authorized
     }
 
     const projected: { [field: string]: unknown } = {};
@@ -204,7 +212,6 @@ export class MockPDPPServer {
 
     return {
       data: projected,
-      emitted_at: record.emitted_at,
       key: record.key,
     };
   }
