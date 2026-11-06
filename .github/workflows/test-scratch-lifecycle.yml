@@ -77,6 +77,8 @@ jobs:
         run: pnpm exec tsc --project scripts/test-scratch/tsconfig.json --pretty false
 
       - name: Lifecycle owner oracle
+        # The whole file runs in well under a minute; a hung process must fail the step, not the job.
+        timeout-minutes: 5
         run: pnpm exec tsx --test scripts/test-scratch/run-command.test.ts
 
       - name: Canonical-entrypoint ratchet
