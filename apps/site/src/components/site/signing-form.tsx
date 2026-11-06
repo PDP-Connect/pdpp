@@ -48,11 +48,32 @@ const fieldClassName = cn(
 
 const choiceTextClassName = "font-sans text-[14px] leading-[1.6]";
 
-function Field({ children, htmlFor, label }: { children: React.ReactNode; htmlFor: string; label: string }) {
+// The visible asterisk is for sighted readers. Screen readers already announce
+// "required" from the input's own attribute, so the mark is hidden from them.
+function RequiredMark() {
+  return (
+    <span aria-hidden className="text-primary">
+      {" *"}
+    </span>
+  );
+}
+
+function Field({
+  children,
+  htmlFor,
+  label,
+  required = false,
+}: {
+  children: React.ReactNode;
+  htmlFor: string;
+  label: string;
+  required?: boolean;
+}) {
   return (
     <div className="flex flex-col gap-1.5">
       <Text as="label" color="subtle" htmlFor={htmlFor} size="stamp">
         {label}
+        {required && <RequiredMark />}
       </Text>
       {children}
     </div>
@@ -104,6 +125,7 @@ function Consent({
       />
       <Text as="span" size="small">
         {children}
+        {required && <RequiredMark />}
       </Text>
     </label>
   );
@@ -169,8 +191,12 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
         ))}
       </fieldset>
 
+      <Text as="p" color="muted" size="small">
+        Required fields are marked with an asterisk (<span className="text-primary">*</span>).
+      </Text>
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Field htmlFor="sign-name" label="Name">
+        <Field htmlFor="sign-name" label="Name" required>
           <input
             autoComplete="name"
             className={fieldClassName}
@@ -181,12 +207,12 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
             type="text"
           />
         </Field>
-        <Field htmlFor="sign-email" label="Email">
+        <Field htmlFor="sign-email" label="Email" required>
           <input autoComplete="email" className={fieldClassName} id="sign-email" name="email" required type="email" />
         </Field>
 
         {isOrganisation && (
-          <Field htmlFor="sign-organisation" label="Organisation">
+          <Field htmlFor="sign-organisation" label="Organisation" required>
             <input
               className={fieldClassName}
               defaultValue={restoredForm?.organisation}
@@ -209,7 +235,7 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
           </Field>
         )}
 
-        <Field htmlFor="sign-country" label="Country">
+        <Field htmlFor="sign-country" label="Country" required>
           <Select
             className={choiceTextClassName}
             defaultValue={restoredForm?.country ?? ""}
@@ -229,7 +255,7 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
         </Field>
 
         {isOrganisation && (
-          <Field htmlFor="sign-type" label="Type">
+          <Field htmlFor="sign-type" label="Type" required>
             <Select
               defaultValue={restoredForm?.organisation_type ?? ""}
               id="sign-type"
