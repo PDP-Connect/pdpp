@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { appDirectoryEnabled, siteFlags } from "./site-config.ts";
+import { siteFlags } from "./site-config.ts";
 
 export interface PublicSiteNavChild {
   readonly link: string;
@@ -26,7 +26,7 @@ export interface PublicSiteNavLink {
 //
 // Participate carries "Is your app on PDPP?" (/apps) the same way: the page is a
 // view over the registers Participate already shows, so it is a door into that
-// section, not a fifth intent. It appears only while /apps is switched on.
+// section, not a fifth intent.
 //
 // The review entry is the ONLY place outside /review and the reader's own
 // version strip that the review period is named. That is deliberate: a
@@ -39,11 +39,10 @@ export function publicSiteNav(): readonly PublicSiteNavLink[] {
     specificationChildren.push({ link: "/review", text: "Review, extended" });
   }
 
-  const participateChildren: PublicSiteNavChild[] = [{ link: "/participate", text: "How to get involved" }];
-
-  if (appDirectoryEnabled()) {
-    participateChildren.push({ link: "/apps", text: "Is your app on PDPP?" });
-  }
+  const participateChildren: PublicSiteNavChild[] = [
+    { link: "/participate", text: "How to get involved" },
+    { link: "/apps", text: "Is your app on PDPP?" },
+  ];
 
   return [
     { link: "/principles", text: "Principles" },

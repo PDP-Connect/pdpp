@@ -9,7 +9,7 @@ import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-pag
 import { PdppConceptSection } from "@/components/sections/concept-section.tsx";
 import { PdppEmailContactCard } from "@/components/site/report-contact-card.tsx";
 import { Text } from "@/components/typography/text.tsx";
-import { appDirectoryEnabled, isPlaceholder, siteConfig, siteFlags } from "@/lib/site-config.ts";
+import { isPlaceholder, siteConfig, siteFlags } from "@/lib/site-config.ts";
 import { GITHUB_REPO_URL } from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -399,14 +399,12 @@ function RegisterSection({
         </Link>{" "}
         · Supporters are listed separately on the Principles page
       </Text>
-      {appDirectoryEnabled() && (
-        <Text as="p" className="mt-4 max-w-[68ch]" color="muted" size="body" wrap="pretty">
-          To check one app against this register, the Supporters list and the open-source connectors, use{" "}
-          <Link className="text-primary hover:text-foreground" href="/apps">
-            Is your app on PDPP?
-          </Link>
-        </Text>
-      )}
+      <Text as="p" className="mt-4 max-w-[68ch]" color="muted" size="body" wrap="pretty">
+        To check one app against this register, the Supporters list and the open-source connectors, use{" "}
+        <Link className="text-primary hover:text-foreground" href="/apps">
+          Is your app on PDPP?
+        </Link>
+      </Text>
 
       <Text as="h3" className="mt-12" size="lede" weight="semi">
         Recognised trust registries

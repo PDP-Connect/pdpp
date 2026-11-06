@@ -3,14 +3,12 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/layout/concept-page.tsx";
 import { PdppAppDirectory } from "@/components/site/app-directory.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { buildDirectory } from "@/lib/app-directory.ts";
 import { readConnectorSnapshot, readRegisterEntries } from "@/lib/app-directory-sources.ts";
 import { readPublicSupporters } from "@/lib/public-supporters.ts";
-import { appDirectoryEnabled } from "@/lib/site-config.ts";
 import { repoBlobUrl } from "@/lib/site-facts.ts";
 
 export const metadata: Metadata = {
@@ -29,13 +27,7 @@ const DATA_CONNECTORS_URL = "https://github.com/PDP-Connect/data-connectors";
 // fallback), the Supporters register and the conformance register. No data is
 // collected and nothing is sent anywhere. The search runs in the visitor's
 // browser over rows built here, so the page is static between regenerations.
-//
-// Behind NEXT_PUBLIC_PDPP_APP_DIRECTORY. Off, the route does not exist.
 export default async function Page() {
-  if (!appDirectoryEnabled()) {
-    notFound();
-  }
-
   const [snapshot, supporters, register] = await Promise.all([
     readConnectorSnapshot(),
     readPublicSupporters(),

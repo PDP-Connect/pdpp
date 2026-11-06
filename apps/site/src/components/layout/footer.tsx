@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { isContributorSurfaceEnabled } from "@/lib/contributor-surface.ts";
-import { appDirectoryEnabled, REPORTS_EMAIL, REPORTS_EMAIL_HREF, siteConfig } from "@/lib/site-config.ts";
+import { REPORTS_EMAIL, REPORTS_EMAIL_HREF, siteConfig } from "@/lib/site-config.ts";
 import { GITHUB_REPO_URL, LFDT_COPYRIGHT_NOTICE, LFPROJECTS_URL, SITE_LICENSES } from "@/lib/site-facts.ts";
 import { cn } from "@/lib/utils.ts";
 import { ColorSchemeMenu } from "../elements/color-scheme-menu.tsx";
@@ -139,13 +139,11 @@ export function PdppConceptFooter() {
                     PDPP Principles
                   </Link>
                 </div>
-                {appDirectoryEnabled() && (
-                  <div>
-                    <Link className={footerLinkClassName} href="/apps">
-                      Is your app on PDPP?
-                    </Link>
-                  </div>
-                )}
+                <div>
+                  <Link className={footerLinkClassName} href="/apps">
+                    Is your app on PDPP?
+                  </Link>
+                </div>
               </div>
             </div>
           </div>

@@ -45,10 +45,7 @@ export function isPlaceholder(value: string): boolean {
 // for. `reviewOpen` gates the banner and the nav dropdown entry; `signingLive`
 // gates the whole Supporter form and the /api/sign route; `accessorApplications`
 // and `operatorApplications` gate the Accessor and Operator apply buttons on
-// /participate until their test suites are published. `appDirectoryEnabled()`
-// gates the /apps page ("Is your app on PDPP?"); set
-// NEXT_PUBLIC_PDPP_APP_DIRECTORY=true to turn it on. It is a function, not a
-// `siteFlags` field, so the page reads the variable when it renders.
+// /participate until their test suites are published.
 function flag(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === "true";
 }
@@ -72,11 +69,6 @@ export const siteFlags = {
  */
 export function shareCardEnabled(): boolean {
   return flag(process.env.NEXT_PUBLIC_PDPP_SHARE_CARD);
-}
-
-/** True when /apps is switched on. Off: the page returns not found. */
-export function appDirectoryEnabled(): boolean {
-  return flag(process.env.NEXT_PUBLIC_PDPP_APP_DIRECTORY);
 }
 
 export const siteConfig = {
