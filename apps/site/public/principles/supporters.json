@@ -117,5 +117,12 @@
     "publicName": "Oshin M.",
     "signedOn": "2026-09-14",
     "type": "Individual"
+  },
+  {
+    "country": "Germany",
+    "principlesVersion": "1.0",
+    "publicName": "Stefan A.",
+    "signedOn": "2026-11-02",
+    "type": "Individual"
   }
 ]
