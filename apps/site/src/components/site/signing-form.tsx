@@ -83,12 +83,14 @@ function Consent({
   checked,
   id,
   name,
+  required = false,
   children,
 }: {
   checked?: boolean;
   children: React.ReactNode;
   id: string;
   name: string;
+  required?: boolean;
 }) {
   return (
     <label className="flex cursor-pointer items-start gap-2.5" htmlFor={id}>
@@ -97,6 +99,7 @@ function Consent({
         defaultChecked={checked}
         id={id}
         name={name}
+        required={required}
         type="checkbox"
       />
       <Text as="span" size="small">
@@ -259,21 +262,21 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
       </Text>
 
       <div className="flex flex-col gap-3">
-        <Consent checked={restoredForm?.consent_principles} id="consent-principles" name="consent_principles">
+        <Consent checked={restoredForm?.consent_principles} id="consent-principles" name="consent_principles" required>
           I support the PDPP Principles v1.0.
         </Consent>
-        <Consent checked={restoredForm?.consent_register} id="consent-register" name="consent_register">
+        <Consent checked={restoredForm?.consent_register} id="consent-register" name="consent_register" required>
           List me on the public register.
         </Consent>
         <Consent checked={restoredForm?.consent_updates} id="consent-updates" name="consent_updates">
           Email me about new versions and comment periods.
         </Consent>
         {isOrganisation ? (
-          <Consent checked={restoredForm?.consent_authority} id="consent-authority" name="consent_authority">
+          <Consent checked={restoredForm?.consent_authority} id="consent-authority" name="consent_authority" required>
             I am authorised to sign on behalf of this organisation.
           </Consent>
         ) : (
-          <Consent checked={restoredForm?.consent_age} id="consent-age" name="consent_age">
+          <Consent checked={restoredForm?.consent_age} id="consent-age" name="consent_age" required>
             I am 18 or over.
           </Consent>
         )}

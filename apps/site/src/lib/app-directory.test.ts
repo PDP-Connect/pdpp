@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   appName,
   buildDirectory,
@@ -231,8 +232,9 @@ test("formatDate, appName and labelsLine", () => {
 });
 
 test("the fallback copy and register parse and build a directory", async () => {
-  const snapshot = await readBundledConnectorSnapshot();
-  const register = await readRegisterEntries();
+  const siteRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const snapshot = await readBundledConnectorSnapshot(siteRoot);
+  const register = await readRegisterEntries(siteRoot);
   const supporters = JSON.parse(
     await readFile(new URL("../../public/principles/supporters.json", import.meta.url), "utf8")
   ) as PublicSupporter[];

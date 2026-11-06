@@ -53,8 +53,10 @@ interface ReadConnectorSnapshotOptions {
 }
 
 /** The copy in the repo, refreshed by scripts/sync-connector-catalog.mjs. */
-export async function readBundledConnectorSnapshot(): Promise<ConnectorSnapshot> {
-  const file = path.join(process.cwd(), ...SNAPSHOT_PATH);
+// `siteRoot` defaults to the working directory, which is apps/site when Next
+// builds or serves the site. Tests pass it because they may run from elsewhere.
+export async function readBundledConnectorSnapshot(siteRoot = process.cwd()): Promise<ConnectorSnapshot> {
+  const file = path.join(siteRoot, ...SNAPSHOT_PATH);
   return snapshotSchema.parse(JSON.parse(await readFile(file, "utf8")));
 }
 
@@ -83,7 +85,7 @@ export async function readConnectorSnapshot(options: ReadConnectorSnapshotOption
 }
 
 /** The conformance register. Empty until Registered and Verified open. */
-export async function readRegisterEntries(): Promise<readonly RegisterEntry[]> {
-  const file = path.join(process.cwd(), ...REGISTER_PATH);
+export async function readRegisterEntries(siteRoot = process.cwd()): Promise<readonly RegisterEntry[]> {
+  const file = path.join(siteRoot, ...REGISTER_PATH);
   return registerSchema.parse(JSON.parse(await readFile(file, "utf8")));
 }
