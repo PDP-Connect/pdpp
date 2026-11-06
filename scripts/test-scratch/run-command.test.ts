@@ -21,7 +21,12 @@ import {
 } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import {
+  assertCommandSeesOnlyBoundPaths,
+  type LifecycleFixture,
+  lifecycleFixture,
+} from "./fixtures/lifecycle-fixture.ts";
 import {
   allocateScratchOwnership,
   cleanupScratchOwnership,
@@ -57,19 +62,30 @@ interface ChildResult {
   signal: NodeJS.Signals | null;
 }
 
-function startWrapper(args: string[], env: NodeJS.ProcessEnv = process.env) {
-  return spawn(process.execPath, ["--import", "tsx", wrapperPath, ...command(args)], {
+// Every launch of the wrapper goes through a LifecycleFixture: it keeps the paths a
+// sandboxed command touches inside the bound runner temp and reaps what the test leaves.
+function startWrapper(fx: LifecycleFixture, args: string[], env: NodeJS.ProcessEnv = fx.env()) {
+  return fx.spawn(process.execPath, ["--import", "tsx", wrapperPath, ...command(args)], {
     env,
     stdio: ["ignore", "pipe", "ignore"],
   });
 }
 
-function startRawWrapper(argv: string[], env: NodeJS.ProcessEnv = process.env) {
-  return spawn(process.execPath, ["--import", "tsx", wrapperPath, "--", ...argv], {
+function startRawWrapper(fx: LifecycleFixture, argv: string[], env: NodeJS.ProcessEnv = fx.env()) {
+  return fx.spawn(process.execPath, ["--import", "tsx", wrapperPath, "--", ...argv], {
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
+
+// The launch must allocate its own owner, not join one this process inherited.
+const NO_INHERITED_OWNER = {
+  PDPP_TEST_SCRATCH_ROOT: undefined,
+  PDPP_TEST_SCRATCH_SCHEMA: undefined,
+  PDPP_TEST_SCRATCH_MARKER: undefined,
+  PDPP_TEST_SCRATCH_NONCE: undefined,
+  PDPP_TEST_SCRATCH_OWNER_PID: undefined,
+};
 
 // Each sandbox these tests spawn must start from its own defaults, whatever
 // TEST_SANDBOX_* knobs the caller's shell or an outer run has set.
@@ -85,43 +101,33 @@ const FRESH_SANDBOX_CONTEXT = {
 const sandboxBashMajor = Number(spawnSync("bash", ["-c", "echo $BASH_VERSINFO"], { encoding: "utf8" }).stdout.trim());
 const sandboxContract = { skip: sandboxBashMajor >= 5 ? false : "test-sandbox needs bash 5 to enforce its contract" };
 
-test("owner routes children through the sandbox unless explicitly disabled", sandboxContract, async () => {
-  const runnerTemp = await temporaryParent();
+test("owner routes children through the sandbox unless explicitly disabled", sandboxContract, async (t) => {
+  const fx = await lifecycleFixture(t);
   const probe = [
     process.execPath,
     "-e",
     "console.log(JSON.stringify({active:process.env.TEST_SANDBOX_ACTIVE||null,tmp:process.env.TMPDIR,mode:require('node:fs').statSync(process.env.TMPDIR).mode%0o1000}))",
   ];
-  try {
-    for (const disabled of [false, true]) {
-      const env = {
-        ...process.env,
-        PDPP_TEST_SCRATCH_ROOT: undefined,
-        PDPP_TEST_SCRATCH_SCHEMA: undefined,
-        PDPP_TEST_SCRATCH_MARKER: undefined,
-        PDPP_TEST_SCRATCH_NONCE: undefined,
-        PDPP_TEST_SCRATCH_OWNER_PID: undefined,
-        RUNNER_TEMP: runnerTemp,
-        ...FRESH_SANDBOX_CONTEXT,
-        TEST_SANDBOX_DISABLE: disabled ? "1" : "0",
-      };
-      const wrapper = startRawWrapper(probe, env);
-      let stdout = "";
-      wrapper.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-      // biome-ignore lint/performance/noAwaitInLoops: exercise enabled and disabled launches sequentially.
-      assert.deepEqual(await closed(wrapper), { code: 0, signal: null });
-      const result = JSON.parse(stdout.trim()) as { active: string | null; tmp: string; mode: number };
-      assert.equal(result.active, disabled ? null : "1");
-      if (!disabled) {
-        assert.equal(result.mode, 0o700);
-      }
-      assert.ok(result.tmp.includes("pdpp-test-scratch"));
-      await assert.rejects(access(result.tmp));
+  for (const disabled of [false, true]) {
+    const env = fx.env({
+      ...NO_INHERITED_OWNER,
+      ...FRESH_SANDBOX_CONTEXT,
+      TEST_SANDBOX_DISABLE: disabled ? "1" : "0",
+    });
+    const wrapper = startRawWrapper(fx, probe, env);
+    let stdout = "";
+    wrapper.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    // biome-ignore lint/performance/noAwaitInLoops: exercise enabled and disabled launches sequentially.
+    assert.deepEqual(await closed(wrapper), { code: 0, signal: null });
+    const result = JSON.parse(stdout.trim()) as { active: string | null; tmp: string; mode: number };
+    assert.equal(result.active, disabled ? null : "1");
+    if (!disabled) {
+      assert.equal(result.mode, 0o700);
     }
-  } finally {
-    await rm(runnerTemp, { force: true, recursive: true });
+    assert.ok(result.tmp.includes("pdpp-test-scratch"));
+    await assert.rejects(access(result.tmp));
   }
 });
 
@@ -154,48 +160,34 @@ test("sandbox creates a missing --scratch root 0700 once and never re-creates it
   }
 });
 
-test("sandbox preserves literal shell variable syntax in child argv", async () => {
-  const runnerTemp = await temporaryParent();
-  try {
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: exercise literal shell syntax across the launcher boundary.
-    const wrapper = startRawWrapper(["bash", "-c", 'X=ok; printf %s "${X}"'], {
-      ...process.env,
-      PDPP_TEST_SCRATCH_ROOT: undefined,
-      PDPP_TEST_SCRATCH_SCHEMA: undefined,
-      PDPP_TEST_SCRATCH_MARKER: undefined,
-      PDPP_TEST_SCRATCH_NONCE: undefined,
-      PDPP_TEST_SCRATCH_OWNER_PID: undefined,
-      RUNNER_TEMP: runnerTemp,
-      ...FRESH_SANDBOX_CONTEXT,
-      TEST_SANDBOX_DISABLE: "0",
-    });
-    let output = "";
-    wrapper.stdout?.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
-    });
-    assert.deepEqual(await closed(wrapper), { code: 0, signal: null });
-    assert.equal(output, "ok");
-  } finally {
-    await rm(runnerTemp, { force: true, recursive: true });
-  }
+test("sandbox preserves literal shell variable syntax in child argv", async (t) => {
+  const fx = await lifecycleFixture(t);
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: exercise literal shell syntax across the launcher boundary.
+  const wrapper = startRawWrapper(fx, ["bash", "-c", 'X=ok; printf %s "${X}"'], {
+    ...fx.env(),
+    ...NO_INHERITED_OWNER,
+    ...FRESH_SANDBOX_CONTEXT,
+    TEST_SANDBOX_DISABLE: "0",
+  });
+  let output = "";
+  wrapper.stdout?.on("data", (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  assert.deepEqual(await closed(wrapper), { code: 0, signal: null });
+  assert.equal(output, "ok");
 });
 
-test("normal sandbox exit stops a background command child before scratch cleanup", async () => {
-  const runnerTemp = await temporaryParent();
+test("normal sandbox exit stops a background command child before scratch cleanup", async (t) => {
+  const fx = await lifecycleFixture(t);
   const wrapper = startRawWrapper(
+    fx,
     ["bash", "-c", 'sleep 300 </dev/null >/dev/null 2>&1 & printf "%s\\n%s\\n" "$!" "$TMPDIR"'],
-    {
-      ...process.env,
-      PDPP_TEST_SCRATCH_ROOT: undefined,
-      PDPP_TEST_SCRATCH_SCHEMA: undefined,
-      PDPP_TEST_SCRATCH_MARKER: undefined,
-      PDPP_TEST_SCRATCH_NONCE: undefined,
-      PDPP_TEST_SCRATCH_OWNER_PID: undefined,
-      RUNNER_TEMP: runnerTemp,
+    fx.env({
+      ...NO_INHERITED_OWNER,
       TEST_RECEIPT_ACTIVE: "1",
       TEST_SANDBOX_ACTIVE: "1",
       TEST_SANDBOX_DISABLE: "0",
-    }
+    })
   );
   let output = "";
   wrapper.stdout?.on("data", (chunk: Buffer) => {
@@ -212,56 +204,37 @@ test("normal sandbox exit stops a background command child before scratch cleanu
     await eventuallyAbsentProcess(backgroundPid);
     await assert.rejects(access(root));
   } finally {
-    if (backgroundPid) {
-      try {
-        process.kill(backgroundPid, "SIGKILL");
-      } catch {
-        // The launcher may already have stopped the child.
-      }
-    }
-    await rm(runnerTemp, { force: true, recursive: true });
+    killQuietly(backgroundPid);
   }
 });
 
 test("sandbox sees its owned scratch root below /tmp", {
   skip: process.platform !== "linux",
-}, async () => {
-  const runnerTemp = await mkdtemp(join("/tmp", "pdpp-test-sandbox-tmp-"));
-  try {
-    const wrapper = startRawWrapper(
-      [
-        process.execPath,
-        "-e",
-        'const fs=require("node:fs");const root=process.env.TMPDIR;fs.writeFileSync(root+"/visible","ok");console.log(JSON.stringify({root,active:process.env.TEST_SANDBOX_ACTIVE}))',
-      ],
-      {
-        ...process.env,
-        PDPP_TEST_SCRATCH_ROOT: undefined,
-        PDPP_TEST_SCRATCH_SCHEMA: undefined,
-        PDPP_TEST_SCRATCH_MARKER: undefined,
-        PDPP_TEST_SCRATCH_NONCE: undefined,
-        PDPP_TEST_SCRATCH_OWNER_PID: undefined,
-        RUNNER_TEMP: runnerTemp,
-        ...FRESH_SANDBOX_CONTEXT,
-        TEST_SANDBOX_DISABLE: "0",
-      }
-    );
-    let output = "";
-    wrapper.stdout?.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
-    });
-    assert.deepEqual(await closed(wrapper), { code: 0, signal: null });
-    const result = JSON.parse(output.trim()) as { root: string; active: string };
-    assert.equal(result.active, "1");
-    assert.ok(result.root.startsWith(`${runnerTemp}/pdpp-test-scratch/run-`));
-    await assert.rejects(access(result.root));
-  } finally {
-    await rm(runnerTemp, { force: true, recursive: true });
-  }
+}, async (t) => {
+  // The case under test is a scratch root directly below /tmp, whatever TMPDIR is.
+  const fx = await lifecycleFixture(t, { under: "/tmp" });
+  const wrapper = startRawWrapper(
+    fx,
+    [
+      process.execPath,
+      "-e",
+      'const fs=require("node:fs");const root=process.env.TMPDIR;fs.writeFileSync(root+"/visible","ok");console.log(JSON.stringify({root,active:process.env.TEST_SANDBOX_ACTIVE}))',
+    ],
+    fx.env({ ...NO_INHERITED_OWNER, ...FRESH_SANDBOX_CONTEXT, TEST_SANDBOX_DISABLE: "0" })
+  );
+  let output = "";
+  wrapper.stdout?.on("data", (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  assert.deepEqual(await closed(wrapper), { code: 0, signal: null });
+  const result = JSON.parse(output.trim()) as { root: string; active: string };
+  assert.equal(result.active, "1");
+  assert.ok(result.root.startsWith(`${fx.runnerTemp}/pdpp-test-scratch/run-`));
+  await assert.rejects(access(result.root));
 });
 
-function startLaunchingWrapper(env: NodeJS.ProcessEnv = process.env) {
-  return spawn(process.execPath, ["--import", "tsx", lifecycleWrapperPath], {
+function startLaunchingWrapper(fx: LifecycleFixture, env: NodeJS.ProcessEnv = fx.env()) {
+  return fx.spawn(process.execPath, ["--import", "tsx", lifecycleWrapperPath], {
     env,
     stdio: ["ignore", "pipe", "ignore"],
   });
@@ -514,8 +487,8 @@ test("cleanup refuses a live recorded process group before quarantine", async ()
   }
 });
 
-test("participant creates no nested owner", async () => {
-  const parent = await temporaryParent();
+test("participant creates no nested owner", async (t) => {
+  const { runnerTemp: parent } = await lifecycleFixture(t);
   const ownership = await allocateScratchOwnership({ parent });
   const keys = Object.keys(ownership.env) as Array<keyof NodeJS.ProcessEnv>;
   const before = new Map(keys.map((key) => [key, process.env[key]]));
@@ -532,90 +505,60 @@ test("participant creates no nested owner", async () => {
       }
     }
     await cleanupScratchOwnership(ownership);
-    await rm(parent, { force: true, recursive: true });
   }
 });
 
-test("participant validation fails closed when any inherited temporary path is altered", async () => {
-  const parent = await temporaryParent();
-  const outside = await temporaryParent();
-  const ownership = await allocateScratchOwnership({ parent });
+test("participant validation fails closed when any inherited temporary path is altered", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const outside = await fx.dir("outside");
+  const ownership = await allocateScratchOwnership({ parent: await fx.dir("parent") });
   try {
     const altered = { ...ownership.env, TMPDIR: outside };
     await assert.rejects(inheritedScratchOwnership(altered), {
       name: "ScratchOwnershipError",
       reason: "invalid-inherited-ownership",
     });
-    const nested = startRawWrapper([process.execPath, "--import", "tsx", child, "--exit=0"], altered);
+    const nested = startRawWrapper(fx, [process.execPath, "--import", "tsx", child, "--exit=0"], fx.env(altered));
     assert.deepEqual(await closed(nested), { code: 1, signal: null });
     await assert.rejects(access(join(outside, "child.txt")));
     await access(ownership.allocation.root);
   } finally {
     await cleanupScratchOwnership(ownership);
-    await rm(parent, { force: true, recursive: true });
-    await rm(outside, { force: true, recursive: true });
   }
 });
 
-test("launch failure removes its allocated root and returns the infrastructure exit", async () => {
-  const runnerTemp = await temporaryParent();
-  const parent = join(runnerTemp, "pdpp-test-scratch");
-  try {
-    const wrapper = startRawWrapper(["/definitely-not-a-pdpp-command"], { ...process.env, RUNNER_TEMP: runnerTemp });
-    assert.deepEqual(await closed(wrapper), { code: 74, signal: null });
-    assert.deepEqual(await readdir(parent), []);
-  } finally {
-    await rm(runnerTemp, { force: true, recursive: true });
-  }
+test("launch failure removes its allocated root and returns the infrastructure exit", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const wrapper = startRawWrapper(fx, ["/definitely-not-a-pdpp-command"]);
+  assert.deepEqual(await closed(wrapper), { code: 74, signal: null });
+  assert.deepEqual(await readdir(fx.scratchParent), []);
 });
 
-test("an unproven group shutdown retains scratch and makes a successful command infrastructure-failed", async () => {
-  const runnerTemp = await temporaryParent();
-  const parent = join(runnerTemp, "pdpp-test-scratch");
-  const previousRunnerTemp = process.env.RUNNER_TEMP;
-  process.env.RUNNER_TEMP = runnerTemp;
-  try {
-    const result = await runScratchCommand(command(["--exit=0"]), { stopGroup: async () => false });
-    assert.deepEqual(result, { code: 74, signal: null });
-    const roots = (await readdir(parent)).filter((entry) => entry.startsWith("run-"));
+test("an unproven group shutdown retains scratch and makes a successful command infrastructure-failed", async (t) => {
+  const fx = await lifecycleFixture(t);
+  fx.adoptAsRunnerTemp();
+  const result = await runScratchCommand(command(["--exit=0"]), { stopGroup: async () => false });
+  assert.deepEqual(result, { code: 74, signal: null });
+  const roots = (await readdir(fx.scratchParent)).filter((entry) => entry.startsWith("run-"));
+  assert.equal(roots.length, 1);
+});
+
+test("a rejected group proof retains scratch but preserves the child result", async (t) => {
+  const fx = await lifecycleFixture(t);
+  fx.adoptAsRunnerTemp();
+  for (const exitCode of [0, 42]) {
+    // biome-ignore lint/performance/noAwaitInLoops: each case must retain and reap its own live group before the next case.
+    const result = await runScratchCommand(["--", "sh", "-c", `sleep 30 & exit ${exitCode}`], {
+      stopGroup: (pgid) => {
+        process.kill(-pgid, "SIGKILL");
+        throw new Error("simulate rejected group proof");
+      },
+    });
+    assert.deepEqual(result, { code: exitCode === 0 ? 74 : exitCode, signal: null });
+    const roots = (await readdir(fx.scratchParent)).filter((entry) => entry.startsWith("run-"));
     assert.equal(roots.length, 1);
-  } finally {
-    if (previousRunnerTemp === undefined) {
-      delete process.env.RUNNER_TEMP;
-    } else {
-      process.env.RUNNER_TEMP = previousRunnerTemp;
-    }
-    await rm(runnerTemp, { force: true, recursive: true });
-  }
-});
-
-test("a rejected group proof retains scratch but preserves the child result", async () => {
-  const runnerTemp = await temporaryParent();
-  const parent = join(runnerTemp, "pdpp-test-scratch");
-  const previousRunnerTemp = process.env.RUNNER_TEMP;
-  process.env.RUNNER_TEMP = runnerTemp;
-  try {
-    for (const exitCode of [0, 42]) {
-      // biome-ignore lint/performance/noAwaitInLoops: each case must retain and reap its own live group before the next case.
-      const result = await runScratchCommand(["--", "sh", "-c", `sleep 30 & exit ${exitCode}`], {
-        stopGroup: (pgid) => {
-          process.kill(-pgid, "SIGKILL");
-          throw new Error("simulate rejected group proof");
-        },
-      });
-      assert.deepEqual(result, { code: exitCode === 0 ? 74 : exitCode, signal: null });
-      const roots = (await readdir(parent)).filter((entry) => entry.startsWith("run-"));
-      assert.equal(roots.length, 1);
-      const root = join(parent, roots[0] as string);
-      await rm(root, { force: true, recursive: true });
-    }
-  } finally {
-    if (previousRunnerTemp === undefined) {
-      delete process.env.RUNNER_TEMP;
-    } else {
-      process.env.RUNNER_TEMP = previousRunnerTemp;
-    }
-    await rm(runnerTemp, { force: true, recursive: true });
+    const root = join(fx.scratchParent, roots[0] as string);
+    await rm(root, { force: true, recursive: true });
   }
 });
 
@@ -927,28 +870,18 @@ test("cleanup rejects a forged nonce before constructing a quarantine target", a
   }
 });
 
-test("CLI child signal remains a signal to its parent", async () => {
-  const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-    const proc = spawn(
-      process.execPath,
-      ["--import", "tsx", new URL("./run-command.ts", import.meta.url).pathname, ...command(["--self-signal=SIGTERM"])],
-      {
-        stdio: "ignore",
-      }
-    );
-    proc.once("error", reject);
-    proc.once("close", (code, signal) => resolve({ code, signal }));
+test("CLI child signal remains a signal to its parent", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const proc = fx.spawn(process.execPath, ["--import", "tsx", wrapperPath, ...command(["--self-signal=SIGTERM"])], {
+    stdio: "ignore",
   });
-  assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+  assert.deepEqual(await closed(proc), { code: null, signal: "SIGTERM" });
 });
 
-test("SIGTERM reaches the owned group and cleanup completes before wrapper termination", async () => {
+test("SIGTERM reaches the owned group and cleanup completes before wrapper termination", async (t) => {
+  const fx = await lifecycleFixture(t);
   let output = "";
-  const wrapper = spawn(
-    process.execPath,
-    ["--import", "tsx", new URL("./run-command.ts", import.meta.url).pathname, ...command(["--print-root", "--wait"])],
-    { stdio: ["ignore", "pipe", "ignore"] }
-  );
+  const wrapper = startWrapper(fx, ["--print-root", "--wait"]);
   wrapper.stdout?.on("data", (chunk: Buffer) => {
     output += chunk.toString();
   });
@@ -973,18 +906,10 @@ test("SIGTERM reaches the owned group and cleanup completes before wrapper termi
   await assert.rejects(access(root));
 });
 
-test("SIGINT is forwarded unchanged to the owned group before cleanup", async () => {
+test("SIGINT is forwarded unchanged to the owned group before cleanup", async (t) => {
+  const fx = await lifecycleFixture(t);
   let output = "";
-  const wrapper = spawn(
-    process.execPath,
-    [
-      "--import",
-      "tsx",
-      new URL("./run-command.ts", import.meta.url).pathname,
-      ...command(["--print-root", "--record-signals", "--wait"]),
-    ],
-    { stdio: ["ignore", "pipe", "ignore"] }
-  );
+  const wrapper = startWrapper(fx, ["--print-root", "--record-signals", "--wait"]);
   wrapper.stdout?.on("data", (chunk: Buffer) => {
     output += chunk.toString();
   });
@@ -1013,19 +938,14 @@ test("SIGINT is forwarded unchanged to the owned group before cleanup", async ()
 });
 
 /** Environment for a sandbox with its cgroup layer absent, as under test-receipt or without a systemd user manager. */
-function noCgroupEnv(runnerTemp: string): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    PDPP_TEST_SCRATCH_ROOT: undefined,
-    PDPP_TEST_SCRATCH_SCHEMA: undefined,
-    PDPP_TEST_SCRATCH_MARKER: undefined,
-    PDPP_TEST_SCRATCH_NONCE: undefined,
-    PDPP_TEST_SCRATCH_OWNER_PID: undefined,
-    RUNNER_TEMP: runnerTemp,
+function noCgroupEnv(fx: LifecycleFixture, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return fx.env({
+    ...NO_INHERITED_OWNER,
     TEST_RECEIPT_ACTIVE: "1",
     ...FRESH_SANDBOX_CONTEXT,
     TEST_SANDBOX_DISABLE: "0",
-  };
+    ...overrides,
+  });
 }
 
 function processAlive(pid: number): boolean {
@@ -1043,39 +963,9 @@ function killQuietly(pid: number | undefined): void {
   }
 }
 
-// Failure-path cleanup for a test whose owner or sidecar was killed on purpose:
-// nothing else stops the process groups it left behind, and a leftover command
-// that inherited the wrapper's stdout/stderr keeps those pipes open, so the test
-// process never exits and the whole step hangs instead of ending red. This stops
-// every group still recorded under a scratch parent and drops our pipe ends.
-async function reapOwnedGroups(runnerTemp: string, wrapper?: ReturnType<typeof spawn>): Promise<void> {
-  const parent = join(runnerTemp, "pdpp-test-scratch");
-  const roots = (await readdir(parent).catch(() => [] as string[])).map((entry) => join(parent, entry));
-  const recorded = await Promise.all(
-    roots.flatMap((root) => [
-      readFile(join(root, ".pdpp-test-scratch.json"), "utf8")
-        .then((text) => String((JSON.parse(text) as { pgid?: unknown }).pgid))
-        .catch(() => ""),
-      readFile(join(root, ".sandbox-child-group"), "utf8").catch(() => ""),
-    ])
-  );
-  for (const text of recorded) {
-    const pgid = Number(text.trim());
-    if (Number.isSafeInteger(pgid) && pgid > 1) {
-      try {
-        process.kill(-pgid, "SIGKILL");
-      } catch {
-        // The group already exited.
-      }
-    }
-  }
-  wrapper?.stdout?.destroy();
-  wrapper?.stderr?.destroy();
-}
-
-test("SIGINT waits for the sidecar to publish its group before the launcher cleans up", async () => {
-  const runnerTemp = await temporaryParent();
-  const wrapper = spawn(
+test("SIGINT waits for the sidecar to publish its group before the launcher cleans up", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const wrapper = fx.spawn(
     process.execPath,
     [
       "--import",
@@ -1090,7 +980,7 @@ test("SIGINT waits for the sidecar to publish its group before the launcher clea
       "--record-signals",
       "--wait",
     ],
-    { env: noCgroupEnv(runnerTemp), stdio: ["ignore", "ignore", "ignore"] }
+    { env: noCgroupEnv(fx), stdio: ["ignore", "ignore", "ignore"] }
   );
   const result = closed(wrapper);
   let settled = false;
@@ -1100,8 +990,7 @@ test("SIGINT waits for the sidecar to publish its group before the launcher clea
   let sidecarPgid: number | undefined;
   let groupPath: string | undefined;
   try {
-    const parent = join(runnerTemp, "pdpp-test-scratch");
-    const root = await eventuallyRunRoot(parent);
+    const root = await eventuallyRunRoot(fx.scratchParent);
     groupPath = join(root, ".sandbox-child-group");
     sidecarPgid = Number((await eventuallyRead(`${groupPath}.held`, 20_000)).trim());
     assert.ok(Number.isSafeInteger(sidecarPgid) && sidecarPgid > 0);
@@ -1132,61 +1021,46 @@ test("SIGINT waits for the sidecar to publish its group before the launcher clea
       wrapper.kill("SIGTERM");
       await result;
     }
-    await rm(runnerTemp, { force: true, recursive: true });
   }
 });
 
-test("a sandbox that exits before publishing a command group leaves no scratch and propagates its status", async () => {
-  const runnerTemp = await temporaryParent();
-  const stubs = await temporaryParent();
-  try {
-    // A bwrap that cannot create namespaces makes TEST_SANDBOX_REQUIRE=1 exit 3 before the command starts.
-    await writeFile(join(stubs, "bwrap"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
-    const wrapper = spawn(process.execPath, ["--import", "tsx", wrapperPath, ...command(["--exit=0"])], {
-      env: {
-        ...process.env,
-        PATH: `${stubs}:${process.env.PATH}`,
-        PDPP_TEST_SCRATCH_ROOT: undefined,
-        PDPP_TEST_SCRATCH_SCHEMA: undefined,
-        PDPP_TEST_SCRATCH_MARKER: undefined,
-        PDPP_TEST_SCRATCH_NONCE: undefined,
-        PDPP_TEST_SCRATCH_OWNER_PID: undefined,
-        RUNNER_TEMP: runnerTemp,
-        ...FRESH_SANDBOX_CONTEXT,
-        TEST_SANDBOX_DISABLE: "0",
-        TEST_SANDBOX_REQUIRE: "1",
-      },
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    let stderr = "";
-    wrapper.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    const started = Date.now();
-    assert.deepEqual(await closed(wrapper), { code: 3, signal: null });
-    assert.doesNotMatch(stderr, GROUP_STILL_LIVE_OUTPUT);
-    assert.ok(Date.now() - started < 3000, "the launcher must not wait out the publish grace period");
-    assert.deepEqual(await readdir(join(runnerTemp, "pdpp-test-scratch")), []);
-  } finally {
-    await rm(runnerTemp, { force: true, recursive: true });
-    await rm(stubs, { force: true, recursive: true });
-  }
+test("a sandbox that exits before publishing a command group leaves no scratch and propagates its status", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const stubs = await fx.dir("stubs");
+  // A bwrap that cannot create namespaces makes TEST_SANDBOX_REQUIRE=1 exit 3 before the command starts.
+  await writeFile(join(stubs, "bwrap"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const wrapper = fx.spawn(process.execPath, ["--import", "tsx", wrapperPath, ...command(["--exit=0"])], {
+    env: fx.env({
+      ...NO_INHERITED_OWNER,
+      ...FRESH_SANDBOX_CONTEXT,
+      PATH: `${stubs}:${process.env.PATH}`,
+      TEST_SANDBOX_DISABLE: "0",
+      TEST_SANDBOX_REQUIRE: "1",
+    }),
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  wrapper.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  const started = Date.now();
+  assert.deepEqual(await closed(wrapper), { code: 3, signal: null });
+  assert.doesNotMatch(stderr, GROUP_STILL_LIVE_OUTPUT);
+  assert.ok(Date.now() - started < 3000, "the launcher must not wait out the publish grace period");
+  assert.deepEqual(await readdir(fx.scratchParent), []);
 });
 
-test("a sidecar killed right after spawning the command does not orphan the command under a deleted scratch", async () => {
-  const runnerTemp = await temporaryParent();
-  // The command runs under a private /tmp where bwrap binds back only the scratch
-  // parent's top directory; a sibling temp directory would be invisible to it.
-  const work = join(runnerTemp, "work");
-  await mkdir(work);
-  const recordFile = join(work, "command.record");
+test("a sidecar killed right after spawning the command does not orphan the command under a deleted scratch", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const recordFile = fx.path("work", "command.record");
+  await fx.dir("work");
   let commandPid: number | undefined;
   try {
-    const wrapper = spawn(
+    const wrapper = fx.spawn(
       process.execPath,
       ["--import", "tsx", sandboxChildWrapperPath, killAfterSpawnSandboxChild, "sh", "-c", "exec sleep 300"],
       {
-        env: { ...noCgroupEnv(runnerTemp), KILL_AFTER_SPAWN_RECORD: recordFile },
+        env: noCgroupEnv(fx, { KILL_AFTER_SPAWN_RECORD: recordFile }),
         stdio: ["ignore", "ignore", "ignore"],
       }
     );
@@ -1206,23 +1080,19 @@ test("a sidecar killed right after spawning the command does not orphan the comm
     }
   } finally {
     killQuietly(commandPid);
-    await reapOwnedGroups(runnerTemp);
-    await rm(runnerTemp, { force: true, recursive: true });
   }
 });
 
-test("owner SIGKILL then a command that leaves a background child does not let recovery delete a live group's scratch", async () => {
-  const runnerTemp = await temporaryParent();
-  // The command runs under a private /tmp where bwrap binds back only the scratch
-  // parent's top directory; a sibling temp directory would be invisible to it.
-  const work = join(runnerTemp, "work");
-  await mkdir(work);
-  const pidFile = join(work, "background.pid");
-  const releaseFile = join(work, "release");
+test("owner SIGKILL then a command that leaves a background child does not let recovery delete a live group's scratch", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const pidFile = fx.path("work", "background.pid");
+  const releaseFile = fx.path("work", "release");
+  await fx.dir("work");
   let backgroundPid: number | undefined;
   let wrapper: ReturnType<typeof startRawWrapper> | undefined;
   try {
     wrapper = startRawWrapper(
+      fx,
       [
         "sh",
         "-c",
@@ -1231,7 +1101,7 @@ test("owner SIGKILL then a command that leaves a background child does not let r
         pidFile,
         releaseFile,
       ],
-      noCgroupEnv(runnerTemp)
+      noCgroupEnv(fx)
     );
     const [pid, root] = (await eventuallyRead(pidFile, 20_000)).trim().split(" ");
     backgroundPid = Number(pid);
@@ -1248,7 +1118,7 @@ test("owner SIGKILL then a command that leaves a background child does not let r
       markerPath,
       `${JSON.stringify({ ...marker, created_at: new Date(Date.now() - 120_000).toISOString() })}\n`
     );
-    const results = await recoverStaleScratch({ parent: join(runnerTemp, "pdpp-test-scratch") });
+    const results = await recoverStaleScratch({ parent: fx.scratchParent });
     // Either recovery keeps the scratch, or nothing of the command is left alive in it.
     if (results.some((entry) => entry.path === root && entry.removed)) {
       await eventuallyAbsentProcess(backgroundPid);
@@ -1260,19 +1130,17 @@ test("owner SIGKILL then a command that leaves a background child does not let r
       wrapper.kill("SIGKILL");
     }
     killQuietly(backgroundPid);
-    await reapOwnedGroups(runnerTemp, wrapper);
-    await rm(runnerTemp, { force: true, recursive: true });
   }
 });
 
-test("a sandbox killed before its sidecar publishes does not let recovery delete the scratch of a command that starts later", async () => {
-  const runnerTemp = await temporaryParent();
-  const parent = join(runnerTemp, "pdpp-test-scratch");
+test("a sandbox killed before its sidecar publishes does not let recovery delete the scratch of a command that starts later", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const parent = fx.scratchParent;
   let sidecarPgid: number | undefined;
   let groupPath: string | undefined;
   let wrapper: ReturnType<typeof spawn> | undefined;
   try {
-    wrapper = spawn(
+    wrapper = fx.spawn(
       process.execPath,
       [
         "--import",
@@ -1283,7 +1151,7 @@ test("a sandbox killed before its sidecar publishes does not let recovery delete
         "-c",
         'echo $$ > "$PDPP_TEST_SCRATCH_ROOT/command.pid"; exec sleep 300',
       ],
-      { env: noCgroupEnv(runnerTemp), stdio: ["ignore", "ignore", "ignore"] }
+      { env: noCgroupEnv(fx), stdio: ["ignore", "ignore", "ignore"] }
     );
     const wrapperClosed = closed(wrapper);
     const root = await eventuallyRunRoot(parent);
@@ -1326,7 +1194,6 @@ test("a sandbox killed before its sidecar publishes does not let recovery delete
     if (wrapper?.pid && wrapper.exitCode === null && wrapper.signalCode === null) {
       wrapper.kill("SIGKILL");
     }
-    await rm(runnerTemp, { force: true, recursive: true });
   }
 });
 
@@ -1391,17 +1258,13 @@ test("recovery keeps a scratch whose published sidecar group is live although th
   }
 });
 
-test("SIGTERM starts bounded escalation before a TERM-ignoring direct child closes", async () => {
+test("SIGTERM starts bounded escalation before a TERM-ignoring direct child closes", async (t) => {
+  const fx = await lifecycleFixture(t);
   let output = "";
-  const wrapper = spawn(
-    process.execPath,
-    [
-      "--import",
-      "tsx",
-      new URL("./run-command.ts", import.meta.url).pathname,
-      ...command(["--print-root", "--ignore-term", "--grandchild", "--grandchild-ignore-term", "--wait"]),
-    ],
-    { env: { ...process.env, TEST_SANDBOX_DISABLE: "1" }, stdio: ["ignore", "pipe", "ignore"] }
+  const wrapper = startWrapper(
+    fx,
+    ["--print-root", "--ignore-term", "--grandchild", "--grandchild-ignore-term", "--wait"],
+    fx.env({ TEST_SANDBOX_DISABLE: "1" })
   );
   wrapper.stdout?.on("data", (chunk: Buffer) => {
     output += chunk.toString();
@@ -1433,13 +1296,13 @@ test("SIGTERM starts bounded escalation before a TERM-ignoring direct child clos
   await assert.rejects(access(root));
 });
 
-test("an intentionally detached descendant is outside the process-group containment contract", async () => {
-  const runnerTemp = await temporaryParent();
-  const wrapper = startWrapper(["--print-root", "--escaped-grandchild", "--wait"], {
-    ...process.env,
-    RUNNER_TEMP: runnerTemp,
-    TEST_SANDBOX_DISABLE: "1",
-  });
+test("an intentionally detached descendant is outside the process-group containment contract", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const wrapper = startWrapper(
+    fx,
+    ["--print-root", "--escaped-grandchild", "--wait"],
+    fx.env({ TEST_SANDBOX_DISABLE: "1" })
+  );
   let escapedPid: number | undefined;
   try {
     const root = await reportedRoot(wrapper);
@@ -1459,7 +1322,6 @@ test("an intentionally detached descendant is outside the process-group containm
       }
       await eventuallyAbsentGroup(escapedPid);
     }
-    await rm(runnerTemp, { force: true, recursive: true });
   }
 });
 
@@ -1473,131 +1335,83 @@ test("a signal latched while the running transition is durable is forwarded afte
   assert.deepEqual(result, { code: null, signal: "SIGTERM" });
 });
 
-test("SIGTERM latched before recovery creates no allocation or child", async () => {
-  const runnerTemp = await temporaryParent();
-  const parent = join(runnerTemp, "pdpp-test-scratch");
-  const previousRunnerTemp = process.env.RUNNER_TEMP;
-  process.env.RUNNER_TEMP = runnerTemp;
-  try {
-    const result = await runScratchCommand(command(["--print-root"]), {
-      afterSignalHandlersInstalled: async () => {
+test("SIGTERM latched before recovery creates no allocation or child", async (t) => {
+  const fx = await lifecycleFixture(t);
+  fx.adoptAsRunnerTemp();
+  const result = await runScratchCommand(command(["--print-root"]), {
+    afterSignalHandlersInstalled: async () => {
+      process.kill(process.pid, "SIGTERM");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    },
+  });
+  assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+  assert.deepEqual(await readdir(fx.scratchParent), []);
+});
+
+test("SIGTERM during allocation cleanup prevents spawn", async (t) => {
+  const fx = await lifecycleFixture(t);
+  fx.adoptAsRunnerTemp();
+  const result = await runScratchCommand(command(["--print-root"]), {
+    afterAllocationBeforeSpawn: async () => {
+      process.kill(process.pid, "SIGTERM");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    },
+  });
+  assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+  assert.deepEqual(await readdir(fx.scratchParent), []);
+});
+
+test("SIGTERM during cleanup remains observable after the root is removed", async (t) => {
+  const fx = await lifecycleFixture(t);
+  fx.adoptAsRunnerTemp();
+  const result = await runScratchCommand(command(["--exit=0"]), {
+    cleanupHooks: {
+      afterJournal: async () => {
         process.kill(process.pid, "SIGTERM");
         await new Promise((resolve) => setTimeout(resolve, 25));
       },
-    });
-    assert.deepEqual(result, { code: null, signal: "SIGTERM" });
-    assert.deepEqual(await readdir(parent), []);
-  } finally {
-    if (previousRunnerTemp === undefined) {
-      delete process.env.RUNNER_TEMP;
-    } else {
-      process.env.RUNNER_TEMP = previousRunnerTemp;
-    }
-    await rm(runnerTemp, { force: true, recursive: true });
-  }
+    },
+  });
+  assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+  assert.deepEqual(await readdir(fx.scratchParent), []);
 });
 
-test("SIGTERM during allocation cleanup prevents spawn", async () => {
-  const runnerTemp = await temporaryParent();
-  const parent = join(runnerTemp, "pdpp-test-scratch");
-  const previousRunnerTemp = process.env.RUNNER_TEMP;
-  process.env.RUNNER_TEMP = runnerTemp;
-  try {
-    const result = await runScratchCommand(command(["--print-root"]), {
-      afterAllocationBeforeSpawn: async () => {
-        process.kill(process.pid, "SIGTERM");
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      },
-    });
-    assert.deepEqual(result, { code: null, signal: "SIGTERM" });
-    assert.deepEqual(await readdir(parent), []);
-  } finally {
-    if (previousRunnerTemp === undefined) {
-      delete process.env.RUNNER_TEMP;
-    } else {
-      process.env.RUNNER_TEMP = previousRunnerTemp;
-    }
-    await rm(runnerTemp, { force: true, recursive: true });
-  }
+test("a latched signal plus a pre-launch error cleans the provably allocated root", async (t) => {
+  const fx = await lifecycleFixture(t);
+  fx.adoptAsRunnerTemp();
+  const result = await runScratchCommand(command(["--print-root"]), {
+    afterAllocationBeforeSpawn: async () => {
+      process.kill(process.pid, "SIGTERM");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      throw new Error("simulate pre-launch failure");
+    },
+  });
+  assert.deepEqual(result, { code: null, signal: "SIGTERM" });
+  assert.deepEqual(await readdir(fx.scratchParent), []);
 });
 
-test("SIGTERM during cleanup remains observable after the root is removed", async () => {
-  const runnerTemp = await temporaryParent();
-  const parent = join(runnerTemp, "pdpp-test-scratch");
-  const previousRunnerTemp = process.env.RUNNER_TEMP;
-  process.env.RUNNER_TEMP = runnerTemp;
-  try {
-    const result = await runScratchCommand(command(["--exit=0"]), {
-      cleanupHooks: {
-        afterJournal: async () => {
-          process.kill(process.pid, "SIGTERM");
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        },
-      },
-    });
-    assert.deepEqual(result, { code: null, signal: "SIGTERM" });
-    assert.deepEqual(await readdir(parent), []);
-  } finally {
-    if (previousRunnerTemp === undefined) {
-      delete process.env.RUNNER_TEMP;
-    } else {
-      process.env.RUNNER_TEMP = previousRunnerTemp;
-    }
-    await rm(runnerTemp, { force: true, recursive: true });
-  }
-});
-
-test("a latched signal plus a pre-launch error cleans the provably allocated root", async () => {
-  const runnerTemp = await temporaryParent();
-  const parent = join(runnerTemp, "pdpp-test-scratch");
-  const previousRunnerTemp = process.env.RUNNER_TEMP;
-  process.env.RUNNER_TEMP = runnerTemp;
-  try {
-    const result = await runScratchCommand(command(["--print-root"]), {
-      afterAllocationBeforeSpawn: async () => {
-        process.kill(process.pid, "SIGTERM");
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        throw new Error("simulate pre-launch failure");
-      },
-    });
-    assert.deepEqual(result, { code: null, signal: "SIGTERM" });
-    assert.deepEqual(await readdir(parent), []);
-  } finally {
-    if (previousRunnerTemp === undefined) {
-      delete process.env.RUNNER_TEMP;
-    } else {
-      process.env.RUNNER_TEMP = previousRunnerTemp;
-    }
-    await rm(runnerTemp, { force: true, recursive: true });
-  }
-});
-
-test("SIGKILL during spawn-before-running retains a launching root even after its group dies", async () => {
-  const runnerTemp = await temporaryParent();
-  const parent = join(runnerTemp, "pdpp-test-scratch");
-  const proc = startLaunchingWrapper({ ...process.env, RUNNER_TEMP: runnerTemp, TEST_SANDBOX_DISABLE: "1" });
-  try {
-    const root = await reportedRoot(proc);
-    const markerPath = join(root, ".pdpp-test-scratch.json");
-    const marker = JSON.parse(await readFile(markerPath, "utf8")) as { state: string };
-    assert.equal(marker.state, "launching");
-    const childPid = Number.parseInt(await eventuallyRead(join(root, "child.txt")), 10);
-    const close = exited(proc);
-    proc.kill("SIGKILL");
-    assert.deepEqual(await close, { code: null, signal: "SIGKILL" });
-    const now = Date.now() + 120_000;
-    assert.deepEqual(await recoverStaleScratch({ now, parent }), [
-      { path: root, reason: "launch-unknown", removed: false },
-    ]);
-    process.kill(-childPid, "SIGKILL");
-    await eventuallyAbsentGroup(childPid);
-    assert.deepEqual(await recoverStaleScratch({ now: now + 120_000, parent }), [
-      { path: root, reason: "launch-unknown", removed: false },
-    ]);
-    await access(root);
-  } finally {
-    await rm(runnerTemp, { force: true, recursive: true });
-  }
+test("SIGKILL during spawn-before-running retains a launching root even after its group dies", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const parent = fx.scratchParent;
+  const proc = startLaunchingWrapper(fx, fx.env({ TEST_SANDBOX_DISABLE: "1" }));
+  const root = await reportedRoot(proc);
+  const markerPath = join(root, ".pdpp-test-scratch.json");
+  const marker = JSON.parse(await readFile(markerPath, "utf8")) as { state: string };
+  assert.equal(marker.state, "launching");
+  const childPid = Number.parseInt(await eventuallyRead(join(root, "child.txt")), 10);
+  const close = exited(proc);
+  proc.kill("SIGKILL");
+  assert.deepEqual(await close, { code: null, signal: "SIGKILL" });
+  const now = Date.now() + 120_000;
+  assert.deepEqual(await recoverStaleScratch({ now, parent }), [
+    { path: root, reason: "launch-unknown", removed: false },
+  ]);
+  process.kill(-childPid, "SIGKILL");
+  await eventuallyAbsentGroup(childPid);
+  assert.deepEqual(await recoverStaleScratch({ now: now + 120_000, parent }), [
+    { path: root, reason: "launch-unknown", removed: false },
+  ]);
+  await access(root);
 });
 
 test("journal recovery resumes an interrupted rename and survives embedded-marker removal", async () => {
@@ -1675,34 +1489,24 @@ test("a malformed nonempty boot identity cannot bypass the live-group proof", as
   }
 });
 
-test("recovery budgets bound inventory inspection and still permit the new owner", async () => {
-  const runnerTemp = await temporaryParent();
-  const parent = join(runnerTemp, "pdpp-test-scratch");
-  const previousRunnerTemp = process.env.RUNNER_TEMP;
-  process.env.RUNNER_TEMP = runnerTemp;
-  try {
-    await mkdir(parent, { mode: 0o700 });
-    await Promise.all(Array.from({ length: 12 }, (_, index) => writeFile(join(parent, `foreign-${index}`), "defer")));
-    const inspected: string[] = [];
-    const recovered = await recoverStaleScratch({
-      hooks: { onInspect: (path) => inspected.push(path) },
-      limits: { maxInspectedEntries: 3 },
-      parent,
-    });
-    assert.ok(inspected.length <= 3);
-    assert.deepEqual(recovered.at(-1), { path: parent, reason: "recovery-budget-exhausted", removed: false });
-    assert.deepEqual(await runScratchCommand(command(["--exit=0"]), { recoveryLimits: { maxInspectedEntries: 1 } }), {
-      code: 0,
-      signal: null,
-    });
-  } finally {
-    if (previousRunnerTemp === undefined) {
-      delete process.env.RUNNER_TEMP;
-    } else {
-      process.env.RUNNER_TEMP = previousRunnerTemp;
-    }
-    await rm(runnerTemp, { force: true, recursive: true });
-  }
+test("recovery budgets bound inventory inspection and still permit the new owner", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const parent = fx.scratchParent;
+  fx.adoptAsRunnerTemp();
+  await mkdir(parent, { mode: 0o700 });
+  await Promise.all(Array.from({ length: 12 }, (_, index) => writeFile(join(parent, `foreign-${index}`), "defer")));
+  const inspected: string[] = [];
+  const recovered = await recoverStaleScratch({
+    hooks: { onInspect: (path) => inspected.push(path) },
+    limits: { maxInspectedEntries: 3 },
+    parent,
+  });
+  assert.ok(inspected.length <= 3);
+  assert.deepEqual(recovered.at(-1), { path: parent, reason: "recovery-budget-exhausted", removed: false });
+  assert.deepEqual(await runScratchCommand(command(["--exit=0"]), { recoveryLimits: { maxInspectedEntries: 1 } }), {
+    code: 0,
+    signal: null,
+  });
 });
 
 test("a durable lexical cursor eventually reaches a stale candidate beyond an initial recovery page", async () => {
@@ -1791,15 +1595,15 @@ test("startup recovery quarantines a large verified root when recursive removal 
   }
 });
 
-test("SIGKILL leaves a live orphan, then a later recovery removes its dead group", async () => {
-  const runnerTemp = await temporaryParent();
-  const sibling = join(runnerTemp, "sibling-sentinel");
+test("SIGKILL leaves a live orphan, then a later recovery removes its dead group", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const sibling = fx.path("sibling-sentinel");
   await writeFile(sibling, "unchanged");
-  const proc = startWrapper(["--print-root", "--grandchild", "--grandchild-ignore-term", "--wait"], {
-    ...process.env,
-    RUNNER_TEMP: runnerTemp,
-    TEST_SANDBOX_DISABLE: "1",
-  });
+  const proc = startWrapper(
+    fx,
+    ["--print-root", "--grandchild", "--grandchild-ignore-term", "--wait"],
+    fx.env({ TEST_SANDBOX_DISABLE: "1" })
+  );
   const root = await reportedRoot(proc);
   const markerPath = join(root, ".pdpp-test-scratch.json");
   const marker = await eventuallyRunningMarker(markerPath);
@@ -1814,7 +1618,7 @@ test("SIGKILL leaves a live orphan, then a later recovery removes its dead group
     markerPath,
     `${JSON.stringify({ ...marker, created_at: new Date(Date.now() - 120_000).toISOString() })}\n`
   );
-  const parent = join(runnerTemp, "pdpp-test-scratch");
+  const parent = fx.scratchParent;
   assert.deepEqual(await recoverStaleScratch({ parent }), [{ path: root, reason: "group-live", removed: false }]);
   assert.equal(await readFile(join(root, "child-root.txt"), "utf8"), `${root}\n`);
   assert.equal(await readFile(sibling, "utf8"), "unchanged");
@@ -1823,7 +1627,6 @@ test("SIGKILL leaves a live orphan, then a later recovery removes its dead group
   await eventuallyRecover(parent, root);
   await assert.rejects(access(root));
   assert.equal(await readFile(sibling, "utf8"), "unchanged");
-  await rm(runnerTemp, { force: true, recursive: true });
 });
 
 test("recovery has stable fail-closed classifications for every stale candidate state", async () => {
@@ -1940,11 +1743,11 @@ test("wrong-owner candidates have a stable conservative recovery reason", async 
   }
 });
 
-test("parallel outer owners isolate participant worker trees under one inherited root each", async () => {
-  const runnerTemp = await temporaryParent();
-  const env = { ...process.env, RUNNER_TEMP: runnerTemp, TEST_SANDBOX_DISABLE: "1" };
-  const first = startWrapper(["--print-root", "--nested-participant", "--wait"], env);
-  const second = startWrapper(["--print-root", "--nested-participant", "--wait"], env);
+test("parallel outer owners isolate participant worker trees under one inherited root each", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const env = fx.env({ TEST_SANDBOX_DISABLE: "1" });
+  const first = startWrapper(fx, ["--print-root", "--nested-participant", "--wait"], env);
+  const second = startWrapper(fx, ["--print-root", "--nested-participant", "--wait"], env);
   const [firstRoot, secondRoot] = await Promise.all([reportedRoot(first), reportedRoot(second)]);
   try {
     assert.notEqual(await realpath(firstRoot), await realpath(secondRoot));
@@ -1983,6 +1786,86 @@ test("parallel outer owners isolate participant worker trees under one inherited
     assert.deepEqual(await secondClose, { code: null, signal: "SIGTERM" });
     await assert.rejects(access(firstRoot));
     await assert.rejects(access(secondRoot));
-    await rm(runnerTemp, { force: true, recursive: true });
+  }
+});
+
+// The tests below protect the fixture that every launch above depends on.
+
+const OUTSIDE_BOUND_ROOT = /outside the bound runner temp/;
+const RUNNER_TEMP_MISMATCH = /RUNNER_TEMP must be/;
+// A bare `spawn(`, not the fixture's `fx.spawn(`.
+const DIRECT_WRAPPER_LAUNCH = /(?<![.\w])spawn\(\s*process\.execPath/;
+
+test("every wrapper launch in this file goes through the lifecycle fixture", async () => {
+  const source = await readFile(new URL(import.meta.url), "utf8");
+  assert.equal(
+    source.match(DIRECT_WRAPPER_LAUNCH)?.[0],
+    undefined,
+    "start the wrapper with fixture.spawn so its paths are checked and its groups reaped"
+  );
+});
+
+test("a command argument or variable naming a temp path outside the bound runner temp is rejected", async (t) => {
+  const fx = await lifecycleFixture(t);
+  const sibling = await mkdtemp(join(tmpdir(), "pdpp-test-scratch-test-sibling-"));
+  t.after(() => rm(sibling, { force: true, recursive: true }));
+  const inside = fx.path("work", "record");
+  assertCommandSeesOnlyBoundPaths(fx.runnerTemp, ["sh", "-c", "true", inside], fx.env({ RECORD: inside }));
+  assert.throws(
+    () => assertCommandSeesOnlyBoundPaths(fx.runnerTemp, ["sh", "-c", "true", join(sibling, "f")], fx.env()),
+    {
+      message: OUTSIDE_BOUND_ROOT,
+    }
+  );
+  assert.throws(() => assertCommandSeesOnlyBoundPaths(fx.runnerTemp, [], fx.env({ RECORD: join(sibling, "f") })), {
+    message: OUTSIDE_BOUND_ROOT,
+  });
+  assert.throws(() => assertCommandSeesOnlyBoundPaths(fx.runnerTemp, [], fx.env({ PATH: `${sibling}:/usr/bin` })), {
+    message: OUTSIDE_BOUND_ROOT,
+  });
+  assert.throws(() => fx.path("..", "elsewhere"), { message: OUTSIDE_BOUND_ROOT });
+  assert.throws(() => fx.spawn("true", [join(sibling, "f")]), { message: OUTSIDE_BOUND_ROOT });
+  assert.throws(() => fx.spawn("true", [], { env: { ...process.env, RUNNER_TEMP: sibling } }), {
+    message: RUNNER_TEMP_MISMATCH,
+  });
+});
+
+test("fixture teardown stops a command group an owner kill orphaned and closes the wrapper pipes", async () => {
+  const hooks: Array<() => Promise<void> | void> = [];
+  const fx = await lifecycleFixture({
+    after: (hook: () => Promise<void> | void) => hooks.push(hook),
+  } as unknown as TestContext);
+  let teardownRan = false;
+  try {
+    // The command leaves a background child that inherits the wrapper's stdout and stderr.
+    const wrapper = startRawWrapper(
+      fx,
+      ["sh", "-c", 'sleep 300 & echo "$!" > "$1"; sleep 300', "sh", fx.path("background.pid")],
+      fx.env({ TEST_SANDBOX_DISABLE: "1" })
+    );
+    await eventuallyRead(fx.path("background.pid"), 20_000);
+    const root = await eventuallyRunRoot(fx.scratchParent);
+    const marker = await eventuallyRunningMarker(join(root, ".pdpp-test-scratch.json"));
+    const close = exited(wrapper);
+    wrapper.kill("SIGKILL");
+    await close;
+    // No owner is left: the command's group is alive and still holds the pipes.
+    process.kill(-marker.pgid, 0);
+    for (const hook of hooks) {
+      // biome-ignore lint/performance/noAwaitInLoops: teardown hooks run in registration order.
+      await hook();
+    }
+    teardownRan = true;
+    await eventuallyAbsentGroup(marker.pgid);
+    assert.equal(wrapper.stdout?.destroyed, true);
+    assert.equal(wrapper.stderr?.destroyed, true);
+    await assert.rejects(access(fx.runnerTemp));
+  } finally {
+    if (!teardownRan) {
+      for (const hook of hooks) {
+        // biome-ignore lint/performance/noAwaitInLoops: teardown hooks run in registration order.
+        await hook();
+      }
+    }
   }
 });
