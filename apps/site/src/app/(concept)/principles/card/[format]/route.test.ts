@@ -32,7 +32,7 @@ test("the card routes are built for exactly the feed and story formats", () => {
 });
 
 for (const format of ["feed", "story"] as const) {
-  test(`${format} returns a PNG of ${SHARE_CARD_FORMATS[format].width}x${SHARE_CARD_FORMATS[format].height} when the flag is 1`, async () => {
+  test(`${format} returns a PNG of ${SHARE_CARD_FORMATS[format].width}x${SHARE_CARD_FORMATS[format].height} when the flag is true`, async () => {
     process.env[FLAG] = "true";
     const response = await request(format);
     assert.equal(response.status, 200);

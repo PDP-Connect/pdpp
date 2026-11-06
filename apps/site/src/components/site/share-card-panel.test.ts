@@ -22,12 +22,12 @@ function statusHtml(signed: string): string {
   return renderToStaticMarkup(createElement(PdppSigningStatus, { signed }));
 }
 
-test("the panel shows on a confirmed signature when the flag is 1", () => {
+test("the panel shows on a confirmed signature when the flag is true", () => {
   process.env[FLAG] = "true";
   assert.match(statusHtml("confirmed"), PANEL_SLOT);
 });
 
-test("the panel is hidden when the flag is off, unset, or not exactly 1", () => {
+test("the panel is hidden when the flag is off, unset, or not exactly true", () => {
   for (const value of [undefined, "", "0", "1"]) {
     if (value === undefined) {
       delete process.env[FLAG];
