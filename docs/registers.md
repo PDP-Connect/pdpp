@@ -19,7 +19,7 @@ the affiliation, if given), the signatory's name for an organisation (the
 `signatoryRole` field is always empty), the email address, the country, the
 type, the four consent flags, the Principles version, the confirmation
 timestamp, and `requestedApps`
-(up to three app names the signatory would like to see join PDPP; an empty
+(up to ten app names the signatory would like to see join PDPP; an empty
 list when none). `requestedApps` is never published. Only counts leave the
 private store; see [Counting requested apps](#counting-requested-apps).
 

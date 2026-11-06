@@ -241,7 +241,7 @@ export function normalizeEmail(value) {
 
 /**
  * Encodes a submission as the form body a browser would send. An array value
- * becomes one repeated key per item, as the form's three app inputs do;
+ * becomes one repeated key per item, as the form's app inputs do;
  * `URLSearchParams(object)` would join the array into a single comma string.
  */
 export function encodeSubmission(submission) {
