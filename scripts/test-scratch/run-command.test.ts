@@ -1762,7 +1762,7 @@ const DELIBERATE_FAILURE = /deliberate failure while an orphaned command holds/;
 const SETUP_FAILED = /setup failed/;
 
 test("a helper outside the bound runner temp is rejected before the command is launched", async (t) => {
-  const fx = await lifecycleFixture(t, { under: "/tmp" });
+  const fx = await lifecycleFixture(t);
   const sibling = await mkdtemp(join(tmpdir(), "pdpp-test-scratch-test-sibling-"));
   t.after(() => rm(sibling, { force: true, recursive: true }));
   assert.throws(() => fx.spawn("true", [], { helpers: [join(sibling, "f")] }), { message: OUTSIDE_BOUND_ROOT });
@@ -1770,11 +1770,16 @@ test("a helper outside the bound runner temp is rejected before the command is l
   assert.throws(() => fx.spawn("true", [], { env: { ...process.env, RUNNER_TEMP: sibling } }), {
     message: RUNNER_TEMP_MISMATCH,
   });
-  // A helper made with the fixture is accepted, and a command run through the sandboxed wrapper can read it
-  // below /tmp, so a broken /tmp bind-back fails here. TEST_SANDBOX_REQUIRE=1 makes a host without a usable
-  // bubblewrap fail this probe instead of running the command on the unisolated host /tmp. Inside an outer
-  // sandbox (the test-accounting run) bubblewrap cannot nest, so the probe cannot require it there; the
-  // test-scratch-lifecycle workflow runs this file outside any sandbox and is the gate for this probe.
+});
+
+test("a helper made with the fixture is readable through the sandboxed wrapper below /tmp", async (t) => {
+  if (process.env.TEST_SANDBOX_ACTIVE) {
+    t.skip("bind-back isolation is gated by the lifecycle job; bwrap cannot nest inside the outer sandbox");
+    return;
+  }
+  // A broken /tmp bind-back fails here. TEST_SANDBOX_REQUIRE=1 makes a host without a usable bubblewrap fail
+  // instead of running the command on the unisolated host /tmp.
+  const fx = await lifecycleFixture(t, { under: "/tmp" });
   const record = join(await fx.dir("work"), "record");
   await writeFile(record, "from the fixture\n");
   const reader = fx.spawn(process.execPath, ["--import", "tsx", wrapperPath, "--", "cat", record], {
@@ -1782,7 +1787,7 @@ test("a helper outside the bound runner temp is rejected before the command is l
       ...NO_INHERITED_OWNER,
       ...FRESH_SANDBOX_CONTEXT,
       TEST_SANDBOX_DISABLE: "0",
-      TEST_SANDBOX_REQUIRE: process.env.TEST_SANDBOX_ACTIVE ? "0" : "1",
+      TEST_SANDBOX_REQUIRE: "1",
     }),
     helpers: [record],
     stdio: ["ignore", "pipe", "pipe"],
