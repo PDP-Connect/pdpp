@@ -29,11 +29,10 @@ export const metadata: Metadata = {
 // document appearing somewhere else.
 
 const STORED = [
-  "The name you entered. For an organisation, the organisation name too. For an individual, the affiliation, if you gave one.",
+  "The name you entered, and for an organisation the organisation name, the signatory's name and their role.",
   "Your email address.",
   "Your country and, for an organisation, its type.",
   "The four consent choices you made on the form.",
-  "Any apps you named as ones you would like to see join PDPP.",
   "The version of the Principles you signed and the time your signature was confirmed.",
 ] as const;
 
@@ -72,10 +71,6 @@ export default function Page() {
             tell you about new versions of the specification and comment periods. We do not use it for anything else,
             and we never sell or share it.
           </Text>
-          <Text as="p" className="mt-4 max-w-[68ch]" size="body" wrap="pretty">
-            If you named apps, we count how many supporters named each one. We may tell a company how many supporters
-            named it. We never give it your name, your email or anything else about you.
-          </Text>
         </PdppConceptSection>
 
         <PdppConceptSection id="stored" title="What is stored">
@@ -104,8 +99,8 @@ export default function Page() {
             ))}
           </ul>
           <Text as="p" className="mt-4 max-w-[68ch]" size="body" wrap="pretty">
-            Your email address is never published. Neither is the name of the person who signed for an organisation, or
-            the affiliation of an individual.
+            Your email address is never published. Neither is the name or role of the person who signed for an
+            organisation.
           </Text>
         </PdppConceptSection>
 
