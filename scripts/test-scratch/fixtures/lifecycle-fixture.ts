@@ -2,24 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The one place the lifecycle oracle creates directories for, launches, and cleans up
-// after a command that runs through the scratch wrapper. It makes two mistakes that hung
-// CI on a runner image with bubblewrap impossible rather than something each test remembers:
+// after a command that runs through the scratch wrapper. It guards against two mistakes that
+// hung CI on a runner image with bubblewrap, so no test has to remember them:
 //
 // 1. A helper the command cannot see. `scripts/test-sandbox/test-sandbox` gives the command
 //    a private /tmp and binds back only the top directory of its scratch root. `path` and
-//    `dir` hand out paths only inside `runnerTemp`, and `spawn` rejects a declared helper
-//    outside it.
+//    `dir` hand out paths only inside `runnerTemp`, and `spawn` rejects a helper declared
+//    outside it. Fixture-created paths stay inside `runnerTemp`; declared outside helpers
+//    are rejected. A path a test builds by hand and does not declare is not checked.
 // 2. A process the test leaves behind. A leftover command group keeps the wrapper's pipes
 //    open, so the test process never exits. Teardown closes the pipes and kills what the
 //    fixture launched.
 //
 // Ownership is the launch environment: `spawn` requires `RUNNER_TEMP` to be this fixture's
 // unique `runnerTemp`, and every descendant, including one in the sandbox, inherits it.
-// Teardown kills exactly the processes carrying that value. It never signals a recorded
-// pid or group id, so a stale or reused id cannot name an unrelated process.
+// Teardown kills exactly the processes carrying that value. It never signals a pid or group
+// id recorded earlier: each process is matched and signalled in one synchronous step.
 
 import { type ChildProcess, spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { TestContext } from "node:test";
@@ -52,21 +54,42 @@ function isInside(root: string, candidate: string): boolean {
   return rel === "" || !(rel.startsWith("..") || isAbsolute(rel));
 }
 
-/** Pids other than this process whose environment carries `entry`; undefined when `/proc` is unreadable. */
-async function pidsCarrying(entry: string): Promise<number[] | undefined> {
-  const names = await readdir("/proc").catch(() => undefined);
-  if (names === undefined) {
-    return;
+/**
+ * Kill every process other than this one whose environment carries `entry`, scanning again
+ * because a parent may fork once more before it dies. False when `/proc` is unreadable, so
+ * ownership cannot be established.
+ */
+function killCarriers(entry: string): boolean {
+  for (let scan = 0; scan < 6; scan += 1) {
+    let names: string[];
+    try {
+      names = readdirSync("/proc");
+    } catch {
+      return false;
+    }
+    let killed = 0;
+    for (const name of names) {
+      const pid = Number(name);
+      if (!DIGITS.test(name) || pid === process.pid) {
+        continue;
+      }
+      try {
+        // Match and signal with nothing awaited between, so the pid cannot be reassigned while
+        // we wait. The remaining window, between this read and the kill, is the one Jenkins'
+        // ProcessTreeKiller accepts.
+        if (readFileSync(`/proc/${name}/environ`, "utf8").split("\0").includes(entry)) {
+          process.kill(pid, "SIGKILL");
+          killed += 1;
+        }
+      } catch {
+        // The environment is unreadable or the process already exited.
+      }
+    }
+    if (killed === 0) {
+      break;
+    }
   }
-  const pids = await Promise.all(
-    names
-      .filter((name) => DIGITS.test(name))
-      .map(async (name) => {
-        const environment = await readFile(`/proc/${name}/environ`, "utf8").catch(() => "");
-        return environment.split("\0").includes(entry) ? Number(name) : 0;
-      })
-  );
-  return pids.filter((pid) => pid > 0 && pid !== process.pid);
+  return true;
 }
 
 function killQuietly(pid: number): void {
@@ -75,24 +98,6 @@ function killQuietly(pid: number): void {
   } catch {
     // The process already exited.
   }
-}
-
-/**
- * Kill every process whose environment carries `entry`, scanning again because a parent may
- * fork once more before it dies. False when ownership cannot be established (no `/proc`).
- */
-async function killCarriers(entry: string, passesLeft = 5): Promise<boolean> {
-  const pids = await pidsCarrying(entry);
-  if (pids === undefined) {
-    return false;
-  }
-  if (pids.length === 0 || passesLeft === 0) {
-    return true;
-  }
-  for (const pid of pids) {
-    killQuietly(pid);
-  }
-  return killCarriers(entry, passesLeft - 1);
 }
 
 /** Create a fixture for one test; everything it handed out is cleaned up in the test's `after` hook. */
@@ -132,7 +137,7 @@ export async function lifecycleFixture(
       }
     }
     // A test that launched nothing and never adopted RUNNER_TEMP has nothing to reap.
-    if (mayHaveLaunched && !(await killCarriers(`RUNNER_TEMP=${runnerTemp}`))) {
+    if (mayHaveLaunched && !killCarriers(`RUNNER_TEMP=${runnerTemp}`)) {
       t.diagnostic(`/proc is unreadable, so descendants of ${runnerTemp} cannot be proven ours; none were killed`);
     }
     await rm(runnerTemp, { force: true, recursive: true });

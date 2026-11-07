@@ -1052,33 +1052,28 @@ test("a sidecar killed right after spawning the command does not orphan the comm
   const fx = await lifecycleFixture(t);
   const recordFile = fx.path("work", "command.record");
   await fx.dir("work");
-  let commandPid: number | undefined;
-  try {
-    const wrapper = fx.spawn(
-      process.execPath,
-      ["--import", "tsx", sandboxChildWrapperPath, killAfterSpawnSandboxChild, "sh", "-c", "exec sleep 300"],
-      {
-        env: noCgroupEnv(fx, { KILL_AFTER_SPAWN_RECORD: recordFile }),
-        helpers: [recordFile],
-        stdio: ["ignore", "ignore", "ignore"],
-      }
-    );
-    await closed(wrapper);
-    // Written by the sidecar before the kill, so it exists even if cleanup stops the command before it runs.
-    const [pid, root] = (await eventuallyRead(recordFile, 20_000)).trim().split(" ");
-    commandPid = Number(pid);
-    assert.ok(Number.isSafeInteger(commandPid) && commandPid > 0);
-    assert.ok(root);
-    // Either the scratch is kept, or the command is gone: never a live command with its scratch deleted.
-    if (
-      !(await access(root)
-        .then(() => true)
-        .catch(() => false))
-    ) {
-      await eventuallyAbsentProcess(commandPid);
+  const wrapper = fx.spawn(
+    process.execPath,
+    ["--import", "tsx", sandboxChildWrapperPath, killAfterSpawnSandboxChild, "sh", "-c", "exec sleep 300"],
+    {
+      env: noCgroupEnv(fx, { KILL_AFTER_SPAWN_RECORD: recordFile }),
+      helpers: [recordFile],
+      stdio: ["ignore", "ignore", "ignore"],
     }
-  } finally {
-    killQuietly(commandPid);
+  );
+  await closed(wrapper);
+  // Written by the sidecar before the kill, so it exists even if cleanup stops the command before it runs.
+  const [pid, root] = (await eventuallyRead(recordFile, 20_000)).trim().split(" ");
+  const commandPid = Number(pid);
+  assert.ok(Number.isSafeInteger(commandPid) && commandPid > 0);
+  assert.ok(root);
+  // Either the scratch is kept, or the command is gone: never a live command with its scratch deleted.
+  if (
+    !(await access(root)
+      .then(() => true)
+      .catch(() => false))
+  ) {
+    await eventuallyAbsentProcess(commandPid);
   }
 });
 
@@ -1087,48 +1082,37 @@ test("owner SIGKILL then a command that leaves a background child does not let r
   const pidFile = fx.path("work", "background.pid");
   const releaseFile = fx.path("work", "release");
   await fx.dir("work");
-  let backgroundPid: number | undefined;
-  let wrapper: ReturnType<typeof startRawWrapper> | undefined;
-  try {
-    wrapper = startRawWrapper(
-      fx,
-      [
-        "sh",
-        "-c",
-        'sleep 300 </dev/null >/dev/null 2>&1 & echo "$! $PDPP_TEST_SCRATCH_ROOT" > "$1"; while [ ! -e "$2" ]; do sleep 0.05; done',
-        "sh",
-        pidFile,
-        releaseFile,
-      ],
-      noCgroupEnv(fx)
-    );
-    const [pid, root] = (await eventuallyRead(pidFile, 20_000)).trim().split(" ");
-    backgroundPid = Number(pid);
-    assert.ok(root);
-    const markerPath = join(root, ".pdpp-test-scratch.json");
-    const marker = await eventuallyRunningMarker(markerPath);
-    const close = exited(wrapper);
-    wrapper.kill("SIGKILL");
-    await close;
-    // The command now exits, leaving its background child behind; no owner is left to stop it.
-    await writeFile(releaseFile, "release\n");
-    await eventuallyAbsentGroup(marker.pgid);
-    await writeFile(
-      markerPath,
-      `${JSON.stringify({ ...marker, created_at: new Date(Date.now() - 120_000).toISOString() })}\n`
-    );
-    const results = await recoverStaleScratch({ parent: fx.scratchParent });
-    // Either recovery keeps the scratch, or nothing of the command is left alive in it.
-    if (results.some((entry) => entry.path === root && entry.removed)) {
-      await eventuallyAbsentProcess(backgroundPid);
-    }
-  } finally {
-    // Release the command's wait loop and stop an owner a failed assertion left running.
-    await writeFile(releaseFile, "release\n").catch(() => undefined);
-    if (wrapper?.pid && wrapper.exitCode === null && wrapper.signalCode === null) {
-      wrapper.kill("SIGKILL");
-    }
-    killQuietly(backgroundPid);
+  const wrapper = startRawWrapper(
+    fx,
+    [
+      "sh",
+      "-c",
+      'sleep 300 </dev/null >/dev/null 2>&1 & echo "$! $PDPP_TEST_SCRATCH_ROOT" > "$1"; while [ ! -e "$2" ]; do sleep 0.05; done',
+      "sh",
+      pidFile,
+      releaseFile,
+    ],
+    noCgroupEnv(fx)
+  );
+  const [pid, root] = (await eventuallyRead(pidFile, 20_000)).trim().split(" ");
+  const backgroundPid = Number(pid);
+  assert.ok(root);
+  const markerPath = join(root, ".pdpp-test-scratch.json");
+  const marker = await eventuallyRunningMarker(markerPath);
+  const close = exited(wrapper);
+  wrapper.kill("SIGKILL");
+  await close;
+  // The command now exits, leaving its background child behind; no owner is left to stop it.
+  await writeFile(releaseFile, "release\n");
+  await eventuallyAbsentGroup(marker.pgid);
+  await writeFile(
+    markerPath,
+    `${JSON.stringify({ ...marker, created_at: new Date(Date.now() - 120_000).toISOString() })}\n`
+  );
+  const results = await recoverStaleScratch({ parent: fx.scratchParent });
+  // Either recovery keeps the scratch, or nothing of the command is left alive in it.
+  if (results.some((entry) => entry.path === root && entry.removed)) {
+    await eventuallyAbsentProcess(backgroundPid);
   }
 });
 
@@ -1792,6 +1776,7 @@ test("parallel outer owners isolate participant worker trees under one inherited
 
 const OUTSIDE_BOUND_ROOT = /outside the bound runner temp/;
 const RUNNER_TEMP_MISMATCH = /RUNNER_TEMP must be/;
+const DELIBERATE_FAILURE = /deliberate failure while an orphaned command holds/;
 
 test("a helper outside the bound runner temp is rejected before the command is launched", async (t) => {
   const fx = await lifecycleFixture(t);
@@ -1802,8 +1787,16 @@ test("a helper outside the bound runner temp is rejected before the command is l
   assert.throws(() => fx.spawn("true", [], { env: { ...process.env, RUNNER_TEMP: sibling } }), {
     message: RUNNER_TEMP_MISMATCH,
   });
-  // A helper made with the fixture is accepted.
-  fx.spawn("true", [], { helpers: [fx.path("work", "record")] });
+  // A helper made with the fixture is accepted, and the launched command can read it.
+  const record = join(await fx.dir("work"), "record");
+  await writeFile(record, "from the fixture\n");
+  const reader = fx.spawn("cat", [record], { helpers: [record] });
+  let output = "";
+  reader.stdout?.on("data", (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  assert.deepEqual(await closed(reader), { code: 0, signal: null });
+  assert.equal(output, "from the fixture\n");
 });
 
 test("fixture teardown kills what the fixture launched and leaves a process it did not launch alone", {
@@ -1836,22 +1829,22 @@ test("fixture teardown kills what the fixture launched and leaves a process it d
 });
 
 for (const sandboxDisabled of ["0", "1"]) {
-  test(`a failed assertion ends the test run and leaves no process group behind (TEST_SANDBOX_DISABLE=${sandboxDisabled})`, {
+  test(`a failed assertion ends the test run and leaves no command process behind (TEST_SANDBOX_DISABLE=${sandboxDisabled})`, {
     skip: process.platform !== "linux",
   }, async (t) => {
     const fx = await lifecycleFixture(t);
-    const groupOut = fx.path("group.pid");
+    const pidsOut = fx.path("pids");
     // Before the fixture reaped what a test left behind, this run never exited.
     const run = fx.spawn(process.execPath, ["--import", "tsx", "--test", leakedGroupAfterFailure], {
       env: fx.env({
         ...NO_INHERITED_OWNER,
         ...FRESH_SANDBOX_CONTEXT,
-        GROUP_OUT: groupOut,
+        PIDS_OUT: pidsOut,
         // The outer test runner's context would make the child run skip its test file.
         NODE_TEST_CONTEXT: undefined,
         TEST_SANDBOX_DISABLE: sandboxDisabled,
       }),
-      helpers: [groupOut],
+      helpers: [pidsOut],
       killSignal: "SIGKILL",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 60_000,
@@ -1863,6 +1856,13 @@ for (const sandboxDisabled of ["0", "1"]) {
       });
     }
     assert.deepEqual(await closed(run), { code: 1, signal: null }, output);
-    await eventuallyAbsentGroup(Number(await readFile(groupOut, "utf8")));
+    // The deliberate failure, not a setup failure, ended the run.
+    assert.match(output, DELIBERATE_FAILURE);
+    await Promise.all(
+      (await readFile(pidsOut, "utf8"))
+        .trim()
+        .split(" ")
+        .map((pid) => eventuallyAbsentProcess(Number(pid)))
+    );
   });
 }
