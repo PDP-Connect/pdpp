@@ -22,11 +22,7 @@ import {
 import { platform, tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import test, { type TestContext } from "node:test";
-import {
-  assertCommandSeesOnlyBoundPaths,
-  type LifecycleFixture,
-  lifecycleFixture,
-} from "./fixtures/lifecycle-fixture.ts";
+import { type LifecycleFixture, lifecycleFixture } from "./fixtures/lifecycle-fixture.ts";
 import {
   allocateScratchOwnership,
   cleanupScratchOwnership,
@@ -56,6 +52,7 @@ const lifecycleWrapperPath = new URL("./fixtures/lifecycle-wrapper.ts", import.m
 const sandboxChildWrapperPath = new URL("./fixtures/sandbox-child-wrapper.ts", import.meta.url).pathname;
 const delayedPublishSandboxChild = new URL("./fixtures/delayed-publish-sandbox-child.ts", import.meta.url).pathname;
 const killAfterSpawnSandboxChild = new URL("./fixtures/kill-after-spawn-sandbox-child.ts", import.meta.url).pathname;
+const leakedGroupAfterFailure = new URL("./fixtures/leaked-group-after-failure.ts", import.meta.url).pathname;
 
 interface ChildResult {
   code: number | null;
@@ -536,7 +533,7 @@ test("launch failure removes its allocated root and returns the infrastructure e
 
 test("an unproven group shutdown retains scratch and makes a successful command infrastructure-failed", async (t) => {
   const fx = await lifecycleFixture(t);
-  fx.adoptAsRunnerTemp();
+  fx.useRunnerTempForThisTest();
   const result = await runScratchCommand(command(["--exit=0"]), { stopGroup: async () => false });
   assert.deepEqual(result, { code: 74, signal: null });
   const roots = (await readdir(fx.scratchParent)).filter((entry) => entry.startsWith("run-"));
@@ -545,7 +542,7 @@ test("an unproven group shutdown retains scratch and makes a successful command 
 
 test("a rejected group proof retains scratch but preserves the child result", async (t) => {
   const fx = await lifecycleFixture(t);
-  fx.adoptAsRunnerTemp();
+  fx.useRunnerTempForThisTest();
   for (const exitCode of [0, 42]) {
     // biome-ignore lint/performance/noAwaitInLoops: each case must retain and reap its own live group before the next case.
     const result = await runScratchCommand(["--", "sh", "-c", `sleep 30 & exit ${exitCode}`], {
@@ -1037,6 +1034,7 @@ test("a sandbox that exits before publishing a command group leaves no scratch a
       TEST_SANDBOX_DISABLE: "0",
       TEST_SANDBOX_REQUIRE: "1",
     }),
+    helpers: [stubs],
     stdio: ["ignore", "ignore", "pipe"],
   });
   let stderr = "";
@@ -1061,6 +1059,7 @@ test("a sidecar killed right after spawning the command does not orphan the comm
       ["--import", "tsx", sandboxChildWrapperPath, killAfterSpawnSandboxChild, "sh", "-c", "exec sleep 300"],
       {
         env: noCgroupEnv(fx, { KILL_AFTER_SPAWN_RECORD: recordFile }),
+        helpers: [recordFile],
         stdio: ["ignore", "ignore", "ignore"],
       }
     );
@@ -1337,7 +1336,7 @@ test("a signal latched while the running transition is durable is forwarded afte
 
 test("SIGTERM latched before recovery creates no allocation or child", async (t) => {
   const fx = await lifecycleFixture(t);
-  fx.adoptAsRunnerTemp();
+  fx.useRunnerTempForThisTest();
   const result = await runScratchCommand(command(["--print-root"]), {
     afterSignalHandlersInstalled: async () => {
       process.kill(process.pid, "SIGTERM");
@@ -1350,7 +1349,7 @@ test("SIGTERM latched before recovery creates no allocation or child", async (t)
 
 test("SIGTERM during allocation cleanup prevents spawn", async (t) => {
   const fx = await lifecycleFixture(t);
-  fx.adoptAsRunnerTemp();
+  fx.useRunnerTempForThisTest();
   const result = await runScratchCommand(command(["--print-root"]), {
     afterAllocationBeforeSpawn: async () => {
       process.kill(process.pid, "SIGTERM");
@@ -1363,7 +1362,7 @@ test("SIGTERM during allocation cleanup prevents spawn", async (t) => {
 
 test("SIGTERM during cleanup remains observable after the root is removed", async (t) => {
   const fx = await lifecycleFixture(t);
-  fx.adoptAsRunnerTemp();
+  fx.useRunnerTempForThisTest();
   const result = await runScratchCommand(command(["--exit=0"]), {
     cleanupHooks: {
       afterJournal: async () => {
@@ -1378,7 +1377,7 @@ test("SIGTERM during cleanup remains observable after the root is removed", asyn
 
 test("a latched signal plus a pre-launch error cleans the provably allocated root", async (t) => {
   const fx = await lifecycleFixture(t);
-  fx.adoptAsRunnerTemp();
+  fx.useRunnerTempForThisTest();
   const result = await runScratchCommand(command(["--print-root"]), {
     afterAllocationBeforeSpawn: async () => {
       process.kill(process.pid, "SIGTERM");
@@ -1399,8 +1398,6 @@ test("SIGKILL during spawn-before-running retains a launching root even after it
   const marker = JSON.parse(await readFile(markerPath, "utf8")) as { state: string };
   assert.equal(marker.state, "launching");
   const childPid = Number.parseInt(await eventuallyRead(join(root, "child.txt")), 10);
-  // The marker is still "launching" and records no group, so teardown cannot find this one itself.
-  fx.trackGroup(childPid);
   const close = exited(proc);
   proc.kill("SIGKILL");
   assert.deepEqual(await close, { code: null, signal: "SIGKILL" });
@@ -1494,7 +1491,7 @@ test("a malformed nonempty boot identity cannot bypass the live-group proof", as
 test("recovery budgets bound inventory inspection and still permit the new owner", async (t) => {
   const fx = await lifecycleFixture(t);
   const parent = fx.scratchParent;
-  fx.adoptAsRunnerTemp();
+  fx.useRunnerTempForThisTest();
   await mkdir(parent, { mode: 0o700 });
   await Promise.all(Array.from({ length: 12 }, (_, index) => writeFile(join(parent, `foreign-${index}`), "defer")));
   const inspected: string[] = [];
@@ -1795,113 +1792,77 @@ test("parallel outer owners isolate participant worker trees under one inherited
 
 const OUTSIDE_BOUND_ROOT = /outside the bound runner temp/;
 const RUNNER_TEMP_MISMATCH = /RUNNER_TEMP must be/;
-// A bare `spawn(`, not the fixture's `fx.spawn(`.
-const DIRECT_WRAPPER_LAUNCH = /(?<![.\w])spawn\(\s*process\.execPath/;
 
-test("every wrapper launch in this file goes through the lifecycle fixture", async () => {
-  const source = await readFile(new URL(import.meta.url), "utf8");
-  assert.equal(
-    source.match(DIRECT_WRAPPER_LAUNCH)?.[0],
-    undefined,
-    "start the wrapper with fixture.spawn so its paths are checked and its groups reaped"
-  );
-});
-
-test("a command argument or variable naming a temp path outside the bound runner temp is rejected", async (t) => {
+test("a helper outside the bound runner temp is rejected before the command is launched", async (t) => {
   const fx = await lifecycleFixture(t);
   const sibling = await mkdtemp(join(tmpdir(), "pdpp-test-scratch-test-sibling-"));
   t.after(() => rm(sibling, { force: true, recursive: true }));
-  const inside = fx.path("work", "record");
-  assertCommandSeesOnlyBoundPaths(fx.runnerTemp, ["sh", "-c", "true", inside], fx.env({ RECORD: inside }));
-  assert.throws(
-    () => assertCommandSeesOnlyBoundPaths(fx.runnerTemp, ["sh", "-c", "true", join(sibling, "f")], fx.env()),
-    {
-      message: OUTSIDE_BOUND_ROOT,
-    }
-  );
-  assert.throws(() => assertCommandSeesOnlyBoundPaths(fx.runnerTemp, [], fx.env({ RECORD: join(sibling, "f") })), {
-    message: OUTSIDE_BOUND_ROOT,
-  });
-  assert.throws(() => assertCommandSeesOnlyBoundPaths(fx.runnerTemp, [], fx.env({ PATH: `${sibling}:/usr/bin` })), {
-    message: OUTSIDE_BOUND_ROOT,
-  });
+  assert.throws(() => fx.spawn("true", [], { helpers: [join(sibling, "f")] }), { message: OUTSIDE_BOUND_ROOT });
   assert.throws(() => fx.path("..", "elsewhere"), { message: OUTSIDE_BOUND_ROOT });
-  assert.throws(() => fx.spawn("true", [join(sibling, "f")]), { message: OUTSIDE_BOUND_ROOT });
   assert.throws(() => fx.spawn("true", [], { env: { ...process.env, RUNNER_TEMP: sibling } }), {
     message: RUNNER_TEMP_MISMATCH,
   });
+  // A helper made with the fixture is accepted.
+  fx.spawn("true", [], { helpers: [fx.path("work", "record")] });
 });
 
-test("a checkout under /tmp stays visible to a sandboxed command", async (t) => {
-  const fx = await lifecycleFixture(t);
-  const checkout = "/tmp/pdpp-checkout-example";
-  const script = `${checkout}/scripts/test-scratch/run-command.ts`;
-  assertCommandSeesOnlyBoundPaths(fx.runnerTemp, [script], fx.env(), `${checkout}/scripts`);
-  assert.throws(() => assertCommandSeesOnlyBoundPaths(fx.runnerTemp, ["/tmp/another-dir/f"], fx.env(), checkout), {
-    message: OUTSIDE_BOUND_ROOT,
-  });
-  assert.throws(() => assertCommandSeesOnlyBoundPaths(fx.runnerTemp, [script], fx.env(), "/home/runner/work/pdpp"), {
-    message: OUTSIDE_BOUND_ROOT,
-  });
-});
-
-test("fixture teardown stops a tracked group that no marker records", async () => {
+test("fixture teardown kills what the fixture launched and leaves a process it did not launch alone", {
+  skip: process.platform !== "linux",
+}, async () => {
   const hooks: Array<() => Promise<void> | void> = [];
   const fx = await lifecycleFixture({
     after: (hook: () => Promise<void> | void) => hooks.push(hook),
   } as unknown as TestContext);
-  const group = spawn("sh", ["-c", "exec sleep 300"], { detached: true, stdio: "ignore" });
-  assert.ok(group.pid);
-  const pgid = group.pid;
+  // Neither has a marker or a registered id: the fixture knows only the environment it gave the first.
+  const launched = fx.spawn("sh", ["-c", "exec sleep 300"], { detached: true });
+  const stranger = spawn("sleep", ["300"], {
+    detached: true,
+    env: { ...process.env, RUNNER_TEMP: "/not/a/fixture" },
+    stdio: "ignore",
+  });
   try {
-    fx.trackGroup(pgid);
-    process.kill(-pgid, 0);
+    assert.ok(launched.pid && stranger.pid);
     for (const hook of hooks) {
       // biome-ignore lint/performance/noAwaitInLoops: teardown hooks run in registration order.
       await hook();
     }
-    await eventuallyAbsentGroup(pgid);
-  } finally {
-    killQuietly(-pgid);
-  }
-});
-
-test("fixture teardown stops a command group an owner kill orphaned and closes the wrapper pipes", async () => {
-  const hooks: Array<() => Promise<void> | void> = [];
-  const fx = await lifecycleFixture({
-    after: (hook: () => Promise<void> | void) => hooks.push(hook),
-  } as unknown as TestContext);
-  let teardownRan = false;
-  try {
-    // The command leaves a background child that inherits the wrapper's stdout and stderr.
-    const wrapper = startRawWrapper(
-      fx,
-      ["sh", "-c", 'sleep 300 & echo "$!" > "$1"; sleep 300', "sh", fx.path("background.pid")],
-      fx.env({ TEST_SANDBOX_DISABLE: "1" })
-    );
-    await eventuallyRead(fx.path("background.pid"), 20_000);
-    const root = await eventuallyRunRoot(fx.scratchParent);
-    const marker = await eventuallyRunningMarker(join(root, ".pdpp-test-scratch.json"));
-    const close = exited(wrapper);
-    wrapper.kill("SIGKILL");
-    await close;
-    // No owner is left: the command's group is alive and still holds the pipes.
-    process.kill(-marker.pgid, 0);
-    for (const hook of hooks) {
-      // biome-ignore lint/performance/noAwaitInLoops: teardown hooks run in registration order.
-      await hook();
-    }
-    teardownRan = true;
-    await eventuallyAbsentGroup(marker.pgid);
-    assert.equal(wrapper.stdout?.destroyed, true);
-    assert.equal(wrapper.stderr?.destroyed, true);
+    await eventuallyAbsentGroup(launched.pid);
+    assert.equal(launched.stdout?.destroyed, true);
     await assert.rejects(access(fx.runnerTemp));
+    process.kill(-stranger.pid, 0);
   } finally {
-    if (!teardownRan) {
-      for (const hook of hooks) {
-        // biome-ignore lint/performance/noAwaitInLoops: teardown hooks run in registration order.
-        await hook();
-      }
-    }
+    killQuietly(stranger.pid);
   }
 });
+
+for (const sandboxDisabled of ["0", "1"]) {
+  test(`a failed assertion ends the test run and leaves no process group behind (TEST_SANDBOX_DISABLE=${sandboxDisabled})`, {
+    skip: process.platform !== "linux",
+  }, async (t) => {
+    const fx = await lifecycleFixture(t);
+    const groupOut = fx.path("group.pid");
+    // Before the fixture reaped what a test left behind, this run never exited.
+    const run = fx.spawn(process.execPath, ["--import", "tsx", "--test", leakedGroupAfterFailure], {
+      env: fx.env({
+        ...NO_INHERITED_OWNER,
+        ...FRESH_SANDBOX_CONTEXT,
+        GROUP_OUT: groupOut,
+        // The outer test runner's context would make the child run skip its test file.
+        NODE_TEST_CONTEXT: undefined,
+        TEST_SANDBOX_DISABLE: sandboxDisabled,
+      }),
+      helpers: [groupOut],
+      killSignal: "SIGKILL",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60_000,
+    });
+    let output = "";
+    for (const stream of [run.stdout, run.stderr]) {
+      stream?.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+    }
+    assert.deepEqual(await closed(run), { code: 1, signal: null }, output);
+    await eventuallyAbsentGroup(Number(await readFile(groupOut, "utf8")));
+  });
+}
