@@ -76,7 +76,20 @@ jobs:
       - name: Scoped strict TypeScript
         run: pnpm exec tsc --project scripts/test-scratch/tsconfig.json --pretty false
 
+      - name: Require bubblewrap
+        # The /tmp visibility probe runs with TEST_SANDBOX_REQUIRE=1. Without a working bubblewrap it must fail,
+        # never fall back to the host /tmp, so install it, lift Ubuntu's unprivileged-userns restriction and
+        # prove it here with the flags test-sandbox uses.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --dev-bind / / --tmpfs /tmp --unshare-net true
+          echo "bubblewrap verified: $(bwrap --version)"
+
       - name: Lifecycle owner oracle
+        # The whole file runs in well under a minute; a hung process must fail the step, not the job.
+        timeout-minutes: 5
         run: pnpm exec tsx --test scripts/test-scratch/run-command.test.ts
 
       - name: Canonical-entrypoint ratchet

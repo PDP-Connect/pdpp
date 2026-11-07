@@ -10,7 +10,7 @@ names the enforcement that remains. `TEST_SANDBOX_REQUIRE=1` makes missing
 enforcement an error. `TEST_SANDBOX_DISABLE=1` runs the command directly while
 keeping scratch ownership and cleanup.
 
-The executable is copied byte-for-byte from `ai/skills/local/test-architecture/scripts/test-sandbox` in Tim Nunamaker's dotfiles at commit `ce0d966`. Change and test that source first, then update this copy and digest:
+The executable is copied from `ai/skills/local/test-architecture/scripts/test-sandbox` in Tim Nunamaker's dotfiles at commit `ce0d966`, plus one later upstream fix applied as-is: commit `e4b320a` makes `TEST_SANDBOX_REQUIRE=1` exit 3 on bash older than 5 instead of running the command without isolation. Change and test that source first, then update this copy and digest:
 
 ```sh
 cp <dotfiles>/ai/skills/local/test-architecture/scripts/test-sandbox scripts/test-sandbox/test-sandbox

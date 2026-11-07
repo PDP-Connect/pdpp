@@ -44,7 +44,9 @@
         {
           "id": "default",
           "required": true,
-          "skip_reasons": {}
+          "skip_reasons": {
+            "bind-back isolation is gated by the lifecycle job; bwrap cannot nest inside the outer sandbox": 1
+          }
         }
       ],
       "environment_unset": [
