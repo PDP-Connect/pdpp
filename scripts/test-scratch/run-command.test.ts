@@ -985,10 +985,9 @@ test("SIGINT waits for the sidecar to publish its group before the launcher clea
     settled = true;
   });
   let sidecarPgid: number | undefined;
-  let groupPath: string | undefined;
   try {
     const root = await eventuallyRunRoot(fx.scratchParent);
-    groupPath = join(root, ".sandbox-child-group");
+    const groupPath = join(root, ".sandbox-child-group");
     sidecarPgid = Number((await eventuallyRead(`${groupPath}.held`, 20_000)).trim());
     assert.ok(Number.isSafeInteger(sidecarPgid) && sidecarPgid > 0);
     await assert.rejects(access(groupPath));
@@ -1002,21 +1001,12 @@ test("SIGINT waits for the sidecar to publish its group before the launcher clea
     await eventuallyAbsentGroup(sidecarPgid);
     await assert.rejects(access(root));
   } finally {
-    if (groupPath) {
-      await writeFile(`${groupPath}.release`, "release\n").catch(() => {
-        // The owner may already have removed its scratch root.
-      });
-    }
     if (sidecarPgid) {
       try {
         process.kill(-sidecarPgid, "SIGKILL");
       } catch {
         // The group may have exited before this failure-path cleanup.
       }
-    }
-    if (wrapper.exitCode === null && wrapper.signalCode === null) {
-      wrapper.kill("SIGTERM");
-      await result;
     }
   }
 });
@@ -1120,10 +1110,8 @@ test("a sandbox killed before its sidecar publishes does not let recovery delete
   const fx = await lifecycleFixture(t);
   const parent = fx.scratchParent;
   let sidecarPgid: number | undefined;
-  let groupPath: string | undefined;
-  let wrapper: ReturnType<typeof spawn> | undefined;
   try {
-    wrapper = fx.spawn(
+    const wrapper = fx.spawn(
       process.execPath,
       [
         "--import",
@@ -1138,7 +1126,7 @@ test("a sandbox killed before its sidecar publishes does not let recovery delete
     );
     const wrapperClosed = closed(wrapper);
     const root = await eventuallyRunRoot(parent);
-    groupPath = join(root, ".sandbox-child-group");
+    const groupPath = join(root, ".sandbox-child-group");
     const markerPath = join(root, ".pdpp-test-scratch.json");
     const marker = await eventuallyRunningMarker(markerPath);
     sidecarPgid = Number((await eventuallyRead(`${groupPath}.held`, 20_000)).trim());
@@ -1164,18 +1152,12 @@ test("a sandbox killed before its sidecar publishes does not let recovery delete
     await access(root);
     assert.ok(processAlive(commandPid));
   } finally {
-    if (groupPath) {
-      await writeFile(`${groupPath}.release`, "release\n").catch(() => undefined);
-    }
     if (sidecarPgid) {
       try {
         process.kill(-sidecarPgid, "SIGKILL");
       } catch {
         // The group may have exited before this failure-path cleanup.
       }
-    }
-    if (wrapper?.pid && wrapper.exitCode === null && wrapper.signalCode === null) {
-      wrapper.kill("SIGKILL");
     }
   }
 });
@@ -1777,9 +1759,10 @@ test("parallel outer owners isolate participant worker trees under one inherited
 const OUTSIDE_BOUND_ROOT = /outside the bound runner temp/;
 const RUNNER_TEMP_MISMATCH = /RUNNER_TEMP must be/;
 const DELIBERATE_FAILURE = /deliberate failure while an orphaned command holds/;
+const SETUP_FAILED = /setup failed/;
 
 test("a helper outside the bound runner temp is rejected before the command is launched", async (t) => {
-  const fx = await lifecycleFixture(t);
+  const fx = await lifecycleFixture(t, { under: "/tmp" });
   const sibling = await mkdtemp(join(tmpdir(), "pdpp-test-scratch-test-sibling-"));
   t.after(() => rm(sibling, { force: true, recursive: true }));
   assert.throws(() => fx.spawn("true", [], { helpers: [join(sibling, "f")] }), { message: OUTSIDE_BOUND_ROOT });
@@ -1787,10 +1770,15 @@ test("a helper outside the bound runner temp is rejected before the command is l
   assert.throws(() => fx.spawn("true", [], { env: { ...process.env, RUNNER_TEMP: sibling } }), {
     message: RUNNER_TEMP_MISMATCH,
   });
-  // A helper made with the fixture is accepted, and the launched command can read it.
+  // A helper made with the fixture is accepted, and a command run through the sandboxed wrapper can read it
+  // below /tmp, so a broken /tmp bind-back fails here.
   const record = join(await fx.dir("work"), "record");
   await writeFile(record, "from the fixture\n");
-  const reader = fx.spawn("cat", [record], { helpers: [record] });
+  const reader = fx.spawn(process.execPath, ["--import", "tsx", wrapperPath, "--", "cat", record], {
+    env: fx.env({ ...NO_INHERITED_OWNER, ...FRESH_SANDBOX_CONTEXT, TEST_SANDBOX_DISABLE: "0" }),
+    helpers: [record],
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let output = "";
   reader.stdout?.on("data", (chunk: Buffer) => {
     output += chunk.toString();
@@ -1857,6 +1845,7 @@ for (const sandboxDisabled of ["0", "1"]) {
     }
     assert.deepEqual(await closed(run), { code: 1, signal: null }, output);
     // The deliberate failure, not a setup failure, ended the run.
+    assert.doesNotMatch(output, SETUP_FAILED);
     assert.match(output, DELIBERATE_FAILURE);
     await Promise.all(
       (await readFile(pidsOut, "utf8"))

@@ -14,15 +14,29 @@ import { lifecycleFixture } from "./lifecycle-fixture.ts";
 const wrapperPath = new URL("../run-command.ts", import.meta.url).pathname;
 const PIDS = /^\d+ \d+\n$/;
 
+// Shorter than the parent's 60 s timeout, so a stuck setup fails here and runs this file's after-hooks.
+const READY_DEADLINE_MS = 20_000;
+
 /** Wait for the shell's readiness sentinel: its own pid and its background child's, written once both exist. */
 async function readyPids(sentinel: string): Promise<string> {
-  for (;;) {
-    // biome-ignore lint/performance/noAwaitInLoops: bounded by the parent test's timeout.
+  const deadline = Date.now() + READY_DEADLINE_MS;
+  while (Date.now() < deadline) {
+    // biome-ignore lint/performance/noAwaitInLoops: bounded by READY_DEADLINE_MS.
     const text = await readFile(sentinel, "utf8").catch(() => "");
     if (PIDS.test(text)) {
       return text;
     }
     await sleep(25);
+  }
+  throw new Error("setup failed: the command never reported its pids");
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -45,7 +59,17 @@ test("owner killed while its command and a background child run, then an asserti
     ],
     { helpers: [sentinel] }
   );
-  await writeFile(process.env.PIDS_OUT as string, await readyPids(sentinel));
+  const pids = await readyPids(sentinel);
+  // Let a command that fails at startup finish failing, then require the leak this test needs.
+  await sleep(200);
+  const gone = pids
+    .trim()
+    .split(" ")
+    .filter((pid) => !alive(Number(pid)));
+  if (gone.length > 0 || wrapper.exitCode !== null || wrapper.signalCode !== null) {
+    throw new Error(`setup failed: the command or its background child is not running (gone: ${gone.join(",")})`);
+  }
+  await writeFile(process.env.PIDS_OUT as string, pids);
   wrapper.kill("SIGKILL");
   assert.fail("deliberate failure while an orphaned command holds the wrapper's pipes");
 });
