@@ -40,7 +40,7 @@ export function isPlaceholder(value: string): boolean {
   return PLACEHOLDER_PATTERN.test(value);
 }
 
-// Feature flags. All four default OFF: a flag that defaults on ships the
+// Feature flags. All default OFF: a flag that defaults on ships the
 // feature the moment the code lands, which is the opposite of what a flag is
 // for. `reviewOpen` gates the banner and the nav dropdown entry; `signingLive`
 // gates the whole Supporter form and the /api/sign route; `accessorApplications`

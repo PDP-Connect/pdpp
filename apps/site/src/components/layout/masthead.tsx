@@ -235,7 +235,7 @@ export function PdppConceptMasthead() {
                 </Text>
               );
 
-              // Only Specification carries children. The panel opens on hover
+              // Specification and Participate can carry children. The panel opens on hover
               // AND on focus-within, so it is reachable by keyboard without a
               // click handler or any open/closed state to keep in sync — the
               // links inside are ordinary tab stops. Below the nav's collapse
@@ -247,12 +247,12 @@ export function PdppConceptMasthead() {
               }
 
               return (
-                <span className="md:group relative" key={item.link}>
+                <span className="group relative" key={item.link}>
                   {label}
                   <span
                     className={cn(
                       "z-30 flex-col gap-2 whitespace-nowrap",
-                      "md:absolute md:top-full md:left-0 md:hidden md:pt-3",
+                      "md:absolute md:top-full md:left-0 md:hidden md:w-max md:pt-3",
                       "md:group-hover:flex md:group-focus-within:flex",
                       "max-md:mt-2 max-md:ml-3 max-md:flex"
                     )}

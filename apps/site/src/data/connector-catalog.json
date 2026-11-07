@@ -1,0 +1,686 @@
+{
+  "source": "ghcr.io/pdp-connect/connector-catalog",
+  "manifest_digest": "sha256:600593d19d560555c5db84d38527ad9f01e802e6de2ed0ddf06ed21b90d0b41d",
+  "layer_digest": "sha256:8d5184178ba8762b7715746ee5f867274b471891cc60cb7d0e7e69e30973fc45",
+  "generated_at": "2026-11-04T22:45:18.000Z",
+  "source_commit": "23aee3aaeafad3a804d504e8614763f7845add60",
+  "connectors": [
+    {
+      "key": "amazon",
+      "display_name": "Amazon",
+      "tier": "supported",
+      "labels": [
+        "Your Amazon orders",
+        "Your order line items",
+        "Your Amazon account"
+      ],
+      "source_path": "connectors/amazon"
+    },
+    {
+      "key": "apple-contacts",
+      "display_name": "Apple Contacts",
+      "tier": "preview",
+      "labels": ["Your address books", "Your contacts", "Your contact groups"],
+      "source_path": "connectors/apple_contacts"
+    },
+    {
+      "key": "apple-health",
+      "display_name": "Apple Health",
+      "tier": "development",
+      "labels": [
+        "Your activity",
+        "Your body measurements",
+        "Your reproductive health",
+        "Your hearing and sound exposure",
+        "Your vital signs",
+        "Your lab and test results",
+        "Your sleep",
+        "Your mindful minutes",
+        "Your nutrition",
+        "Your alcohol consumption",
+        "Your mobility",
+        "Your symptoms",
+        "Your other Health data",
+        "Your workouts",
+        "What was imported"
+      ],
+      "source_path": "connectors/apple_health"
+    },
+    {
+      "key": "apple-photos",
+      "display_name": "Apple Photos",
+      "tier": "development",
+      "labels": ["Your exported photos and videos"],
+      "source_path": "connectors/apple_photos"
+    },
+    {
+      "key": "ical",
+      "display_name": "Calendar (iCal)",
+      "tier": "development",
+      "labels": ["Your calendar events"],
+      "source_path": "connectors/ical"
+    },
+    {
+      "key": "character-ai",
+      "display_name": "Character.AI",
+      "tier": "development",
+      "labels": ["Your chats", "Your messages"],
+      "source_path": "connectors/character_ai"
+    },
+    {
+      "key": "chase",
+      "display_name": "Chase",
+      "tier": "supported",
+      "labels": [
+        "Your Chase accounts",
+        "Your Chase transactions",
+        "Your current Chase activity",
+        "Your Chase statements",
+        "Your Chase balance snapshots"
+      ],
+      "source_path": "connectors/chase"
+    },
+    {
+      "key": "chatgpt",
+      "display_name": "ChatGPT",
+      "tier": "supported",
+      "labels": [
+        "Your conversations",
+        "Your messages",
+        "ChatGPT memories",
+        "Your custom GPTs",
+        "Your custom instructions",
+        "Your shared conversations",
+        "Your ChatGPT plan",
+        "Your ChatGPT account profile",
+        "Your ChatGPT usage summary"
+      ],
+      "source_path": "connectors/chatgpt"
+    },
+    {
+      "key": "anthropic",
+      "display_name": "Claude (Anthropic)",
+      "tier": "preview",
+      "labels": [
+        "Your Claude account",
+        "Your Claude plan",
+        "Your Claude conversations",
+        "Your Claude messages",
+        "Your Claude projects",
+        "Your Claude project documents"
+      ],
+      "source_path": "connectors/anthropic"
+    },
+    {
+      "key": "anthropic-live",
+      "display_name": "Claude (Live Session)",
+      "tier": "preview",
+      "labels": [
+        "Your Claude conversations",
+        "Your Claude messages",
+        "Your Claude plan",
+        "Your Claude usage limits"
+      ],
+      "source_path": "connectors/anthropic_live"
+    },
+    {
+      "key": "claude-code",
+      "display_name": "Claude Code",
+      "tier": "supported",
+      "labels": [
+        "Your Claude Code sessions",
+        "Your Claude Code messages",
+        "Claude Code events",
+        "Your Claude Code skills",
+        "Your Claude Code memory notes",
+        "Your custom slash commands",
+        "Your Claude Code usage"
+      ],
+      "source_path": "connectors/claude_code"
+    },
+    {
+      "key": "discord-browser",
+      "display_name": "Discord (Browser Sign-In)",
+      "tier": "development",
+      "labels": [
+        "Your Discord profile",
+        "Your Discord servers",
+        "Your linked accounts",
+        "Your messages in servers"
+      ],
+      "source_path": "connectors/discord_browser"
+    },
+    {
+      "key": "doordash",
+      "display_name": "DoorDash",
+      "tier": "development",
+      "labels": ["Your DoorDash orders", "Your DoorDash order items"],
+      "source_path": "connectors/doordash"
+    },
+    {
+      "key": "facebook",
+      "display_name": "Facebook",
+      "tier": "development",
+      "labels": [
+        "Your Facebook profile",
+        "Your posts",
+        "Your friends",
+        "Your groups",
+        "Your likes and reactions",
+        "Your comments"
+      ],
+      "source_path": "connectors/facebook"
+    },
+    {
+      "key": "fitbit",
+      "display_name": "Fitbit",
+      "tier": "development",
+      "labels": [
+        "Your Fitbit exercise",
+        "Your Fitbit daily activity",
+        "Your Fitbit sleep"
+      ],
+      "source_path": "connectors/fitbit"
+    },
+    {
+      "key": "garmin-browser",
+      "display_name": "Garmin (Browser Sign-In)",
+      "tier": "development",
+      "labels": [
+        "Your Garmin daily summaries",
+        "Your Garmin sleep",
+        "Your Garmin HRV status",
+        "Your Garmin training status",
+        "Your Garmin activities"
+      ],
+      "source_path": "connectors/garmin_browser"
+    },
+    {
+      "key": "github-browser",
+      "display_name": "GitHub (browser session)",
+      "tier": "preview",
+      "labels": [],
+      "source_path": "connectors/github_browser"
+    },
+    {
+      "key": "gmail",
+      "display_name": "Gmail",
+      "tier": "preview",
+      "labels": [
+        "Your messages",
+        "Your conversations",
+        "Your labels",
+        "The text of your emails",
+        "Your attachments"
+      ],
+      "source_path": "connectors/gmail"
+    },
+    {
+      "key": "google-calendar",
+      "display_name": "Google Calendar",
+      "tier": "development",
+      "labels": ["Your Google calendars", "Your Google Calendar events"],
+      "source_path": "connectors/google_calendar"
+    },
+    {
+      "key": "google-contacts",
+      "display_name": "Google Contacts",
+      "tier": "development",
+      "labels": ["Your Google contacts", "Your Google contact groups"],
+      "source_path": "connectors/google_contacts"
+    },
+    {
+      "key": "google-maps-data-portability",
+      "display_name": "Google Maps Data Portability",
+      "tier": "development",
+      "labels": ["Your Google Maps export jobs"],
+      "source_path": "connectors/google_maps_data_portability"
+    },
+    {
+      "key": "google-maps",
+      "display_name": "Google Maps Timeline Import",
+      "tier": "supported",
+      "labels": [
+        "Your Google Maps location points",
+        "Your Google Maps visits and activities"
+      ],
+      "source_path": "connectors/google_maps"
+    },
+    {
+      "key": "google-takeout",
+      "display_name": "Google Takeout",
+      "tier": "development",
+      "labels": [
+        "Your Google location history",
+        "Your YouTube watch history",
+        "Your Google search history",
+        "Your Google photos and videos"
+      ],
+      "source_path": "connectors/google_takeout"
+    },
+    {
+      "key": "groupme",
+      "display_name": "GroupMe",
+      "tier": "development",
+      "labels": [
+        "Your GroupMe groups",
+        "Messages from your GroupMe groups",
+        "Your GroupMe direct messages",
+        "Your GroupMe attachments"
+      ],
+      "source_path": "connectors/groupme"
+    },
+    {
+      "key": "heb",
+      "display_name": "H-E-B",
+      "tier": "preview",
+      "labels": [
+        "Your H-E-B orders",
+        "Your H-E-B order line items",
+        "Your H-E-B profile",
+        "Your H-E-B product nutrition"
+      ],
+      "source_path": "connectors/heb"
+    },
+    {
+      "key": "icloud-notes",
+      "display_name": "iCloud Notes",
+      "tier": "preview",
+      "labels": [
+        "Your iCloud account",
+        "Your iCloud notes",
+        "Your iCloud notes folders"
+      ],
+      "source_path": "connectors/icloud_notes"
+    },
+    {
+      "key": "imessage",
+      "display_name": "iMessage (macOS)",
+      "tier": "development",
+      "labels": [
+        "Your iMessages",
+        "Your iMessage chat participants",
+        "Your iMessage attachments"
+      ],
+      "source_path": "connectors/imessage"
+    },
+    {
+      "key": "meta",
+      "display_name": "Instagram (Meta)",
+      "tier": "preview",
+      "labels": [
+        "Your Instagram profile",
+        "Your posts",
+        "Likes on your posts",
+        "Accounts you follow",
+        "Your Instagram ad preferences"
+      ],
+      "source_path": "connectors/meta"
+    },
+    {
+      "key": "instinct",
+      "display_name": "Instinct",
+      "tier": "development",
+      "labels": [
+        "Your Instinct profile",
+        "How you reach your Instinct",
+        "Services connected to your Instinct",
+        "Your enrolled devices",
+        "People your Instinct trusts",
+        "What your Instinct vault holds",
+        "Your chats with your agent",
+        "Your conversations with your agent"
+      ],
+      "source_path": "connectors/instinct"
+    },
+    {
+      "key": "jellyfin",
+      "display_name": "Jellyfin",
+      "tier": "preview",
+      "labels": ["Your Jellyfin libraries", "Your Jellyfin items"],
+      "source_path": "connectors/jellyfin"
+    },
+    {
+      "key": "linkedin",
+      "display_name": "LinkedIn",
+      "tier": "preview",
+      "labels": [
+        "Your LinkedIn profile",
+        "Your work experience",
+        "Your education",
+        "Your skills",
+        "Your languages",
+        "Your connections"
+      ],
+      "source_path": "connectors/linkedin"
+    },
+    {
+      "key": "loom",
+      "display_name": "Loom",
+      "tier": "development",
+      "labels": ["Your Loom videos", "Your Loom transcripts"],
+      "source_path": "connectors/loom"
+    },
+    {
+      "key": "muse",
+      "display_name": "Muse (Meta)",
+      "tier": "development",
+      "labels": [
+        "Your Muse chats",
+        "Your Muse messages",
+        "Your Muse agent activity",
+        "Your Muse goals",
+        "Your Muse scheduled tasks",
+        "Your Muse agent's memory",
+        "Your Muse files",
+        "Your Muse connected apps"
+      ],
+      "source_path": "connectors/muse"
+    },
+    {
+      "key": "netflix-export",
+      "display_name": "Netflix Export",
+      "tier": "development",
+      "labels": ["Your Netflix viewing history"],
+      "source_path": "connectors/netflix_export"
+    },
+    {
+      "key": "notion",
+      "display_name": "Notion",
+      "tier": "preview",
+      "labels": ["Your Notion pages", "Your Notion databases"],
+      "source_path": "connectors/notion"
+    },
+    {
+      "key": "codex",
+      "display_name": "OpenAI Codex CLI",
+      "tier": "supported",
+      "labels": [
+        "Your Codex CLI sessions",
+        "Your Codex messages",
+        "Codex tool calls",
+        "Your Codex approval rules",
+        "Your Codex prompts",
+        "Your Codex skills"
+      ],
+      "source_path": "connectors/codex"
+    },
+    {
+      "key": "oura",
+      "display_name": "Oura",
+      "tier": "development",
+      "labels": ["Your sleep sessions", "Your readiness", "Your activity"],
+      "source_path": "connectors/oura"
+    },
+    {
+      "key": "oura-browser",
+      "display_name": "Oura (Browser Sign-In)",
+      "tier": "preview",
+      "labels": ["Your sleep sessions", "Your readiness", "Your activity"],
+      "source_path": "connectors/oura_browser"
+    },
+    {
+      "key": "perplexity",
+      "display_name": "Perplexity (Browser Sign-In)",
+      "tier": "development",
+      "labels": ["Your Perplexity threads", "Your Perplexity messages"],
+      "source_path": "connectors/perplexity"
+    },
+    {
+      "key": "pocket",
+      "display_name": "Pocket",
+      "tier": "development",
+      "labels": ["Your Pocket saves"],
+      "source_path": "connectors/pocket"
+    },
+    {
+      "key": "reddit",
+      "display_name": "Reddit",
+      "tier": "supported",
+      "labels": [
+        "Your Reddit posts",
+        "Your Reddit post stats",
+        "Your Reddit comments",
+        "Your Reddit comment stats",
+        "Your saved Reddit items",
+        "Your upvoted Reddit items",
+        "Your upvoted Reddit item stats",
+        "Your downvoted Reddit items",
+        "Your downvoted Reddit item stats",
+        "Your hidden Reddit items",
+        "Your hidden Reddit item stats"
+      ],
+      "source_path": "connectors/reddit"
+    },
+    {
+      "key": "shopify",
+      "display_name": "Shopify Shop",
+      "tier": "preview",
+      "labels": ["Your Shop app orders"],
+      "source_path": "connectors/shopify"
+    },
+    {
+      "key": "slack-browser",
+      "display_name": "Slack (Browser Sign-In)",
+      "tier": "development",
+      "labels": [
+        "Slack workspace",
+        "Your Slack channels",
+        "People and bots in your Slack workspace",
+        "Your Slack messages",
+        "Link previews and message attachments",
+        "Slack reactions",
+        "Files shared in Slack",
+        "Slack user groups",
+        "Your Slack reminders",
+        "Your starred and saved items"
+      ],
+      "source_path": "connectors/slack_browser"
+    },
+    {
+      "key": "spotify",
+      "display_name": "Spotify",
+      "tier": "preview",
+      "labels": [
+        "Your playlists",
+        "Your playlist tracks",
+        "Your saved tracks",
+        "Your Spotify profile",
+        "Recently played contexts",
+        "Your top artists",
+        "Your top tracks"
+      ],
+      "source_path": "connectors/spotify"
+    },
+    {
+      "key": "steam",
+      "display_name": "Steam",
+      "tier": "preview",
+      "labels": [
+        "Your Steam profile",
+        "Your owned games",
+        "Your recently played games",
+        "Your Steam friends",
+        "Your Steam level"
+      ],
+      "source_path": "connectors/steam"
+    },
+    {
+      "key": "strava",
+      "display_name": "Strava",
+      "tier": "supported",
+      "labels": ["Your Strava activities"],
+      "source_path": "connectors/strava"
+    },
+    {
+      "key": "strava-browser",
+      "display_name": "Strava (Browser Sign-In)",
+      "tier": "preview",
+      "labels": ["Your Strava activities"],
+      "source_path": "connectors/strava_browser"
+    },
+    {
+      "key": "tiktok",
+      "display_name": "TikTok (Browser Sign-In)",
+      "tier": "development",
+      "labels": [
+        "Your TikTok profile",
+        "Your TikTok videos",
+        "Videos you liked on TikTok",
+        "Your TikTok Favorites",
+        "Your TikTok Favorites collections",
+        "Videos in your TikTok Favorites collections",
+        "Accounts you follow on TikTok",
+        "Your TikTok followers"
+      ],
+      "source_path": "connectors/tiktok"
+    },
+    {
+      "key": "twitter-archive",
+      "display_name": "Twitter/X Archive",
+      "tier": "development",
+      "labels": ["Your tweets", "Your DMs"],
+      "source_path": "connectors/twitter_archive"
+    },
+    {
+      "key": "uber",
+      "display_name": "Uber",
+      "tier": "supported",
+      "labels": ["Your Uber trips", "Your Uber receipts"],
+      "source_path": "connectors/uber"
+    },
+    {
+      "key": "usaa",
+      "display_name": "USAA",
+      "tier": "preview",
+      "labels": [
+        "Your USAA accounts",
+        "Your USAA account balances (daily)",
+        "Your USAA transactions",
+        "Your USAA statements",
+        "Your USAA inbox",
+        "Your credit card billing details",
+        "Your credit card balances (daily)"
+      ],
+      "source_path": "connectors/usaa"
+    },
+    {
+      "key": "venmo",
+      "display_name": "Venmo",
+      "tier": "preview",
+      "labels": [
+        "Your Venmo profile",
+        "Your Venmo friends",
+        "Your Venmo transactions"
+      ],
+      "source_path": "connectors/venmo"
+    },
+    {
+      "key": "whatsapp",
+      "display_name": "WhatsApp (chat export)",
+      "tier": "supported",
+      "labels": [
+        "Your WhatsApp chats",
+        "Your WhatsApp messages",
+        "Your WhatsApp media attachments"
+      ],
+      "source_path": "connectors/whatsapp"
+    },
+    {
+      "key": "whatsapp-web",
+      "display_name": "WhatsApp (web)",
+      "tier": "development",
+      "labels": [
+        "Your WhatsApp chats",
+        "Your WhatsApp messages",
+        "Your WhatsApp contacts",
+        "Your WhatsApp groups"
+      ],
+      "source_path": "connectors/whatsapp_web"
+    },
+    {
+      "key": "wholefoods",
+      "display_name": "Whole Foods",
+      "tier": "development",
+      "labels": [
+        "Your Amazon account",
+        "Your Whole Foods orders",
+        "Your Whole Foods items",
+        "Nutrition facts"
+      ],
+      "source_path": "connectors/wholefoods"
+    },
+    {
+      "key": "whoop",
+      "display_name": "WHOOP",
+      "tier": "supported",
+      "labels": [
+        "Your WHOOP profile",
+        "Your WHOOP body measurements",
+        "Your WHOOP cycles",
+        "Your WHOOP recoveries",
+        "Your WHOOP sleeps",
+        "Your WHOOP workouts"
+      ],
+      "source_path": "connectors/whoop"
+    },
+    {
+      "key": "whoop-browser",
+      "display_name": "WHOOP (Browser Sign-In)",
+      "tier": "development",
+      "labels": [
+        "Your WHOOP cycles",
+        "Your WHOOP recoveries",
+        "Your WHOOP sleeps",
+        "Your WHOOP workouts"
+      ],
+      "source_path": "connectors/whoop_browser"
+    },
+    {
+      "key": "x-browser",
+      "display_name": "X (Browser Sign-In)",
+      "tier": "development",
+      "labels": [
+        "Your X profile",
+        "Your X posts",
+        "Posts you liked on X",
+        "Posts you bookmarked on X"
+      ],
+      "source_path": "connectors/x_browser"
+    },
+    {
+      "key": "ynab",
+      "display_name": "YNAB",
+      "tier": "supported",
+      "labels": [
+        "Your budgets",
+        "Your accounts",
+        "Account balances (daily)",
+        "Your budget category groups",
+        "Your budget categories",
+        "Your payees",
+        "Payee GPS locations",
+        "Your transactions",
+        "Your scheduled transactions",
+        "Monthly budget summaries",
+        "Monthly category history"
+      ],
+      "source_path": "connectors/ynab"
+    },
+    {
+      "key": "youtube",
+      "display_name": "YouTube",
+      "tier": "preview",
+      "labels": [
+        "Your YouTube channel",
+        "Your subscriptions",
+        "Your playlists",
+        "Your playlist items",
+        "Your liked videos",
+        "Your watch later list",
+        "Your watch history"
+      ],
+      "source_path": "connectors/youtube"
+    }
+  ]
+}

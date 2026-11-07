@@ -85,7 +85,11 @@ export default async function Page({
           <div className="mt-8 max-w-[46rem]">
             <div className="flex flex-col gap-4">
               <PdppSigningStatus signed={params.signed} withdraw={params.withdraw} />
-              <PdppSigningForm restoredForm={restoredForm} />
+              {/* After a submission or a confirmation the person is done: showing an
+                  empty form again reads as "sign again". Error states keep it for a retry. */}
+              {params.signed === "pending" || params.signed === "confirmed" ? null : (
+                <PdppSigningForm restoredForm={restoredForm} />
+              )}
             </div>
           </div>
         </PdppConceptSection>

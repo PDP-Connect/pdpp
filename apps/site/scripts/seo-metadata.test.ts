@@ -88,6 +88,7 @@ test("sitemap includes the front door, nav destinations, and every real doc page
   assert.ok(urls.includes(SITE_ORIGIN), "front door must be in the sitemap");
   assert.ok(urls.includes(`${SITE_ORIGIN}/self-host`));
   assert.ok(urls.includes(`${SITE_ORIGIN}/participate`));
+  assert.ok(urls.includes(`${SITE_ORIGIN}/apps`));
   assert.ok(urls.includes(`${SITE_ORIGIN}/specification`), "the docs index itself must be listed exactly once");
   assert.ok(urls.includes(`${SITE_ORIGIN}/specification/spec-core`));
   // A normative companion specification: unlisting the maintainer documents

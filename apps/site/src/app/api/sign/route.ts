@@ -59,7 +59,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    const parsed = submissionSchema.safeParse(Object.fromEntries(form));
+    const parsed = submissionSchema.safeParse({
+      ...Object.fromEntries(form),
+      // Several inputs share this name; fromEntries keeps only the last.
+      requested_apps: form.getAll("requested_apps"),
+    });
     if (!parsed.success) {
       // The individual field errors are deliberately not returned: they
       // describe a schema an attacker would otherwise get to probe, and the

@@ -14,9 +14,14 @@ It is written for whoever inherits this, which may not be anyone who set it up.
 `PDP-Connect/supporters-private`. Private. **Holds personal data.**
 
 One file per confirmed signatory at `signatories/<yyyy>/<id>.json`, holding the
-name as entered, the computed public name, the organisation, the signatory's
-name and role, the email address, the country, the type, the four consent
-flags, the Principles version, and the confirmation timestamp.
+name as entered, the computed public name, the organisation (for an individual,
+the affiliation, if given), the signatory's name for an organisation (the
+`signatoryRole` field is always empty), the email address, the country, the
+type, the four consent flags, the Principles version, the confirmation
+timestamp, and `requestedApps`
+(up to ten app names the signatory would like to see join PDPP; an empty
+list when none). `requestedApps` is never published. Only counts leave the
+private store; see [Counting requested apps](#counting-requested-apps).
 
 Also `withdrawn.log`: dates only, one line per withdrawal, with no identifier
 and no reason.
@@ -210,6 +215,45 @@ interim controller changes.
 
 If the programme ends without a successor, do step 1, then delete the private
 repository and empty `supporters.json` in the same week.
+
+## Counting requested apps
+
+To tell a company how many supporters asked for it, run the count script against
+a local checkout of the private repository's `signatures` branch:
+
+```sh
+node apps/site/scripts/count-requested-apps.mjs <private-checkout-directory>
+```
+
+It reads `signatories/**/*.json`, folds case and spacing, applies a small alias
+map (`insta` to Instagram, `chat gpt` and `openai` to ChatGPT), and prints JSON
+to stdout:
+
+```json
+{"apps": [{"app": "Spotify", "count": 12}], "unreviewedAnswers": 4}
+```
+
+`apps` lists only canonical names, highest count first. A canonical name is one
+on the script's reviewed list (`REVIEWED_APP_NAMES`) or a target of the alias
+map. The form question has no suggestions, so a signatory can type anything,
+including personal data. Any answer that is not a canonical name is never
+printed. It is counted once in `unreviewedAnswers`.
+
+**Only this default output may be shared**, for example with a company. It holds
+no name, email, id or free text. A withdrawn signatory is not counted, because
+withdrawal deletes the file.
+
+To see which spellings fall in `unreviewedAnswers`, so you can add them to the
+alias map, add `--review`:
+
+```sh
+node apps/site/scripts/count-requested-apps.mjs --review <private-checkout-directory>
+```
+
+It prints the same default output to stdout and the unreviewed raw values with
+counts to stderr, under a line marked `PRIVATE`. **Review output stays with
+maintainers.** Do not share, paste or commit it. Redirect stdout only if you
+need to save the shareable part (`> counts.json`).
 
 ## Deleting a single signatory
 

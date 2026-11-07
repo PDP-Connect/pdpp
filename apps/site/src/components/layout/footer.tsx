@@ -139,6 +139,11 @@ export function PdppConceptFooter() {
                     PDPP Principles
                   </Link>
                 </div>
+                <div>
+                  <Link className={footerLinkClassName} href="/apps">
+                    Is your app on PDPP?
+                  </Link>
+                </div>
               </div>
             </div>
           </div>
