@@ -20,6 +20,9 @@
 # unless --receipt is given.
 # Old bash (macOS ships 3.2) cannot parse what follows: run the command directly.
 if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
+  if [ "${TEST_SANDBOX_REQUIRE:-0}" = 1 ] && [ "${TEST_SANDBOX_DISABLE:-0}" != 1 ]; then
+    echo "test-sandbox: bash 5 not found; required enforcement layer unavailable" >&2; exit 3
+  fi
   echo "test-sandbox: bash 5 not found; running without enforcement" >&2
   # Drop our options (bash 3.2 syntax only): everything after "--" is the command.
   # The scratch contract still holds: TMPDIR is --scratch (created 0700 if
