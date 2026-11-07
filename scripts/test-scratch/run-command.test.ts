@@ -1771,11 +1771,17 @@ test("a helper outside the bound runner temp is rejected before the command is l
     message: RUNNER_TEMP_MISMATCH,
   });
   // A helper made with the fixture is accepted, and a command run through the sandboxed wrapper can read it
-  // below /tmp, so a broken /tmp bind-back fails here.
+  // below /tmp, so a broken /tmp bind-back fails here. TEST_SANDBOX_REQUIRE=1 makes a host without a usable
+  // bubblewrap fail this probe instead of running the command on the unisolated host /tmp.
   const record = join(await fx.dir("work"), "record");
   await writeFile(record, "from the fixture\n");
   const reader = fx.spawn(process.execPath, ["--import", "tsx", wrapperPath, "--", "cat", record], {
-    env: fx.env({ ...NO_INHERITED_OWNER, ...FRESH_SANDBOX_CONTEXT, TEST_SANDBOX_DISABLE: "0" }),
+    env: fx.env({
+      ...NO_INHERITED_OWNER,
+      ...FRESH_SANDBOX_CONTEXT,
+      TEST_SANDBOX_DISABLE: "0",
+      TEST_SANDBOX_REQUIRE: "1",
+    }),
     helpers: [record],
     stdio: ["ignore", "pipe", "pipe"],
   });
