@@ -6,10 +6,9 @@
 // hung CI on a runner image with bubblewrap, so no test has to remember them:
 //
 // 1. A helper the command cannot see. `scripts/test-sandbox/test-sandbox` gives the command
-//    a private /tmp and binds back only the top directory of its scratch root. `path` and
-//    `dir` hand out paths only inside `runnerTemp`, and `spawn` rejects a helper declared
-//    outside it. Fixture-created paths stay inside `runnerTemp`; declared outside helpers
-//    are rejected. A path a test builds by hand and does not declare is not checked.
+//    a private /tmp and binds back only the top directory of its scratch root. Fixture-created
+//    paths stay inside `runnerTemp`; declared outside helpers are rejected. A path a test
+//    builds by hand and does not declare is not checked.
 // 2. A process the test leaves behind. A leftover command group keeps the wrapper's pipes
 //    open, so the test process never exits. Teardown closes the pipes and kills what the
 //    fixture launched.
@@ -54,39 +53,27 @@ function isInside(root: string, candidate: string): boolean {
   return rel === "" || !(rel.startsWith("..") || isAbsolute(rel));
 }
 
-/**
- * Kill every process other than this one whose environment carries `entry`, scanning again
- * because a parent may fork once more before it dies. False when `/proc` is unreadable, so
- * ownership cannot be established.
- */
+/** Kill every other process whose environment carries `entry`, rescanning while a parent forks; false when `/proc` is unreadable. */
 function killCarriers(entry: string): boolean {
-  for (let scan = 0; scan < 6; scan += 1) {
+  let killed = -1;
+  for (let scan = 0; scan < 6 && killed !== 0; scan += 1) {
+    killed = 0;
     let names: string[];
     try {
       names = readdirSync("/proc");
     } catch {
       return false;
     }
-    let killed = 0;
-    for (const name of names) {
-      const pid = Number(name);
-      if (!DIGITS.test(name) || pid === process.pid) {
-        continue;
-      }
+    for (const name of names.filter((n) => DIGITS.test(n) && Number(n) !== process.pid)) {
       try {
-        // Match and signal with nothing awaited between, so the pid cannot be reassigned while
-        // we wait. The remaining window, between this read and the kill, is the one Jenkins'
-        // ProcessTreeKiller accepts.
+        // Nothing is awaited between this read and the kill; that gap is the window Jenkins' ProcessTreeKiller accepts.
         if (readFileSync(`/proc/${name}/environ`, "utf8").split("\0").includes(entry)) {
-          process.kill(pid, "SIGKILL");
+          process.kill(Number(name), "SIGKILL");
           killed += 1;
         }
       } catch {
         // The environment is unreadable or the process already exited.
       }
-    }
-    if (killed === 0) {
-      break;
     }
   }
   return true;
