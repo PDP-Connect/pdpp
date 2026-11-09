@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { ShareCardPanel } from "@/components/site/share-card-panel.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { signedStatusMessage } from "@/lib/signing/status-messages.ts";
 
@@ -17,10 +18,14 @@ export function PdppSigningStatus({ signed, withdraw }: { signed?: string; withd
     return null;
   }
   return (
-    <div aria-live="polite" className="border border-border p-4" data-slot="pdpp-signing-status" role="status">
-      <Text as="p" size="body">
-        {message}
-      </Text>
-    </div>
+    <>
+      <div aria-live="polite" className="border border-border p-4" data-slot="pdpp-signing-status" role="status">
+        <Text as="p" size="body">
+          {message}
+        </Text>
+      </div>
+      {/* Only a confirmed signature earns the card. */}
+      {signed === "confirmed" ? <ShareCardPanel /> : null}
+    </>
   );
 }

@@ -9,7 +9,7 @@ export interface PublicSiteNavChild {
 }
 
 export interface PublicSiteNavLink {
-  /** Present only on Specification, which opens a dropdown on hover/focus. */
+  /** Present on Specification and Participate. With two or more, the item opens a dropdown on hover/focus. */
   readonly children?: readonly PublicSiteNavChild[];
   readonly link: string;
   readonly text: string;
@@ -24,6 +24,10 @@ export interface PublicSiteNavLink {
 // document, not a separate destination, and it disappears with reviewOpen
 // without leaving a gap in the nav.
 //
+// Participate carries "Is your app on PDPP?" (/apps) the same way: the page is a
+// view over the registers Participate already shows, so it is a door into that
+// section, not a fifth intent.
+//
 // The review entry is the ONLY place outside /review and the reader's own
 // version strip that the review period is named. That is deliberate: a
 // deadline repeated across a site has to be unwound from every one of those
@@ -35,10 +39,15 @@ export function publicSiteNav(): readonly PublicSiteNavLink[] {
     specificationChildren.push({ link: "/review", text: "Review, extended" });
   }
 
+  const participateChildren: PublicSiteNavChild[] = [
+    { link: "/participate", text: "How to get involved" },
+    { link: "/apps", text: "Is your app on PDPP?" },
+  ];
+
   return [
     { link: "/principles", text: "Principles" },
     { children: specificationChildren, link: "/specification", text: "Specification" },
     { link: "/build", text: "Build" },
-    { link: "/participate", text: "Participate" },
+    { children: participateChildren, link: "/participate", text: "Participate" },
   ];
 }

@@ -1,0 +1,158 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+import { ImageResponse } from "next/og";
+import type { ReactElement } from "react";
+import { WORDMARK_PATH } from "../../components/elements/icons.tsx";
+import { SHARE_CARD_COPY, SHARE_CARD_FORMATS, type ShareCardFormat } from "./copy.ts";
+import { type CardFont, loadCardFonts } from "./fonts.ts";
+
+// Colours of the concept surface (the live site), as hex. Satori cannot parse oklch(),
+// so each is the sRGB value of a light-scheme token in
+// src/styles/surfaces/concept/tokens/primitive.css. Re-derive them if a token moves.
+const PAPER = "#f4f5f6"; // --background = --pdpp-editorial-paper, oklch(0.97 0.001 245)
+const INK = "#181b1d"; // --foreground = --pdpp-editorial-ink, oklch(0.22 0.006 245)
+const MUTED = "#4e5052"; // --muted-foreground = --pdpp-editorial-ink-soft
+const PRIMARY = "#295171"; // --primary = --pdpp-editorial-teal, oklch(0.42 0.07 245); also the header wordmark colour
+
+/**
+ * The header wordmark as the site draws it: the same path and viewBox as
+ * WordmarkIcon, filled with the site's primary colour (the header sets `text-primary`).
+ */
+export function wordmarkSvg(fill: string): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 365 160"><path d="${WORDMARK_PATH}" fill="${fill}"/></svg>`;
+}
+
+// Downloaded once per process, on first use. A failed download is not kept,
+// so the next render tries again.
+let fonts: Promise<CardFont[]> | undefined;
+
+function cardFonts(): Promise<CardFont[]> {
+  fonts ??= loadCardFonts().catch((error: unknown) => {
+    fonts = undefined;
+    throw error;
+  });
+  return fonts;
+}
+const wordmarkDataUri = `data:image/svg+xml;base64,${Buffer.from(wordmarkSvg(PRIMARY)).toString("base64")}`;
+
+/** Per-format measurements. The design is the same; only the room around it changes. */
+interface Layout {
+  /** Space above and below the content; Stories keeps clear of the app's own header and reply bar. */
+  padBottom: number;
+  padTop: number;
+  statementSize: number;
+}
+
+const LAYOUTS: Record<ShareCardFormat, Layout> = {
+  feed: { padBottom: 80, padTop: 80, statementSize: 168 },
+  story: { padBottom: 280, padTop: 250, statementSize: 184 },
+};
+
+interface DesignProps {
+  layout: Layout;
+  wordmark: string;
+}
+
+// The wordmark's box is 365 x 160 (see WordmarkIcon).
+const WORDMARK_HEIGHT = 56;
+const WORDMARK_WIDTH = Math.round((WORDMARK_HEIGHT * 365) / 160);
+
+/**
+ * The card's designs. Adding another is a new entry here and a new value of
+ * `ShareCardVariant`; the route, sizes, fonts and copy do not change.
+ *
+ * It follows the concept surface: flat paper, ink type, a serif statement and
+ * sans controls and square corners.
+ */
+function EditorialDesign({ layout, wordmark }: DesignProps): ReactElement {
+  const side = 88;
+  return (
+    <div
+      style={{
+        background: PAPER,
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        justifyContent: "space-between",
+        padding: `${layout.padTop}px ${side}px ${layout.padBottom}px`,
+        width: "100%",
+      }}
+    >
+      <div style={{ display: "flex", paddingBottom: 40 }}>
+        <img alt="" height={WORDMARK_HEIGHT} src={wordmark} width={WORDMARK_WIDTH} />
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        <div
+          style={{
+            color: INK,
+            display: "flex",
+            flexDirection: "column",
+            fontFamily: "Source Serif 4",
+            fontSize: layout.statementSize,
+            letterSpacing: -4,
+            lineHeight: 0.98,
+          }}
+        >
+          <div style={{ display: "flex" }}>My data,</div>
+          <div style={{ color: PRIMARY, display: "flex", fontStyle: "italic" }}>my rules.</div>
+        </div>
+        <div
+          style={{
+            color: MUTED,
+            display: "flex",
+            fontFamily: "Source Serif 4",
+            fontSize: 44,
+            lineHeight: 1.4,
+            marginTop: 64,
+            maxWidth: 740,
+          }}
+        >
+          {SHARE_CARD_COPY.subtext}
+        </div>
+      </div>
+
+      <div
+        style={{
+          alignItems: "center",
+          display: "flex",
+          justifyContent: "space-between",
+          paddingTop: 40,
+        }}
+      >
+        <div
+          style={{
+            color: PRIMARY,
+            display: "flex",
+            fontFamily: "Inter",
+            fontSize: 40,
+            fontWeight: 700,
+          }}
+        >
+          {SHARE_CARD_COPY.button}
+        </div>
+        <div style={{ color: MUTED, display: "flex", fontFamily: "Inter", fontSize: 36 }}>
+          {SHARE_CARD_COPY.hashtag}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const DESIGNS = { editorial: EditorialDesign } as const;
+
+export type ShareCardVariant = keyof typeof DESIGNS;
+export const DEFAULT_SHARE_CARD_VARIANT: ShareCardVariant = "editorial";
+
+export async function renderShareCard(
+  format: ShareCardFormat,
+  variant: ShareCardVariant = DEFAULT_SHARE_CARD_VARIANT
+): Promise<ImageResponse> {
+  const loaded = await cardFonts();
+  const Design = DESIGNS[variant];
+  return new ImageResponse(<Design layout={LAYOUTS[format]} wordmark={wordmarkDataUri} />, {
+    ...SHARE_CARD_FORMATS[format],
+    fonts: loaded,
+  });
+}

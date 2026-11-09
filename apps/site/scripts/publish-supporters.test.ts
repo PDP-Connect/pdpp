@@ -38,6 +38,7 @@ test("publish supporters writes only consented public fields", async () => {
       privateMetadata: { identityProviderToken: "nested-private-token" },
       principlesVersion: "v1.0",
       publicName: "Public P.",
+      requestedApps: ["Fake Requested App"],
       signatoryName: "Private Signatory",
       signatoryRole: "Private Role",
       type: "Individual",
@@ -76,6 +77,8 @@ test("publish supporters writes only consented public fields", async () => {
     "Private Signatory",
     "Private Role",
     "unlisted@example.test",
+    "Fake Requested App",
+    "requestedApps",
   ]) {
     assert.equal(output.includes(privateValue), false, `${privateValue} must not reach the public register`);
   }

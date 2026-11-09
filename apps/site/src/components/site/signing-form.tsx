@@ -5,6 +5,7 @@
 
 import Link from "next/link";
 import { type ComponentProps, useState } from "react";
+import { RequestedAppsField } from "@/components/site/requested-apps-field.tsx";
 import { Text } from "@/components/typography/text.tsx";
 import { COUNTRIES } from "@/lib/countries.ts";
 import type { RestoredSigningForm } from "@/lib/signing/form-restoration.ts";
@@ -47,11 +48,32 @@ const fieldClassName = cn(
 
 const choiceTextClassName = "font-sans text-[14px] leading-[1.6]";
 
-function Field({ children, htmlFor, label }: { children: React.ReactNode; htmlFor: string; label: string }) {
+// The visible asterisk is for sighted readers. Screen readers already announce
+// "required" from the input's own attribute, so the mark is hidden from them.
+function RequiredMark() {
+  return (
+    <span aria-hidden className="text-primary">
+      {" *"}
+    </span>
+  );
+}
+
+function Field({
+  children,
+  htmlFor,
+  label,
+  required = false,
+}: {
+  children: React.ReactNode;
+  htmlFor: string;
+  label: string;
+  required?: boolean;
+}) {
   return (
     <div className="flex flex-col gap-1.5">
       <Text as="label" color="subtle" htmlFor={htmlFor} size="stamp">
         {label}
+        {required && <RequiredMark />}
       </Text>
       {children}
     </div>
@@ -82,12 +104,14 @@ function Consent({
   checked,
   id,
   name,
+  required = false,
   children,
 }: {
   checked?: boolean;
   children: React.ReactNode;
   id: string;
   name: string;
+  required?: boolean;
 }) {
   return (
     <label className="flex cursor-pointer items-start gap-2.5" htmlFor={id}>
@@ -96,10 +120,12 @@ function Consent({
         defaultChecked={checked}
         id={id}
         name={name}
+        required={required}
         type="checkbox"
       />
       <Text as="span" size="small">
         {children}
+        {required && <RequiredMark />}
       </Text>
     </label>
   );
@@ -165,8 +191,12 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
         ))}
       </fieldset>
 
+      <Text as="p" color="muted" size="small">
+        Required fields are marked with an asterisk (<span className="text-primary">*</span>).
+      </Text>
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Field htmlFor="sign-name" label="Name">
+        <Field htmlFor="sign-name" label="Name" required>
           <input
             autoComplete="name"
             className={fieldClassName}
@@ -177,12 +207,12 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
             type="text"
           />
         </Field>
-        <Field htmlFor="sign-email" label="Email">
+        <Field htmlFor="sign-email" label="Email" required>
           <input autoComplete="email" className={fieldClassName} id="sign-email" name="email" required type="email" />
         </Field>
 
         {isOrganisation && (
-          <Field htmlFor="sign-organisation" label="Organisation">
+          <Field htmlFor="sign-organisation" label="Organisation" required>
             <input
               className={fieldClassName}
               defaultValue={restoredForm?.organisation}
@@ -205,7 +235,7 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
           </Field>
         )}
 
-        <Field htmlFor="sign-country" label="Country">
+        <Field htmlFor="sign-country" label="Country" required>
           <Select
             className={choiceTextClassName}
             defaultValue={restoredForm?.country ?? ""}
@@ -225,7 +255,7 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
         </Field>
 
         {isOrganisation && (
-          <Field htmlFor="sign-type" label="Type">
+          <Field htmlFor="sign-type" label="Type" required>
             <Select
               defaultValue={restoredForm?.organisation_type ?? ""}
               id="sign-type"
@@ -243,6 +273,12 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
             </Select>
           </Field>
         )}
+
+        <RequestedAppsField
+          className="md:col-span-2"
+          fieldClassName={fieldClassName}
+          restored={restoredForm?.requested_apps}
+        />
       </div>
 
       <Text as="p" color="muted" size="small">
@@ -252,21 +288,21 @@ export function PdppSigningForm({ restoredForm }: { restoredForm?: RestoredSigni
       </Text>
 
       <div className="flex flex-col gap-3">
-        <Consent checked={restoredForm?.consent_principles} id="consent-principles" name="consent_principles">
+        <Consent checked={restoredForm?.consent_principles} id="consent-principles" name="consent_principles" required>
           I support the PDPP Principles v1.0.
         </Consent>
-        <Consent checked={restoredForm?.consent_register} id="consent-register" name="consent_register">
+        <Consent checked={restoredForm?.consent_register} id="consent-register" name="consent_register" required>
           List me on the public register.
         </Consent>
         <Consent checked={restoredForm?.consent_updates} id="consent-updates" name="consent_updates">
           Email me about new versions and comment periods.
         </Consent>
         {isOrganisation ? (
-          <Consent checked={restoredForm?.consent_authority} id="consent-authority" name="consent_authority">
+          <Consent checked={restoredForm?.consent_authority} id="consent-authority" name="consent_authority" required>
             I am authorised to sign on behalf of this organisation.
           </Consent>
         ) : (
-          <Consent checked={restoredForm?.consent_age} id="consent-age" name="consent_age">
+          <Consent checked={restoredForm?.consent_age} id="consent-age" name="consent_age" required>
             I am 18 or over.
           </Consent>
         )}

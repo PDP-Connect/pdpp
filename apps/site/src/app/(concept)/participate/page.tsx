@@ -399,6 +399,12 @@ function RegisterSection({
         </Link>{" "}
         · Supporters are listed separately on the Principles page
       </Text>
+      <Text as="p" className="mt-4 max-w-[68ch]" color="muted" size="body" wrap="pretty">
+        To check one app against this register, the Supporters list and the open-source connectors, use{" "}
+        <Link className="text-primary hover:text-foreground" href="/apps">
+          Is your app on PDPP?
+        </Link>
+      </Text>
 
       <Text as="h3" className="mt-12" size="lede" weight="semi">
         Recognised trust registries

@@ -9,6 +9,7 @@ import {
   buildCommand,
   createReceipt,
   describeCommandError,
+  encodeSubmission,
   extractLinks,
   looksLikeVercelPreview,
   normalizeEmail,
@@ -430,4 +431,10 @@ test("looksLikeVercelPreview reads the host, and a malformed URL is not a previe
   assert.equal(looksLikeVercelPreview("https://pdpp-git-x-pdpp.vercel.app/principles"), true);
   assert.equal(looksLikeVercelPreview("https://pdpp.dev"), false);
   assert.equal(looksLikeVercelPreview("not a url"), false);
+});
+
+test("encodeSubmission sends an array as repeated keys, as the form's app inputs do", () => {
+  const body = encodeSubmission({ name: "Fake Person", requested_apps: ["One", "", "Two"] });
+  assert.deepEqual(body.getAll("requested_apps"), ["One", "", "Two"]);
+  assert.equal(body.get("name"), "Fake Person");
 });

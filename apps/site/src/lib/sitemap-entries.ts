@@ -58,7 +58,8 @@ const NON_CANONICAL_DOC_PATHS = new Set([
 export function buildSitemap(siteOrigin: string, docPages: readonly DocPageRef[], specLastModified: string) {
   // /sandbox is excluded: it is noindex (see its layout and robots.ts) and
   // must not appear here.
-  // The four-intent routes, plus the two the footer and the form link to.
+  // The four-intent routes, /apps (linked from the Participate menu), and the
+  // two the footer and the form link to.
   // /governance is NOT here: it 308s to /specification#governance, and a
   // redirect in a sitemap is a redirect a crawler has to follow to find out it
   // was one. /review is absent for a different reason — it is temporary, and a
@@ -68,6 +69,7 @@ export function buildSitemap(siteOrigin: string, docPages: readonly DocPageRef[]
     { url: `${siteOrigin}${principlesRoute}` },
     { url: `${siteOrigin}/build` },
     { url: `${siteOrigin}/participate` },
+    { url: `${siteOrigin}/apps` },
     { url: `${siteOrigin}/self-host` },
     { url: `${siteOrigin}/privacy` },
   ];

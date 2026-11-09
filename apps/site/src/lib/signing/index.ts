@@ -5,6 +5,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import "server-only";
 import { z } from "zod";
 import { COUNTRIES } from "@/lib/countries.ts";
+import { MAX_REQUESTED_APP_LENGTH, MAX_REQUESTED_APPS } from "./requested-app-limits.ts";
 
 // The interim Supporter signing system, server side.
 //
@@ -54,11 +55,44 @@ const personName = z.string().trim().min(1).max(120);
 // out shapes that cannot be an address at all.
 const email = z.string().trim().toLowerCase().min(3).max(254).email();
 
+// Apps a signer would like to see join PDPP. Optional, at most ten, and only
+// ever counted: nothing here reaches the public register. Names are cleaned
+// before the limits are checked, so a blank box or a repeat does not use up a
+// slot. Too many, or one that is too long, fails the whole submission like any
+// other bad field.
+const INNER_WHITESPACE = /\s+/g;
+
+function cleanRequestedApps(values: string[]): string[] {
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const value of values) {
+    const app = value.trim().replace(INNER_WHITESPACE, " ");
+    const key = app.toLowerCase();
+    if (app && !seen.has(key)) {
+      seen.add(key);
+      cleaned.push(app);
+    }
+  }
+  return cleaned;
+}
+
+const requestedApps = z
+  .array(z.string())
+  .default([])
+  .transform(cleanRequestedApps)
+  .pipe(z.array(z.string().max(MAX_REQUESTED_APP_LENGTH)).max(MAX_REQUESTED_APPS));
+
 const ORGANISATION_TYPES = ["Company", "Platform", "Research institute", "Civil society", "Public body"] as const;
 
 // A checkbox that was ticked arrives as "on"; an unticked one is absent.
 const consented = z.literal("on").transform(() => true);
-const optionalConsent = z.union([z.literal("on"), z.undefined()]).transform((value) => value === "on");
+// `.optional()` is what lets the key be missing: in zod 4 a union that merely
+// includes z.undefined() still requires the key, so an unticked box failed the
+// whole submission.
+const optionalConsent = z
+  .literal("on")
+  .optional()
+  .transform((value) => value === "on");
 
 const individualSubmission = z.object({
   signatory_kind: z.literal("individual"),
@@ -74,6 +108,7 @@ const individualSubmission = z.object({
   consent_register: consented,
   consent_age: consented,
   consent_updates: optionalConsent,
+  requested_apps: requestedApps,
 });
 
 const organisationSubmission = z.object({
@@ -88,6 +123,7 @@ const organisationSubmission = z.object({
   consent_register: consented,
   consent_authority: consented,
   consent_updates: optionalConsent,
+  requested_apps: requestedApps,
 });
 
 export const submissionSchema = z.discriminatedUnion("signatory_kind", [individualSubmission, organisationSubmission]);
@@ -246,6 +282,8 @@ export function newSubmissionId(): string {
  * Everything a signatory gave, plus what was computed at the moment they
  * consented. The public register is derived from this by the publish script,
  * which copies only five of these fields; nothing else has a route out.
+ * `requestedApps` is counted by `scripts/count-requested-apps.mjs`, which prints
+ * totals per app and never a name, email or id.
  */
 export interface SignatoryRecord {
   confirmedAt: string;
@@ -262,6 +300,7 @@ export interface SignatoryRecord {
   organisation: string | null;
   principlesVersion: string;
   publicName: string;
+  requestedApps: string[];
   signatoryName: string | null;
   signatoryRole: string | null;
   type: string;
@@ -273,6 +312,8 @@ export function buildRecord(id: string, submission: Submission, confirmedAt = ne
     id,
     displayName: submission.name,
     publicName: computePublicName(submission),
+    // A pending record written before this field existed has no value.
+    requestedApps: submission.requested_apps ?? [],
     organisation: isOrganisation ? submission.organisation : (submission.affiliation ?? null),
     signatoryName: isOrganisation ? submission.name : null,
     signatoryRole: null,
@@ -298,9 +339,19 @@ export function recordPath(record: SignatoryRecord): string {
 /**
  * Conflicting writes may have different confirmation timestamps. All other
  * fields are the immutable statement the signatory confirmed.
+ *
+ * A record persisted before `requestedApps` existed has no such field, while a
+ * retry built after that deploy has `requestedApps: []`. Both mean "no apps",
+ * so a missing field is read as [] on both sides and compared in one key order.
  */
-export function hasSameImmutableFields(expected: SignatoryRecord, actual: SignatoryRecord): boolean {
-  const { confirmedAt: _expectedConfirmedAt, ...expectedFields } = expected;
-  const { confirmedAt: _actualConfirmedAt, ...actualFields } = actual;
-  return JSON.stringify(expectedFields) === JSON.stringify(actualFields);
+export function hasSameImmutableFields(
+  expected: Omit<SignatoryRecord, "requestedApps"> & { requestedApps?: string[] },
+  actual: Omit<SignatoryRecord, "requestedApps"> & { requestedApps?: string[] }
+): boolean {
+  return JSON.stringify(comparableFields(expected)) === JSON.stringify(comparableFields(actual));
+}
+
+function comparableFields(record: Omit<SignatoryRecord, "requestedApps"> & { requestedApps?: string[] }) {
+  const { confirmedAt: _confirmedAt, requestedApps: apps, ...fields } = record;
+  return { ...fields, requestedApps: apps ?? [] };
 }

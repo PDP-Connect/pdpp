@@ -240,6 +240,21 @@ export function normalizeEmail(value) {
 }
 
 /**
+ * Encodes a submission as the form body a browser would send. An array value
+ * becomes one repeated key per item, as the form's app inputs do;
+ * `URLSearchParams(object)` would join the array into a single comma string.
+ */
+export function encodeSubmission(submission) {
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(submission)) {
+    for (const item of Array.isArray(value) ? value : [value]) {
+      body.append(key, item);
+    }
+  }
+  return body;
+}
+
+/**
  * Describes a signing link for the receipt without putting the token on disk.
  *
  * The receipt is an ordinary file and these links are live single-use
@@ -661,7 +676,12 @@ async function main() {
     // against the live preview: identical submissions differing only in this
     // key returned 400 without it and 303 with it.
     consent_updates: "on",
+    // Messy on purpose: the route must trim, collapse spaces, drop the blank
+    // and the case-insensitive repeat, leaving the two names in
+    // REQUESTED_APPS_STORED. Fake names, so a run adds nothing to real counts.
+    requested_apps: ["  Oracle  Test App One ", "", "oracle test app one", "Oracle Test App Two"],
   };
+  const REQUESTED_APPS_STORED = ["Oracle Test App One", "Oracle Test App Two"];
 
   try {
     // Checked inside the try so a misconfigured run leaves a receipt like every
@@ -694,7 +714,7 @@ async function main() {
     // ---- step 1: submit
     log("1/6 submitting…");
     const submitResponse = await fetchNoRedirect(`${baseUrl}/api/sign`, {
-      body: new URLSearchParams(submission),
+      body: encodeSubmission(submission),
       headers: { "content-type": "application/x-www-form-urlencoded" },
       method: "POST",
     });
@@ -882,6 +902,11 @@ async function main() {
       if (stored[field] !== expected) {
         fail(`signatory file ${field}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(stored[field])}`);
       }
+    }
+    if (JSON.stringify(stored.requestedApps) !== JSON.stringify(REQUESTED_APPS_STORED)) {
+      fail(
+        `signatory file requestedApps: expected ${JSON.stringify(REQUESTED_APPS_STORED)}, got ${JSON.stringify(stored.requestedApps)}`
+      );
     }
     if (stored.consent?.principles !== true || stored.consent?.register !== true) {
       fail(`signatory file consent not recorded: ${JSON.stringify(stored.consent)}`);

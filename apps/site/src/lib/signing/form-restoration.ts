@@ -1,6 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { MAX_REQUESTED_APPS } from "./requested-app-limits.ts";
+
 export interface RestoredSigningForm {
   affiliation?: string;
   consent_age: boolean;
@@ -12,6 +14,7 @@ export interface RestoredSigningForm {
   name?: string;
   organisation?: string;
   organisation_type?: string;
+  requested_apps: string[];
   signatory_kind: "individual" | "organisation";
 }
 
@@ -27,6 +30,14 @@ function text(form: FormData, name: string): string | undefined {
   return value.slice(0, MAX_FIELD_LENGTH);
 }
 
+function textList(form: FormData, name: string): string[] {
+  return form
+    .getAll(name)
+    .filter((value): value is string => typeof value === "string")
+    .slice(0, MAX_REQUESTED_APPS)
+    .map((value) => value.slice(0, MAX_FIELD_LENGTH));
+}
+
 /** Returns form values that may be shown back to the person who submitted them. Email is never included. */
 export function formValuesForRetry(form: FormData): RestoredSigningForm {
   return {
@@ -40,6 +51,7 @@ export function formValuesForRetry(form: FormData): RestoredSigningForm {
     name: text(form, "name"),
     organisation: text(form, "organisation"),
     organisation_type: text(form, "organisation_type"),
+    requested_apps: textList(form, "requested_apps"),
     signatory_kind: form.get("signatory_kind") === "organisation" ? "organisation" : "individual",
   };
 }
@@ -76,6 +88,9 @@ export function readRestoredForm(value: string | undefined): RestoredSigningForm
       name: typeof form.name === "string" ? form.name : undefined,
       organisation: typeof form.organisation === "string" ? form.organisation : undefined,
       organisation_type: typeof form.organisation_type === "string" ? form.organisation_type : undefined,
+      requested_apps: Array.isArray(form.requested_apps)
+        ? form.requested_apps.filter((app): app is string => typeof app === "string").slice(0, MAX_REQUESTED_APPS)
+        : [],
       signatory_kind: form.signatory_kind,
     };
   } catch {
