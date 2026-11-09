@@ -29,11 +29,13 @@ export const metadata: Metadata = {
 // document appearing somewhere else.
 
 const STORED = [
-  "The name you entered, and for an organisation the organisation name, the signatory's name and their role.",
+  "The name you entered, and for an organisation the organisation name and the signatory's name.",
+  "For an individual, the affiliation you gave, if you gave one.",
   "Your email address.",
   "Your country and, for an organisation, its type.",
   "The four consent choices you made on the form.",
   "The version of the Principles you signed and the time your signature was confirmed.",
+  "Any apps you named when you signed, if you chose to.",
 ] as const;
 
 const PUBLISHED = [
@@ -68,8 +70,9 @@ export default function Page() {
         <PdppConceptSection id="purposes" title="Why we hold it">
           <Text as="p" className="mt-6 max-w-[68ch]" size="body" wrap="pretty">
             To confirm that a signature is genuine, to publish the register of Supporters, and, if you asked for it, to
-            tell you about new versions of the specification and comment periods. We do not use it for anything else,
-            and we never sell or share it.
+            tell you about new versions of the specification and comment periods. We count how many supporters asked for
+            each app and may tell that company the total. We never tell anyone who asked, and the names you give are
+            never published. We do not use it for anything else, and we never sell or share it.
           </Text>
         </PdppConceptSection>
 
