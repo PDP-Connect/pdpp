@@ -16,7 +16,7 @@ import {
 import { buildReport, type CaseResult, exitCodeFor } from "../src/report/result.ts";
 import { SPEC_SOURCE } from "../src/requirements/catalog.ts";
 import { CLAUSE_MATRIX, type Observable } from "../src/requirements/matrix.ts";
-import { clauseFragments, normalizeSpecText } from "../src/requirements/spec-scan.ts";
+import { clauseFragments, makeSpecLocator, normalizeSpecText } from "../src/requirements/spec-scan.ts";
 import { ALL_CASES, SUITE } from "../src/suite.ts";
 
 const SYNTHETIC_FAILURE = /synthetic failure/;
@@ -186,4 +186,46 @@ test("an uncovered, observable clause is not-tested and a review-only clause is 
   assert.equal(byId.get("12.4-3")?.result, "not-tested");
   assert.equal(byId.get("12.4-1")?.result, "untestable");
   assert.ok(byId.get("12.4-1")?.reason);
+});
+
+test("section citations disambiguate repeated text and fail closed on drift", () => {
+  const text = "Clients MUST keep the value.";
+  const spec = ["## 2. First", text, "## 3. Second", text, "## Appendix A", text].join("\n");
+  const seed = CLAUSE_MATRIX[0];
+  assert.ok(seed);
+  const clauses = ["2", "3", "A"].map((section) => ({
+    ...seed, clauseId: `${section}.0-test`, text, level: "must" as const,
+  }));
+  const out = buildRequirementsReport(reportWith(() => "pass"), spec, clauses);
+  assert.deepEqual(out.must.map((entry) => entry.specLine), [2, 4, 6]);
+  assert.throws(
+    () => buildRequirementsReport(reportWith(() => "pass"), "## 2. First\n" + text + "\n## 3. Second\nMissing.", [clauses[1]!]),
+    /Clause 3\.0-test/
+  );
+});
+
+test("locator windows cannot cross a same-level heading, including unnumbered headings", () => {
+  const locate = makeSpecLocator("## 2. First\nClients MUST\n## Notes\nkeep the value.\n## Appendix A\nClients MUST\nkeep the value.");
+  assert.equal(locate("Clients MUST ## Notes keep the value.", "2"), undefined);
+  assert.equal(locate("keep the value.", "2"), undefined);
+  assert.equal(locate("Clients MUST keep the value.", "A"), 6);
+  assert.equal(locate("Clients MUST", "99"), undefined);
+});
+
+test("every real clause cites its own section; report every changed citation", (t) => {
+  const lines = SPEC.split("\n");
+  const locate = makeSpecLocator(SPEC);
+  const changes: string[] = [];
+  for (const clause of CLAUSE_MATRIX) {
+    const section = clause.clauseId.split(".")[0] ?? "";
+    const fragment = clauseFragments(clause.text)[0] ?? clause.text;
+    const line = locate(fragment, section);
+    assert.ok(line !== undefined, clause.clauseId);
+    const heading = lines.slice(0, line).filter((raw) => /^## /.test(raw)).at(-1);
+    const match = /^## (?:(\d+)\.|Appendix ([A-Z])\b)/.exec(heading ?? "");
+    assert.equal(match?.[1] ?? match?.[2], section, clause.clauseId);
+    const previous = locate(fragment);
+    if (previous !== line) changes.push(`${clause.clauseId}: ${previous} -> ${line}`);
+  }
+  t.diagnostic("Citation changes: " + (changes.join(", ") || "none"));
 });

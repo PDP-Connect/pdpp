@@ -191,13 +191,13 @@ function decidingDetail(
 
 function entryFor(
   clause: ClauseEntry,
-  locate: (fragment: string) => number | undefined,
+  locate: (fragment: string, section?: string) => number | undefined,
   results: ReadonlyMap<string, { outcome: Outcome; detail?: string }>
 ): RequirementEntry {
   const first = clauseFragments(clause.text)[0] ?? clause.text;
-  const specLine = locate(first);
+  const specLine = locate(first, sectionOf(clause));
   if (specLine === undefined) {
-    throw new Error(`Clause ${clause.clauseId} text is not found in the spec; the matrix and spec have drifted.`);
+    throw new Error(`Clause ${clause.clauseId} text is not found in section ${sectionOf(clause)} of the spec; the matrix and spec have drifted.`);
   }
   const cases: ClauseCaseEntry[] = clause.caseIds.map((caseId) => ({
     caseId,
