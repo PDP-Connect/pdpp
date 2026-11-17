@@ -9,7 +9,9 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { REQUIREMENTS, SPEC_SOURCE } from "../src/requirements/catalog.ts";
+import { SPEC_SENTENCE_EXCLUSIONS } from "../src/requirements/exclusions.ts";
 import { CLAUSE_MATRIX, parseSpecVersion } from "../src/requirements/matrix.ts";
+import { everyKeywordQuoted, normalizeSpecText, scanSpecSentences } from "../src/requirements/spec-scan.ts";
 import { ALL_CASES } from "../src/suite.ts";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -20,7 +22,8 @@ const EXPLICIT_ANCHOR = /\{#([^}]+)\}/;
 const NON_SLUG_CHARS = /[^a-z0-9 -]/g;
 const SPACES = / /g;
 const SECTION_HEADING = /^## (\d+)\./;
-const NORMATIVE_KEYWORD = /\b(MUST NOT|MUST|SHALL NOT|SHALL|SHOULD NOT|SHOULD|REQUIRED|MAY)\b/;
+// Keep the existing raw-line presence rule only for SHOULD/MAY.
+const NORMATIVE_KEYWORD = /\b(SHOULD NOT|SHOULD|MAY)\b/;
 
 function specAnchors(): ReadonlySet<string> {
   const anchors = new Set<string>();
@@ -138,7 +141,42 @@ test("every clause text is verbatim spec-core.md text", () => {
   assert.deepEqual(missing, [], `Clause text not found verbatim:\n${missing.join("\n")}`);
 });
 
+// Match spec-delta's unit, normalization, exclusions and keyword-range rule.
+// Section 9 is the conformance index rather than a source of matrix clauses.
+function unquotedMustSentences(spec: string, clauseTexts: readonly string[]): readonly string[] {
+  return scanSpecSentences(spec)
+    .filter(
+      (s) =>
+        s.family === "must" &&
+        s.section !== "9" &&
+        !SPEC_SENTENCE_EXCLUSIONS.some((e) => s.text.startsWith(normalizeSpecText(e.startsWith))) &&
+        !everyKeywordQuoted(s.text, clauseTexts)
+    )
+    .map((s) => `L${s.line} §${s.section}: ${s.text}`);
+}
+
+// Explicit inventory, never a dynamically generated baseline. Any added or
+// removed gap requires review; a newly unquoted obligation cannot pass silently.
+const KNOWN_MUST_GAPS: readonly string[] = [];
+
+test("one quoted clause cannot cover a sentence with two MUST obligations", () => {
+  const sentence = "The server MUST reject the request and the client MUST retry with a fresh token.";
+  const spec = `## 4. Synthetic\n\n${sentence}\n`;
+  const first = "The server MUST reject the request";
+  assert.ok(sentence.includes(first), "the former raw-line rule would accept this quote");
+  const gaps = unquotedMustSentences(spec, [first]);
+  assert.deepEqual(gaps, [`L3 §4: ${sentence}`]);
+  assert.throws(() => assert.deepEqual(gaps, []), { code: "ERR_ASSERTION" });
+  assert.deepEqual(unquotedMustSentences(spec, [first, "the client MUST retry with a fresh token."]), []);
+});
+
 test("the matrix accounts for every normative line in the spec scan", () => {
+  const mustGaps = unquotedMustSentences(
+    SPEC,
+    clauses.map((clause) => clause.text)
+  );
+  assert.deepEqual(mustGaps, KNOWN_MUST_GAPS, `Unquoted MUST-family sentences:\n${mustGaps.join("\n")}`);
+
   const unaccounted: string[] = [];
   for (const { line, text } of normativeSpecLines()) {
     const covered = clauses.some((clause) =>

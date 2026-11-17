@@ -1562,7 +1562,7 @@ const SECTION_8: readonly ClauseEntry[] = [
     requirementIds: ["CL-4"],
     level: "must",
     role: ["client"],
-    text: "then store `next_changes_since` from the terminal page for the next session.",
+    text: "Use `next_changes_since` from the terminal page to seed the next session.",
     specAnchor: "#list-records",
     applicability: "the client performs incremental sync",
     observable: "client-capture",
