@@ -49,6 +49,20 @@ test("buildRecordsQuery composes record-list query params without empty values",
   );
 });
 
+test("buildRecordsQuery preserves zero and false for downstream validation", () => {
+  assert.deepEqual(
+    buildRecordsQuery({ limit: 0, view: false, cursor: "", fields: [], changes_since: null }),
+    { limit: 0, view: false }
+  );
+});
+
+test("buildRecordsQuery keeps the order of normalized expansions and omits empty limits", () => {
+  assert.deepEqual(
+    buildRecordsQuery({ expand: ["artists,, albums ", "artists,tracks"], expand_limit: { albums: null, tracks: [] } }),
+    { expand: ["artists", "albums", "tracks"] }
+  );
+});
+
 test("buildRecordsQuery preserves malformed filters for downstream rejection", () => {
   assert.deepEqual(
     buildRecordsQuery({
