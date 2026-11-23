@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DataRow, DataRowWho, Monogram } from "./data-row.tsx";
+import { DataRow, DataRowDetail, DataRowMeta, DataRowWho, Monogram } from "./data-row.tsx";
 
 const MONOGRAM_CLASS = /class="pdpp-monogram"/;
 const ARIA_HIDDEN_TRUE = /aria-hidden="true"/;
@@ -38,4 +38,16 @@ test("DataRowWho keeps the display title when the protocol identifier is absent"
 
   const identified = renderToStaticMarkup(createElement(DataRowWho, { title: "Sample client", id: "example-id" }));
   assert.match(identified, /class="pdpp-data-row__id">example-id<\/span>/);
+});
+
+test("DataRowDetail combines the caller class with the detail class and renders its label as text", () => {
+  const html = renderToStaticMarkup(createElement(DataRowDetail, { className: "custom-detail", children: "A < B & C" }));
+
+  assert.equal(html, '<span class="pdpp-data-row__detail custom-detail">A &lt; B &amp; C</span>');
+});
+
+test("DataRowMeta renders an explicit numeric zero rather than a blank value", () => {
+  const html = renderToStaticMarkup(createElement(DataRowMeta, { children: 0 }));
+
+  assert.equal(html, '<span class="pdpp-data-row__meta">0</span>');
 });
