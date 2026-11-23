@@ -103,3 +103,25 @@ test("attention axis maps known states to owner-facing words with correct tone",
   assert.equal(formatAttentionAxis("unknown_state")?.value, "not measured");
   assert.equal(formatAttentionAxis("unknown_state")?.tone, "neutral");
 });
+
+test("settled limited coverage explains why no additional collection is owed", () => {
+  const optional = formatCoverageAxis("deferred");
+  assert.equal(optional.label, "Coverage · optional, not collected");
+  assert.match(optional.title, /accepted, settled state/);
+  assert.match(optional.title, /not a queued task/);
+
+  const listOnly = formatCoverageAxis("inventory_only");
+  assert.equal(listOnly.label, "Coverage · complete (list only, by design)");
+  assert.match(listOnly.title, /nothing is missing and nothing is owed/);
+});
+
+test("coverage gap tooltips distinguish waiting from recovery without implying existing data loss", () => {
+  const retryable = formatCoverageAxis("retryable_gap");
+  assert.match(retryable.title, /fill it on a later run/);
+  assert.match(retryable.title, /no owner action is needed yet/);
+
+  const terminal = formatCoverageAxis("terminal_gap");
+  assert.match(terminal.title, /will not backfill on its own/);
+  assert.match(terminal.title, /Records already collected stay valid and usable/);
+  assert.match(terminal.title, /latest run.*recovery step/);
+});
