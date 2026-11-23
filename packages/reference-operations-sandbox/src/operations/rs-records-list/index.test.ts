@@ -108,3 +108,43 @@ test("owner and granted client reads of stream A succeed", async () => {
   assert.equal(queryCalls, 2);
   assert.equal(decorateCalls, 2);
 });
+
+test("owner view selects fields within a decorated record envelope", async () => {
+  const requestParams = { view: "compact" };
+  const input = makeInput({
+    actor: { kind: "owner", subject_id: "owner-1" },
+    rawQueryView: "compact",
+    requestParams,
+  });
+  const result = await executeRecordsList(
+    input,
+    makeDependencies({
+      getManifest: () => ({
+        streams: [{ ...manifest.streams[0], name: "A", views: [{ id: "compact", fields: ["title"] }] }],
+      }),
+      queryRecords: async (_stream, _grant, params) => {
+        assert.deepEqual(params, { fields: ["title"] });
+        return { data: [{ id: "row-1", data: { title: "Draft", subtitle: "Long title" } }] };
+      },
+      decorateRecord: (record) => ({ ...record, display: "Preview" }),
+    })
+  );
+  assert.deepEqual(result.result.data, [{ id: "row-1", display: "Preview", data: { title: "Draft" } }]);
+  assert.equal(result.queryData.requested_view, "compact");
+});
+
+test("an empty records page preserves its continuation and reports zero returned rows", async () => {
+  const page = { data: [], has_more: true, next_cursor: "page-2", next_changes_since: "2026-01-01T00:00:00Z" };
+  const result = await executeRecordsList(
+    makeInput({ requestParams: { fields: ["title"], limit: "8", changes_since: "2025-12-31T00:00:00Z" } }),
+    makeDependencies({ queryRecords: async () => page })
+  );
+  assert.deepEqual(result.result, page);
+  assert.deepEqual(result.disclosureData, {
+    has_more: true,
+    has_next_changes_since: true,
+    query_shape: "record_list",
+    record_count: 0,
+  });
+  assert.deepEqual(result.queryData, { has_changes_since: true, limit: 8, query_shape: "record_list" });
+});
