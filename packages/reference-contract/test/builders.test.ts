@@ -85,6 +85,26 @@ test("buildRecordsQuery preserves malformed filters for downstream rejection", (
   );
 });
 
+test("buildRecordsQuery keeps an opaque continuation and projection-free query", () => {
+  assert.deepEqual(
+    buildRecordsQuery({
+      cursor: "fictional-next:part/2+3",
+      fields: [],
+      expand: [" ", ","],
+      expand_limit: { related: null },
+      view: "",
+    }),
+    { cursor: "fictional-next:part/2+3" }
+  );
+});
+
+test("buildRecordsQuery preserves false and zero filter operands", () => {
+  assert.deepEqual(
+    buildRecordsQuery({ filter: { active: false, size: { eq: 0 } } }),
+    { filter: { active: false, size: { eq: 0 } } }
+  );
+});
+
 test("buildOwnerDeviceAuthorizationRequest builds x-www-form-urlencoded payloads", () => {
   const params = buildOwnerDeviceAuthorizationRequest({
     audience: "pdpp",
