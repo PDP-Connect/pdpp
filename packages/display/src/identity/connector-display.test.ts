@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveSourceDisplayNameFallback, formatSourceWithConnectionForDisplay, isFallbackConnectionLabel } from "./connector-display.ts";
+import { deriveSourceDisplayNameFallback, formatConnectorNameForDisplay, formatSourceWithConnectionForDisplay, isFallbackConnectionLabel } from "./connector-display.ts";
 
 test("absent display name is a fallback", () => {
   assert.equal(isFallbackConnectionLabel({ connectorId: "gmail", displayName: null }), true);
@@ -134,4 +134,14 @@ test("non-connector source display keeps its type and plain identity", () => {
     formatSourceWithConnectionForDisplay({ connector_id: "gmail", id: " fixture-id ", kind: " dataset " }),
     "dataset:fixture-id",
   );
+});
+
+
+test("owner labels take precedence over manifest names; blank labels do not", () => {
+  const connector = { connectorId: "gmail", name: "Fixture Mail" };
+  assert.equal(
+    formatConnectorNameForDisplay({ ...connector, displayName: "  Shared inbox  " }),
+    "Shared inbox",
+  );
+  assert.equal(formatConnectorNameForDisplay({ ...connector, displayName: "   " }), "Fixture Mail");
 });
