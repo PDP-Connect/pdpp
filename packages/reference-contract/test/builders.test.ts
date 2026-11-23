@@ -97,6 +97,26 @@ test("buildOwnerDeviceAuthorizationRequest builds x-www-form-urlencoded payloads
   assert.equal(params.get("audience"), "pdpp");
 });
 
+test("buildRecordsQuery preserves an opaque continuation and connector selection exactly", () => {
+  const cursor = "opaque+page/2==";
+  assert.deepEqual(
+    buildRecordsQuery({ cursor, connector_id: "fixture", view: "", fields: [], limit: 1 }),
+    { cursor, connector_id: "fixture", limit: 1 }
+  );
+});
+
+test("buildOwnerDeviceAuthorizationRequest preserves ordered repeated form values", () => {
+  const form = buildOwnerDeviceAuthorizationRequest({
+    client_id: "  fixture_cli  ",
+    resource: ["urn:example:first?a=1&b=2", "", null, "urn:example:second + more"],
+  });
+  assert.deepEqual([...new URLSearchParams(form.toString())], [
+    ["client_id", "fixture_cli"],
+    ["resource", "urn:example:first?a=1&b=2"],
+    ["resource", "urn:example:second + more"],
+  ]);
+});
+
 test("buildParRequest lifts flat data-access inputs into authorization_details", () => {
   assert.deepEqual(
     buildParRequest({
