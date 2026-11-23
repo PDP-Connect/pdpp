@@ -60,6 +60,31 @@ test("an app outside the reviewed names and alias map is unreviewed, never in ap
   assert.deepEqual(result.unreviewed, [{ value: "Obscure App", count: 3 }]);
 });
 
+test("malformed app fields do not create public names or private answers", () => {
+  const result = countRequestedApps([
+    null,
+    { requestedApps: "Spotify" },
+    { requestedApps: [null, 7, { name: "Spotify" }, " ", "Strava"] },
+  ]);
+  assert.deepEqual(result, {
+    apps: [{ app: "Strava", count: 1 }],
+    unreviewed: [],
+    unreviewedAnswers: 0,
+  });
+});
+
+test("private spelling ties are stable across record order", () => {
+  const first = { requestedApps: ["Unlisted Tool", "Unlisted Tool"] };
+  const second = { requestedApps: ["unlisted tool"] };
+  for (const records of [[first, second], [second, first]]) {
+    assert.deepEqual(countRequestedApps(records), {
+      apps: [],
+      unreviewed: [{ value: "Unlisted Tool", count: 2 }],
+      unreviewedAnswers: 2,
+    });
+  }
+});
+
 async function writeRegister(records: Array<{ id: string; requestedApps: string[] }>): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "pdpp-app-counts-"));
   temporaryDirectories.push(directory);
