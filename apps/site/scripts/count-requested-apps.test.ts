@@ -43,6 +43,28 @@ test("count folds case, spacing and aliases, and sorts by count", () => {
   ]);
 });
 
+test("the private review label uses the most frequent spelling, not the first one", () => {
+  const result = countRequestedApps([
+    { requestedApps: ["EXAMPLE TOOL"] },
+    { requestedApps: ["Example Tool"] },
+    { requestedApps: ["Example Tool"] },
+  ]);
+  assert.deepEqual(result.unreviewed, [{ value: "Example Tool", count: 3 }]);
+  assert.equal(result.unreviewedAnswers, 3);
+});
+
+test("reviewed aliases match whole answers, not longer requested names", () => {
+  const result = countRequestedApps([
+    { requestedApps: ["YT", "YT Studio"] },
+    { requestedApps: ["Twitter", "Twitter Archive"] },
+  ]);
+  assert.deepEqual(result.apps, [
+    { app: "X", count: 1 },
+    { app: "YouTube", count: 1 },
+  ]);
+  assert.equal(result.unreviewedAnswers, 2);
+});
+
 test("one signatory counts once per app even when they spell it two ways", () => {
   assert.deepEqual(countRequestedApps([{ requestedApps: ["Insta", "Instagram", "instagram"] }]).apps, [
     { app: "Instagram", count: 1 },
