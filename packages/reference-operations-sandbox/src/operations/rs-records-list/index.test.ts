@@ -85,6 +85,47 @@ test("client view selection is invalid before storage or decoration", async () =
   assert.equal(decorateCalls, 0);
 });
 
+test("owner record-list telemetry describes an incremental page and its continuation", async () => {
+  const result = await executeRecordsList(
+    makeInput({
+      actor: { kind: "owner", subject_id: "synthetic" },
+      requestParams: { fields: ["title"], limit: "2", changes_since: "previous-marker" },
+    }),
+    makeDependencies({
+      queryRecords: async () => ({
+        data: [{ title: "first" }, { title: "second" }],
+        has_more: true,
+        next_changes_since: "next-marker",
+      }),
+    })
+  );
+
+  assert.deepEqual(result.queryData, { has_changes_since: true, limit: 2, query_shape: "record_list" });
+  assert.deepEqual(result.disclosureData, {
+    has_more: true,
+    has_next_changes_since: true,
+    query_shape: "record_list",
+    record_count: 2,
+  });
+  assert.equal(result.result.next_changes_since, "next-marker");
+});
+
+test("owner record-list telemetry keeps an unknown limit separate from an observed empty page", async () => {
+  const result = await executeRecordsList(
+    makeInput({ actor: { kind: "owner", subject_id: "synthetic" }, requestParams: { limit: "" } }),
+    makeDependencies({ queryRecords: async () => ({ data: [] }) })
+  );
+
+  assert.deepEqual(result.queryData, { has_changes_since: false, limit: null, query_shape: "record_list" });
+  assert.deepEqual(result.disclosureData, {
+    has_more: false,
+    has_next_changes_since: false,
+    query_shape: "record_list",
+    record_count: 0,
+  });
+  assert.deepEqual(result.result.data, []);
+});
+
 test("owner and granted client reads of stream A succeed", async () => {
   let queryCalls = 0;
   let decorateCalls = 0;
