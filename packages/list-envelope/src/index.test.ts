@@ -95,3 +95,22 @@ test("envelope validation preserves record values and order without applying a r
     assert.deepEqual(result.data, [{ id: "second" }, null, { id: "first" }]);
   }
 });
+
+test("a terminal page with an explicit null cursor returns no continuation", () => {
+  assert.deepEqual(validateListEnvelope({ data: ["last"], has_more: false, next_cursor: null, object: "list" }), {
+    data: ["last"], hasMore: false, kind: "valid", nextCursor: undefined,
+  });
+});
+
+test("malformed pages report the first invalid field in envelope order", () => {
+  const page = { data: null, has_more: null, next_cursor: "unexpected", object: "page" };
+  assert.deepEqual(validateListEnvelope(page), {
+    kind: "invalid", reason: 'expected object: "list", got "page"',
+  });
+  assert.deepEqual(validateListEnvelope({ ...page, object: "list" }), {
+    kind: "invalid", reason: "expected data to be an array",
+  });
+  assert.deepEqual(validateListEnvelope({ ...page, object: "list", data: [] }), {
+    kind: "invalid", reason: "expected has_more to be a boolean, got null",
+  });
+});
