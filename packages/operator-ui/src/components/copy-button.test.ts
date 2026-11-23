@@ -32,3 +32,27 @@ test("CopyButton grows its hit area via a pseudo-element for both sizes, clearin
   assert.match(src, MD_INSET_RE);
   assert.match(src, RELATIVE_POSITION_RE);
 });
+
+test("CopyButton renders an accessible default label without submitting its parent form", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { CopyButton } = await import("./copy-button.tsx");
+  const markup = renderToStaticMarkup(createElement(CopyButton, { value: "fixture-value" }));
+
+  assert.ok(markup.includes('aria-label="Copy fixture-value"'));
+  assert.ok(markup.includes('type="button"'));
+  assert.ok(!markup.includes("data-copied="));
+});
+
+test("CopyButton uses the supplied label and tooltip instead of the copied value", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { CopyButton } = await import("./copy-button.tsx");
+  const markup = renderToStaticMarkup(
+    createElement(CopyButton, { value: "fixture-value", ariaLabel: "Copy connection ID" })
+  );
+
+  assert.ok(markup.includes('aria-label="Copy connection ID"'));
+  assert.ok(markup.includes('title="Copy connection ID"'));
+  assert.ok(!markup.includes("fixture-value"));
+});
