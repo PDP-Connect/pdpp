@@ -21,6 +21,18 @@ test("Monogram renders decorative initials without polluting accessible labels",
   assert.doesNotMatch(html, CLAUDE_INITIALS_TEXT);
 });
 
+test("Monogram keeps supplementary Unicode initials intact", () => {
+  const html = renderToStaticMarkup(createElement(Monogram, { name: "🌱 B" }));
+
+  assert.ok(html.includes('data-initials="🌱B"'));
+});
+
+test("Monogram derives single-word initials after trimming", () => {
+  const html = renderToStaticMarkup(createElement(Monogram, { name: "  A  " }));
+
+  assert.ok(html.includes('data-initials="A"'));
+});
+
 test("DataRow applies revoked styling without hiding the row content", () => {
   const render = (revoked: boolean) =>
     renderToStaticMarkup(createElement(DataRow, { revoked, cols: "1fr 2fr", className: "custom-row", children: "Example record" }));
