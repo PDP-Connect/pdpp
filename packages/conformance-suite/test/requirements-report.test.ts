@@ -80,6 +80,19 @@ test("roll-up: unsupported beside evidence is ignored", () => {
   assert.equal(roll(["pass", "not-run"]).result, "pass");
 });
 
+test("roll-up: blank notes cannot hide the default partial reason", () => {
+  assert.deepEqual(roll(["pass"], "black-box-http", "   ", true), {
+    result: "partial",
+    reason: "The cases exercise only part of this clause.",
+  });
+});
+
+test("roll-up: environmental skip does not report the partial coverage gap as its cause", () => {
+  assert.deepEqual(roll(["unsupported", "advisory", "skip"], "client-capture", "missing evidence by design", true), {
+    result: "skip",
+  });
+});
+
 const SPEC = readSpecText();
 const target = {
   id: "synthetic",
