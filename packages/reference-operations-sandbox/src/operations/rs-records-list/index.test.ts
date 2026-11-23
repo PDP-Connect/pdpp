@@ -190,3 +190,27 @@ test("an empty records page preserves its continuation and reports zero returned
   });
   assert.deepEqual(result.queryData, { has_changes_since: true, limit: 8, query_shape: "record_list" });
 });
+
+test("a short records page keeps its opaque continuation unchanged", async () => {
+  const page = {
+    data: [{ title: "Invented row" }],
+    has_more: true,
+    next_cursor: "fixture+page/2=",
+    next_changes_since: "synthetic-watermark",
+  };
+  const result = await executeRecordsList(
+    makeInput({
+      actor: { kind: "owner", subject_id: "synthetic" },
+      requestParams: { fields: ["title"], limit: 10 },
+    }),
+    makeDependencies({ queryRecords: async () => page })
+  );
+  assert.equal(result.result.next_cursor, "fixture+page/2=");
+  assert.equal(result.result.next_changes_since, "synthetic-watermark");
+  assert.deepEqual(result.disclosureData, {
+    has_more: true,
+    has_next_changes_since: true,
+    query_shape: "record_list",
+    record_count: 1,
+  });
+});
