@@ -76,3 +76,22 @@ test("a next_cursor with surrounding whitespace is validated as usable but retur
     assert.equal(result.nextCursor, "  raw-cursor  ");
   }
 });
+
+test("continuation rejects numeric and object cursors without coercion", () => {
+  for (const next_cursor of [123, { value: "opaque" }]) {
+    assert.deepEqual(validateListEnvelope({ data: [], has_more: true, next_cursor, object: "list" }), {
+      kind: "invalid",
+      reason: "has_more is true but next_cursor is missing, non-string, or blank after trimming",
+    });
+  }
+});
+
+test("envelope validation preserves record values and order without applying a record schema", () => {
+  const data = [{ id: "second" }, null, { id: "first" }];
+  const result = validateListEnvelope({ data, has_more: false, object: "list" });
+  assert.equal(result.kind, "valid");
+  if (result.kind === "valid") {
+    assert.equal(result.data, data);
+    assert.deepEqual(result.data, [{ id: "second" }, null, { id: "first" }]);
+  }
+});
