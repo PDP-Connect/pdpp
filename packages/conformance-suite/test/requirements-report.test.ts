@@ -156,6 +156,34 @@ test("Markdown names an uncovered MUST that is absent from the requirement table
   assert.ok(section.includes("- `synthetic-gap`: Fixture evidence missing"));
 });
 
+test("Markdown reports zero coverage denominators as not applicable", () => {
+  const report = reportWith(() => "pass");
+  const markdown = renderMarkdown({
+    ...report,
+    coverage: [],
+    clauseCoverage: {
+      ...report.clauseCoverage,
+      mustWithCase: 0,
+      mustTotal: 0,
+      mustClausesPassed: 0,
+      total: 0,
+    },
+  });
+  assert.ok(markdown.includes("Coverage (tested/applicable): 0/0 (n/a)"));
+  assert.ok(markdown.includes("0/0 MUST-level clauses have at least one case (n/a)"));
+  assert.ok(!markdown.includes("NaN"));
+});
+
+test("Markdown states that no human review evidence is attached", () => {
+  const report = reportWith(() => "pass");
+  const markdown = renderMarkdown({ ...report, reviewEvidence: [] });
+  const reviewEvidence = markdown.indexOf("## Review evidence");
+  assert.ok(reviewEvidence > markdown.indexOf("## Coverage"));
+  const section = markdown.slice(reviewEvidence);
+  assert.ok(section.includes("They do not create cases, change coverage, or count as tested."));
+  assert.ok(section.includes("| — | — | No review evidence attached. | — | — | — |"));
+});
+
 test("the requirements report has one entry per MUST clause and one per SHOULD clause", () => {
   const out = buildRequirementsReport(
     reportWith(() => "pass"),
