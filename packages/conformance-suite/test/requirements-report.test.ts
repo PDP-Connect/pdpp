@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import { renderMarkdown } from "../src/report/markdown.ts";
 import {
   buildRequirementsReport,
   type ClauseCaseOutcome,
@@ -134,6 +135,25 @@ test("headline: 'has a case' and 'rolls up to pass' are separate numbers", () =>
   const { mustWithCase, mustClausesPassed, mustTotal } = report.clauseCoverage;
   assert.ok(mustClausesPassed < mustWithCase, "partial clauses have a case but do not pass");
   assert.ok(mustWithCase < mustTotal);
+});
+
+test("Markdown keeps case presence separate from passing clause evidence", () => {
+  const report = reportWith(() => "pass");
+  const { mustWithCase, mustTotal, mustClausesPassed } = report.clauseCoverage;
+  assert.ok(mustClausesPassed < mustWithCase);
+  const markdown = renderMarkdown(report);
+  assert.ok(markdown.includes(`${mustWithCase}/${mustTotal} MUST-level clauses have at least one case`));
+  assert.ok(markdown.includes(`and ${mustClausesPassed} roll up to pass`));
+});
+
+test("Markdown names an uncovered MUST that is absent from the requirement table", () => {
+  const report = {
+    ...reportWith(() => "pass"),
+    unmappedMustClauses: [{ clauseId: "synthetic-gap", gapNote: "Fixture evidence missing" }],
+  };
+  const markdown = renderMarkdown(report);
+  const section = markdown.slice(markdown.indexOf("### Uncovered MUST clauses under no Section 9 item"));
+  assert.ok(section.includes("- `synthetic-gap`: Fixture evidence missing"));
 });
 
 test("the requirements report has one entry per MUST clause and one per SHOULD clause", () => {
