@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Monogram } from "./data-row.tsx";
+import { DataRow, DataRowWho, Monogram } from "./data-row.tsx";
 
 const MONOGRAM_CLASS = /class="pdpp-monogram"/;
 const ARIA_HIDDEN_TRUE = /aria-hidden="true"/;
@@ -19,4 +19,23 @@ test("Monogram renders decorative initials without polluting accessible labels",
   assert.match(html, ARIA_HIDDEN_TRUE);
   assert.match(html, CLAUDE_INITIALS_DATA);
   assert.doesNotMatch(html, CLAUDE_INITIALS_TEXT);
+});
+
+test("DataRow applies revoked styling without hiding the row content", () => {
+  const render = (revoked: boolean) =>
+    renderToStaticMarkup(createElement(DataRow, { revoked, cols: "1fr 2fr", className: "custom-row", children: "Example record" }));
+
+  assert.match(render(true), /class="pdpp-data-row pdpp-data-row--revoked custom-row"/);
+  assert.doesNotMatch(render(false), /pdpp-data-row--revoked/);
+  assert.match(render(true), /style="--cols:1fr 2fr"/);
+  assert.match(render(true), />Example record<\/div>/);
+});
+
+test("DataRowWho keeps the display title when the protocol identifier is absent", () => {
+  const anonymous = renderToStaticMarkup(createElement(DataRowWho, { title: "Sample client" }));
+  assert.match(anonymous, /class="pdpp-data-row__title">Sample client<\/span>/);
+  assert.doesNotMatch(anonymous, /pdpp-data-row__id/);
+
+  const identified = renderToStaticMarkup(createElement(DataRowWho, { title: "Sample client", id: "example-id" }));
+  assert.match(identified, /class="pdpp-data-row__id">example-id<\/span>/);
 });
