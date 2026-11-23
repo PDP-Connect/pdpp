@@ -107,6 +107,16 @@ test("private spelling ties are stable across record order", () => {
   }
 });
 
+test("repeated unreviewed spellings count once per synthetic respondent", () => {
+  assert.deepEqual(
+    countRequestedApps([
+      { requestedApps: ["Example Tool", " example  tool ", "EXAMPLE TOOL"] },
+      { requestedApps: ["Example Tool"] },
+    ]),
+    { apps: [], unreviewed: [{ value: "Example Tool", count: 2 }], unreviewedAnswers: 2 }
+  );
+});
+
 async function writeRegister(records: Array<{ id: string; requestedApps: string[] }>): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "pdpp-app-counts-"));
   temporaryDirectories.push(directory);
