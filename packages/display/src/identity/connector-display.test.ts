@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveSourceDisplayNameFallback, isFallbackConnectionLabel } from "./connector-display.ts";
+import { deriveSourceDisplayNameFallback, formatSourceWithConnectionForDisplay, isFallbackConnectionLabel } from "./connector-display.ts";
 
 test("absent display name is a fallback", () => {
   assert.equal(isFallbackConnectionLabel({ connectorId: "gmail", displayName: null }), true);
@@ -120,5 +120,18 @@ test("deriveSourceDisplayNameFallback converts underscores/hyphens to spaces for
       connectorId: "my-new-connector",
     }),
     "my new connector source"
+  );
+});
+
+test("source display uses connector fallback and trims optional connection context", () => {
+  const source = { connector_id: "gmail", id: " ", kind: " ", connection_id: " device-2 " };
+  assert.equal(formatSourceWithConnectionForDisplay(source), "Gmail (connection device-2)");
+  assert.equal(formatSourceWithConnectionForDisplay({ ...source, connection_id: " " }), "Gmail");
+});
+
+test("non-connector source display keeps its type and plain identity", () => {
+  assert.equal(
+    formatSourceWithConnectionForDisplay({ connector_id: "gmail", id: " fixture-id ", kind: " dataset " }),
+    "dataset:fixture-id",
   );
 });
