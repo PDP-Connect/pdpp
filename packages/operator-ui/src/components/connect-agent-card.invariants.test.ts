@@ -13,6 +13,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ConnectAgentCard } from "./connect-agent-card.tsx";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CARD_FILE = `${HERE}connect-agent-card.tsx`;
@@ -24,6 +27,29 @@ const MCP_URL_SUBSTITUTION_RE =
 const CONNECT_HREF_PROP_RE = /connectHref\??:\s*string/;
 const OPEN_SETUP_LINK_RE = /href=\{connectHref\}/;
 const OWNER_TOKEN_SETUP_RE = /Authorization: Bearer|bearer-token-env-var|Issue owner token/;
+
+const LIVE_SETUP_LINK = /href="\/sample-setup"/;
+const LIVE_MCP_TEXT = /https:\/\/fixture\.example\/mcp<\/code>/;
+const SANDBOX_MCP_TEXT = /&lt;provider-url&gt;\/mcp<\/code>/;
+const SANDBOX_COPY = /deterministic mock data/;
+const LINK_ELEMENT = /<a(?: |>)/;
+
+test("ConnectAgentCard renders the setup link and one normalized MCP path", () => {
+  const html = renderToStaticMarkup(createElement(ConnectAgentCard, {
+    connectHref: "/sample-setup",
+    mode: "live",
+    providerUrl: "https://fixture.example///",
+  }));
+  assert.match(html, LIVE_SETUP_LINK);
+  assert.match(html, LIVE_MCP_TEXT);
+});
+
+test("ConnectAgentCard sandbox without a deployment renders a placeholder and no setup link", () => {
+  const html = renderToStaticMarkup(createElement(ConnectAgentCard, { mode: "sandbox" }));
+  assert.match(html, SANDBOX_MCP_TEXT);
+  assert.match(html, SANDBOX_COPY);
+  assert.doesNotMatch(html, LINK_ELEMENT);
+});
 
 test("ConnectAgentCard accepts a providerUrl prop", async () => {
   const src = await readFile(CARD_FILE, "utf8");
