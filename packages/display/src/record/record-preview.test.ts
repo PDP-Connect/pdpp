@@ -117,6 +117,19 @@ test("builds a role-backed titled preview", () => {
   );
 });
 
+test("truncates a titled preview without leaving half of an astral character", () => {
+  const previewTitle = (title: string) =>
+    buildRecordPreview("titled", { title }, null, { title: "primary-title" })?.title;
+  const glyph = "\u{1F9EA}";
+  const split = "a".repeat(88);
+  assert.equal(previewTitle(split + glyph + "z"), split + "…");
+  assert.equal(previewTitle(split + glyph), split + glyph);
+
+  const fitsBeforeEllipsis = "a".repeat(87) + glyph;
+  assert.equal(previewTitle(fitsBeforeEllipsis + "zz"), fitsBeforeEllipsis + "…");
+  assert.equal(previewTitle("\t" + "a".repeat(91) + "\n"), "a".repeat(89) + "…");
+});
+
 test("generic preview uses declared title and body roles only", () => {
   const preview = buildRecordPreview(
     "generic",
