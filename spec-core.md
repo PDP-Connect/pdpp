@@ -297,11 +297,11 @@ A client that has previously synced a stream queries for changes by passing its 
 
 This design ensures that a client authorized for fields A and B cannot infer that field C changed, even if C was modified after the client's last sync. The response is a function of the grant, not of the full record state.
 
-This promise covers field values, not membership. Under a time-bounded or resource-filtered grant, the client can see which records are visible. A change to a hidden time field can move a record into or out of that set. Repeated full listings reveal the same change, so no grant of this kind can hide it.
+This promise covers field values, not membership. Under a time-bounded or resource-filtered grant, the client can see which records are visible. A change to a hidden time field can move a record into or out of that set. Repeated full listings reveal the same change, so no grant of this kind can hide it. A client request filter tests only granted fields (see [Client request filters](#list-records)), so a record that enters or leaves a filtered session reveals only a change the client could already see in its granted fields.
 
 **Snapshot model:** `changes_since` returns the full current state of every record not visible at h0 and visible at h1, and of every record visible at both whose grant-authorized projection changed, plus tombstones. It also returns each record that the previous session withheld, or in which it redacted a reference, after a deletion (see the pagination rule below, and Cross-stream references in Section 4). It does not return field-level diffs. The client receives a complete record object for any record that changed.
 
-**Visibility:** A record is *visible* at a horizon if it exists at that horizon and passes every restriction of the query context at that horizon. For a client token, these are the grant's stream, `instance_ids`, `resources`, and `time_constraint`. For an owner token, they are the owner scope and any request filter. Within a stream, a record is identified by its instance and its canonical key (see RECORD envelope, Record identity below). A `changes_since` session from horizon h0 to horizon h1 returns:
+**Visibility:** A record is *visible* at a horizon if it exists at that horizon and passes every restriction of the query context at that horizon. For a client token, these are the grant's stream, `instance_ids`, `resources`, and `time_constraint`, and any request filter. For an owner token, they are the owner scope and any request filter. Within a stream, a record is identified by its instance and its canonical key (see RECORD envelope, Record identity below). A `changes_since` session from horizon h0 to horizon h1 returns:
 
 | At h0 | At h1 | Result |
 |---|---|---|
@@ -637,7 +637,7 @@ The full declaration below gives the omitted schema: `source_updated_at` is a st
 
 **The consent screen.** The authorization server shows the declaration's label and detail, the requested fields, and the bound stated as inclusive, for example "artists updated at or after 00:00 UTC on 28 September 2025" (see [consent_time_field](#consent-time-field)). It also states that `id` and `name` remain in every record the client receives. The owner approves or declines the request.
 
-**The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields, the required-field subset, the sort field, and time bound:
+**The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields, the required-field subset, the sort field, the filter capability, and time bound. `genres` is an array, so it has no filter entry, and only `source_updated_at` is declared in `query.range_filters`:
 
 ```json
 {
@@ -646,6 +646,12 @@ The full declaration below gives the omitted schema: `source_updated_at` is a st
   "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
   "required_fields": ["id", "name"],
   "sort_field": "source_updated_at",
+  "filter_fields": {
+    "id": { "type": "string", "range": false },
+    "name": { "type": "string", "range": false },
+    "popularity": { "type": "integer", "range": false },
+    "source_updated_at": { "type": "date-time", "range": true }
+  },
   "time_constraint": {
     "field": "source_updated_at",
     "type": "date-time",
@@ -1351,6 +1357,12 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
       "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
       "required_fields": ["id", "name"],
       "sort_field": "source_updated_at",
+      "filter_fields": {
+        "id": { "type": "string", "range": false },
+        "name": { "type": "string", "range": false },
+        "popularity": { "type": "integer", "range": false },
+        "source_updated_at": { "type": "date-time", "range": true }
+      },
       "time_constraint": {
         "field": "source_updated_at",
         "type": "date-time",
@@ -1399,6 +1411,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 | `fields` | string[] | yes | Protocol-enforced | Unique non-empty resolved field allowlist, authoritative for RS enforcement. Includes every `required_fields` entry. Top-level field names only. |
 | `required_fields` | string[] | yes | Protocol-enforced | Unique top-level field names forming the schema-required consent floor frozen from the retained declaration. Every entry is also in `fields`. An empty array represents an empty floor. Order has no meaning. |
 | `sort_field` | string | no | Protocol-enforced | The declared `cursor_field` when its schema format is `date` or `date-time` and `fields` includes it; otherwise absent. If absent, client list reads sort by `instance_id` and canonical key string. |
+| `filter_fields` | object | no | Protocol-enforced | Frozen client filter capability, keyed by top-level field name. Each key is also in `fields`. Each value is exactly `{ type, range }`. The AS sets `type` at issuance from the field's schema in the retained declaration: `string`, `integer`, `number`, or `boolean`, or `date` or `date-time` for a string with that `format`. It sets `range` to `true` only when the retained declaration lists the field in `query.range_filters`. A granted field whose schema is not one of these scalar types, ignoring `null`, has no entry. Absent means a client cannot filter this stream. See [Client request filters](#list-records). |
 | `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, type, since?, until? }` resolved from the retained declaration. `field` and `type` are required and at least one bound is present. `type` is `date` or `date-time`; the AS sets it at issuance from the field's format in the retained declaration. Each bound has that type. `since` is inclusive; `until` is exclusive. |
 | `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Present only when `instance_ids` has exactly one handle. Absent means all records. |
 
@@ -1871,6 +1884,12 @@ These examples assume retained declarations whose root `required` arrays list `i
       "fields": ["id", "name", "genres", "popularity", "source_updated_at"],
       "required_fields": ["id", "name"],
       "sort_field": "source_updated_at",
+      "filter_fields": {
+        "id": { "type": "string", "range": false },
+        "name": { "type": "string", "range": false },
+        "popularity": { "type": "integer", "range": false },
+        "source_updated_at": { "type": "date-time", "range": true }
+      },
       "time_constraint": {
         "field": "source_updated_at",
         "type": "date-time",
@@ -1956,7 +1975,7 @@ On every request, the resource server:
 
 1. Resolves the access token through authenticated RFC 7662 introspection or a local equivalent for co-located deployments. Positive introspection results MUST NOT be cached for more than 60 seconds, and never past `exp` when present.
 2. Determines `pdpp_token_kind` from the introspection response, then branches:
-   - **Client:** requires an active resolved authorization context (`active: true`, a resolved grant). Verifies that the requested stream appears in the grant's `streams` list. Selects records only from the explicitly granted `instance_ids` and enforces the grant's `time_constraint`, `fields`, and `resources` constraints.
+   - **Client:** requires an active resolved authorization context (`active: true`, a resolved grant). Verifies that the requested stream appears in the grant's `streams` list. Selects records only from the explicitly granted `instance_ids` and enforces the grant's `time_constraint`, `fields`, and `resources` constraints. Evaluates any request filter only under the grant's frozen `filter_fields`.
    - **Owner:** enforces subject, source, connection, and operation scope derived from the introspection response. Does not require or synthesize a client grant — an owner token carries none.
    - **Any other kind:** unauthorized for Core operations.
 3. If all checks pass, returns records filtered accordingly.
@@ -1964,7 +1983,7 @@ On every request, the resource server:
 
 For owner-token current-capability reads, the effective filter is the permitted owner request filter alone: an owner token carries no grant, so there is no grant filter to intersect. Request filters can only narrow the current owner read and cannot widen it.
 
-In v0.1, client-token reads do not have request-time predicate filters (see List records below); the resource server enforces the frozen grant constraints and rejects a client request-time predicate filter rather than evaluating it. A future client-filter capability may define intersection semantics.
+For client-token reads, the effective filter is the intersection of the frozen grant constraints and the request filters, which the RS evaluates only under the grant's frozen `filter_fields` (see [Client request filters](#list-records)). A request filter can only narrow what the grant authorizes and cannot widen it.
 
 The RS MUST NOT re-validate authorization against the current SourceDeclaration. All enforcement constraints are in the resolved grant. Current serving metadata MAY route a granted instance, describe current schemas or query capabilities, or reject a request that cannot currently be served. It MUST NOT widen or reinterpret a stream, instance, field, time field, time type, bound, or resource key.
 
@@ -2107,7 +2126,7 @@ Authorization: Bearer <access_token>
 A client-token caller may fetch metadata only for a stream present in its resolved authorization context. An owner-token caller may fetch metadata for streams in the subject's data store the owner token is scoped to. Once access is authorized, the response body is actor-specific:
 
 - **Owner token:** the metadata document is returned whole — full current schema, query capabilities, views, and relationships — rather than field-projected by any grant. An owner token carries no grant, so there is nothing to project against.
-- **Client token:** The response is a closed projection. It contains the granted stream's explicitly granted fields and immutable or frozen grant facts, including `sort_field` only when the grant freezes it. It MUST NOT expose the current `cursor_field`. Current query, view, relationship, filter, expansion, and aggregation capabilities MUST NOT appear unless a future frozen grant vocabulary includes them. Current metadata MAY report availability or `freshness` (see [Freshness metadata](#freshness)), or reject an unavailable operation, but MUST NOT make the grant appear broader or semantically different than issued. A source declaration change after grant issuance MUST NOT become visible through this endpoint.
+- **Client token:** The response is a closed projection. It contains the granted stream's explicitly granted fields and immutable or frozen grant facts, including `sort_field` and `filter_fields` only when the grant freezes them. It MUST NOT expose the current `cursor_field`. Current query, view, relationship, filter, expansion, and aggregation capabilities MUST NOT appear unless a future frozen grant vocabulary includes them. Current metadata MAY report availability or `freshness` (see [Freshness metadata](#freshness)), or reject an unavailable operation, but MUST NOT make the grant appear broader or semantically different than issued. A source declaration change after grant issuance MUST NOT become visible through this endpoint.
 
 **Owner-token response** (full current metadata):
 
@@ -2147,7 +2166,7 @@ A client-token caller may fetch metadata only for a stream present in its resolv
 }
 ```
 
-**Client-token response** (closed projection of a grant frozen to fields `id`, `name`, `source_updated_at`; no range filters, views, or relationships were granted). It shows no declaration fact that the grant does not carry, such as the primary key, cursor field, or selection capabilities:
+**Client-token response** (closed projection of a grant frozen to fields `id`, `name`, `source_updated_at`, with their frozen filter capability; no views or relationships were granted). It shows no declaration fact that the grant does not carry, such as the primary key, cursor field, or selection capabilities:
 
 ```json
 {
@@ -2161,6 +2180,11 @@ A client-token caller may fetch metadata only for a stream present in its resolv
     }
   },
   "sort_field": "source_updated_at",
+  "filter_fields": {
+    "id": { "type": "string", "range": false },
+    "name": { "type": "string", "range": false },
+    "source_updated_at": { "type": "date-time", "range": true }
+  },
   "query": { },
   "freshness": [
     { "instance_id": "inst_K4wq8Rn2", "last_success_at": "2026-04-06T15:00:00Z" }
@@ -2218,27 +2242,31 @@ Returns records from a stream, filtered by the grant and any additional request 
 | `limit` | integer | Records per page. Default 25, max 100. A request for more than 100 is clamped to 100 and the response carries a non-fatal `limit_clamped` warning (see below), not an error. |
 | `cursor` | string | Opaque pagination token from a previous response. Clients MUST NOT parse or construct cursor tokens. |
 | `order` | enum | `desc` (default) or `asc`. |
-| `filter[{field}]` and `filter[{field}][op]` | string | Owner-token current-capability filters only. Client-token requests MUST reject exact and range forms in v0.1. |
+| `filter[{field}]` and `filter[{field}][op]` | string | Owner-token current-capability filters, and client-token filters on the grant's frozen `filter_fields` (see [Client request filters](#list-records)). |
 | `view` | string | Owner-token current-capability request for records projected to a named view. Client-token records requests MUST reject `view`; clients use explicit `fields` or the field projection already frozen into the grant. Mutually exclusive with `fields`. |
 | `fields` | comma-separated | Sparse fieldset. Every client-token field MUST be in the grant, or the whole read fails with 403 `field_not_granted`; see [Effective projection](#record-evidence). For a client token, the RS uses the granted fields requested here together with the grant's `required_fields`, as Section 4 defines. For an owner token, schema-required fields are included under the current-capability read rules. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
 | `expand[]` | string | Owner-token current-capability request to expand a relation declared under `query.expand`. Depth is 1. Expanded relations appear under the `expanded` key on the parent record. Client-token requests MUST reject this parameter in v0.1. |
 | `expand_limit[{relation}]` | integer | Owner-token current-capability limit for an expanded `has_many` relation. Valid only for relations declared under `query.expand`; defaults and limits come from that declaration. Client-token requests MUST reject this parameter in v0.1. |
 | `changes_since` | string | Opaque incremental-sync token from a previous session (distinct token space from `cursor`), or `beginning` to start a sync. Returns the changes since that token under [Incremental sync](#incremental-sync): every record not visible at h0 and visible at h1, and tombstones. A record visible at both is returned only if its grant-authorized projection changed or the previous session withheld it, or redacted a reference in it, after a deletion. Use `next_changes_since` from the terminal page to seed the next session. Returns HTTP 410 Gone with error code `cursor_expired` if the token has expired. |
 
-The durable client-token base query surface in v0.1 is: `limit`, `cursor`, `order`, `fields`, `changes_since`, and blob fetch. Exact and range `filter[...]`, `expand[]`, and `expand_limit[...]` parameters are not part of the client-token surface. Owner-token current-capability reads MAY support exact and declared range filters, `view`, and declared expansion; those reads consult current serving metadata. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
+The durable client-token base query surface is: `limit`, `cursor`, `order`, `fields`, `changes_since`, blob fetch, and exact and range `filter[...]` on the grant's frozen `filter_fields`. `expand[]` and `expand_limit[...]` parameters are not part of the client-token surface. Owner-token current-capability reads MAY support exact and declared range filters, `view`, and declared expansion; those reads consult current serving metadata. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
 
 Unknown query parameters and unsupported query shapes MUST be rejected with HTTP 400 and MUST NOT be silently ignored.
 
 **Non-fatal warnings:** A list response MAY carry a `meta.warnings[]` array reporting non-fatal lossiness that the server resolved without failing the request. Each entry has a stable `code` and a human-readable `message`; clients SHOULD branch on `code`, not on message text. A `limit` above the maximum is the canonical case: the RS returns the bounded page and a `limit_clamped` warning rather than silently dropping the excess or returning an error. Clients page forward with the returned cursor instead of expecting a larger page. Warnings are not errors and MUST NOT change the HTTP status.
 
-Client-token requests that contain any exact or range `filter[...]` parameter MUST be rejected with HTTP 400 `invalid_request` before the RS consults current SourceDeclaration or serving metadata. This rejection applies regardless of whether the field or operator would otherwise be declared. Owner-token current-capability reads MAY accept exact filters on declared top-level scalar fields and range filters explicitly declared by current serving metadata.
+**Client request filters.** A client-token list read MAY carry exact `filter[{field}]` and range `filter[{field}][op]` parameters. The RS evaluates them only under the grant's frozen `filter_fields` and MUST NOT consult the current SourceDeclaration or serving metadata to accept, reject, or interpret them. After it validates request syntax, resolves the active grant, and authorizes the stream, the RS MUST compare each filter field with the grant's `fields`. If a filter field is not in `fields`, the RS MUST reject the whole read with HTTP 403 `field_not_granted` before any source-schema or record-data lookup, as [Effective projection](#record-evidence) requires for `fields`. The error's `param` MUST be the first such `filter[...]` parameter, and its message MUST name exactly the filter fields absent from `fields`. For the same well-formed request and grant, the response MUST be identical whether one of those names exists in the current source schema or not. A filter on a granted field without a `filter_fields` entry returns HTTP 400 `invalid_request`. So does a range operator on an entry whose `range` is not `true`, or a value that is invalid for the entry's `type`. In each case `param` names the parameter.
+
+A record matches a client read when it is visible under every grant constraint and satisfies every request filter. Filters combine with AND. The RS compares values by the frozen `type`; on a `date` or `date-time` entry it uses the validity and comparison rules in [Time constraint semantics](#time-constraint-semantics). A range filter whose bounds reach outside the grant's `time_constraint` is not an error: records outside the constraint stay invisible, and the result is the intersection. Because a client filter can test only granted fields, the records it returns reveal nothing about fields outside the grant.
+
+Owner-token current-capability reads MAY accept exact filters on declared top-level scalar fields and range filters explicitly declared by current serving metadata.
 Unknown fields, non-scalar fields, and unsupported range shapes return HTTP
 400. Owner subject, source, and connection scope are enforced independently. An
 owner token has no client grant field projection.
 
 Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be rejected with HTTP 400 `invalid_request` before the RS consults current SourceDeclaration or serving metadata. A v0.1 resolved grant does not freeze relationship identity, target stream, foreign-key join semantics, cardinality, or expansion limits. Current relationship metadata therefore cannot interpret client grant rights. Owner-token current-capability reads MAY use declared expansion against current serving metadata.
 
-For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. On a `date` or `date-time` field, they use the validity and comparison rules in [Time constraint semantics](#time-constraint-semantics), and an invalid value returns 400 `invalid_request`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
+For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. For client-token reads, they apply only to `filter_fields` entries whose `range` is `true`. On a `date` or `date-time` field, they use the validity and comparison rules in [Time constraint semantics](#time-constraint-semantics), and an invalid value returns 400 `invalid_request`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
 
 For owner-token current-capability reads, expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations. Expansion joins only related records in the parent record's instance.
 
@@ -2254,7 +2282,7 @@ A `changes_since` token is bound to the grant (for an owner token, the subject a
 
 If a `changes_since` response is paginated, all pages in that session MUST be anchored to the same session horizon selected on the first page. New writes arriving after page 1 MUST NOT appear in later pages of that same session; they surface in the next session via the terminal-page `next_changes_since`. Deletion is the exception: the resource server MUST NOT serve a record on a later page if the record was deleted after page 1. The next session under the same still-authorized grant or owner scope and query context treats the withheld record as changed, even if its projection did not change. That session emits its tombstone, or its current state if the record was reinserted. Otherwise a client that replaced its copy after a `changes_since=beginning` session would lose a record that was deleted and reinserted unchanged. An ordinary edit after page 1 does not override the horizon; the next session applies it. Revocation ends access and promises no later tombstone: requests fail within the propagation bound in [Revocation](#revocation).
 
-**Invalid owner filter:** An owner-token current-capability filter on an unknown, non-scalar, or unsupported field/operator returns HTTP 400 `invalid_request` or `unknown_field`, as applicable. Client-token predicate filters are rejected earlier under the v0.1 client-filter rule.
+**Invalid owner filter:** An owner-token current-capability filter on an unknown, non-scalar, or unsupported field/operator returns HTTP 400 `invalid_request` or `unknown_field`, as applicable. Client-token filters follow [Client request filters](#list-records).
 
 **Expansion:** A client-token expansion request is rejected with 400 `invalid_request` before declaration lookup. For an owner-token current-capability read, requesting an undeclared relation returns 400 `invalid_expand`. Expansion never widens the current owner read scope.
 
@@ -2420,7 +2448,6 @@ This makes a future error code safe to introduce: an older client keeps handling
 | `field_not_granted` | 403 | `permission_error` | A well-formed client `fields` request includes names outside the grant. Reject the whole read before schema or data lookup; `param` is `fields`, and `message` names exactly the requested fields absent from the grant. |
 | `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
 | `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
-| `grant_time_range_exceeded` | 403 | `permission_error` | Request filters exceed the grant's frozen `time_constraint`. |
 | `grant_expired` | 401 | `authentication_error` | Token is inactive because its grant has expired, and authenticated context establishes this cause. See Inactive tokens below. |
 | `grant_revoked` | 401 | `authentication_error` | Token is inactive because its grant has been revoked, and authenticated context establishes this cause. See Inactive tokens below. |
 | `grant_invalid` | 403 | `permission_error` | Resolved grant is malformed or cannot be served without changing its authorization meaning. |
@@ -2523,7 +2550,7 @@ A conformant authorization server:
 10. For `single_use` grants, consumes the grant atomically with first client-token issuance. Gives that access token a finite expiration set by local policy and, when the grant has `expires_at`, no later than `expires_at`; that expiry ends the grant's one read window. Lets a later token in the same refresh-token family carry the grant only inside the window, reports the grant inactive for reads after it, and otherwise rejects access-token issuance against the consumed grant.
 11. Validates stream/field/view/resource-id shape at grant issuance. Rejects `resources` on a stream with more than one instance. Rejects `resources` entries that are not canonical under Section 4 and does not percent-decode JSON `resources` values.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
-13. Resolves view names to field lists at issuance time; stores resolved `fields` and `required_fields` in the `StreamGrant`. Freezes `cursor_field` as `sort_field` when its format is `date` or `date-time` and the grant includes it; otherwise omits `sort_field`. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
+13. Resolves view names to field lists at issuance time; stores resolved `fields` and `required_fields` in the `StreamGrant`. Freezes `cursor_field` as `sort_field` when its format is `date` or `date-time` and the grant includes it; otherwise omits `sort_field`. Freezes `filter_fields` from the retained declaration for the granted scalar fields; omits it when no granted field qualifies. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
 14. Rejects a detail whose `processing_permissions` is malformed or contains a duplicate, unknown, or unsupported value, with `invalid_authorization_details`, and never ignores, substitutes, or narrows such a value or issues an ordinary grant in its place. Advertises in `pdpp_processing_permissions_supported`, and grants, only permissions whose complete defining contract it implements. Treats `https://pdpp.dev/processing/ai_training` as unsupported until the PDPP AI Training Profile is published and its registration is approved, and afterwards supports it only by conforming to that profile.
 15. For Core `data-access` details, resolves omitted instance IDs before the final approval surface. Binds
     exact resolved instances and all final decision fields to an immutable
@@ -2577,21 +2604,20 @@ A conformant authorization server:
 A conformant Core RS:
 
 1. Implements the query endpoints defined in Section 8: list streams, get stream metadata, list records, get a single record, get a blob, delete a record (owner-authenticated).
-2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, `required_fields`, frozen `sort_field`, and `resources` filter. Authorizes each disclosure under one grant and never combines the constraints of different grants. Uses Section 4's canonical key representation, never percent-decodes JSON key values, and decodes an HTTP path key exactly once before comparison.
+2. Enforces grant constraints on every client request: stream membership, explicit instance handles, frozen `time_constraint`, `fields` allowlist, `required_fields`, frozen `sort_field`, frozen `filter_fields`, and `resources` filter. Authorizes each disclosure under one grant and never combines the constraints of different grants. Uses Section 4's canonical key representation, never percent-decodes JSON key values, and decodes an HTTP path key exactly once before comparison.
 3. In a separated deployment, resolves access tokens through authenticated RFC 7662 introspection, enforces only from that response, and makes no second AS lookup while handling the request. A co-located deployment may use a local equivalent. Caches positive results for no more than 60 seconds and never past `exp` when present.
 4. Distinguishes owner tokens from client tokens via `pdpp_token_kind`, and authorizes Core operations only for those two kinds, each under its own rules.
-5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens in v0.1, rejects request-time predicate filters and enforces the frozen grant constraints.
+5. For owner tokens, computes the effective filter as the permitted owner request filter alone (there is no grant filter). For client tokens, computes the effective filter as the frozen grant constraints intersected with the request filters, evaluated only under the grant's frozen `filter_fields`.
 6. Returns structured errors as defined in Section 8 (unified error table).
 7. Supports incremental sync via `changes_since` on every stream, starting from `beginning`, with tombstone entries and HTTP 410 with error code `cursor_expired` on cursor expiry. Returns every record not visible at h0 and visible at h1, and omits a record visible at both horizons whose projection did not change, unless the previous session withheld it, or redacted a reference in it, after a deletion. The projection is the grant-authorized projection for a client token, and the session's effective `fields` or resolved `view` projection for an owner token.
 8. Returns `next_changes_since` on the terminal page of every `changes_since` response and on no other page.
-9. Rejects client-token exact and range `filter[...]` parameters with 400
-   `invalid_request` before consulting current declaration metadata; owner-token current-capability reads MAY retain declared filter behavior.
+9. For a client-token `filter[...]` on a field outside the grant's `fields`, returns 403 `field_not_granted` before any schema or data lookup, with the same response whether the field exists or not. For a granted field or operator outside the frozen `filter_fields`, returns 400 `invalid_request`. Never consults current declaration metadata for a client filter. Owner-token current-capability reads MAY retain declared filter behavior.
 10. Rejects unknown query parameters and unsupported query shapes with 400 instead of silently ignoring them.
 11. Implements [API versioning](#api-versioning): supports the exact `0.1` contract, selects it for an absent header, rejects malformed or unsupported values without fallback, reports the selected contract in responses, and publishes the matching default in protected resource metadata. Binds cursors and synchronization tokens to the selected contract and preserves all grant and profile enforcement independently of it.
 12. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response. Never discloses the introspection `subject_id` to a client.
 13. SHOULD support owner-authenticated access to the `/v1/streams/{stream}/records` query endpoints without a client grant, allowing the data subject to export their own data directly (self-export).
 14. For owner-token stream-metadata reads, returns the full current stream metadata within the owner's subject/source/connection scope, including current query, view, and relationship capabilities.
-15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
+15. For client-token stream-metadata reads, returns only a projection derived from the resolved authorization context: the granted stream and its explicitly granted fields, and immutable/frozen grant facts, including `filter_fields` when the grant freezes it. MUST NOT include current view, relationship, filter, expansion, or aggregation capability unless that capability is explicitly part of a future frozen grant vocabulary, and MUST NOT surface a source-declaration change made after grant issuance.
 16. Publishes RFC 9728 protected resource metadata at the location RFC 9728 Section 3 derives from its resource identifier, carrying `resource`, the four required `pdpp_`-prefixed members defined in Section 8, and `authorization_servers` when its issuer set is enumerable. Also carries `pdpp_freshness_granularity_seconds` when it attaches `freshness` to client-token responses. Returns a `WWW-Authenticate: Bearer` challenge on 401 per RFC 6750 Section 3, carrying the RFC 9728 `resource_metadata` parameter.
 17. Does not interpret an unrecognized stream semantic as `append_only` or `mutable_state`, or an unrecognized grant `source.kind` as a known provenance class.
 18. Serves a blob only when a record the requesting token may currently read, including its field projection, references it. Otherwise returns 404 `blob_not_found`. Gives a redirect's signed URL an expiry no later than the positive-status cache expiry, or, when no result was cached, 60 seconds after the RS sent the introspection request that validated the token. The expiry is also no later than the token or grant expiration when present. A delayed response never restarts this deadline.
@@ -2885,7 +2911,7 @@ The `retention` field is a structured policy declaration and policy commitment b
 
 v0.1 grants narrow access only by stream selection, named view or field projection, time range, and explicit resource identifiers. Generic predicate expressions (e.g., `filter[sender_domain]=amazon.com` as a grant parameter) are not supported.
 
-**Request-time filters are not grant scope.** Owner-token current-capability reads MAY use `filter[...]` to narrow a result set, but those filters do not narrow any client grant. Client-token requests do not support request-time filters in v0.1; a client that needs a semantically bounded subset requests a named stream declared by the SourceDeclaration.
+**Request-time filters are not grant scope.** A request filter narrows one read. It never narrows or widens a client grant, and the owner does not approve it. Owner-token reads filter under current capability, and client-token reads filter only on granted fields under the grant's frozen `filter_fields`. A client that needs the owner to consent to a semantically bounded subset requests a named stream declared by the SourceDeclaration.
 
 **Derived subset streams (non-normative).** A stream MAY represent either a source-native collection or a derived subset, provided its semantics are stable, versioned through the SourceDeclaration, and human-reviewable in consent UI. Implementations that need semantically bounded consent in v0.1 SHOULD prefer named streams with human-readable semantics (e.g., a source that exposes `amazon_messages` as a distinct stream) over ad hoc technical predicates. Stream names MUST NOT encode predicate logic or synthesize per-request subsets; derived streams MUST be statically declared in the SourceDeclaration.
 
@@ -3015,12 +3041,18 @@ type TimeConstraint = TimeRange & {
   type: 'date' | 'date-time';  // Frozen by the AS from the retained declaration
 };
 
+interface FilterField {
+  type: 'string' | 'integer' | 'number' | 'boolean' | 'date' | 'date-time'; // Frozen from the retained declaration
+  range: boolean;          // true only when the retained declaration lists the field in query.range_filters
+}
+
 interface StreamGrant {
   name: string;
   instance_ids: string[];  // Non-empty and unique; pairwise per client; a handle names one instance across the source's streams
   fields: string[];        // Non-empty and authoritative for RS enforcement
   required_fields: string[]; // Frozen, unique subset of fields; may be empty
   sort_field?: string;     // Frozen date/date-time cursor_field when granted; absent means key ordering
+  filter_fields?: Record<string, FilterField>; // Frozen client filter capability; keys are in fields
   time_constraint?: TimeConstraint;
   resources?: string[];    // Canonical key strings per compound key encoding
 }

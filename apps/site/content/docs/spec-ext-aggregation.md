@@ -67,7 +67,7 @@ Single-stream aggregation. The server aggregates over exactly one stream per req
 | `granularity` | string | REQUIRED when `group_by_time` is present: omitting it MUST be rejected with `invalid_request`. FORBIDDEN otherwise: supplying it without `group_by_time` MUST be rejected, not ignored. MUST be one of `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`. |
 | `time_zone` | string | OPTIONAL with `group_by_time`; FORBIDDEN otherwise: supplying it without `group_by_time` MUST be rejected, not ignored. MUST be an IANA time zone name; fixed offsets such as `+05:00` MUST be rejected with `invalid_request` ("Unknown time_zone"). Defaults to `UTC` when omitted. |
 | `limit` | integer | OPTIONAL on grouped requests only; supplying `limit` on an ungrouped request MUST be rejected. Defaults to `10`; MUST be an integer between 1 and 100. |
-| `filter[{field}][{op}]` | string | OPTIONAL. Same exact and declared range-filter validation as record-list requests (`query.range_filters`); applied **before** aggregation. |
+| `filter[{field}][{op}]` | string | OPTIONAL. Same exact and range-filter validation as record-list requests: `query.range_filters` for an owner token, and the grant's frozen `filter_fields` for a client token (Core Section 8, Client request filters). Applied **before** aggregation. |
 
 Aggregation requests reuse record-list filter semantics exactly: unsupported, unauthorized, or malformed filters fail with the same error class as record-list filtering, and declared range filters apply the same coercion and comparison semantics.
 
