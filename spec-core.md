@@ -637,7 +637,7 @@ The full declaration below gives the omitted schema: `source_updated_at` is a st
 
 **The consent screen.** The authorization server shows the declaration's label and detail, the requested fields, and the bound stated as inclusive, for example "artists updated at or after 00:00 UTC on 28 September 2025" (see [consent_time_field](#consent-time-field)). It also states that `id` and `name` remain in every record the client receives. The owner approves or declines the request.
 
-**The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields, the required-field subset, the sort field, the filter capability, and time bound. `genres` is an array, so it has no filter entry, and only `source_updated_at` is declared in `query.range_filters`:
+**The resulting grant.** After the owner approves, the grant's `StreamGrant` entry for this stream freezes the resolved fields, the required-field subset, the sort field, the filter capability, and time bound. `genres` is an array, so it has no filter entry. Only `source_updated_at` is listed in `query.range_filters`, so only its entry allows range operators:
 
 ```json
 {
@@ -647,10 +647,10 @@ The full declaration below gives the omitted schema: `source_updated_at` is a st
   "required_fields": ["id", "name"],
   "sort_field": "source_updated_at",
   "filter_fields": {
-    "id": { "type": "string", "range": false },
-    "name": { "type": "string", "range": false },
-    "popularity": { "type": "integer", "range": false },
-    "source_updated_at": { "type": "date-time", "range": true }
+    "id": { "type": "string", "range": [] },
+    "name": { "type": "string", "range": [] },
+    "popularity": { "type": "integer", "range": [] },
+    "source_updated_at": { "type": "date-time", "range": ["gte", "gt", "lte", "lt"] }
   },
   "time_constraint": {
     "field": "source_updated_at",
@@ -1340,7 +1340,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "grant_id": "grt_8f72a1b3",
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "sub_Jq4tN8wR" },
@@ -1358,10 +1358,10 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
       "required_fields": ["id", "name"],
       "sort_field": "source_updated_at",
       "filter_fields": {
-        "id": { "type": "string", "range": false },
-        "name": { "type": "string", "range": false },
-        "popularity": { "type": "integer", "range": false },
-        "source_updated_at": { "type": "date-time", "range": true }
+        "id": { "type": "string", "range": [] },
+        "name": { "type": "string", "range": [] },
+        "popularity": { "type": "integer", "range": [] },
+        "source_updated_at": { "type": "date-time", "range": ["gte", "gt", "lte", "lt"] }
       },
       "time_constraint": {
         "field": "source_updated_at",
@@ -1384,7 +1384,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 
 | Field | Type | Required | Status | Description |
 |-------|------|----------|--------|-------------|
-| `version` | string | yes | Protocol metadata | Tracks the version of this specification's grant schema (not a URL; there is no external schema document to resolve). This contract requires exactly `0.1.0`. |
+| `version` | string | yes | Protocol metadata | Tracks the version of this specification's grant schema (not a URL; there is no external schema document to resolve). This contract defines exactly `0.1.0` and `0.2.0`. A `0.2.0` grant MAY carry `filter_fields`; a `0.1.0` grant that carries it is malformed. An AS issues a `0.2.0` grant only for a resource server that implements [Client request filters](#list-records). |
 | `grant_id` | string | yes | Protocol metadata | Unique identifier. |
 | `issued_at` | ISO 8601 | yes | Protocol metadata | When the grant was issued. |
 | `subject` | object | yes | Identity binding | Exactly `{ id }`. The `subject.id` is an opaque string, unique within the issuing AS's namespace. It is the subject's pairwise identifier for the grant's client (see [Pairwise identifiers](#pairwise-identifiers)). No format constraint is imposed. |
@@ -1411,7 +1411,7 @@ A grant covers one subject, one source, and one purpose. This is a granularity r
 | `fields` | string[] | yes | Protocol-enforced | Unique non-empty resolved field allowlist, authoritative for RS enforcement. Includes every `required_fields` entry. Top-level field names only. |
 | `required_fields` | string[] | yes | Protocol-enforced | Unique top-level field names forming the schema-required consent floor frozen from the retained declaration. Every entry is also in `fields`. An empty array represents an empty floor. Order has no meaning. |
 | `sort_field` | string | no | Protocol-enforced | The declared `cursor_field` when its schema format is `date` or `date-time` and `fields` includes it; otherwise absent. If absent, client list reads sort by `instance_id` and canonical key string. |
-| `filter_fields` | object | no | Protocol-enforced | Frozen client filter capability, keyed by top-level field name. Each key is also in `fields`. Each value is exactly `{ type, range }`. The AS sets `type` at issuance from the field's schema in the retained declaration: `string`, `integer`, `number`, or `boolean`, or `date` or `date-time` for a string with that `format`. It sets `range` to `true` only when the retained declaration lists the field in `query.range_filters`. A granted field whose schema is not one of these scalar types, ignoring `null`, has no entry. Absent means a client cannot filter this stream. See [Client request filters](#list-records). |
+| `filter_fields` | object | no | Protocol-enforced | Frozen client filter capability, keyed by top-level field name. Each key is also in `fields`, and each value is exactly `{ type, range }`. The AS sets both at issuance from the field's schema in the retained declaration and MUST NOT change them afterwards. `type` is `string`, `integer`, `number`, or `boolean` when the schema's `type` names exactly that one type, alone or together with `null`; for a `string` whose `format` is `date` or `date-time`, `type` is that format. A granted field whose schema has any other type has no entry. `range` is the set of operators that the retained declaration lists for the field in `query.range_filters`, as an array without duplicates, when `type` is `integer`, `number`, `date`, or `date-time`. Otherwise `range` is empty, and the entry allows exact filters only. A key outside `fields`, another `type`, or an operator other than `gte`, `gt`, `lte`, and `lt` makes the grant malformed. Absent means a client cannot filter this stream. See [Client request filters](#list-records). |
 | `time_constraint` | object | no | Protocol-enforced | Frozen `{ field, type, since?, until? }` resolved from the retained declaration. `field` and `type` are required and at least one bound is present. `type` is `date` or `date-time`; the AS sets it at issuance from the field's format in the retained declaration. Each bound has that type. `since` is inclusive; `until` is exclusive. |
 | `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Present only when `instance_ids` has exactly one handle. Absent means all records. |
 
@@ -1868,7 +1868,7 @@ These examples assume retained declarations whose root `required` arrays list `i
 **Specific data, single use:**
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "grant_id": "grt_001",
   "issued_at": "2026-04-06T15:00:00Z",
   "subject": { "id": "sub_x7Pd2KfL" },
@@ -1885,10 +1885,10 @@ These examples assume retained declarations whose root `required` arrays list `i
       "required_fields": ["id", "name"],
       "sort_field": "source_updated_at",
       "filter_fields": {
-        "id": { "type": "string", "range": false },
-        "name": { "type": "string", "range": false },
-        "popularity": { "type": "integer", "range": false },
-        "source_updated_at": { "type": "date-time", "range": true }
+        "id": { "type": "string", "range": [] },
+        "name": { "type": "string", "range": [] },
+        "popularity": { "type": "integer", "range": [] },
+        "source_updated_at": { "type": "date-time", "range": ["gte", "gt", "lte", "lt"] }
       },
       "time_constraint": {
         "field": "source_updated_at",
@@ -2181,9 +2181,9 @@ A client-token caller may fetch metadata only for a stream present in its resolv
   },
   "sort_field": "source_updated_at",
   "filter_fields": {
-    "id": { "type": "string", "range": false },
-    "name": { "type": "string", "range": false },
-    "source_updated_at": { "type": "date-time", "range": true }
+    "id": { "type": "string", "range": [] },
+    "name": { "type": "string", "range": [] },
+    "source_updated_at": { "type": "date-time", "range": ["gte", "gt", "lte", "lt"] }
   },
   "query": { },
   "freshness": [
@@ -2255,9 +2255,25 @@ Unknown query parameters and unsupported query shapes MUST be rejected with HTTP
 
 **Non-fatal warnings:** A list response MAY carry a `meta.warnings[]` array reporting non-fatal lossiness that the server resolved without failing the request. Each entry has a stable `code` and a human-readable `message`; clients SHOULD branch on `code`, not on message text. A `limit` above the maximum is the canonical case: the RS returns the bounded page and a `limit_clamped` warning rather than silently dropping the excess or returning an error. Clients page forward with the returned cursor instead of expecting a larger page. Warnings are not errors and MUST NOT change the HTTP status.
 
-**Client request filters.** A client-token list read MAY carry exact `filter[{field}]` and range `filter[{field}][op]` parameters. The RS evaluates them only under the grant's frozen `filter_fields` and MUST NOT consult the current SourceDeclaration or serving metadata to accept, reject, or interpret them. After it validates request syntax, resolves the active grant, and authorizes the stream, the RS MUST compare each filter field with the grant's `fields`. If a filter field is not in `fields`, the RS MUST reject the whole read with HTTP 403 `field_not_granted` before any source-schema or record-data lookup, as [Effective projection](#record-evidence) requires for `fields`. The error's `param` MUST be the first such `filter[...]` parameter, and its message MUST name exactly the filter fields absent from `fields`. For the same well-formed request and grant, the response MUST be identical whether one of those names exists in the current source schema or not. A filter on a granted field without a `filter_fields` entry returns HTTP 400 `invalid_request`. So does a range operator on an entry whose `range` is not `true`, or a value that is invalid for the entry's `type`. In each case `param` names the parameter.
+**Client request filters.** A client-token list read MAY carry exact `filter[{field}]` and range `filter[{field}][{op}]` parameters. The RS evaluates them only under the StreamGrant's frozen `filter_fields`. It MUST NOT consult the current SourceDeclaration or serving metadata to accept, reject, or interpret a client filter. If the StreamGrant has no `filter_fields`, the RS MUST reject every client filter with HTTP 400 `invalid_request` before it consults current SourceDeclaration or serving metadata, whether or not the field or operator would otherwise be declared.
 
-A record matches a client read when it is visible under every grant constraint and satisfies every request filter. Filters combine with AND. The RS compares values by the frozen `type`; on a `date` or `date-time` entry it uses the validity and comparison rules in [Time constraint semantics](#time-constraint-semantics). A range filter whose bounds reach outside the grant's `time_constraint` is not an error: records outside the constraint stay invisible, and the result is the intersection. Because a client filter can test only granted fields, the records it returns reveal nothing about fields outside the grant.
+Otherwise, after the RS validates request syntax, resolves the active grant, and authorizes the stream, it MUST compare each filter field with the grant's `fields`. If a filter field is not in `fields`, the RS MUST reject the whole read with HTTP 403 `field_not_granted` before any source-schema or record-data lookup, as [Effective projection](#record-evidence) requires for `fields`. The error's `param` MUST be the first such `filter[...]` parameter in request order, and its message MUST name exactly the filter fields absent from `fields`. When the request's `fields` also names a field outside the grant, the `fields` rejection applies instead. For the same well-formed request and grant, the response MUST be identical whether one of those names exists in the current source schema or not. A filter field need not be in the request's `fields`. The RS MUST then reject the read with HTTP 400 `invalid_request`, with `param` naming the parameter, in each of these cases:
+
+- The filter is on a granted field that has no `filter_fields` entry.
+- A range operator is not in the entry's `range`.
+- A field has more than one exact filter, or the same field and operator pair appears more than once.
+- A value is not valid for the entry's `type`.
+
+The RS validates and compares a filter value by the entry's frozen `type`, never by a current declaration. The value is the parameter value after query-string decoding.
+
+- `string`: the value matches a stored string that has the same sequence of Unicode code points. The RS applies no normalization or case folding.
+- `boolean`: the value MUST be exactly `true` or `false`.
+- `integer` and `number`: the value MUST match the `number` grammar of RFC 8259 Section 6. On an `integer` entry, a value whose mathematical value is not an integer is invalid. The RS compares exact mathematical values and does not round either value through binary floating point.
+- `date` and `date-time`: the RS uses the validity and comparison rules in [Time constraint semantics](#time-constraint-semantics). An exact `date-time` filter matches a stored value that denotes the same instant.
+
+A record whose value for a filter field is absent, null, or not a valid value of the entry's `type` does not satisfy that filter. A stored value of another JSON type, such as a string under a `number` entry, is not valid. A change to the current declaration after issuance therefore cannot make a frozen filter widen, fail, or change meaning.
+
+A record matches a client read when it is visible under every grant constraint and satisfies every request filter. Filters combine with AND. A range filter whose bounds reach outside the grant's `time_constraint` is not an error: records outside the constraint stay invisible, and the result is the intersection, which can be empty. Page boundaries, page lengths, and `has_more` come from the matching records only. Because a client filter can test only granted fields, the records it returns reveal nothing about fields outside the grant.
 
 Owner-token current-capability reads MAY accept exact filters on declared top-level scalar fields and range filters explicitly declared by current serving metadata.
 Unknown fields, non-scalar fields, and unsupported range shapes return HTTP
@@ -2266,7 +2282,7 @@ owner token has no client grant field projection.
 
 Client-token requests that contain `expand[]` or `expand_limit[...]` MUST be rejected with HTTP 400 `invalid_request` before the RS consults current SourceDeclaration or serving metadata. A v0.1 resolved grant does not freeze relationship identity, target stream, foreign-key join semantics, cardinality, or expansion limits. Current relationship metadata therefore cannot interpret client grant rights. Owner-token current-capability reads MAY use declared expansion against current serving metadata.
 
-For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. For client-token reads, they apply only to `filter_fields` entries whose `range` is `true`. On a `date` or `date-time` field, they use the validity and comparison rules in [Time constraint semantics](#time-constraint-semantics), and an invalid value returns 400 `invalid_request`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
+For owner-token current-capability reads, range filters (`gte`, `gt`, `lte`, `lt`) apply only to fields declared in `query.range_filters`. For client-token reads, they apply only to the operators in a `filter_fields` entry's `range`. On a `date` or `date-time` field, they use the validity and comparison rules in [Time constraint semantics](#time-constraint-semantics), and an invalid value returns 400 `invalid_request`. Nested paths, arrays, OR grammar, and full-text search are not part of v0.1.
 
 For owner-token current-capability reads, expansion is declaration-driven. A relation is structurally present if listed under `relationships`, but it is only expandable if declared under `query.expand`. `expand_limit[{relation}]` is only valid for declared `has_many` relations. Expansion joins only related records in the parent record's instance.
 
@@ -2524,6 +2540,8 @@ A `PDPP-Version` field on an RS blob response identifies the RS contract, not th
 
 A later document release MAY retain the identifier `0.1` only for a compatible revision of this contract. Compatibility requires preserving the meaning of conforming requests and responses and all authorization and disclosure constraints. Allowed response extensions remain subject to this specification's response forward-compatibility, closed-shape, and projection rules. An incompatible HTTP contract MUST have a distinct identifier and MUST NOT be served as `0.1`. A companion profile MUST NOT redefine `0.1` or alter the meaning of a Core member under that identifier.
 
+**Note (non-normative).** [Client request filters](#list-records) are a compatible revision of `0.1`. A `0.1.0` grant carries no `filter_fields`, so every client filter under it is still rejected with 400 `invalid_request`. The capability arrives with the `0.2.0` grant schema, which a client reads from its own grant, not with a new HTTP contract.
+
 Every response includes a `Request-Id` header for debugging.
 
 ---
@@ -2550,7 +2568,7 @@ A conformant authorization server:
 10. For `single_use` grants, consumes the grant atomically with first client-token issuance. Gives that access token a finite expiration set by local policy and, when the grant has `expires_at`, no later than `expires_at`; that expiry ends the grant's one read window. Lets a later token in the same refresh-token family carry the grant only inside the window, reports the grant inactive for reads after it, and otherwise rejects access-token issuance against the consumed grant.
 11. Validates stream/field/view/resource-id shape at grant issuance. Rejects `resources` on a stream with more than one instance. Rejects `resources` entries that are not canonical under Section 4 and does not percent-decode JSON `resources` values.
 12. MUST NOT define a view including fields absent from the retained SourceDeclaration schema.
-13. Resolves view names to field lists at issuance time; stores resolved `fields` and `required_fields` in the `StreamGrant`. Freezes `cursor_field` as `sort_field` when its format is `date` or `date-time` and the grant includes it; otherwise omits `sort_field`. Freezes `filter_fields` from the retained declaration for the granted scalar fields; omits it when no granted field qualifies. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
+13. Resolves view names to field lists at issuance time; stores resolved `fields` and `required_fields` in the `StreamGrant`. Freezes `cursor_field` as `sort_field` when its format is `date` or `date-time` and the grant includes it; otherwise omits `sort_field`. In a `0.2.0` grant, freezes `filter_fields` from the retained declaration for the granted scalar fields, with each field's type and its declared range operators, and omits it when no granted field qualifies. Client-token record reads reject query-time `view` in v0.1. Owner-token current-capability reads MAY resolve current views.
 14. Rejects a detail whose `processing_permissions` is malformed or contains a duplicate, unknown, or unsupported value, with `invalid_authorization_details`, and never ignores, substitutes, or narrows such a value or issues an ordinary grant in its place. Advertises in `pdpp_processing_permissions_supported`, and grants, only permissions whose complete defining contract it implements. Treats `https://pdpp.dev/processing/ai_training` as unsupported until the PDPP AI Training Profile is published and its registration is approved, and afterwards supports it only by conforming to that profile.
 15. For Core `data-access` details, resolves omitted instance IDs before the final approval surface. Binds
     exact resolved instances and all final decision fields to an immutable
@@ -2611,7 +2629,7 @@ A conformant Core RS:
 6. Returns structured errors as defined in Section 8 (unified error table).
 7. Supports incremental sync via `changes_since` on every stream, starting from `beginning`, with tombstone entries and HTTP 410 with error code `cursor_expired` on cursor expiry. Returns every record not visible at h0 and visible at h1, and omits a record visible at both horizons whose projection did not change, unless the previous session withheld it, or redacted a reference in it, after a deletion. The projection is the grant-authorized projection for a client token, and the session's effective `fields` or resolved `view` projection for an owner token.
 8. Returns `next_changes_since` on the terminal page of every `changes_since` response and on no other page.
-9. For a client-token `filter[...]` on a field outside the grant's `fields`, returns 403 `field_not_granted` before any schema or data lookup, with the same response whether the field exists or not. For a granted field or operator outside the frozen `filter_fields`, returns 400 `invalid_request`. Never consults current declaration metadata for a client filter. Owner-token current-capability reads MAY retain declared filter behavior.
+9. Under a StreamGrant without `filter_fields`, rejects every client-token `filter[...]` parameter with 400 `invalid_request` before consulting current declaration metadata. Under a StreamGrant with `filter_fields`, returns 403 `field_not_granted` for a filter on a field outside the grant's `fields` before any schema or data lookup, with the same response whether the field exists or not. Returns 400 `invalid_request` for a granted field without an entry, an operator outside the entry's `range`, a repeated filter, or a value invalid for the entry's `type`. Compares values by the frozen `type`, and treats an absent, null, or invalid stored value as not matching. Never consults current declaration metadata for a client filter. Owner-token current-capability reads MAY retain declared filter behavior.
 10. Rejects unknown query parameters and unsupported query shapes with 400 instead of silently ignoring them.
 11. Implements [API versioning](#api-versioning): supports the exact `0.1` contract, selects it for an absent header, rejects malformed or unsupported values without fallback, reports the selected contract in responses, and publishes the matching default in protected resource metadata. Binds cursors and synchronization tokens to the selected contract and preserves all grant and profile enforcement independently of it.
 12. Scopes owner token access to a single subject's data store; derives `subject_id` from introspection response. Never discloses the introspection `subject_id` to a client.
@@ -3043,7 +3061,7 @@ type TimeConstraint = TimeRange & {
 
 interface FilterField {
   type: 'string' | 'integer' | 'number' | 'boolean' | 'date' | 'date-time'; // Frozen from the retained declaration
-  range: boolean;          // true only when the retained declaration lists the field in query.range_filters
+  range: Array<'gte' | 'gt' | 'lte' | 'lt'>; // Declared range operators; empty for string and boolean, or when none are declared
 }
 
 interface StreamGrant {
@@ -3052,13 +3070,13 @@ interface StreamGrant {
   fields: string[];        // Non-empty and authoritative for RS enforcement
   required_fields: string[]; // Frozen, unique subset of fields; may be empty
   sort_field?: string;     // Frozen date/date-time cursor_field when granted; absent means key ordering
-  filter_fields?: Record<string, FilterField>; // Frozen client filter capability; keys are in fields
+  filter_fields?: Record<string, FilterField>; // 0.2.0 grants only; frozen client filter capability; keys are in fields
   time_constraint?: TimeConstraint;
   resources?: string[];    // Canonical key strings per compound key encoding
 }
 
 interface DataGrant {
-  version: '0.1.0';
+  version: '0.1.0' | '0.2.0'; // filter_fields requires '0.2.0'
   grant_id: string;
   issued_at: string;
   subject: { id: string };  // Pairwise identifier for this client
