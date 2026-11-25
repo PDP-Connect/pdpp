@@ -112,8 +112,12 @@ checkout_head() {
 
 # "dirty" when tracked files differ from HEAD or untracked, non-ignored files
 # exist; build output (node_modules, dist) is gitignored and does not count.
+# A git status that fails (unreadable checkout) is dirty, never clean: a
+# failed status yields empty stdout, which must not read as "nothing changed".
 checkout_dirty() {
-  [ -n "$(git -C "$PDPP_DC_REF" status --porcelain 2>/dev/null)" ]
+  local status
+  status=$(git -C "$PDPP_DC_REF" status --porcelain 2>/dev/null) || return 0
+  [ -n "$status" ]
 }
 
 # The suite's expectations (seed shape, device flow, bootstrap sentinel) were

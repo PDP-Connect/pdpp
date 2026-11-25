@@ -28,6 +28,8 @@ const PATTERN_BUILD_FAILED = /build failed/;
 const PATTERN_NOT_INSTALLED = /NOT_INSTALLED/;
 const PATTERN_MISSING_OR_EMPTY = /missing or empty/;
 const PATTERN_SECOND_1 = /second=1/;
+const PATTERN_DIRTY = /DIRTY/;
+const PATTERN_CLEAN = /CLEAN/;
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "reference-target.sh");
 const SCRATCH_ROOT = join(process.env.TMPDIR ?? join(homedir(), ".tmp"), "conformance-lifecycle-tests");
@@ -211,5 +213,40 @@ describe("output directories: concurrent runs cannot share one", () => {
     assert.equal(existsSync(join(out, "report.json")), false);
     assert.equal(existsSync(join(out, "server.log")), false);
     assert.equal(readFileSync(join(out, "notes.txt"), "utf8"), "mine");
+  });
+});
+
+describe("checkout state: a failed git status is never read as clean", () => {
+  it("reports a clean checkout as clean", () => {
+    const { root } = fakeCheckout("dirty-clean", {});
+    const result = sh("checkout_dirty && echo DIRTY || echo CLEAN", { PDPP_DC_REF: root });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, PATTERN_CLEAN);
+    assert.doesNotMatch(result.stdout, PATTERN_DIRTY);
+  });
+
+  it("reports a modified checkout as dirty", () => {
+    const { root } = fakeCheckout("dirty-modified", {});
+    writeFileSync(join(root, "packages/connector-protocol/package.json"), "{}\n");
+    const result = sh("checkout_dirty && echo DIRTY || echo CLEAN", { PDPP_DC_REF: root });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, PATTERN_DIRTY);
+  });
+
+  it("treats a failed git status as dirty, not clean", () => {
+    // `git status` fails with empty stdout when the checkout is not a git
+    // repository, and when its .git metadata is gone; either way the checkout
+    // must not be reported clean.
+    const notARepo = join(scratch, "not-a-repo");
+    mkdirSync(notARepo, { recursive: true });
+    const missing = sh("checkout_dirty && echo DIRTY || echo CLEAN", { PDPP_DC_REF: notARepo });
+    assert.equal(missing.status, 0, missing.stderr);
+    assert.match(missing.stdout, PATTERN_DIRTY);
+
+    const { root } = fakeCheckout("dirty-nogit", {});
+    rmSync(join(root, ".git"), { recursive: true, force: true });
+    const broken = sh("checkout_dirty && echo DIRTY || echo CLEAN", { PDPP_DC_REF: root });
+    assert.equal(broken.status, 0, broken.stderr);
+    assert.match(broken.stdout, PATTERN_DIRTY);
   });
 });
