@@ -176,6 +176,32 @@ describe("build provenance: a failed or empty rebuild never inherits a stamp or 
   });
 });
 
+describe("target provenance: reports describe what actually ran", () => {
+  it("refuses a checkout off the pin without the explicit override", () => {
+    const { root, git } = fakeCheckout("unapproved-head", {});
+    const head = git("rev-parse", "HEAD").stdout.trim();
+    const pin = head.startsWith("0") ? "1".repeat(40) : "0".repeat(40);
+    const result = sh("check_pin", { PDPP_DC_REF: root, PDPP_DC_PIN: pin, PDPP_DC_ALLOW_UNPINNED: "" });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /not the pinned/);
+    assert.ok(result.stderr.includes(head));
+  });
+
+  it("labels the actual checkout and dirty state when an unpinned run is explicitly allowed", () => {
+    const { root, git } = fakeCheckout("approved-unpinned", {});
+    const head = git("rev-parse", "HEAD").stdout.trim();
+    const pin = head.startsWith("0") ? "1".repeat(40) : "0".repeat(40);
+    writeFileSync(join(root, "local-note.txt"), "uncommitted fixture");
+    const result = sh("check_pin; actual_target_version", {
+      PDPP_DC_REF: root, PDPP_DC_PIN: pin, PDPP_DC_ALLOW_UNPINNED: "1",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /has uncommitted changes/);
+    assert.equal(result.stdout,
+      `data-connect@${head.slice(0, 10)} reference-implementation (UNPINNED override; pin is ${pin.slice(0, 10)}) +dirty`);
+  });
+});
+
 describe("output directories: concurrent runs cannot share one", () => {
   it("reports a missing flock prerequisite before opening the output lock", () => {
     const out = join(scratch, "out-no-flock");
