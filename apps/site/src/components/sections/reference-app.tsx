@@ -1982,8 +1982,9 @@ Content-Type: application/json
           detail={
             <DetailPanel label="See the HTTP exchange" spec="§8 Resource Server">
               <p>
-                Client reads enforce the frozen grant constraints. Request-time predicate filters are rejected in Core
-                v0.1; owner current-capability reads may use supported filters.
+                Client reads enforce the frozen grant constraints. A client filters only on granted fields that the
+                grant's frozen <span className="font-mono">filter_fields</span> lists; owner current-capability reads
+                may use supported filters.
               </p>
               <pre
                 className="overflow-x-auto rounded-md p-3 font-mono text-xs"
@@ -2007,7 +2008,8 @@ PDPP-Version: 0.1
                   {'Bearer error="invalid_token"'}
                 </span>
                 <span>
-                  <span className="text-destructive">400 invalid_request</span> — client-token predicate filter
+                  <span className="text-destructive">400 invalid_request</span> — client filter that the grant's frozen
+                  filter_fields does not allow
                 </span>
                 <span>
                   <span className="text-destructive">403 insufficient_scope</span> — stream not in grant
