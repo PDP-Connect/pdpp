@@ -197,18 +197,37 @@ export function scanSpecSentences(specText: string): readonly SpecSentence[] {
  *
  * The narrowest window of consecutive lines that contains the text wins, which
  * pins a list item or wrapped paragraph to its first line. Text that occurs
- * twice resolves to the earlier occurrence.
+ * twice resolves to the earlier occurrence within the requested section.
+ * Omitting section preserves the historical whole-document lookup.
  */
-export function makeSpecLocator(specText: string): (fragment: string) => number | undefined {
+export function makeSpecLocator(specText: string): (fragment: string, section?: string) => number | undefined {
   const lines = specText.split("\n");
+  let currentSection = "";
+  let boundary = 0;
+  const sections = lines.map((raw) => {
+    if (/^## /.test(raw)) {
+      boundary += 1;
+      const heading = SECTION_HEADING.exec(raw);
+      currentSection = heading?.[1] ?? heading?.[2] ?? "";
+    }
+    return { section: currentSection, boundary };
+  });
   const windows = Array.from({ length: MAX_LOCATOR_WIDTH }, (_, w) =>
     Array.from({ length: Math.max(lines.length - w, 0) }, (_unused, i) =>
       normalizeSpecText(lines.slice(i, i + w + 1).join(" "))
     )
   );
-  return (fragment) => {
+  return (fragment, section) => {
     const needle = normalizeSpecText(fragment);
-    const at = windows.map((row) => row.findIndex((window) => window.includes(needle))).find((i) => i !== -1);
+    const at = windows
+      .map((row, width) =>
+        row.findIndex((window, i) =>
+          window.includes(needle) &&
+          (section === undefined ||
+            (sections[i]?.section === section && sections[i]?.boundary === sections[i + width]?.boundary))
+        )
+      )
+      .find((i) => i !== -1);
     return at === undefined ? undefined : at + 1;
   };
 }

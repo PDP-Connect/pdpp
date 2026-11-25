@@ -43,9 +43,10 @@ const locateInSpec = makeSpecLocator(readSpecText());
 
 /** The spec-core.md line a clause starts on; throws when the matrix and the spec have drifted. */
 function specLineOf(clause: ClauseEntry): number {
-  const line = locateInSpec(clauseFragments(clause.text)[0] ?? clause.text);
+  const section = clause.clauseId.split(".")[0] ?? "";
+  const line = locateInSpec(clauseFragments(clause.text)[0] ?? clause.text, section);
   if (line === undefined) {
-    throw new Error(`Clause ${clause.clauseId} text is not found in spec-core.md.`);
+    throw new Error(`Clause ${clause.clauseId} text is not found in section ${section} of spec-core.md.`);
   }
   return line;
 }

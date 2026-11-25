@@ -510,7 +510,7 @@ Stores `next_changes_since` from the terminal page of a `changes_since` response
 
 | Clause | Spec line | Level | Observable | Cases | Gap |
 | --- | --- | --- | --- | --- | --- |
-| `8.9-16` | 249 | MUST | client-capture | `CL-4/stores-terminal-next-changes-since` | — |
+| `8.9-16` | 1288 | MUST | client-capture | `CL-4/stores-terminal-next-changes-since` | — |
 
 ### CL-5 (client, MUST)
 
