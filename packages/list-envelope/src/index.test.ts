@@ -76,3 +76,41 @@ test("a next_cursor with surrounding whitespace is validated as usable but retur
     assert.equal(result.nextCursor, "  raw-cursor  ");
   }
 });
+
+test("continuation rejects numeric and object cursors without coercion", () => {
+  for (const next_cursor of [123, { value: "opaque" }]) {
+    assert.deepEqual(validateListEnvelope({ data: [], has_more: true, next_cursor, object: "list" }), {
+      kind: "invalid",
+      reason: "has_more is true but next_cursor is missing, non-string, or blank after trimming",
+    });
+  }
+});
+
+test("envelope validation preserves record values and order without applying a record schema", () => {
+  const data = [{ id: "second" }, null, { id: "first" }];
+  const result = validateListEnvelope({ data, has_more: false, object: "list" });
+  assert.equal(result.kind, "valid");
+  if (result.kind === "valid") {
+    assert.equal(result.data, data);
+    assert.deepEqual(result.data, [{ id: "second" }, null, { id: "first" }]);
+  }
+});
+
+test("a terminal page with an explicit null cursor returns no continuation", () => {
+  assert.deepEqual(validateListEnvelope({ data: ["last"], has_more: false, next_cursor: null, object: "list" }), {
+    data: ["last"], hasMore: false, kind: "valid", nextCursor: undefined,
+  });
+});
+
+test("malformed pages report the first invalid field in envelope order", () => {
+  const page = { data: null, has_more: null, next_cursor: "unexpected", object: "page" };
+  assert.deepEqual(validateListEnvelope(page), {
+    kind: "invalid", reason: 'expected object: "list", got "page"',
+  });
+  assert.deepEqual(validateListEnvelope({ ...page, object: "list" }), {
+    kind: "invalid", reason: "expected data to be an array",
+  });
+  assert.deepEqual(validateListEnvelope({ ...page, object: "list", data: [] }), {
+    kind: "invalid", reason: "expected has_more to be a boolean, got null",
+  });
+});
