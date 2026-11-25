@@ -13,9 +13,9 @@ description: "Current implementation behavior for the forkable PDPP reference st
 
 These are implementation notes for the current `reference-implementation/` package. The public explainer and run/deploy entrypoint is [/reference](/reference). For protocol semantics, use the protocol docs under [/docs](/docs).
 
-The `reference-implementation/` package is the forkable PDPP reference substrate in this repo. It is where the current authorization server, resource server, runtime, CLI, and black-box tests exercise the protocol.
+The forkable PDPP reference substrate lives under `reference-implementation/` in [`PDP-Connect/data-connect`](https://github.com/PDP-Connect/data-connect). Its authorization server, resource server, runtime, CLI, and black-box tests exercise the protocol.
 
-For repo-level orientation, start with the root `README.md`. For runnable package details, see `reference-implementation/README.md`.
+For protocol repository orientation, start with the root `README.md` in `PDP-Connect/pdpp`. For setup and run commands, see the [reference implementation README](https://github.com/PDP-Connect/data-connect/blob/main/reference-implementation/README.md).
 
 ## Current topology
 
@@ -226,5 +226,5 @@ Notably:
 The most trustworthy description of the live system remains:
 
 1. root PDPP specs for protocol semantics
-2. `reference-implementation/` code and tests for current implementation behavior
+2. Code and tests under `reference-implementation/` in `PDP-Connect/data-connect` for current behavior
 3. OpenSpec change/spec artifacts for project-level planning and boundaries

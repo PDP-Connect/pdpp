@@ -141,8 +141,7 @@ implementation.
 This repository uses a three-license split:
 
 - **Code, packaged software, and generated artifacts** — Apache-2.0
-  ([`LICENSE`](LICENSE), plus per-package `LICENSE` files such as
-  `reference-implementation/LICENSE`).
+  ([`LICENSE`](LICENSE), plus applicable per-package `LICENSE` files).
 - **Protocol specification text** (all root `spec-*.md` files and their
   mirrored site pages) — Community Specification License 1.0
   ([`LICENSE-specs`](LICENSE-specs)).
