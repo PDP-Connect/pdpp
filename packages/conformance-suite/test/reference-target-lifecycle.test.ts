@@ -46,6 +46,28 @@ function sh(snippet: string, env: Record<string, string> = {}) {
   });
 }
 
+describe("readiness of the owned target", () => {
+  it("retries a failed metadata probe and does not report ready until it succeeds", () => {
+    const result = sh(`
+      SERVER_PID=fixture
+      SERVER_START=owned
+      LOG_FILE=/dev/null
+      AS_PORT=10001
+      RS_PORT=10002
+      READY_TIMEOUT_SECONDS=5
+      probes=0
+      owned_alive() { [ "$1:$2" = "fixture:owned" ]; }
+      curl() { probes=$((probes + 1)); [ "$probes" -eq 2 ]; }
+      sleep() { :; }
+      wait_until_ready
+      echo "probes=$probes"
+    `);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /probes=2/);
+    assert.match(result.stderr, /ready after.*AS :10001, RS :10002/);
+  });
+});
+
 describe("process identity: a recycled PID is never signalled", () => {
   it("does not signal a bystander that holds the PID of a server that exited early", () => {
     // The 'server' exits immediately; its recorded start time then belongs to a
@@ -146,6 +168,20 @@ describe("build provenance: a failed or empty rebuild never inherits a stamp or 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(join(root, STAMP), "utf8").trim(), head);
     assert.ok(existsSync(join(root, "reference-implementation/vendor/mcp-server/dist/src/server.js")));
+  });
+
+  it("does not reuse a stamped checkout after a tracked source change", () => {
+    const { root, git } = fakeCheckout("dirty-after-build", {});
+    const head = git("rev-parse", "HEAD").stdout.trim();
+    const env = { PDPP_DC_REF: root, PDPP_DC_PIN: head };
+    const built = sh("build_vendored_and_stamp", env);
+    assert.equal(built.status, 0, built.stderr);
+    writeFileSync(join(root, ".gitignore"), "node_modules\ndist\n# local edit\n");
+    const checked = sh("is_installed && echo INSTALLED || echo NOT_INSTALLED; actual_target_version", env);
+    assert.equal(checked.status, 0, checked.stderr);
+    assert.match(checked.stdout, /NOT_INSTALLED/);
+    assert.match(checked.stdout, /\+dirty/);
+    assert.equal(readFileSync(join(root, STAMP), "utf8").trim(), head);
   });
 
   it("removes stale output and refuses to stamp when a rebuild fails", () => {
