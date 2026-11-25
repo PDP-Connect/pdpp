@@ -214,3 +214,49 @@ test("a short records page keeps its opaque continuation unchanged", async () =>
     record_count: 1,
   });
 });
+
+test("record-list projection normalizes repeated CSV fields for flat and wrapped rows", async () => {
+  const result = await executeRecordsList(
+    makeInput({
+      actor: { kind: "owner", subject_id: "synthetic" },
+      requestParams: { fields: [" title, title ", " ,title"], limit: 10 },
+    }),
+    makeDependencies({
+      queryRecords: async () => ({
+        data: [
+          { title: "flat fixture", note: "unselected" },
+          { id: "row-2", data: { title: "wrapped fixture", note: "unselected" } },
+        ],
+      }),
+    })
+  );
+  assert.deepEqual(result.result.data, [
+    { title: "flat fixture" },
+    { id: "row-2", data: { title: "wrapped fixture" } },
+  ]);
+  assert.equal(result.disclosureData.record_count, 2);
+});
+
+test("an owner fields validator can supply the selection before view resolution", async () => {
+  const result = await executeRecordsList(
+    makeInput({
+      actor: { kind: "owner", subject_id: "synthetic" },
+      rawQueryView: "compact",
+      requestParams: { view: "compact" },
+    }),
+    makeDependencies({
+      getManifest: () => ({
+        streams: [{ ...manifest.streams[0], name: "A", views: [{ id: "compact", fields: ["subtitle"] }] }],
+      }),
+      validateRequestFields(params) {
+        params.fields = ["title"];
+      },
+      queryRecords: async (_stream, _grant, params) => {
+        assert.deepEqual(params.fields, ["title"]);
+        return { data: [{ title: "chosen", subtitle: "not chosen" }] };
+      },
+    })
+  );
+  assert.deepEqual(result.result.data, [{ title: "chosen" }]);
+  assert.equal(result.queryData.requested_view, "compact");
+});
