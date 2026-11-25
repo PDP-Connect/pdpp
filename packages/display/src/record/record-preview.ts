@@ -226,6 +226,12 @@ const TIME_FMT = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
 });
 
+// Date.parse reads a zoneless ISO datetime as host local time, while TIME_FMT
+// pins UTC — so the same declared event-time rendered differently on SSR and
+// client hosts. Treat a zoneless datetime as UTC. A date-only string is already
+// UTC per spec, and an explicit offset or `Z` is honoured as-is.
+const ZONELESS_DATETIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
 /**
  * Format the time value of the DECLARED `event-time` field. Never guesses the time
  * from `start`/`end`/`when` field names (end-review P0: event time is the
@@ -234,7 +240,8 @@ const TIME_FMT = new Intl.DateTimeFormat("en-US", {
  */
 function extractEventTimeFromField(data: RecordData, field: string): string | undefined {
   const v = data[field];
-  const ms = typeof v === "string" || typeof v === "number" ? Date.parse(String(v)) : Number.NaN;
+  const s = typeof v === "string" && ZONELESS_DATETIME_RE.test(v) ? `${v}Z` : v;
+  const ms = typeof s === "string" || typeof s === "number" ? Date.parse(String(s)) : Number.NaN;
   if (Number.isNaN(ms)) {
     return;
   }
