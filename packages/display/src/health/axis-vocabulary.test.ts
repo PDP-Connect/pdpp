@@ -125,3 +125,28 @@ test("coverage gap tooltips distinguish waiting from recovery without implying e
   assert.match(terminal.title, /Records already collected stay valid and usable/);
   assert.match(terminal.title, /latest run.*recovery step/);
 });
+
+test("an unread queue does not make the same claim as an idle queue", () => {
+  const unmeasured = formatOutboxAxis(null);
+  const idle = formatOutboxAxis("idle");
+  const stalled = formatOutboxAxis("stalled");
+
+  assert.equal(unmeasured.label, "Outbox · not measured");
+  assert.match(unmeasured.title, /can't say whether it is keeping up/);
+  assert.equal(idle.label, "Outbox · idle");
+  assert.match(idle.title, /No retryable outbound work is pending/);
+  assert.equal(stalled.label, "Outbox · stalled");
+  assert.match(stalled.title, /stalled and not progressing/);
+});
+
+test("an unavailable attention reading does not masquerade as a known action or none", () => {
+  assert.equal(formatAttentionAxis("none"), null);
+  const absent = formatAttentionAxis(undefined);
+  assert.equal(absent?.label, "Attention · not measured");
+  assert.equal(absent?.tone, "neutral");
+  assert.match(absent?.title ?? "", /cannot say whether anything needs you/);
+
+  const open = formatAttentionAxis("open");
+  assert.equal(open?.label, "Attention · open");
+  assert.match(open?.title ?? "", /Owner action is open/);
+});
