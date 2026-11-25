@@ -184,3 +184,31 @@ test("the command exits non-zero with a usage line when given no directory", asy
     return true;
   });
 });
+
+test("equal public counts stay alphabetical independently of input order", () => {
+  const records = [
+    { requestedApps: ["YouTube", "Fitbit"] },
+    { requestedApps: ["yt", "Fitbit"] },
+    { requestedApps: ["Amazon"] },
+  ];
+  const expected = [
+    { app: "Fitbit", count: 2 },
+    { app: "YouTube", count: 2 },
+    { app: "Amazon", count: 1 },
+  ];
+  assert.deepEqual(countRequestedApps(records).apps, expected);
+  assert.deepEqual(countRequestedApps([...records].reverse()).apps, expected);
+});
+
+test("separates a frozen record's reviewed app from unmatched aggregate counts", () => {
+  const records = Object.freeze([
+    Object.freeze({ requestedApps: Object.freeze(["  open   ai ", "Fixture Research Tool", " ChatGPT "]) }),
+    null,
+    Object.freeze({ requestedApps: Object.freeze(["fixture research tool", ""]) }),
+  ]);
+  assert.deepEqual(countRequestedApps(records), {
+    apps: [{ app: "ChatGPT", count: 1 }],
+    unreviewed: [{ value: "Fixture Research Tool", count: 2 }],
+    unreviewedAnswers: 2,
+  });
+});
