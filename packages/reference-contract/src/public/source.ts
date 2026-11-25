@@ -80,6 +80,8 @@ export interface SelectionRequestStream {
 interface SelectionRequestBase {
   access_mode: "single_use" | "continuous";
   client_claims?: { commitments?: string[] };
+  /** Newest grant schema the client accepts; absent means "0.1.0" (Core Section 6). */
+  grant_version?: "0.1.0" | "0.2.0";
   purpose_code: string;
   purpose_description?: string;
   retention?: { max_duration: string; on_expiry: "anonymize" | "delete" };
@@ -856,6 +858,7 @@ export const SelectionRequestSchema = {
       },
       type: "object",
     },
+    grant_version: { enum: ["0.1.0", "0.2.0"], type: "string" },
     purpose_code: { format: "uri", minLength: 1, type: "string" },
     purpose_description: NonEmptyStringSchema,
     retention: RetentionSchema,

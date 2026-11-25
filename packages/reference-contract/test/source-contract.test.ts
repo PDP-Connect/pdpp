@@ -370,6 +370,9 @@ test("selection requests keep convenience forms request-only and never imply fan
   assertInvalid(validate, { ...base, streams: [{ instance_ids: ["account-a", "account-a"], name: "issues" }] });
   assertValid(validate, { ...base, streams: [{ instance_ids: ["account-a"], name: "*" }] });
   assertInvalid(validate, { ...base, purpose_code: "research", streams: [{ name: "issues" }] });
+  assertValid(validate, { ...base, grant_version: "0.2.0", streams: [{ name: "issues" }] });
+  assertValid(validate, { ...base, grant_version: "0.1.0", selection_preset: "issues-basic" });
+  assertInvalid(validate, { ...base, grant_version: "0.3.0", streams: [{ name: "issues" }] });
   assertInvalid(validate, {
     ...base,
     client_claims: { asserted_by_server: true },

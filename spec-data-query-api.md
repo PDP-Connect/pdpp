@@ -143,7 +143,7 @@ Returns records from a stream, filtered by grant constraints and request paramet
 
 **Grant enforcement:** For owner-token current-capability reads, the effective filter is the permitted owner request filter alone: an owner token carries no grant, so there is no grant filter to intersect. See Core Section 8, which is authoritative for the current query contract.
 
-**Client filters:** For client tokens, the effective filter is the frozen grant constraints intersected with the request filters. The RS evaluates client filters only under the grant's frozen `filter_fields` and never consults current source metadata for them; a filter on a field outside the grant returns 403 `field_not_granted`.
+**Client filters:** For client tokens, the effective filter is the frozen grant constraints intersected with the request filters. The RS evaluates client filters only under the grant's frozen `filter_fields` and never consults current source metadata for them. [Core Client request filters](spec-core.md#list-records) defines their validation and error order: under a StreamGrant without `filter_fields`, every client filter returns 400 `invalid_request` before any field check; otherwise a filter on a field outside the grant returns 403 `field_not_granted`.
 
 Note: `limit` on this API is **page size** (how many records per response). The grant constrains access through `time_range`, `fields`, and stream selection — not through record count limits. "Top 50 artists" or "recent 100 posts" are modeled as manifest-defined streams or profiles, not as grant-level constraints.
 
