@@ -172,3 +172,24 @@ test("buildParRequest rejects legacy source scalar inputs", () => {
   };
   assert.throws(() => buildParRequest(legacyInput), LEGACY_SOURCE_RE);
 });
+
+test("buildParRequest preserves explicit details and their order without rebuilding them", () => {
+  const authorization_details = [
+    { type: "https://pdpp.dev/data-access", source: { id: "fixture-first" } },
+    { type: "https://pdpp.dev/data-access", source: { id: "fixture-second" } },
+  ];
+  const input = { client_id: "fixture", authorization_details };
+  assert.deepEqual(buildParRequest(input), input);
+  assert.deepEqual(authorization_details.map(detail => detail.source.id), ["fixture-first", "fixture-second"]);
+});
+
+test("buildParRequest takes explicit scenario before the legacy request context alias", () => {
+  assert.deepEqual(
+    buildParRequest({ client_id: "fixture", scenario_id: "explicit", request_context: "legacy" }),
+    { client_id: "fixture", scenario_id: "explicit" }
+  );
+  assert.deepEqual(
+    buildParRequest({ client_id: "fixture", request_context: "legacy" }),
+    { client_id: "fixture", scenario_id: "legacy" }
+  );
+});
