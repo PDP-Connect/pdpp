@@ -117,6 +117,29 @@ test("repeated unreviewed spellings count once per synthetic respondent", () => 
   );
 });
 
+test("neighboring Unicode spellings stay private unless they match a reviewed alias", () => {
+  assert.deepEqual(countRequestedApps([
+    { requestedApps: ["You\u00a0Tube", "YouTube", "Spótify"] },
+    { requestedApps: ["spótify", "Spotify"] },
+  ]), {
+    apps: [{ app: "Spotify", count: 1 }, { app: "YouTube", count: 1 }],
+    unreviewed: [{ value: "Spótify", count: 2 }],
+    unreviewedAnswers: 2,
+  });
+});
+
+test("public app ties are deterministic without modifying frozen signer input", () => {
+  const first = Object.freeze({ requestedApps: Object.freeze(["YouTube", "yt", "Amazon"]) });
+  const second = Object.freeze({ requestedApps: Object.freeze(["Spotify", "Amazon"]) });
+  const forward = countRequestedApps(Object.freeze([first, second]));
+  assert.deepEqual(forward, countRequestedApps(Object.freeze([second, first])));
+  assert.deepEqual(forward.apps, [
+    { app: "Amazon", count: 2 }, { app: "Spotify", count: 1 }, { app: "YouTube", count: 1 },
+  ]);
+  assert.equal(forward.unreviewedAnswers, 0);
+  assert.deepEqual(first.requestedApps, ["YouTube", "yt", "Amazon"]);
+});
+
 async function writeRegister(records: Array<{ id: string; requestedApps: string[] }>): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "pdpp-app-counts-"));
   temporaryDirectories.push(directory);
