@@ -191,6 +191,37 @@ test("an empty records page preserves its continuation and reports zero returned
   assert.deepEqual(result.queryData, { has_changes_since: true, limit: 8, query_shape: "record_list" });
 });
 
+test("owner view and fields conflict stops before validation and storage", async () => {
+  const calls: string[] = [];
+  await assert.rejects(executeRecordsList(makeInput({
+    actor: { kind: "owner", subject_id: "owner-1" },
+    rawQueryView: "compact",
+    rawQueryFields: ["title"],
+  }), makeDependencies({
+    validateRequestFields: () => { calls.push("validate"); },
+    queryRecords: async () => { calls.push("query"); return { data: [] }; },
+  })), (error: unknown) => error instanceof RecordsListVisibilityError &&
+    error.code === "invalid_request" && /mutually exclusive/.test(error.message));
+  assert.deepEqual(calls, []);
+});
+
+test("repeated owner view values do not silently select a valid projection", async () => {
+  const calls: string[] = [];
+  await assert.rejects(executeRecordsList(makeInput({
+    actor: { kind: "owner", subject_id: "owner-1" },
+    rawQueryView: ["compact"],
+    requestParams: {},
+  }), makeDependencies({
+    getManifest: () => ({
+      streams: [{ ...manifest.streams[0], name: "A", views: [{ id: "compact", fields: ["title"] }] }],
+    }),
+    validateRequestFields: () => { calls.push("validate"); },
+    queryRecords: async () => { calls.push("query"); return { data: [] }; },
+  })), (error: unknown) => error instanceof RecordsListVisibilityError &&
+    error.code === "invalid_request" && /Unknown view/.test(error.message));
+  assert.deepEqual(calls, ["validate"]);
+});
+
 test("a short records page keeps its opaque continuation unchanged", async () => {
   const page = {
     data: [{ title: "Invented row" }],
