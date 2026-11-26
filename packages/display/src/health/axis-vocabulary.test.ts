@@ -67,6 +67,27 @@ test("outbox axis maps known states to owner-facing words with correct tone", ()
   assert.equal(formatOutboxAxis("unknown").tone, "neutral");
 });
 
+test("absent evidence uses each axis's own neutral explanation", () => {
+  for (const format of [formatCoverageAxis, formatFreshnessAxis, formatOutboxAxis]) {
+    assert.deepEqual(format(null), format("unknown"));
+    assert.equal(format(null).tone, "neutral");
+    assert.equal(format(null).value, "not measured");
+  }
+  assert.equal(formatAttentionAxis(null), null);
+});
+
+test("unrecognized wire values remain neutral without implying a measurement", () => {
+  const state = "future-state";
+  for (const format of [formatCoverageAxis, formatFreshnessAxis, formatOutboxAxis]) {
+    const chip = format(state);
+    assert.equal(chip.dimension, format(null).dimension);
+    assert.equal(chip.tone, "neutral");
+    assert.equal(chip.value, "not measured");
+    assert.ok(chip.title.includes(state));
+    assert.notEqual(chip.title, format(null).title);
+  }
+});
+
 test("attention axis maps known states to owner-facing words with correct tone", () => {
   assert.equal(formatAttentionAxis("acknowledged")?.value, "acknowledged");
   assert.equal(formatAttentionAxis("acknowledged")?.tone, "warning");
@@ -81,4 +102,26 @@ test("attention axis maps known states to owner-facing words with correct tone",
 
   assert.equal(formatAttentionAxis("unknown_state")?.value, "not measured");
   assert.equal(formatAttentionAxis("unknown_state")?.tone, "neutral");
+});
+
+test("settled limited coverage explains why no additional collection is owed", () => {
+  const optional = formatCoverageAxis("deferred");
+  assert.equal(optional.label, "Coverage · optional, not collected");
+  assert.match(optional.title, /accepted, settled state/);
+  assert.match(optional.title, /not a queued task/);
+
+  const listOnly = formatCoverageAxis("inventory_only");
+  assert.equal(listOnly.label, "Coverage · complete (list only, by design)");
+  assert.match(listOnly.title, /nothing is missing and nothing is owed/);
+});
+
+test("coverage gap tooltips distinguish waiting from recovery without implying existing data loss", () => {
+  const retryable = formatCoverageAxis("retryable_gap");
+  assert.match(retryable.title, /fill it on a later run/);
+  assert.match(retryable.title, /no owner action is needed yet/);
+
+  const terminal = formatCoverageAxis("terminal_gap");
+  assert.match(terminal.title, /will not backfill on its own/);
+  assert.match(terminal.title, /Records already collected stay valid and usable/);
+  assert.match(terminal.title, /latest run.*recovery step/);
 });

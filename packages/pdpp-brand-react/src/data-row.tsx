@@ -102,11 +102,12 @@ const WHITESPACE_RE = /\s+/;
 
 /** Derive a 2-letter monogram from a client name. */
 function toMonogram(name: string): string {
-  const words = name.trim().split(WHITESPACE_RE);
-  if (words.length >= 2 && words[0] && words[1]) {
-    return ((words[0][0] ?? "") + (words[1][0] ?? "")).toUpperCase();
+  const trimmed = name.trim();
+  const [first, second] = trimmed.split(WHITESPACE_RE);
+  if (first && second) {
+    return ((Array.from(first)[0] ?? "") + (Array.from(second)[0] ?? "")).toUpperCase();
   }
-  return name.slice(0, 2).toUpperCase();
+  return Array.from(trimmed).slice(0, 2).join("").toUpperCase();
 }
 
 // A small fixed palette of readable, distinguishable hues (not a brand color

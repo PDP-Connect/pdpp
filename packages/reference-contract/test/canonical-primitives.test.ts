@@ -151,6 +151,22 @@ test("MetaSchema accepts {count, warnings} and rejects unknown members", () => {
   assertInvalid(validate, { count: { kind: "none" }, extra: true }, "unknown member");
 });
 
+test("bounded window metadata accepts a zero total without timestamps", () => {
+  const validate = compile(MetaSchema);
+  assertValid(validate, { window: { total: 0 } }, "empty bounded window");
+});
+
+test("bounded window metadata requires a non-negative whole total and valid date-time bounds", () => {
+  const validate = compile(MetaSchema);
+  const earliest_at = "2026-01-01T00:00:00Z";
+  const latest_at = "2026-01-02T00:00:00Z";
+  assertValid(validate, { window: { earliest_at, latest_at, total: 1 } }, "populated window");
+  assertInvalid(validate, { window: { earliest_at, latest_at } }, "window missing total");
+  assertInvalid(validate, { window: { total: -1 } }, "negative total");
+  assertInvalid(validate, { window: { total: 0.5 } }, "fractional total");
+  assertInvalid(validate, { window: { earliest_at, latest_at: "unknown", total: 1 } }, "invalid bound");
+});
+
 // ----- Envelope helpers -----
 
 const recordItem = {

@@ -104,7 +104,17 @@ function str(v: unknown, max: number): string | undefined {
   if (!s) {
     return;
   }
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+  if (s.length <= max) {
+    return s;
+  }
+  let end = max - 1;
+  const left = s.charCodeAt(end - 1);
+  const right = s.charCodeAt(end);
+  // Keep the existing UTF-16 cap, but never cut a well-formed surrogate pair in half.
+  if (left >= 0xd800 && left <= 0xdbff && right >= 0xdc00 && right <= 0xdfff) {
+    end -= 1;
+  }
+  return `${s.slice(0, end)}…`;
 }
 
 // Neutral number formatting for an amount-ROLE field that declares no currency TYPE.

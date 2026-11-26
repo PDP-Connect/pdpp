@@ -43,6 +43,28 @@ test("count folds case, spacing and aliases, and sorts by count", () => {
   ]);
 });
 
+test("the private review label uses the most frequent spelling, not the first one", () => {
+  const result = countRequestedApps([
+    { requestedApps: ["EXAMPLE TOOL"] },
+    { requestedApps: ["Example Tool"] },
+    { requestedApps: ["Example Tool"] },
+  ]);
+  assert.deepEqual(result.unreviewed, [{ value: "Example Tool", count: 3 }]);
+  assert.equal(result.unreviewedAnswers, 3);
+});
+
+test("reviewed aliases match whole answers, not longer requested names", () => {
+  const result = countRequestedApps([
+    { requestedApps: ["YT", "YT Studio"] },
+    { requestedApps: ["Twitter", "Twitter Archive"] },
+  ]);
+  assert.deepEqual(result.apps, [
+    { app: "X", count: 1 },
+    { app: "YouTube", count: 1 },
+  ]);
+  assert.equal(result.unreviewedAnswers, 2);
+});
+
 test("one signatory counts once per app even when they spell it two ways", () => {
   assert.deepEqual(countRequestedApps([{ requestedApps: ["Insta", "Instagram", "instagram"] }]).apps, [
     { app: "Instagram", count: 1 },
@@ -58,6 +80,41 @@ test("an app outside the reviewed names and alias map is unreviewed, never in ap
   assert.deepEqual(result.apps, [{ app: "Oura", count: 2 }]);
   assert.equal(result.unreviewedAnswers, 3);
   assert.deepEqual(result.unreviewed, [{ value: "Obscure App", count: 3 }]);
+});
+
+test("malformed app fields do not create public names or private answers", () => {
+  const result = countRequestedApps([
+    null,
+    { requestedApps: "Spotify" },
+    { requestedApps: [null, 7, { name: "Spotify" }, " ", "Strava"] },
+  ]);
+  assert.deepEqual(result, {
+    apps: [{ app: "Strava", count: 1 }],
+    unreviewed: [],
+    unreviewedAnswers: 0,
+  });
+});
+
+test("private spelling ties are stable across record order", () => {
+  const first = { requestedApps: ["Unlisted Tool", "Unlisted Tool"] };
+  const second = { requestedApps: ["unlisted tool"] };
+  for (const records of [[first, second], [second, first]]) {
+    assert.deepEqual(countRequestedApps(records), {
+      apps: [],
+      unreviewed: [{ value: "Unlisted Tool", count: 2 }],
+      unreviewedAnswers: 2,
+    });
+  }
+});
+
+test("repeated unreviewed spellings count once per synthetic respondent", () => {
+  assert.deepEqual(
+    countRequestedApps([
+      { requestedApps: ["Example Tool", " example  tool ", "EXAMPLE TOOL"] },
+      { requestedApps: ["Example Tool"] },
+    ]),
+    { apps: [], unreviewed: [{ value: "Example Tool", count: 2 }], unreviewedAnswers: 2 }
+  );
 });
 
 async function writeRegister(records: Array<{ id: string; requestedApps: string[] }>): Promise<string> {
