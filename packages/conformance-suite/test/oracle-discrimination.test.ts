@@ -24,7 +24,8 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
+import { createServer } from "node:http";
 import { describe, it } from "node:test";
 import type { BlobFixture, GrantRequest, IssuedGrant, StagedApproval, TargetAdapter } from "../src/harness/adapter.ts";
 import type { ConformanceCase } from "../src/harness/runner.ts";
@@ -45,9 +46,9 @@ import { VIEW_CASES } from "../src/tests/views.ts";
 import { TARGET_DISCRIMINATION_MATRIX } from "./fixtures/proof-registry.ts";
 
 /** Detail-text patterns the blob cases match on, hoisted per useTopLevelRegex. */
-const BYTES_DO_NOT_MATCH = /do not match/;
-const OUT_OF_GRANT_BLOB_HOOK = /outOfGrantBlobId/;
-const MULTI_INSTANCE_HOOK = /issueMultiInstanceGrant/;
+const BYTES_DO_NOT_MATCH = /do not match/u;
+const OUT_OF_GRANT_BLOB_HOOK = /outOfGrantBlobId/u;
+const MULTI_INSTANCE_HOOK = /issueMultiInstanceGrant/u;
 
 const CASES: readonly ConformanceCase[] = [
   ...RESOURCE_SERVER_CASES,
@@ -303,7 +304,7 @@ class SingleUseCapableAdapter implements Omit<TargetAdapter, "reissueAgainstCons
   }
 }
 
-const REISSUE_HOOK_NAME_PATTERN = /reissueAgainstConsumedGrant/;
+const REISSUE_HOOK_NAME_PATTERN = /reissueAgainstConsumedGrant/u;
 
 describe("AS-10 cannot be satisfied by an unrelated new grant", () => {
   // AS-10 used to issue a second single_use grant and pass if its id differed
@@ -667,12 +668,12 @@ describe("AS-19 replay oracle discriminates genuine token-endpoint code replay",
  * or "empty 200" would pass all three, which is exactly what this proves it
  * does not do.
  */
-const CACHE_CONTROL_PATTERN = /Cache-Control/;
-const LOCATION_PATTERN = /Location/;
-const NOT_A_MEDIA_TYPE = /not a media type/;
-const OVERBROAD_ACCESS_PATTERN = /Overbroad access/;
-const UNAUTHORIZED_ACCESS_PATTERN = /Unauthorized access/;
-const BEARER_TOKEN_PATTERN = /^Bearer\s+\S+/;
+const CACHE_CONTROL_PATTERN = /Cache-Control/u;
+const LOCATION_PATTERN = /Location/u;
+const NOT_A_MEDIA_TYPE = /not a media type/u;
+const OVERBROAD_ACCESS_PATTERN = /Overbroad access/u;
+const UNAUTHORIZED_ACCESS_PATTERN = /Unauthorized access/u;
+const BEARER_TOKEN_PATTERN = /^Bearer\s+\S+/u;
 
 describe("RS-1/get-blob-bytes discriminates byte fidelity", () => {
   const UPLOAD_BYTES = Buffer.from("pdpp-conformance-blob-fixture-payload");

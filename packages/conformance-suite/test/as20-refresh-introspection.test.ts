@@ -12,7 +12,8 @@
 // and keeps the bundled resource server, so the AS's answer is the only variable.
 
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
+import { createServer } from "node:http";
 import { describe, it } from "node:test";
 import type { PdppResponse } from "../src/harness/http.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
@@ -23,10 +24,10 @@ const AS20 =
   ALL_CASES.find((c) => c.caseId === "AS-20/refresh-reuse-revokes-the-family") ??
   assert.fail("AS-20/refresh-reuse-revokes-the-family must exist");
 
-const PATTERN_ACTIVE_AS_JSON_BOOLEAN = /`active` as a JSON boolean/;
-const PATTERN_NO_ROUTE = /no usable introspection route was found/;
-const PATTERN_ENDPOINT_404 = /the endpoint answered 404/;
-const PATTERN_ENDPOINT_500 = /the endpoint answered 500/;
+const PATTERN_ACTIVE_AS_JSON_BOOLEAN = /`active` as a JSON boolean/u;
+const PATTERN_NO_ROUTE = /no usable introspection route was found/u;
+const PATTERN_ENDPOINT_404 = /the endpoint answered 404/u;
+const PATTERN_ENDPOINT_500 = /the endpoint answered 500/u;
 
 /**
  * What the scripted authorization server answers. `no-endpoint` publishes RFC

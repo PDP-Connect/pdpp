@@ -6,7 +6,8 @@
 import type { TargetAdapter } from "./harness/adapter.ts";
 import type { ConformanceCase } from "./harness/runner.ts";
 import { makeContext, runCases } from "./harness/runner.ts";
-import { buildReport, type ConformanceReport } from "./report/result.ts";
+import type { ConformanceReport } from "./report/result.ts";
+import { buildReport } from "./report/result.ts";
 import { DEFAULT_SPEC_VERSION } from "./requirements/matrix.ts";
 import { AUTHORIZATION_SERVER_CASES } from "./tests/authorization-server.ts";
 import { CLIENT_CASES } from "./tests/client.ts";
@@ -54,7 +55,7 @@ export const ALL_CASES: readonly ConformanceCase[] = [
  * losing its last case shows up as coverage loss rather than silently vanishing.
  */
 export function coveredRequirementIds(cases: readonly ConformanceCase[] = ALL_CASES): readonly string[] {
-  return [...new Set(cases.map((c) => c.requirementId))].sort();
+  return [...new Set(cases.map((c) => c.requirementId))].sort((a, b) => a.localeCompare(b));
 }
 
 /**

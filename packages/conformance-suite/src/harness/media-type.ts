@@ -31,10 +31,10 @@ const IANA_TOP_LEVEL_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /** RFC 6838 Section 4.2 `restricted-name`: an alphanumeric start, then a bounded set. */
-const MEDIA_SUBTYPE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/;
+const MEDIA_SUBTYPE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/u;
 
 /** The `x-` experimental tree: `x-` followed by an RFC 6838 `restricted-name` token. */
-const EXPERIMENTAL_TYPE = /^x-[a-z0-9][a-z0-9!#$&^_.+-]{0,124}$/;
+const EXPERIMENTAL_TYPE = /^x-[a-z0-9][a-z0-9!#$&^_.+-]{0,124}$/u;
 
 /** Whether `value` is structurally a valid IANA media type (clause 4.8-1). */
 export function isValidMediaType(value: string): boolean {

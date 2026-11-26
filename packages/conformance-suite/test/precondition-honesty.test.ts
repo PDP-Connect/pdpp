@@ -11,7 +11,8 @@
 // name the failed step (status and body excerpt).
 
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
+import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 
@@ -22,10 +23,10 @@ import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts
 import { GRANT_LIFECYCLE_CASES } from "../src/tests/grant-lifecycle.ts";
 import { QUERY_SURFACE_CASES } from "../src/tests/query-surface.ts";
 
-const REVOKE_STEP = /revoke/i;
-const STATUS_401 = /401/;
-const BODY_EXCERPT = /revoke-denied-by-stub/;
-const TIME_CONSTRAINT_STEP = /without the requested time_constraint/;
+const REVOKE_STEP = /revoke/iu;
+const STATUS_401 = /401/u;
+const BODY_EXCERPT = /revoke-denied-by-stub/u;
+const TIME_CONSTRAINT_STEP = /without the requested time_constraint/u;
 
 const STREAM: SeededStream = {
   cursorField: "updated_at",
@@ -138,7 +139,7 @@ describe("harness steps that cannot arrange a precondition report skip", () => {
     assert.equal(cases.length, 2);
   });
 
-  for (const caseId of ["AS-8/revoked-token-introspects-inactive", "AS-8/revoked-grant-refused"]) {
+  function itSkipsWhenRevokeAnswers401(caseId: string): void {
     it(`${caseId} skips when revoke answers 401`, async () => {
       const conformanceCase = cases.find((c) => c.caseId === caseId);
       assert.ok(conformanceCase);
@@ -150,6 +151,10 @@ describe("harness steps that cannot arrange a precondition report skip", () => {
       assert.match(result.detail ?? "", STATUS_401);
       assert.match(result.detail ?? "", BODY_EXCERPT);
     });
+  }
+
+  for (const caseId of ["AS-8/revoked-token-introspects-inactive", "AS-8/revoked-grant-refused"]) {
+    itSkipsWhenRevokeAnswers401(caseId);
   }
 
   it("RS-2/time-constraint-enforced skips when the AS resolves the grant without the requested window", async () => {

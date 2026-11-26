@@ -17,7 +17,8 @@
 
 import type { MultiInstanceFixture, TargetAdapter } from "../harness/adapter.ts";
 import { request } from "../harness/http.ts";
-import { type CaseVerdict, type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import type { CaseVerdict, ConformanceCase } from "../harness/runner.ts";
+import { fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 
 interface ListBody {

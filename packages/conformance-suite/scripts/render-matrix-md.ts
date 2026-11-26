@@ -16,12 +16,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readSpecText } from "../src/report/requirements.ts";
 import { REQUIREMENTS } from "../src/requirements/catalog.ts";
-import {
-  CLAUSE_MATRIX,
-  type ClauseEntry,
-  clausesForRequirement,
-  clausesWithoutRequirement,
-} from "../src/requirements/matrix.ts";
+import type { ClauseEntry } from "../src/requirements/matrix.ts";
+import { CLAUSE_MATRIX, clausesForRequirement, clausesWithoutRequirement } from "../src/requirements/matrix.ts";
 import { clauseFragments, makeSpecLocator } from "../src/requirements/spec-scan.ts";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,7 +32,7 @@ export const MATRIX_MARKDOWN_PATH = matrixMarkdownPath();
 
 /** Escapes the one character that would break out of a markdown table cell. */
 function cell(text: string): string {
-  return text.replace(/\|/g, "\\|");
+  return text.replace(/\|/gu, "\\|");
 }
 
 const locateInSpec = makeSpecLocator(readSpecText());

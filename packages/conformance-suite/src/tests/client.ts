@@ -7,7 +7,8 @@
 // in test/client-conformance.test.ts to prove each oracle can fail.
 
 import type { ClientUnderTest } from "../harness/client-adapter.ts";
-import { type ConformanceCase, fail, pass, skip, unsupported } from "../harness/runner.ts";
+import type { ConformanceCase } from "../harness/runner.ts";
+import { fail, pass, skip, unsupported } from "../harness/runner.ts";
 
 const STREAM = "fixture_stream";
 const CHANGES_SINCE = "changes-since-fixture-token";

@@ -25,7 +25,7 @@ interface StreamRow {
 }
 
 function fieldsOf(rows: unknown, streamName: string): readonly string[] | undefined {
-  const row = Array.isArray(rows) ? (rows as StreamRow[]).find((r) => r?.name === streamName) : undefined;
+  const row = Array.isArray(rows) ? (rows as (StreamRow | null)[]).find((r) => r?.name === streamName) : undefined;
   return Array.isArray(row?.fields) && row.fields.every((f) => typeof f === "string")
     ? (row.fields as string[])
     : undefined;

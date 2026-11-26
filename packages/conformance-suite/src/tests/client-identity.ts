@@ -32,10 +32,12 @@
 // document it wrongly accepted, and the malformed case would prove nothing
 // against a target that was simply handed a body.
 
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
+import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { TargetAdapter, UrlHostedClientOutcome } from "../harness/adapter.ts";
-import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import type { ConformanceCase } from "../harness/runner.ts";
+import { fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 
 const NO_HOOK =

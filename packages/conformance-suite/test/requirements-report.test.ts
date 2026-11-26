@@ -7,20 +7,17 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { renderMarkdown } from "../src/report/markdown.ts";
-import {
-  buildRequirementsReport,
-  type ClauseCaseOutcome,
-  type ClauseResult,
-  readSpecText,
-  rollUpClauseResult,
-} from "../src/report/requirements.ts";
-import { buildReport, type CaseResult, exitCodeFor } from "../src/report/result.ts";
+import type { ClauseCaseOutcome, ClauseResult } from "../src/report/requirements.ts";
+import { buildRequirementsReport, readSpecText, rollUpClauseResult } from "../src/report/requirements.ts";
+import type { CaseResult } from "../src/report/result.ts";
+import { buildReport, exitCodeFor } from "../src/report/result.ts";
 import { SPEC_SOURCE } from "../src/requirements/catalog.ts";
-import { CLAUSE_MATRIX, type Observable } from "../src/requirements/matrix.ts";
+import type { Observable } from "../src/requirements/matrix.ts";
+import { CLAUSE_MATRIX } from "../src/requirements/matrix.ts";
 import { clauseFragments, normalizeSpecText } from "../src/requirements/spec-scan.ts";
 import { ALL_CASES, SUITE } from "../src/suite.ts";
 
-const SYNTHETIC_FAILURE = /synthetic failure/;
+const SYNTHETIC_FAILURE = /synthetic failure/u;
 const roll = (
   caseOutcomes: readonly ClauseCaseOutcome[],
   observable: Observable = "black-box-http",

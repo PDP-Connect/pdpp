@@ -15,21 +15,21 @@ import { ALL_CASES } from "../src/suite.ts";
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const SPEC = readFileSync(join(REPO_ROOT, SPEC_SOURCE.path), "utf8");
 const SPEC_LINES = SPEC.split("\n");
-const HEADING = /^#{1,6} (.+)$/;
-const EXPLICIT_ANCHOR = /\{#([^}]+)\}/;
-const NON_SLUG_CHARS = /[^a-z0-9 -]/g;
-const SPACES = / /g;
-const SECTION_HEADING = /^## (\d+)\./;
-const NORMATIVE_KEYWORD = /\b(MUST NOT|MUST|SHALL NOT|SHALL|SHOULD NOT|SHOULD|REQUIRED|MAY)\b/;
+const HEADING = /^#{1,6} (?<title>.+)$/u;
+const EXPLICIT_ANCHOR = /\{#(?<anchor>[^}]+)\}/u;
+const NON_SLUG_CHARS = /[^a-z0-9 -]/gu;
+const SPACES = / /gu;
+const SECTION_HEADING = /^## (?<number>\d+)\./u;
+const NORMATIVE_KEYWORD = /\b(?:MUST NOT|MUST|SHALL NOT|SHALL|SHOULD NOT|SHOULD|REQUIRED|MAY)\b/u;
 
 function specAnchors(): ReadonlySet<string> {
   const anchors = new Set<string>();
   for (const line of SPEC_LINES) {
-    const [, title] = HEADING.exec(line) ?? [];
+    const title = HEADING.exec(line)?.groups?.title;
     if (!title) {
       continue;
     }
-    const [, explicit] = EXPLICIT_ANCHOR.exec(title) ?? [];
+    const explicit = EXPLICIT_ANCHOR.exec(title)?.groups?.anchor;
     if (explicit) {
       anchors.add(`#${explicit}`);
     } else {
@@ -51,7 +51,7 @@ function normativeSpecLines(): readonly { line: number; text: string }[] {
     if (inFence) {
       continue;
     }
-    const [, sectionNumber] = SECTION_HEADING.exec(line) ?? [];
+    const sectionNumber = SECTION_HEADING.exec(line)?.groups?.number;
     if (sectionNumber) {
       sectionOrdinal = Number(sectionNumber);
       continue;

@@ -22,21 +22,21 @@ import {
   scanSpecSentences,
 } from "../src/requirements/spec-scan.ts";
 
-const PATTERN_BETA_ITEM = /beta item/;
+const PATTERN_BETA_ITEM = /beta item/u;
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const SPEC = readFileSync(join(REPO_ROOT, SPEC_SOURCE.path), "utf8");
 const SPEC_LINES = SPEC.split("\n");
 const CLAUSE_TEXTS = CLAUSE_MATRIX.map((clause) => clause.text);
 const CONFORMANCE_SECTION = "9";
-const NUMBERED_ITEM = /^(\d+)\. (.*)$/;
+const NUMBERED_ITEM = /^\d+\. (?<text>.*)$/u;
 const ROLE_HEADINGS = [
   { heading: "### Authorization Server conformance", prefix: "AS" },
   { heading: "### Resource Server conformance", prefix: "RS" },
   { heading: "### Client conformance", prefix: "CL" },
 ] as const;
-const CONTINUATION_LINE = /^\s+\S/;
-const MUST_KEYWORD = /\b(?:MUST NOT|MUST|SHALL NOT|SHALL|REQUIRED)\b/;
+const CONTINUATION_LINE = /^\s+\S/u;
+const MUST_KEYWORD = /\b(?:MUST NOT|MUST|SHALL NOT|SHALL|REQUIRED)\b/u;
 
 const sentences = scanSpecSentences(SPEC);
 const mustSentences = sentences.filter((s) => s.family === "must" && s.section !== CONFORMANCE_SECTION);
@@ -142,7 +142,7 @@ test("every numbered Section 9 item maps to a catalogue requirement", () => {
       }
       const numbered = NUMBERED_ITEM.exec(raw);
       if (numbered) {
-        items.push(numbered[2] ?? "");
+        items.push(numbered.groups?.text ?? "");
       } else if (items.length > 0 && CONTINUATION_LINE.test(raw)) {
         items[items.length - 1] += ` ${raw.trim()}`;
       }

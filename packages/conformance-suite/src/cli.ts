@@ -24,9 +24,11 @@ import { renderMarkdown } from "./report/markdown.ts";
 import { buildRequirementsReport, readSpecText } from "./report/requirements.ts";
 import { exitCodeFor } from "./report/result.ts";
 import { ALL_CASES, runSuite } from "./suite.ts";
-import { type HttpTargetConfig, httpTargetFromConfig } from "./targets/http-target.ts";
+import type { HttpTargetConfig } from "./targets/http-target.ts";
+import { httpTargetFromConfig } from "./targets/http-target.ts";
 import { ReferenceTargetAdapter } from "./targets/reference-adapter.ts";
-import { ReferenceAsAdapter, type ReferenceAsConfig } from "./targets/reference-as-adapter.ts";
+import type { ReferenceAsConfig } from "./targets/reference-as-adapter.ts";
+import { ReferenceAsAdapter } from "./targets/reference-as-adapter.ts";
 
 const USAGE = `pdpp-conformance --target <reference|config.json|module-path> [options]
 
@@ -51,7 +53,7 @@ but coverage incomplete.
  * A whole-string `${ENV_VAR}` placeholder. Anchored so a config value that merely
  * contains the syntax is left alone rather than partially substituted.
  */
-const ENV_PLACEHOLDER = /^\$\{([A-Z0-9_]+)\}$/;
+const ENV_PLACEHOLDER = /^\$\{(?<name>[A-Z0-9_]+)\}$/u;
 
 /**
  * Resolves `${ENV_VAR}` placeholders in a target config against the environment.
@@ -68,7 +70,7 @@ const ENV_PLACEHOLDER = /^\$\{([A-Z0-9_]+)\}$/;
  */
 function resolveEnvPlaceholders(value: unknown, path: string[] = []): unknown {
   if (typeof value === "string") {
-    const name = ENV_PLACEHOLDER.exec(value)?.[1];
+    const name = ENV_PLACEHOLDER.exec(value)?.groups?.name;
     if (!name) {
       return value;
     }

@@ -19,15 +19,15 @@ import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const PATTERN_BYSTANDER_ALIVE = /BYSTANDER_ALIVE/;
-const PATTERN_BYSTANDER_KILLED = /BYSTANDER_KILLED/;
-const PATTERN_STOPPED = /STOPPED/;
-const PATTERN_RC_1 = /rc=1/;
-const PATTERN_START_D = /start=\d+/;
-const PATTERN_BUILD_FAILED = /build failed/;
-const PATTERN_NOT_INSTALLED = /NOT_INSTALLED/;
-const PATTERN_MISSING_OR_EMPTY = /missing or empty/;
-const PATTERN_SECOND_1 = /second=1/;
+const PATTERN_BYSTANDER_ALIVE = /BYSTANDER_ALIVE/u;
+const PATTERN_BYSTANDER_KILLED = /BYSTANDER_KILLED/u;
+const PATTERN_STOPPED = /STOPPED/u;
+const PATTERN_RC_1 = /rc=1/u;
+const PATTERN_START_D = /start=\d+/u;
+const PATTERN_BUILD_FAILED = /build failed/u;
+const PATTERN_NOT_INSTALLED = /NOT_INSTALLED/u;
+const PATTERN_MISSING_OR_EMPTY = /missing or empty/u;
+const PATTERN_SECOND_1 = /second=1/u;
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "reference-target.sh");
 const SCRATCH_ROOT = join(process.env.TMPDIR ?? join(homedir(), ".tmp"), "conformance-lifecycle-tests");

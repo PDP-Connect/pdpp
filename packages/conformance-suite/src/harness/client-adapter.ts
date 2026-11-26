@@ -6,9 +6,10 @@
 // client sends to it. The fixture is deliberately part of the contract: a
 // client case must say which server response made its next request meaningful.
 
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { createServer } from "node:http";
 
-const RECORDS_PATH = /^\/v1\/streams\/[^/]+\/records$/;
+const RECORDS_PATH = /^\/v1\/streams\/[^/]+\/records$/u;
 
 export type ClientSelection = Readonly<Record<string, unknown>>;
 

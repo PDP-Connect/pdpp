@@ -92,8 +92,8 @@ describe("the report cannot present a partial run as complete", () => {
     const expected = REQUIREMENTS.filter((r) => scoped.has(r.role)).map((r) => r.id);
     const actual = report.requirements.map((r) => r.requirement.id);
     assert.deepEqual(
-      [...actual].sort(),
-      [...expected].sort(),
+      [...actual].sort((x, y) => x.localeCompare(y)),
+      [...expected].sort((x, y) => x.localeCompare(y)),
       "The report's requirement list must be the catalogue filtered to scoped roles."
     );
 

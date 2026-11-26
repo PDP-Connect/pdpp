@@ -16,7 +16,8 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type ClientUnderTest, startClientFixture } from "../src/harness/client-adapter.ts";
+import type { ClientUnderTest } from "../src/harness/client-adapter.ts";
+import { startClientFixture } from "../src/harness/client-adapter.ts";
 import { makeContext, runCase } from "../src/harness/runner.ts";
 import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import { CLIENT_CASES } from "../src/tests/client.ts";
