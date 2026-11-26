@@ -155,6 +155,11 @@ const nextConfig = {
         source: "/spec-mcp-profile",
       },
       {
+        destination: "/specification/spec-client-range-filters",
+        permanent: true,
+        source: "/spec-client-range-filters",
+      },
+      {
         destination: "/specification/spec-architecture",
         permanent: true,
         source: "/spec-architecture",

@@ -36,6 +36,7 @@ export const GUIDANCE_SLUGS = [
   "spec-collection-profile",
   "spec-access-extension",
   "spec-mcp-profile",
+  "spec-client-range-filters",
   "spec-ext-lexical-search",
   "spec-ext-aggregation",
   "spec-semantic-retrieval-extension",
@@ -64,6 +65,7 @@ export const GENERATED_MDX_SPEC_SLUGS = [
   "spec-connector-ecosystem",
   "spec-core",
   "spec-mcp-profile",
+  "spec-client-range-filters",
   "spec-data-query-api",
   "spec-discovery-and-trust",
 ] as const;
