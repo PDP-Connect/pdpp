@@ -93,3 +93,28 @@ test("ConnectAgentCard links to the dedicated setup page without owner-token set
   assert.match(src, OPEN_SETUP_LINK_RE);
   assert.doesNotMatch(src, OWNER_TOKEN_SETUP_RE);
 });
+
+
+test("ConnectAgentCard keeps a live MCP URL available without a setup link", () => {
+  const html = renderToStaticMarkup(createElement(ConnectAgentCard, {
+    mode: "live",
+    providerUrl: "https://fixture.example",
+  }));
+  assert.match(html, /Live reference/);
+  assert.match(html, LIVE_MCP_TEXT);
+  assert.match(html, /aria-label="Copy MCP server URL"/);
+  assert.doesNotMatch(html, LINK_ELEMENT);
+});
+
+test("ConnectAgentCard keeps sandbox posture explicit even with a URL and setup link", () => {
+  const html = renderToStaticMarkup(createElement(ConnectAgentCard, {
+    connectHref: "/sample-setup",
+    mode: "sandbox",
+    providerUrl: "https://fixture.example",
+  }));
+  assert.match(html, /Sandbox mock/);
+  assert.match(html, SANDBOX_COPY);
+  assert.match(html, LIVE_MCP_TEXT);
+  assert.match(html, LIVE_SETUP_LINK);
+  assert.doesNotMatch(html, /Live reference/);
+});
