@@ -30,6 +30,11 @@ const PATTERN_MISSING_OR_EMPTY = /missing or empty/;
 const PATTERN_SECOND_1 = /second=1/;
 const PATTERN_DIRTY = /DIRTY/;
 const PATTERN_CLEAN = /CLEAN/;
+const PATTERN_PROBES_2 = /probes=2/;
+const PATTERN_READY = /ready after.*AS :10001, RS :10002/;
+const PATTERN_DIRTY_SUFFIX = /\+dirty/;
+const PATTERN_OFF_PIN = /not the pinned/;
+const PATTERN_UNCOMMITTED = /has uncommitted changes/;
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "reference-target.sh");
 const SCRATCH_ROOT = join(process.env.TMPDIR ?? join(homedir(), ".tmp"), "conformance-lifecycle-tests");
@@ -63,8 +68,8 @@ describe("readiness of the owned target", () => {
       echo "probes=$probes"
     `);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /probes=2/);
-    assert.match(result.stderr, /ready after.*AS :10001, RS :10002/);
+    assert.match(result.stdout, PATTERN_PROBES_2);
+    assert.match(result.stderr, PATTERN_READY);
   });
 });
 
@@ -179,8 +184,8 @@ describe("build provenance: a failed or empty rebuild never inherits a stamp or 
     writeFileSync(join(root, ".gitignore"), "node_modules\ndist\n# local edit\n");
     const checked = sh("is_installed && echo INSTALLED || echo NOT_INSTALLED; actual_target_version", env);
     assert.equal(checked.status, 0, checked.stderr);
-    assert.match(checked.stdout, /NOT_INSTALLED/);
-    assert.match(checked.stdout, /\+dirty/);
+    assert.match(checked.stdout, PATTERN_NOT_INSTALLED);
+    assert.match(checked.stdout, PATTERN_DIRTY_SUFFIX);
     assert.equal(readFileSync(join(root, STAMP), "utf8").trim(), head);
   });
 
@@ -219,7 +224,7 @@ describe("target provenance: reports describe what actually ran", () => {
     const pin = head.startsWith("0") ? "1".repeat(40) : "0".repeat(40);
     const result = sh("check_pin", { PDPP_DC_REF: root, PDPP_DC_PIN: pin, PDPP_DC_ALLOW_UNPINNED: "" });
     assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stderr, /not the pinned/);
+    assert.match(result.stderr, PATTERN_OFF_PIN);
     assert.ok(result.stderr.includes(head));
   });
 
@@ -229,12 +234,16 @@ describe("target provenance: reports describe what actually ran", () => {
     const pin = head.startsWith("0") ? "1".repeat(40) : "0".repeat(40);
     writeFileSync(join(root, "local-note.txt"), "uncommitted fixture");
     const result = sh("check_pin; actual_target_version", {
-      PDPP_DC_REF: root, PDPP_DC_PIN: pin, PDPP_DC_ALLOW_UNPINNED: "1",
+      PDPP_DC_REF: root,
+      PDPP_DC_PIN: pin,
+      PDPP_DC_ALLOW_UNPINNED: "1",
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stderr, /has uncommitted changes/);
-    assert.equal(result.stdout,
-      `data-connect@${head.slice(0, 10)} reference-implementation (UNPINNED override; pin is ${pin.slice(0, 10)}) +dirty`);
+    assert.match(result.stderr, PATTERN_UNCOMMITTED);
+    assert.equal(
+      result.stdout,
+      `data-connect@${head.slice(0, 10)} reference-implementation (UNPINNED override; pin is ${pin.slice(0, 10)}) +dirty`
+    );
   });
 });
 
