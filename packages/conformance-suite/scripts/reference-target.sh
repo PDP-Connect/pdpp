@@ -658,6 +658,7 @@ OUT_FILES=(target.json report.json report.md requirements.json suite.stdout suit
 # then remove only the files a run owns.
 claim_out_dir() {
   local out="$1" f
+  command -v flock >/dev/null 2>&1 || die "missing prerequisite: flock; install flock before running the reference target."
   exec 7>"$out/.run.lock"
   flock -n 7 || die "output directory $out is in use by another run; choose a different --out or wait."
   for f in "${OUT_FILES[@]}"; do

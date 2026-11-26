@@ -175,6 +175,16 @@ describe("build provenance: a failed or empty rebuild never inherits a stamp or 
 });
 
 describe("output directories: concurrent runs cannot share one", () => {
+  it("reports a missing flock prerequisite before opening the output lock", () => {
+    const out = join(scratch, "out-no-flock");
+    const emptyPath = join(scratch, "no-flock-bin");
+    mkdirSync(out, { recursive: true });
+    mkdirSync(emptyPath, { recursive: true });
+    const result = sh(`PATH="${emptyPath}"; claim_out_dir "${out}"`);
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(result.stderr.includes("missing prerequisite: flock"), result.stderr);
+    assert.equal(existsSync(join(out, ".run.lock")), false);
+  });
   it("refuses a second claim on a directory that is in use", () => {
     const out = join(scratch, "out-shared");
     mkdirSync(out, { recursive: true });

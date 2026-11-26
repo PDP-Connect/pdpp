@@ -85,6 +85,48 @@ test("client view selection is invalid before storage or decoration", async () =
   assert.equal(decorateCalls, 0);
 });
 
+test("owner record-list telemetry describes an incremental page and its continuation", async () => {
+  const page = {
+    data: [{ title: "first" }, { title: "second" }],
+    has_more: true,
+    next_changes_since: "next-marker",
+  };
+  const result = await executeRecordsList(
+    makeInput({
+      actor: { kind: "owner", subject_id: "synthetic" },
+      requestParams: { fields: ["title"], limit: "2", changes_since: "previous-marker" },
+    }),
+    makeDependencies({ queryRecords: async () => page })
+  );
+
+  assert.deepEqual(result.queryData, { has_changes_since: true, limit: 2, query_shape: "record_list" });
+  assert.deepEqual(result.disclosureData, {
+    has_more: true,
+    has_next_changes_since: true,
+    query_shape: "record_list",
+    record_count: 2,
+  });
+  assert.deepEqual(result.result, page);
+});
+
+test("owner record-list telemetry keeps an unknown limit separate from an observed empty page", async () => {
+  for (const page of [{ data: [] }, { data: [], has_more: false, next_changes_since: null }]) {
+    const result = await executeRecordsList(
+      makeInput({ actor: { kind: "owner", subject_id: "synthetic" }, requestParams: { limit: "" } }),
+      makeDependencies({ queryRecords: async () => page })
+    );
+
+    assert.deepEqual(result.queryData, { has_changes_since: false, limit: null, query_shape: "record_list" });
+    assert.deepEqual(result.disclosureData, {
+      has_more: false,
+      has_next_changes_since: false,
+      query_shape: "record_list",
+      record_count: 0,
+    });
+    assert.deepEqual(result.result, page);
+  }
+});
+
 test("owner and granted client reads of stream A succeed", async () => {
   let queryCalls = 0;
   let decorateCalls = 0;
@@ -107,4 +149,68 @@ test("owner and granted client reads of stream A succeed", async () => {
   assert.deepEqual(owner.result.data, [{ title: "allowed" }]);
   assert.equal(queryCalls, 2);
   assert.equal(decorateCalls, 2);
+});
+
+test("owner view selects fields within a decorated record envelope", async () => {
+  const requestParams = { view: "compact" };
+  const input = makeInput({
+    actor: { kind: "owner", subject_id: "owner-1" },
+    rawQueryView: "compact",
+    requestParams,
+  });
+  const result = await executeRecordsList(
+    input,
+    makeDependencies({
+      getManifest: () => ({
+        streams: [{ ...manifest.streams[0], name: "A", views: [{ id: "compact", fields: ["title"] }] }],
+      }),
+      queryRecords: async (_stream, _grant, params) => {
+        assert.deepEqual(params, { fields: ["title"] });
+        return { data: [{ id: "row-1", data: { title: "Draft", subtitle: "Long title" } }] };
+      },
+      decorateRecord: (record) => ({ ...record, display: "Preview" }),
+    })
+  );
+  assert.deepEqual(result.result.data, [{ id: "row-1", display: "Preview", data: { title: "Draft" } }]);
+  assert.equal(result.queryData.requested_view, "compact");
+});
+
+test("an empty records page preserves its continuation and reports zero returned rows", async () => {
+  const page = { data: [], has_more: true, next_cursor: "page-2", next_changes_since: "2026-01-01T00:00:00Z" };
+  const result = await executeRecordsList(
+    makeInput({ requestParams: { fields: ["title"], limit: "8", changes_since: "2025-12-31T00:00:00Z" } }),
+    makeDependencies({ queryRecords: async () => page })
+  );
+  assert.deepEqual(result.result, page);
+  assert.deepEqual(result.disclosureData, {
+    has_more: true,
+    has_next_changes_since: true,
+    query_shape: "record_list",
+    record_count: 0,
+  });
+  assert.deepEqual(result.queryData, { has_changes_since: true, limit: 8, query_shape: "record_list" });
+});
+
+test("a short records page keeps its opaque continuation unchanged", async () => {
+  const page = {
+    data: [{ title: "Invented row" }],
+    has_more: true,
+    next_cursor: "fixture+page/2=",
+    next_changes_since: "synthetic-watermark",
+  };
+  const result = await executeRecordsList(
+    makeInput({
+      actor: { kind: "owner", subject_id: "synthetic" },
+      requestParams: { fields: ["title"], limit: 10 },
+    }),
+    makeDependencies({ queryRecords: async () => page })
+  );
+  assert.equal(result.result.next_cursor, "fixture+page/2=");
+  assert.equal(result.result.next_changes_since, "synthetic-watermark");
+  assert.deepEqual(result.disclosureData, {
+    has_more: true,
+    has_next_changes_since: true,
+    query_shape: "record_list",
+    record_count: 1,
+  });
 });
