@@ -23,7 +23,8 @@
 // resource-server cases.
 
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
+import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 
@@ -37,8 +38,8 @@ import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts
 const AS9_CASE = AUTHORIZATION_SERVER_CASES.find((c) => c.caseId === "AS-9/introspection-carries-pdpp-extensions");
 assert.ok(AS9_CASE, "AS-9/introspection-carries-pdpp-extensions must exist");
 
-const PDPP_TOKEN_KIND_PATTERN = /pdpp_token_kind/;
-const GRANT_ID_PATTERN = /grant_id/;
+const PDPP_TOKEN_KIND_PATTERN = /pdpp_token_kind/u;
+const GRANT_ID_PATTERN = /grant_id/u;
 
 const OWNER_TOKEN = "owner-stub-token";
 

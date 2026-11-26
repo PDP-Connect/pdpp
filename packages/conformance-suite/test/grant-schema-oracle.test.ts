@@ -30,7 +30,7 @@ import { ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
 
 /** Hoisted per useTopLevelRegex: the missing-version mutant must name the field. */
-const VERSION_MENTIONED = /version/;
+const VERSION_MENTIONED = /version/u;
 
 /**
  * spec-core.md Section 7 "### Grant fields", the normative example, transcribed

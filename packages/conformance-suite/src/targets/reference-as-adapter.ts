@@ -22,23 +22,22 @@
 // unchanged.
 
 import { createHash, randomBytes } from "node:crypto";
-import {
-  type BlobFixture,
-  type DeclarationOutcome,
-  describeRefusedStep,
-  type GrantRequest,
-  type IssuedGrant,
-  type MultiInstanceFixture,
-  PreconditionFailed,
-  type SeededStream,
-  type SelectionOutcome,
-  type SelectionRequest,
-  type SourceDeclarationStream,
-  type SourceDeclarationSubmission,
-  type StagedApproval,
-  type TargetAdapter,
-  type TargetCapabilities,
+import type {
+  BlobFixture,
+  DeclarationOutcome,
+  GrantRequest,
+  IssuedGrant,
+  MultiInstanceFixture,
+  SeededStream,
+  SelectionOutcome,
+  SelectionRequest,
+  SourceDeclarationStream,
+  SourceDeclarationSubmission,
+  StagedApproval,
+  TargetAdapter,
+  TargetCapabilities,
 } from "../harness/adapter.ts";
+import { describeRefusedStep, PreconditionFailed } from "../harness/adapter.ts";
 import type { Role } from "../requirements/catalog.ts";
 
 export interface ReferenceAsConfig {

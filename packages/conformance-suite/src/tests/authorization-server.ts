@@ -21,11 +21,13 @@
 
 import type { TargetAdapter } from "../harness/adapter.ts";
 import { grantSchemaViolations } from "../harness/grant-schema.ts";
-import { type PdppResponse, request } from "../harness/http.ts";
-import { advisory, arrange, type ConformanceCase, fail, pass, skip, unsupported } from "../harness/runner.ts";
+import type { PdppResponse } from "../harness/http.ts";
+import { request } from "../harness/http.ts";
+import type { ConformanceCase } from "../harness/runner.ts";
+import { advisory, arrange, fail, pass, skip, unsupported } from "../harness/runner.ts";
 
 /** Trailing slash on an issuer path, stripped before the well-known suffix. */
-const TRAILING_SLASH = /\/$/;
+const TRAILING_SLASH = /\/$/u;
 
 /** The RFC 7662 + PDPP introspection response shape (Core Section 8). */
 interface IntrospectionBody {

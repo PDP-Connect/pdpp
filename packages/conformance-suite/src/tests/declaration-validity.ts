@@ -38,7 +38,8 @@
 // nothing.
 
 import type { DeclarationOutcome, SourceDeclarationSubmission, TargetAdapter } from "../harness/adapter.ts";
-import { type ConformanceCase, fail, pass, skip } from "../harness/runner.ts";
+import type { ConformanceCase } from "../harness/runner.ts";
+import { fail, pass, skip } from "../harness/runner.ts";
 import type { Evidence } from "../report/result.ts";
 
 const NO_HOOK =

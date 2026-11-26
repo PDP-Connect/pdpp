@@ -12,6 +12,25 @@
       }
     }
   },
+  "linter": {
+    "rules": {
+      // Adapter and fixture classes implement an interface (TargetAdapter,
+      // ClientUnderTest, …), and that interface fixes their method set: an
+      // interface method cannot move to `static` without the class no longer
+      // satisfying it. Subclasses overriding an inherited method are in the same
+      // position. The rule ships these two options for exactly that shape, so an
+      // implementing class is exempt while a plain class is still checked.
+      "style": {
+        "useThisInClassMethods": {
+          "level": "error",
+          "options": {
+            "ignoreClassesWithImplements": "all",
+            "ignoreOverrideMethods": true
+          }
+        }
+      }
+    }
+  },
   "files": {
     "ignoreUnknown": true,
     // The tracked-source contract starts with all files Biome recognizes.
@@ -95,6 +114,36 @@
         "rules": {
           "complexity": {
             "noExcessiveCognitiveComplexity": "off"
+          }
+        }
+      }
+    },
+    {
+      // A frozen transcription of Core v0.1.0 at babd0ef3fb, not authored prose:
+      // it is the text the catalogue and matrix are transcribed from, so its line
+      // numbers and list layout are part of the oracle (spec-completeness reads a
+      // lead-in at a fixed line). Reformatting it would silently change the
+      // artifact the suite judges against.
+      "includes": ["packages/conformance-suite/spec/spec-core.md"],
+      "formatter": { "enabled": false }
+    },
+    {
+      // Conformance tests declare a small fixture class next to the case it
+      // exercises: a scripted authorization server, a stub adapter overriding
+      // one hook, and so on. The fixtures are local by design — moving each to
+      // its own module would separate it from the only test that reads it — and
+      // a test that compares two adapters needs more than one. Raise the cap for
+      // this package's tests only; the default still applies to shipped source.
+      "includes": ["packages/conformance-suite/test/**/*.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveClassesPerFile": {
+              "level": "error",
+              "options": {
+                "maxClasses": 8
+              }
+            }
           }
         }
       }

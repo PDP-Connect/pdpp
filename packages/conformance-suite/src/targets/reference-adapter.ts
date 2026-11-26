@@ -34,13 +34,8 @@ import type {
 } from "../harness/adapter.ts";
 import type { PdppResponse } from "../harness/http.ts";
 import type { Role } from "../requirements/catalog.ts";
-import {
-  type Defect,
-  GRANT_SCHEMA_VERSION,
-  PDPP_VERSION,
-  ReferenceServer,
-  type StreamFixture,
-} from "./reference-server.ts";
+import type { Defect, StreamFixture } from "./reference-server.ts";
+import { GRANT_SCHEMA_VERSION, PDPP_VERSION, ReferenceServer } from "./reference-server.ts";
 
 /**
  * Two streams with overlapping shape: the negative oracles need a second stream
@@ -248,7 +243,7 @@ function sameStreams(a: readonly SourceDeclarationStream[], b: readonly SourceDe
   const normalize = (streams: readonly SourceDeclarationStream[]) =>
     JSON.stringify(
       [...streams]
-        .map((s) => ({ name: s.name, fields: [...s.fields].sort() }))
+        .map((s) => ({ name: s.name, fields: [...s.fields].sort((x, y) => x.localeCompare(y)) }))
         .sort((x, y) => x.name.localeCompare(y.name))
     );
   return normalize(a) === normalize(b);
@@ -403,7 +398,9 @@ export class ReferenceTargetAdapter implements TargetAdapter {
     this.defects = defects;
     this.server = new ReferenceServer(effective, defects);
     this.targetId =
-      defects.size === 0 ? "pdpp-reference-target" : `pdpp-reference-target+defects(${[...defects].sort().join(",")})`;
+      defects.size === 0
+        ? "pdpp-reference-target"
+        : `pdpp-reference-target+defects(${[...defects].sort((x, y) => x.localeCompare(y)).join(",")})`;
   }
 
   get baseUrl(): string {

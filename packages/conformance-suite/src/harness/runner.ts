@@ -15,13 +15,14 @@
 //     body never runs, so it cannot accidentally report success
 //   - a case that cannot arrange its precondition returns `skip` explicitly
 
-import { assertRequirementExists, type CaseResult, type Evidence } from "../report/result.ts";
+import type { CaseResult, Evidence } from "../report/result.ts";
+import { assertRequirementExists } from "../report/result.ts";
+import type { SeededStream, TargetAdapter } from "./adapter.ts";
+import { PreconditionFailed } from "./adapter.ts";
+import type { ClientUnderTest } from "./client-adapter.ts";
 
 /** Strips one trailing slash so a declared base and a suffix do not double up. */
-const TRAILING_SLASH = /\/$/;
-
-import { PreconditionFailed, type SeededStream, type TargetAdapter } from "./adapter.ts";
-import type { ClientUnderTest } from "./client-adapter.ts";
+const TRAILING_SLASH = /\/$/u;
 
 /** What a case body receives. The adapter plus what setup() provisioned. */
 export interface CaseContext {

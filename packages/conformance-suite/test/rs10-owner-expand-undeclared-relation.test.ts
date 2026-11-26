@@ -12,7 +12,7 @@ import { makeContext, runCase } from "../src/harness/runner.ts";
 import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/reference-adapter.ts";
 import { declaredRelationNames, RESOURCE_SERVER_CASES } from "../src/tests/resource-server.ts";
 
-const SERVED_INSTEAD_OF_REJECTED_PATTERN = /served \(200\) instead of rejected/;
+const SERVED_INSTEAD_OF_REJECTED_PATTERN = /served \(200\) instead of rejected/u;
 
 // The exact synthetic name the case tries first when it believes nothing is
 // declared. A fixture that genuinely declares a relation under this name

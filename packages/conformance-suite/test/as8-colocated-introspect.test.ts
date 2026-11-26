@@ -18,7 +18,8 @@
 // expectations shaped.
 
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
+import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 
@@ -30,8 +31,8 @@ import { DEFAULT_FIXTURES, ReferenceTargetAdapter } from "../src/targets/referen
 import { AUTHORIZATION_SERVER_CASES } from "../src/tests/authorization-server.ts";
 
 /** Detail-text patterns the cases below match on, hoisted per useTopLevelRegex. */
-const REVOKED_AS_ACTIVE = /revoked token as active/;
-const MISSING_INTROSPECTION_FIELDS = /grant_id, subject_id|subject_id, grant_id/;
+const REVOKED_AS_ACTIVE = /revoked token as active/u;
+const MISSING_INTROSPECTION_FIELDS = /grant_id, subject_id|subject_id, grant_id/u;
 
 const AS8_CASE = AUTHORIZATION_SERVER_CASES.find((c) => c.caseId === "AS-8/revoked-token-introspects-inactive");
 assert.ok(AS8_CASE, "AS-8/revoked-token-introspects-inactive must exist");
